@@ -1,0 +1,194 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">
+<suite name="ApiAutomationSuite" verbose="1" parallel="classes" thread-count="4">
+
+    <!-- Listeners:
+             TestSuiteListener      : pass/fail counters + suite lifecycle
+             ExtentReportListener   : ExtentReports HTML with request/response bodies
+             (Allure listener attaches automatically via allure-testng on the classpath) -->
+    <listeners>
+        <listener class-name="com.ak.api.reporting.TestSuiteListener"/>
+        <listener class-name="com.ak.api.reporting.TestCaseLogListener"/>
+        <listener class-name="com.ak.api.reporting.ExtentReportListener"/>
+        <listener class-name="com.ak.api.reporting.XrayReportListener"/>
+    </listeners>
+
+    <!-- Smoke suite: runs everything tagged with @Test(groups="smoke") -->
+    <test name="Smoke">
+        <groups>
+            <run>
+                <include name="smoke"/>
+            </run>
+        </groups>
+        <classes>
+            <class name="com.ak.api.tests.PostsSmokeTests"/>
+        </classes>
+    </test>
+
+    <!-- Regression suite: wider coverage tagged with @Test(groups="regression") -->
+    <test name="Regression">
+        <groups>
+            <run>
+                <include name="regression"/>
+            </run>
+        </groups>
+        <classes>
+            <class name="com.ak.api.tests.PostsSmokeTests"/>
+            <class name="com.ak.api.tests.PostsDataDrivenTest"/>
+        </classes>
+    </test>
+
+    <!-- CSV data-driven suite: dataFile parameter feeds DataProviders.csvData -->
+    <test name="CsvDriven">
+        <parameter name="dataFile" value="testdata/posts.csv"/>
+        <parameter name="dataStartRow" value="1"/>
+        <parameter name="dataEndRow" value="3"/>
+        <groups>
+            <run>
+                <include name="csv"/>
+            </run>
+        </groups>
+        <classes>
+            <class name="com.ak.api.tests.PostsCsvDrivenTest"/>
+        </classes>
+    </test>
+
+    <!-- Auth suite: exercises AuthUtilities against httpbin.org (public echo).
+             Requires outbound https access; not for air-gapped CI. -->
+    <test name="Auth">
+        <groups>
+            <run>
+                <include name="auth"/>
+            </run>
+        </groups>
+        <classes>
+            <class name="com.ak.api.tests.AuthTests"/>
+        </classes>
+    </test>
+
+    <!-- XML-driven parameterization suite: proves testng.xml <parameter> flows
+             into DataProviders.csvData and out as row Map objects. Change the
+             dataFile value below (or override with -DdataFile=...) to point at
+             a different CSV without touching Java. -->
+    <test name="ParameterizedLogin">
+        <parameter name="dataFile"     value="testdata/login_credentials.csv"/>
+        <parameter name="dataStartRow" value="1"/>
+        <parameter name="dataEndRow"   value="5"/>
+        <parameter name="dataSkipRows" value="3"/>
+        <groups>
+            <run>
+                <include name="parameterized"/>
+            </run>
+        </groups>
+        <classes>
+            <class name="com.ak.api.tests.ParameterizedLoginTest"/>
+        </classes>
+    </test>
+
+    <!-- Faker-driven suite: same template + placeholder + POST pipeline as
+             PostsDataDrivenTest, but the dataMap comes from net.datafaker so
+             every run posts a different payload. Set -Dfake.seed=<long> for
+             reproducible data. -->
+    <test name="FakerPosts">
+        <groups>
+            <run>
+                <include name="faker"/>
+            </run>
+        </groups>
+        <classes>
+            <class name="com.ak.api.tests.FakerPostsTest"/>
+        </classes>
+    </test>
+
+    <!-- JsonPath depth suite: exercises the harder JsonPath surface
+             (filter/wildcard/aggregation/nested/deep-scan/groupBy) using both
+             REST Assured GPath and standard $-notation via com.jayway.jsonpath. -->
+    <test name="JsonPathDemo">
+        <groups>
+            <run>
+                <include name="jsonpath"/>
+            </run>
+        </groups>
+        <classes>
+            <class name="com.ak.api.tests.JsonPathDemoTests"/>
+        </classes>
+    </test>
+
+    <!-- DemoWebshop login suite: live end-to-end against demowebshop.tricentis.com.
+             Skips cleanly if demoshop.username / demoshop.password are not
+             supplied via -D or DEMOSHOP_USERNAME / DEMOSHOP_PASSWORD env vars.
+             (Public demo credentials: do NOT commit to source.) -->
+    <test name="DemoWebshopLogin">
+        <groups>
+            <run>
+                <include name="demoshop"/>
+            </run>
+        </groups>
+        <classes>
+            <class name="com.ak.api.tests.DemoWebshopLoginTest"/>
+        </classes>
+    </test>
+
+    <!-- Headers loaders suite: verifies Headers.fromJson/Properties/Text/File
+             loaders + one httpbin round-trip. Same outbound https requirement
+             as the Auth suite. -->
+    <test name="HeadersLoaders">
+        <groups>
+            <run>
+                <include name="headers"/>
+            </run>
+        </groups>
+        <classes>
+            <class name="com.ak.api.tests.HeadersFromFileTests"/>
+        </classes>
+    </test>
+
+    <!-- Account Statement suite: full end-to-end datasheet -> template ->
+             substitution -> POST -> assertion, modelled after the reference
+             project's accountStatement flow. -->
+    <test name="AccountStatement">
+        <parameter name="dataFile"     value="testdata/account_statements.csv"/>
+        <parameter name="dataStartRow" value="1"/>
+        <parameter name="dataEndRow"   value="2"/>
+        <groups>
+            <run>
+                <include name="account-statement"/>
+            </run>
+        </groups>
+        <classes>
+            <class name="com.ak.api.tests.AccountStatementDataDrivenTest"/>
+        </classes>
+    </test>
+
+    <!-- DB suite: H2QueryTest runs self-contained (in-memory H2 in Postgres
+             compat mode); PostgresQueryTest skips cleanly when db.url is
+             unset. Both are tagged 'db' so a targeted run picks up both. -->
+    <test name="Db">
+        <groups>
+            <run>
+                <include name="db"/>
+            </run>
+        </groups>
+        <classes>
+            <class name="com.ak.api.tests.H2QueryTest"/>
+            <class name="com.ak.api.tests.PostgresQueryTest"/>
+        </classes>
+    </test>
+
+    <!-- JSON data-driven suite: dataFile parameter feeds DataProviders.jsonData -->
+    <test name="JsonDriven">
+        <parameter name="dataFile" value="testdata/posts.json"/>
+        <parameter name="dataArrayKey" value="rows"/>
+        <parameter name="dataStartRow" value="1"/>
+        <parameter name="dataEndRow" value="3"/>
+        <groups>
+            <run>
+                <include name="json"/>
+            </run>
+        </groups>
+        <classes>
+            <class name="com.ak.api.tests.PostsJsonDrivenTest"/>
+        </classes>
+    </test>
+
+</suite>

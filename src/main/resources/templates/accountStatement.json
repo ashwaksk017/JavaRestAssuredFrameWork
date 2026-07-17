@@ -1,0 +1,5 @@
+{
+    "accountId":                  "#accountId#",
+    "startingSettlementWindowId": "#startingSettlementWindowId#",
+    "endingSettlementWindowId":   "#endingSettlementWindowId#"
+}

@@ -1,0 +1,28 @@
+{
+    "rows": [
+        {
+            "title": "JSON row 1 title",
+            "body": "JSON row 1 body",
+            "userId": "111",
+            "published": "true",
+            "jira_xray_id": "",
+            "expected": "statusCode:201;titleLenMin:5"
+        },
+        {
+            "title": "JSON row 2 title",
+            "body": "JSON row 2 body",
+            "userId": "222",
+            "published": "false",
+            "jira_xray_id": "",
+            "expected": "statusCode:201;titleLenMin:5"
+        },
+        {
+            "title": "JSON row 3 title",
+            "body": "JSON row 3 body",
+            "userId": "333",
+            "published": "true",
+            "jira_xray_id": "",
+            "expected": "statusCode:201;titleLenMin:5"
+        }
+    ]
+}

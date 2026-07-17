@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">
+<!--
+    Parent suite: pulls in multiple child suite files in one Maven invocation.
+
+    TestNG runs each referenced <suite-file> in the order listed. Each child
+    suite is an independent XML with its own <listeners>, <parameter>, and
+    <test> blocks (all preserved). Result: one `mvn test` runs everything,
+    but each child suite stays independently runnable via -DsuiteXmlFile.
+
+    Run:
+        mvn test "-DsuiteXmlFile=src/test/resources/testng-all.xml"
+-->
+<suite name="ApiAutomationSuite-All" verbose="1">
+
+    <suite-files>
+        <suite-file path="./testng-smoke.xml"/>
+        <suite-file path="./testng.xml"/>
+    </suite-files>
+
+</suite>

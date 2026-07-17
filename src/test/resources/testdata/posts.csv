@@ -1,0 +1,4 @@
+title,body,userId,published,jira_xray_id,expected
+CSV row 1 title,CSV row 1 body,11,true,,statusCode:201;titleLenMin:5
+CSV row 2 title,CSV row 2 body,22,false,,statusCode:201;titleLenMin:5
+CSV row 3 title,CSV row 3 body,33,true,,statusCode:201;titleLenMin:5

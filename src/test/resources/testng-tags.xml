@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">
+<!--
+    Tag-driven suite: all test classes are listed in one <test> block with NO
+    <groups> filter, so the CLI -Dgroups=... controls exactly what runs across
+    the entire codebase.
+
+    Point Maven at this suite instead of the default testng.xml:
+
+        mvn test "-Dsurefire.suiteXmlFiles=src/test/resources/testng-tags.xml" `
+                 "-Dgroups=smoke"
+
+    Or make it your default by editing pom.xml's <suiteXmlFile> value.
+
+    Available tags (as of 2026-07-16):
+
+        smoke          -- fastest happy-path assertions
+        regression     -- wider coverage tests
+        posts          -- exercises /posts endpoints
+        auth           -- httpbin.org auth flows
+        bearer, basic  -- specific auth mechanisms
+        headers        -- header-loader tests (JSON/properties/text)
+        loaders        -- file-loader unit tests
+        parameterized  -- CSV-driven parameterization demo
+        csv, json      -- data-driven format subgroups
+        data-driven    -- any data-driven test
+        demoshop       -- Tricentis DemoWebshop live login
+        login          -- login flows (any provider)
+        faker          -- Faker-generated data
+        jsonpath       -- JsonPath depth-coverage demos
+        unit           -- pure unit / non-network tests
+
+    Common combinations:
+
+        mvn test "-Dgroups=smoke"                         # only smoke
+        mvn test "-Dgroups=smoke,regression"              # smoke OR regression
+        mvn test "-DexcludedGroups=demoshop,auth"         # everything except external
+        mvn test "-Dgroups=regression -DexcludedGroups=auth"
+
+-->
+<suite name="ApiAutomationSuite-Tags" verbose="1" parallel="classes" thread-count="4">
+
+    <listeners>
+        <listener class-name="com.ak.api.reporting.TestSuiteListener"/>
+        <listener class-name="com.ak.api.reporting.TestCaseLogListener"/>
+        <listener class-name="com.ak.api.reporting.ExtentReportListener"/>
+    </listeners>
+
+    <!-- Parameters used by data-driven providers; harmless if a test doesn't need them. -->
+    <parameter name="dataFile"     value="testdata/posts.csv"/>
+    <parameter name="dataArrayKey" value="rows"/>
+    <parameter name="dataStartRow" value="1"/>
+    <parameter name="dataEndRow"   value="5"/>
+
+    <test name="All-By-Tag">
+        <classes>
+            <class name="com.ak.api.tests.PostsSmokeTests"/>
+            <class name="com.ak.api.tests.PostsDataDrivenTest"/>
+            <class name="com.ak.api.tests.PostsCsvDrivenTest"/>
+            <class name="com.ak.api.tests.PostsJsonDrivenTest"/>
+            <class name="com.ak.api.tests.ParameterizedLoginTest"/>
+            <class name="com.ak.api.tests.AuthTests"/>
+            <class name="com.ak.api.tests.HeadersFromFileTests"/>
+            <class name="com.ak.api.tests.DemoWebshopLoginTest"/>
+            <class name="com.ak.api.tests.JsonPathDemoTests"/>
+            <class name="com.ak.api.tests.FakerPostsTest"/>
+        </classes>
+    </test>
+
+</suite>

@@ -1,0 +1,35 @@
+# Build output
+target/
+*.class
+
+# Reports + logs (generated on every run)
+logs/
+allure-results/
+allure-report/
+extent-reports/
+test-output/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.project
+.classpath
+.settings/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Secrets (never commit)
+*.env
+.env
+application-secret.properties
+application-local.properties
+src/main/resources/application-local.properties
+src/test/resources/application-local.properties
+# Any credentials override file, in case one lands anywhere in the tree:
+**/credentials.properties
+**/*-credentials.properties

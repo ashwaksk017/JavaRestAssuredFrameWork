@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">
+<!--
+    Focused smoke suite: fastest happy-path only.
+
+    Run this suite directly:
+        mvn test "-DsuiteXmlFile=src/test/resources/testng-smoke.xml"
+
+    Or combine with the full suite via testng-all.xml (parent suite).
+-->
+<suite name="ApiAutomationSuite-Smoke" verbose="1" parallel="classes" thread-count="2">
+
+    <listeners>
+        <listener class-name="com.ak.api.reporting.TestSuiteListener"/>
+        <listener class-name="com.ak.api.reporting.TestCaseLogListener"/>
+        <listener class-name="com.ak.api.reporting.ExtentReportListener"/>
+    </listeners>
+
+    <test name="Smoke-Only">
+        <groups>
+            <run>
+                <include name="smoke"/>
+            </run>
+        </groups>
+        <classes>
+            <class name="com.ak.api.tests.PostsSmokeTests"/>
+        </classes>
+    </test>
+
+</suite>
