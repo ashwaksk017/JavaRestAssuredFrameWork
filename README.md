@@ -2,7 +2,7 @@
 
 Standalone, API-only automation framework built on **Rest Assured 5.x + TestNG 7 + Java 17**.
 
-The utility layer (`RestUtilities`, `RestLoggerUtilityDataHolder`, `RestLogAppender`) is ported from a larger enterprise batch-payment framework (`BatchPaymentAutomation`, VISA B2B Connect stack). Method signatures and placeholder semantics are preserved so calling code migrates 1:1; every P0 correctness gap in the reference is fixed here.
+The utility layer (`RestUtilities`, `RestLoggerUtilityDataHolder`, `RestLogAppender`) is ported from a larger enterprise batch-payment framework (`BatchPaymentAutomation`, stack). Method signatures and placeholder semantics are preserved so calling code migrates 1:1; every P0 correctness gap in the reference is fixed here.
 
 ## What's inside
 
