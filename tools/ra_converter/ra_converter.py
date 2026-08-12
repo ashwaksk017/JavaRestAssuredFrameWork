@@ -928,6 +928,76 @@ def _business_method_name(case_name: str) -> tuple[str, str, str]:
     return method, status_code, variant
 
 
+def _cluster_cases_by_shape(cases: list["TestCase"]) -> list[list["TestCase"]]:
+    """Group cases whose REST-step shape is IDENTICAL into clusters that
+    can share a single @Test method + a multi-row CSV.
+
+    Cluster key = tuple of (verb, resource_path, body-hash) for every
+    REST step in order. Two cases cluster iff they:
+      - hit the same endpoints in the same order,
+      - use the same HTTP verbs,
+      - use the same NORMALIZED body (SoapUI placeholders rewritten to
+        `#name#` first, so scenario-only value differences don't split
+        the cluster).
+
+    Preserves discovery order (first case in each cluster keeps its
+    original position). Returns list of clusters where each cluster
+    is 1..N cases in the order they appeared in the SoapUI XML."""
+    import hashlib
+
+    def body_hash(step: "RestStep") -> str:
+        if not step.request_body.strip():
+            return "-"
+        translated, _ = soapui_body_to_placeholders(step.request_body)
+        return hashlib.sha1(translated.encode("utf-8")).hexdigest()[:8]
+
+    def sig(case: "TestCase") -> tuple:
+        return tuple(
+            (s.http_method, s.resource_path, body_hash(s))
+            for s in case.steps if isinstance(s, RestStep)
+        )
+
+    clusters: dict = {}
+    order: list = []
+    for c in cases:
+        k = sig(c)
+        if k not in clusters:
+            clusters[k] = []
+            order.append(k)
+        clusters[k].append(c)
+    return [clusters[k] for k in order]
+
+
+def _cluster_method_name(cluster: list["TestCase"],
+                          seen_bases: dict[str, int]) -> tuple[str, str, str]:
+    """Return (method_name, expected_status_code, variant) for a cluster.
+
+    Uses the first case's business-intent name as the base. When multiple
+    clusters produce the same base name (two clusters happen to share the
+    business phrasing but differ in step shape), disambiguate with a
+    `_c2`, `_c3`, ... suffix. Case-level variant/status inside a cluster
+    move to per-row CSV cells, not the method name.
+    """
+    rep = cluster[0]
+    base, status, variant = _business_method_name(rep.name)
+    # Single-case cluster keeps the same method-name-with-variant shape
+    # the non-clustered v2 code used before. Multi-case clusters drop
+    # the variant from the method name (each case's variant is a CSV row).
+    if len(cluster) == 1 and variant:
+        key = f"{base[:-4]}_{variant}Test"
+    else:
+        key = base
+    n = seen_bases.get(key, 0) + 1
+    seen_bases[key] = n
+    final = key if n == 1 else f"{key[:-4]}_c{n}Test"
+    # Cluster-level status/variant only meaningful for single-case
+    # clusters; for multi-case clusters they vary per row and are
+    # blank at the method level.
+    if len(cluster) > 1:
+        status, variant = "", ""
+    return final, status, variant
+
+
 def _unique_method_names(cases: list["TestCase"]) -> dict[str, tuple[str, str, str]]:
     """Given a list of cases that will all live in one class, return
     {case_name -> (final_method_name, expected_status_code, variant)}.
@@ -955,6 +1025,210 @@ def _unique_method_names(cases: list["TestCase"]) -> dict[str, tuple[str, str, s
             final = f"{key[:-4]}_v{n}Test"
         out[c.name] = (final, status, variant)
     return out
+
+
+def _shape_sig(node) -> str:
+    """Return a signature capturing JSON STRUCTURE only (keys + leaf
+    types), not literal leaf values. Two bodies with identical sig can
+    be merged into one template with `#tpl_<path>#` placeholders at
+    positions where their leaf values differ."""
+    if isinstance(node, dict):
+        return "{" + ",".join(
+            f"{k}:{_shape_sig(v)}" for k, v in sorted(node.items())) + "}"
+    if isinstance(node, list):
+        if not node:
+            return "[]"
+        # Signature per element position so list-of-heterogeneous-shapes
+        # doesn't false-merge with list-of-uniform-shape. Truncate long
+        # lists at 20 to keep the signature bounded.
+        head = node[:20]
+        return "[" + "|".join(_shape_sig(x) for x in head) + f"*{len(node)}]"
+    if isinstance(node, bool):
+        return "B"
+    if isinstance(node, (int, float)):
+        return "N"
+    if isinstance(node, str):
+        return "S"
+    if node is None:
+        return "_"
+    return "?"
+
+
+def _walk_leaves(node, path: str = ""):
+    """Yield (json_path, leaf_value) for every leaf in the tree. `path`
+    uses dot-notation for object keys and `[i]` for list indices so
+    every leaf gets a stable JSON-path-like id."""
+    if isinstance(node, dict):
+        for k, v in node.items():
+            key_seg = k if path == "" else f".{k}"
+            yield from _walk_leaves(v, f"{path}{key_seg}")
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            yield from _walk_leaves(v, f"{path}[{i}]")
+    else:
+        yield (path, node)
+
+
+def _sanitize_path_for_col(json_path: str) -> str:
+    """Convert a JSON-path expression into a CSV-column-safe identifier.
+    e.g. `contactInfo.email.address` -> `contactInfo_email_address`;
+    `emailDomains[0]` -> `emailDomains_0`."""
+    s = re.sub(r"[^A-Za-z0-9]+", "_", json_path).strip("_")
+    return s or "root"
+
+
+def _merge_bodies_with_placeholders(trees: list, texts: list[str]) -> tuple[str, list[dict[str, str]]]:
+    """Given N JSON trees with IDENTICAL structural shape and their raw
+    text, produce:
+      - a single merged template TEXT where every leaf position whose
+        value VARIES across the group is replaced with `#tpl_<path>#`
+        (leaves whose value is constant across the group stay literal);
+      - a list of dicts (one per input tree) mapping each placeholder
+        column name to that tree's actual value at that path -- these
+        become CSV cells so mergedRow at runtime substitutes the right
+        per-scenario value.
+    """
+    import json as _json
+    # Gather every leaf position across the group, unify by path.
+    all_leaves_per_tree = [dict(_walk_leaves(t)) for t in trees]
+    all_paths = sorted(set().union(*[set(d) for d in all_leaves_per_tree]))
+
+    # For each path, check whether every tree has the same value.
+    varying_paths: set = set()
+    for p in all_paths:
+        vals = {d.get(p) for d in all_leaves_per_tree}
+        # `None` (a leaf whose value is literal JSON null) is distinct
+        # from `missing` -- we use a sentinel for the missing case.
+        if len(vals) > 1:
+            varying_paths.add(p)
+
+    # Build the merged template by rewriting the FIRST tree, replacing
+    # every varying leaf with a #tpl_<path># placeholder. Use string-form
+    # placeholder (unquoted numbers/booleans would break JSON syntax on
+    # the row's default value); tests can still coerce with Integer.parseInt
+    # etc. at consume time.
+    def rewrite(node, path=""):
+        if isinstance(node, dict):
+            return {k: rewrite(v, f"{path}.{k}" if path else k)
+                    for k, v in node.items()}
+        if isinstance(node, list):
+            return [rewrite(v, f"{path}[{i}]") for i, v in enumerate(node)]
+        # leaf
+        if path in varying_paths:
+            col = f"tpl_{_sanitize_path_for_col(path)}"
+            return f"#{col}#"
+        return node
+
+    merged_tree = rewrite(trees[0])
+    merged_text = _json.dumps(merged_tree, indent=2, ensure_ascii=False)
+
+    # Per-entry cells: for each tree, list the actual value at every
+    # varying path. Missing paths get empty string; None-valued leaves
+    # get "" too (mergedRow non-strict resolves #X# -> "null" if absent).
+    per_entry_cells: list[dict[str, str]] = []
+    for d in all_leaves_per_tree:
+        cells: dict[str, str] = {}
+        for p in varying_paths:
+            col = f"tpl_{_sanitize_path_for_col(p)}"
+            v = d.get(p)
+            if v is None:
+                cells[col] = ""
+            elif isinstance(v, bool):
+                cells[col] = "true" if v else "false"
+            else:
+                cells[col] = str(v)
+        per_entry_cells.append(cells)
+
+    return merged_text, per_entry_cells
+
+
+def _jsonpath_to_gpath(path: str) -> str:
+    """Rewrite Jayway/JsonPath.com syntax (SoapUI's convention) into the
+    Groovy GPath syntax RestAssured's default `.jsonPath()` parser uses.
+
+    Examples:
+      `$[*]['guestId']`             -> `[*].guestId`
+      `$.notifications[0].message`  -> `notifications[0].message`
+      `$['a']['b'].c`               -> `a.b.c`
+      `$..email`                    -> `..email` (recursive descent stays)
+
+    Idempotent: paths already in GPath form pass through untouched."""
+    if not path:
+        return path
+    p = path
+    # Strip leading $ (root indicator; GPath doesn't use it)
+    if p.startswith("$"):
+        p = p[1:]
+    # ['key'] and ["key"] -> .key (dot access equivalent in GPath)
+    p = re.sub(r"\['([^']+)'\]", r".\1", p)
+    p = re.sub(r'\["([^"]+)"\]', r".\1", p)
+    # Leading dot -> drop
+    if p.startswith("."):
+        p = p[1:]
+    return p
+
+
+def _assert_col_key(a: "Assertion", a_idx: int) -> Optional[str]:
+    """Return a short, filesystem+CSV-safe key that identifies what a
+    SoapUI Assertion checks (the JSON path, the regex target, etc.).
+    Returns None when the assertion carries no user-visible expected
+    value (e.g. an existence check with no configured path).
+
+    Column-name convention: expected_<sanitizedStepName>_<returnedKey>.
+    """
+    t = a.type
+    cfg = a.config or {}
+    def _clean(s: str, keep_dot: bool = False) -> str:
+        s = (s or "").strip().lstrip("$.")
+        rx = r"[^A-Za-z0-9]+" if not keep_dot else r"[^A-Za-z0-9.]+"
+        s = re.sub(rx, "_", s).strip("_")
+        return s or "root"
+    if t == "Valid HTTP Status Codes":
+        return "status_code"
+    if t == "Invalid HTTP Status Codes":
+        return "invalid_status_codes"
+    if t == "JsonPath Match":
+        return f"jsonpath_{_clean(cfg.get('path', ''))}"
+    if t == "JsonPath Existence Match":
+        return f"exists_{_clean(cfg.get('path', ''))}"
+    if t == "JsonPath Count":
+        return f"count_{_clean(cfg.get('path', ''))}"
+    if t == "JsonPath RegEx Match":
+        return f"regex_{_clean(cfg.get('path', ''))}"
+    if t == "Simple Equals":
+        return f"equals_{a_idx}" if a_idx else "equals"
+    if t == "Simple Contains":
+        return f"contains_{a_idx}" if a_idx else "contains"
+    if t == "Simple NotContains":
+        return f"notcontains_{a_idx}" if a_idx else "notcontains"
+    if t == "Response SLA Assertion":
+        return "sla_ms"
+    return None
+
+
+def _assert_default_value(a: "Assertion") -> str:
+    """Extract the "expected value" a SoapUI Assertion carries. This is
+    what lands in the CSV cell as the default; users edit rows to vary
+    scenarios."""
+    t = a.type
+    cfg = a.config or {}
+    if t == "Valid HTTP Status Codes":
+        codes = (cfg.get("codes", "") or "").strip()
+        return re.split(r"[,\s]+", codes)[0] if codes else "200"
+    if t == "Invalid HTTP Status Codes":
+        return (cfg.get("codes", "") or "").strip()
+    if t in ("JsonPath Match", "JsonPath RegEx Match"):
+        return (cfg.get("content", "") or "").strip()
+    if t == "JsonPath Existence Match":
+        return "true"
+    if t == "JsonPath Count":
+        raw = (cfg.get("expectedCount", "") or cfg.get("content", "") or "0").strip()
+        return raw
+    if t in ("Simple Equals", "Simple Contains", "Simple NotContains"):
+        return (cfg.get("token", "") or "").strip()
+    if t == "Response SLA Assertion":
+        return str(cfg.get("SLA", cfg.get("sla", "1000")))
+    return ""
 
 
 def _csv_cell(value: str) -> str:
@@ -1530,6 +1804,10 @@ public class {class_name} extends BaseApiTest {{
         lines.append(f'RestUtilities.logResponseBody(testCaseId, holder, RestUtilities.getResponseAsString({response_var}));')
 
         # Assertions
+        # `assertion_index` counts only ACTIVE assertions (skipped ones
+        # don't consume an index) so the CSV column names stay stable
+        # even if a SoapUI author toggles a disabled assertion on later.
+        a_active = 0
         for a in step.assertions:
             if a.disabled:
                 self.ledger.add_assertion(
@@ -1537,7 +1815,9 @@ public class {class_name} extends BaseApiTest {{
                     a.type, a.config, "", "SKIPPED")
                 continue
             emitted, coverage = self._render_assertion(
-                a, response_var, step.step_name, suffix=suf)
+                a, response_var, step.step_name, suffix=suf,
+                assertion_index=a_active)
+            a_active += 1
             lines.extend(emitted)
             self.ledger.add_assertion(
                 self._current_prefix, self._current_case, step.step_name,
@@ -1546,13 +1826,28 @@ public class {class_name} extends BaseApiTest {{
         return lines
 
     def _render_assertion(self, a: Assertion, response_var: str,
-                           step_name: str, suffix: str = "") -> tuple[list[str], str]:
+                           step_name: str, suffix: str = "",
+                           assertion_index: int = 0) -> tuple[list[str], str]:
         """Returns (java_lines, coverage) where coverage is FULL / PARTIAL / TODO.
         `suffix` disambiguates local vars when the same step name appears
-        multiple times in one test method."""
+        multiple times in one test method.
+
+        Every expected VALUE is read from the CSV row via `row.getOrDefault`
+        so scenarios in a multi-row cluster can each assert something
+        different without changing Java code. The value from the SoapUI
+        Assertion config becomes the FALLBACK when the CSV cell is blank.
+        """
         t = a.type
         cfg = a.config
         sid = sanitize_identifier(step_name) + suffix
+        # CSV column name for this assertion's expected value (may be None
+        # for assertion types that don't carry a user-visible expected).
+        col_key = _assert_col_key(a, assertion_index)
+        col_name = f"expected_{sanitize_identifier(step_name)}_{col_key}" if col_key else None
+        # Java-local var suffix keyed off (assertion_index, col_key) so
+        # multiple assertions on the SAME step never collide. Falls back
+        # to just the step's suffix when no col_key exists (unused var).
+        vsid = f"{sid}_a{assertion_index}_{col_key}" if col_key else sid
 
         def _jlit(s: str) -> str:
             """Escape an arbitrary string for use inside a Java "" literal."""
@@ -1564,12 +1859,29 @@ public class {class_name} extends BaseApiTest {{
                      .replace("\n", "\\n")
                      .replace("\t", "\\t"))
 
+        def _row_expr(fallback_literal: str) -> str:
+            """Java expression that reads the expected value from CSV row
+            with `fallback_literal` (already _jlit-escaped) as the default.
+            Treats empty-string cells as MISSING so an empty CSV cell
+            triggers the fallback (matches user intent: blank = 'no override')."""
+            # ternary keeps this a one-line expression usable inline as an arg
+            return (
+                f'(row.get("{col_name}") == null || row.get("{col_name}").isEmpty() '
+                f'? "{fallback_literal}" : row.get("{col_name}"))'
+            )
+
         if t == "Valid HTTP Status Codes":
             codes = (cfg.get("codes", "") or "").strip()
             first_code = re.split(r"[,\s]+", codes)[0] if codes else "200"
+            # Two-tier lookup: the standalone `expected_<step>_status_code`
+            # column wins; otherwise fall back to `exp.getInt("statusCode", ...)`
+            # which parses the legacy `expected` combined column. Empty
+            # cell -> treat as missing so the fallback fires (not parseInt("")).
             return ([
-                f'int expected_{sid} = exp.getInt("statusCode", {first_code});',
-                f'softAssert.assertEquals({response_var}.statusCode(), expected_{sid}, "expected status for {step_name}");',
+                f'String rawStatus_{vsid} = row.get("{col_name}");',
+                f'int expected_{vsid} = (rawStatus_{vsid} == null || rawStatus_{vsid}.isEmpty()) '
+                f'? exp.getInt("statusCode", {first_code}) : Integer.parseInt(rawStatus_{vsid}.trim());',
+                f'softAssert.assertEquals({response_var}.statusCode(), expected_{vsid}, "expected status for {step_name}");',
             ], "FULL")
         if t == "Invalid HTTP Status Codes":
             codes = (cfg.get("codes", "") or "").strip()
@@ -1577,10 +1889,12 @@ public class {class_name} extends BaseApiTest {{
             checks = " && ".join(
                 f'{response_var}.statusCode() != {c}' for c in code_list) or "true"
             return ([
+                f'// invalid-status assertion values are fixed at converter time;'
+                f' override via CSV column `{col_name}` (comma-separated) if needed.',
                 f'softAssert.assertTrue({checks}, "invalid status codes: {codes}");',
             ], "FULL")
         if t == "JsonPath Match":
-            path = _jlit(cfg.get("path", ""))
+            path = _jlit(_jsonpath_to_gpath(cfg.get("path", "")))
             content_raw = cfg.get("content", "") or ""
             if content_raw.startswith(("{", "[")):
                 return ([
@@ -1588,54 +1902,83 @@ public class {class_name} extends BaseApiTest {{
                     f'softAssert.assertNotNull({response_var}.jsonPath().get("{path}"), "JsonPath present: {path}");',
                 ], "PARTIAL")
             if "${" in content_raw:
+                # SoapUI property expansion in expected value -- keep runtime
+                # substitution behavior; still parameterizable via CSV column.
                 java_expr = soapui_expr_to_java(content_raw)
                 return ([
-                    f'softAssert.assertEquals({response_var}.jsonPath().getString("{path}"), {java_expr}, "JsonPath Match: {path}");',
+                    f'String expected_{vsid} = row.getOrDefault("{col_name}", '
+                    f'String.valueOf({java_expr}));',
+                    f'softAssert.assertEquals({response_var}.jsonPath().getString("{path}"), '
+                    f'expected_{vsid}, "JsonPath Match: {path}");',
                 ], "FULL")
             content = _jlit(content_raw)
             return ([
-                f'softAssert.assertEquals({response_var}.jsonPath().getString("{path}"), "{content}", "JsonPath Match: {path}");',
+                f'String expected_{vsid} = {_row_expr(content)};',
+                f'softAssert.assertEquals({response_var}.jsonPath().getString("{path}"), '
+                f'expected_{vsid}, "JsonPath Match: {path}");',
             ], "FULL")
         if t == "JsonPath Existence Match":
-            path = _jlit(cfg.get("path", ""))
+            path = _jlit(_jsonpath_to_gpath(cfg.get("path", "")))
+            # existence check can be turned OFF for a row by setting the CSV
+            # cell to "false"; empty cell keeps the (default = must-exist)
+            # behavior.
             return ([
-                f'softAssert.assertNotNull({response_var}.jsonPath().get("{path}"), "JsonPath exists: {path}");',
+                f'if (!"false".equalsIgnoreCase(row.getOrDefault("{col_name}", "true"))) {{',
+                f'    softAssert.assertNotNull({response_var}.jsonPath().get("{path}"), '
+                f'"JsonPath exists: {path}");',
+                f'}}',
             ], "FULL")
         if t == "JsonPath Count":
-            path = _jlit(cfg.get("path", ""))
+            path = _jlit(_jsonpath_to_gpath(cfg.get("path", "")))
             expected_raw = (cfg.get("expectedCount", "") or cfg.get("content", "") or "0").strip()
             expected_int = expected_raw if expected_raw.lstrip("-").isdigit() else "0"
             return ([
-                f'Object count_{sid} = {response_var}.jsonPath().get("{path}");',
-                f'int actualCount_{sid} = count_{sid} instanceof java.util.List ? ((java.util.List<?>) count_{sid}).size() : (count_{sid} == null ? 0 : 1);',
-                f'softAssert.assertEquals(actualCount_{sid}, {expected_int}, "JsonPath Count for {path}");',
+                f'Object count_{vsid} = {response_var}.jsonPath().get("{path}");',
+                f'int actualCount_{vsid} = count_{vsid} instanceof java.util.List ? '
+                f'((java.util.List<?>) count_{vsid}).size() : (count_{vsid} == null ? 0 : 1);',
+                f'String rawExp_{vsid} = row.get("{col_name}");',
+                f'int expectedCount_{vsid} = (rawExp_{vsid} == null || rawExp_{vsid}.isEmpty()) '
+                f'? {expected_int} : Integer.parseInt(rawExp_{vsid}.trim());',
+                f'softAssert.assertEquals(actualCount_{vsid}, expectedCount_{vsid}, '
+                f'"JsonPath Count for {path}");',
             ], "FULL")
         if t == "JsonPath RegEx Match":
-            path = _jlit(cfg.get("path", ""))
+            path = _jlit(_jsonpath_to_gpath(cfg.get("path", "")))
             content = _jlit(cfg.get("content", ""))
             return ([
-                f'String matched_{sid} = {response_var}.jsonPath().getString("{path}");',
-                f'softAssert.assertTrue(matched_{sid} != null && matched_{sid}.matches("{content}"), "JsonPath regex: {path}");',
+                f'String matched_{vsid} = {response_var}.jsonPath().getString("{path}");',
+                f'String pattern_{vsid} = {_row_expr(content)};',
+                f'softAssert.assertTrue(matched_{vsid} != null && matched_{vsid}.matches(pattern_{vsid}), '
+                f'"JsonPath regex: {path}");',
             ], "FULL")
         if t == "Simple Equals":
             token = _jlit(cfg.get("token", ""))
             return ([
-                f'softAssert.assertTrue({response_var}.asString().contains("{token}"), "Simple Equals contains token");',
+                f'String token_{vsid} = {_row_expr(token)};',
+                f'softAssert.assertTrue({response_var}.asString().contains(token_{vsid}), '
+                f'"Simple Equals contains token");',
             ], "FULL")
         if t == "Simple Contains":
             token = _jlit(cfg.get("token", ""))
             return ([
-                f'softAssert.assertTrue({response_var}.asString().contains("{token}"), "Simple Contains: {token[:40]}");',
+                f'String token_{vsid} = {_row_expr(token)};',
+                f'softAssert.assertTrue({response_var}.asString().contains(token_{vsid}), '
+                f'"Simple Contains: {token[:40]}");',
             ], "FULL")
         if t == "Simple NotContains":
             token = _jlit(cfg.get("token", ""))
             return ([
-                f'softAssert.assertFalse({response_var}.asString().contains("{token}"), "Simple NotContains");',
+                f'String token_{vsid} = {_row_expr(token)};',
+                f'softAssert.assertFalse({response_var}.asString().contains(token_{vsid}), '
+                f'"Simple NotContains");',
             ], "FULL")
         if t == "Response SLA Assertion":
             sla = cfg.get("SLA", cfg.get("sla", "1000"))
             return ([
-                f'softAssert.assertTrue({response_var}.time() <= {sla}L, "SLA {sla}ms");',
+                f'String rawSla_{vsid} = row.get("{col_name}");',
+                f'long sla_{vsid} = (rawSla_{vsid} == null || rawSla_{vsid}.isEmpty()) '
+                f'? {sla}L : Long.parseLong(rawSla_{vsid}.trim());',
+                f'softAssert.assertTrue({response_var}.time() <= sla_{vsid}, "SLA " + sla_{vsid} + "ms");',
             ], "FULL")
         if t == "SOAP Response":
             return ([
@@ -1827,7 +2170,12 @@ public final class TestSupport {{
         # emission logic with test-method emission (bug fixes benefit both).
         method_bodies: list[str] = []
         for flow in flows:
-            self._current_case = f"__setup_{flow['id']}__"
+            # Use the template case's ACTUAL name so
+            # `_template_path_by_step` lookups in _render_rest_step_body
+            # hit the dedup/merge map correctly. (`__setup_flow_A__`
+            # would never be a real key and the emitter would fall back
+            # to the flat legacy template path -- broken in v2.)
+            self._current_case = flow["template_case"].name
             self._current_prefix = "__setup__"
             self._reset_per_method_state()
             step_lines: list[str] = [
@@ -1878,6 +2226,7 @@ import org.testng.asserts.SoftAssert;
 import com.ak.api.config.Config;
 import com.ak.api.data.Expected;
 import com.ak.api.data.FakeData;
+import com.ak.api.data.PlaceholderResolver;
 import com.ak.api.db.Db;
 import com.ak.api.rest.clients.{service_class_name};
 import com.ak.api.rest.utilities.Headers;
@@ -2617,15 +2966,28 @@ public final class PlaceholderResolver {{
         # Prime state so per-method emitters know their audit-ledger cursor.
         self._current_prefix = soapui_suite_name
 
-        method_name_map = _unique_method_names(cases)
-        method_names: list[str] = []
+        # Cluster cases by REST-step shape (verb + path + body-hash per step)
+        # so N cases that share an intent collapse to ONE @Test method with
+        # N CSV rows. Single-case clusters emit exactly like before.
+        self._clusters = _cluster_cases_by_shape(cases)
+        # Publish cluster -> method-name mapping for downstream emitters
+        # (emit_csv_per_method uses this too).
+        seen_bases: dict[str, int] = {}
+        self._cluster_to_method: dict[int, tuple[str, str, str]] = {}
+        for idx, cluster in enumerate(self._clusters):
+            self._cluster_to_method[idx] = _cluster_method_name(cluster, seen_bases)
 
+        method_names: list[str] = []
         rendered_methods: list[str] = []
-        for case in cases:
-            final_name, status_code, variant = method_name_map[case.name]
+        for idx, cluster in enumerate(self._clusters):
+            final_name, status_code, variant = self._cluster_to_method[idx]
             method_names.append(final_name)
+            # Use the first case as the "template" case for step rendering.
+            # All cases in the cluster share the exact same step shape and
+            # body pattern by construction; scenario data varies per CSV row.
             rendered_methods.append(self._render_test_method_v2(
-                case, service_class_name, final_name, status_code, variant))
+                cluster[0], service_class_name, final_name, status_code, variant,
+                cluster_size=len(cluster)))
 
         # Explicit @XrayTest keys from all cases (union) -- power users can
         # narrow to a subset via TestNG groups from the CSV `groups` column.
@@ -2724,17 +3086,32 @@ public class {class_name} extends BaseApiTest {{
 
     def _render_test_method_v2(self, case: TestCase, service_class_name: str,
                                  method_name: str, expected_status_code: str,
-                                 variant: str) -> str:
+                                 variant: str, cluster_size: int = 1) -> str:
         """Same shape as `_render_test_method` but wired to the convention-
         based DataProvider (`PerMethodCsvDataProvider`, name `"rows"`), and
         the method name is the business-intent form (not the hash-shortened
-        SoapUI case name)."""
+        SoapUI case name).
+
+        When `cluster_size > 1`, this method represents N SoapUI cases that
+        share the same REST step shape; the CSV has one row per case and
+        `testCaseId` is read PER ROW (from the `test_case_id` column) so
+        each scenario logs its own identity."""
         self._current_case = case.name
         self._reset_per_method_state()
 
+        # For multi-case clusters, testCaseId varies per row; the CSV's
+        # `test_case_id` column carries the original SoapUI case name.
+        # Fall back to the representative case name when the CSV is missing
+        # the column (older CSVs or hand-written rows).
+        if cluster_size > 1:
+            id_stmt = (f'String testCaseId = row.getOrDefault("test_case_id", '
+                       f'"{_jlit(case.name)}");')
+        else:
+            id_stmt = f'String testCaseId = "{_jlit(case.name)}";'
+
         assigned_flow = self._flow_by_case.get(case.name)
         body_lines = [
-            f'String testCaseId = "{_jlit(case.name)}";',
+            id_stmt,
             '// Expand <<faker>> tokens + ${{property}} refs in every CSV cell '
             'so downstream code sees live values, not placeholders.',
             'row = PlaceholderResolver.resolveRow(row, ctx);',
@@ -2807,107 +3184,181 @@ public class {class_name} extends BaseApiTest {{
     }
 
     def emit_csv_per_method(self, class_name: str, method_name: str,
-                              case: TestCase, expected_status_code: str,
-                              variant: str) -> str:
+                              cluster: list[TestCase]) -> str:
         """Write `src/test/resources/csv/<class_name>/<method_name>.csv` with
-        one row per scenario. Header is stable across runs so adding more
-        scenarios later is a matter of appending rows (no code change).
+        one row per case in the cluster (a cluster is 1..N SoapUI cases
+        sharing the same REST step shape). Header is stable across runs
+        so adding more scenarios later is a matter of appending rows (no
+        code change).
 
         Placeholder-friendly: any CSV cell can hold `<<fakerToken>>` or
-        `${{propertyRef}}` -- `PlaceholderResolver.resolveRow` (called at the
-        top of every @Test method) expands these into live values before
-        the row reaches user code."""
-        classification = classify_placeholders_for_case(case)
-        for kind_key in ("config", "runtime", "csv"):
-            for ph in sorted(classification[kind_key]):
-                self.ledger.add_placeholder(case.name, ph, kind_key)
+        `${{propertyRef}}` -- `PlaceholderResolver.resolveRow` (called at
+        the top of every @Test method) expands these into live values
+        before the row reaches user code."""
+        # Union placeholders across every case in the cluster so the CSV
+        # header carries every runtime column any row could need.
+        union_csv: set[str] = set()
+        for c in cluster:
+            classification = classify_placeholders_for_case(c)
+            for kind_key in ("config", "runtime", "csv"):
+                for ph in sorted(classification[kind_key]):
+                    self.ledger.add_placeholder(c.name, ph, kind_key)
+            union_csv.update(classification["csv"])
+        csv_columns = sorted(union_csv)
 
-        csv_columns = sorted(classification["csv"])
-
-        # Well-known columns (email, phone, ...) -- pre-populate with a
-        # sensible faker/property hint IF a placeholder of that name shows
-        # up ANYWHERE in the case's raw bodies/params (not just as an
-        # already-classified CSV placeholder). Reference-framework rows
-        # rely on these being available without hand-declaring them.
-        raw_texts = []
-        for step in case.steps:
-            if isinstance(step, RestStep):
-                raw_texts.append(step.request_body or "")
-                raw_texts.extend(list(step.headers.values()))
-                raw_texts.extend(list(step.path_params.values()))
-                raw_texts.extend(list(step.query_params.values()))
-        corpus = "\n".join(raw_texts)
+        # Well-known hint columns from the union of every case's corpus.
+        corpus_parts: list[str] = []
+        for c in cluster:
+            for step in c.steps:
+                if isinstance(step, RestStep):
+                    corpus_parts.append(step.request_body or "")
+                    corpus_parts.extend(list(step.headers.values()))
+                    corpus_parts.extend(list(step.path_params.values()))
+                    corpus_parts.extend(list(step.query_params.values()))
+        corpus = "\n".join(corpus_parts)
         hinted_cols: list[tuple[str, str]] = []
         for common_key, hint in self._COMMON_PLACEHOLDER_HINTS.items():
             if f"${{{common_key}}}" in corpus and common_key not in csv_columns:
                 hinted_cols.append((common_key, hint))
-        # Also expose hinted keys the user can override even if the body
-        # doesn't reference them yet (they're free to add ${email} etc.
-        # to the body template later without regenerating).
         hint_col_names = [k for k, _ in hinted_cols]
 
-        # Reserved columns matching what BaseApiTest.expected(row) + the
-        # ra_converter Java emitter both read at runtime.
-        cols = csv_columns + hint_col_names + [
-            "test_case_id",       # original SoapUI case name, for report grouping
-            "jira_xray_id",       # e.g. B2B-172
+        # ---- Per-assertion "expected value" columns ------------------
+        # For every ACTIVE assertion on every REST step in the cluster,
+        # derive a stable column name (`expected_<step>_<key>`) and per-
+        # case value. The Java assertion emitters read row.getOrDefault
+        # against these column names, so editing a CSV cell changes what
+        # gets asserted at runtime without any code change.
+        assert_cols_order: list[str] = []
+        assert_vals_per_case: dict[str, list[str]] = {}
+        for case_idx, c in enumerate(cluster):
+            for step in c.steps:
+                if not isinstance(step, RestStep):
+                    continue
+                a_idx = 0
+                for a in step.assertions:
+                    if a.disabled:
+                        continue
+                    key = _assert_col_key(a, a_idx)
+                    a_idx += 1
+                    if key is None:
+                        continue
+                    col = f"expected_{sanitize_identifier(step.step_name)}_{key}"
+                    if col not in assert_vals_per_case:
+                        assert_vals_per_case[col] = ["" for _ in cluster]
+                        assert_cols_order.append(col)
+                    assert_vals_per_case[col][case_idx] = _assert_default_value(a)
+
+        # ---- Merged-template placeholder columns ---------------------
+        # When emit_templates_deduplicated merged two+ same-shape bodies
+        # into one file, it stashed each (case, step) -> {tpl_col: value}
+        # in self._merged_template_cells. Pull those into CSV columns so
+        # runtime mergedRow substitutes each case's original literal
+        # back into the `#tpl_<path>#` placeholder in the merged template.
+        merged_tpl_cols: list[str] = []
+        merged_tpl_vals: dict[str, list[str]] = {}
+        merged_cells_map = getattr(self, "_merged_template_cells", {}) or {}
+        for case_idx, c in enumerate(cluster):
+            for step in c.steps:
+                if not isinstance(step, RestStep):
+                    continue
+                cells = merged_cells_map.get((c.name, step.step_name))
+                if not cells:
+                    continue
+                for col, val in cells.items():
+                    if col not in merged_tpl_vals:
+                        merged_tpl_vals[col] = ["" for _ in cluster]
+                        merged_tpl_cols.append(col)
+                    merged_tpl_vals[col][case_idx] = val
+
+        cols = csv_columns + hint_col_names + merged_tpl_cols + assert_cols_order + [
+            "test_case_id",       # original SoapUI case name (per row -- read at runtime)
+            "jira_xray_id",       # e.g. B2B-172 (per row)
             "variant",            # scenario disambiguator (from name suffix)
             "expected_status_code",
             "expected",           # semicolon-joined k:v extras (statusCode:200;...)
         ]
-
-        # Compute the first row from the case's LAST REST step's assertions
-        # (same logic as the legacy emit_csv), but now also fill status_code
-        # and variant so authors can add follow-up rows without opening the code.
-        terminal = None
-        for step in reversed(case.steps):
-            if isinstance(step, RestStep):
-                terminal = step
-                break
-        expected_bits = []
-        derived_status = expected_status_code or ""
-        if terminal:
-            for a in terminal.assertions:
-                if a.disabled:
-                    continue
-                if a.type == "Valid HTTP Status Codes":
-                    codes = (a.config.get("codes", "") or "").strip()
-                    first_code = re.split(r"[,\s]+", codes)[0] if codes else "200"
-                    expected_bits.append(f"statusCode:{first_code}")
-                    if not derived_status:
-                        derived_status = first_code
-        expected_str = ";".join(expected_bits)
-
         header_row = ",".join(cols)
-        row_cells = (
-            ["" for _ in csv_columns] +
-            [_csv_cell(hint) for _, hint in hinted_cols] +
-            [_csv_cell(case.name), _csv_cell(case.prefix),
-             _csv_cell(variant), _csv_cell(derived_status), _csv_cell(expected_str)]
-        )
-        data_row = ",".join(row_cells)
-        content = header_row + "\n" + data_row + "\n"
+
+        # One row per case in the cluster. Reserved cells come from the
+        # case; user-data cells start empty for author fill-in.
+        rows: list[str] = []
+        for case_idx, c in enumerate(cluster):
+            _, status, variant = _business_method_name(c.name)
+
+            # Prefer the status code baked into the case name (e.g. `_400`);
+            # otherwise derive from the terminal REST step's assertion.
+            derived_status = status or ""
+            expected_bits: list[str] = []
+            terminal = None
+            for step in reversed(c.steps):
+                if isinstance(step, RestStep):
+                    terminal = step
+                    break
+            if terminal:
+                for a in terminal.assertions:
+                    if a.disabled:
+                        continue
+                    if a.type == "Valid HTTP Status Codes":
+                        codes = (a.config.get("codes", "") or "").strip()
+                        first_code = re.split(r"[,\s]+", codes)[0] if codes else "200"
+                        expected_bits.append(f"statusCode:{first_code}")
+                        if not derived_status:
+                            derived_status = first_code
+            expected_str = ";".join(expected_bits)
+
+            assert_cells = [
+                _csv_cell(assert_vals_per_case[col][case_idx])
+                for col in assert_cols_order
+            ]
+            merged_tpl_cells = [
+                _csv_cell(merged_tpl_vals[col][case_idx])
+                for col in merged_tpl_cols
+            ]
+            row_cells = (
+                ["" for _ in csv_columns] +
+                [_csv_cell(hint) for _, hint in hinted_cols] +
+                merged_tpl_cells +
+                assert_cells +
+                [_csv_cell(c.name), _csv_cell(c.prefix),
+                 _csv_cell(variant), _csv_cell(derived_status), _csv_cell(expected_str)]
+            )
+            rows.append(",".join(row_cells))
+
+        content = header_row + "\n" + "\n".join(rows) + "\n"
         rel = f"src/test/resources/csv/{class_name}/{method_name}.csv"
         self._write(rel, content)
         return rel
 
     def emit_templates_deduplicated(self, cases: list[TestCase]) -> dict[str, str]:
-        """Hash-dedup all request-body templates across the whole suite.
-        Two REST steps with identical bodies (after placeholder normalization)
-        share one file under `templates/<resource>/<basename>.json` -- so 296
-        cases that all POST the same `businesses` payload get exactly one
-        template file, not 296 copies.
+        """Two-tier dedup of request-body templates across the whole suite.
 
-        Side effect (v2 wiring): populates `self._template_path_by_step`
-        with the CLASSPATH-relative template path for every (case, step)
-        that has a body. `_render_rest_step_body` reads this map so
-        emitted Java references the actual dedup'd file location, not
-        the flat legacy guess.
+        Tier 1 (exact-body): bodies with identical normalized text share one
+        file (verbatim reuse -- 296 POSTs of the same payload -> 1 file).
 
-        Returns {body-hash -> classpath-path} so callers can also do a
-        by-hash lookup if needed."""
-        import hashlib
-        hash_to_path: dict[str, str] = {}
+        Tier 2 (structural merge): JSON bodies with the same STRUCTURE but
+        differing LITERAL values collapse further. Diff paths become
+        `#tpl_<jsonPath>#` placeholders in one merged template; each case's
+        original value at that path lands in a per-row CSV cell so the
+        runtime substitution puts the right value back. Non-JSON bodies
+        (XML, form-encoded, plain text) fall through to exact-body dedup
+        only.
+
+        Side effects (v2 wiring):
+          - `self._template_path_by_step[(case, step)] -> classpath path`
+            populated for every (case, step) with a body, so
+            `_render_rest_step_body` emits the right getRequestTemplate call.
+          - `self._merged_template_cells[(case, step)] -> {col: value}`
+            populated when Tier 2 merges a body; `emit_csv_per_method`
+            reads this per case to add the placeholder columns to the
+            CSV with the correct per-row value.
+
+        Returns {body-hash -> classpath-path} for by-hash lookups."""
+        import hashlib, json as _json
+        self._merged_template_cells = {}
+
+        # Pass 1: normalize every body, keep provenance for each (case, step).
+        # `entries` = [{"case", "step", "translated", "hash", "bucket"}]
+        entries: list[dict] = []
         for case in cases:
             for step in case.steps:
                 if not isinstance(step, RestStep):
@@ -2916,25 +3367,87 @@ public class {class_name} extends BaseApiTest {{
                     continue
                 translated, _ = soapui_body_to_placeholders(step.request_body)
                 h = hashlib.sha1(translated.encode("utf-8")).hexdigest()[:10]
-                # Bucket by resource: first path segment gives us a stable
-                # folder (e.g. `businesses/`, `guests/`, `tokens/`). Falls
-                # back to `misc` when we can't infer.
                 seg = (step.resource_path or "").strip("/").split("/", 1)[0]
                 bucket = sanitize_identifier(seg).lower() or "misc"
-                basename = f"{sanitize_identifier(step.step_name).lower()}_{h}.json"
-                # Classpath-relative form (what getRequestTemplate("dir/", "file")
-                # combines back into) -- this is what the emitted Java will use.
-                classpath_dir = f"templates/{self.suite_name}/{bucket}/"
-                classpath_file = basename
-                self._template_path_by_step[(case.name, step.step_name)] = (
-                    classpath_dir + classpath_file)
-                if h in hash_to_path:
-                    continue  # file already written, but every step still
-                              # gets mapped to it above so lookup works.
-                rel = f"src/main/resources/{classpath_dir}{classpath_file}"
-                self._write(rel, translated)
-                hash_to_path[h] = classpath_dir + classpath_file
+                entries.append({
+                    "case": case.name, "step": step.step_name,
+                    "translated": translated, "hash": h, "bucket": bucket,
+                })
+
+        # Pass 2: partition by JSON-parseability. Non-JSON goes straight
+        # to exact-body dedup (Tier 1 only).
+        json_entries: list[dict] = []
+        nonjson_entries: list[dict] = []
+        for e in entries:
+            try:
+                e["tree"] = _json.loads(e["translated"])
+                json_entries.append(e)
+            except (_json.JSONDecodeError, ValueError):
+                nonjson_entries.append(e)
+
+        # Pass 3: JSON bodies get grouped by structural shape (leaf types
+        # only). Groups with size >1 -- multiple exact hashes sharing the
+        # same shape -- become Tier 2 merge candidates.
+        shape_groups: dict[str, list[dict]] = {}
+        for e in json_entries:
+            sig = _shape_sig(e["tree"])
+            shape_groups.setdefault(sig, []).append(e)
+
+        hash_to_path: dict[str, str] = {}
+        merged_count = 0
+
+        for sig, group in shape_groups.items():
+            unique_hashes = {e["hash"] for e in group}
+            if len(unique_hashes) <= 1:
+                # Nothing to merge -- all entries in this shape group already
+                # share one exact-body hash. Fall through to Tier 1.
+                self._emit_tier1_for(group, hash_to_path)
+                continue
+            # Tier 2 merge: multiple distinct exact-bodies with identical
+            # shape. Compute per-leaf-path values across the group, then
+            # inject `#tpl_<path>#` placeholders wherever leaves differ.
+            merged_text, per_entry_cells = _merge_bodies_with_placeholders(
+                [e["tree"] for e in group],
+                [e["translated"] for e in group],
+            )
+            # Pick a stable filename: hash of the MERGED template so re-runs
+            # produce the same path regardless of iteration order.
+            merged_hash = hashlib.sha1(merged_text.encode("utf-8")).hexdigest()[:10]
+            first = group[0]
+            classpath_dir = f"templates/{self.suite_name}/{first['bucket']}/"
+            classpath_file = (
+                f"{sanitize_identifier(first['step']).lower()}_merged_{merged_hash}.json")
+            classpath = classpath_dir + classpath_file
+            # Write the merged template once.
+            self._write(f"src/main/resources/{classpath}", merged_text)
+            hash_to_path[merged_hash] = classpath
+            merged_count += len(group)
+            # Every entry in the group points at the merged template + its
+            # per-row cell values.
+            for e, cells in zip(group, per_entry_cells):
+                self._template_path_by_step[(e["case"], e["step"])] = classpath
+                if cells:
+                    self._merged_template_cells[(e["case"], e["step"])] = cells
+
+        # Non-JSON bodies stay Tier 1 only.
+        self._emit_tier1_for(nonjson_entries, hash_to_path)
+
+        # Book-keeping the caller uses for the summary line.
+        self._templates_merged = merged_count
         return hash_to_path
+
+    def _emit_tier1_for(self, entries: list[dict], hash_to_path: dict[str, str]) -> None:
+        """Exact-body dedup helper used by both JSON singleton groups and
+        the non-JSON fallback path. Writes each unique body once and maps
+        every (case, step) to it."""
+        for e in entries:
+            classpath_dir = f"templates/{self.suite_name}/{e['bucket']}/"
+            classpath_file = f"{sanitize_identifier(e['step']).lower()}_{e['hash']}.json"
+            classpath = classpath_dir + classpath_file
+            self._template_path_by_step[(e["case"], e["step"])] = classpath
+            if e["hash"] not in hash_to_path:
+                self._write(f"src/main/resources/{classpath}", e["translated"])
+                hash_to_path[e["hash"]] = classpath
 
     def emit_master_suite_xml(self, class_fqns: list[str],
                                 variant: str = "Regression") -> str:
@@ -3246,9 +3759,15 @@ def main():
         cases_in_scope = cases_all
         soapui_suites = parsed_suites
         print(f"[ra_converter] --one-class-per-suite: "
-              f"{len(soapui_suites)} class(es) will be emitted:")
+              f"{len(soapui_suites)} class(es) will be emitted "
+              f"(cases grouped by endpoint-shape into fewer methods "
+              f"with N CSV rows each):")
         for sn, cs in soapui_suites:
-            print(f"    - {sn}: {len(cs)} test cases -> {len(cs)} @Test methods")
+            clusters_preview = _cluster_cases_by_shape(cs)
+            print(f"    - {sn}: {len(cs)} test cases "
+                  f"-> {len(clusters_preview)} @Test methods "
+                  f"({sum(1 for cl in clusters_preview if len(cl) > 1)} "
+                  f"with >1 CSV row)")
     elif args.all_prefixes:
         buckets = _iter_prefix_buckets(cases_all)
         print(f"[ra_converter] --all-prefixes: {len(buckets)} prefix buckets")
@@ -3311,8 +3830,6 @@ def main():
               f"cases hit at least one flow; "
               f"{total_steps_extracted} step-emissions saved via extraction")
         emitter._flow_by_case = build_flow_assignment(cases_in_scope, flows)
-        helper_rel = emitter.emit_setup_helper(flows, service_class)
-        print(f"[ra_converter] emitted setup helper: {helper_rel}")
     else:
         print("[ra_converter]   no flows meet the threshold; test methods "
               "keep all steps inline")
@@ -3331,7 +3848,8 @@ def main():
         print(f"[ra_converter] emitted placeholder resolver: {pr_rel}")
 
         # 1a) Deduped templates emitted FIRST so _template_path_by_step is
-        #     populated before test-class emission reads it.
+        #     populated before ANY step-rendering reads it (SetupHelper AND
+        #     the test-class emitter both depend on it).
         template_map = emitter.emit_templates_deduplicated(cases_in_scope)
         rest_step_ct = sum(
             1 for c in cases_in_scope for s in c.steps
@@ -3340,28 +3858,42 @@ def main():
         print(f"[ra_converter] emitted {len(template_map)} deduped templates "
               f"(from {rest_step_ct} REST bodies -> {dedup_pct}% dedup)")
 
-        # 1) Emit one Java class per SoapUI test suite + CSVs colocated
+        # 1b) SetupHelper emission runs AFTER template dedup so its shared
+        #     flow methods reference the deduped template paths, not the
+        #     flat legacy fallback.
+        if flows:
+            helper_rel = emitter.emit_setup_helper(flows, service_class)
+            print(f"[ra_converter] emitted setup helper: {helper_rel}")
+
+        # 2) Emit one Java class per SoapUI test suite + CSVs colocated
         #    under `csv/<ClassName>/`.
         v2_class_fqns: list[str] = []
         total_methods = 0
+        total_rows = 0
         for soapui_sname, sui_cases in soapui_suites:
             rel, fqn, method_names = emitter.emit_test_class_per_suite(
                 soapui_sname, sui_cases, service_class)
             v2_class_fqns.append(fqn)
-            print(f"[ra_converter] emitted {fqn}  "
-                  f"({len(method_names)} @Test methods)")
 
-            # Per-method CSV. We recompute the name map so the CSV name
-            # matches the method name written by the class emitter.
-            name_map = _unique_method_names(sui_cases)
+            # The class emitter set up emitter._clusters + _cluster_to_method
+            # while rendering; reuse them so CSV filenames match the method
+            # names written into the class exactly.
             class_simple = fqn.rsplit(".", 1)[-1]
-            for c in sui_cases:
-                mname, status, variant = name_map[c.name]
-                emitter.emit_csv_per_method(class_simple, mname, c, status, variant)
+            for idx, cluster in enumerate(emitter._clusters):
+                mname, _status, _variant = emitter._cluster_to_method[idx]
+                emitter.emit_csv_per_method(class_simple, mname, cluster)
+                total_rows += len(cluster)
+            multi = sum(1 for cl in emitter._clusters if len(cl) > 1)
+            print(f"[ra_converter] emitted {fqn}  "
+                  f"({len(method_names)} @Test methods, "
+                  f"{multi} with >1 CSV row, "
+                  f"{sum(len(cl) for cl in emitter._clusters if len(cl) > 1)} rows in shared CSVs)")
             total_methods += len(method_names)
         print(f"[ra_converter] v2 total: {len(v2_class_fqns)} class(es), "
               f"{total_methods} @Test method(s), "
-              f"{total_methods} CSV file(s) under src/test/resources/csv/")
+              f"{total_rows} CSV row(s) across "
+              f"{total_methods} CSV file(s) under src/test/resources/csv/  "
+              f"(saved {total_rows - total_methods} methods via endpoint clustering)")
 
         # 3) Env configs (unchanged from v1)
         for env in args.envs.split(","):
@@ -3385,6 +3917,13 @@ def main():
     # Legacy path: --prefix or --all-prefixes
     # =========================================================
     else:
+        # Legacy modes: SetupHelper runs BEFORE templates because those
+        # modes use the flat template layout `templates/<suite>/<step>.json`
+        # that doesn't depend on the dedup map.
+        if flows:
+            helper_rel = emitter.emit_setup_helper(flows, service_class)
+            print(f"[ra_converter] emitted setup helper: {helper_rel}")
+
         # Emit one test class per prefix bucket
         prefix_order: list[str] = []
         for pref, pref_cases in buckets.items():
