@@ -330,37 +330,62 @@ _STEP_PARSERS = {
 
 
 def parse_test_suite(xml_path: str) -> list[TestCase]:
-    """Parse a SoapUI test suite XML and return all test cases as IR."""
+    """Parse a SoapUI test suite XML and return all test cases as IR.
+    Legacy entry point: returns cases from the FIRST <con:testSuite> only
+    (matches original behavior). For multi-suite XMLs prefer
+    `parse_test_suites()` which returns [(suite_name, cases), ...]."""
+    suites = parse_test_suites(xml_path)
+    if not suites:
+        raise ValueError("No testSuite found in XML")
+    # Flatten all cases across all suites so callers that expected the
+    # single-suite return keep working for multi-suite XMLs too.
+    return [c for _sn, cs in suites for c in cs]
+
+
+def parse_test_suites(xml_path: str) -> list[tuple[str, list[TestCase]]]:
+    """Parse a SoapUI project XML and return every <con:testSuite> as
+    (suite_name, cases). SoapUI project XMLs may contain more than one
+    suite; the "one class per SoapUI suite" emit mode uses this to
+    emit exactly one Java test class per suite."""
     tree = ET.parse(xml_path)
     root = tree.getroot()
 
-    # Root is either <con:testSuite> or wraps one
-    ts_el = root if root.tag.endswith("testSuite") else root.find(".//con:testSuite", NS)
-    if ts_el is None:
-        raise ValueError("No testSuite found in XML")
+    # Two shapes are legal here:
+    #   1. Root IS the <con:testSuite> element (single-suite export)
+    #   2. Root is a wrapping <con:soapui-project> containing 1..N testSuites
+    if root.tag.endswith("testSuite"):
+        ts_elements = [root]
+    else:
+        ts_elements = root.findall(".//con:testSuite", NS)
+    if not ts_elements:
+        return []
 
-    cases: list[TestCase] = []
-    for tc_el in ts_el.findall("con:testCase", NS):
-        desc_el = tc_el.find("con:description", NS)
-        tc = TestCase(
-            id=tc_el.get("id", ""),
-            name=tc_el.get("name", ""),
-            description=_text(desc_el),
-        )
-        for step_el in tc_el.findall("con:testStep", NS):
-            step_type = step_el.get("type", "")
-            parser = _STEP_PARSERS.get(step_type)
-            if parser is None:
-                # Unknown step type -- store as a placeholder Groovy with a note
-                gs = GroovyStep(
-                    step_name=step_el.get("name", ""),
-                    script=f"// UNSUPPORTED STEP TYPE: {step_type}  (manual review)",
-                )
-                tc.steps.append(gs)
-            else:
-                tc.steps.append(parser(step_el))
-        cases.append(tc)
-    return cases
+    out: list[tuple[str, list[TestCase]]] = []
+    for ts_el in ts_elements:
+        suite_name = ts_el.get("name", "") or "unnamed_suite"
+        cases: list[TestCase] = []
+        for tc_el in ts_el.findall("con:testCase", NS):
+            desc_el = tc_el.find("con:description", NS)
+            tc = TestCase(
+                id=tc_el.get("id", ""),
+                name=tc_el.get("name", ""),
+                description=_text(desc_el),
+            )
+            for step_el in tc_el.findall("con:testStep", NS):
+                step_type = step_el.get("type", "")
+                parser = _STEP_PARSERS.get(step_type)
+                if parser is None:
+                    # Unknown step type -- store as a placeholder Groovy with a note
+                    gs = GroovyStep(
+                        step_name=step_el.get("name", ""),
+                        script=f"// UNSUPPORTED STEP TYPE: {step_type}  (manual review)",
+                    )
+                    tc.steps.append(gs)
+                else:
+                    tc.steps.append(parser(step_el))
+            cases.append(tc)
+        out.append((suite_name, cases))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -833,6 +858,127 @@ def short_class(name: str, max_len: int) -> str:
     return f"{camel[:head_len]}_{h}"
 
 
+# Common HTTP status codes ReadyAPI users append to test-case names to
+# distinguish scenarios (e.g. `..._200_1`, `..._400`, `..._403_4`). These
+# are stripped for the readable method name so the same business intent
+# maps to a stable base name; the status code moves to the CSV column
+# `expected_status_code` and the trailing `_N` disambiguator is kept as a
+# `_N` suffix on the method (otherwise the class would have duplicates).
+_STATUS_CODES_IN_NAMES = {
+    "200", "201", "202", "204", "206",
+    "301", "302", "304",
+    "400", "401", "403", "404", "405", "406", "409", "410", "412", "413", "415", "416", "422", "429",
+    "500", "502", "503", "504",
+}
+
+
+def _business_method_name(case_name: str) -> tuple[str, str, str]:
+    """Derive a business-meaningful Java method name from a SoapUI test-case
+    name. Returns (method_name, expected_status_code, variant_suffix).
+
+    Rules:
+      - Strip the leading JIRA ticket (`B2B-172_...`, `B2B134_...`) so
+        the method name reads as business intent, not ticket ID (the ticket
+        moves onto the @XrayTest / @Story annotation instead).
+      - Recognize a trailing `_<status_code>` (e.g. `_200`, `_403`) and
+        move it to the `expected_status_code` CSV column.
+      - Recognize a trailing `_<N>` disambiguator that appears AFTER the
+        status code (e.g. `_200_1`); return that as `variant_suffix` so
+        method-name uniqueness can be preserved when multiple variants of
+        the same status exist in one class.
+      - Everything left becomes camelCase + `Test` suffix.
+
+    Examples:
+      "B2B-172_post_create_programaccount_member_403_1"
+          -> ("postCreateProgramaccountMemberTest", "403", "1")
+      "B2B339_post_program_add_packages_200"
+          -> ("postProgramAddPackagesTest", "200", "")
+      "Cleanup_testdata_creation"
+          -> ("cleanupTestdataCreationTest", "", "")
+    """
+    working = case_name
+    # 1. Strip JIRA-style prefix (`B2B-172_` / `B2B134_`). Keep whatever
+    #    follows as the semantic body.
+    m = re.match(r"^([A-Z]+[-_]?\d+)_(.+)$", working)
+    if m:
+        working = m.group(2)
+
+    # 2. Peel off trailing `_<digits>` first (variant), then `_<status_code>`.
+    variant = ""
+    status_code = ""
+    m = re.match(r"^(.+?)_(\d{1,3})$", working)
+    if m and m.group(2) in _STATUS_CODES_IN_NAMES:
+        working = m.group(1)
+        status_code = m.group(2)
+    else:
+        # Could be `..._<status>_<N>` shape
+        m = re.match(r"^(.+?)_(\d{3})_(\d{1,2})$", working)
+        if m and m.group(2) in _STATUS_CODES_IN_NAMES:
+            working = m.group(1)
+            status_code = m.group(2)
+            variant = m.group(3)
+
+    method = to_camel_case(working, upper_first=False)
+    # Java method-name rules -- our to_camel_case already handles this,
+    # but be defensive if the whole thing collapsed to empty.
+    if not method or not method[0].isalpha():
+        method = "test" + method[:1].upper() + method[1:]
+    if not method.endswith("Test"):
+        method = method + "Test"
+    return method, status_code, variant
+
+
+def _unique_method_names(cases: list["TestCase"]) -> dict[str, tuple[str, str, str]]:
+    """Given a list of cases that will all live in one class, return
+    {case_name -> (final_method_name, expected_status_code, variant)}.
+    Handles collisions after `_business_method_name()` normalization by
+    appending `_v2`, `_v3`, ... to duplicates (variant suffix is kept
+    inside the base name where present so `_v` never collides with it)."""
+    out: dict[str, tuple[str, str, str]] = {}
+    seen_counts: dict[str, int] = {}
+    for c in cases:
+        base, status, variant = _business_method_name(c.name)
+        # Preserve the variant number in the method name so callers can
+        # tell scenario 1 vs scenario 4 apart in reports without having
+        # to open the CSV. (Variant only appears when the case name
+        # originally carried a `_<status>_<N>` shape.)
+        if variant:
+            key = f"{base[:-4]}_{variant}Test"  # strip "Test", add "_N", re-add "Test"
+        else:
+            key = base
+        n = seen_counts.get(key, 0) + 1
+        seen_counts[key] = n
+        if n == 1:
+            final = key
+        else:
+            # Collision even after variant: append `_v2`, `_v3`, ...
+            final = f"{key[:-4]}_v{n}Test"
+        out[c.name] = (final, status, variant)
+    return out
+
+
+def _csv_cell(value: str) -> str:
+    """Quote a CSV cell when it contains a comma, quote, or newline.
+    Doubles existing quotes per RFC 4180. Bare values pass through."""
+    s = "" if value is None else str(value)
+    if any(c in s for c in (",", '"', "\n", "\r")):
+        return '"' + s.replace('"', '""') + '"'
+    return s
+
+
+def _jlit(value: str) -> str:
+    """Escape a Python string so it is safe to drop between "..." in
+    emitted Java source. Handles the four characters that break a Java
+    string literal (backslash, double-quote, CR, LF) plus tab. Backslash
+    MUST be escaped first so we don't double-escape newly inserted ones."""
+    s = "" if value is None else str(value)
+    return (s.replace("\\", "\\\\")
+             .replace('"', '\\"')
+             .replace("\r", "\\r")
+             .replace("\n", "\\n")
+             .replace("\t", "\\t"))
+
+
 # ---------------------------------------------------------------------------
 # Emitters
 # ---------------------------------------------------------------------------
@@ -877,6 +1023,21 @@ class Emitter:
         # with the current prefix/case.
         self._current_prefix: str = ""
         self._current_case: str = ""
+        # Populated by emit_templates_deduplicated (v2 mode). Keyed by
+        # (case_name, step_name) so per-step template path lookups get
+        # the ACTUAL dedup'd path -- not the flat legacy guess. Empty in
+        # legacy modes; _render_rest_step_body falls back to the flat
+        # `templates/<suite>/<step>.json` shape when unset.
+        self._template_path_by_step: dict[tuple[str, str], str] = {}
+        # v2 only: set True by emit_per_method_csv_data_provider (which
+        # co-emits PlaceholderResolver.java). Guards _render_rest_step_body
+        # from calling the resolver in legacy modes where the class doesn't
+        # exist on classpath.
+        self._resolver_emitted: bool = False
+        # Track every class FQN we've already emitted so a second SoapUI
+        # suite whose name collapses to the same camelCase in this run
+        # can be disambiguated instead of silently overwriting the first.
+        self._emitted_class_fqns: set[str] = set()
 
     def _short(self, name: str) -> str:
         """Filesystem-safe short form of `name`. Records the mapping so
@@ -1196,7 +1357,7 @@ public class {class_name} extends BaseApiTest {{
         # scenario-specific remaining steps inline.
         assigned_flow = flow_assignment or self._flow_by_case.get(case.name)
         body_lines = [
-            f'String testCaseId = "{case.name}";',
+            f'String testCaseId = "{_jlit(case.name)}";',
             'Expected exp = expected(row);',
             '',
         ]
@@ -1232,17 +1393,17 @@ public class {class_name} extends BaseApiTest {{
                      .replace("\t", " "))
 
         # @XrayTest fallback: if the case doesn't match a JIRA-style prefix,
-        # use the case name itself so it's still greppable in Xray. Escape
-        # quotes just in case.
+        # use the case name itself so it's still greppable in Xray.
         xray_id_raw = case.prefix if re.match(r"^[A-Z]+-\d+$", case.prefix) else case.name
-        xray_id = xray_id_raw.replace("\\", "\\\\").replace('"', '\\"')
+        # sanitize the group value -- TestNG groups can't contain quotes.
+        group_val = sanitize_identifier(case.prefix.lower())
 
         return f"""    @Test(dataProvider = "csvData",
           dataProviderClass = DataProviders.class,
-          groups = {{"imported", "{case.prefix.lower()}"}},
+          groups = {{"imported", "{group_val}"}},
           retryAnalyzer = RetryAnalyzer.class)
-    @XrayTest("{xray_id}")
-    @Story("{case.name}")
+    @XrayTest("{_jlit(xray_id_raw)}")
+    @Story("{_jlit(case.name)}")
     @Description("Imported from ReadyAPI. Original description: {desc_safe}")
     public void {method_name}(Map<String, String> row) throws Exception {{
 {indented}
@@ -1298,13 +1459,39 @@ public class {class_name} extends BaseApiTest {{
         has_source_body = bool(step.request_body.strip())
         body_var = '""'
         if verb_expects_body and has_source_body:
-            template_name = f'{sanitize_identifier(step.step_name).lower()}.json'
+            # Template location resolution:
+            #   v2 mode (--one-class-per-suite): emit_templates_deduplicated
+            #     populates _template_path_by_step with the ACTUAL classpath-
+            #     relative path (`templates/<suite>/<bucket>/<step>_<sha1>.json`)
+            #     for every (case, step). Prefer that.
+            #   Legacy mode: fall back to the flat `templates/<suite>/<step>.json`
+            #     that emit_templates writes.
+            classpath_ref = self._template_path_by_step.get(
+                (self._current_case, step.step_name))
+            if classpath_ref:
+                # Split back into (dir/, file) as getRequestTemplate expects.
+                slash = classpath_ref.rfind("/")
+                tmpl_dir = classpath_ref[:slash + 1]  # includes trailing slash
+                tmpl_file = classpath_ref[slash + 1:]
+            else:
+                tmpl_dir = f"templates/{self.suite_name}/"
+                tmpl_file = f'{sanitize_identifier(step.step_name).lower()}.json'
             payload_var = f"{base}Payload{suf}"
             self._locals_in_method.add(payload_var)
             lines.append(f'String {payload_var} = RestUtilities.mapJsonValues(')
-            lines.append(f'    RestUtilities.getRequestTemplate("templates/{self.suite_name}/", "{template_name}"),')
+            lines.append(f'    RestUtilities.getRequestTemplate("{tmpl_dir}", "{tmpl_file}"),')
             lines.append(f'    TestSupport.mergedRow(row, ctx), /* strict */ false);')
             body_var = payload_var
+            if self._resolver_emitted:
+                # v2 only: runtime dynamic-value pass expands `<<X>>`
+                # faker tokens (fresh per call) and `${X}` property refs
+                # (per-test bag) into the payload. Users can drop these
+                # into any CSV cell too. See PlaceholderResolver Javadoc.
+                payload_var_resolved = f"{payload_var}Resolved"
+                self._locals_in_method.add(payload_var_resolved)
+                lines.append(f'String {payload_var_resolved} = '
+                             f'PlaceholderResolver.resolveAll({payload_var}, ctx);')
+                body_var = payload_var_resolved
 
         # Path-param args from ctx/config
         path_param_names = re.findall(r"\{([A-Za-z0-9_]+)\}", step.resource_path)
@@ -1555,6 +1742,13 @@ import com.ak.api.config.Config;
  * That way #placeholder# in a request-body template resolves from the
  * highest-priority source that knows a value, and never sees a literal
  * unresolved #placeholder# at runtime.
+ *
+ * Key-naming aliasing: SoapUI's ${{stepName#field}} references become
+ * #stepName_field# placeholders in the template (underscore-joined),
+ * but ctx.put sites write dotted keys "stepName.field" (matching the
+ * SoapUI property namespace). mergedRow expands every dotted key into
+ * BOTH forms so #stepName_field# and #stepName.field# both resolve to
+ * the same value without every ctx.put needing to double-write.
  */
 public final class TestSupport {{
 
@@ -1568,7 +1762,9 @@ public final class TestSupport {{
     /**
      * Union a CSV row + runtime ctx map + config lookups. Highest-priority
      * wins on collision so ctx values (extracted runtime IDs) beat both CSV
-     * defaults and env-config fallbacks.
+     * defaults and env-config fallbacks. Every dotted key is also written
+     * under its underscore-joined and dash-normalized aliases so multiple
+     * placeholder-naming conventions resolve against the same value.
      */
     public static Map<String, String> mergedRow(Map<String, String> row,
                                                 Map<String, String> ctx) {{
@@ -1576,13 +1772,40 @@ public final class TestSupport {{
         // 1. Load config values FIRST (lowest priority; overwritten below)
         for (String k : CONFIG_KEYS) {{
             String v = Config.get(k, null);
-            if (v != null) merged.put(k, v);
+            if (v != null) putWithAliases(merged, k, v);
         }}
         // 2. Layer CSV row over config
-        if (row != null) merged.putAll(row);
+        if (row != null) {{
+            for (Map.Entry<String, String> e : row.entrySet()) {{
+                putWithAliases(merged, e.getKey(), e.getValue());
+            }}
+        }}
         // 3. ctx wins (runtime-generated values)
-        if (ctx != null) merged.putAll(ctx);
+        if (ctx != null) {{
+            for (Map.Entry<String, String> e : ctx.entrySet()) {{
+                putWithAliases(merged, e.getKey(), e.getValue());
+            }}
+        }}
         return merged;
+    }}
+
+    /**
+     * Insert {{@code (key, value)}} plus every naming-convention alias of
+     * {{@code key}} that a template placeholder might use:
+     * <ul>
+     *   <li>dot-joined form:      {{@code "stepName.field"}}</li>
+     *   <li>underscore-joined:    {{@code "stepName_field"}} (matches the
+     *       converter's own placeholder naming)</li>
+     *   <li>hash-neutral form:    dashes collapsed to underscores in both above</li>
+     * </ul>
+     */
+    private static void putWithAliases(Map<String, String> merged, String key, String value) {{
+        if (key == null) return;
+        merged.put(key, value);
+        String underscoreForm = key.replace('.', '_').replace('-', '_');
+        if (!underscoreForm.equals(key)) merged.put(underscoreForm, value);
+        String dotForm = key.replace('-', '_');
+        if (!dotForm.equals(key) && !dotForm.equals(underscoreForm)) merged.put(dotForm, value);
     }}
 }}
 """
@@ -1968,6 +2191,795 @@ public final class SetupHelper {{
         self._write(rel, json.dumps(config, indent=2) + "\n")
         return rel
 
+    # =====================================================================
+    # v2: "one class per SoapUI suite" mode. Every emitter method below
+    # is used only by the `--one-class-per-suite` codepath and is
+    # additive -- the legacy per-prefix emitters above are untouched, so
+    # existing callers keep working.
+    # =====================================================================
+
+    def emit_per_method_csv_data_provider(self) -> str:
+        """One-time helper class: `PerMethodCsvDataProvider` locates a
+        `csv/<ClassSimpleName>/<methodName>.csv` on the classpath from the
+        calling test's Class + Method. Test methods just declare
+        `@Test(dataProvider="rows", dataProviderClass=PerMethodCsvDataProvider.class)`
+        with no other wiring -- the CSV is discovered by convention. Rewritten
+        idempotently across suite imports; only one copy exists per output tree."""
+        pkg = f"{self.package_root}.data"
+        rel = f"src/main/java/{pkg.replace('.', '/')}/PerMethodCsvDataProvider.java"
+        content = f"""package {pkg};
+
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.BufferedReader;
+import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+import org.testng.annotations.DataProvider;
+
+/**
+ * Convention-based TestNG DataProvider used by every ra_converter-emitted
+ * test class. For a test method
+ *   {{@code com.ak.api.tests.imported.<suite>.<Class>.<methodName>(Map<String,String> row)}}
+ * this provider loads
+ *   {{@code classpath:/csv/<Class>/<methodName>.csv}}
+ * and yields one Map<String,String> per data row (header keys, string values).
+ *
+ * <p>Blank CSV cells are surfaced as {{@code ""}}; the CSV file itself is required
+ * (missing file -> {{@link IllegalStateException}} so a test won't silently pass
+ * with zero rows).</p>
+ *
+ * <p>Mirrors the reuse pattern of {{@code com.hilton.providers.CsvDataProvider}}
+ * from the reference framework -- one CSV per @Test method, colocated under a
+ * class-named folder so authors don't wire {{@code -DdataFile}} per class.</p>
+ */
+public final class PerMethodCsvDataProvider {{
+
+    private PerMethodCsvDataProvider() {{ }}
+
+    @DataProvider(name = "rows")
+    public static Object[][] rows(Method method) {{
+        String cls  = method.getDeclaringClass().getSimpleName();
+        String meth = method.getName();
+        String resourcePath = "csv/" + cls + "/" + meth + ".csv";
+
+        InputStream in = Thread.currentThread().getContextClassLoader()
+                .getResourceAsStream(resourcePath);
+        if (in == null) {{
+            throw new IllegalStateException(
+                    "PerMethodCsvDataProvider: no CSV on classpath at " + resourcePath
+                    + " (expected one row per data-driven scenario for @Test " + cls + "#" + meth + ")");
+        }}
+
+        List<Map<String, String>> rows = new ArrayList<>();
+        try (BufferedReader br = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {{
+            String headerLine = br.readLine();
+            if (headerLine == null) {{
+                throw new IllegalStateException("PerMethodCsvDataProvider: empty CSV " + resourcePath);
+            }}
+            String[] header = splitCsvLine(headerLine);
+            String line;
+            while ((line = br.readLine()) != null) {{
+                if (line.isEmpty()) continue;
+                String[] cells = splitCsvLine(line);
+                Map<String, String> row = new LinkedHashMap<>();
+                for (int i = 0; i < header.length; i++) {{
+                    row.put(header[i], i < cells.length ? cells[i] : "");
+                }}
+                rows.add(row);
+            }}
+        }} catch (Exception e) {{
+            throw new IllegalStateException("PerMethodCsvDataProvider: failed reading " + resourcePath, e);
+        }}
+
+        Object[][] out = new Object[rows.size()][1];
+        for (int i = 0; i < rows.size(); i++) out[i][0] = rows.get(i);
+        return out;
+    }}
+
+    /**
+     * Minimal RFC-4180-ish CSV splitter: honors double-quoted fields
+     * (with embedded commas and "" escaped quotes). Sufficient for
+     * ra_converter-generated CSVs, which are hand-written or exported
+     * from SoapUI -- neither introduces multi-line fields.
+     */
+    private static String[] splitCsvLine(String line) {{
+        List<String> out = new ArrayList<>();
+        StringBuilder cur = new StringBuilder();
+        boolean inQuotes = false;
+        for (int i = 0; i < line.length(); i++) {{
+            char c = line.charAt(i);
+            if (inQuotes) {{
+                if (c == '"') {{
+                    if (i + 1 < line.length() && line.charAt(i + 1) == '"') {{
+                        cur.append('"');
+                        i++;
+                    }} else {{
+                        inQuotes = false;
+                    }}
+                }} else {{
+                    cur.append(c);
+                }}
+            }} else {{
+                if (c == ',') {{
+                    out.add(cur.toString());
+                    cur.setLength(0);
+                }} else if (c == '"') {{
+                    inQuotes = true;
+                }} else {{
+                    cur.append(c);
+                }}
+            }}
+        }}
+        out.add(cur.toString());
+        return out.toArray(new String[0]);
+    }}
+}}
+"""
+        self._write(rel, content)
+        return rel
+
+    def emit_placeholder_resolver(self) -> str:
+        """Emit `PlaceholderResolver.java` alongside `PerMethodCsvDataProvider`.
+
+        Fills the reference-framework parity gap: users can drop faker
+        tokens like `<<email>>`, `<<username(8)>>`, `<<phone>>` into CSV
+        cells, and cross-field property refs like `${{phone}}`, `${{email}}`,
+        `${{email_domain}}` that stay CONSISTENT across a single row
+        (`${{phone}}` in the JSON payload and in the CSV `expected` column
+        resolve to the same value within a test method).
+
+        Runtime call surface:
+          - `resolveAll(String text, Map<String,String> ctx)`     -- both passes
+          - `resolveFakerTokens(String text)`                     -- <<X>> only
+          - `resolveDollarRefs(String text, Map<String,String> ctx)` -- ${{X}} only
+
+        The Java class expects `com.ak.api.data.FakeData` to be present
+        (already exists in the framework)."""
+        pkg = f"{self.package_root}.data"
+        rel = f"src/main/java/{pkg.replace('.', '/')}/PlaceholderResolver.java"
+        content = f"""package {pkg};
+
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+/**
+ * Two-pass placeholder resolver for CSV cells and request-body templates.
+ *
+ * <p><b>Pass 1: faker-style {{@code <<X>>}} tokens</b>. Each occurrence
+ * produces a fresh random value on every call. Supports:
+ * <pre>
+ *   &lt;&lt;name&gt;&gt;              full personal name (space-separated first/last)
+ *   &lt;&lt;firstName&gt;&gt;         first name only
+ *   &lt;&lt;lastName&gt;&gt;          last name only
+ *   &lt;&lt;username&gt;&gt;          random username (lowercase letters)
+ *   &lt;&lt;username(N)&gt;&gt;       random username, exactly N chars
+ *   &lt;&lt;email&gt;&gt;             random.local@example.com
+ *   &lt;&lt;email(domain)&gt;&gt;     random.local@domain
+ *   &lt;&lt;phone&gt;&gt;             10-digit US phone
+ *   &lt;&lt;address&gt;&gt;           street address (no city/state)
+ *   &lt;&lt;city&gt;&gt;              city name
+ *   &lt;&lt;state&gt;&gt;             2-letter US state code
+ *   &lt;&lt;zip&gt;&gt;               5-digit US ZIP
+ *   &lt;&lt;country&gt;&gt;           2-letter ISO country code
+ *   &lt;&lt;company&gt;&gt;           company name
+ *   &lt;&lt;uuid&gt;&gt;              lowercase UUID
+ *   &lt;&lt;unique&gt;&gt;            monotonic timestamp+random suffix
+ *   &lt;&lt;int(min,max)&gt;&gt;      random int in [min,max] inclusive
+ *   &lt;&lt;alphanum(N)&gt;&gt;       N random alphanumerics
+ *   &lt;&lt;alpha(N)&gt;&gt;          N random letters
+ *   &lt;&lt;digits(N)&gt;&gt;         N random digits
+ * </pre>
+ *
+ * <p><b>Pass 2: property-bag {{@code ${{X}}}} refs</b>. On first read of
+ * an unknown key, the resolver GENERATES a fresh value and stores it
+ * in the ctx map so later reads (in the same row/method) see the same
+ * value. This matches the reference framework's convention that all
+ * occurrences of {{@code ${{phone}}}} inside one payload / CSV row are the
+ * same phone number, but a rerun of the row yields a different one.
+ * Auto-generated keys:
+ * <pre>
+ *   ${{email}}         random.local@${{email_domain}}
+ *   ${{email_domain}}  example.com (or override via env / CSV column)
+ *   ${{domain}}        example.com
+ *   ${{phone}}         10-digit US phone
+ *   ${{username}}      random lowercase username
+ *   ${{firstName}} / ${{lastName}} / ${{name}}
+ *   ${{uuid}}          lowercase UUID
+ * </pre>
+ * Any {{@code ${{X}}}} that isn't a well-known key AND isn't already in
+ * ctx is left unchanged so the caller can decide whether that's an
+ * error (via strict-mode mapJsonValues) or acceptable fallback.
+ */
+public final class PlaceholderResolver {{
+
+    private PlaceholderResolver() {{}}
+
+    // <<X>> or <<X(args)>>
+    private static final Pattern FAKER_TOKEN =
+        Pattern.compile("<<([A-Za-z_][A-Za-z0-9_]*)(?:\\\\(([^)]*)\\\\))?>>");
+    // ${{X}} -- key may include dots + underscores + digits + dashes
+    private static final Pattern DOLLAR_REF =
+        Pattern.compile("\\\\$\\\\{{([A-Za-z_][A-Za-z0-9_.-]*)\\\\}}");
+
+    /** Run pass 1 then pass 2. Safe to call on already-resolved text
+     *  (idempotent -- no faker tokens or ${{}} refs to match). */
+    public static String resolveAll(String text, Map<String, String> ctx) {{
+        if (text == null || text.isEmpty()) return text;
+        String phase1 = resolveFakerTokens(text);
+        return resolveDollarRefs(phase1, ctx);
+    }}
+
+    /**
+     * Expand every cell of a CSV row: {{@code <<X>>}} faker tokens become
+     * fresh values, {{@code ${{X}}}} property refs consult / populate ctx so
+     * the same ref used across multiple cells resolves to the same value
+     * WITHIN one row. Returns a fresh LinkedHashMap so retrying a failed
+     * row from the original DataProvider array still sees the unresolved
+     * template.
+     */
+    public static java.util.Map<String, String> resolveRow(
+            java.util.Map<String, String> row, java.util.Map<String, String> ctx) {{
+        if (row == null || row.isEmpty()) return row;
+        java.util.LinkedHashMap<String, String> out = new java.util.LinkedHashMap<>(row.size());
+        for (java.util.Map.Entry<String, String> e : row.entrySet()) {{
+            out.put(e.getKey(), resolveAll(e.getValue(), ctx));
+        }}
+        return out;
+    }}
+
+    /** Pass 1: faker-style {{@code <<X>>}} tokens. Fresh values each call. */
+    public static String resolveFakerTokens(String text) {{
+        if (text == null || text.isEmpty() || text.indexOf('<') < 0) return text;
+        Matcher m = FAKER_TOKEN.matcher(text);
+        StringBuilder out = new StringBuilder();
+        while (m.find()) {{
+            String key = m.group(1);
+            String args = m.group(2);
+            String value = fakerValue(key, args);
+            m.appendReplacement(out, Matcher.quoteReplacement(value));
+        }}
+        m.appendTail(out);
+        return out.toString();
+    }}
+
+    /** Pass 2: {{@code ${{X}}}} refs. Populates ctx on first use of a
+     *  known-key so all occurrences within one row stay consistent. */
+    public static String resolveDollarRefs(String text, Map<String, String> ctx) {{
+        if (text == null || text.isEmpty() || text.indexOf('$') < 0) return text;
+        Matcher m = DOLLAR_REF.matcher(text);
+        StringBuilder out = new StringBuilder();
+        while (m.find()) {{
+            String key = m.group(1);
+            String value = ctx == null ? null : ctx.get(key);
+            if (value == null) value = autoGenerate(key, ctx);
+            if (value == null) {{
+                // Unknown key -- leave the literal ${{X}} alone
+                m.appendReplacement(out, Matcher.quoteReplacement(m.group()));
+            }} else {{
+                m.appendReplacement(out, Matcher.quoteReplacement(value));
+            }}
+        }}
+        m.appendTail(out);
+        return out.toString();
+    }}
+
+    // =====================================================================
+    // Faker dispatch
+    // =====================================================================
+
+    private static String fakerValue(String key, String args) {{
+        String k = key.toLowerCase();
+        switch (k) {{
+            case "name":       return FakeData.fullName();
+            case "firstname":  return FakeData.faker().name().firstName();
+            case "lastname":   return FakeData.faker().name().lastName();
+            case "username":   return truncOrPad(FakeData.username(), parseIntArg(args, -1));
+            case "email":      return args == null || args.isEmpty()
+                                        ? FakeData.email()
+                                        : (FakeData.username() + "@" + args);
+            case "phone":      return randomDigits(10);
+            case "address":    return FakeData.faker().address().streetAddress();
+            case "city":       return FakeData.faker().address().city();
+            case "state":      return FakeData.faker().address().stateAbbr();
+            case "zip":        return FakeData.faker().address().zipCode().substring(0, 5);
+            case "country":    return FakeData.faker().address().countryCode();
+            case "company":    return FakeData.companyName();
+            case "uuid":       return UUID.randomUUID().toString();
+            case "unique":     return Long.toString(System.currentTimeMillis()) + randomAlnum(3);
+            case "int":        return Integer.toString(parseIntRange(args));
+            case "alphanum":   return randomAlnum(parseIntArg(args, 8));
+            case "alpha":      return randomAlpha(parseIntArg(args, 8));
+            case "digits":     return randomDigits(parseIntArg(args, 6));
+            default:           return "<<" + key + (args == null ? ">>" : "(" + args + ")>>");
+        }}
+    }}
+
+    // =====================================================================
+    // ${{X}} dispatch (populates ctx so subsequent ${{X}} in same row see same value)
+    // =====================================================================
+
+    private static String autoGenerate(String key, Map<String, String> ctx) {{
+        String v;
+        String k = key.toLowerCase();
+        switch (k) {{
+            case "email_domain":
+            case "domain":       v = "example.com"; break;
+            case "email":        v = FakeData.username() + "@"
+                                     + getOrDefault(ctx, "email_domain", "example.com"); break;
+            case "phone":        v = randomDigits(10); break;
+            case "username":     v = FakeData.username(); break;
+            case "firstname":    v = FakeData.faker().name().firstName(); break;
+            case "lastname":     v = FakeData.faker().name().lastName(); break;
+            case "name":         v = FakeData.fullName(); break;
+            case "uuid":         v = UUID.randomUUID().toString(); break;
+            default:             return null;  // caller leaves the literal alone
+        }}
+        if (ctx != null) ctx.put(key, v);
+        return v;
+    }}
+
+    // =====================================================================
+    // Small utilities (kept local so the class has no non-FakeData deps)
+    // =====================================================================
+
+    private static String getOrDefault(Map<String, String> ctx, String key, String fallback) {{
+        if (ctx == null) return fallback;
+        String v = ctx.get(key);
+        return v == null || v.isEmpty() ? fallback : v;
+    }}
+
+    private static int parseIntArg(String args, int fallback) {{
+        if (args == null || args.isEmpty()) return fallback;
+        try {{ return Integer.parseInt(args.trim()); }} catch (NumberFormatException e) {{ return fallback; }}
+    }}
+
+    private static int parseIntRange(String args) {{
+        if (args == null || !args.contains(",")) {{
+            return FakeData.intBetween(0, parseIntArg(args, 100));
+        }}
+        String[] parts = args.split(",", 2);
+        int lo = parseIntArg(parts[0].trim(), 0);
+        int hi = parseIntArg(parts[1].trim(), lo + 100);
+        return FakeData.intBetween(Math.min(lo, hi), Math.max(lo, hi));
+    }}
+
+    private static String randomAlnum(int n) {{
+        return random(n, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
+    }}
+
+    private static String randomAlpha(int n) {{
+        return random(n, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ");
+    }}
+
+    private static String randomDigits(int n) {{
+        return random(n, "0123456789");
+    }}
+
+    private static String random(int n, String alphabet) {{
+        if (n <= 0) n = 1;
+        StringBuilder sb = new StringBuilder(n);
+        for (int i = 0; i < n; i++) {{
+            sb.append(alphabet.charAt(ThreadLocalRandom.current().nextInt(alphabet.length())));
+        }}
+        return sb.toString();
+    }}
+
+    private static String truncOrPad(String s, int n) {{
+        if (n <= 0) return s;
+        if (s.length() == n) return s;
+        if (s.length() > n) return s.substring(0, n);
+        return s + randomAlnum(n - s.length());
+    }}
+}}
+"""
+        self._write(rel, content)
+        return rel
+
+    def emit_test_class_per_suite(self, soapui_suite_name: str,
+                                    cases: list[TestCase],
+                                    service_class_name: str) -> tuple[str, str, list[str]]:
+        """Emit ONE Java test class per SoapUI test suite. Every case in
+        the suite becomes a @Test method inside that class; the method
+        name is derived from the case name via `_business_method_name()`
+        so it reads as business intent, not as a ticket ID.
+
+        Returns (relative_path, class_fqn, method_names_in_emit_order).
+        """
+        # Truncate + hash long suite names so the generated class file
+        # stays under Windows MAX_PATH once the package path prefix is
+        # applied. Collision guard: refuse to overwrite an already-emitted
+        # class in the same package -- caller either renamed a suite or
+        # this XML has two suites that collapse to the same camel case.
+        raw_class = short_class(soapui_suite_name, self.max_name_len)
+        class_name = raw_class if raw_class.endswith("Test") else raw_class + "Test"
+        pkg = f"{self.package_root}.tests.imported.{self.suite_name}"
+        fqn_candidate = f"{pkg}.{class_name}"
+        if fqn_candidate in self._emitted_class_fqns:
+            # Deterministic suffix from the ORIGINAL suite name (not the
+            # already-truncated form) so callers can diff and see which
+            # suite produced the alternate name.
+            import hashlib as _hl
+            suffix = _hl.sha1(soapui_suite_name.encode("utf-8")).hexdigest()[:6].upper()
+            class_name = f"{raw_class[:-4] if raw_class.endswith('Test') else raw_class}_{suffix}Test"
+            fqn_candidate = f"{pkg}.{class_name}"
+            print(f"[ra_converter] WARN: SoapUI suite name '{soapui_suite_name}' "
+                  f"collides after truncation; disambiguated to {class_name}")
+        self._emitted_class_fqns.add(fqn_candidate)
+
+        # Prime state so per-method emitters know their audit-ledger cursor.
+        self._current_prefix = soapui_suite_name
+
+        method_name_map = _unique_method_names(cases)
+        method_names: list[str] = []
+
+        rendered_methods: list[str] = []
+        for case in cases:
+            final_name, status_code, variant = method_name_map[case.name]
+            method_names.append(final_name)
+            rendered_methods.append(self._render_test_method_v2(
+                case, service_class_name, final_name, status_code, variant))
+
+        # Explicit @XrayTest keys from all cases (union) -- power users can
+        # narrow to a subset via TestNG groups from the CSV `groups` column.
+        xray_keys = sorted({
+            c.prefix for c in cases
+            if re.match(r"^[A-Z]+-\d+$", c.prefix or "")
+        })
+
+        # Header comment enumerates the flows shared inside this class -- so a
+        # reader knows what SetupHelper.flow_X does without opening it.
+        flow_blurbs = []
+        for case in cases[:1]:  # blurb from first case only to avoid a wall
+            f = self._flow_by_case.get(case.name)
+            if f:
+                flow_blurbs.append(
+                    f" *   - {f['id']}: {f['prefix_len']} shared setup steps "
+                    f"used by {len(f['cases'])} methods")
+
+        header_lines = [
+            f" * Auto-generated by ra_converter from SoapUI test suite `{soapui_suite_name}`.",
+            f" *",
+            f" * ONE Java class -> ONE SoapUI test suite. Each SoapUI test case",
+            f" * becomes one @Test method here; scenario variants (200 / 400 / 403)",
+            f" * are kept as separate methods so failures are addressable per intent.",
+            f" *",
+            f" * Data: {{@code csv/{class_name}/<methodName>.csv}} on the classpath.",
+            f" * Auto-loaded by {{@link {self.package_root}.data.PerMethodCsvDataProvider}}",
+            f" * -- no per-class wiring required. Add rows to a CSV to add scenarios.",
+        ]
+        if flow_blurbs:
+            header_lines.append(" *")
+            header_lines.append(" * Shared setup flows in this class:")
+            header_lines.extend(flow_blurbs)
+        header = "\n".join(header_lines)
+
+        content = f"""package {pkg};
+
+import java.util.HashMap;
+import java.util.Map;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.testng.annotations.BeforeClass;
+import org.testng.annotations.Test;
+
+import com.ak.api.config.Config;
+import com.ak.api.data.Expected;
+import com.ak.api.data.FakeData;
+import com.ak.api.data.PerMethodCsvDataProvider;
+import com.ak.api.data.PlaceholderResolver;
+import com.ak.api.db.Db;
+import com.ak.api.rest.utilities.Headers;
+import com.ak.api.rest.utilities.RestUtilities;
+import com.ak.api.retry.RetryAnalyzer;
+import {self.package_root}.support.{self.suite_name}.SetupHelper;
+import {self.package_root}.support.{self.suite_name}.TestSupport;
+import com.ak.api.tests.BaseApiTest;
+import com.ak.api.xray.XrayTest;
+
+import com.ak.api.rest.clients.{service_class_name};
+
+import io.qameta.allure.Description;
+import io.qameta.allure.Epic;
+import io.qameta.allure.Feature;
+import io.qameta.allure.Story;
+import io.restassured.response.Response;
+
+/**
+{header}
+ */
+@Epic("Imported from ReadyAPI")
+@Feature("{soapui_suite_name}")
+public class {class_name} extends BaseApiTest {{
+
+    private static final Logger LOG = LoggerFactory.getLogger({class_name}.class);
+
+    private {service_class_name} client;
+    /** Runtime context bag: IDs/tokens carried between setup calls within one test. */
+    private final Map<String, String> ctx = new HashMap<>();
+
+    @BeforeClass(alwaysRun = true)
+    public void initClient() {{
+        String baseUrl = Config.get("base_url", Config.baseUrl());
+        client = new {service_class_name}(baseUrl);
+        LOG.info("initialised {class_name} against baseUrl={{}}  (auth={{}})",
+                baseUrl, Config.authType());
+    }}
+
+{chr(10).join(rendered_methods)}
+}}
+"""
+        rel = f"src/test/java/{pkg.replace('.', '/')}/{class_name}.java"
+        self._write(rel, content)
+        fqn = f"{pkg}.{class_name}"
+        return rel, fqn, method_names
+
+    def _render_test_method_v2(self, case: TestCase, service_class_name: str,
+                                 method_name: str, expected_status_code: str,
+                                 variant: str) -> str:
+        """Same shape as `_render_test_method` but wired to the convention-
+        based DataProvider (`PerMethodCsvDataProvider`, name `"rows"`), and
+        the method name is the business-intent form (not the hash-shortened
+        SoapUI case name)."""
+        self._current_case = case.name
+        self._reset_per_method_state()
+
+        assigned_flow = self._flow_by_case.get(case.name)
+        body_lines = [
+            f'String testCaseId = "{_jlit(case.name)}";',
+            '// Expand <<faker>> tokens + ${{property}} refs in every CSV cell '
+            'so downstream code sees live values, not placeholders.',
+            'row = PlaceholderResolver.resolveRow(row, ctx);',
+            'Expected exp = expected(row);',
+            '',
+        ]
+        skip_count = 0
+        if assigned_flow:
+            skip_count = assigned_flow["prefix_len"]
+            body_lines.append(
+                f'// ==== shared setup: SetupHelper.{assigned_flow["id"]} '
+                f'({skip_count} steps, reused by '
+                f'{len(assigned_flow["cases"])} methods in this suite) ====')
+            body_lines.append(
+                f'SetupHelper.{assigned_flow["id"]}('
+                'client, ctx, row, softAssert, holder, testCaseId);')
+            body_lines.append('')
+        for step in case.steps[skip_count:]:
+            body_lines.extend(self._render_step(step, service_class_name))
+            body_lines.append('')
+
+        indented = "\n".join("        " + l if l else "" for l in body_lines)
+
+        desc_safe = _jlit((case.description or "")[:200])
+
+        xray_id_raw = case.prefix if re.match(r"^[A-Z]+-\d+$", case.prefix) else case.name
+
+        # Emit variant info in the Story annotation so Allure can group by scenario
+        story_bits = [case.name]
+        if expected_status_code:
+            story_bits.append(f"expected {expected_status_code}")
+        if variant:
+            story_bits.append(f"variant #{variant}")
+        story = " -- ".join(story_bits)
+        # TestNG group values can't contain quotes or newlines; sanitize the
+        # prefix-derived group so weird case names don't produce broken XML.
+        group_val = sanitize_identifier(case.prefix.lower())
+
+        return f"""    @Test(dataProvider = "rows",
+          dataProviderClass = PerMethodCsvDataProvider.class,
+          groups = {{"imported", "{group_val}"}},
+          retryAnalyzer = RetryAnalyzer.class)
+    @XrayTest("{_jlit(xray_id_raw)}")
+    @Story("{_jlit(story)}")
+    @Description("Imported from ReadyAPI. Original description: {desc_safe}")
+    public void {method_name}(Map<String, String> row) throws Exception {{
+{indented}
+    }}
+"""
+
+    # Well-known placeholder column suggestions -- if the case's request
+    # bodies mention these SoapUI properties (${{...}}), the CSV header
+    # includes them as blank cells with helpful defaults commented in
+    # the row so authors know what to fill (or leave blank -> auto-
+    # generated by PlaceholderResolver at runtime).
+    _COMMON_PLACEHOLDER_HINTS: dict = {
+        "email":        "<<email>>",          # random.local@example.com per call
+        "phone":        "<<phone>>",          # 10-digit US phone
+        "username":     "<<username(8)>>",
+        "email_domain": "example.com",
+        "domain":       "example.com",
+        "first_name":   "<<firstName>>",
+        "last_name":    "<<lastName>>",
+        "name":         "<<name>>",
+        "uuid":         "<<uuid>>",
+        "address":      "<<address>>",
+        "city":         "<<city>>",
+        "state":        "<<state>>",
+        "zip":          "<<zip>>",
+    }
+
+    def emit_csv_per_method(self, class_name: str, method_name: str,
+                              case: TestCase, expected_status_code: str,
+                              variant: str) -> str:
+        """Write `src/test/resources/csv/<class_name>/<method_name>.csv` with
+        one row per scenario. Header is stable across runs so adding more
+        scenarios later is a matter of appending rows (no code change).
+
+        Placeholder-friendly: any CSV cell can hold `<<fakerToken>>` or
+        `${{propertyRef}}` -- `PlaceholderResolver.resolveRow` (called at the
+        top of every @Test method) expands these into live values before
+        the row reaches user code."""
+        classification = classify_placeholders_for_case(case)
+        for kind_key in ("config", "runtime", "csv"):
+            for ph in sorted(classification[kind_key]):
+                self.ledger.add_placeholder(case.name, ph, kind_key)
+
+        csv_columns = sorted(classification["csv"])
+
+        # Well-known columns (email, phone, ...) -- pre-populate with a
+        # sensible faker/property hint IF a placeholder of that name shows
+        # up ANYWHERE in the case's raw bodies/params (not just as an
+        # already-classified CSV placeholder). Reference-framework rows
+        # rely on these being available without hand-declaring them.
+        raw_texts = []
+        for step in case.steps:
+            if isinstance(step, RestStep):
+                raw_texts.append(step.request_body or "")
+                raw_texts.extend(list(step.headers.values()))
+                raw_texts.extend(list(step.path_params.values()))
+                raw_texts.extend(list(step.query_params.values()))
+        corpus = "\n".join(raw_texts)
+        hinted_cols: list[tuple[str, str]] = []
+        for common_key, hint in self._COMMON_PLACEHOLDER_HINTS.items():
+            if f"${{{common_key}}}" in corpus and common_key not in csv_columns:
+                hinted_cols.append((common_key, hint))
+        # Also expose hinted keys the user can override even if the body
+        # doesn't reference them yet (they're free to add ${email} etc.
+        # to the body template later without regenerating).
+        hint_col_names = [k for k, _ in hinted_cols]
+
+        # Reserved columns matching what BaseApiTest.expected(row) + the
+        # ra_converter Java emitter both read at runtime.
+        cols = csv_columns + hint_col_names + [
+            "test_case_id",       # original SoapUI case name, for report grouping
+            "jira_xray_id",       # e.g. B2B-172
+            "variant",            # scenario disambiguator (from name suffix)
+            "expected_status_code",
+            "expected",           # semicolon-joined k:v extras (statusCode:200;...)
+        ]
+
+        # Compute the first row from the case's LAST REST step's assertions
+        # (same logic as the legacy emit_csv), but now also fill status_code
+        # and variant so authors can add follow-up rows without opening the code.
+        terminal = None
+        for step in reversed(case.steps):
+            if isinstance(step, RestStep):
+                terminal = step
+                break
+        expected_bits = []
+        derived_status = expected_status_code or ""
+        if terminal:
+            for a in terminal.assertions:
+                if a.disabled:
+                    continue
+                if a.type == "Valid HTTP Status Codes":
+                    codes = (a.config.get("codes", "") or "").strip()
+                    first_code = re.split(r"[,\s]+", codes)[0] if codes else "200"
+                    expected_bits.append(f"statusCode:{first_code}")
+                    if not derived_status:
+                        derived_status = first_code
+        expected_str = ";".join(expected_bits)
+
+        header_row = ",".join(cols)
+        row_cells = (
+            ["" for _ in csv_columns] +
+            [_csv_cell(hint) for _, hint in hinted_cols] +
+            [_csv_cell(case.name), _csv_cell(case.prefix),
+             _csv_cell(variant), _csv_cell(derived_status), _csv_cell(expected_str)]
+        )
+        data_row = ",".join(row_cells)
+        content = header_row + "\n" + data_row + "\n"
+        rel = f"src/test/resources/csv/{class_name}/{method_name}.csv"
+        self._write(rel, content)
+        return rel
+
+    def emit_templates_deduplicated(self, cases: list[TestCase]) -> dict[str, str]:
+        """Hash-dedup all request-body templates across the whole suite.
+        Two REST steps with identical bodies (after placeholder normalization)
+        share one file under `templates/<resource>/<basename>.json` -- so 296
+        cases that all POST the same `businesses` payload get exactly one
+        template file, not 296 copies.
+
+        Side effect (v2 wiring): populates `self._template_path_by_step`
+        with the CLASSPATH-relative template path for every (case, step)
+        that has a body. `_render_rest_step_body` reads this map so
+        emitted Java references the actual dedup'd file location, not
+        the flat legacy guess.
+
+        Returns {body-hash -> classpath-path} so callers can also do a
+        by-hash lookup if needed."""
+        import hashlib
+        hash_to_path: dict[str, str] = {}
+        for case in cases:
+            for step in case.steps:
+                if not isinstance(step, RestStep):
+                    continue
+                if not step.request_body.strip():
+                    continue
+                translated, _ = soapui_body_to_placeholders(step.request_body)
+                h = hashlib.sha1(translated.encode("utf-8")).hexdigest()[:10]
+                # Bucket by resource: first path segment gives us a stable
+                # folder (e.g. `businesses/`, `guests/`, `tokens/`). Falls
+                # back to `misc` when we can't infer.
+                seg = (step.resource_path or "").strip("/").split("/", 1)[0]
+                bucket = sanitize_identifier(seg).lower() or "misc"
+                basename = f"{sanitize_identifier(step.step_name).lower()}_{h}.json"
+                # Classpath-relative form (what getRequestTemplate("dir/", "file")
+                # combines back into) -- this is what the emitted Java will use.
+                classpath_dir = f"templates/{self.suite_name}/{bucket}/"
+                classpath_file = basename
+                self._template_path_by_step[(case.name, step.step_name)] = (
+                    classpath_dir + classpath_file)
+                if h in hash_to_path:
+                    continue  # file already written, but every step still
+                              # gets mapped to it above so lookup works.
+                rel = f"src/main/resources/{classpath_dir}{classpath_file}"
+                self._write(rel, translated)
+                hash_to_path[h] = classpath_dir + classpath_file
+        return hash_to_path
+
+    def emit_master_suite_xml(self, class_fqns: list[str],
+                                variant: str = "Regression") -> str:
+        """Write a master TestNG suite XML at `Suites/<Suite><Variant>.xml`
+        (matching reference framework naming). Lists every generated test
+        class + Allure/Extent listeners. `variant` = 'Regression' | 'Smoke'
+        | 'UAT' | ... -- reference framework ships all three."""
+        pretty_suite = to_camel_case(self.suite_name, upper_first=True)
+        pretty_variant = variant[:1].upper() + variant[1:]
+        suite_display = f"{pretty_suite}-{pretty_variant}"
+
+        class_blocks = "\n".join(
+            f'            <class name="{fqn}"/>' for fqn in sorted(class_fqns))
+
+        content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">
+<suite name="{suite_display}" parallel="classes" thread-count="3">
+
+    <parameter name="testSuite" value="{variant.lower()}"/>
+
+    <listeners>
+        <listener class-name="io.qameta.allure.testng.AllureTestNg"/>
+        <listener class-name="com.ak.api.reporting.TestSuiteListener"/>
+        <listener class-name="com.ak.api.reporting.TestCaseLogListener"/>
+        <listener class-name="com.ak.api.reporting.ExtentReportListener"/>
+        <listener class-name="com.ak.api.reporting.XrayReportListener"/>
+    </listeners>
+
+    <test name="{suite_display}Tests">
+        <groups>
+            <run>
+                <include name="imported"/>
+            </run>
+        </groups>
+        <classes>
+{class_blocks}
+        </classes>
+    </test>
+
+</suite>
+"""
+        rel = f"Suites/{pretty_suite}_{pretty_variant}.xml"
+        self._write(rel, content)
+        return rel
+
     # -- testng.xml --------------------------------------------------------
 
     def emit_testng_entry(self, prefix: str, test_class_fqn: str,
@@ -2066,21 +3078,42 @@ def _clean_suite_output(output_dir: str, suite_name: str, package_root: str,
     Prevents stale test classes / CSVs / templates from lingering after a
     rename or a case-removal in the source XML. Safe: only touches paths
     scoped to `suite_name`."""
-    import shutil
+    import shutil, glob as _g
     pkg_path = f"src/test/java/{package_root.replace('.', '/')}/tests/imported/{suite_name}"
     support_pkg_path = f"src/main/java/{package_root.replace('.', '/')}/support/{suite_name}"
+    imported_pkg_dir = os.path.join(output_dir, pkg_path)
+
+    # v2 (--one-class-per-suite) writes per-method CSVs at
+    # `src/test/resources/csv/<ClassName>/` and master TestNG suites at
+    # `Suites/<PrettySuite>_*.xml`. Class names come from the SoapUI
+    # <testSuite name="..."> attribute -- which may NOT match either the
+    # CLI --suite-name or the XML basename. Enumerate the existing class
+    # files BEFORE wiping the package dir so we scope csv/ + Suites/
+    # cleanup to what actually got written last time.
+    v2_class_names: list[str] = []
+    if os.path.isdir(imported_pkg_dir):
+        for entry in os.listdir(imported_pkg_dir):
+            if entry.endswith(".java"):
+                v2_class_names.append(entry[:-len(".java")])
+
     dirs_to_clean = [
-        os.path.join(output_dir, pkg_path),
+        imported_pkg_dir,
         os.path.join(output_dir, support_pkg_path),
         os.path.join(output_dir, "src/test/resources/testdata", suite_name),
         os.path.join(output_dir, "src/main/resources/templates", suite_name),
         os.path.join(output_dir, "_audit", suite_name),
     ]
+    # Add each v2 class's CSV folder
+    for cls in v2_class_names:
+        dirs_to_clean.append(
+            os.path.join(output_dir, "src/test/resources/csv", cls))
+
     removed = []
     for d in dirs_to_clean:
         if os.path.isdir(d):
             shutil.rmtree(d)
             removed.append(d)
+
     # Individual files (testng suite files + flow diagram + any older
     # xml-basename-based flow diagram from a rename)
     file_paths = [
@@ -2090,11 +3123,28 @@ def _clean_suite_output(output_dir: str, suite_name: str, package_root: str,
     if input_xml:
         xml_base = os.path.splitext(os.path.basename(input_xml))[0]
         file_paths.append(f"_flows/{xml_base}.md")
-    import glob as _g
     for glob_pat in file_paths:
         for p in _g.glob(os.path.join(output_dir, glob_pat)):
             os.remove(p)
             removed.append(p)
+
+    # Master TestNG suite XMLs: scoped per emitted class name (drops the
+    # trailing `Test` and adds `_Regression.xml` / `_Smoke.xml`).
+    for cls in v2_class_names:
+        stem = cls[:-4] if cls.endswith("Test") else cls
+        for glob_pat in (f"Suites/{stem}_*.xml",):
+            for p in _g.glob(os.path.join(output_dir, glob_pat)):
+                os.remove(p)
+                removed.append(p)
+    # Also sweep the legacy heuristic pattern (pretty(suite_name) form)
+    # in case an older run named files that way and enumeration above
+    # doesn't cover them.
+    pretty = to_camel_case(suite_name, upper_first=True)
+    for glob_pat in (f"Suites/{pretty}_*.xml",):
+        for p in _g.glob(os.path.join(output_dir, glob_pat)):
+            if p not in removed:
+                os.remove(p)
+                removed.append(p)
     return removed
 
 
@@ -2120,9 +3170,19 @@ def main():
     group = p.add_mutually_exclusive_group(required=True)
     group.add_argument("--prefix", help="JIRA prefix to convert (e.g. B2B-172)")
     group.add_argument("--all-prefixes", action="store_true",
-                       help="Convert EVERY prefix bucket found in the suite "
-                            "into its own test class, all reusing one shared "
-                            "service client across the entire imported set.")
+                       help="Legacy: convert EVERY case-name prefix bucket "
+                            "into its own test class (many small classes). "
+                            "Kept for backwards compat; prefer "
+                            "--one-class-per-suite for new imports.")
+    group.add_argument("--one-class-per-suite", action="store_true",
+                       dest="one_class_per_suite",
+                       help="Recommended: emit ONE Java test class per SoapUI "
+                            "test suite -- every case in it becomes a @Test "
+                            "method inside that class. Matches reference "
+                            "framework layout: CSVs at csv/<Class>/<method>.csv, "
+                            "templates deduplicated across the suite, one "
+                            "master TestNG suite XML at Suites/<Suite>_Regression.xml "
+                            "with Allure listeners wired in.")
     p.add_argument("--output", default="output", help="Output root directory")
     p.add_argument("--package-root", default="com.ak.api", help="Java package root")
     p.add_argument("--service-name", default="ProgramAccounts",
@@ -2165,24 +3225,42 @@ def main():
             print(f"    ... and {len(removed) - 5} more")
 
     print(f"[ra_converter] parsing {args.input} ...")
-    cases_all = parse_test_suite(args.input)
-    print(f"[ra_converter] found {len(cases_all)} test cases total in suite")
+    # v2 mode wants to see SoapUI suite boundaries (one class per suite).
+    # Legacy modes flatten across suites, which is fine because most SoapUI
+    # exports carry a single suite anyway.
+    parsed_suites: list[tuple[str, list[TestCase]]] = parse_test_suites(args.input)
+    cases_all: list[TestCase] = [c for _sn, cs in parsed_suites for c in cs]
+    print(f"[ra_converter] found {len(cases_all)} test cases across "
+          f"{len(parsed_suites)} SoapUI test suite(s)")
 
     dup_renames = _dedupe_case_names_inplace(cases_all)
     if dup_renames:
         print(f"[ra_converter] renamed {dup_renames} duplicate case name(s) "
               f"with _dupN suffix so Java method names don't collide")
 
-    if args.all_prefixes:
+    if getattr(args, "one_class_per_suite", False):
+        # New mode: preserve SoapUI suite boundaries so each suite becomes
+        # ONE Java class with N methods. Buckets are for the legacy per-
+        # prefix path only; here we track (soapui_suite_name -> cases).
+        buckets = {}  # unused in v2 path
+        cases_in_scope = cases_all
+        soapui_suites = parsed_suites
+        print(f"[ra_converter] --one-class-per-suite: "
+              f"{len(soapui_suites)} class(es) will be emitted:")
+        for sn, cs in soapui_suites:
+            print(f"    - {sn}: {len(cs)} test cases -> {len(cs)} @Test methods")
+    elif args.all_prefixes:
         buckets = _iter_prefix_buckets(cases_all)
         print(f"[ra_converter] --all-prefixes: {len(buckets)} prefix buckets")
         cases_in_scope = cases_all
+        soapui_suites = []
     else:
         cases_in_scope = group_by_prefix(cases_all, args.prefix)
         if not cases_in_scope:
             print(f"[ra_converter] no cases match prefix {args.prefix!r}")
             return 1
         buckets = {args.prefix: cases_in_scope}
+        soapui_suites = []
         print(f"[ra_converter] {len(cases_in_scope)} cases match prefix {args.prefix}:")
         for c in cases_in_scope:
             rest_ct = sum(1 for s in c.steps if isinstance(s, RestStep))
@@ -2239,43 +3317,111 @@ def main():
         print("[ra_converter]   no flows meet the threshold; test methods "
               "keep all steps inline")
 
-    # Emit one test class per prefix bucket
-    prefix_order: list[str] = []
-    for pref, pref_cases in buckets.items():
-        prefix_order.append(pref)
-        emitter.emit_test_class(pref, pref_cases, service_class)
+    # =========================================================
+    # v2 path: one Java class per SoapUI test suite.
+    # =========================================================
+    if getattr(args, "one_class_per_suite", False):
+        # 0) The convention-based DataProvider + PlaceholderResolver need
+        #    to exist ONCE per output tree -- rewriting them every run is
+        #    idempotent.
+        dp_rel = emitter.emit_per_method_csv_data_provider()
+        print(f"[ra_converter] emitted convention CSV data provider: {dp_rel}")
+        pr_rel = emitter.emit_placeholder_resolver()
+        emitter._resolver_emitted = True
+        print(f"[ra_converter] emitted placeholder resolver: {pr_rel}")
 
-    # Emit the flow diagram documenting THIS suite's migration.
-    flow_rel = emitter.emit_flow_diagram(
-        args.input, cases_in_scope, flows,
-        service_class, shared_ops_count=len(shared_ops))
-    print(f"[ra_converter] emitted flow diagram: {flow_rel}")
-    print(f"[ra_converter] emitted {len(prefix_order)} test classes "
-          f"(one per prefix bucket)")
+        # 1a) Deduped templates emitted FIRST so _template_path_by_step is
+        #     populated before test-class emission reads it.
+        template_map = emitter.emit_templates_deduplicated(cases_in_scope)
+        rest_step_ct = sum(
+            1 for c in cases_in_scope for s in c.steps
+            if isinstance(s, RestStep) and s.request_body.strip())
+        dedup_pct = (100 - int(100 * len(template_map) / max(1, rest_step_ct)))
+        print(f"[ra_converter] emitted {len(template_map)} deduped templates "
+              f"(from {rest_step_ct} REST bodies -> {dedup_pct}% dedup)")
 
-    # Per-case CSV + template artifacts
-    for case in cases_in_scope:
-        emitter.emit_csv(case)
-        emitter.emit_templates(case)
-    print(f"[ra_converter] emitted CSVs + request-body templates for "
-          f"{len(cases_in_scope)} cases")
+        # 1) Emit one Java class per SoapUI test suite + CSVs colocated
+        #    under `csv/<ClassName>/`.
+        v2_class_fqns: list[str] = []
+        total_methods = 0
+        for soapui_sname, sui_cases in soapui_suites:
+            rel, fqn, method_names = emitter.emit_test_class_per_suite(
+                soapui_sname, sui_cases, service_class)
+            v2_class_fqns.append(fqn)
+            print(f"[ra_converter] emitted {fqn}  "
+                  f"({len(method_names)} @Test methods)")
 
-    # Env configs -- one file per env, containing every distinct config key
-    # observed across all cases in scope
-    for env in args.envs.split(","):
-        emitter.emit_env_config(cases_in_scope, env_name=env.strip())
-    print(f"[ra_converter] emitted env config for: {args.envs}")
+            # Per-method CSV. We recompute the name map so the CSV name
+            # matches the method name written by the class emitter.
+            name_map = _unique_method_names(sui_cases)
+            class_simple = fqn.rsplit(".", 1)[-1]
+            for c in sui_cases:
+                mname, status, variant = name_map[c.name]
+                emitter.emit_csv_per_method(class_simple, mname, c, status, variant)
+            total_methods += len(method_names)
+        print(f"[ra_converter] v2 total: {len(v2_class_fqns)} class(es), "
+              f"{total_methods} @Test method(s), "
+              f"{total_methods} CSV file(s) under src/test/resources/csv/")
 
-    # testng.xml per prefix, plus a master that aggregates them all
-    for pref in prefix_order:
-        fqn = (f"{args.package_root}.tests.imported.{suite_name}."
-               f"{emitter._short(pref)}."
-               + emitter._short_cls(pref) + "Test")
-        emitter.emit_testng_entry(pref, fqn, buckets[pref])
-    if args.all_prefixes:
-        master_rel = _emit_master_testng(emitter, prefix_order)
-        print(f"[ra_converter] emitted master suite: {master_rel}")
-    print(f"[ra_converter] emitted {len(prefix_order)} per-prefix testng entries")
+        # 3) Env configs (unchanged from v1)
+        for env in args.envs.split(","):
+            emitter.emit_env_config(cases_in_scope, env_name=env.strip())
+        print(f"[ra_converter] emitted env config for: {args.envs}")
+
+        # 4) Master TestNG suite XMLs at Suites/<Suite>_Regression.xml
+        #    (+ _Smoke.xml as a starter template with same class list;
+        #    authors typically narrow it later by editing groups).
+        for variant in ("Regression", "Smoke"):
+            master_rel = emitter.emit_master_suite_xml(v2_class_fqns, variant=variant)
+            print(f"[ra_converter] emitted master suite: {master_rel}")
+
+        # Flow diagram still useful in v2 for visualizing shared setup.
+        flow_rel = emitter.emit_flow_diagram(
+            args.input, cases_in_scope, flows,
+            service_class, shared_ops_count=len(shared_ops))
+        print(f"[ra_converter] emitted flow diagram: {flow_rel}")
+
+    # =========================================================
+    # Legacy path: --prefix or --all-prefixes
+    # =========================================================
+    else:
+        # Emit one test class per prefix bucket
+        prefix_order: list[str] = []
+        for pref, pref_cases in buckets.items():
+            prefix_order.append(pref)
+            emitter.emit_test_class(pref, pref_cases, service_class)
+
+        # Emit the flow diagram documenting THIS suite's migration.
+        flow_rel = emitter.emit_flow_diagram(
+            args.input, cases_in_scope, flows,
+            service_class, shared_ops_count=len(shared_ops))
+        print(f"[ra_converter] emitted flow diagram: {flow_rel}")
+        print(f"[ra_converter] emitted {len(prefix_order)} test classes "
+              f"(one per prefix bucket)")
+
+        # Per-case CSV + template artifacts (legacy shape)
+        for case in cases_in_scope:
+            emitter.emit_csv(case)
+            emitter.emit_templates(case)
+        print(f"[ra_converter] emitted CSVs + request-body templates for "
+              f"{len(cases_in_scope)} cases")
+
+        # Env configs -- one file per env, containing every distinct config key
+        # observed across all cases in scope
+        for env in args.envs.split(","):
+            emitter.emit_env_config(cases_in_scope, env_name=env.strip())
+        print(f"[ra_converter] emitted env config for: {args.envs}")
+
+        # testng.xml per prefix, plus a master that aggregates them all
+        for pref in prefix_order:
+            fqn = (f"{args.package_root}.tests.imported.{suite_name}."
+                   f"{emitter._short(pref)}."
+                   + emitter._short_cls(pref) + "Test")
+            emitter.emit_testng_entry(pref, fqn, buckets[pref])
+        if args.all_prefixes:
+            master_rel = _emit_master_testng(emitter, prefix_order)
+            print(f"[ra_converter] emitted master suite: {master_rel}")
+        print(f"[ra_converter] emitted {len(prefix_order)} per-prefix testng entries")
 
     # ---- AUDIT LEDGER: proves every SoapUI assertion / Groovy block was ----
     # ---- accounted for (translated, stubbed, or explicitly TODO'd). --------
