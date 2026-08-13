@@ -176,14 +176,36 @@ _TOKEN_RX = re.compile(
     r"jsonSlurper\w*\.parseText\([^)]*\)\.(?P<field>access_token|token|id_token)",
     re.IGNORECASE)
 
+def _has_bearer_concat(script: str) -> bool:
+    """True when the script contains an actual `"Bearer " + something`
+    concatenation pattern (Groovy string literal followed by `+`, or
+    preceded by `+`). Prior version used bare `"Bearer" in script`
+    which false-matched any occurrence -- including comments,
+    exception messages, and unrelated identifiers -- and produced
+    wrong `"Bearer " + token` output in tests that had "Bearer"
+    literally anywhere in the script."""
+    if not script:
+        return False
+    # Strip line + block comments first so commented Bearer doesn't count.
+    stripped = re.sub(r'//[^\n]*', ' ', script)
+    stripped = re.sub(r'/\*.*?\*/', ' ', stripped, flags=re.DOTALL)
+    # Look for the actual concat pattern: a `"Bearer"` / `"Bearer "` /
+    # `'Bearer '` string literal in a concat context (with `+` on either
+    # side). Only this pattern signals real token-prefixing intent.
+    return bool(re.search(
+        r'["\']Bearer\s*["\']\s*\+|\+\s*["\']Bearer\s*["\']', stripped))
+
+
 def _emit_token_extract(m: re.Match, ctx: dict) -> list[str]:
     field = m.group("field")
     # Best-effort: which step's response are we parsing? Grep the surrounding
     # script for the most recent `testStepByName("X")` or `testSteps["X"]`.
     step_name = ctx.get("_last_source_step", "tokenRequest")
     resp = _resp_var_for(step_name, ctx)
-    # If a "Bearer " prefix appears later in the script, emit that; otherwise raw.
-    prefix = '"Bearer " + ' if "Bearer" in ctx.get("_script", "") else ""
+    # If actual `"Bearer " + X` concat appears in the script, emit that
+    # prefix in Java too; otherwise raw. Bare substring match would fire
+    # on comments/error strings/unrelated identifiers.
+    prefix = '"Bearer " + ' if _has_bearer_concat(ctx.get("_script", "")) else ""
     return [
         f'// [translated] extract {field} from {step_name} response',
         f'String extractedToken = {prefix}{resp}.jsonPath().getString("{field}");',

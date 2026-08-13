@@ -1,33 +1,47 @@
 """ReadyAPI (SoapUI) test-suite -> Java + REST Assured + TestNG converter.
 
-Reads a SoapUI/ReadyAPI project XML, extracts a specified subset of test
-cases (currently: by JIRA-style prefix like 'B2B-172'), and emits the
-corresponding artifacts targeting the ApiAutomationRestAssured framework:
+Reads a SoapUI/ReadyAPI project XML and emits Java + TestNG + CSV +
+templates + a master TestNG suite XML targeting the ApiAutomationRestAssured
+framework. Single emission mode:
 
-  - Reusable service client class:
-      src/main/java/com/ak/api/rest/clients/{Service}Client.java
-  - Test class (one per JIRA prefix; one @Test method per SoapUI test case):
-      src/test/java/com/ak/api/tests/imported/{prefix}/{Prefix}Test.java
-  - Per-case CSV datasheet:
-      src/test/resources/testdata/{case_name}.csv
-  - Request-body JSON templates with #placeholder# syntax:
-      src/main/resources/templates/{name}.json
-  - Env config JSON (converter emits qa + prod stubs):
-      src/main/resources/config/{env}.json
-  - testng-{prefix}.xml suite entry.
+  - ONE Java test class per SoapUI <con:testSuite>:
+      src/test/java/com/ak/api/tests/imported/<suite>/<Suite>Test.java
+    Cases sharing (verb, path, body-shape) per REST step cluster into one
+    @Test method with N CSV rows; prefix-matching clusters fold shorter
+    scenarios into longer ones with an early-return `_stop_after` CSV cell.
+  - Per-method CSV datasheets (one row per SoapUI case):
+      src/test/resources/csv/<Suite>Test/<methodName>.csv
+    Every expected value (status code, JsonPath match, JsonPath count,
+    header presence, SLA, etc.) is a CSV column -- edit the CSV to change
+    what a scenario asserts, no code change.
+  - Deduped request-body templates:
+      src/main/resources/templates/<suite>/<bucket>/<step>_<sha1>.json
+    Bodies with identical JSON shape merge into ONE template with
+    #tpl_<jsonPath># placeholders; per-case literal values live in CSV cells.
+  - Convention CSV DataProvider + faker/property placeholder resolver:
+      src/main/java/com/ak/api/data/PerMethodCsvDataProvider.java
+      src/main/java/com/ak/api/data/PlaceholderResolver.java
+  - Master TestNG suite XMLs at Suites/<Suite>_Regression.xml + _Smoke.xml
+    with Allure + Extent + Xray listeners wired in.
+  - Env config JSON (qa + prod stubs) at src/main/resources/config/<env>.json.
+  - Shared service client at src/main/java/com/ak/api/rest/clients/<Service>Client.java.
+  - Setup-flow helper for opening step-sequences reused by >=10 cases.
 
-Coverage in this iteration:
-  - restrequest step -> service-client method + test-code call
-  - properties step / ${step#field} references -> tracked in IR
-  - datasource step -> flagged (CSV data-drive is target)
-  - groovy step / GroovyScriptAssertion -> TODO comment (manual review)
-  - assertions handled: Valid HTTP Status Codes, JsonPath Match,
-    JsonPath Existence Match, Simple Equals, Simple NotContains,
-    Response SLA Assertion. All others emit TODO stubs.
+Coverage:
+  - REST step -> service-client method + test-code call
+  - Properties / ${step#field} refs -> classified as config / runtime / csv
+  - Groovy step -> pattern-translated (JsonSlurper, setPropertyValue,
+    def-var publications, JDBC literal queries) with runtime WARN + Allure
+    attachment for unrecognized shapes
+  - Assertions: Valid HTTP Status Codes, Invalid HTTP Status Codes,
+    JsonPath Match / Existence / Count / RegEx, Simple Equals / Contains /
+    NotContains, Response SLA, MessageContentAssertion (per-element XPath),
+    DataAndMetadataAssertion (per-element JsonPath), GroovyScriptAssertion
+    (common patterns; others log + attach to Allure).
 
 Usage:
-  python ra_converter.py --input input/accountmemberregression.xml \\
-                         --prefix B2B-172 --output output --config converter.json
+  python ra_converter.py --input path/to/soapui.xml --output . \\
+                         --package-root com.ak.api --service-name YourService
 """
 from __future__ import annotations
 
@@ -57,6 +71,11 @@ class Assertion:
     disabled: bool = False
     # type-specific config, stored as dict of tag -> text
     config: dict = field(default_factory=dict)
+    # For MessageContentAssertion / DataAndMetadataAssertion the
+    # configuration wraps 1..N <elements> children -- each is one
+    # element check (xpath/JsonPath + expectedValue + enabled + ...).
+    # Empty for scalar-config assertion types.
+    elements: list = field(default_factory=list)
 
 
 @dataclass
@@ -75,6 +94,23 @@ class RestStep:
     path_params: dict       # path-param -> ${...} expression
     query_params: dict      # query-param -> ${...} expression
     assertions: list[Assertion] = field(default_factory=list)
+    # SoapUI per-request auth override -- populated from <con:credentials>
+    # when the step declares its own auth. Empty when the step inherits
+    # from project-level auth (typical). Keys:
+    #   auth_type    -> "No Authorization" | "Basic" | "OAuth 2.0" |
+    #                    "OAuth 1.0" | "NTLM" | "Kerberos" | "SPNEGO" |
+    #                    "WS-Security" (SOAP)
+    #   profile_name -> name of the SoapUI auth profile
+    #   username/password/domain -- when Basic/NTLM/Kerberos
+    #   oauth_token / oauth_client_id / oauth_client_secret -- when OAuth 2.0
+    auth_profile: dict = field(default_factory=dict)
+    # File attachments (multipart/form-data uploads). Populated from
+    # `<con:attachment>` elements on the REST request. Each entry is
+    # a dict {name, content_type, part_name, data_ref}. Empty when the
+    # step doesn't upload files. Consumers must emit multipart-aware
+    # code (which the current emitter doesn't yet -- emitted as a TODO
+    # comment + WARN at runtime).
+    attachments: list = field(default_factory=list)
 
 
 @dataclass
@@ -109,6 +145,17 @@ class TestCase:
     name: str
     description: str
     steps: list = field(default_factory=list)  # ordered list of RestStep / GroovyStep / PropertiesStep / DataSourceStep / TransferStep
+    # Test-management annotations mined from `<con:testCase>` attributes.
+    # Populated by parse_test_suites when present in the source XML.
+    # Blank string means "not set in SoapUI". Consumed by
+    # emit_test_class_per_suite to emit @XrayTest / @TmsLink / @Issue
+    # annotations that pass through to Allure + JIRA integrations.
+    zephyr_test_id: str = ""
+    zephyr_test_name: str = ""
+    jira: str = ""
+    # Free-form dict for other custom test-case attributes we notice.
+    # Non-standard SoapUI plugins sometimes stash IDs here (e.g. `qtestId`).
+    tm_extras: dict = field(default_factory=dict)
 
     @property
     def prefix(self) -> str:
@@ -125,6 +172,66 @@ def _text(el: Optional[ET.Element], default: str = "") -> str:
     return el.text if (el is not None and el.text is not None) else default
 
 
+# Populated by parse_test_suites() when a full SoapUI project XML is
+# passed (i.e. the file includes <con:interface> definitions). Maps
+# the operation `methodName` attribute stored on each <con:testStep>
+# to the AUTHORITATIVE HTTP verb from its <con:method method="..."/>
+# declaration. testSuite-only exports won't populate this -- the parser
+# falls back to keyword-based inference in _infer_http_method.
+_INTERFACE_METHOD_MAP: dict[str, str] = {}
+
+
+def _build_interface_method_map(root: ET.Element) -> dict[str, str]:
+    """Scan the project XML for `<con:interface xsi:type="con:RestService">`
+    definitions. Each interface contains `<con:resource>` children with
+    `<con:method name="X" method="POST"/>` grandchildren; return
+    {methodName -> HTTPVerb}. Empty for suite-only exports."""
+    out: dict[str, str] = {}
+    # Match any interface descendant, then walk method nodes.
+    for iface in root.iter("{http://eviware.com/soapui/config}interface"):
+        for meth in iface.iter("{http://eviware.com/soapui/config}method"):
+            name = meth.get("name", "")
+            verb = (meth.get("method", "") or "").upper()
+            if name and verb:
+                out[name] = verb
+    return out
+
+
+# Populated by parse_test_suites when the project XML declares
+# multiple environments via `<con:environments>` / `<con:environment
+# name="X">` blocks. Maps env-name -> {interface_name -> base_url}.
+# emit_env_config reads this to write per-env base_url values instead
+# of cloning one URL into every env file.
+_PROJECT_ENVIRONMENTS: dict[str, dict[str, str]] = {}
+
+
+def _build_environment_map(root: ET.Element) -> dict[str, dict[str, str]]:
+    """Scan the project XML for `<con:environments>` /
+    `<con:environment name="X">` definitions. Each environment carries
+    per-interface endpoints via nested `<con:endpoint>` elements.
+    Returns {env_name -> {interface_name -> base_url}}. Empty for
+    single-env projects."""
+    out: dict[str, dict[str, str]] = {}
+    for envs_container in root.iter("{http://eviware.com/soapui/config}environments"):
+        for env_el in envs_container.findall("{http://eviware.com/soapui/config}environment"):
+            env_name = env_el.get("name", "")
+            if not env_name:
+                continue
+            per_iface: dict[str, str] = {}
+            # SoapUI stores endpoints under either `<con:endpoints>` (list)
+            # or as attributes on `<con:interface>` children within the env.
+            for iface in env_el.iter("{http://eviware.com/soapui/config}interface"):
+                iface_name = iface.get("name", "")
+                for ep in iface.iter("{http://eviware.com/soapui/config}endpoint"):
+                    text = (ep.text or "").strip()
+                    if iface_name and text:
+                        per_iface[iface_name] = text
+                        break  # first endpoint per interface
+            if per_iface:
+                out[env_name] = per_iface
+    return out
+
+
 def _parse_assertion(a_el: ET.Element) -> Assertion:
     a = Assertion(
         type=a_el.get("type", ""),
@@ -135,7 +242,17 @@ def _parse_assertion(a_el: ET.Element) -> Assertion:
     if cfg_el is not None:
         for child in cfg_el:
             tag = child.tag.split("}")[-1]
-            a.config[tag] = (child.text or "").strip()
+            if tag == "elements":
+                # MessageContentAssertion + DataAndMetadataAssertion:
+                # each <elements> block is one element-level check
+                # with its own xpath/path + expectedValue + enabled.
+                el_data: dict = {}
+                for gc in child:
+                    gc_tag = gc.tag.split("}")[-1]
+                    el_data[gc_tag] = (gc.text or "").strip()
+                a.elements.append(el_data)
+            else:
+                a.config[tag] = (child.text or "").strip()
     return a
 
 
@@ -152,9 +269,16 @@ def _parse_rest_step(step_el: ET.Element) -> RestStep:
     original_uri = _text(req_el.find("con:originalUri", NS)) if req_el is not None else ""
     request_body = _text(req_el.find("con:request", NS)) if req_el is not None else ""
 
-    # HTTP method: SoapUI stores it via methodName heuristics + resource
-    # config in a separate part of the project XML. Best-effort infer:
-    http_method = _infer_http_method(method_name, resource_path, request_body, step_name)
+    # HTTP method resolution priority:
+    #   1. AUTHORITATIVE: <con:interface>/<con:resource>/<con:method method="X">
+    #      populated by parse_test_suites when a full project XML is passed.
+    #      Uses `methodName` on this step as the lookup key.
+    #   2. FALLBACK: keyword-based inference from method_name + step_name +
+    #      resource_path -- unreliable but the only signal available for
+    #      suite-only exports.
+    http_method = _INTERFACE_METHOD_MAP.get(method_name, "").upper()
+    if not http_method:
+        http_method = _infer_http_method(method_name, resource_path, request_body, step_name)
 
     # Parameters: <con:parameters><con:entry key="X" value="${...}"/></con:parameters>
     # These are a mix of query params, path params, and HEADERS (esp. Authorization).
@@ -183,6 +307,52 @@ def _parse_rest_step(step_el: ET.Element) -> RestStep:
         for a_el in req_el.findall("con:assertion", NS):
             assertions.append(_parse_assertion(a_el))
 
+    # SoapUI per-request auth profile (<con:credentials>). Empty when the
+    # step inherits from project-level auth (the common case), populated
+    # when the step overrides it. Also captures the selected auth-profile
+    # NAME so the emitter can hint at which project-level profile drives
+    # this request when the step itself only stores the reference.
+    auth_profile: dict = {}
+    if req_el is not None:
+        creds = req_el.find("con:credentials", NS)
+        if creds is not None:
+            def _c(tag: str) -> str:
+                return _text(creds.find(f"con:{tag}", NS)) or ""
+            auth_profile = {
+                "profile_name": _c("selectedAuthProfile"),
+                "auth_type": _c("authType"),
+                "username": _c("username"),
+                "password": _c("password"),
+                "domain": _c("domain"),
+                # OAuth 2 flow: SoapUI stores tokens/refresh under nested
+                # <con:oauth2Flow>. Best-effort flat pull; consumers can
+                # dig deeper via the raw string when needed.
+                "oauth_token": _c("accessToken") or _c("oauth2Token"),
+                "oauth_client_id": _c("clientID") or _c("clientId"),
+                "oauth_client_secret": _c("clientSecret"),
+                "oauth_refresh_token": _c("refreshToken"),
+            }
+            # Drop empty fields so downstream code can test `if
+            # step.auth_profile` as a truthy override check.
+            auth_profile = {k: v for k, v in auth_profile.items() if v}
+
+    # File attachments (multipart uploads). `<con:attachment>` children
+    # of the REST request carry name, content-type, and data reference.
+    attachments: list = []
+    if req_el is not None:
+        for att_el in req_el.findall("con:attachment", NS):
+            def _t(tag: str) -> str:
+                return _text(att_el.find(f"con:{tag}", NS)) or att_el.get(tag, "") or ""
+            entry = {
+                "name": _t("name") or att_el.get("name", ""),
+                "content_type": _t("contentType") or att_el.get("contentType", ""),
+                "part_name": _t("partName") or att_el.get("partName", ""),
+                "data_ref": _t("data") or "",  # base64 blob or file ref
+                "file_ref": _t("url") or _t("filename") or "",
+            }
+            if any(entry.values()):
+                attachments.append({k: v for k, v in entry.items() if v})
+
     return RestStep(
         step_name=step_name,
         service=service,
@@ -197,25 +367,53 @@ def _parse_rest_step(step_el: ET.Element) -> RestStep:
         path_params=path_params,
         query_params=query_params,
         assertions=assertions,
+        auth_profile=auth_profile,
+        attachments=attachments,
     )
 
 
+# Verb keyword hints for `_infer_http_method`. Multi-lingual coverage
+# helps when the SoapUI project uses Spanish/German/French/Italian
+# operation names (common in EU/LATAM enterprise SoapUI projects).
+# Full-word-only matching (see `_infer_http_method`) so `list` doesn't
+# match `deletedItems/list`. Order matters: verbs earlier in the dict
+# win when multiple match; DELETE goes first so `list` doesn't win over
+# `delete` when both appear.
 _METHOD_KEYWORDS = {
-    "get":    ["read", "get", "fetch", "list", "search", "retrieve"],
-    "post":   ["create", "post", "enroll", "activate", "add", "insert", "token"],
-    "put":    ["update", "put", "replace", "modify"],
-    "patch":  ["patch"],
-    "delete": ["delete", "remove", "cancel"],
+    "delete": ["delete", "remove", "cancel", "destroy", "borrar", "eliminar",
+                "supprimer", "loeschen", "loschen", "eliminare", "rimuovere"],
+    "patch":  ["patch", "parche"],
+    "put":    ["update", "put", "replace", "modify", "actualizar", "reemplazar",
+                "modificar", "aktualisieren", "ersetzen", "mettreajour",
+                "aggiornare", "sostituire"],
+    "post":   ["create", "post", "enroll", "activate", "add", "insert", "token",
+                "crear", "agregar", "insertar", "erstellen", "hinzufuegen",
+                "hinzufugen", "creer", "ajouter", "creare", "aggiungere"],
+    "get":    ["read", "get", "fetch", "list", "search", "retrieve", "find",
+                "leer", "obtener", "buscar", "lesen", "abrufen", "suchen",
+                "lire", "chercher", "leggere", "ottenere", "cercare"],
 }
 
 
 def _infer_http_method(method_name: str, resource_path: str, body: str, step_name: str) -> str:
-    """SoapUI's XML doesn't attribute HTTP verb on the step element; infer from
-    the operation name / body presence. Callers can override in the emitter."""
-    hay = " ".join((method_name, step_name, resource_path)).lower()
+    """SoapUI's XML doesn't attribute HTTP verb on the step element in
+    suite-only exports; infer from the operation name / body presence.
+    Full-project exports get the AUTHORITATIVE verb via `_build_interface_method_map`;
+    this function only runs as a fallback.
+
+    Uses WORD-BOUNDARY matching so `/deletedItems/list` doesn't get
+    inferred as DELETE (bare substring match previously fired on
+    "delete" inside "deletedItems"). Words boundaries include the
+    common URL-segment separators (`/`, `-`, `_`, `.`, ` `)."""
+    hay = " ".join((method_name, step_name, resource_path))
+    # Normalize separators to spaces so word-boundary regex matches
+    # `deletedItems/list` -> tokens `deletedItems`, `list`.
+    tokens = re.split(r"[/_\-\.\s]+", hay.lower())
+    token_set = set(t for t in tokens if t)
     for verb, kws in _METHOD_KEYWORDS.items():
         for kw in kws:
-            if kw in hay:
+            # Full-word match (no more `delete` matching `deletedItems`).
+            if kw in token_set:
                 return verb.upper()
     # Fallback: body present -> POST, else GET
     return "POST" if body.strip() else "GET"
@@ -260,6 +458,14 @@ def _parse_datasource_step(step_el: ET.Element) -> DataSourceStep:
             n = p.find("con:name", NS)
             if n is not None and n.text:
                 ds.columns.append(n.text)
+        # File-based DataSource references an external CSV/Excel via
+        # <con:file> or <con:fileName>. Grab it so downstream code can
+        # migrate the actual data file (or at least log its absence).
+        for tag in ("file", "fileName", "excelFile"):
+            file_el = cfg_el.find(f".//con:{tag}", NS)
+            if file_el is not None and file_el.text:
+                ds.file_path = file_el.text.strip()
+                break
     return ds
 
 
@@ -318,14 +524,197 @@ def _parse_jdbc_step(step_el: ET.Element) -> "JdbcStep":
         query=query, connection_string=conn, driver=driver)
 
 
+# --- Additional first-class step types ------------------------------------
+
+@dataclass
+class CallTestCaseStep:
+    """SoapUI `calltestcase` / `runtestcase` step -- invokes another test
+    case within the same project. Emitted as a comment + a call to the
+    target case's generated Java method when the target lives in the
+    same class; otherwise as a TODO stub."""
+    step_name: str
+    target_test_suite: str = ""
+    target_test_case: str = ""
+
+
+def _parse_calltestcase_step(step_el: ET.Element) -> "CallTestCaseStep":
+    cfg_el = step_el.find("con:config", NS)
+    tgt_suite = ""
+    tgt_case = ""
+    if cfg_el is not None:
+        tgt_suite = _text(cfg_el.find("con:targetTestSuite", NS)) or cfg_el.get("targetTestSuite", "")
+        tgt_case = _text(cfg_el.find("con:targetTestCase", NS)) or cfg_el.get("targetTestCase", "")
+    return CallTestCaseStep(
+        step_name=step_el.get("name", ""),
+        target_test_suite=tgt_suite, target_test_case=tgt_case,
+    )
+
+
+@dataclass
+class DelayStep:
+    """SoapUI `delay` / `wait` step -- sleeps for N milliseconds."""
+    step_name: str
+    delay_ms: int = 0
+
+
+def _parse_delay_step(step_el: ET.Element) -> "DelayStep":
+    cfg_el = step_el.find("con:config", NS)
+    delay_ms = 0
+    if cfg_el is not None:
+        raw = _text(cfg_el.find("con:delay", NS)) or cfg_el.get("delay", "0")
+        try:
+            delay_ms = int(raw)
+        except (TypeError, ValueError):
+            delay_ms = 0
+    return DelayStep(step_name=step_el.get("name", ""), delay_ms=delay_ms)
+
+
+@dataclass
+class GotoStep:
+    """SoapUI `gotostep` / `conditionalgoto` step -- branches to another
+    step based on a condition. Emitted as a TODO comment since Java
+    doesn't have goto; author must refactor into if/loop."""
+    step_name: str
+    conditions: list = field(default_factory=list)
+
+
+def _parse_goto_step(step_el: ET.Element) -> "GotoStep":
+    cfg_el = step_el.find("con:config", NS)
+    conditions = []
+    if cfg_el is not None:
+        for cond in cfg_el.iter("{http://eviware.com/soapui/config}condition"):
+            conditions.append({
+                "target_step": cond.get("targetStep", ""),
+                "expression": _text(cond.find("con:expression", NS)) or cond.get("expression", ""),
+            })
+    return GotoStep(step_name=step_el.get("name", ""), conditions=conditions)
+
+
+@dataclass
+class SoapRequestStep:
+    """SoapUI `request` (wsdlrequest / soaprequest) -- classic SOAP call.
+    Emitted with best-effort SOAP envelope handling (assumes existing
+    RestAssured setup can send arbitrary XML with the right Content-Type
+    header). Assertion types coincide with REST for most SoapUI checks."""
+    step_name: str
+    operation: str = ""
+    endpoint: str = ""
+    request_body: str = ""
+    media_type: str = "text/xml"
+    assertions: list = field(default_factory=list)
+
+
+def _parse_soap_request_step(step_el: ET.Element) -> "SoapRequestStep":
+    cfg_el = step_el.find("con:config", NS)
+    operation = cfg_el.get("operation", "") if cfg_el is not None else ""
+    req_el = cfg_el.find("con:request", NS) if cfg_el is not None else None
+    body = _text(req_el.find("con:request", NS)) if req_el is not None else ""
+    endpoint = _text(req_el.find("con:endpoint", NS)) if req_el is not None else ""
+    assertions = []
+    if req_el is not None:
+        for a_el in req_el.findall("con:assertion", NS):
+            assertions.append(_parse_assertion(a_el))
+    return SoapRequestStep(
+        step_name=step_el.get("name", ""),
+        operation=operation, endpoint=endpoint,
+        request_body=body, assertions=assertions,
+    )
+
+
+@dataclass
+class HttpRequestStep:
+    """SoapUI `httprequest` -- raw HTTP (not REST-resource-backed). Rare;
+    used for non-REST endpoints. Best-effort: emit as a plain
+    RestAssured given().body(...).post(url) call."""
+    step_name: str
+    http_method: str = "GET"
+    endpoint: str = ""
+    request_body: str = ""
+    media_type: str = "application/octet-stream"
+    assertions: list = field(default_factory=list)
+
+
+def _parse_http_request_step(step_el: ET.Element) -> "HttpRequestStep":
+    cfg_el = step_el.find("con:config", NS)
+    method = "GET"
+    endpoint = ""
+    body = ""
+    media_type = "application/octet-stream"
+    assertions = []
+    if cfg_el is not None:
+        req_el = cfg_el.find("con:restRequest", NS) or cfg_el.find("con:request", NS)
+        if req_el is not None:
+            method = (req_el.get("method", "") or "GET").upper()
+            media_type = req_el.get("mediaType", "application/octet-stream")
+            endpoint = _text(req_el.find("con:endpoint", NS))
+            body = _text(req_el.find("con:request", NS))
+            for a_el in req_el.findall("con:assertion", NS):
+                assertions.append(_parse_assertion(a_el))
+    return HttpRequestStep(
+        step_name=step_el.get("name", ""),
+        http_method=method, endpoint=endpoint,
+        request_body=body, media_type=media_type,
+        assertions=assertions,
+    )
+
+
+@dataclass
+class MockResponseStep:
+    """SoapUI `mockresponse` step -- listens for an incoming request.
+    Not runnable in a pure REST Assured test; emitted as a TODO stub."""
+    step_name: str
+
+
+def _parse_mock_response_step(step_el: ET.Element) -> "MockResponseStep":
+    return MockResponseStep(step_name=step_el.get("name", ""))
+
+
+@dataclass
+class JmsStep:
+    """SoapUI `jms` step -- send/receive JMS messages. Emitted as a
+    TODO stub since REST Assured doesn't cover JMS."""
+    step_name: str
+    direction: str = ""
+    destination: str = ""
+
+
+def _parse_jms_step(step_el: ET.Element) -> "JmsStep":
+    cfg_el = step_el.find("con:config", NS)
+    direction = ""
+    destination = ""
+    if cfg_el is not None:
+        direction = cfg_el.get("direction", "") or _text(cfg_el.find("con:direction", NS))
+        destination = cfg_el.get("destination", "") or _text(cfg_el.find("con:destination", NS))
+    return JmsStep(
+        step_name=step_el.get("name", ""),
+        direction=direction, destination=destination,
+    )
+
+
 _STEP_PARSERS = {
-    "restrequest":    _parse_rest_step,
-    "groovy":         _parse_groovy_step,
-    "properties":     _parse_properties_step,
-    "datasource":     _parse_datasource_step,
-    "transfer":       _parse_transfer_step,
-    "manualTestStep": _parse_manual_step,
-    "jdbc":           _parse_jdbc_step,
+    "restrequest":       _parse_rest_step,
+    "groovy":            _parse_groovy_step,
+    "properties":        _parse_properties_step,
+    "datasource":        _parse_datasource_step,
+    "transfer":          _parse_transfer_step,
+    "manualTestStep":    _parse_manual_step,
+    "jdbc":              _parse_jdbc_step,
+    # Extended step types (previously silently dropped to Groovy placeholder):
+    "calltestcase":      _parse_calltestcase_step,
+    "runtestcase":       _parse_calltestcase_step,
+    "delay":             _parse_delay_step,
+    "wait":              _parse_delay_step,
+    "gotostep":          _parse_goto_step,
+    "conditionalgoto":   _parse_goto_step,
+    "goto":              _parse_goto_step,
+    "request":           _parse_soap_request_step,     # wsdlrequest / soaprequest
+    "wsdlrequest":       _parse_soap_request_step,
+    "soaprequest":       _parse_soap_request_step,
+    "httprequest":       _parse_http_request_step,
+    "mockresponse":      _parse_mock_response_step,
+    "jms":               _parse_jms_step,
+    "jmsreceive":        _parse_jms_step,
+    "jmsdispatch":       _parse_jms_step,
 }
 
 
@@ -346,9 +735,29 @@ def parse_test_suites(xml_path: str) -> list[tuple[str, list[TestCase]]]:
     """Parse a SoapUI project XML and return every <con:testSuite> as
     (suite_name, cases). SoapUI project XMLs may contain more than one
     suite; the "one class per SoapUI suite" emit mode uses this to
-    emit exactly one Java test class per suite."""
-    tree = ET.parse(xml_path)
+    emit exactly one Java test class per suite.
+
+    UTF-8 BOM tolerant: some SoapUI exports (especially from Windows
+    editors) include a byte-order mark; ET.parse chokes on that unless
+    we pre-read and strip it. Falls back to a bytes-level open + parse
+    when the file starts with \\xEF\\xBB\\xBF."""
+    with open(xml_path, "rb") as _f:
+        _head = _f.read(3)
+    if _head == b"\xef\xbb\xbf":
+        with open(xml_path, "r", encoding="utf-8-sig") as _f:
+            tree = ET.parse(_f)
+    else:
+        tree = ET.parse(xml_path)
     root = tree.getroot()
+
+    # Populate the AUTHORITATIVE HTTP-verb lookup table from <con:interface>
+    # definitions in this XML (full project exports include them; suite-
+    # only exports don't -- in which case the map stays empty and
+    # _parse_rest_step falls back to keyword-based inference).
+    global _INTERFACE_METHOD_MAP, _PROJECT_ENVIRONMENTS
+    _INTERFACE_METHOD_MAP = _build_interface_method_map(root)
+    # Same for multi-environment endpoint tables (empty for single-env).
+    _PROJECT_ENVIRONMENTS = _build_environment_map(root)
 
     # Two shapes are legal here:
     #   1. Root IS the <con:testSuite> element (single-suite export)
@@ -366,10 +775,39 @@ def parse_test_suites(xml_path: str) -> list[tuple[str, list[TestCase]]]:
         cases: list[TestCase] = []
         for tc_el in ts_el.findall("con:testCase", NS):
             desc_el = tc_el.find("con:description", NS)
+            # Test-management annotations (Zephyr / JIRA) live as XML
+            # attributes on the `<con:testCase>` element. Empty defaults
+            # mean the field wasn't set in SoapUI. Also scoop up any
+            # attribute NAME containing "test" / "jira" / "story" / "qtest"
+            # so custom-plugin IDs land in `tm_extras` for reporting.
+            zephyr_test_id = tc_el.get("zephyrTestId", "")
+            zephyr_test_name = tc_el.get("zephyrTestName", "")
+            jira = tc_el.get("jira", "")
+            tm_extras: dict = {}
+            for attr_name, attr_val in tc_el.attrib.items():
+                if not attr_val:
+                    continue
+                # Skip attributes we've already captured or are core SoapUI
+                # config (id / name / boolean flags on the testCase element).
+                if attr_name in ("id", "name", "zephyrTestId", "zephyrTestName",
+                                  "jira", "discardOkResults", "failOnError",
+                                  "failTestCaseOnErrors", "keepSession",
+                                  "searchProperties", "timeout", "wsrmEnabled",
+                                  "wsrmVersion", "wsrmAckTo", "amfAuthorisation",
+                                  "amfEndpoint", "amfLogin", "amfPassword",
+                                  "disabled", "{http://www.w3.org/2001/XMLSchema-instance}nil"):
+                    continue
+                lower = attr_name.lower()
+                if any(t in lower for t in ("test", "jira", "story", "qtest", "issue", "id")):
+                    tm_extras[attr_name] = attr_val
             tc = TestCase(
                 id=tc_el.get("id", ""),
                 name=tc_el.get("name", ""),
                 description=_text(desc_el),
+                zephyr_test_id=zephyr_test_id,
+                zephyr_test_name=zephyr_test_name,
+                jira=jira,
+                tm_extras=tm_extras,
             )
             for step_el in tc_el.findall("con:testStep", NS):
                 step_type = step_el.get("type", "")
@@ -568,11 +1006,6 @@ class AuditLedger:
 # Analyzer: extract reuse across test cases
 # ---------------------------------------------------------------------------
 
-def group_by_prefix(cases: list[TestCase], prefix: str) -> list[TestCase]:
-    """Return only the cases whose JIRA-style prefix matches (e.g. 'B2B-172')."""
-    return [c for c in cases if c.prefix == prefix or c.name.startswith(prefix + "_")]
-
-
 def _step_sig(step) -> tuple:
     """Structural signature of a step -- used to determine if two step
     sequences are equivalent enough to extract into a shared helper."""
@@ -700,8 +1133,25 @@ def collect_shared_rest_steps(cases: list[TestCase], min_occurrences: int = 2) -
 # Helpers for emitters
 # ---------------------------------------------------------------------------
 
-_PROJ_PROP_RX = re.compile(r"\$\{#Project#([A-Za-z0-9_]+)\}")
-_STEP_PROP_RX = re.compile(r"\$\{([A-Za-z0-9_-]+)#([A-Za-z0-9_-]+)\}")
+# SoapUI property expression regexes.
+#
+# `${#SCOPE#property}` for the standard property scopes:
+#   Project, TestSuite, TestCase, Global, Env, MockService
+# `${step#field}` for step-response references
+# `${var}` for bare property names (SoapUI's default namespace lookup --
+# resolves against TestCase properties first, then TestSuite, then Project)
+_PROJ_PROP_RX = re.compile(r"\$\{#Project#([A-Za-z0-9_.-]+)\}")
+_SCOPE_PROP_RX = re.compile(
+    r"\$\{#(TestSuite|TestCase|Global|Env|MockService)#([A-Za-z0-9_.-]+)\}")
+_STEP_PROP_RX = re.compile(r"\$\{([A-Za-z0-9_-]+)#([A-Za-z0-9_.-]+)\}")
+# Bare `${var}` -- only match identifiers that AREN'T already caught
+# by one of the scoped patterns above. SoapUI uses this for TestCase-
+# level property lookup by default. Skips `${=groovy}` (starts with =)
+# and `${#...}` (scoped).
+_BARE_PROP_RX = re.compile(r"\$\{(?!#|=)([A-Za-z_][A-Za-z0-9_.-]*)\}")
+# `${=<groovy expression>}` -- inline Groovy evaluation. Rare; passes
+# through as-is so the emitter can log a TODO for manual review.
+_GROOVY_EXPR_RX = re.compile(r"\$\{=([^}]+)\}")
 
 
 def soapui_expr_to_java(expr: str) -> str:
@@ -710,24 +1160,65 @@ def soapui_expr_to_java(expr: str) -> str:
         return "null"
     e = expr
     e = _PROJ_PROP_RX.sub(lambda m: f'config.get("{m.group(1)}")', e)
+    # Scoped non-Project props all resolve from mergedRow's config/ctx bag:
+    # TestSuite/TestCase properties -> ctx (published by setup); Global/Env
+    # -> config; MockService -> ctx (rare, treated as runtime).
+    def _scoped(m):
+        scope, prop = m.group(1), m.group(2)
+        if scope in ("Global", "Env"):
+            return f'config.get("{prop}")'
+        return f'ctx.get("{prop}")'
+    e = _SCOPE_PROP_RX.sub(_scoped, e)
     e = _STEP_PROP_RX.sub(lambda m: f'ctx.get("{m.group(1)}.{m.group(2)}")', e)
-    return f'"{e}"' if not (e.startswith("config.get") or e.startswith("ctx.get")) else e
+    # Bare `${var}` -- default namespace lookup, resolve from ctx (which
+    # includes TestCase-level properties published by setup steps).
+    e = _BARE_PROP_RX.sub(lambda m: f'ctx.get("{m.group(1)}")', e)
+    starts_with_known = any(e.startswith(p) for p in ("config.get", "ctx.get"))
+    return f'"{e}"' if not starts_with_known else e
 
 
 def soapui_body_to_placeholders(body: str) -> tuple[str, list[str]]:
-    """Convert SoapUI body's ${#Project#var} and ${step#field} refs to the
-    framework's #var# placeholder syntax. Returns (translated_body, placeholders)."""
+    """Convert SoapUI body's `${#SCOPE#var}`, `${step#field}`, and bare
+    `${var}` refs to the framework's `#var#` placeholder syntax so
+    RestUtilities.mapJsonValues can substitute at runtime. Returns
+    (translated_body, placeholders).
+
+    Scoped placeholders are namespaced by scope prefix so `${#Env#foo}`
+    doesn't collide with `${#Project#foo}` when both appear.
+    """
     placeholders: list[str] = []
     def _proj(m):
         var = m.group(1)
         placeholders.append(var)
         return f"#{var}#"
-    def _step(m):
-        var = f"{m.group(1)}_{m.group(2)}".replace("-", "_")
+    def _scoped(m):
+        scope, prop = m.group(1), m.group(2)
+        # Namespace with scope so `${#Env#foo}` != `${#Project#foo}`
+        var = f"{scope.lower()}_{prop}".replace(".", "_").replace("-", "_")
         placeholders.append(var)
         return f"#{var}#"
+    def _step(m):
+        var = f"{m.group(1)}_{m.group(2)}".replace(".", "_").replace("-", "_")
+        placeholders.append(var)
+        return f"#{var}#"
+    def _bare(m):
+        var = m.group(1).replace(".", "_").replace("-", "_")
+        placeholders.append(var)
+        return f"#{var}#"
+    def _groovy(m):
+        # Inline Groovy evaluation -- can't safely translate. Preserve
+        # verbatim so a human reader spots it, and emit a placeholder
+        # column so tests can override at runtime.
+        preview = m.group(1).strip()[:50]
+        placeholders.append(f"__GROOVY_EXPR__")
+        return f"#groovy_expr#/*{preview}*/"
+
     translated = _PROJ_PROP_RX.sub(_proj, body or "")
+    translated = _SCOPE_PROP_RX.sub(_scoped, translated)
     translated = _STEP_PROP_RX.sub(_step, translated)
+    translated = _GROOVY_EXPR_RX.sub(_groovy, translated)
+    # Bare ${var} runs LAST so scoped patterns get first pass.
+    translated = _BARE_PROP_RX.sub(_bare, translated)
     return translated, placeholders
 
 
@@ -809,23 +1300,78 @@ def classify_placeholders_for_case(case: "TestCase") -> dict:
     return {"config": config, "runtime": runtime, "csv": csv_kind}
 
 
+# Java reserved words + keywords + literal names. Any identifier that
+# matches one of these gets a trailing `_` appended so emitted Java
+# compiles. Sourced from JLS 3.9 + boolean/null literals.
+_JAVA_RESERVED: set[str] = {
+    "abstract", "assert", "boolean", "break", "byte", "case", "catch",
+    "char", "class", "const", "continue", "default", "do", "double",
+    "else", "enum", "extends", "final", "finally", "float", "for",
+    "goto", "if", "implements", "import", "instanceof", "int",
+    "interface", "long", "native", "new", "non-sealed", "package",
+    "permits", "private", "protected", "public", "record", "return",
+    "sealed", "short", "static", "strictfp", "super", "switch",
+    "synchronized", "this", "throw", "throws", "transient", "try",
+    "void", "volatile", "while", "yield",
+    "true", "false", "null", "var",
+}
+
+
+def _transliterate_non_ascii(s: str) -> str:
+    """Best-effort Unicode -> ASCII so Japanese/Chinese/umlaut case names
+    don't collapse to `unnamed`. Uses NFKD decomposition to strip
+    combining marks (`é` -> `e`, `ö` -> `o`), then keeps whatever ASCII
+    letters/digits survive. Non-Latin scripts (CJK, Cyrillic, Arabic)
+    still fall through to `unnamed` -- but at least accented Latin
+    names round-trip cleanly."""
+    if not s:
+        return s
+    if all(ord(c) < 128 for c in s):
+        return s
+    import unicodedata as _ud
+    nfkd = _ud.normalize("NFKD", s)
+    return "".join(c for c in nfkd if ord(c) < 128)
+
+
 def sanitize_identifier(s: str) -> str:
-    """Turn a SoapUI name into a valid Java identifier."""
-    s = re.sub(r"[^A-Za-z0-9]", "_", s)
+    """Turn a SoapUI name into a valid Java identifier. Guards against
+    Java reserved words (appends `_`), leading digits (prepends `_`),
+    and non-ASCII characters (transliterates when possible, falls back
+    to `unnamed`)."""
+    if s:
+        s = _transliterate_non_ascii(s)
+    s = re.sub(r"[^A-Za-z0-9]", "_", s or "")
     s = re.sub(r"_+", "_", s).strip("_")
     if s and s[0].isdigit():
         s = "_" + s
-    return s or "unnamed"
+    if not s:
+        return "unnamed"
+    # Java reserved-word collision -> suffix with `_` so
+    # `class` -> `class_`, `new` -> `new_`, `return` -> `return_`. JLS
+    # allows trailing underscore in identifiers.
+    if s in _JAVA_RESERVED:
+        s = s + "_"
+    return s
 
 
 def to_camel_case(s: str, upper_first: bool = False) -> str:
-    parts = re.split(r"[^A-Za-z0-9]+", s)
+    """Convert to camelCase (or PascalCase when upper_first=True).
+    Unicode-tolerant: non-ASCII chars get transliterated so `テスト_case`
+    doesn't collapse to `unnamed`. Java-reserved-word safe: identifiers
+    matching Java keywords get a trailing `_` appended."""
+    if s:
+        s = _transliterate_non_ascii(s)
+    parts = re.split(r"[^A-Za-z0-9]+", s or "")
     parts = [p for p in parts if p]
     if not parts:
         return "unnamed"
     if upper_first:
-        return "".join(p[:1].upper() + p[1:] for p in parts)
-    return parts[0][:1].lower() + parts[0][1:] + "".join(p[:1].upper() + p[1:] for p in parts[1:])
+        result = "".join(p[:1].upper() + p[1:] for p in parts)
+    else:
+        result = parts[0][:1].lower() + parts[0][1:] + "".join(p[:1].upper() + p[1:] for p in parts[1:])
+    if result in _JAVA_RESERVED:
+        result = result + "_"
+    return result
 
 
 def short_id(name: str, max_len: int) -> str:
@@ -897,6 +1443,12 @@ def _business_method_name(case_name: str) -> tuple[str, str, str]:
           -> ("cleanupTestdataCreationTest", "", "")
     """
     working = case_name
+    # 0. Strip `__step<N>` suffix added by `_flatten_repeat_endpoint_cases`
+    #    so a flattened case derives the same base method name as its
+    #    siblings from other SoapUI cases with the same intent.
+    m = re.match(r"^(.+?)__step\d+$", working)
+    if m:
+        working = m.group(1)
     # 1. Strip JIRA-style prefix (`B2B-172_` / `B2B134_`). Keep whatever
     #    follows as the semantic body.
     m = re.match(r"^([A-Z]+[-_]?\d+)_(.+)$", working)
@@ -928,34 +1480,236 @@ def _business_method_name(case_name: str) -> tuple[str, str, str]:
     return method, status_code, variant
 
 
+def _body_shape_key(step: "RestStep") -> str:
+    """Return a stable body-shape fingerprint for clustering purposes.
+    Reused by `_cluster_cases_by_shape`, `_flatten_repeat_endpoint_cases`,
+    and `_merge_prefix_clusters` so all three see the same equality."""
+    import json as _json, re as _re
+    if not step.request_body.strip():
+        return "-"
+    translated, _ = soapui_body_to_placeholders(step.request_body)
+    try:
+        return "j:" + _shape_sig(_json.loads(translated))
+    except (_json.JSONDecodeError, ValueError):
+        return "raw:" + _re.sub(r"\s+", "", translated)[:120]
+
+
+def _rest_shape_sig(case: "TestCase") -> tuple:
+    """Full REST-step signature of a case: tuple of
+    (verb, path, media-type, body-shape) per REST step in emission
+    order. Used by both shape-clustering and prefix-merge to compare
+    cases.
+
+    Media type is part of the key so a JSON POST at /foo doesn't
+    cluster with an XML POST at /foo -- they need different Content-Type
+    headers, and the generated client method's ContentType is baked in
+    at emit time from the FIRST occurrence in the cluster. Without the
+    guard, the second occurrence would send its body under the first's
+    content-type and get 415 Unsupported Media Type."""
+    return tuple(
+        (s.http_method, s.resource_path,
+         (s.media_type or "application/json").split(";")[0].strip().lower(),
+         _body_shape_key(s))
+        for s in case.steps if isinstance(s, RestStep)
+    )
+
+
+def _merge_prefix_clusters(
+    clusters: list[list["TestCase"]]
+) -> list[tuple[list["TestCase"], dict[str, str]]]:
+    """When one cluster's REST-step signature is a strict PREFIX of another
+    (shorter case's flow is a truncated version of the longer's), fold the
+    shorter cluster into the longer one. Emitted method runs the LONGEST
+    case's full step sequence; shorter cases get a `_stop_after` CSV cell
+    naming the last REST step they should execute before returning early.
+
+    Guards:
+      - Only merges when prefix match is EXACT on (verb, path, body-shape)
+        for every REST step in the shorter signature.
+      - Doesn't merge two clusters of equal length (that's regular shape
+        clustering's job).
+      - Preserves clusters whose signatures don't prefix-match anyone
+        else as-is (with an empty stop_markers dict).
+
+    Returns: list of (merged_cluster, {case_name -> stop_after_step_name}).
+    A missing case name in stop_markers means "run everything" (i.e.,
+    the case IS the longest one).
+    """
+    # Compute sig once per cluster.
+    sigs = [_rest_shape_sig(cl[0]) for cl in clusters]
+
+    # Sort by (sig length desc, case-count desc, first-case-index asc) so:
+    #   - Longer clusters process first (they absorb shorter prefixes).
+    #   - Among ties on length, the LARGER cluster wins absorption — a
+    #     short prefix ends up in the biggest bucket for the strongest
+    #     data-driven grouping.
+    #   - Final tie-break on original order gives stable, reproducible
+    #     naming across re-runs when inputs don't change.
+    order = sorted(
+        range(len(clusters)),
+        key=lambda i: (-len(sigs[i]), -len(clusters[i]), i))
+    consumed: set[int] = set()
+    out: list[tuple[list["TestCase"], dict[str, str]]] = []
+
+    for base_idx in order:
+        if base_idx in consumed:
+            continue
+        base_cluster = list(clusters[base_idx])
+        base_sig = sigs[base_idx]
+        stop_markers: dict[str, str] = {}
+        # Look for shorter clusters whose sig is a prefix of base_sig.
+        for other_idx in order:
+            if other_idx == base_idx or other_idx in consumed:
+                continue
+            other_sig = sigs[other_idx]
+            if len(other_sig) >= len(base_sig):
+                continue
+            if base_sig[:len(other_sig)] != other_sig:
+                continue
+            # Prefix match -- fold in. Use POSITIONAL step-index (into the
+            # LONGER cluster's REST-step sequence) as the stop marker, NOT
+            # the shorter's step-name. Two reasons this matters:
+            #   1. Cluster members whose (verb, path, body-shape) match can
+            #      still differ in their `step_name` attributes -- the
+            #      emitted Java walks the LONGER cluster's steps and uses
+            #      its own names, so a shorter's step-name may never appear.
+            #   2. If the LONGER flow legitimately repeats a step name
+            #      (e.g. `http_request_200_1` twice), a name-based check
+            #      would fire at the FIRST occurrence and skip work the
+            #      shorter scenario expected to do.
+            # The marker is stored as a stringified int so it round-trips
+            # cleanly through CSV.
+            stop_after_index = len(other_sig)  # exit after the Nth REST step
+            for c in clusters[other_idx]:
+                stop_markers[c.name] = str(stop_after_index)
+            base_cluster.extend(clusters[other_idx])
+            consumed.add(other_idx)
+        out.append((base_cluster, stop_markers))
+        consumed.add(base_idx)
+    return out
+
+
+def _flatten_repeat_endpoint_cases(cases: list["TestCase"]) -> list["TestCase"]:
+    """When a SoapUI case bundles N REST calls to the same (verb, path,
+    body-shape) as one test case, treat those N calls as N independent
+    scenarios: split into N pseudo-cases each with the shared setup +
+    ONE REST call. Downstream clustering then folds pseudo-cases from
+    multiple SoapUI cases into a single @Test method with N CSV rows.
+
+    Guards against wrong-splitting cases where the N calls are meant to
+    run sequentially with state carried between them:
+      - Requires ALL REST steps to share (verb, path, body-shape). A
+        `create -> activate -> verify` case (3 different endpoints)
+        stays unsplit because its shape signature isn't uniform.
+      - Requires REST steps to be CONTIGUOUS at the end -- no non-REST
+        logic (Groovy, Transfer, Properties) between them. If a case
+        has `REST1 -> Groovy -> REST2`, the Groovy might publish state
+        REST2 depends on, so we leave it alone.
+      - Single-REST-step cases pass through untouched.
+
+    Pseudo-case naming: `<original>__step<N>` so `test_case_id` in the
+    CSV row can be traced back to the source SoapUI case + step index.
+    """
+    out: list["TestCase"] = []
+    for c in cases:
+        rest_steps = [s for s in c.steps if isinstance(s, RestStep)]
+        if len(rest_steps) < 2:
+            out.append(c)
+            continue
+
+        # Uniform shape across every REST step?
+        keys = {(s.http_method, s.resource_path, _body_shape_key(s)) for s in rest_steps}
+        if len(keys) > 1:
+            out.append(c)
+            continue
+
+        # REST steps must be contiguous at the end -- no non-REST between them.
+        rest_started = False
+        contiguous = True
+        for s in c.steps:
+            if isinstance(s, RestStep):
+                rest_started = True
+            elif rest_started:
+                contiguous = False
+                break
+        if not contiguous:
+            out.append(c)
+            continue
+
+        # NEW: refuse to flatten when REST[i] references any earlier REST's
+        # response via `${prevStep#field}`. Even without an explicit Transfer
+        # or Groovy step in between, a case may thread state through the
+        # SoapUI property namespace directly (e.g. path param `{accountId}`
+        # bound to `${create#Response#$['id']}`). Splitting would leave
+        # REST[i]'s pseudo-case with no producer for that reference.
+        rest_step_names = {s.step_name for s in rest_steps}
+        has_inter_rest_dep = False
+        for i, rs in enumerate(rest_steps):
+            # A step's body, headers, path params, query params, and
+            # assertion configs can all contain ${prevStep#field} refs.
+            texts = [rs.request_body or ""]
+            texts.extend(rs.headers.values())
+            texts.extend(rs.path_params.values())
+            texts.extend(rs.query_params.values())
+            for a in rs.assertions:
+                for v in (a.config or {}).values():
+                    texts.append(v or "")
+            corpus = "\n".join(texts)
+            for m in _STEP_PROP_RX.finditer(corpus):
+                referenced_step = m.group(1)
+                # Refs to any other REST step in THIS case = inter-REST
+                # dependency; splitting would break the chain. Refs to
+                # non-REST steps (Groovy/Properties) are fine -- those live
+                # in setup_steps and get replayed for every pseudo-case.
+                if referenced_step in rest_step_names and referenced_step != rs.step_name:
+                    has_inter_rest_dep = True
+                    break
+            if has_inter_rest_dep:
+                break
+        if has_inter_rest_dep:
+            out.append(c)
+            continue
+
+        # Emit N pseudo-cases. Setup steps are SHARED across pseudo-cases;
+        # each pseudo-case ends with one distinct REST step (which carries
+        # its own assertions).
+        setup_steps = [s for s in c.steps if not isinstance(s, RestStep)]
+        for idx, rest in enumerate(rest_steps, start=1):
+            pseudo = TestCase(
+                id=f"{c.id}__step{idx}",
+                name=f"{c.name}__step{idx}",
+                description=c.description,
+                steps=list(setup_steps) + [rest],
+            )
+            out.append(pseudo)
+    return out
+
+
 def _cluster_cases_by_shape(cases: list["TestCase"]) -> list[list["TestCase"]]:
     """Group cases whose REST-step shape is IDENTICAL into clusters that
     can share a single @Test method + a multi-row CSV.
 
-    Cluster key = tuple of (verb, resource_path, body-hash) for every
+    Cluster key = tuple of (verb, resource_path, body-SHAPE) for every
     REST step in order. Two cases cluster iff they:
       - hit the same endpoints in the same order,
       - use the same HTTP verbs,
-      - use the same NORMALIZED body (SoapUI placeholders rewritten to
-        `#name#` first, so scenario-only value differences don't split
-        the cluster).
+      - use the same JSON body STRUCTURE (keys + leaf types), even when
+        their leaf VALUES differ -- the literal-value diffs become
+        `#tpl_<jsonpath>#` placeholders via emit_templates_deduplicated
+        and land as per-row CSV cells at runtime.
+
+    Body shape (not exact hash) is intentional: scenario variants of one
+    operation typically share body structure but differ in field values;
+    keying on exact hash would leave every variant in its own singleton
+    cluster (defeating the reference-framework pattern of "one method,
+    N data rows"). Non-JSON bodies fall back to a raw-text fingerprint
+    since we can't structurally normalize them.
 
     Preserves discovery order (first case in each cluster keeps its
     original position). Returns list of clusters where each cluster
     is 1..N cases in the order they appeared in the SoapUI XML."""
-    import hashlib
-
-    def body_hash(step: "RestStep") -> str:
-        if not step.request_body.strip():
-            return "-"
-        translated, _ = soapui_body_to_placeholders(step.request_body)
-        return hashlib.sha1(translated.encode("utf-8")).hexdigest()[:8]
-
     def sig(case: "TestCase") -> tuple:
-        return tuple(
-            (s.http_method, s.resource_path, body_hash(s))
-            for s in case.steps if isinstance(s, RestStep)
-        )
+        return _rest_shape_sig(case)
 
     clusters: dict = {}
     order: list = []
@@ -1077,6 +1831,30 @@ def _sanitize_path_for_col(json_path: str) -> str:
     return s or "root"
 
 
+_SECRET_LEAF_KEY_HINTS = (
+    "password", "passwd", "secret", "apikey", "api_key",
+    "authorization", "auth_token", "access_token", "refresh_token",
+    "clientsecret", "client_secret", "privatekey", "private_key",
+    "credential",
+)
+
+
+def _is_secret_path(path: str) -> bool:
+    """True when the last segment of a JSON path names a credential-ish
+    field. These should NOT be extracted as per-row CSV cells even if
+    values differ across cluster members -- surfacing secrets in CSVs
+    is a policy leak and per-row secret variation is almost always
+    accidental (usually just one test using a different sandbox account).
+    Keep the literal in the merged template (from case[0]) and let
+    users move it to env config later if they need to.
+    """
+    if not path:
+        return False
+    # Last dot-separated segment, stripped of array index suffix `[N]`.
+    last = re.sub(r"\[\d+\]$", "", path.rsplit(".", 1)[-1]).lower()
+    return any(h in last for h in _SECRET_LEAF_KEY_HINTS)
+
+
 def _merge_bodies_with_placeholders(trees: list, texts: list[str]) -> tuple[str, list[dict[str, str]]]:
     """Given N JSON trees with IDENTICAL structural shape and their raw
     text, produce:
@@ -1087,6 +1865,11 @@ def _merge_bodies_with_placeholders(trees: list, texts: list[str]) -> tuple[str,
         column name to that tree's actual value at that path -- these
         become CSV cells so mergedRow at runtime substitutes the right
         per-scenario value.
+
+    Secret-looking leaves (password / secret / token / credential / etc.)
+    are EXEMPTED from placeholder extraction: keep case[0]'s literal in
+    the merged template regardless of whether values differ. Prevents
+    credentials from leaking into per-row CSV cells.
     """
     import json as _json
     # Gather every leaf position across the group, unify by path.
@@ -1096,6 +1879,10 @@ def _merge_bodies_with_placeholders(trees: list, texts: list[str]) -> tuple[str,
     # For each path, check whether every tree has the same value.
     varying_paths: set = set()
     for p in all_paths:
+        # Never extract secret-looking leaves. Case[0]'s literal stays in
+        # the merged template; users can move it to Config later.
+        if _is_secret_path(p):
+            continue
         vals = {d.get(p) for d in all_leaves_per_tree}
         # `None` (a leaf whose value is literal JSON null) is distinct
         # from `missing` -- we use a sentinel for the missing case.
@@ -1142,19 +1929,77 @@ def _merge_bodies_with_placeholders(trees: list, texts: list[str]) -> tuple[str,
     return merged_text, per_entry_cells
 
 
+def _soapui_xpath_to_jsonpath(xpath: str) -> str:
+    """Translate SoapUI's XPath-with-namespace notation (used in
+    MessageContentAssertion) into a simple JSON-path-like accessor.
+
+    SoapUI shows JSON responses as XML internally, so a MessageContent
+    XPath like `//ns1:Response[1]/ns1:accountId[1]` really means the
+    JSON field `accountId` on the response root. Strip namespaces,
+    positional [1] indices, and the outer `Response` wrapper; keep any
+    non-trivial [N] positional indices as list-index JSON-path segments.
+
+    Examples:
+      `declare namespace ns1='...'; //ns1:Response[1]/ns1:accountId[1]`
+        -> `accountId`
+      `//ns1:Response[1]/ns1:members[3]/ns1:role[1]`
+        -> `members[3-1].role` (0-indexed conversion) = `members[2].role`
+    """
+    if not xpath:
+        return ""
+    # Drop namespace declarations
+    p = re.sub(r"declare\s+namespace\s+\w+\s*=\s*'[^']*'\s*;\s*", "", xpath).strip()
+    # Split into steps
+    steps = [s for s in p.split("/") if s.strip()]
+    out_parts: list[str] = []
+    for step in steps:
+        # Strip namespace prefix
+        step = re.sub(r"^[A-Za-z_][A-Za-z0-9_]*:", "", step)
+        m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)(?:\[(\d+)\])?$", step)
+        if not m:
+            continue
+        name, idx = m.group(1), m.group(2)
+        # Drop the outer `Response` wrapper (SoapUI's synthetic root).
+        if name.lower() == "response" and not out_parts:
+            continue
+        # SoapUI XPath is 1-indexed; JsonPath / GPath is 0-indexed. Only
+        # emit [N] when the index is > 1 (positional filter, not the
+        # trivial "first element" that SoapUI emits by default).
+        if idx and int(idx) > 1:
+            out_parts.append(f"{name}[{int(idx) - 1}]")
+        else:
+            out_parts.append(name)
+    return ".".join(out_parts)
+
+
 def _jsonpath_to_gpath(path: str) -> str:
     """Rewrite Jayway/JsonPath.com syntax (SoapUI's convention) into the
     Groovy GPath syntax RestAssured's default `.jsonPath()` parser uses.
 
-    Examples:
+    Supported (translated):
       `$[*]['guestId']`             -> `[*].guestId`
       `$.notifications[0].message`  -> `notifications[0].message`
       `$['a']['b'].c`               -> `a.b.c`
-      `$..email`                    -> `..email` (recursive descent stays)
+
+    UNSUPPORTED (translator returns path as-is; GPath will likely reject
+    it or match the wrong node -- these need manual review):
+      `$..field`                    recursive descent (GPath uses **)
+      `$[?(@.status=='active')]`    filter expressions
+      `$[0,2,4]` / `$['a','b']`     union indexing
+      `$.a[?(@.b)].c`               inline filters
+      `$.a[(len-1)]`                script indexing
 
     Idempotent: paths already in GPath form pass through untouched."""
     if not path:
         return path
+    # Bail out early on unsupported syntax so we don't mistranslate --
+    # let the caller notice a passthrough and either fail loud at
+    # runtime or hand-fix. Detection is intentionally conservative.
+    if (".." in path
+            or "[?(" in path
+            or re.search(r"\[[^]]*,[^]]*\]", path)  # union: [a,b] or ['a','b']
+            or re.search(r"\[\([^)]*\)\]", path)):  # script index: [(expr)]
+        return path  # leave unchanged; runtime will surface the issue
     p = path
     # Strip leading $ (root indicator; GPath doesn't use it)
     if p.startswith("$"):
@@ -1166,6 +2011,18 @@ def _jsonpath_to_gpath(path: str) -> str:
     if p.startswith("."):
         p = p[1:]
     return p
+
+
+def _jsonpath_is_gpath_incompatible(path: str) -> bool:
+    """True when the JsonPath uses syntax GPath doesn't support --
+    caller emits a `// TODO` comment + skips the assertion to avoid
+    a runtime IllegalArgumentException from `.jsonPath().getString(path)`."""
+    if not path:
+        return False
+    return (".." in path
+            or "[?(" in path
+            or bool(re.search(r"\[[^]]*,[^]]*\]", path))
+            or bool(re.search(r"\[\([^)]*\)\]", path)))
 
 
 def _assert_col_key(a: "Assertion", a_idx: int) -> Optional[str]:
@@ -1204,6 +2061,32 @@ def _assert_col_key(a: "Assertion", a_idx: int) -> Optional[str]:
     if t == "Response SLA Assertion":
         return "sla_ms"
     return None
+
+
+def _assert_element_cols(a: "Assertion", step_name: str) -> list[tuple[str, str]]:
+    """For assertion types whose configuration wraps N element-level checks
+    (MessageContentAssertion, DataAndMetadataAssertion), return one
+    (col_name, default_value) tuple per ENABLED element. The translator
+    (`_render_message_content_assertion` / `_render_data_and_metadata_assertion`)
+    emits matching `row.get(col_name)` lookups keyed off the SAME
+    naming scheme; this helper feeds `emit_csv_per_method` so the CSV
+    header carries columns for every user-overridable value.
+
+    Non-multi-element assertion types return empty."""
+    if a.type not in ("MessageContentAssertion", "DataAndMetadataAssertion"):
+        return []
+    prefix = ("msgcontent" if a.type == "MessageContentAssertion"
+              else "datameta")
+    out: list[tuple[str, str]] = []
+    for idx, el in enumerate(a.elements):
+        if (el.get("enabled", "true") or "").lower() == "false":
+            continue
+        elem_name = el.get("element", "") or f"el{idx}"
+        col = (f"expected_{sanitize_identifier(step_name)}"
+               f"_{prefix}_{sanitize_identifier(elem_name)}")
+        val = el.get("expectedValue", "") or el.get("content", "")
+        out.append((col, val))
+    return out
 
 
 def _assert_default_value(a: "Assertion") -> str:
@@ -1312,6 +2195,20 @@ class Emitter:
         # suite whose name collapses to the same camelCase in this run
         # can be disambiguated instead of silently overwriting the first.
         self._emitted_class_fqns: set[str] = set()
+        # Populated by emit_test_class_per_suite when prefix-merged
+        # clusters are in play. Keyed by cluster index -> {case_name ->
+        # stop_after_step_name}. Empty when no prefix-merge happened.
+        self._stop_markers_per_cluster: dict[int, dict[str, str]] = {}
+        # Populated by _render_test_method_v2 before each method render.
+        # Keys are the REST-step position index in cluster[0]'s step
+        # sequence; values are the UNION of unique Assertion objects
+        # across every case in the current cluster at that position.
+        # _render_rest_step_body reads this instead of step.assertions
+        # so cluster members' extra assertions don't silently vanish.
+        self._cluster_asserts_by_pos: dict[int, list] = {}
+        # Running counter incremented inside _render_rest_step_body so
+        # it can index into _cluster_asserts_by_pos. Reset per method.
+        self._current_rest_step_pos: int = 0
 
     def _short(self, name: str) -> str:
         """Filesystem-safe short form of `name`. Records the mapping so
@@ -1344,6 +2241,31 @@ class Emitter:
         return abs_path
 
     # -- Service client -----------------------------------------------------
+
+    @staticmethod
+    def _java_content_type_for(mime: str) -> tuple[str, str]:
+        """Map an HTTP media type to the Java expression that produces
+        the right RestAssured ContentType. Returns (expression, accept_hint).
+        Unknown types fall through to a raw string literal that
+        RestAssured accepts via `.contentType(String)`."""
+        m = (mime or "").lower()
+        if m in ("application/json", "application/vnd.api+json") or m.endswith("+json"):
+            return ("ContentType.JSON", "application/json")
+        if m in ("text/xml", "application/xml", "application/soap+xml") or m.endswith("+xml"):
+            return ("ContentType.XML", "application/xml")
+        if m == "application/x-www-form-urlencoded":
+            return ("ContentType.URLENC", "application/x-www-form-urlencoded")
+        if m == "multipart/form-data":
+            return ('"multipart/form-data"', "multipart/form-data")
+        if m == "text/plain":
+            return ("ContentType.TEXT", "text/plain")
+        if m == "text/html":
+            return ("ContentType.HTML", "text/html")
+        if m == "application/octet-stream":
+            return ("ContentType.BINARY", "application/octet-stream")
+        # Unknown: pass through as a string literal (RestAssured has an
+        # overload accepting arbitrary String content-types).
+        return (f'"{m}"', m)
 
     def emit_service_client(self, service_name: str, rest_step_groups: dict) -> str:
         """Emit one Java client class exposing a method per distinct REST op.
@@ -1413,12 +2335,24 @@ public class {class_name} {{
         return class_name
 
     def _render_client_method(self, op_name: str, path: str, step: RestStep, override_name: str = None) -> str:
-        """Render one Java method wrapping the REST call."""
+        """Render one Java method wrapping the REST call.
+
+        Content-type aware: the media_type from the source SoapUI step
+        drives which ContentType helper is chosen in the emitted Java
+        so XML / form-encoded / multipart bodies aren't sent under
+        `application/json` (which used to produce 415 Unsupported Media
+        Type at runtime). Callers with a DIFFERENT media type on the
+        same client method can pass an override via the per-call
+        RestAssured spec (a follow-up refactor)."""
         m_name = override_name or to_camel_case(op_name or step.step_name, upper_first=False)
         verb = step.http_method
-        # Path params from resource_path
-        path_params = re.findall(r"\{([A-Za-z0-9_]+)\}", path)
-        java_path_params = ", ".join(f"String {p}" for p in path_params)
+        # Path params from resource_path -- sanitize each name so Java
+        # reserved words (`class`, `new`, `return`, etc.) get a `_` suffix.
+        raw_path_params = re.findall(r"\{([A-Za-z0-9_]+)\}", path)
+        # Map raw-name -> safe-name so we can rewrite the replace() calls too.
+        path_param_map = {p: sanitize_identifier(p) for p in raw_path_params}
+        java_path_params = ", ".join(
+            f"String {path_param_map[p]}" for p in raw_path_params)
         # Build method params: (String token, [path_params...], [String body if POST/PUT/PATCH])
         params = ["String token"]
         if java_path_params:
@@ -1428,42 +2362,56 @@ public class {class_name} {{
             params.append("String requestBody")
         params_str = ", ".join(params)
 
-        # Runtime path substitution
+        # Runtime path substitution (rewrite `{raw}` -> safe-name lookup).
         path_expr = f'"{path}"'
-        for p in path_params:
-            path_expr = f'{path_expr}.replace("{{{p}}}", {p})'
+        for p in raw_path_params:
+            path_expr = f'{path_expr}.replace("{{{p}}}", {path_param_map[p]})'
 
-        # Build headers block
-        headers_block = """Map<String, String> headers = Headers.builder()
+        # Content-type dispatch: normalize the media_type and pick the
+        # right ContentType constant + Accept header. Unknown media types
+        # fall through to a raw string content-type (RestAssured accepts
+        # arbitrary strings, sends them as the Content-Type header).
+        raw_mt = (step.media_type or "application/json").split(";")[0].strip().lower()
+        content_type_expr, accept_helper = self._java_content_type_for(raw_mt)
+
+        # Build headers block. For JSON we use the existing Headers builder;
+        # for non-JSON we build the map inline with the right content type
+        # so nothing forces application/json on top.
+        if raw_mt == "application/json":
+            headers_block = """Map<String, String> headers = Headers.builder()
                 .contentTypeJson()
                 .acceptJson()
                 .header("Authorization", token)
                 .correlationId()
                 .build();"""
+        else:
+            headers_block = f"""Map<String, String> headers = new java.util.HashMap<>();
+        headers.put("Content-Type", "{raw_mt}");
+        headers.put("Accept", "{raw_mt}");
+        headers.put("Authorization", token);"""
 
-        # Call site per verb
+        # Call site per verb -- ContentType is set explicitly on every
+        # body-bearing verb so it matches the headers map above.
+        body_chain = ".body(requestBody)" if needs_body else ""
+        content_chain = (f".contentType({content_type_expr})"
+                         if needs_body else "")
+        verb_call = verb.lower()
         if verb == "GET":
-            call = 'Response res = RestAssured.given()\n' \
-                   '                .headers(headers)\n' \
-                   '                .get(baseUrl + path);'
+            call = ('Response res = RestAssured.given()\n'
+                    '                .headers(headers)\n'
+                    '                .get(baseUrl + path);')
         elif verb == "DELETE":
-            call = 'Response res = RestAssured.given()\n' \
-                   '                .headers(headers)\n' \
-                   '                .delete(baseUrl + path);'
-        elif verb == "POST":
-            call = 'Response res = RestUtilities.getResponsePost(requestBody, baseUrl + path, headers);'
-        elif verb == "PUT":
-            call = 'Response res = RestAssured.given()\n' \
-                   '                .headers(headers)\n' \
-                   '                .contentType(ContentType.JSON)\n' \
-                   '                .body(requestBody)\n' \
-                   '                .put(baseUrl + path);'
-        elif verb == "PATCH":
-            call = 'Response res = RestAssured.given()\n' \
-                   '                .headers(headers)\n' \
-                   '                .contentType(ContentType.JSON)\n' \
-                   '                .body(requestBody)\n' \
-                   '                .patch(baseUrl + path);'
+            call = ('Response res = RestAssured.given()\n'
+                    '                .headers(headers)\n'
+                    '                .delete(baseUrl + path);')
+        elif verb in ("POST", "PUT", "PATCH"):
+            # Use the direct RestAssured chain uniformly (no more
+            # RestUtilities.getResponsePost which was JSON-hardcoded).
+            call = ('Response res = RestAssured.given()\n'
+                    '                .headers(headers)\n'
+                    f'                {content_chain}\n'
+                    f'                {body_chain}\n'
+                    f'                .{verb_call}(baseUrl + path);')
         else:
             call = f'// TODO: unsupported verb {verb}\n' \
                    'Response res = null;'
@@ -1480,115 +2428,43 @@ public class {class_name} {{
     }}
 """
 
-    # -- Test class ---------------------------------------------------------
-
-    def emit_test_class(self, prefix: str, cases: list[TestCase], service_class_name: str) -> str:
-        pkg = f"{self.package_root}.tests.imported.{self.suite_name}.{self._short(prefix)}"
-        class_name = self._short_cls(prefix) + "Test"
-
-        # Set audit-ledger cursor for all cases in this prefix
-        self._current_prefix = prefix
-        test_methods = [self._render_test_method(c, service_class_name) for c in cases]
-
-        content = f"""package {pkg};
-
-import java.util.HashMap;
-import java.util.Map;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
-
-import com.ak.api.config.Config;
-import com.ak.api.data.DataProviders;
-import com.ak.api.data.Expected;
-import com.ak.api.data.FakeData;
-import com.ak.api.db.Db;
-import com.ak.api.rest.utilities.Headers;
-import com.ak.api.rest.utilities.RestUtilities;
-import com.ak.api.retry.RetryAnalyzer;
-import {self.package_root}.support.{self.suite_name}.SetupHelper;
-import {self.package_root}.support.{self.suite_name}.TestSupport;
-import com.ak.api.tests.BaseApiTest;
-import com.ak.api.xray.XrayTest;
-
-import com.ak.api.rest.clients.{service_class_name};
-
-import io.qameta.allure.Description;
-import io.qameta.allure.Epic;
-import io.qameta.allure.Feature;
-import io.qameta.allure.Story;
-import io.restassured.response.Response;
-
-/**
- * Auto-generated by ra_converter from ReadyAPI test cases under JIRA
- * story {prefix}. Each ReadyAPI test case becomes one @Test method here.
- *
- * SETUP FLOW (shared by most cases in this story):
- *   1. Get OAuth token from token endpoint
- *   2. Generate synthetic guest data (email / username / phone)
- *   3. Enroll guest -> yields guestId
- *   4. Create program-account business -> yields accountId + memberId
- *   5. Read program-account (verifies setup)
- *   6. Execute the SCENARIO-specific call and assert expected status
- *
- * State between setup and assertion steps is carried in `ctx` (a HashMap
- * mirroring SoapUI's testCase properties). Environment / project-level
- * config values (client_id, client_secret, base_url, etc.) come from
- * `Config.get(key, fallback)` -- populate them via env vars or the
- * env-config JSON before running.
- */
-@Epic("Imported from ReadyAPI")
-@Feature("{prefix}")
-public class {class_name} extends BaseApiTest {{
-
-    private static final Logger LOG = LoggerFactory.getLogger({class_name}.class);
-
-    private {service_class_name} client;
-    /** Runtime context bag: IDs/tokens carried between setup calls. */
-    private final Map<String, String> ctx = new HashMap<>();
-
-    @BeforeClass
-    public void initClient() {{
-        String baseUrl = Config.get("base_url", Config.baseUrl());
-        client = new {service_class_name}(baseUrl);
-        LOG.info("initialised {class_name} against baseUrl={{}}", baseUrl);
-    }}
-
-{chr(10).join(test_methods)}
-}}
-"""
-        rel = f"src/test/java/{pkg.replace('.', '/')}/{class_name}.java"
-        self._write(rel, content)
-        return rel
-
     def _reset_per_method_state(self) -> None:
         """Clear per-method emit state -- called at the start of every
         test method AND at the start of every SetupHelper method."""
         self.response_var_by_step = {}
         self._locals_in_method = {"testCaseId", "exp"}
         self._step_suffix_by_name = {}
+        # Reset the cluster REST-step position counter so the next method
+        # walks _cluster_asserts_by_pos from position 0 again.
+        self._current_rest_step_pos = 0
 
     def _render_step(self, step, service_class_name: str) -> list[str]:
-        """Render one step's Java lines. Extracted so both test-method
-        emission and SetupHelper emission can share the exact same
-        step-walking logic without duplication."""
+        """Render one step's Java lines. Shared by test-method emission
+        AND SetupHelper emission so bug fixes benefit both."""
         lines: list[str] = []
         if isinstance(step, RestStep):
             lines.extend(self._render_rest_step_body(step, service_class_name))
         elif isinstance(step, GroovyStep):
             lines.extend(self._render_groovy_translated(step))
         elif isinstance(step, PropertiesStep):
-            lines.append(f'// [properties step] {step.step_name} -- initial values from base; populated by preceding groovy into ctx')
+            lines.append(f'// [properties step] {step.step_name} -- initial values '
+                         'from base; populated by preceding groovy into ctx')
             for prop, val in (step.properties or {}).items():
                 if val:
                     lines.append(
-                        f'ctx.putIfAbsent("{step.step_name}.{prop}", "{val}");')
+                        f'ctx.putIfAbsent("{step.step_name}.{prop}", "{_jlit(val)}");')
         elif isinstance(step, DataSourceStep):
             lines.append(
                 f'// [datasource step] {step.step_name} -- iteration comes '
                 f'from the CSV data-provider; datasource type: {step.ds_type}')
+            if step.file_path:
+                lines.append(
+                    f'// [datasource external file] "{_jlit(step.file_path)}" '
+                    f'-- migrate this file into src/test/resources/csv/ and '
+                    f'point PerMethodCsvDataProvider at it, or hand-populate '
+                    f'the method CSV with the same rows.')
+                lines.append(
+                    f'LOG.warn("STUB DataSource external file: {_jlit(step.file_path)}");')
         elif isinstance(step, TransferStep):
             lines.extend(self._render_transfer_translated(step))
         elif isinstance(step, ManualStep):
@@ -1598,91 +2474,119 @@ public class {class_name} extends BaseApiTest {{
                 f'// [manualTestStep] {step.step_name} -- documentation '
                 f'only (no runtime action): {desc_short}')
         elif isinstance(step, JdbcStep):
-            q_escaped = (step.query or "").replace("\\", "\\\\") \
-                                          .replace('"', '\\"') \
-                                          .replace("\r", " ").replace("\n", " ")
+            q_escaped = _jlit((step.query or "").replace("\r", " ").replace("\n", " "))
             lines.append(f'// [jdbc step] {step.step_name}')
             lines.append('if (Db.isConfigured()) {')
             lines.append(f'    Db.execute("{q_escaped}");')
             lines.append('} else {')
             lines.append(
                 f'    LOG.warn("Skipping JDBC step (Db not configured): '
-                f'{step.step_name}");')
+                f'{_jlit(step.step_name)}");')
             lines.append('}')
+        elif isinstance(step, CallTestCaseStep):
+            # SoapUI `calltestcase` invokes another test case by name.
+            # In our emitted model each SoapUI case becomes ONE @Test
+            # method, so calling from inside another method would run
+            # a data-driven test outside its DataProvider context --
+            # not straightforward. Emit a TODO with the target coords.
+            lines.append(
+                f'// [calltestcase] {step.step_name} -- calls SoapUI test '
+                f'case: {step.target_test_suite}/{step.target_test_case}')
+            lines.append(
+                f'// TODO manual: extract the target test case\'s body into '
+                f'a shared helper and call it here.')
+            lines.append(
+                f'LOG.warn("STUB calltestcase {_jlit(step.target_test_case or step.step_name)}");')
+        elif isinstance(step, DelayStep):
+            lines.append(f'// [delay step] {step.step_name} -- sleep {step.delay_ms}ms')
+            lines.append(f'try {{ Thread.sleep({step.delay_ms}L); }} '
+                         f'catch (InterruptedException __ie) {{ '
+                         f'Thread.currentThread().interrupt(); }}')
+        elif isinstance(step, GotoStep):
+            # goto/conditional-goto can't be mechanically translated into
+            # Java (no `goto`; refactoring into if/loop needs human review).
+            lines.append(
+                f'// [gotostep] {step.step_name} -- {len(step.conditions)} '
+                f'condition(s). Java has no goto; refactor the surrounding '
+                f'code into a loop/if.')
+            for c in step.conditions:
+                lines.append(f'//   IF ({c.get("expression", "?")}) '
+                             f'GOTO {c.get("target_step", "?")}')
+            lines.append(
+                f'LOG.warn("STUB gotostep {_jlit(step.step_name)} -- '
+                f'manual refactor required");')
+        elif isinstance(step, SoapRequestStep):
+            # SOAP request: send raw XML body with text/xml content-type.
+            # Uses generic RestAssured; assumes framework's request-spec
+            # allows a body + endpoint override.
+            body_lit = _jlit((step.request_body or "").strip())
+            ep_lit = _jlit(step.endpoint or "")
+            lines.append(f'// [soaprequest] {step.step_name} '
+                         f'(operation={_jlit(step.operation)})')
+            resp_var = f"{sanitize_identifier(step.step_name)}Res"
+            self._locals_in_method.add(resp_var)
+            self.response_var_by_step[step.step_name] = resp_var
+            lines.append(
+                f'Response {resp_var} = io.restassured.RestAssured.given()'
+                f'.contentType("{step.media_type}")'
+                f'.body("{body_lit}")'
+                f'.post("{ep_lit}");')
+            lines.append(
+                f'RestUtilities.logResponseBody(testCaseId, holder, '
+                f'RestUtilities.getResponseAsString({resp_var}));')
+            for a in step.assertions:
+                if a.disabled:
+                    continue
+                emitted, _cov = self._render_assertion(
+                    a, resp_var, step.step_name, suffix="", assertion_index=0)
+                lines.extend(emitted)
+        elif isinstance(step, HttpRequestStep):
+            # Raw HTTP (not REST-resource-backed). Emit a generic given()
+            # call to the endpoint with the right verb + body.
+            body_lit = _jlit((step.request_body or "").strip())
+            ep_lit = _jlit(step.endpoint or "")
+            verb = (step.http_method or "GET").lower()
+            has_body = step.http_method in ("POST", "PUT", "PATCH") and step.request_body.strip()
+            lines.append(f'// [httprequest] {step.step_name} '
+                         f'({step.http_method} {ep_lit})')
+            resp_var = f"{sanitize_identifier(step.step_name)}Res"
+            self._locals_in_method.add(resp_var)
+            self.response_var_by_step[step.step_name] = resp_var
+            body_chain = f'.body("{body_lit}")' if has_body else ""
+            lines.append(
+                f'Response {resp_var} = io.restassured.RestAssured.given()'
+                f'.contentType("{step.media_type}"){body_chain}'
+                f'.{verb}("{ep_lit}");')
+            lines.append(
+                f'RestUtilities.logResponseBody(testCaseId, holder, '
+                f'RestUtilities.getResponseAsString({resp_var}));')
+            for a in step.assertions:
+                if a.disabled:
+                    continue
+                emitted, _cov = self._render_assertion(
+                    a, resp_var, step.step_name, suffix="", assertion_index=0)
+                lines.extend(emitted)
+        elif isinstance(step, MockResponseStep):
+            lines.append(
+                f'// [mockresponse] {step.step_name} -- SoapUI mock-server '
+                f'step, not runnable in a pure REST Assured test. Skipped.')
+            lines.append(
+                f'LOG.warn("STUB mockresponse {_jlit(step.step_name)}");')
+        elif isinstance(step, JmsStep):
+            lines.append(
+                f'// [jms {step.direction}] {step.step_name} '
+                f'destination={_jlit(step.destination)} '
+                f'-- REST Assured does not cover JMS; manual translation required.')
+            lines.append(
+                f'LOG.warn("STUB jms {_jlit(step.step_name)}");')
         else:
             cls_name = type(step).__name__
-            lines.append(f'// [unknown step type: {cls_name}] {getattr(step, "step_name", "")} -- runnable no-op stub')
-            lines.append(f'LOG.warn("skipped {cls_name} step: {getattr(step, "step_name", "")}");')
+            step_name = getattr(step, "step_name", "")
+            lines.append(f'// [unknown step type: {cls_name}] {step_name} -- runnable no-op stub')
+            lines.append(f'LOG.warn("skipped {cls_name} step: {_jlit(step_name)}");')
             self.ledger.add_unknown_step(
-                self._current_prefix, self._current_case,
-                getattr(step, "step_name", ""), cls_name)
+                self._current_prefix, self._current_case, step_name, cls_name)
         return lines
-
-    def _render_test_method(self, case: TestCase, service_class_name: str,
-                              flow_assignment: Optional[dict] = None) -> str:
-        method_name = self._short(case.name)
-        # Update audit-ledger cursor
-        self._current_case = case.name
-        # Reset per-method emit state
-        self._reset_per_method_state()
-
-        # If this case starts with a known shared flow, replace its first
-        # N steps with a single SetupHelper call and only emit the
-        # scenario-specific remaining steps inline.
-        assigned_flow = flow_assignment or self._flow_by_case.get(case.name)
-        body_lines = [
-            f'String testCaseId = "{_jlit(case.name)}";',
-            'Expected exp = expected(row);',
-            '',
-        ]
-
-        # Replace the first N steps with a SetupHelper call if this case
-        # matches a shared flow.
-        skip_count = 0
-        if assigned_flow:
-            skip_count = assigned_flow["prefix_len"]
-            body_lines.append(
-                f'// ==== shared setup: SetupHelper.{assigned_flow["id"]} '
-                f'({skip_count} steps, reused by '
-                f'{len(assigned_flow["cases"])} cases) ====')
-            body_lines.append(
-                f'SetupHelper.{assigned_flow["id"]}('
-                'client, ctx, row, softAssert, holder, testCaseId);')
-            body_lines.append('')
-
-        for step in case.steps[skip_count:]:
-            body_lines.extend(self._render_step(step, service_class_name))
-            body_lines.append('')
-
-        indented = "\n".join("        " + l if l else "" for l in body_lines)
-
-        # Description safe for Java string literal
-        # (escape backslashes FIRST so we don't double-escape newly-inserted ones)
-        desc_raw = (case.description or "")[:200]
-        desc_safe = (desc_raw
-                     .replace("\\", "\\\\")
-                     .replace('"', '\\"')
-                     .replace("\r", " ")
-                     .replace("\n", " ")
-                     .replace("\t", " "))
-
-        # @XrayTest fallback: if the case doesn't match a JIRA-style prefix,
-        # use the case name itself so it's still greppable in Xray.
-        xray_id_raw = case.prefix if re.match(r"^[A-Z]+-\d+$", case.prefix) else case.name
-        # sanitize the group value -- TestNG groups can't contain quotes.
-        group_val = sanitize_identifier(case.prefix.lower())
-
-        return f"""    @Test(dataProvider = "csvData",
-          dataProviderClass = DataProviders.class,
-          groups = {{"imported", "{group_val}"}},
-          retryAnalyzer = RetryAnalyzer.class)
-    @XrayTest("{_jlit(xray_id_raw)}")
-    @Story("{_jlit(case.name)}")
-    @Description("Imported from ReadyAPI. Original description: {desc_safe}")
-    public void {method_name}(Map<String, String> row) throws Exception {{
-{indented}
-    }}
-"""
 
     def _uniq_local(self, base: str) -> str:
         """Return a unique local-var name for the current test method,
@@ -1717,6 +2621,23 @@ public class {class_name} extends BaseApiTest {{
     def _render_rest_step_body(self, step: RestStep, service_class_name: str) -> list[str]:
         """Emit Java for one REST step: build body -> call client -> assertions -> extract via jsonPath."""
         lines = [f'// ==== REST step: {step.step_name}  ({step.http_method} {step.resource_path}) ====']
+        # SoapUI file attachments (multipart uploads). The current client
+        # emitter builds a JSON/XML body via a template; multipart support
+        # would need a `.multiPart(...)` chain per attachment. Emit a
+        # TODO stub so tests still compile but the missing multipart is
+        # loud at runtime.
+        if step.attachments:
+            att_names = [a.get("name") or a.get("part_name") or "?"
+                          for a in step.attachments]
+            lines.append(
+                f'// [attachments] {len(step.attachments)} file '
+                f'attachment(s): {", ".join(att_names)[:120]}')
+            lines.append(
+                f'// TODO manual: emit .multiPart(new File(...), "{step.media_type}") '
+                f'per attachment; existing client method sends only the JSON body.')
+            lines.append(
+                f'LOG.warn("STUB: {len(step.attachments)} file attachment(s) '
+                f'not sent for step {_jlit(step.step_name)}");')
 
         # Suffix (shared across Payload / Res / expected_X for this step
         # instance -- keeps them grouped when the same step name repeats).
@@ -1775,8 +2696,39 @@ public class {class_name} extends BaseApiTest {{
             expr = step.path_params.get(p, f'${{Properties#{p}}}')
             path_args.append(soapui_expr_to_java(expr))
 
-        # Token: pull from ctx or headers
+        # Token / Authorization header resolution priority:
+        #   1. Per-request `<con:credentials>` auth profile (if this step
+        #      overrides the project-level auth) -- see step.auth_profile.
+        #      Basic and OAuth 2.0 Bearer can be fully translated to Java
+        #      here; more exotic types (NTLM, Kerberos, WS-Security) emit
+        #      a WARN comment and fall through to the ctx-based default so
+        #      the request still goes out with SOME auth (even if wrong).
+        #   2. Explicit `Authorization` parameter on the step -- old
+        #      SoapUI style where the header value is a ${...} expression.
+        #   3. Default: ctx-published token key (framework convention).
         token_expr = 'ctx.getOrDefault("tokenId.GeneratedTokenID", "")'
+        if step.auth_profile:
+            atype = (step.auth_profile.get("auth_type") or "").strip()
+            if atype in ("Basic", "Preemptive"):
+                u = _jlit(step.auth_profile.get("username", ""))
+                p = _jlit(step.auth_profile.get("password", ""))
+                lines.append(
+                    f'// [auth override] step declares Basic auth profile "'
+                    f'{_jlit(step.auth_profile.get("profile_name", ""))}"')
+                token_expr = (f'"Basic " + java.util.Base64.getEncoder().encodeToString('
+                               f'("{u}:{p}").getBytes(java.nio.charset.StandardCharsets.UTF_8))')
+            elif atype in ("OAuth 2.0", "OAuth2", "Bearer") and step.auth_profile.get("oauth_token"):
+                tok = _jlit(step.auth_profile["oauth_token"])
+                lines.append(
+                    f'// [auth override] step declares OAuth 2.0 profile "'
+                    f'{_jlit(step.auth_profile.get("profile_name", ""))}"')
+                token_expr = f'"Bearer {tok}"'
+            else:
+                lines.append(
+                    f'// [auth override] step declares "'
+                    f'{_jlit(atype or step.auth_profile.get("profile_name", ""))}" '
+                    f'auth profile -- not auto-translated; falling back to '
+                    f'ctx token. Wire up manually if needed.')
         if "Authorization" in step.headers:
             token_expr = soapui_expr_to_java(step.headers["Authorization"])
 
@@ -1803,17 +2755,27 @@ public class {class_name} extends BaseApiTest {{
         lines.append(f'Response {response_var} = client.{method_name_java}({", ".join(call_args)});')
         lines.append(f'RestUtilities.logResponseBody(testCaseId, holder, RestUtilities.getResponseAsString({response_var}));')
 
-        # Assertions
+        # Assertions:
+        # Prefer the UNION of active assertions computed across the whole
+        # cluster (populated by `_union_cluster_asserts` in
+        # `emit_test_class_per_suite`) so a cluster member's extra
+        # assertions don't silently vanish. Fall back to just this
+        # step's own assertions when not in cluster mode.
+        assertions_to_emit = (
+            self._cluster_asserts_by_pos.get(self._current_rest_step_pos)
+            if self._cluster_asserts_by_pos else None)
+        if assertions_to_emit is None:
+            assertions_to_emit = [a for a in step.assertions if not a.disabled]
         # `assertion_index` counts only ACTIVE assertions (skipped ones
         # don't consume an index) so the CSV column names stay stable
         # even if a SoapUI author toggles a disabled assertion on later.
-        a_active = 0
         for a in step.assertions:
             if a.disabled:
                 self.ledger.add_assertion(
                     self._current_prefix, self._current_case, step.step_name,
                     a.type, a.config, "", "SKIPPED")
-                continue
+        a_active = 0
+        for a in assertions_to_emit:
             emitted, coverage = self._render_assertion(
                 a, response_var, step.step_name, suffix=suf,
                 assertion_index=a_active)
@@ -1823,7 +2785,46 @@ public class {class_name} extends BaseApiTest {{
                 self._current_prefix, self._current_case, step.step_name,
                 a.type, a.config, " ".join(emitted), coverage)
 
+        # Advance the cluster REST-step position so the next call reads
+        # assertions from position+1.
+        self._current_rest_step_pos += 1
+
         return lines
+
+    def _union_cluster_asserts(self, cluster: list) -> dict[int, list]:
+        """Compute the UNION of active Assertion objects across every case
+        in a cluster, keyed by REST-step POSITION (0-based) into any
+        cluster case's REST-step sequence. Deduplication key = (type,
+        `_assert_col_key` output) so cases asserting different values on
+        the same JSON path collapse to ONE emitted block (whose per-row
+        value comes from the CSV column).
+
+        Since cluster construction guarantees (verb, path, body-shape)
+        equality per REST-step position across members, position N in any
+        case is comparable to position N in every other case. Longer
+        cases (prefix-merged in) may extend beyond the base cluster's
+        REST-step count -- we honor those too.
+        """
+        by_pos: dict[int, list] = {}
+        by_pos_seen: dict[int, set] = {}
+        for c in cluster:
+            pos = 0
+            for step in c.steps:
+                if not isinstance(step, RestStep):
+                    continue
+                a_idx = 0
+                for a in step.assertions:
+                    if a.disabled:
+                        continue
+                    key = (a.type, _assert_col_key(a, a_idx) or f"a{a_idx}")
+                    a_idx += 1
+                    seen = by_pos_seen.setdefault(pos, set())
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    by_pos.setdefault(pos, []).append(a)
+                pos += 1
+        return by_pos
 
     def _render_assertion(self, a: Assertion, response_var: str,
                            step_name: str, suffix: str = "",
@@ -1848,6 +2849,29 @@ public class {class_name} extends BaseApiTest {{
         # multiple assertions on the SAME step never collide. Falls back
         # to just the step's suffix when no col_key exists (unused var).
         vsid = f"{sid}_a{assertion_index}_{col_key}" if col_key else sid
+
+        # Bail early on JsonPath-family assertions whose expression uses
+        # GPath-incompatible syntax (recursive descent `..`, filters
+        # `[?()]`, unions `[a,b]`, script indices `[(expr)]`). Passing
+        # these through to RestAssured's `.jsonPath().getString(...)`
+        # would throw IllegalArgumentException at runtime.
+        _JSONPATH_TYPES = ("JsonPath Match", "JsonPath Existence Match",
+                            "JsonPath Count", "JsonPath RegEx Match")
+        if t in _JSONPATH_TYPES:
+            raw_path = cfg.get("path", "")
+            if _jsonpath_is_gpath_incompatible(raw_path):
+                # Escape raw_path for a Java comment: replace only chars
+                # that would break comment-block syntax (`*/` sequence).
+                safe_path = raw_path.replace("*/", "* /")
+                return ([
+                    f'// [{t}] SKIPPED at emit time -- JsonPath expression '
+                    f'uses syntax GPath does not support.',
+                    f'// path: {safe_path}',
+                    f'// Unsupported: `..` (recursive descent), `[?()]` (filters), '
+                    f'`[a,b]` (unions), `[(expr)]` (script index).',
+                    f'// Convert manually or use com.jayway.jsonpath.JsonPath.read(...) '
+                    f'directly. See audit ledger for full context.',
+                ], "TODO")
 
         def _jlit(s: str) -> str:
             """Escape an arbitrary string for use inside a Java "" literal."""
@@ -1991,26 +3015,287 @@ public class {class_name} extends BaseApiTest {{
                 f'softAssert.assertNotNull({response_var}.asString(), "response present (schema check stubbed)");',
             ], "PARTIAL")
         if t in ("GroovyScriptAssertion", "GroovyScript"):
-            script_body = (cfg.get("scriptText", "") or cfg.get("script", "") or "")
-            preview = " ".join(script_body.split())[:80]
-            return ([
-                f'// [GroovyScriptAssertion] custom Groovy -- manual review required',
-                f'// script preview: {preview}',
-                f'// softAssert.assertTrue(<translate {preview[:40]}>);',
-            ], "TODO")
+            return self._render_groovy_script_assertion(
+                a, response_var, step_name, vsid)
         if t == "DataAndMetadataAssertion":
-            return ([
-                f'// [DataAndMetadataAssertion] SoapUI custom assertion -- manual review',
-                f'softAssert.assertNotNull({response_var}.asString(), "response present (DataAndMetadata stubbed)");',
-            ], "PARTIAL")
+            return self._render_data_and_metadata_assertion(
+                a, response_var, step_name, vsid)
         if t == "MessageContentAssertion":
-            return ([
-                f'// [MessageContentAssertion] SoapUI XPath/XML-content check -- manual review',
-                f'softAssert.assertNotNull({response_var}.asString(), "response present (MessageContent stubbed)");',
-            ], "PARTIAL")
+            return self._render_message_content_assertion(
+                a, response_var, step_name, vsid)
         # Unknown assertion type -- emit a TODO stub, log it in ledger
         return ([
             f'// TODO manual review: assertion type "{t}" not auto-converted. Original name: {_jlit(a.name)}',
+        ], "TODO")
+
+    # =====================================================================
+    # SoapUI "complex" assertion translators (MessageContent, DataAndMetadata,
+    # GroovyScript). Each returns (java_lines, coverage).
+    # =====================================================================
+
+    def _render_message_content_assertion(self, a: Assertion, response_var: str,
+                                            step_name: str, vsid: str) -> tuple[list[str], str]:
+        """SoapUI MessageContent: 1..N XPath+expectedValue elements per
+        assertion. Each ENABLED element becomes one assertion in Java.
+        XPath is translated to a JsonPath-ish accessor via
+        `_soapui_xpath_to_jsonpath` (SoapUI wraps JSON responses in a
+        synthetic XML view for these checks). Every expected value goes
+        to a per-row CSV column so scenario variants can override it."""
+        active_elements = [
+            e for e in a.elements
+            if (e.get("enabled", "true").lower() != "false")
+        ]
+        if not active_elements:
+            return ([
+                f'// [MessageContentAssertion] "{_jlit(a.name)}" -- all '
+                f'{len(a.elements)} element(s) disabled in source XML',
+            ], "SKIPPED")
+        lines: list[str] = [
+            f'// [MessageContentAssertion] "{_jlit(a.name)}" '
+            f'({len(active_elements)} active element(s))',
+        ]
+        for idx, el in enumerate(active_elements):
+            xpath = el.get("xpath", "") or el.get("path", "")
+            jpath = _soapui_xpath_to_jsonpath(xpath)
+            expected = el.get("expectedValue", "") or el.get("content", "")
+            operator = el.get("operator", "=") or "="
+            elem_name = el.get("element", "") or f"el{idx}"
+            col_name = (f"expected_{sanitize_identifier(step_name)}"
+                        f"_msgcontent_{sanitize_identifier(elem_name)}")
+            v = f"{vsid}_msg{idx}"
+            fallback = _jlit(expected)
+            lines.append(
+                f'String actual_{v} = {response_var}.jsonPath().getString("{_jlit(jpath)}");')
+            lines.append(
+                f'String expected_{v} = (row.get("{col_name}") == null || '
+                f'row.get("{col_name}").isEmpty()) ? "{fallback}" : row.get("{col_name}");')
+            if operator.strip() == "!=":
+                lines.append(
+                    f'softAssert.assertNotEquals(actual_{v}, expected_{v}, '
+                    f'"MessageContent != for {_jlit(elem_name)}");')
+            else:
+                lines.append(
+                    f'softAssert.assertEquals(actual_{v}, expected_{v}, '
+                    f'"MessageContent = for {_jlit(elem_name)}");')
+        return (lines, "FULL")
+
+    def _render_data_and_metadata_assertion(self, a: Assertion, response_var: str,
+                                              step_name: str, vsid: str) -> tuple[list[str], str]:
+        """SoapUI DataAndMetadata: 1..N JsonPath+expectedValue+operatorId
+        elements. Similar to MessageContent but the path is JsonPath and
+        operatorId is numeric (1=equals, 2=notequals, 3=contains — we
+        default to equals when unrecognized)."""
+        active_elements = [
+            e for e in a.elements
+            if (e.get("enabled", "true").lower() != "false")
+        ]
+        if not active_elements:
+            return ([
+                f'// [DataAndMetadataAssertion] "{_jlit(a.name)}" -- all '
+                f'{len(a.elements)} element(s) disabled in source XML',
+            ], "SKIPPED")
+        lines: list[str] = [
+            f'// [DataAndMetadataAssertion] "{_jlit(a.name)}" '
+            f'({len(active_elements)} active element(s))',
+        ]
+        for idx, el in enumerate(active_elements):
+            path = _jsonpath_to_gpath(el.get("path", ""))
+            expected = el.get("expectedValue", "") or el.get("content", "")
+            op = (el.get("operatorId", "1") or "1").strip()
+            elem_name = el.get("element", "") or f"el{idx}"
+            col_name = (f"expected_{sanitize_identifier(step_name)}"
+                        f"_datameta_{sanitize_identifier(elem_name)}")
+            v = f"{vsid}_dm{idx}"
+            fallback = _jlit(expected)
+            lines.append(
+                f'String actual_{v} = {response_var}.jsonPath().getString("{_jlit(path)}");')
+            lines.append(
+                f'String expected_{v} = (row.get("{col_name}") == null || '
+                f'row.get("{col_name}").isEmpty()) ? "{fallback}" : row.get("{col_name}");')
+            if op == "2":  # not equals
+                lines.append(
+                    f'softAssert.assertNotEquals(actual_{v}, expected_{v}, '
+                    f'"DataAndMetadata != for {_jlit(elem_name)}");')
+            elif op == "3":  # contains
+                lines.append(
+                    f'softAssert.assertTrue(actual_{v} != null && '
+                    f'actual_{v}.contains(expected_{v}), '
+                    f'"DataAndMetadata contains for {_jlit(elem_name)}");')
+            else:  # default: equals
+                lines.append(
+                    f'softAssert.assertEquals(actual_{v}, expected_{v}, '
+                    f'"DataAndMetadata = for {_jlit(elem_name)}");')
+        return (lines, "FULL")
+
+    # Pattern library for GroovyScriptAssertion translation. Each entry is
+    # (compiled_regex, function(match, response_var, vsid) -> list[str]).
+    _GROOVY_ASSERT_PATTERNS: list = None  # populated lazily in _init
+
+    @staticmethod
+    def _strip_groovy_comments_and_strings(script: str) -> str:
+        """Return `script` with line comments (`//...`), block comments
+        (`/*...*/`), and string literals (single- + double-quoted + triple-
+        quoted) replaced by spaces. Used to sanitize the script BEFORE
+        running assertion-pattern regexes so a commented-out
+        `// assert response.status == 500` (or an assert-string inside
+        a heredoc) doesn't spuriously match a pattern and emit real Java.
+
+        Length-preserving replacement (spaces, not deletion) so anchor
+        positions in the regex stay meaningful."""
+        out = list(script)
+        i = 0
+        n = len(script)
+        while i < n:
+            c = script[i]
+            # Line comment: // to end of line
+            if c == "/" and i + 1 < n and script[i + 1] == "/":
+                j = script.find("\n", i)
+                end = j if j != -1 else n
+                for k in range(i, end):
+                    if out[k] != "\n":
+                        out[k] = " "
+                i = end
+                continue
+            # Block comment: /* ... */
+            if c == "/" and i + 1 < n and script[i + 1] == "*":
+                j = script.find("*/", i + 2)
+                end = j + 2 if j != -1 else n
+                for k in range(i, end):
+                    if out[k] != "\n":
+                        out[k] = " "
+                i = end
+                continue
+            # Triple-quoted string: '''...''' or """..."""
+            if c in ("'", '"') and i + 2 < n and script[i + 1] == c and script[i + 2] == c:
+                triple = c * 3
+                j = script.find(triple, i + 3)
+                end = j + 3 if j != -1 else n
+                for k in range(i, end):
+                    if out[k] != "\n":
+                        out[k] = " "
+                i = end
+                continue
+            # Single-line string: ' or "
+            if c in ("'", '"'):
+                j = i + 1
+                while j < n and script[j] != c:
+                    # Skip escaped char
+                    if script[j] == "\\" and j + 1 < n:
+                        j += 2
+                        continue
+                    if script[j] == "\n":
+                        break
+                    j += 1
+                end = j + 1 if j < n else n
+                for k in range(i, end):
+                    if out[k] != "\n":
+                        out[k] = " "
+                i = end
+                continue
+            i += 1
+        return "".join(out)
+
+    def _render_groovy_script_assertion(self, a: Assertion, response_var: str,
+                                          step_name: str, vsid: str) -> tuple[list[str], str]:
+        """Attempt to translate common Groovy-assertion shapes into Java
+        soft-asserts. Unrecognized scripts emit a runtime WARN + attach
+        the raw script to the Allure report so the parity gap is visible.
+
+        Pattern matching runs against a COMMENT-STRIPPED and STRING-
+        STRIPPED copy of the script so a commented-out
+        `// assert response.status == 500` doesn't fire a real assert."""
+        script = (a.config.get("scriptText", "") or a.config.get("script", "") or "").strip()
+        # Sanitize before pattern-matching so comments/strings can't fake a hit.
+        sanitized = self._strip_groovy_comments_and_strings(script)
+
+        # Pattern 1: `assert messageExchange.responseHeaders["X"] != null`
+        m = re.search(
+            r'assert\s+messageExchange\.responseHeaders\[\s*["\'](?P<h>[^"\']+)["\']\s*\]\s*!=\s*null',
+            sanitized)
+        if m:
+            # Re-extract the header name from the ORIGINAL script at the
+            # matched position (sanitized has strings blanked out).
+            m2 = re.search(
+                r'assert\s+messageExchange\.responseHeaders\[\s*["\'](?P<h>[^"\']+)["\']\s*\]\s*!=\s*null',
+                script)
+            header = _jlit(m2.group("h") if m2 else "?")
+            return ([
+                f'// [GroovyScriptAssertion] header presence: {header}',
+                f'softAssert.assertNotNull({response_var}.header("{header}"), '
+                f'"header present: {header}");',
+            ], "FULL")
+
+        # Pattern 2: `assert messageExchange.responseHeaders["X"] == "value"`
+        # Match against the ORIGINAL script (needs the string literals),
+        # but only if the assertion isn't inside a comment (verify via
+        # sanitized copy: same position should still contain "assert").
+        m = re.search(
+            r'assert\s+messageExchange\.responseHeaders\[\s*["\'](?P<h>[^"\']+)["\']\s*\]'
+            r'\s*==\s*["\'](?P<v>[^"\']*)["\']', script)
+        if m and "assert" in sanitized[max(0, m.start()):m.start() + 6]:
+            header = _jlit(m.group("h"))
+            expected = _jlit(m.group("v"))
+            col_name = (f"expected_{sanitize_identifier(step_name)}_"
+                        f"header_{sanitize_identifier(header)}")
+            return ([
+                f'// [GroovyScriptAssertion] header value: {header}',
+                f'String expected_{vsid}_gsh = (row.get("{col_name}") == null || '
+                f'row.get("{col_name}").isEmpty()) ? "{expected}" : row.get("{col_name}");',
+                f'softAssert.assertEquals({response_var}.header("{header}"), '
+                f'expected_{vsid}_gsh, "header = for {header}");',
+            ], "FULL")
+
+        # Pattern 3: `assert response.status == N` (older SoapUI style)
+        m = re.search(r'assert\s+response\.status\s*==\s*(\d{3})', sanitized)
+        if m:
+            code = m.group(1)
+            return ([
+                f'// [GroovyScriptAssertion] status code check: {code}',
+                f'softAssert.assertEquals({response_var}.statusCode(), {code}, '
+                f'"response status == {code}");',
+            ], "FULL")
+
+        # Pattern 4: assert body contains substring (string literal in
+        # ORIGINAL, but position must map into sanitized `assert` region).
+        m = re.search(
+            r'assert\s+(?:response\.body|messageExchange\.responseContent)'
+            r'\.?(?:toString\(\))?\.contains\(\s*["\'](?P<t>[^"\']+)["\']\s*\)', script)
+        if m and "assert" in sanitized[max(0, m.start()):m.start() + 6]:
+            token = _jlit(m.group("t"))
+            # TRUNCATE BEFORE jlit-escape so we never split an escape
+            # sequence at the boundary (bug: `\\"` at pos 39-40 gives `\\`
+            # alone -> unterminated Java literal).
+            token_preview = _jlit(m.group("t")[:40])
+            return ([
+                f'// [GroovyScriptAssertion] response body contains: {token_preview}',
+                f'softAssert.assertTrue({response_var}.asString().contains("{token}"), '
+                f'"body contains: {token_preview}");',
+            ], "FULL")
+
+        # Nothing matched -- WARN at runtime + attach the raw Groovy to
+        # Allure so the parity gap is loudly visible in reports. Test
+        # still passes (soft-assert not fired) but the assertion is not
+        # silently dropped anymore.
+        #
+        # Escape rules:
+        #   - preview goes into LOG.warn's "..." literal -> full _jlit
+        #     (backslashes, CR, LF, tabs, quotes all covered);
+        #   - full script goes into an Allure attachment string -> also
+        #     full _jlit.
+        # Truncate BEFORE escaping so we never split a `\\n` at the boundary.
+        preview_raw = " ".join(script.split())[:120]
+        preview_j = _jlit(preview_raw)
+        script_j = _jlit(script)
+        assert_name_j = _jlit(a.name)
+        step_name_j = _jlit(step_name)
+        return ([
+            f'// [GroovyScriptAssertion] "{assert_name_j}" -- unrecognized '
+            f'Groovy pattern; original script attached to Allure report',
+            f'LOG.warn("STUBBED GroovyScriptAssertion for step \\"{step_name_j}\\": '
+            f'{preview_j}");',
+            f'io.qameta.allure.Allure.addAttachment('
+            f'"STUBBED Groovy assertion: {assert_name_j}", "text/x-groovy", '
+            f'"{script_j}");',
         ], "TODO")
 
     def _render_groovy_translated(self, step: GroovyStep) -> list[str]:
@@ -2445,97 +3730,74 @@ public final class SetupHelper {{
         self._write(rel, content)
         return rel
 
-    # -- CSV datasheet ------------------------------------------------------
-
-    def emit_csv(self, case: TestCase) -> str:
-        """One CSV per case, header = only TRUE data-driven placeholders +
-        reserved cols. Config-driven placeholders live in the env JSON;
-        runtime-generated ones live in ctx -- neither belongs in the CSV.
-        Every placeholder gets logged to the audit ledger."""
-        classification = classify_placeholders_for_case(case)
-
-        # Log each placeholder for the audit report
-        for kind_key in ("config", "runtime", "csv"):
-            for ph in sorted(classification[kind_key]):
-                self.ledger.add_placeholder(case.name, ph, kind_key)
-
-        # Only TRUE csv placeholders become columns
-        csv_columns = sorted(classification["csv"])
-        cols = csv_columns + ["jira_xray_id", "expected"]
-
-        # Terminal (last REST) step yields the "expected" for this row
-        terminal = None
-        for step in reversed(case.steps):
-            if isinstance(step, RestStep):
-                terminal = step
-                break
-        expected_bits = []
-        if terminal:
-            for a in terminal.assertions:
-                if a.disabled:
-                    continue
-                if a.type == "Valid HTTP Status Codes":
-                    codes = (a.config.get("codes", "") or "").strip()
-                    first_code = re.split(r"[,\s]+", codes)[0] if codes else "200"
-                    expected_bits.append(f"statusCode:{first_code}")
-        expected_str = ";".join(expected_bits)
-
-        header_row = ",".join(cols)
-        # First data row: TRUE csv cells blank (user fills), reserved cols set
-        row_cells = ["" for _ in csv_columns] + [case.prefix, expected_str]
-        data_row = ",".join(row_cells)
-
-        content = header_row + "\n" + data_row + "\n"
-        rel = f"src/test/resources/testdata/{self.suite_name}/{self._short(case.name)}.csv"
-        self._write(rel, content)
-        return rel
-
-    # -- Request-body templates --------------------------------------------
-
-    def emit_templates(self, case: TestCase) -> list[str]:
-        rels = []
-        for step in case.steps:
-            if not isinstance(step, RestStep):
-                continue
-            if not step.request_body.strip():
-                continue
-            translated, _ = soapui_body_to_placeholders(step.request_body)
-            template_name = f'{sanitize_identifier(step.step_name).lower()}.json'
-            rel = f"src/main/resources/templates/{self.suite_name}/{template_name}"
-            self._write(rel, translated)
-            rels.append(rel)
-        return rels
-
     # -- Env config --------------------------------------------------------
 
     def emit_env_config(self, cases: list[TestCase], env_name: str = "qa") -> str:
-        # Collect all Project-level property refs across all cases
-        project_props = set()
+        """Emit `src/main/resources/config/<env>.json` with a base_url
+        + placeholder entries for every `${#Project#X}` and `${#Env#X}`
+        reference seen across the case scope.
+
+        Base URL resolution priority:
+          1. When the source XML declares `<con:environments>` matching
+             `env_name` (via `_PROJECT_ENVIRONMENTS`), use the first
+             interface endpoint from that env -- SoapUI's real config.
+          2. Otherwise: fall back to the first non-empty `<con:originalUri>`
+             seen on any REST step (trim off the resource_path suffix).
+          3. Otherwise: the placeholder `https://api.example.com`.
+        """
+        # Collect all Project-scoped and Env-scoped property refs across all cases.
+        project_props: set[str] = set()
+        env_props: set[str] = set()
         for case in cases:
             for step in case.steps:
                 if isinstance(step, RestStep):
-                    project_props.update(_PROJ_PROP_RX.findall(step.request_body or ""))
-                    for v in list(step.headers.values()) + list(step.path_params.values()) + list(step.query_params.values()):
-                        project_props.update(_PROJ_PROP_RX.findall(v))
-        # Include the base URL (first non-localhost originalUri as best-effort)
-        base_url = ""
-        for case in cases:
-            for step in case.steps:
-                if isinstance(step, RestStep) and step.original_uri:
-                    # trim off the resource path to leave the base
-                    base = step.original_uri
-                    if step.resource_path and step.resource_path in base:
-                        base = base.split(step.resource_path)[0]
-                    base_url = base.rstrip("/")
+                    for text in ([step.request_body or ""]
+                                  + list(step.headers.values())
+                                  + list(step.path_params.values())
+                                  + list(step.query_params.values())):
+                        project_props.update(_PROJ_PROP_RX.findall(text))
+                        for m in _SCOPE_PROP_RX.finditer(text):
+                            if m.group(1) in ("Env", "Global"):
+                                env_props.add(f"{m.group(1).lower()}_{m.group(2)}")
+
+        # PRIMARY: use SoapUI-declared env endpoints if present.
+        env_endpoint = ""
+        if _PROJECT_ENVIRONMENTS and env_name in _PROJECT_ENVIRONMENTS:
+            # First interface endpoint in the env; if multiple interfaces
+            # exist we take the shortest URL (usually the "base API host").
+            per_iface = _PROJECT_ENVIRONMENTS[env_name]
+            if per_iface:
+                env_endpoint = min(per_iface.values(), key=len).rstrip("/")
+
+        # FALLBACK: derive from any REST step's original URI.
+        base_url = env_endpoint
+        if not base_url:
+            for case in cases:
+                for step in case.steps:
+                    if isinstance(step, RestStep) and step.original_uri:
+                        base = step.original_uri
+                        if step.resource_path and step.resource_path in base:
+                            base = base.split(step.resource_path)[0]
+                        base_url = base.rstrip("/")
+                        break
+                if base_url:
                     break
-            if base_url:
-                break
 
         config = {
             "env": env_name,
             "base_url": base_url or "https://api.example.com",
             **{p: f"__SET_{p}__" for p in sorted(project_props)},
+            **{p: f"__SET_{p}__" for p in sorted(env_props)},
         }
+        # When the XML declared SoapUI environments, emit ALL of them as
+        # sibling `<other_env>_base_url` keys so authors can eyeball the
+        # difference in one file without checking each env.json.
+        if _PROJECT_ENVIRONMENTS:
+            for other_env, per_iface in _PROJECT_ENVIRONMENTS.items():
+                if other_env == env_name or not per_iface:
+                    continue
+                short = min(per_iface.values(), key=len).rstrip("/")
+                config[f"__soapui_env_{other_env}_base_url"] = short
         rel = f"src/main/resources/config/{env_name}.json"
         self._write(rel, json.dumps(config, indent=2) + "\n")
         return rel
@@ -2969,7 +4231,14 @@ public final class PlaceholderResolver {{
         # Cluster cases by REST-step shape (verb + path + body-hash per step)
         # so N cases that share an intent collapse to ONE @Test method with
         # N CSV rows. Single-case clusters emit exactly like before.
-        self._clusters = _cluster_cases_by_shape(cases)
+        shape_clusters = _cluster_cases_by_shape(cases)
+        # Prefix-merge pass: fold shorter clusters into longer ones when the
+        # shorter's REST-step signature is a prefix of the longer's. Merged
+        # methods emit the LONGEST shape; shorter-case rows carry a
+        # `_stop_after` CSV cell so they return early at the right step.
+        merged = _merge_prefix_clusters(shape_clusters)
+        self._clusters = [cl for cl, _sm in merged]
+        self._stop_markers_per_cluster = {idx: sm for idx, (_cl, sm) in enumerate(merged)}
         # Publish cluster -> method-name mapping for downstream emitters
         # (emit_csv_per_method uses this too).
         seen_bases: dict[str, int] = {}
@@ -2982,12 +4251,21 @@ public final class PlaceholderResolver {{
         for idx, cluster in enumerate(self._clusters):
             final_name, status_code, variant = self._cluster_to_method[idx]
             method_names.append(final_name)
+            # Precompute UNION of assertions across all cluster cases at
+            # each REST-step position so _render_rest_step_body emits every
+            # unique assertion (not just cluster[0]'s). Members' extra
+            # assertions become CSV-conditional -- their default from the
+            # source case is baked in, but rows for other cases can leave
+            # the cell blank to skip.
+            self._cluster_asserts_by_pos = self._union_cluster_asserts(cluster)
             # Use the first case as the "template" case for step rendering.
-            # All cases in the cluster share the exact same step shape and
-            # body pattern by construction; scenario data varies per CSV row.
+            # In merged clusters the FIRST case is always the LONGEST (the
+            # base cluster from `_merge_prefix_clusters`), so its steps are
+            # the full sequence -- shorter cases stop early via CSV cell.
             rendered_methods.append(self._render_test_method_v2(
                 cluster[0], service_class_name, final_name, status_code, variant,
-                cluster_size=len(cluster)))
+                cluster_size=len(cluster),
+                stop_markers=self._stop_markers_per_cluster.get(idx, {})))
 
         # Explicit @XrayTest keys from all cases (union) -- power users can
         # narrow to a subset via TestNG groups from the CSV `groups` column.
@@ -3086,7 +4364,8 @@ public class {class_name} extends BaseApiTest {{
 
     def _render_test_method_v2(self, case: TestCase, service_class_name: str,
                                  method_name: str, expected_status_code: str,
-                                 variant: str, cluster_size: int = 1) -> str:
+                                 variant: str, cluster_size: int = 1,
+                                 stop_markers: dict[str, str] = None) -> str:
         """Same shape as `_render_test_method` but wired to the convention-
         based DataProvider (`PerMethodCsvDataProvider`, name `"rows"`), and
         the method name is the business-intent form (not the hash-shortened
@@ -3095,9 +4374,17 @@ public class {class_name} extends BaseApiTest {{
         When `cluster_size > 1`, this method represents N SoapUI cases that
         share the same REST step shape; the CSV has one row per case and
         `testCaseId` is read PER ROW (from the `test_case_id` column) so
-        each scenario logs its own identity."""
+        each scenario logs its own identity.
+
+        When `stop_markers` is non-empty, the cluster is a prefix-merged
+        one: shorter cases stop early at a designated REST step. After
+        each REST step's body we emit a runtime check that returns from
+        the method when `row["_stop_after"]` equals the step's name.
+        """
         self._current_case = case.name
         self._reset_per_method_state()
+        stop_markers = stop_markers or {}
+        emit_stop_checks = bool(stop_markers)
 
         # For multi-case clusters, testCaseId varies per row; the CSV's
         # `test_case_id` column carries the original SoapUI case name.
@@ -3112,12 +4399,26 @@ public class {class_name} extends BaseApiTest {{
         assigned_flow = self._flow_by_case.get(case.name)
         body_lines = [
             id_stmt,
+            '// Prevent state leakage between rows of a multi-scenario method:'
+            ' each row starts with a fresh ctx bag.',
+            'ctx.clear();',
             '// Expand <<faker>> tokens + ${{property}} refs in every CSV cell '
             'so downstream code sees live values, not placeholders.',
             'row = PlaceholderResolver.resolveRow(row, ctx);',
             'Expected exp = expected(row);',
             '',
         ]
+        if emit_stop_checks:
+            # POSITIONAL stop marker: the `_stop_after` CSV cell carries
+            # the 1-based count of REST steps this row should execute
+            # before returning. We increment a running counter after each
+            # REST step and return when it matches.
+            body_lines.append(
+                '// Prefix-merged cluster: shorter-scenario rows return early '
+                'after N REST calls per their `_stop_after` CSV cell.')
+            body_lines.append('int __restStepIdx = 0;')
+            body_lines.append('String __stopAfter = row.getOrDefault("_stop_after", "");')
+            body_lines.append('')
         skip_count = 0
         if assigned_flow:
             skip_count = assigned_flow["prefix_len"]
@@ -3128,9 +4429,29 @@ public class {class_name} extends BaseApiTest {{
             body_lines.append(
                 f'SetupHelper.{assigned_flow["id"]}('
                 'client, ctx, row, softAssert, holder, testCaseId);')
+            # SetupHelper flows contain their own REST calls -- count them
+            # too so the positional marker stays consistent across the
+            # helper boundary.
+            if emit_stop_checks:
+                helper_rest_count = sum(
+                    1 for s in case.steps[:skip_count] if isinstance(s, RestStep))
+                if helper_rest_count:
+                    body_lines.append(f'__restStepIdx += {helper_rest_count};')
+                body_lines.append(
+                    'if (!__stopAfter.isEmpty() && __restStepIdx >= '
+                    'Integer.parseInt(__stopAfter)) { return; }')
             body_lines.append('')
         for step in case.steps[skip_count:]:
             body_lines.extend(self._render_step(step, service_class_name))
+            # Prefix-merge early-return: after each REST step, check whether
+            # this row's cumulative REST-step count has hit the `_stop_after`
+            # threshold. If so, return from the method so the LONGER
+            # cluster's tail steps don't run for shorter-scenario rows.
+            if emit_stop_checks and isinstance(step, RestStep):
+                body_lines.append('__restStepIdx++;')
+                body_lines.append(
+                    'if (!__stopAfter.isEmpty() && __restStepIdx >= '
+                    'Integer.parseInt(__stopAfter)) { return; }')
             body_lines.append('')
 
         indented = "\n".join("        " + l if l else "" for l in body_lines)
@@ -3150,13 +4471,39 @@ public class {class_name} extends BaseApiTest {{
         # prefix-derived group so weird case names don't produce broken XML.
         group_val = sanitize_identifier(case.prefix.lower())
 
+        # Optional TM-integration annotations sourced from SoapUI's
+        # `<con:testCase>` attributes. Emitted only when present so the
+        # generated code stays lean for the common (no-TM-attrs) case.
+        # Allure's `@TmsLink` renders as a clickable link to Zephyr/qTest
+        # in the report; `@Issue` renders as a clickable JIRA link.
+        extra_annotations: list[str] = []
+        if case.zephyr_test_id:
+            extra_annotations.append(
+                f'    @io.qameta.allure.TmsLink("{_jlit(case.zephyr_test_id)}")')
+        if case.zephyr_test_name:
+            # Zephyr name often carries the same info as story; only add
+            # as a Label if it's DIFFERENT from case.name to avoid noise.
+            if case.zephyr_test_name != case.name:
+                extra_annotations.append(
+                    f'    @io.qameta.allure.Label(name = "zephyrTestName", '
+                    f'value = "{_jlit(case.zephyr_test_name)}")')
+        if case.jira:
+            extra_annotations.append(
+                f'    @io.qameta.allure.Issue("{_jlit(case.jira)}")')
+        for k, v in (case.tm_extras or {}).items():
+            extra_annotations.append(
+                f'    @io.qameta.allure.Label(name = "{_jlit(k)}", '
+                f'value = "{_jlit(v)}")')
+        extra_annotations_str = ("\n" + "\n".join(extra_annotations)
+                                  if extra_annotations else "")
+
         return f"""    @Test(dataProvider = "rows",
           dataProviderClass = PerMethodCsvDataProvider.class,
           groups = {{"imported", "{group_val}"}},
           retryAnalyzer = RetryAnalyzer.class)
     @XrayTest("{_jlit(xray_id_raw)}")
     @Story("{_jlit(story)}")
-    @Description("Imported from ReadyAPI. Original description: {desc_safe}")
+    @Description("Imported from ReadyAPI. Original description: {desc_safe}"){extra_annotations_str}
     public void {method_name}(Map<String, String> row) throws Exception {{
 {indented}
     }}
@@ -3184,7 +4531,8 @@ public class {class_name} extends BaseApiTest {{
     }
 
     def emit_csv_per_method(self, class_name: str, method_name: str,
-                              cluster: list[TestCase]) -> str:
+                              cluster: list[TestCase],
+                              stop_markers: dict[str, str] = None) -> str:
         """Write `src/test/resources/csv/<class_name>/<method_name>.csv` with
         one row per case in the cluster (a cluster is 1..N SoapUI cases
         sharing the same REST step shape). Header is stable across runs
@@ -3194,7 +4542,14 @@ public class {class_name} extends BaseApiTest {{
         Placeholder-friendly: any CSV cell can hold `<<fakerToken>>` or
         `${{propertyRef}}` -- `PlaceholderResolver.resolveRow` (called at
         the top of every @Test method) expands these into live values
-        before the row reaches user code."""
+        before the row reaches user code.
+
+        When `stop_markers` is populated (cluster is a prefix-merged one),
+        adds a `_stop_after` column whose per-row value is the step name
+        where the shorter case's flow originally ended -- the emitted
+        method returns early at that step so the LONGER cluster's tail
+        steps don't run for shorter-scenario rows."""
+        stop_markers = stop_markers or {}
         # Union placeholders across every case in the cluster so the CSV
         # header carries every runtime column any row could need.
         union_csv: set[str] = set()
@@ -3228,25 +4583,50 @@ public class {class_name} extends BaseApiTest {{
         # case value. The Java assertion emitters read row.getOrDefault
         # against these column names, so editing a CSV cell changes what
         # gets asserted at runtime without any code change.
+        #
+        # Column NAMING uses cluster[0]'s step name at each REST position
+        # -- NOT each case's own step name -- so cluster members with
+        # different names for the same-shape step (e.g. `token` vs
+        # `getToken`) all write to the SAME column that the emitted Java
+        # actually reads. Without this, member #2's cell would land in a
+        # column the Java never queries.
+        cluster0_rest_step_names: list[str] = [
+            s.step_name for s in cluster[0].steps if isinstance(s, RestStep)]
         assert_cols_order: list[str] = []
         assert_vals_per_case: dict[str, list[str]] = {}
         for case_idx, c in enumerate(cluster):
+            pos = 0
             for step in c.steps:
                 if not isinstance(step, RestStep):
                     continue
+                # Use cluster[0]'s step name at this position (falls back to
+                # the case's own name for cases longer than cluster[0]
+                # -- prefix-merged flavour where cluster[0] is longest).
+                canonical_step_name = (
+                    cluster0_rest_step_names[pos]
+                    if pos < len(cluster0_rest_step_names) else step.step_name)
+                pos += 1
                 a_idx = 0
                 for a in step.assertions:
                     if a.disabled:
                         continue
+                    # Simple assertion types: single (col, val)
                     key = _assert_col_key(a, a_idx)
                     a_idx += 1
-                    if key is None:
-                        continue
-                    col = f"expected_{sanitize_identifier(step.step_name)}_{key}"
-                    if col not in assert_vals_per_case:
-                        assert_vals_per_case[col] = ["" for _ in cluster]
-                        assert_cols_order.append(col)
-                    assert_vals_per_case[col][case_idx] = _assert_default_value(a)
+                    if key is not None:
+                        col = f"expected_{sanitize_identifier(canonical_step_name)}_{key}"
+                        if col not in assert_vals_per_case:
+                            assert_vals_per_case[col] = ["" for _ in cluster]
+                            assert_cols_order.append(col)
+                        assert_vals_per_case[col][case_idx] = _assert_default_value(a)
+                    # Multi-element assertion types (MessageContent /
+                    # DataAndMetadata): each enabled element becomes its
+                    # own column.
+                    for col, val in _assert_element_cols(a, canonical_step_name):
+                        if col not in assert_vals_per_case:
+                            assert_vals_per_case[col] = ["" for _ in cluster]
+                            assert_cols_order.append(col)
+                        assert_vals_per_case[col][case_idx] = val
 
         # ---- Merged-template placeholder columns ---------------------
         # When emit_templates_deduplicated merged two+ same-shape bodies
@@ -3270,13 +4650,40 @@ public class {class_name} extends BaseApiTest {{
                         merged_tpl_cols.append(col)
                     merged_tpl_vals[col][case_idx] = val
 
-        cols = csv_columns + hint_col_names + merged_tpl_cols + assert_cols_order + [
-            "test_case_id",       # original SoapUI case name (per row -- read at runtime)
+        # Include `_stop_after` column ONLY when the cluster is prefix-
+        # merged. Header stays lean for regular clusters so authors don't
+        # see a mystery blank column.
+        stop_col = ["_stop_after"] if stop_markers else []
+
+        # Column order: FOUR logical groups so an Excel user can scan
+        # left-to-right and know exactly what they're looking at.
+        #
+        #   A. Meta / traceability
+        #        description, test_case_id, jira_xray_id, variant
+        #
+        #   B. Control
+        #        _stop_after  (only when prefix-merged clusters exist)
+        #
+        #   C. Request data (everything that goes INTO the request)
+        #        csv_columns       -- runtime placeholders (Properties_X)
+        #        hint_col_names    -- faker/property hints (<<email>>)
+        #        merged_tpl_cols   -- template diff values (tpl_X)
+        #
+        #   D. Expected values (everything ASSERTED against the response)
+        #        expected_status_code   -- top-level status shortcut
+        #        expected               -- semicolon combined shortcut
+        #        assert_cols_order      -- per-assertion expected values
+        #                                  (expected_<step>_<assertion_key>)
+        group_a_meta = [
+            "description",        # SoapUI <con:description> text
+            "test_case_id",       # original SoapUI case name (per row)
             "jira_xray_id",       # e.g. B2B-172 (per row)
             "variant",            # scenario disambiguator (from name suffix)
-            "expected_status_code",
-            "expected",           # semicolon-joined k:v extras (statusCode:200;...)
         ]
+        group_b_control = stop_col
+        group_c_request = csv_columns + hint_col_names + merged_tpl_cols
+        group_d_expected = ["expected_status_code", "expected"] + assert_cols_order
+        cols = group_a_meta + group_b_control + group_c_request + group_d_expected
         header_row = ",".join(cols)
 
         # One row per case in the cluster. Reserved cells come from the
@@ -3314,14 +4721,29 @@ public class {class_name} extends BaseApiTest {{
                 _csv_cell(merged_tpl_vals[col][case_idx])
                 for col in merged_tpl_cols
             ]
-            row_cells = (
+            stop_cell = [_csv_cell(stop_markers.get(c.name, ""))] if stop_markers else []
+            # Description from SoapUI: collapse newlines to spaces so it
+            # stays a single CSV cell without breaking row boundaries.
+            desc_flat = " ".join((c.description or "").split())
+            # Match header column groups exactly:
+            #   Group A: meta / traceability (4 cells)
+            #   Group B: control (0 or 1 cells)
+            #   Group C: request data (csv_columns + hint_col_names + merged_tpl_cols)
+            #   Group D: expected values (status_code + expected + assert_cols_order)
+            group_a_cells = [
+                _csv_cell(desc_flat), _csv_cell(c.name),
+                _csv_cell(c.prefix), _csv_cell(variant),
+            ]
+            group_c_cells = (
                 ["" for _ in csv_columns] +
                 [_csv_cell(hint) for _, hint in hinted_cols] +
-                merged_tpl_cells +
-                assert_cells +
-                [_csv_cell(c.name), _csv_cell(c.prefix),
-                 _csv_cell(variant), _csv_cell(derived_status), _csv_cell(expected_str)]
+                merged_tpl_cells
             )
+            group_d_cells = (
+                [_csv_cell(derived_status), _csv_cell(expected_str)] +
+                assert_cells
+            )
+            row_cells = group_a_cells + stop_cell + group_c_cells + group_d_cells
             rows.append(",".join(row_cells))
 
         content = header_row + "\n" + "\n".join(rows) + "\n"
@@ -3353,11 +4775,58 @@ public class {class_name} extends BaseApiTest {{
             CSV with the correct per-row value.
 
         Returns {body-hash -> classpath-path} for by-hash lookups."""
-        import hashlib, json as _json
+        import hashlib, json as _json, re as _re
         self._merged_template_cells = {}
 
+        def _canonicalize(text: str) -> tuple[str, object]:
+            """Return (canonical_text, parsed_tree_or_None). For JSON,
+            parses and re-serializes with fixed indent so trivial
+            whitespace/formatting differences produce identical text.
+            For non-JSON, collapses runs of whitespace so extra spaces
+            around fields don't make bodies hash differently.
+
+            This kills a class of duplicate templates that only differ
+            in author-invisible whitespace (e.g. one file has a leading
+            space before "annualSalesRange" and the other doesn't --
+            same content, same shape, was two files, now one).
+
+            Repairs a common corruption pattern before giving up on
+            JSON parsing: SoapUI XMLs edited by hand on Windows can
+            store JSON with 2-char `\\r`/`\\n` sequences (backslash +
+            letter) AS whitespace between tokens instead of real CR/LF.
+            That produces invalid JSON since `\\r` outside a string is
+            not a valid escape. Retry after stripping those sequences."""
+            try:
+                tree = _json.loads(text)
+                canon = _json.dumps(tree, indent=2, ensure_ascii=False,
+                                     sort_keys=False)
+                return canon, tree
+            except (_json.JSONDecodeError, ValueError):
+                pass
+            # Retry: strip stray backslash-escape sequences that leaked
+            # into JSON whitespace positions (2-char `\r`, `\n`, `\t`).
+            # These occur when a SoapUI XML is edited and Windows CRLF
+            # gets mangled to backslash-r + LF. Replacing globally is
+            # safe because inside string values, `\r`/`\n`/`\t` are
+            # valid escapes AND already parse-through cleanly; the only
+            # problem case is when they land BETWEEN JSON tokens.
+            repaired = text.replace("\\r\\n", "\n") \
+                            .replace("\\r", " ") \
+                            .replace("\\n", "\n") \
+                            .replace("\\t", " ")
+            try:
+                tree = _json.loads(repaired)
+                canon = _json.dumps(tree, indent=2, ensure_ascii=False,
+                                     sort_keys=False)
+                return canon, tree
+            except (_json.JSONDecodeError, ValueError):
+                pass
+            # Still non-JSON: collapse whitespace runs, strip.
+            collapsed = _re.sub(r"\s+", " ", repaired).strip()
+            return collapsed, None
+
         # Pass 1: normalize every body, keep provenance for each (case, step).
-        # `entries` = [{"case", "step", "translated", "hash", "bucket"}]
+        # `entries` = [{"case", "step", "translated", "hash", "bucket", "tree"}]
         entries: list[dict] = []
         for case in cases:
             for step in case.steps:
@@ -3365,13 +4834,38 @@ public class {class_name} extends BaseApiTest {{
                     continue
                 if not step.request_body.strip():
                     continue
-                translated, _ = soapui_body_to_placeholders(step.request_body)
-                h = hashlib.sha1(translated.encode("utf-8")).hexdigest()[:10]
+                translated, _ph = soapui_body_to_placeholders(step.request_body)
+                # Pick the right file extension for this body's media type
+                # (JSON / XML / form / plain). Non-JSON bodies also skip
+                # JSON canonicalization -- canonicalize would try to parse
+                # XML as JSON and fall through to whitespace-collapse,
+                # which is fine but the file extension needs to match so
+                # editors + IDEs open with the right syntax highlighting.
+                mt = (step.media_type or "application/json").split(";")[0].strip().lower()
+                is_json_mt = (mt in ("application/json", "application/vnd.api+json")
+                              or mt.endswith("+json"))
+                if is_json_mt:
+                    canonical, tree = _canonicalize(translated)
+                    ext = "json"
+                elif mt in ("text/xml", "application/xml", "application/soap+xml") or mt.endswith("+xml"):
+                    canonical, tree = translated.strip(), None
+                    ext = "xml"
+                elif mt == "application/x-www-form-urlencoded":
+                    canonical, tree = translated.strip(), None
+                    ext = "form"
+                else:
+                    canonical, tree = translated.strip(), None
+                    ext = "txt"
+                h = hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:10]
                 seg = (step.resource_path or "").strip("/").split("/", 1)[0]
                 bucket = sanitize_identifier(seg).lower() or "misc"
                 entries.append({
                     "case": case.name, "step": step.step_name,
-                    "translated": translated, "hash": h, "bucket": bucket,
+                    # Write the CANONICAL form on disk (not the raw
+                    # SoapUI-preserved formatting) so bodies with
+                    # cosmetically-different whitespace collapse into one file.
+                    "translated": canonical, "tree": tree,
+                    "hash": h, "bucket": bucket, "ext": ext,
                 })
 
         # Pass 2: partition by JSON-parseability. Non-JSON goes straight
@@ -3379,10 +4873,9 @@ public class {class_name} extends BaseApiTest {{
         json_entries: list[dict] = []
         nonjson_entries: list[dict] = []
         for e in entries:
-            try:
-                e["tree"] = _json.loads(e["translated"])
+            if e["tree"] is not None:
                 json_entries.append(e)
-            except (_json.JSONDecodeError, ValueError):
+            else:
                 nonjson_entries.append(e)
 
         # Pass 3: JSON bodies get grouped by structural shape (leaf types
@@ -3416,7 +4909,7 @@ public class {class_name} extends BaseApiTest {{
             first = group[0]
             classpath_dir = f"templates/{self.suite_name}/{first['bucket']}/"
             classpath_file = (
-                f"{sanitize_identifier(first['step']).lower()}_merged_{merged_hash}.json")
+                f"{sanitize_identifier(first['step']).lower()}_merged_{merged_hash}.{first['ext']}")
             classpath = classpath_dir + classpath_file
             # Write the merged template once.
             self._write(f"src/main/resources/{classpath}", merged_text)
@@ -3439,10 +4932,13 @@ public class {class_name} extends BaseApiTest {{
     def _emit_tier1_for(self, entries: list[dict], hash_to_path: dict[str, str]) -> None:
         """Exact-body dedup helper used by both JSON singleton groups and
         the non-JSON fallback path. Writes each unique body once and maps
-        every (case, step) to it."""
+        every (case, step) to it. Uses the per-entry `ext` field for the
+        file extension so XML/form/plain bodies land as `.xml`/`.form`/
+        `.txt` instead of `.json`."""
         for e in entries:
             classpath_dir = f"templates/{self.suite_name}/{e['bucket']}/"
-            classpath_file = f"{sanitize_identifier(e['step']).lower()}_{e['hash']}.json"
+            ext = e.get("ext", "json")
+            classpath_file = f"{sanitize_identifier(e['step']).lower()}_{e['hash']}.{ext}"
             classpath = classpath_dir + classpath_file
             self._template_path_by_step[(e["case"], e["step"])] = classpath
             if e["hash"] not in hash_to_path:
@@ -3493,90 +4989,10 @@ public class {class_name} extends BaseApiTest {{
         self._write(rel, content)
         return rel
 
-    # -- testng.xml --------------------------------------------------------
-
-    def emit_testng_entry(self, prefix: str, test_class_fqn: str,
-                           cases: list[TestCase]) -> str:
-        """One <test> block per case, each pointing at its own CSV so the
-        framework's data-provider picks up the right file per test method."""
-        test_blocks = []
-        for case in cases:
-            csv_name = f"{self._short(case.name)}.csv"
-            method_name = self._short(case.name)
-            test_blocks.append(f"""    <test name="{case.name}">
-        <parameter name="dataFile" value="testdata/{self.suite_name}/{csv_name}"/>
-        <classes>
-            <class name="{test_class_fqn}">
-                <methods>
-                    <include name="{method_name}"/>
-                </methods>
-            </class>
-        </classes>
-    </test>""")
-        content = f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">
-<suite name="Imported-{prefix}" verbose="1" parallel="none">
-    <listeners>
-        <listener class-name="com.ak.api.reporting.TestSuiteListener"/>
-        <listener class-name="com.ak.api.reporting.TestCaseLogListener"/>
-        <listener class-name="com.ak.api.reporting.ExtentReportListener"/>
-        <listener class-name="com.ak.api.reporting.XrayReportListener"/>
-    </listeners>
-{chr(10).join(test_blocks)}
-</suite>
-"""
-        rel = f"src/test/resources/testng-{self.suite_name}-{self._short(prefix)}.xml"
-        self._write(rel, content)
-        return rel
-
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
-
-def _emit_master_testng(emitter: Emitter, prefixes: list[str]) -> str:
-    """Emit a testng-<suite>-all.xml that includes all per-prefix suites for
-    THIS suite via <suite-file> references."""
-    file_lines = [
-        f'    <suite-file path="./testng-{emitter.suite_name}-{emitter._short(p)}.xml"/>'
-        for p in prefixes]
-    content = f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">
-<suite name="Imported-{emitter.suite_name}-All" verbose="1">
-    <suite-files>
-{chr(10).join(file_lines)}
-    </suite-files>
-</suite>
-"""
-    rel = f"src/test/resources/testng-{emitter.suite_name}-all.xml"
-    emitter._write(rel, content)
-    return rel
-
-
-def _cases_prefix(case: TestCase) -> str:
-    """Return a stable prefix bucket for a case, coping with mixed naming.
-
-    Priority:
-    1. Standard `B2B-172` (uppercase-dash-digits) as first token.
-    2. Alphanumeric-only prefix like `B2B134` (SoapUI's older style).
-    3. Fallback to the sanitized full case name so it still gets its own bucket.
-    """
-    m = re.match(r"^([A-Z]+-\d+)_", case.name)
-    if m:
-        return m.group(1)
-    m = re.match(r"^([A-Z]+\d+)_", case.name)
-    if m:
-        return m.group(1)
-    return sanitize_identifier(case.name)
-
-
-def _iter_prefix_buckets(cases: list[TestCase]) -> dict[str, list[TestCase]]:
-    """Group cases by prefix bucket, preserving discovery order."""
-    buckets: dict[str, list[TestCase]] = {}
-    for c in cases:
-        buckets.setdefault(_cases_prefix(c), []).append(c)
-    return buckets
-
 
 def _default_suite_name(xml_path: str) -> str:
     """Suite name derived from the source-XML basename (stripped +
@@ -3622,10 +5038,45 @@ def _clean_suite_output(output_dir: str, suite_name: str, package_root: str,
             os.path.join(output_dir, "src/test/resources/csv", cls))
 
     removed = []
+    _locked_files: list[str] = []
+
+    def _on_rm_error(func, path, exc_info):
+        """Skip files that another process (usually Excel/IDE) has open,
+        log them, and continue. Prior behavior was to fail-fast with a
+        PermissionError which forced the user to close every open CSV
+        before regenerating.
+
+        Also skip the cascade `OSError: [WinError 145] directory not
+        empty` that fires when we skipped a locked file and then
+        Python tries to `os.rmdir` the parent directory it lives in --
+        that's a natural consequence of the file skip, not a separate
+        error worth failing on."""
+        err = exc_info[1] if exc_info else None
+        if isinstance(err, PermissionError):
+            _locked_files.append(path)
+            return
+        # Windows "directory not empty" after a skipped file inside it.
+        if isinstance(err, OSError) and getattr(err, "winerror", None) == 145:
+            _locked_files.append(path + " (parent of locked file)")
+            return
+        # Missing file/dir mid-walk (another process racing us). Ignore.
+        if isinstance(err, FileNotFoundError):
+            return
+        # Re-raise anything else -- real IO error worth stopping on.
+        raise err
+
     for d in dirs_to_clean:
         if os.path.isdir(d):
-            shutil.rmtree(d)
+            shutil.rmtree(d, onerror=_on_rm_error)
             removed.append(d)
+    if _locked_files:
+        print(f"[ra_converter] --clean: {len(_locked_files)} file(s) locked "
+              f"by another process (Excel? IDE? open editor?) -- skipped. "
+              f"Close them and re-run to fully clean.")
+        for p in _locked_files[:3]:
+            print(f"    LOCKED: {p}")
+        if len(_locked_files) > 3:
+            print(f"    ... and {len(_locked_files) - 3} more")
 
     # Individual files (testng suite files + flow diagram + any older
     # xml-basename-based flow diagram from a rename)
@@ -3680,22 +5131,12 @@ def _dedupe_case_names_inplace(cases: list[TestCase]) -> int:
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--input", required=True, help="Path to the ReadyAPI/SoapUI project XML")
-    group = p.add_mutually_exclusive_group(required=True)
-    group.add_argument("--prefix", help="JIRA prefix to convert (e.g. B2B-172)")
-    group.add_argument("--all-prefixes", action="store_true",
-                       help="Legacy: convert EVERY case-name prefix bucket "
-                            "into its own test class (many small classes). "
-                            "Kept for backwards compat; prefer "
-                            "--one-class-per-suite for new imports.")
-    group.add_argument("--one-class-per-suite", action="store_true",
-                       dest="one_class_per_suite",
-                       help="Recommended: emit ONE Java test class per SoapUI "
-                            "test suite -- every case in it becomes a @Test "
-                            "method inside that class. Matches reference "
-                            "framework layout: CSVs at csv/<Class>/<method>.csv, "
-                            "templates deduplicated across the suite, one "
-                            "master TestNG suite XML at Suites/<Suite>_Regression.xml "
-                            "with Allure listeners wired in.")
+    # (Legacy `--prefix` and `--all-prefixes` modes have been removed.
+    # There is exactly ONE emission mode now: ONE Java test class per
+    # SoapUI <testSuite>, with cases clustered into methods, per-method
+    # multi-row CSVs, deduped templates, assertions parameterized via
+    # CSV cells, faker+property placeholder resolution at runtime, and
+    # a master TestNG suite XML with Allure listeners wired in.)
     p.add_argument("--output", default="output", help="Output root directory")
     p.add_argument("--package-root", default="com.ak.api", help="Java package root")
     p.add_argument("--service-name", default="ProgramAccounts",
@@ -3751,40 +5192,39 @@ def main():
         print(f"[ra_converter] renamed {dup_renames} duplicate case name(s) "
               f"with _dupN suffix so Java method names don't collide")
 
-    if getattr(args, "one_class_per_suite", False):
-        # New mode: preserve SoapUI suite boundaries so each suite becomes
-        # ONE Java class with N methods. Buckets are for the legacy per-
-        # prefix path only; here we track (soapui_suite_name -> cases).
-        buckets = {}  # unused in v2 path
-        cases_in_scope = cases_all
-        soapui_suites = parsed_suites
-        print(f"[ra_converter] --one-class-per-suite: "
-              f"{len(soapui_suites)} class(es) will be emitted "
-              f"(cases grouped by endpoint-shape into fewer methods "
-              f"with N CSV rows each):")
-        for sn, cs in soapui_suites:
-            clusters_preview = _cluster_cases_by_shape(cs)
-            print(f"    - {sn}: {len(cs)} test cases "
-                  f"-> {len(clusters_preview)} @Test methods "
-                  f"({sum(1 for cl in clusters_preview if len(cl) > 1)} "
-                  f"with >1 CSV row)")
-    elif args.all_prefixes:
-        buckets = _iter_prefix_buckets(cases_all)
-        print(f"[ra_converter] --all-prefixes: {len(buckets)} prefix buckets")
-        cases_in_scope = cases_all
-        soapui_suites = []
-    else:
-        cases_in_scope = group_by_prefix(cases_all, args.prefix)
-        if not cases_in_scope:
-            print(f"[ra_converter] no cases match prefix {args.prefix!r}")
-            return 1
-        buckets = {args.prefix: cases_in_scope}
-        soapui_suites = []
-        print(f"[ra_converter] {len(cases_in_scope)} cases match prefix {args.prefix}:")
-        for c in cases_in_scope:
-            rest_ct = sum(1 for s in c.steps if isinstance(s, RestStep))
-            groovy_ct = sum(1 for s in c.steps if isinstance(s, GroovyStep))
-            print(f"    - {c.name}  ({len(c.steps)} steps, {rest_ct} REST, {groovy_ct} Groovy)")
+    # SINGLE emission mode: one Java test class per SoapUI <testSuite>,
+    # cases clustered into methods with N CSV rows, deduped templates,
+    # assertions parameterized via CSV cells, per-test-method placeholder
+    # resolution at runtime, master TestNG suite XML with Allure wired in.
+
+    # FLATTEN: a SoapUI case that bundles N calls to the same endpoint
+    # (create/update/verify all on the same URL) is really N scenarios;
+    # split into N pseudo-cases so clustering can fold them with
+    # variants from OTHER SoapUI cases into a single method with N rows.
+    flattened_suites: list[tuple[str, list[TestCase]]] = []
+    total_before, total_after = 0, 0
+    for sn, cs in parsed_suites:
+        flat = _flatten_repeat_endpoint_cases(cs)
+        flattened_suites.append((sn, flat))
+        total_before += len(cs)
+        total_after += len(flat)
+    if total_after > total_before:
+        print(f"[ra_converter] flatten repeat-endpoint cases: "
+              f"{total_before} SoapUI cases -> {total_after} pseudo-cases "
+              f"(split {total_after - total_before} extra pseudo-cases "
+              f"so same-endpoint variants can share a method)")
+    parsed_suites = flattened_suites
+    cases_in_scope = [c for _sn, cs in parsed_suites for c in cs]
+    soapui_suites = parsed_suites
+    print(f"[ra_converter] {len(soapui_suites)} class(es) will be emitted "
+          f"(cases grouped by endpoint-shape into fewer methods "
+          f"with N CSV rows each):")
+    for sn, cs in soapui_suites:
+        clusters_preview = _cluster_cases_by_shape(cs)
+        print(f"    - {sn}: {len(cs)} test cases "
+              f"-> {len(clusters_preview)} @Test methods "
+              f"({sum(1 for cl in clusters_preview if len(cl) > 1)} "
+              f"with >1 CSV row)")
 
     # ONE shared client covering every REST op across ALL prefixes in scope.
     # Cross-prefix dedup: if two prefixes both hit /token, they share the same
@@ -3834,133 +5274,96 @@ def main():
         print("[ra_converter]   no flows meet the threshold; test methods "
               "keep all steps inline")
 
-    # =========================================================
-    # v2 path: one Java class per SoapUI test suite.
-    # =========================================================
-    if getattr(args, "one_class_per_suite", False):
-        # 0) The convention-based DataProvider + PlaceholderResolver need
-        #    to exist ONCE per output tree -- rewriting them every run is
-        #    idempotent.
-        dp_rel = emitter.emit_per_method_csv_data_provider()
-        print(f"[ra_converter] emitted convention CSV data provider: {dp_rel}")
-        pr_rel = emitter.emit_placeholder_resolver()
-        emitter._resolver_emitted = True
-        print(f"[ra_converter] emitted placeholder resolver: {pr_rel}")
+    # 0) The convention-based DataProvider + PlaceholderResolver need
+    #    to exist ONCE per output tree -- rewriting them every run is
+    #    idempotent.
+    dp_rel = emitter.emit_per_method_csv_data_provider()
+    print(f"[ra_converter] emitted convention CSV data provider: {dp_rel}")
+    pr_rel = emitter.emit_placeholder_resolver()
+    emitter._resolver_emitted = True
+    print(f"[ra_converter] emitted placeholder resolver: {pr_rel}")
 
-        # 1a) Deduped templates emitted FIRST so _template_path_by_step is
-        #     populated before ANY step-rendering reads it (SetupHelper AND
-        #     the test-class emitter both depend on it).
-        template_map = emitter.emit_templates_deduplicated(cases_in_scope)
-        rest_step_ct = sum(
-            1 for c in cases_in_scope for s in c.steps
-            if isinstance(s, RestStep) and s.request_body.strip())
-        dedup_pct = (100 - int(100 * len(template_map) / max(1, rest_step_ct)))
-        print(f"[ra_converter] emitted {len(template_map)} deduped templates "
-              f"(from {rest_step_ct} REST bodies -> {dedup_pct}% dedup)")
+    # 1a) Deduped templates emitted FIRST so _template_path_by_step is
+    #     populated before ANY step-rendering reads it (SetupHelper AND
+    #     the test-class emitter both depend on it).
+    template_map = emitter.emit_templates_deduplicated(cases_in_scope)
+    rest_step_ct = sum(
+        1 for c in cases_in_scope for s in c.steps
+        if isinstance(s, RestStep) and s.request_body.strip())
+    dedup_pct = (100 - int(100 * len(template_map) / max(1, rest_step_ct)))
+    print(f"[ra_converter] emitted {len(template_map)} deduped templates "
+          f"(from {rest_step_ct} REST bodies -> {dedup_pct}% dedup)")
 
-        # 1b) SetupHelper emission runs AFTER template dedup so its shared
-        #     flow methods reference the deduped template paths, not the
-        #     flat legacy fallback.
-        if flows:
-            helper_rel = emitter.emit_setup_helper(flows, service_class)
-            print(f"[ra_converter] emitted setup helper: {helper_rel}")
+    # 1b) SetupHelper emission runs AFTER template dedup so its shared
+    #     flow methods reference the deduped template paths.
+    if flows:
+        helper_rel = emitter.emit_setup_helper(flows, service_class)
+        print(f"[ra_converter] emitted setup helper: {helper_rel}")
 
-        # 2) Emit one Java class per SoapUI test suite + CSVs colocated
-        #    under `csv/<ClassName>/`.
-        v2_class_fqns: list[str] = []
-        total_methods = 0
-        total_rows = 0
-        for soapui_sname, sui_cases in soapui_suites:
-            rel, fqn, method_names = emitter.emit_test_class_per_suite(
-                soapui_sname, sui_cases, service_class)
-            v2_class_fqns.append(fqn)
+    # 2) Emit one Java class per SoapUI test suite + CSVs colocated
+    #    under `csv/<ClassName>/`.
+    class_fqns: list[str] = []
+    total_methods = 0
+    total_rows = 0
+    for soapui_sname, sui_cases in soapui_suites:
+        rel, fqn, method_names = emitter.emit_test_class_per_suite(
+            soapui_sname, sui_cases, service_class)
+        class_fqns.append(fqn)
 
-            # The class emitter set up emitter._clusters + _cluster_to_method
-            # while rendering; reuse them so CSV filenames match the method
-            # names written into the class exactly.
-            class_simple = fqn.rsplit(".", 1)[-1]
-            for idx, cluster in enumerate(emitter._clusters):
-                mname, _status, _variant = emitter._cluster_to_method[idx]
-                emitter.emit_csv_per_method(class_simple, mname, cluster)
-                total_rows += len(cluster)
-            multi = sum(1 for cl in emitter._clusters if len(cl) > 1)
-            print(f"[ra_converter] emitted {fqn}  "
-                  f"({len(method_names)} @Test methods, "
-                  f"{multi} with >1 CSV row, "
-                  f"{sum(len(cl) for cl in emitter._clusters if len(cl) > 1)} rows in shared CSVs)")
-            total_methods += len(method_names)
-        print(f"[ra_converter] v2 total: {len(v2_class_fqns)} class(es), "
-              f"{total_methods} @Test method(s), "
-              f"{total_rows} CSV row(s) across "
-              f"{total_methods} CSV file(s) under src/test/resources/csv/  "
-              f"(saved {total_rows - total_methods} methods via endpoint clustering)")
+        # The class emitter set up emitter._clusters + _cluster_to_method
+        # while rendering; reuse them so CSV filenames match the method
+        # names written into the class exactly.
+        class_simple = fqn.rsplit(".", 1)[-1]
+        prefix_merged = 0
+        for idx, cluster in enumerate(emitter._clusters):
+            mname, _status, _variant = emitter._cluster_to_method[idx]
+            sm = emitter._stop_markers_per_cluster.get(idx, {})
+            if sm:
+                prefix_merged += 1
+            emitter.emit_csv_per_method(class_simple, mname, cluster, stop_markers=sm)
+            total_rows += len(cluster)
+        multi = sum(1 for cl in emitter._clusters if len(cl) > 1)
+        print(f"[ra_converter] emitted {fqn}  "
+              f"({len(method_names)} @Test methods, "
+              f"{multi} with >1 CSV row, "
+              f"{prefix_merged} prefix-merged, "
+              f"{sum(len(cl) for cl in emitter._clusters if len(cl) > 1)} rows in shared CSVs)")
+        total_methods += len(method_names)
+    print(f"[ra_converter] total: {len(class_fqns)} class(es), "
+          f"{total_methods} @Test method(s), "
+          f"{total_rows} CSV row(s) across "
+          f"{total_methods} CSV file(s) under src/test/resources/csv/  "
+          f"(saved {total_rows - total_methods} methods via clustering+prefix-merge)")
 
-        # 3) Env configs (unchanged from v1)
-        for env in args.envs.split(","):
-            emitter.emit_env_config(cases_in_scope, env_name=env.strip())
-        print(f"[ra_converter] emitted env config for: {args.envs}")
+    # 3) Env configs (one file per env, containing every distinct config key).
+    # When the source XML declares SoapUI environments, use their names as
+    # the authoritative list AND union with any --envs values so the user
+    # can add extras (dev, ci) that aren't in the XML. Otherwise use the
+    # CLI list verbatim.
+    env_names: list[str] = [e.strip() for e in args.envs.split(",") if e.strip()]
+    if _PROJECT_ENVIRONMENTS:
+        for xml_env in _PROJECT_ENVIRONMENTS:
+            if xml_env not in env_names:
+                env_names.append(xml_env)
+        print(f"[ra_converter] detected {len(_PROJECT_ENVIRONMENTS)} "
+              f"SoapUI environments in project XML: "
+              f"{', '.join(sorted(_PROJECT_ENVIRONMENTS))}")
+    for env in env_names:
+        emitter.emit_env_config(cases_in_scope, env_name=env)
+    print(f"[ra_converter] emitted env config for: {', '.join(env_names)}")
 
-        # 4) Master TestNG suite XMLs at Suites/<Suite>_Regression.xml
-        #    (+ _Smoke.xml as a starter template with same class list;
-        #    authors typically narrow it later by editing groups).
-        for variant in ("Regression", "Smoke"):
-            master_rel = emitter.emit_master_suite_xml(v2_class_fqns, variant=variant)
-            print(f"[ra_converter] emitted master suite: {master_rel}")
+    # 4) Master TestNG suite XMLs at Suites/<Suite>_Regression.xml
+    #    (+ _Smoke.xml as a starter template with same class list;
+    #    authors typically narrow it later by editing groups).
+    for variant in ("Regression", "Smoke"):
+        master_rel = emitter.emit_master_suite_xml(class_fqns, variant=variant)
+        print(f"[ra_converter] emitted master suite: {master_rel}")
 
-        # Flow diagram still useful in v2 for visualizing shared setup.
-        flow_rel = emitter.emit_flow_diagram(
-            args.input, cases_in_scope, flows,
-            service_class, shared_ops_count=len(shared_ops))
-        print(f"[ra_converter] emitted flow diagram: {flow_rel}")
-
-    # =========================================================
-    # Legacy path: --prefix or --all-prefixes
-    # =========================================================
-    else:
-        # Legacy modes: SetupHelper runs BEFORE templates because those
-        # modes use the flat template layout `templates/<suite>/<step>.json`
-        # that doesn't depend on the dedup map.
-        if flows:
-            helper_rel = emitter.emit_setup_helper(flows, service_class)
-            print(f"[ra_converter] emitted setup helper: {helper_rel}")
-
-        # Emit one test class per prefix bucket
-        prefix_order: list[str] = []
-        for pref, pref_cases in buckets.items():
-            prefix_order.append(pref)
-            emitter.emit_test_class(pref, pref_cases, service_class)
-
-        # Emit the flow diagram documenting THIS suite's migration.
-        flow_rel = emitter.emit_flow_diagram(
-            args.input, cases_in_scope, flows,
-            service_class, shared_ops_count=len(shared_ops))
-        print(f"[ra_converter] emitted flow diagram: {flow_rel}")
-        print(f"[ra_converter] emitted {len(prefix_order)} test classes "
-              f"(one per prefix bucket)")
-
-        # Per-case CSV + template artifacts (legacy shape)
-        for case in cases_in_scope:
-            emitter.emit_csv(case)
-            emitter.emit_templates(case)
-        print(f"[ra_converter] emitted CSVs + request-body templates for "
-              f"{len(cases_in_scope)} cases")
-
-        # Env configs -- one file per env, containing every distinct config key
-        # observed across all cases in scope
-        for env in args.envs.split(","):
-            emitter.emit_env_config(cases_in_scope, env_name=env.strip())
-        print(f"[ra_converter] emitted env config for: {args.envs}")
-
-        # testng.xml per prefix, plus a master that aggregates them all
-        for pref in prefix_order:
-            fqn = (f"{args.package_root}.tests.imported.{suite_name}."
-                   f"{emitter._short(pref)}."
-                   + emitter._short_cls(pref) + "Test")
-            emitter.emit_testng_entry(pref, fqn, buckets[pref])
-        if args.all_prefixes:
-            master_rel = _emit_master_testng(emitter, prefix_order)
-            print(f"[ra_converter] emitted master suite: {master_rel}")
-        print(f"[ra_converter] emitted {len(prefix_order)} per-prefix testng entries")
+    # Flow diagram for visualizing shared setup.
+    flow_rel = emitter.emit_flow_diagram(
+        args.input, cases_in_scope, flows,
+        service_class, shared_ops_count=len(shared_ops))
+    print(f"[ra_converter] emitted flow diagram: {flow_rel}")
 
     # ---- AUDIT LEDGER: proves every SoapUI assertion / Groovy block was ----
     # ---- accounted for (translated, stubbed, or explicitly TODO'd). --------
