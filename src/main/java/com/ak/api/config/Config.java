@@ -146,6 +146,20 @@ public final class Config {
             }
             System.out.println("[Config]   " + k + " = " + display);
         }
+        // Loud warning banner when the run is CERTAIN to fail against the
+        // fallback baseUrl (default jsonplaceholder + no api_config keys).
+        // Every REST call will 404 -- surface the misconfiguration so it
+        // isn't blamed on the target API.
+        if ("BUILT-IN FALLBACK (jsonplaceholder) -- your config is not reaching this code".equals(source)
+                || (!isNonEmpty(derived) && "https://jsonplaceholder.typicode.com".equals(effective))) {
+            System.out.println("[Config] ");
+            System.out.println("[Config] *** WARNING ***  Tests will run against JSONPLACEHOLDER (public sample API)");
+            System.out.println("[Config] *** WARNING ***  because program_configuration.json is missing or empty.");
+            System.out.println("[Config] *** WARNING ***  Expect HTTP 404 on every request. To point tests at your");
+            System.out.println("[Config] *** WARNING ***  real env, put a program_configuration.json under");
+            System.out.println("[Config] *** WARNING ***  src/main/resources/ (see program_configuration.example.json),");
+            System.out.println("[Config] *** WARNING ***  or set -Dapi_config.api_end_point=... on the mvn command line.");
+        }
         System.out.println("[Config] ============================================================");
     }
 

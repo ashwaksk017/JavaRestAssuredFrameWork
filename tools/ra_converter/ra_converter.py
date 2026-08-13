@@ -2390,6 +2390,22 @@ def _jsonpath_to_gpath(path: str) -> str:
     return p
 
 
+def _has_soapui_placeholder(s: str) -> bool:
+    """True when the string contains an unresolved SoapUI property
+    placeholder that would confuse a downstream evaluator (JsonPath,
+    Groovy, regex, etc.). Matches:
+      - `${...}` -- bare or scoped property
+      - `{X#Y}`  -- SoapUI shorthand (no leading `$`) that Groovy sees
+                    as an unclosed block start.
+    """
+    if not s:
+        return False
+    if "${" in s:
+        return True
+    # Bare {X#Y} form -- avoid false positive on `{key: value}` JSON.
+    return bool(re.search(r"\{[A-Za-z_][A-Za-z0-9_.]*#[A-Za-z_][A-Za-z0-9_.-]*\}", s))
+
+
 def _jsonpath_is_gpath_incompatible(path: str) -> bool:
     """True when the JsonPath uses syntax GPath doesn't support --
     caller emits a `// TODO` comment + skips the assertion to avoid
@@ -3315,6 +3331,25 @@ public class {class_name} {{
                     f'`[a,b]` (unions), `[(expr)]` (script index).',
                     f'// Convert manually or use com.jayway.jsonpath.JsonPath.read(...) '
                     f'directly. See audit ledger for full context.',
+                ], "TODO")
+            # Also skip when the JsonPath expression itself contains an
+            # unresolved SoapUI placeholder -- e.g. `$.foo[?(@.id ==
+            # {Properties#partnerAccountID})]`. RestAssured / Groovy will
+            # choke on the `{` char with "Invalid JSON expression". Would
+            # need runtime string-concat + type-aware quoting to translate;
+            # deferred. Skip at emit time so the test fails loudly at
+            # convert-time rather than blowing up with a cryptic Groovy
+            # parse error at runtime.
+            if _has_soapui_placeholder(raw_path):
+                safe_path = raw_path.replace("*/", "* /")
+                return ([
+                    f'// [{t}] SKIPPED at emit time -- JsonPath expression '
+                    f'contains an unresolved SoapUI property placeholder.',
+                    f'// path: {safe_path}',
+                    f'// Runtime interpolation with ctx values needs type-'
+                    f'aware quoting (string vs number); not auto-translated. '
+                    f'Rewrite manually as: `String path = "$.foo[?(@.id == "'
+                    f' + TestSupport.ctxGet(ctx, "Properties.X") + ")]";`',
                 ], "TODO")
 
         def _jlit(s: str) -> str:
@@ -6150,10 +6185,22 @@ public class ProgressLogListener implements ITestListener {{
 
     private static final Logger LOG = LoggerFactory.getLogger(ProgressLogListener.class);
     private static final ConcurrentHashMap<String, Long> STARTS = new ConcurrentHashMap<>();
+    // Per-method attempt counter: keyed by class#method (no hashcode).
+    // Increments on every onTestStart; a terminal PASSED/FAILED clears
+    // the entry. RetryAnalyzer-driven retries share the same key so we
+    // can suppress intermediate STARTED lines and annotate the terminal
+    // outcome with "[after N attempts]".
+    private static final ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger> ATTEMPTS
+        = new ConcurrentHashMap<>();
 
     private String key(ITestResult r) {{
         return r.getTestClass().getRealClass().getSimpleName()
                 + "#" + r.getMethod().getMethodName() + "@" + r.hashCode();
+    }}
+
+    private String methodKey(ITestResult r) {{
+        return r.getTestClass().getRealClass().getName()
+                + "#" + r.getMethod().getMethodName();
     }}
 
     private String label(ITestResult r) {{
@@ -6167,54 +6214,58 @@ public class ProgressLogListener implements ITestListener {{
         return System.currentTimeMillis() - start;
     }}
 
-    /**
-     * RetryAnalyzer-driven retries flood the console with per-attempt
-     * SKIPPED/STARTED pairs (a failed run marks SKIPPED, then TestNG
-     * re-invokes with a fresh STARTED). Suppress non-terminal SKIPPED
-     * lines: if {{@link IRetryAnalyzer#retry(ITestResult)}} on this
-     * result says "yes, retry" then we know the SKIPPED is intermediate,
-     * not a real skip of a scenario, and we drop the log line entirely.
-     * Real skips (dependency failures, disabled tests, no retry-analyzer)
-     * still log normally.
-     */
-    private boolean isIntermediateRetrySkip(ITestResult r) {{
-        try {{
-            org.testng.IRetryAnalyzer ra = r.getMethod().getRetryAnalyzer(r);
-            // Note: retry(...) is generally consulted BEFORE the SKIPPED
-            // callback in TestNG's flow; by the time we ask here, a
-            // "willRetryMethod" flag on the result reflects the decision.
-            return r.wasRetried()
-                    || (ra != null && ra.getClass().getSimpleName().contains("Retry"));
-        }} catch (Throwable ignored) {{
-            return false;
-        }}
+    private int currentAttempt(ITestResult r) {{
+        java.util.concurrent.atomic.AtomicInteger c = ATTEMPTS.get(methodKey(r));
+        return c == null ? 1 : c.get();
+    }}
+
+    private void clearAttempts(ITestResult r) {{
+        ATTEMPTS.remove(methodKey(r));
     }}
 
     @Override
     public void onTestStart(ITestResult r) {{
         STARTS.put(key(r), System.currentTimeMillis());
-        LOG.info("[TEST] STARTED  {{}}  (thread={{}})",
-                label(r), Thread.currentThread().getName());
+        int attempt = ATTEMPTS.computeIfAbsent(methodKey(r),
+                k -> new java.util.concurrent.atomic.AtomicInteger(0)).incrementAndGet();
+        // Only log STARTED on the first attempt. Retries are silent at
+        // start; the terminal PASSED/FAILED line reports the final
+        // outcome + attempt count so users see the retry story once.
+        if (attempt == 1) {{
+            LOG.info("[TEST] STARTED  {{}}  (thread={{}})",
+                    label(r), Thread.currentThread().getName());
+        }}
     }}
 
     @Override
     public void onTestSuccess(ITestResult r) {{
-        LOG.info("[TEST] PASSED   {{}}  ({{}}ms)", label(r), elapsedMs(r));
+        int attempt = currentAttempt(r);
+        clearAttempts(r);
+        if (attempt > 1) {{
+            LOG.info("[TEST] PASSED   {{}}  ({{}}ms) [passed after {{}} attempts]",
+                    label(r), elapsedMs(r), attempt);
+        }} else {{
+            LOG.info("[TEST] PASSED   {{}}  ({{}}ms)", label(r), elapsedMs(r));
+        }}
     }}
 
     @Override
     public void onTestFailure(ITestResult r) {{
+        int attempt = currentAttempt(r);
         Throwable t = r.getThrowable();
         String msg = (t == null) ? "(no throwable)" : t.getClass().getSimpleName()
                 + ": " + (t.getMessage() == null ? "" : t.getMessage());
-        // Failures that WILL be retried are logged at DEBUG so the console
-        // reserves WARN-visible FAILED lines for terminal outcomes. Users
-        // still see the STARTED before + STARTED after (retry attempt), and
-        // the final PASSED / FAILED that lands after retry exhaustion.
+        // Failures that will retry are silent at INFO (still DEBUG-visible).
+        // Terminal FAILED (retry exhausted OR no retry) logs at WARN with
+        // the attempt count so users see how many tries it took to give up.
         if (r.wasRetried()) {{
-            LOG.debug("[TEST] retry-failed  {{}}  ({{}}ms) -- {{}}", label(r), elapsedMs(r), msg);
+            LOG.debug("[TEST] retry-failed  {{}}  ({{}}ms) attempt={{}} -- {{}}",
+                    label(r), elapsedMs(r), attempt, msg);
         }} else {{
-            LOG.warn("[TEST] FAILED   {{}}  ({{}}ms) -- {{}}", label(r), elapsedMs(r), msg);
+            clearAttempts(r);
+            String attemptNote = (attempt > 1) ? " [after " + attempt + " attempts]" : "";
+            LOG.warn("[TEST] FAILED   {{}}  ({{}}ms){{}} -- {{}}",
+                    label(r), elapsedMs(r), attemptNote, msg);
         }}
     }}
 
@@ -6223,10 +6274,11 @@ public class ProgressLogListener implements ITestListener {{
         // Suppress intermediate SKIPPED entries from RetryAnalyzer cycles
         // (TestNG's flow: run -> mark SKIPPED -> retry -> repeat). Only
         // real skips (dependency failures, disabled tests) log at INFO.
-        if (isIntermediateRetrySkip(r)) {{
-            elapsedMs(r);  // drain the STARTS entry so it doesn't leak
+        if (r.wasRetried()) {{
+            elapsedMs(r);  // drain STARTS
             return;
         }}
+        clearAttempts(r);
         LOG.info("[TEST] SKIPPED  {{}}  ({{}}ms)", label(r), elapsedMs(r));
     }}
 
