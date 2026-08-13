@@ -345,24 +345,71 @@ public final class Config {
      * a broken local file doesn't break every test suite.
      */
     private static void loadProgramConfiguration(String envName) {
-        try (InputStream in = Config.class.getClassLoader()
-                .getResourceAsStream("program_configuration.json")) {
-            if (in == null) return;
+        // Verbose diagnostics so a failed load isn't a mystery. Every branch
+        // prints to STDOUT with a `[Config-JSON]` prefix so you can grep for
+        // exactly what happened. Costs one classpath walk per JVM start;
+        // negligible for a test run.
+        String resource = "program_configuration.json";
+        ClassLoader cl = Config.class.getClassLoader();
+        System.out.println("[Config-JSON] classloader = " + cl);
+        // Enumerate every URL the classloader knows for this resource. If
+        // there are 0, the file isn't on the classpath at all. If there
+        // are 2, we'll load the FIRST -- and print all of them so you can
+        // see which wins vs which is stale.
+        try {
+            java.util.Enumeration<java.net.URL> urls = cl.getResources(resource);
+            int i = 0;
+            while (urls.hasMoreElements()) {
+                System.out.println("[Config-JSON]   found #" + (++i)
+                        + ": " + urls.nextElement());
+            }
+            if (i == 0) {
+                System.out.println("[Config-JSON]   NO occurrences of `"
+                        + resource + "` on the classpath.");
+                System.out.println("[Config-JSON]   Expected at "
+                        + "target/classes/program_configuration.json after "
+                        + "`mvn clean` copies from src/main/resources/.");
+                return;
+            }
+        } catch (IOException e) {
+            System.err.println("[Config-JSON] classloader.getResources failed: "
+                    + e.getMessage());
+        }
+        try (InputStream in = cl.getResourceAsStream(resource)) {
+            if (in == null) {
+                System.out.println("[Config-JSON] getResourceAsStream returned null "
+                        + "(despite getResources finding entries -- classpath race?).");
+                return;
+            }
             ObjectMapper mapper = new ObjectMapper();
             JsonNode root = mapper.readTree(in);
+            if (root == null || !root.isObject()) {
+                System.err.println("[Config-JSON] parsed JSON is null or not an object");
+                return;
+            }
+            // List every top-level env key so a case mismatch is instantly
+            // obvious (e.g. `STG` in the JSON but envName=`stg`).
+            java.util.List<String> topKeys = new java.util.ArrayList<>();
+            root.fieldNames().forEachRemaining(topKeys::add);
+            System.out.println("[Config-JSON] top-level keys in JSON: " + topKeys);
+            System.out.println("[Config-JSON] looking for envName = `" + envName + "`");
             JsonNode envNode = root.get(envName);
             if (envNode == null || !envNode.isObject()) {
                 System.err.printf(
-                    "[Config] program_configuration.json has no block for env=%s%n",
-                    envName);
+                    "[Config-JSON] no block for env=`%s`. Try `-Denv=<one-of-%s>` "
+                    + "or rename the top-level key in the JSON to `%s`.%n",
+                    envName, topKeys, envName);
                 return;
             }
             flatten("", envNode, programConfig);
             deriveDbKeys(envNode);
+            System.out.println("[Config-JSON] loaded " + programConfig.size()
+                    + " keys from `" + envName + "` block");
         } catch (IOException e) {
             System.err.printf(
-                "[Config] failed to load program_configuration.json: %s%n",
-                e.getMessage());
+                "[Config-JSON] failed to parse program_configuration.json: "
+                + "%s: %s%n",
+                e.getClass().getSimpleName(), e.getMessage());
         }
     }
 
