@@ -1283,7 +1283,13 @@ _GROOVY_EXPR_RX = re.compile(r"\$\{=([^}]+)\}")
 
 
 def soapui_expr_to_java(expr: str) -> str:
-    """Translate a SoapUI property expression to a Java-code equivalent."""
+    """Translate a SoapUI property expression to a Java-code equivalent.
+
+    Ctx reads go through `TestSupport.ctxGet(ctx, "<key>")` (not the
+    raw `ctx.get`) so path params + query params + header values benefit
+    from alias walking -- ie a value written under `PropertiesGuestId.
+    guestId` by a Groovy extract is visible when the next step reads
+    `Properties.guestID`. See TestSupport.ctxGet for the walk order."""
     if expr is None:
         return "null"
     e = expr
@@ -1295,13 +1301,16 @@ def soapui_expr_to_java(expr: str) -> str:
         scope, prop = m.group(1), m.group(2)
         if scope in ("Global", "Env"):
             return f'config.get("{prop}")'
-        return f'ctx.get("{prop}")'
+        return f'TestSupport.ctxGet(ctx, "{prop}")'
     e = _SCOPE_PROP_RX.sub(_scoped, e)
-    e = _STEP_PROP_RX.sub(lambda m: f'ctx.get("{m.group(1)}.{m.group(2)}")', e)
+    e = _STEP_PROP_RX.sub(
+        lambda m: f'TestSupport.ctxGet(ctx, "{m.group(1)}.{m.group(2)}")', e)
     # Bare `${var}` -- default namespace lookup, resolve from ctx (which
     # includes TestCase-level properties published by setup steps).
-    e = _BARE_PROP_RX.sub(lambda m: f'ctx.get("{m.group(1)}")', e)
-    starts_with_known = any(e.startswith(p) for p in ("config.get", "ctx.get"))
+    e = _BARE_PROP_RX.sub(
+        lambda m: f'TestSupport.ctxGet(ctx, "{m.group(1)}")', e)
+    starts_with_known = any(e.startswith(p) for p in
+                            ("config.get", "TestSupport.ctxGet"))
     return f'"{e}"' if not starts_with_known else e
 
 
@@ -3841,6 +3850,68 @@ public final class TestSupport {{
     private static final Map<String, String> TEST_DATA_DEFAULTS = loadTestDataDefaults();
 
     private TestSupport() {{}}
+
+    /**
+     * Alias-aware ctx lookup. Solves the SoapUI-property-namespace
+     * mismatch where a Groovy step captures a value into (say)
+     * {{@code ctx.put("PropertiesGuestId.guestId", ...)}} but the next
+     * REST step's path param reads {{@code ctx.get("Properties.guestID")}}
+     * -- different key, so the captured value is invisible.
+     *
+     * <p>Walk order:
+     * <ol>
+     *   <li>Exact key: ctx.get(primaryKey)</li>
+     *   <li>Case-flipped tail (guestID vs guestId, ID vs Id)</li>
+     *   <li>Namespace-stripped: any ctx key ending in `.field` where
+     *       field is the trailing component of primaryKey. Catches
+     *       PropertiesGuestId.guestId vs Properties.guestID.</li>
+     *   <li>Bare-field lookup: ctx.get(field)</li>
+     * </ol>
+     * Returns {{@code ""}} when nothing matches. Empty ctx values are
+     * treated as "not set" so a still-frozen literal from a Properties
+     * step doesn't beat a Groovy-captured value under a sibling key.
+     */
+    public static String ctxGet(Map<String, String> ctx, String primaryKey) {{
+        if (ctx == null || primaryKey == null) return "";
+        String v = ctx.get(primaryKey);
+        if (v != null && !v.isEmpty()) return v;
+        // Extract the trailing field name after the last dot.
+        int lastDot = primaryKey.lastIndexOf('.');
+        String field = (lastDot >= 0) ? primaryKey.substring(lastDot + 1) : primaryKey;
+        // Case-flipped variants: guestId <-> guestID, accountId <-> accountID
+        String fieldAlt = flipTrailingCase(field);
+        // Walk every ctx key -- match by suffix on the field name.
+        String bestByAlias = null;
+        for (Map.Entry<String, String> e : ctx.entrySet()) {{
+            String k = e.getKey();
+            String val = e.getValue();
+            if (val == null || val.isEmpty() || k.equals(primaryKey)) continue;
+            int kDot = k.lastIndexOf('.');
+            String kField = (kDot >= 0) ? k.substring(kDot + 1) : k;
+            if (kField.equals(field) || (fieldAlt != null && kField.equals(fieldAlt))) {{
+                // Prefer values written INTO ctx by a Groovy extract
+                // (namespaced) over bare-field ones.
+                if (kDot >= 0) return val;
+                if (bestByAlias == null) bestByAlias = val;
+            }}
+        }}
+        if (bestByAlias != null) return bestByAlias;
+        // Last resort: bare-field lookup
+        String bare = ctx.get(field);
+        if (bare != null && !bare.isEmpty()) return bare;
+        return "";
+    }}
+
+    private static String flipTrailingCase(String field) {{
+        if (field == null || field.length() < 2) return null;
+        int n = field.length();
+        char last = field.charAt(n - 1);
+        char alt;
+        if (last == 'D') alt = 'd';
+        else if (last == 'd') alt = 'D';
+        else return null;
+        return field.substring(0, n - 1) + alt;
+    }}
 
     /**
      * Test-data lookup for values that used to be hardcoded literals in
