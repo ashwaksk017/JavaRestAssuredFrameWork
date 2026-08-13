@@ -858,6 +858,13 @@ class AuditLedger:
     # XML -- they should be flagged so authors know what to move to
     # per-env config or replace with fresh <<faker>> tokens.
     frozen_properties: list[tuple] = field(default_factory=list)
+    # (soapui_suite, soapui_case, xray_key, java_class_fqn, java_method,
+    #  csv_path, cluster_size, cluster_row_index, expected_status)
+    # One row per SoapUI test case, showing where its logic ended up in
+    # the emitted Java + CSV. Populated by main() after class emission.
+    # Bidirectional traceability: verify a specific SoapUI case moved to
+    # the right place; find which SoapUI cases share a @Test method.
+    case_mapping: list[tuple] = field(default_factory=list)
 
     def add_assertion(self, prefix, case, step, soapui_type, cfg,
                        emitted_java, coverage):
@@ -883,6 +890,18 @@ class AuditLedger:
 
     def add_placeholder(self, case, name, kind):
         self.placeholders.append((case, name, kind))
+
+    def add_case_mapping(self, soapui_suite, soapui_case, xray_key,
+                           java_class_fqn, java_method, csv_path,
+                           cluster_size, cluster_row_index, expected_status):
+        """Record where a SoapUI test case ended up in the emitted tree.
+        Provides bidirectional traceability -- open the CSV to see which
+        SoapUI cases share a method; open a SoapUI case name to find its
+        Java class + method + CSV row."""
+        self.case_mapping.append((
+            soapui_suite, soapui_case, xray_key, java_class_fqn,
+            java_method, csv_path, cluster_size, cluster_row_index,
+            expected_status))
 
     def add_frozen_property(self, prefix, case, step_name, prop_name,
                              literal_value, ctx_key):
@@ -931,6 +950,16 @@ class AuditLedger:
             ["prefix", "case", "step_name", "prop_name",
              "literal_value", "ctx_key"],
             self.frozen_properties)
+        # Case -> Java @Test method mapping. Open this CSV in Excel to
+        # verify a specific ReadyAPI case landed in the intended Java
+        # class + method, or to find which cases share a data-driven
+        # method (multi-row clusters).
+        self._write_csv(
+            os.path.join(base, "case_to_method_mapping.csv"),
+            ["soapui_suite", "soapui_case", "xray_key", "java_class_fqn",
+             "java_method", "csv_path", "cluster_size",
+             "cluster_row_index", "expected_status"],
+            self.case_mapping)
 
         # ---- summary.md -------------------------------------------------
         def _counts(rows, cov_index):
@@ -990,6 +1019,27 @@ class AuditLedger:
             f"- True CSV columns: **{ph_counts.get('csv', 0)}** placeholders",
             "",
         ]
+
+        # ---- ReadyAPI -> REST Assured case mapping -------------------
+        if self.case_mapping:
+            distinct_classes = len({row[3] for row in self.case_mapping})
+            distinct_methods = len({(row[3], row[4]) for row in self.case_mapping})
+            shared_methods = sum(1 for row in self.case_mapping if row[6] > 1)
+            lines.extend([
+                "## ReadyAPI -> REST Assured case mapping",
+                "",
+                "> Bidirectional traceability report. Every ReadyAPI test case",
+                "> is listed with its landing spot -- Java class + @Test method +",
+                "> CSV row. Verify per-case landings by opening",
+                "> `case_to_method_mapping.csv` in Excel.",
+                "",
+                f"- ReadyAPI cases converted: **{len(self.case_mapping)}**",
+                f"- Landed across: **{distinct_classes}** Java classes / "
+                f"**{distinct_methods}** @Test methods",
+                f"- Cases that share a data-driven method (cluster_size > 1): "
+                f"**{shared_methods}**",
+                "",
+            ])
 
         # ---- frozen Properties-step literals -------------------------
         # SoapUI Properties-step defaults emitted as ctx.putIfAbsent
@@ -2775,6 +2825,10 @@ public class {class_name} {{
         if isinstance(step, RestStep):
             lines.extend(self._render_rest_step_body(step, service_class_name))
         elif isinstance(step, GroovyStep):
+            # Console marker so a groovy-side hang or long-running side
+            # effect is attributable in the log stream.
+            lines.append(
+                f'LOG.info(" .. groovy step: {_jlit(step.step_name)}");')
             lines.extend(self._render_groovy_translated(step))
         elif isinstance(step, PropertiesStep):
             lines.append(f'// [properties step] {step.step_name} -- values '
@@ -3107,7 +3161,22 @@ public class {class_name} {{
         # Register this step's response variable so a subsequent Groovy step
         # translator can reference it (e.g. tokenRequestRes.jsonPath()...).
         self.response_var_by_step[step.step_name] = response_var
+        # Console surround: before-log the verb+path so a hung REST call
+        # is immediately visible ("stuck on POST /X was the last thing
+        # printed"); after-log the status+elapsed ms so slow endpoints
+        # stand out. `_uniq_local` walks _2/_3/... until unique so
+        # multiple REST calls in one method never clash on this local.
+        elapsed_var = self._uniq_local(f"__restT_{base}")
+        lines.append(
+            f'LOG.info(" -> {step.http_method} {step.resource_path}  '
+            f'(step={_jlit(step.step_name)})");')
+        lines.append(f'long {elapsed_var} = System.currentTimeMillis();')
         lines.append(f'Response {response_var} = client.{method_name_java}({", ".join(call_args)});')
+        lines.append(
+            f'LOG.info(" <- HTTP {{}} in {{}}ms  '
+            f'(step={_jlit(step.step_name)})", '
+            f'{response_var}.getStatusCode(), '
+            f'System.currentTimeMillis() - {elapsed_var});')
         lines.append(f'RestUtilities.logResponseBody(testCaseId, holder, RestUtilities.getResponseAsString({response_var}));')
 
         # Assertions:
@@ -5110,8 +5179,14 @@ public class {class_name} extends BaseApiTest {{
             id_stmt = f'String testCaseId = "{_jlit(case.name)}";'
 
         assigned_flow = self._flow_by_case.get(case.name)
+        # Per-method banner + duration so `mvn test` console reads as a
+        # sequential log ("STARTED xxx", REST calls with -> / <- markers,
+        # then "FINISHED xxx in Nms"). Makes stuck tests obvious.
         body_lines = [
             id_stmt,
+            'long __methodStartMs = System.currentTimeMillis();',
+            f'LOG.info("========== STARTED {method_name}  "'
+            f'+ "(case=" + testCaseId + ") ==========");',
             '// Prevent state leakage between rows of a multi-scenario method,'
             ' BUT preserve the class-level accessToken primed by @BeforeClass',
             '// so each row doesn\'t re-fetch a fresh OAuth token.',
@@ -5169,6 +5244,14 @@ public class {class_name} extends BaseApiTest {{
                     'if (!__stopAfter.isEmpty() && __restStepIdx >= '
                     'Integer.parseInt(__stopAfter)) { return; }')
             body_lines.append('')
+
+        # Trailing method-duration banner. Not wrapped in try/finally so
+        # exceptions still propagate cleanly to TestNG; on failure the
+        # PASSED/FAILED line from TestNG delimits the method instead.
+        body_lines.append(
+            f'LOG.info("========== FINISHED {method_name}  "'
+            f'+ "(" + (System.currentTimeMillis() - __methodStartMs) + '
+            f'"ms) ==========");')
 
         indented = "\n".join("        " + l if l else "" for l in body_lines)
 
@@ -6321,7 +6404,7 @@ def main():
             class_simple = fqn.rsplit(".", 1)[-1]
             prefix_merged = 0
             for idx, cluster in enumerate(emitter._clusters):
-                mname, _status, _variant = emitter._cluster_to_method[idx]
+                mname, status, _variant = emitter._cluster_to_method[idx]
                 sm = emitter._stop_markers_per_cluster.get(idx, {})
                 if sm:
                     prefix_merged += 1
@@ -6329,6 +6412,18 @@ def main():
                     class_simple, mname, cluster, stop_markers=sm,
                     csv_subpackage=resource_slug)
                 total_rows += len(cluster)
+                # Record case -> method mapping so authors can verify (and
+                # BAs can audit) where each SoapUI case landed. One ledger
+                # row per case in the cluster; cluster_row_index tracks
+                # the row in the CSV file that this case occupies.
+                csv_rel_path = (
+                    f"src/test/resources/csv/{suite_name}/{resource_slug}/"
+                    f"{class_simple}/{mname}.csv")
+                for row_idx, c in enumerate(cluster, start=1):
+                    xray = c.prefix if re.match(r"^[A-Z]+-\d+$", c.prefix or "") else ""
+                    ledger.add_case_mapping(
+                        soapui_sname, c.name, xray, fqn, mname,
+                        csv_rel_path, len(cluster), row_idx, status)
             multi = sum(1 for cl in emitter._clusters if len(cl) > 1)
             print(f"[ra_converter]   {resource_slug}/{class_simple}  "
                   f"({len(method_names)} @Test method(s), "
@@ -6348,6 +6443,16 @@ def main():
           f"{total_rows} CSV row(s) across "
           f"{total_methods} CSV file(s) under src/test/resources/csv/  "
           f"(saved {total_rows - total_methods} methods via clustering+prefix-merge)")
+    # Prominent conversion summary + pointer to the traceability CSV so
+    # authors and BAs know where to look to verify per-case landings.
+    src_case_count = len(cases_in_scope)
+    dest_row_count = len(ledger.case_mapping)
+    print(f"[ra_converter] CONVERSION SUMMARY:")
+    print(f"[ra_converter]   {src_case_count} ReadyAPI test case(s) -> "
+          f"{total_methods} REST Assured @Test method(s) "
+          f"({dest_row_count} case-rows in CSVs)")
+    print(f"[ra_converter]   case -> method mapping (open in Excel to verify): "
+          f"_audit/{suite_name}/case_to_method_mapping.csv")
 
     # 2b) Per-suite README.md -- business-friendly table of contents so
     #     a BA can navigate the resource catalog without opening Java files.
