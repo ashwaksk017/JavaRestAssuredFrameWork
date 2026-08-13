@@ -123,11 +123,41 @@ def _trace_groovy_defs(script: str) -> dict:
     return b
 
 
+def _dest_key_for_var(script: str, var_name: str,
+                        default_step_hint: str) -> str:
+    """Return the ctx key under which a Groovy variable's value should be
+    published. If the script has a downstream `X.setPropertyValue("field",
+    varName)` call, use `X.field` -- that's the SoapUI-property destination
+    the author intended, and it's the key OTHER steps' `${X#field}` refs
+    will read. Otherwise fall back to `<default_step_hint>.<varName>`.
+
+    Rationale: without this, a script like
+        def newTokenId = "Bearer " + tokenId
+        tokenIDproperty.setPropertyValue("GeneratedTokenID", newTokenId)
+    was emitted as `ctx.put("Token.newTokenId", ...)` while every other
+    step read `ctx.get("tokenId.GeneratedTokenID")` -- a total silent
+    key-mismatch that broke every downstream authorization call.
+    """
+    for target_step, field, expr in _find_setproperty_targets(script):
+        # `expr` here is the raw argument string. Strip surrounding
+        # whitespace + `.toString().trim()` chains people often add,
+        # then compare to var_name.
+        raw = expr.strip()
+        # Common trailing chains: `.toString()`, `.trim()`, `.toString().trim()`
+        stripped = re.sub(
+            r'(\.toString\(\))?(\.trim\(\))?\s*$', '', raw).strip()
+        if stripped == var_name:
+            return f'{target_step}.{field}'
+    return f'{default_step_hint}.{var_name}'
+
+
 def _emit_def_publications(script: str, bindings: dict, ctx: dict,
                             step_name_hint: str) -> list[str]:
     """For each `def X = ...` where X ends up as an extracted value (or a
-    Bearer-prefixed one), publish it to ctx under `<step_name_hint>.X` so
-    downstream `${step#X}` property expansions resolve via ctx.get."""
+    Bearer-prefixed one), publish it to ctx under the destination key the
+    SoapUI author intended -- prefer `<targetStep>.<field>` from any
+    `setPropertyValue(...)` call on X, fall back to
+    `<step_name_hint>.X`. See `_dest_key_for_var`."""
     out: list[str] = []
     published: set[str] = set()
 
@@ -141,8 +171,9 @@ def _emit_def_publications(script: str, bindings: dict, ctx: dict,
         if not info or info.get("kind") != "extracted":
             continue
         resp = _resp_var_for(info["source_step"], ctx)
+        dest_key = _dest_key_for_var(script, new_var, step_name_hint)
         out.append(
-            f'ctx.put("{step_name_hint}.{new_var}", "Bearer " + '
+            f'ctx.put("{dest_key}", "Bearer " + '
             f'{resp}.jsonPath().getString("{info["jsonpath"]}"));')
         published.add(new_var)
         published.add(src_var)
@@ -158,8 +189,9 @@ def _emit_def_publications(script: str, bindings: dict, ctx: dict,
                      script):
             continue
         resp = _resp_var_for(info["source_step"], ctx)
+        dest_key = _dest_key_for_var(script, var_name, step_name_hint)
         out.append(
-            f'ctx.put("{step_name_hint}.{var_name}", '
+            f'ctx.put("{dest_key}", '
             f'{resp}.jsonPath().getString("{info["jsonpath"]}"));')
         published.add(var_name)
     return out
@@ -503,6 +535,10 @@ def translate(script: str, response_var_by_step: dict[str, str],
         consumed = True
 
     # ---- JDBC (uses paren-balanced walker; safe with nested parens)
+    # Guard: a script with multiple mutation JDBC calls must throw
+    # SkipException only ONCE -- subsequent throws are unreachable and
+    # javac rejects them. Track whether we've emitted a throw already.
+    _skip_thrown = False
     for groups, args_body in _balanced_arg_call(script, r"sql\.execute\("):
         query = args_body.strip()
         # Detect Groovy list-arg syntax: `sql.execute("QUERY", [p1, p2])`
@@ -627,7 +663,6 @@ def translate(script: str, response_var_by_step: dict[str, str],
             ])
         else:
             # Query is a Groovy variable / expression we can't safely inline.
-            # Log a warning so the test still runs; comment preserves intent.
             preview_c = query_expr.replace("*/", "* /")[:80]
             # Escape for the Java "..." literal below
             preview_java = (query_expr[:80]
@@ -635,12 +670,48 @@ def translate(script: str, response_var_by_step: dict[str, str],
                             .replace('"', '\\"')
                             .replace("\r", " ")
                             .replace("\n", " "))
-            lines.extend([
-                f'// [jdbc] query is a Groovy expression (`{preview_c}`) '
-                f'-- not translated. Populate it via Config or hand-fill:',
-                f'LOG.warn("Skipping JDBC step -- query expression not '
-                f'translatable to Java: {preview_java}");',
-            ])
+            # Detect MUTATION intent from the step name so tests that
+            # depend on the DB write skip loudly instead of marching on
+            # into a REST assertion with pre-mutation state (which then
+            # fails cryptically with a status/body mismatch). Selectish
+            # step names (`db_read_x`, `sql_query_lookup`) just warn.
+            hint = (step_name_hint or "").lower()
+            mutation_kws = ("update", "insert", "delete", "upsert",
+                            "merge", "set", "cleanup", "prepare",
+                            "reset", "clean_data", "seed")
+            is_mutation = any(kw in hint for kw in mutation_kws)
+            if is_mutation and not _skip_thrown:
+                # Wrap the throw so javac doesn't mark subsequent
+                # translated lines (LOG.error / log.info bits from the
+                # rest of the same Groovy script) as "unreachable". LOG
+                # is never null at runtime, but javac can't prove that,
+                # so flow-analysis treats the block as conditional.
+                lines.extend([
+                    f'// [jdbc] MUTATION query is a Groovy expression '
+                    f'(`{preview_c}`) -- not translated. Downstream REST '
+                    f'steps would see PRE-mutation state, causing a '
+                    f'cryptic status/body mismatch; SKIP this test loudly.',
+                    f'if (LOG != null) throw new org.testng.SkipException(',
+                    f'    "Untranslated JDBC mutation step (`" + '
+                    f'"{preview_java}" + "`). Hand-translate the query '
+                    f'or wire Db.execute(...) with the concrete SQL.");',
+                ])
+                _skip_thrown = True
+            elif is_mutation:
+                # A previous throw already exists in this script; subsequent
+                # throws would be javac-unreachable. Emit a comment only so
+                # readers see the untranslated intent.
+                lines.append(
+                    f'// [jdbc] SUPPRESSED throw (an earlier mutation-JDBC '
+                    f'step in this script already throws SkipException): '
+                    f'`{preview_c}`')
+            else:
+                lines.extend([
+                    f'// [jdbc] query is a Groovy expression (`{preview_c}`) '
+                    f'-- not translated. Populate it via Config or hand-fill:',
+                    f'LOG.warn("Skipping JDBC step -- query expression not '
+                    f'translatable to Java: {preview_java}");',
+                ])
         _mark("jdbc_execute")
         consumed = True
 

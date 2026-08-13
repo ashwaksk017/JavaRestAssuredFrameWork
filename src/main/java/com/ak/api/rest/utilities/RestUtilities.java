@@ -56,7 +56,12 @@ import io.restassured.path.json.JsonPath;
 import io.restassured.response.Response;
 import io.restassured.specification.RequestSpecification;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 public class RestUtilities {
+
+    private static final Logger LOG = LoggerFactory.getLogger(RestUtilities.class);
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper()
             // Real APIs add fields over time -- don't fail deserialization when
@@ -173,8 +178,20 @@ public class RestUtilities {
         schema = substitute(schema, P_AT_Q,  dataMap, strict ? null : "0",     unresolved, /* jsonEscape = */ false);
 
         if (!unresolved.isEmpty()) {
-            throw new UnresolvedPlaceholderException(
-                    "Unresolved placeholders: " + new HashSet<>(unresolved));
+            if (strict) {
+                throw new UnresolvedPlaceholderException(
+                        "Unresolved placeholders: " + new HashSet<>(unresolved));
+            }
+            // Non-strict path: WARN with the exact placeholder set so a
+            // silent "null" / "false" / "0" substitution isn't invisible.
+            // Prior behaviour was to substitute the fallback and log nothing
+            // -- callers would then see a 400 with a schema-validation error
+            // and no way to know why. Now the log line pinpoints the missing
+            // keys. Also dedupe so a template using #x# five times only
+            // reports #x# once per request.
+            LOG.warn("mapJsonValues: {} unresolved placeholder(s), substituted fallback: {}",
+                    unresolved.size(),
+                    new java.util.TreeSet<>(unresolved));
         }
         return schema;
     }

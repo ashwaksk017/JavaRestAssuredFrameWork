@@ -401,18 +401,22 @@ def _infer_http_method(method_name: str, resource_path: str, body: str, step_nam
     Full-project exports get the AUTHORITATIVE verb via `_build_interface_method_map`;
     this function only runs as a fallback.
 
-    Uses WORD-BOUNDARY matching so `/deletedItems/list` doesn't get
-    inferred as DELETE (bare substring match previously fired on
-    "delete" inside "deletedItems"). Words boundaries include the
-    common URL-segment separators (`/`, `-`, `_`, `.`, ` `)."""
+    Tokenizes on WORD boundaries -- URL separators (`/_-. `) AND CamelCase
+    transitions -- so `DeleteProgramAccountMember` splits into
+    `[delete, program, account, member]` and DELETE fires. Prior
+    behaviour split only on URL separators, so any all-camel op name
+    stayed a single token and no keyword ever matched -> body-based
+    fallback (POST/GET) took over -> DELETE methods emitted as GET."""
     hay = " ".join((method_name, step_name, resource_path))
-    # Normalize separators to spaces so word-boundary regex matches
-    # `deletedItems/list` -> tokens `deletedItems`, `list`.
+    # Insert spaces at CamelCase boundaries: `DeleteFoo` -> `Delete Foo`,
+    # `HTTPRequest` -> `HTTP Request`, `deleteXBar` -> `delete X Bar`.
+    hay = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", hay)
+    hay = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", hay)
+    # Then split on URL separators + spaces.
     tokens = re.split(r"[/_\-\.\s]+", hay.lower())
     token_set = set(t for t in tokens if t)
     for verb, kws in _METHOD_KEYWORDS.items():
         for kw in kws:
-            # Full-word match (no more `delete` matching `deletedItems`).
             if kw in token_set:
                 return verb.upper()
     # Fallback: body present -> POST, else GET
@@ -1271,6 +1275,14 @@ def collect_shared_rest_steps(cases: list[TestCase], min_occurrences: int = 2) -
 _PROJ_PROP_RX = re.compile(r"\$\{#Project#([A-Za-z0-9_.-]+)\}")
 _SCOPE_PROP_RX = re.compile(
     r"\$\{#(TestSuite|TestCase|Global|Env|MockService)#([A-Za-z0-9_.-]+)\}")
+# `${step#Response#<jsonPath>}` -- SoapUI's shorthand for "read a value
+# out of another step's response body via JsonPath". The jsonPath can
+# contain any char except `}` (e.g. `$['guestId']`, `$.foo.bar`, `$[0]`).
+# Must be matched BEFORE _STEP_PROP_RX because that pattern's second
+# group excludes `#` -- it would fail to match this shape but be
+# checked first anyway; keeping the response one earlier removes any
+# ordering surprise.
+_STEP_RESPONSE_RX = re.compile(r"\$\{([A-Za-z0-9_-]+)#Response#([^}]+)\}")
 _STEP_PROP_RX = re.compile(r"\$\{([A-Za-z0-9_-]+)#([A-Za-z0-9_.-]+)\}")
 # Bare `${var}` -- only match identifiers that AREN'T already caught
 # by one of the scoped patterns above. SoapUI uses this for TestCase-
@@ -1282,6 +1294,20 @@ _BARE_PROP_RX = re.compile(r"\$\{(?!#|=)([A-Za-z_][A-Za-z0-9_.-]*)\}")
 _GROOVY_EXPR_RX = re.compile(r"\$\{=([^}]+)\}")
 
 
+def _translate_soapui_jsonpath(path: str) -> str:
+    """Convert a SoapUI JSON path (`$['x']`, `$.foo.bar`, `$[0].id`) to
+    the RestAssured JsonPath string form (`x`, `foo.bar`, `[0].id`).
+    Strips the leading `$`/`$.` and unwraps `['key']` -> `.key`."""
+    p = (path or "").strip()
+    if p.startswith("$."):
+        p = p[2:]
+    elif p.startswith("$"):
+        p = p[1:]
+    p = re.sub(r"\['([^']+)'\]", r".\1", p)
+    p = re.sub(r'\["([^"]+)"\]', r".\1", p)
+    return p.lstrip(".")
+
+
 def soapui_expr_to_java(expr: str) -> str:
     """Translate a SoapUI property expression to a Java-code equivalent.
 
@@ -1289,7 +1315,13 @@ def soapui_expr_to_java(expr: str) -> str:
     raw `ctx.get`) so path params + query params + header values benefit
     from alias walking -- ie a value written under `PropertiesGuestId.
     guestId` by a Groovy extract is visible when the next step reads
-    `Properties.guestID`. See TestSupport.ctxGet for the walk order."""
+    `Properties.guestID`. See TestSupport.ctxGet for the walk order.
+
+    `${step#Response#$['field']}` refs translate to
+    `<sanitized_step>Res.jsonPath().getString("field")`. That response
+    variable is only in scope inside the SAME test method as the step
+    that produced it -- fine for path params of a subsequent step; if
+    the reference reaches outside that scope, javac fails visibly."""
     if expr is None:
         return "null"
     e = expr
@@ -1303,6 +1335,13 @@ def soapui_expr_to_java(expr: str) -> str:
             return f'config.get("{prop}")'
         return f'TestSupport.ctxGet(ctx, "{prop}")'
     e = _SCOPE_PROP_RX.sub(_scoped, e)
+    # `${step#Response#$jsonPath}` -- resolves against the emitted response
+    # variable (in scope only within the same test method).
+    def _step_response(m):
+        step = sanitize_identifier(m.group(1))
+        path = _translate_soapui_jsonpath(m.group(2))
+        return f'{step}Res.jsonPath().getString("{path}")'
+    e = _STEP_RESPONSE_RX.sub(_step_response, e)
     e = _STEP_PROP_RX.sub(
         lambda m: f'TestSupport.ctxGet(ctx, "{m.group(1)}.{m.group(2)}")', e)
     # Bare `${var}` -- default namespace lookup, resolve from ctx (which
@@ -1311,6 +1350,10 @@ def soapui_expr_to_java(expr: str) -> str:
         lambda m: f'TestSupport.ctxGet(ctx, "{m.group(1)}")', e)
     starts_with_known = any(e.startswith(p) for p in
                             ("config.get", "TestSupport.ctxGet"))
+    # If we substituted a step-response ref, `e` starts with a Java
+    # identifier (e.g. `enroll_guestRes.jsonPath()...`) -- treat as raw.
+    if re.match(r'^[A-Za-z_][A-Za-z0-9_]*Res\.jsonPath', e):
+        return e
     return f'"{e}"' if not starts_with_known else e
 
 
@@ -1778,10 +1821,19 @@ def _classify_frozen_properties(cases: list["TestCase"]) -> dict:
         for step in case.steps:
             if isinstance(step, PropertiesStep):
                 for prop, val in (step.properties or {}).items():
-                    if val:
-                        ctx_key = f'{step.step_name}.{prop}'
-                        # Last-write-wins if the same case has this step twice.
-                        key_case_values[ctx_key][case.name] = val
+                    if not val:
+                        continue
+                    ctx_key = f'{step.step_name}.{prop}'
+                    # Filter out credentials: neither the key name nor the
+                    # value should indicate a secret. Stale bearer tokens
+                    # baked into a defaults JSON file are worse than useless
+                    # (they mask a broken auth flow with a 401 that looks
+                    # like a real API error). Runtime auth is responsible
+                    # for these; the frozen literal has no valid role.
+                    if _is_secret_path(ctx_key) or _looks_like_bearer_token(val):
+                        continue
+                    # Last-write-wins if the same case has this step twice.
+                    key_case_values[ctx_key][case.name] = val
 
     from collections import Counter as _Counter
     migration: dict[str, dict] = {}
@@ -2212,8 +2264,24 @@ _SECRET_LEAF_KEY_HINTS = (
     "password", "passwd", "secret", "apikey", "api_key",
     "authorization", "auth_token", "access_token", "refresh_token",
     "clientsecret", "client_secret", "privatekey", "private_key",
-    "credential",
+    "credential", "tokenid", "generatedtokenid", "bearer", "jwt",
 )
+
+
+def _looks_like_bearer_token(value: str) -> bool:
+    """True when a literal value looks like an OAuth Bearer token that
+    should NEVER be shipped as a default. Catches `Bearer <jwt>`, bare
+    JWT (3 dot-separated base64 segments), and long hex/GUID-shaped
+    tokens where 'token' keyword tipped us off."""
+    if not value:
+        return False
+    v = value.strip()
+    if v.lower().startswith("bearer "):
+        return True
+    # JWT: three base64url segments separated by dots
+    if re.match(r'^[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}$', v):
+        return True
+    return False
 
 
 def _is_secret_path(path: str) -> bool:
@@ -2782,18 +2850,25 @@ public class {class_name} {{
         # Build headers block. For JSON we use the existing Headers builder;
         # for non-JSON we build the map inline with the right content type
         # so nothing forces application/json on top.
+        # Normalize the Authorization value: SetupHelper stores it with a
+        # "Bearer " prefix while AuthHelper stores the raw JWT. If both
+        # ever coexist for the same test method (or the caller changes
+        # which one populates ctx), we'd send `Authorization: <rawJwt>`
+        # and the server 401s cryptically. Prefix only when missing.
+        auth_expr = ('(token == null || token.isEmpty() || token.startsWith("Bearer ") '
+                     '? token : "Bearer " + token)')
         if raw_mt == "application/json":
-            headers_block = """Map<String, String> headers = Headers.builder()
+            headers_block = f"""Map<String, String> headers = Headers.builder()
                 .contentTypeJson()
                 .acceptJson()
-                .header("Authorization", token)
+                .header("Authorization", {auth_expr})
                 .correlationId()
                 .build();"""
         else:
             headers_block = f"""Map<String, String> headers = new java.util.HashMap<>();
         headers.put("Content-Type", "{raw_mt}");
         headers.put("Accept", "{raw_mt}");
-        headers.put("Authorization", token);"""
+        headers.put("Authorization", {auth_expr});"""
 
         # Call site per verb -- ContentType is set explicitly on every
         # body-bearing verb so it matches the headers map above.
