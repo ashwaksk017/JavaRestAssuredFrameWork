@@ -94,6 +94,66 @@ public final class Config {
         // `program_configuration.json` layout). Flat keys land in
         // `programConfig` scoped to the active env. Silent when absent.
         loadProgramConfiguration(envName);
+
+        // Diagnostic banner: prints the active env, whether program_config
+        // JSON loaded, and the effective baseUrl WITH its source. Answers
+        // "why did baseUrl fall back to the jsonplaceholder default?"
+        // without any debugger step-through.
+        logStartupDiagnostics(envName);
+    }
+
+    private static void logStartupDiagnostics(String envName) {
+        System.out.println("[Config] ============================================================");
+        System.out.println("[Config] Active env: " + envName + "  (source: " + detectEnvSource() + ")");
+        System.out.println("[Config] program_configuration.json: "
+                + (programConfig.isEmpty()
+                        ? "NOT LOADED (file missing OR active env block missing)"
+                        : "loaded (" + programConfig.size() + " keys under `" + envName + "` block)"));
+        String derived = deriveBaseUrl();
+        String effective = baseUrl();
+        String source;
+        if (isNonEmpty(derived)) {
+            source = "derived from api_config.api_end_point + api_config.version (JSON)";
+        } else if (isNonEmpty(System.getProperty("baseUrl"))) {
+            source = "-DbaseUrl system property";
+        } else if (isNonEmpty(System.getenv("BASEURL"))) {
+            source = "BASEURL env var";
+        } else if (isNonEmpty(props.getProperty("baseUrl"))) {
+            source = "application.properties (or per-env overlay)";
+        } else {
+            source = "BUILT-IN FALLBACK (jsonplaceholder) -- your config is not reaching this code";
+        }
+        System.out.println("[Config] Effective baseUrl: " + effective);
+        System.out.println("[Config]   source: " + source);
+        // Peek a handful of important api_config.* keys (masked for
+        // secrets) so misconfiguration is obvious at a glance.
+        String[] peek = {
+            "api_config.api_end_point", "api_config.version",
+            "api_config.token_end_point", "api_config.token_route",
+            "api_config.client_id", "api_config.client_secret",
+            "api_config.grant_type",
+        };
+        System.out.println("[Config] api_config.* keys visible:");
+        for (String k : peek) {
+            String v = programConfig.get(k);
+            String display;
+            if (v == null || v.isEmpty()) {
+                display = "(missing)";
+            } else if (k.endsWith("client_secret") || k.endsWith("password")) {
+                display = "***" + (v.length() > 4 ? v.substring(v.length() - 4) : "") + " (len=" + v.length() + ")";
+            } else {
+                display = v;
+            }
+            System.out.println("[Config]   " + k + " = " + display);
+        }
+        System.out.println("[Config] ============================================================");
+    }
+
+    private static String detectEnvSource() {
+        if (isNonEmpty(System.getProperty("env"))) return "-Denv system property";
+        if (isNonEmpty(System.getenv("TEST_ENV"))) return "TEST_ENV env var";
+        if (isNonEmpty(props.getProperty("env"))) return "application.properties `env`";
+        return "default (qa)";
     }
 
     private Config() {

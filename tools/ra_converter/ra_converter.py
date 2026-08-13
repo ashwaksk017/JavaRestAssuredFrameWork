@@ -4752,6 +4752,13 @@ public final class PlaceholderResolver {{
             String key = m.group(1);
             String args = m.group(2);
             String value = fakerValue(key, args);
+            // Null-guard: an unrecognized faker key OR an internal null
+            // return would otherwise crash Matcher.quoteReplacement with
+            // an NPE. Leave the literal <<X>> in place so the caller
+            // (or a later stage) can see what wasn't resolved.
+            if (value == null) {{
+                value = m.group();
+            }}
             m.appendReplacement(out, Matcher.quoteReplacement(value));
         }}
         m.appendTail(out);
@@ -5993,8 +6000,11 @@ public final class Templates {{
     <parameter name="testSuite" value="{variant.lower()}"/>
 
     <listeners>
-        <!-- Allure: always available (allure-testng in pom.xml). -->
-        <listener class-name="io.qameta.allure.testng.AllureTestNg"/>
+        <!-- Allure is auto-loaded via ServiceLoader (allure-testng SPI file).
+             Declaring it explicitly here caused surefire to register it 3x,
+             producing repeated `Ignoring duplicate listener` warnings on
+             every run. Left commented as reference. -->
+        <!-- <listener class-name="io.qameta.allure.testng.AllureTestNg"/> -->
         <!-- Progress banner listener: emitted by ra_converter (see
              emit_progress_listener). Prints class + method + timing to
              the mvn console so parallel classes are attributable. -->
@@ -6086,6 +6096,29 @@ public class ProgressLogListener implements ITestListener {{
         return System.currentTimeMillis() - start;
     }}
 
+    /**
+     * RetryAnalyzer-driven retries flood the console with per-attempt
+     * SKIPPED/STARTED pairs (a failed run marks SKIPPED, then TestNG
+     * re-invokes with a fresh STARTED). Suppress non-terminal SKIPPED
+     * lines: if {{@link IRetryAnalyzer#retry(ITestResult)}} on this
+     * result says "yes, retry" then we know the SKIPPED is intermediate,
+     * not a real skip of a scenario, and we drop the log line entirely.
+     * Real skips (dependency failures, disabled tests, no retry-analyzer)
+     * still log normally.
+     */
+    private boolean isIntermediateRetrySkip(ITestResult r) {{
+        try {{
+            org.testng.IRetryAnalyzer ra = r.getMethod().getRetryAnalyzer(r);
+            // Note: retry(...) is generally consulted BEFORE the SKIPPED
+            // callback in TestNG's flow; by the time we ask here, a
+            // "willRetryMethod" flag on the result reflects the decision.
+            return r.wasRetried()
+                    || (ra != null && ra.getClass().getSimpleName().contains("Retry"));
+        }} catch (Throwable ignored) {{
+            return false;
+        }}
+    }}
+
     @Override
     public void onTestStart(ITestResult r) {{
         STARTS.put(key(r), System.currentTimeMillis());
@@ -6103,11 +6136,26 @@ public class ProgressLogListener implements ITestListener {{
         Throwable t = r.getThrowable();
         String msg = (t == null) ? "(no throwable)" : t.getClass().getSimpleName()
                 + ": " + (t.getMessage() == null ? "" : t.getMessage());
-        LOG.warn("[TEST] FAILED   {{}}  ({{}}ms) -- {{}}", label(r), elapsedMs(r), msg);
+        // Failures that WILL be retried are logged at DEBUG so the console
+        // reserves WARN-visible FAILED lines for terminal outcomes. Users
+        // still see the STARTED before + STARTED after (retry attempt), and
+        // the final PASSED / FAILED that lands after retry exhaustion.
+        if (r.wasRetried()) {{
+            LOG.debug("[TEST] retry-failed  {{}}  ({{}}ms) -- {{}}", label(r), elapsedMs(r), msg);
+        }} else {{
+            LOG.warn("[TEST] FAILED   {{}}  ({{}}ms) -- {{}}", label(r), elapsedMs(r), msg);
+        }}
     }}
 
     @Override
     public void onTestSkipped(ITestResult r) {{
+        // Suppress intermediate SKIPPED entries from RetryAnalyzer cycles
+        // (TestNG's flow: run -> mark SKIPPED -> retry -> repeat). Only
+        // real skips (dependency failures, disabled tests) log at INFO.
+        if (isIntermediateRetrySkip(r)) {{
+            elapsedMs(r);  // drain the STARTS entry so it doesn't leak
+            return;
+        }}
         LOG.info("[TEST] SKIPPED  {{}}  ({{}}ms)", label(r), elapsedMs(r));
     }}
 
