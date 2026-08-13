@@ -33,3 +33,7 @@ src/test/resources/application-local.properties
 # Any credentials override file, in case one lands anywhere in the tree:
 **/credentials.properties
 **/*-credentials.properties
+# Nested per-env JSON config with real secrets. `.example.json` variant
+# (with placeholder values) IS committed so contributors see the shape.
+src/main/resources/program_configuration.json
+program_configuration.json

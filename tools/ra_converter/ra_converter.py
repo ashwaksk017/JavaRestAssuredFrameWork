@@ -852,6 +852,12 @@ class AuditLedger:
     placeholders: list[tuple] = field(default_factory=list)
     # (prefix, case, step_name, step_type)
     unknown_step_types: list[tuple] = field(default_factory=list)
+    # (prefix, case, step_name, prop_name, literal_value, ctx_key)
+    # SoapUI Properties-step defaults emitted as ctx.putIfAbsent literals.
+    # These are frozen, environment-specific values baked into the source
+    # XML -- they should be flagged so authors know what to move to
+    # per-env config or replace with fresh <<faker>> tokens.
+    frozen_properties: list[tuple] = field(default_factory=list)
 
     def add_assertion(self, prefix, case, step, soapui_type, cfg,
                        emitted_java, coverage):
@@ -877,6 +883,16 @@ class AuditLedger:
 
     def add_placeholder(self, case, name, kind):
         self.placeholders.append((case, name, kind))
+
+    def add_frozen_property(self, prefix, case, step_name, prop_name,
+                             literal_value, ctx_key):
+        """Record a SoapUI Properties-step default value emitted as a
+        `ctx.putIfAbsent(ctx_key, literal_value)` line. These frozen
+        literals are one of the biggest env-portability + freshness
+        risks in the emitted code -- surface them so authors can move
+        them to per-env config or replace with faker tokens."""
+        self.frozen_properties.append(
+            (prefix, case, step_name, prop_name, literal_value, ctx_key))
 
     def _write_csv(self, path: str, header: list[str], rows: list[tuple]):
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -910,6 +926,11 @@ class AuditLedger:
             os.path.join(base, "placeholders.csv"),
             ["case", "placeholder", "kind"],
             self.placeholders)
+        self._write_csv(
+            os.path.join(base, "frozen_properties.csv"),
+            ["prefix", "case", "step_name", "prop_name",
+             "literal_value", "ctx_key"],
+            self.frozen_properties)
 
         # ---- summary.md -------------------------------------------------
         def _counts(rows, cov_index):
@@ -969,6 +990,63 @@ class AuditLedger:
             f"- True CSV columns: **{ph_counts.get('csv', 0)}** placeholders",
             "",
         ]
+
+        # ---- frozen Properties-step literals -------------------------
+        # SoapUI Properties-step defaults emitted as ctx.putIfAbsent
+        # literals. These are ENV-FROZEN values baked into the source
+        # XML at export time -- big risk for env-portability, freshness,
+        # and (occasionally) leaking real IDs. Surface every one so
+        # authors can decide: keep, move to env config, or replace with
+        # <<faker>> tokens. See full list in `frozen_properties.csv`.
+        if self.frozen_properties:
+            fp_unique_keys: dict[str, set] = defaultdict(set)
+            fp_by_prop_name: dict[str, int] = defaultdict(int)
+            for prefix, case, step_name, prop_name, val, ctx_key in self.frozen_properties:
+                fp_unique_keys[ctx_key].add(val)
+                fp_by_prop_name[prop_name] += 1
+            multi_valued_keys = {k: sorted(vs) for k, vs in fp_unique_keys.items()
+                                 if len(vs) > 1}
+            lines.extend([
+                "## Frozen Properties-step literals",
+                "",
+                "> SoapUI `<properties>` step defaults emitted as "
+                "`ctx.putIfAbsent(\"<step>.<prop>\", \"<literal>\")` in every method's",
+                "> body. These are ENV-FROZEN: run against a different env (prod / "
+                "fresh QA) and IDs / domains may not exist there. Reference framework",
+                "> (oneqa) uses `<<faker>>` tokens or per-env config for the same",
+                "> use case; see `frozen_properties.csv` for the full list.",
+                "",
+                f"- Total emissions: **{len(self.frozen_properties)}** "
+                f"across {len(fp_unique_keys)} unique ctx keys",
+                f"- Distinct prop names: **{len(fp_by_prop_name)}**",
+                f"- Multi-valued keys (same key, different literals across cases): "
+                f"**{len(multi_valued_keys)}** -- indicates the SoapUI author "
+                f"varied the seed per case; these should almost certainly be CSV columns",
+                "",
+                "### Top 15 by prop name (frequency)",
+                "",
+                "| Prop name | Emissions |",
+                "|---|---:|",
+            ])
+            for prop_name, count in sorted(
+                    fp_by_prop_name.items(), key=lambda x: -x[1])[:15]:
+                lines.append(f"| `{prop_name}` | {count} |")
+            lines.append("")
+            if multi_valued_keys:
+                lines.extend([
+                    "### Multi-valued keys (top 10 -- CSV-column candidates)",
+                    "",
+                    "| ctx key | distinct literal values |",
+                    "|---|---|",
+                ])
+                for key, vals in list(multi_valued_keys.items())[:10]:
+                    preview = ", ".join(
+                        f"`{v[:40]}{'...' if len(v) > 40 else ''}`"
+                        for v in vals[:4])
+                    if len(vals) > 4:
+                        preview += f", + {len(vals) - 4} more"
+                    lines.append(f"| `{key}` | {preview} |")
+                lines.append("")
         if self.unknown_step_types:
             lines.append("## Unknown SoapUI step types")
             lines.append("")
@@ -1478,6 +1556,246 @@ def _business_method_name(case_name: str) -> tuple[str, str, str]:
     if not method.endswith("Test"):
         method = method + "Test"
     return method, status_code, variant
+
+
+# HTTP verb -> English word for business-area class naming. Kept small
+# and explicit so an unknown verb gets a titlecased fallback rather than
+# a Python KeyError -- future verbs (LINK, UNLINK, TRACE, ...) surface
+# as themselves in the class name until we map them explicitly.
+_HTTP_VERB_WORD = {
+    "GET":     "Get",
+    "POST":    "Create",
+    "PUT":     "Update",
+    "PATCH":   "Patch",
+    "DELETE":  "Delete",
+    "HEAD":    "Head",
+    "OPTIONS": "Options",
+}
+
+# Last-path-segment words that themselves describe the intent -- when a URL
+# ends in one of these (e.g. `/members/{id}/activate`), we use the action
+# verb as the class-name verb and the PARENT segment as its noun
+# (`ActivateMembersTest`) instead of the boring `<HttpVerb><LastSegment>`
+# form (`CreateActivateTest`). Curated from common REST resource verbs
+# across SoapUI / Postman collections -- extend as needed.
+_URL_ACTION_VERBS = {
+    "activate", "deactivate", "verify", "cancel", "refresh", "revoke",
+    "invite", "reset", "confirm", "reject", "approve", "search",
+    "validate", "merge", "restrict", "unrestrict", "reactivate",
+    "unlock", "lock", "resend", "notify", "publish", "unpublish",
+    "enable", "disable", "list", "import", "export", "register",
+    "login", "logout", "authenticate", "authorize", "assign", "unassign",
+    "attach", "detach", "start", "stop", "pause", "resume", "restart",
+    "sync", "count", "batch", "bulk", "clone", "duplicate", "archive",
+    "unarchive", "restore", "purge", "checkout", "checkin", "submit",
+    "approve", "process",
+}
+
+
+def _terminal_rest_step(case: "TestCase") -> Optional["RestStep"]:
+    """Return the LAST RestStep in a case's step sequence, or None when
+    the case has no REST call (pure Groovy / cleanup cases fall through).
+
+    We key business-area bucketing on the terminal REST step because
+    setup calls (login, token, prime data) are shared across many
+    intents; the LAST call is what the test is actually testing."""
+    for step in reversed(case.steps):
+        if isinstance(step, RestStep):
+            return step
+    return None
+
+
+def _business_area_from_rest(http_method: str, resource_path: str) -> tuple[str, str]:
+    """Derive (resource_slug, operation_class_simple_name) from an HTTP
+    verb + resource path. Groups tests by INTENT so N SoapUI cases cluster
+    into a handful of business-area classes organized:
+        `<suite>.<resource_slug>.<Operation>Test`
+
+    Returns:
+      resource_slug -- lowercase snake_case sub-package segment
+                       (e.g. `program_account_member`, `guest`).
+      op_class_simple -- PascalCase Java class name for the operation
+                         (e.g. `CreateTest`, `DeleteTest`, `ActivateTest`).
+                         Always ends in `Test`.
+
+    Rules:
+      1. Strip path-param segments (`{guestId}`, `{accountId}`).
+      2. If the last non-param segment is an action verb (`activate`,
+         `verify`, `invite`, ...), the operation is that action and the
+         resource is the PARENT segment (`.../members/{id}/activate`
+         -> resource `members`, operation `ActivateTest`).
+      3. Otherwise: operation = verb word (POST->Create, GET->Get, etc.)
+         and resource = last non-param segment.
+      4. Root-level (`/`) endpoints fall back to `root` / `<Verb>Test`.
+      5. Resource slug is snake_case + Java-package-safe (no reserved
+         words, no leading digits).
+    """
+    verb = (http_method or "GET").upper()
+    segs = [s for s in (resource_path or "").split("/") if s]
+    non_param = [s for s in segs if not (s.startswith("{") and s.endswith("}"))]
+    if not non_param:
+        # `POST /` (rare) -- one bucket per verb at the root.
+        return "root", _HTTP_VERB_WORD.get(verb, verb.title()) + "Test"
+    last = non_param[-1].lower()
+    if last in _URL_ACTION_VERBS and len(non_param) >= 2:
+        # `.../<resource>/{id}/<action>` -> resource=<resource>, op=<Action>Test
+        resource = non_param[-2]
+        op = to_camel_case(last, upper_first=True) + "Test"
+    elif last in _URL_ACTION_VERBS:
+        # `.../<action>` at root -> resource=<action> (best we can do),
+        # op=<Verb><Action>Test so multiple verbs on the same action
+        # don't collapse into one bucket.
+        resource = last
+        op = (_HTTP_VERB_WORD.get(verb, verb.title())
+              + to_camel_case(last, upper_first=True) + "Test")
+    else:
+        resource = non_param[-1]
+        op = _HTTP_VERB_WORD.get(verb, verb.title()) + "Test"
+    # Snake_case + package-safe slug for the sub-package name.
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", resource).strip("_").lower()
+    if not slug:
+        slug = "root"
+    if slug[0].isdigit():
+        slug = "_" + slug
+    if slug in _JAVA_RESERVED:
+        slug = slug + "_"
+    return slug, op
+
+
+# ---------------------------------------------------------------------------
+# Frozen-Properties migration -- turn SoapUI Properties-step defaults from
+# hardcoded `ctx.putIfAbsent("key", "literal")` emissions into either
+# per-row CSV columns (when the SoapUI author varied the value per case)
+# or per-env Config lookups (when the value is constant across cases).
+# Never auto-replaces with `<<faker>>` -- that could break tests that
+# reference specific pre-seeded QA data records. Faker migration is left
+# as a manual opt-in the user does after seeing the audit report.
+# ---------------------------------------------------------------------------
+
+_EMAIL_RX = re.compile(r'^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$', re.I)
+_PHONE_RX = re.compile(r'^\d{7,15}$')
+_UUID_RX  = re.compile(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.I)
+
+
+def _detect_property_shape(values) -> str:
+    """Return a shape label for a set of literal values: 'email' | 'phone'
+    | 'uuid' | 'literal'. Used only for the audit report -- the migrator
+    itself doesn't switch on shape. Empty input returns 'literal'."""
+    if not values:
+        return 'literal'
+    if all(_EMAIL_RX.match(v or "") for v in values):
+        return 'email'
+    if all(_PHONE_RX.match(v or "") for v in values):
+        return 'phone'
+    if all(_UUID_RX.match(v or "") for v in values):
+        return 'uuid'
+    return 'literal'
+
+
+def _classify_frozen_properties(cases: list["TestCase"]) -> dict:
+    """Analyze all `PropertiesStep` values across the given cases and
+    return a migration plan keyed by ctx_key. The Emitter uses this plan
+    to decide whether each `ctx.putIfAbsent(...)` line becomes a CSV
+    column lookup or a Config lookup at emission time.
+
+    Returns
+    -------
+    dict[str, dict] with per-key entries:
+        destination     -- 'csv' if the SoapUI author varied the value
+                           per case, 'config' if constant across cases
+        shape           -- 'email' | 'phone' | 'uuid' | 'literal'
+                           (audit-report metadata, not used for routing)
+        default         -- most-common literal value; used as the code-
+                           level fallback when the CSV row or Config
+                           lookup returns empty
+        per_case        -- {case_name: literal_value} map so the CSV
+                           emitter can populate per-row columns for the
+                           'csv' destination
+        distinct_count  -- number of unique literal values across cases
+    """
+    key_case_values: dict[str, dict[str, str]] = defaultdict(dict)
+    for case in cases:
+        for step in case.steps:
+            if isinstance(step, PropertiesStep):
+                for prop, val in (step.properties or {}).items():
+                    if val:
+                        ctx_key = f'{step.step_name}.{prop}'
+                        # Last-write-wins if the same case has this step twice.
+                        key_case_values[ctx_key][case.name] = val
+
+    from collections import Counter as _Counter
+    migration: dict[str, dict] = {}
+    for ctx_key, case_values in key_case_values.items():
+        distinct = set(case_values.values())
+        # Most-common value = the fallback default. Deterministic tie-break
+        # via the sorted() call so re-runs don't churn the emitted default.
+        most_common = _Counter(case_values.values()).most_common()
+        top_count = most_common[0][1]
+        tied = sorted(v for v, c in most_common if c == top_count)
+        default = tied[0]
+        migration[ctx_key] = {
+            'destination': 'csv' if len(distinct) > 1 else 'config',
+            'shape':       _detect_property_shape(distinct),
+            'default':     default,
+            'per_case':    dict(case_values),
+            'distinct_count': len(distinct),
+        }
+    return migration
+
+
+def _is_token_fetch_step(step: "RestStep") -> bool:
+    """Heuristic: does this REST step look like an OAuth token fetch?
+
+    Signature (both must match):
+      - POST verb
+      - URL path ends in one of the well-known token endpoints:
+        `/token`, `/oauth/token`, `/access-token`, `/access_token`,
+        `/oauth2/token`, `/authorize`, or ANY path containing `/realms/`
+        and ending in `/token` (Keycloak / custom OAuth realm servers).
+      - Request body / form params / headers reference AT LEAST ONE of
+        the classic OAuth credential fields: `grant_type`, `client_id`,
+        `client_secret`, `refresh_token`, or the classic username +
+        password pair. Covers form-encoded (grant_type), JSON with
+        credentials (client_id + client_secret), and password grant
+        (username + password) all in one check.
+
+    False positives here would wrap a real business call in an
+    if-not-cached guard (bad); false negatives just leave a redundant
+    token fetch inline (harmless). The path suffix requirement keeps
+    the false-positive rate low -- normal REST resources rarely end in
+    `/token` and don't also carry client_id/client_secret."""
+    if (step.http_method or "").upper() != "POST":
+        return False
+    path = (step.resource_path or "").lower()
+    ends_in_token_endpoint = any(path.endswith(p) for p in (
+        "/token", "/oauth/token", "/oauth2/token",
+        "/access-token", "/access_token", "/authorize",
+    ))
+    if not ends_in_token_endpoint:
+        return False
+    corpus = "\n".join([
+        step.request_body or "",
+        *(step.headers.values() if step.headers else []),
+        *(step.query_params.values() if step.query_params else []),
+    ]).lower()
+    # At least one OAuth credential field must be present.
+    if any(tok in corpus for tok in
+           ("grant_type", "client_id", "client_secret", "refresh_token")):
+        return True
+    # Password-grant pattern: BOTH username and password.
+    return "username" in corpus and "password" in corpus
+
+
+def _business_bucket_of_case(case: "TestCase") -> tuple[str, str]:
+    """Business-area (resource_slug, operation_class) for a whole case.
+
+    Setup-only cases (no REST call) land in `misc/CleanupOrSetupTest.java`
+    so they still get executed but don't pollute a real resource bucket."""
+    step = _terminal_rest_step(case)
+    if step is None:
+        return "misc", "CleanupOrSetupTest"
+    return _business_area_from_rest(step.http_method, step.resource_path)
 
 
 def _body_shape_key(step: "RestStep") -> str:
@@ -2171,6 +2489,18 @@ class Emitter:
         # Populated by main() before emit_test_class runs. Maps case name to
         # the flow dict (or missing = no shared flow covers this case).
         self._flow_by_case: dict[str, dict] = {}
+        # Populated by main() before rendering. See _classify_frozen_properties.
+        # Maps ctx_key -> {destination, shape, default, per_case, distinct_count}.
+        # Consumed by _render_step's PropertiesStep branch AND
+        # emit_csv_per_method (which injects per-case columns for CSV
+        # destinations). Empty dict = no migration (fall back to literals).
+        self._property_migration: dict = {}
+        # Populated by emit_templates_class (after emit_templates_deduplicated).
+        # Maps `templates/<suite>/<subdir>/<file>.<ext>` -> Java constant
+        # name in the emitted Templates class. Consumed by
+        # `_render_rest_step_body` so call sites emit
+        # `Templates.<NAME>` instead of two literal string args.
+        self._template_const_by_path: dict[str, str] = {}
         # Populated per-test-case in the test emitter so Groovy translator
         # can reference the Response variable for each REST step.
         self.response_var_by_step: dict[str, str] = {}
@@ -2447,12 +2777,26 @@ public class {class_name} {{
         elif isinstance(step, GroovyStep):
             lines.extend(self._render_groovy_translated(step))
         elif isinstance(step, PropertiesStep):
-            lines.append(f'// [properties step] {step.step_name} -- initial values '
-                         'from base; populated by preceding groovy into ctx')
+            lines.append(f'// [properties step] {step.step_name} -- values '
+                         'resolved via TestSupport.testData(row, key):')
+            lines.append('//   1. CSV row cell  2. Config test_data.<key>  '
+                         '3. bundled test_data_defaults JSON  4. ""')
             for prop, val in (step.properties or {}).items():
-                if val:
-                    lines.append(
-                        f'ctx.putIfAbsent("{step.step_name}.{prop}", "{_jlit(val)}");')
+                if not val:
+                    continue
+                ctx_key = f'{step.step_name}.{prop}'
+                # Track the original SoapUI literal for the audit even
+                # after we migrate the emission -- the "frozen" audit
+                # reflects what the SOURCE XML shipped, not what we emit.
+                self.ledger.add_frozen_property(
+                    self._current_prefix, self._current_case,
+                    step.step_name, prop, val, ctx_key)
+                # Single emission shape regardless of destination -- the
+                # runtime helper walks the precedence chain and finds the
+                # right value. No hardcoded literal in the emitted Java.
+                lines.append(
+                    f'ctx.putIfAbsent("{ctx_key}", '
+                    f'TestSupport.testData(row, "{ctx_key}"));')
         elif isinstance(step, DataSourceStep):
             lines.append(
                 f'// [datasource step] {step.step_name} -- iteration comes '
@@ -2663,19 +3007,30 @@ public class {class_name} {{
             #     that emit_templates writes.
             classpath_ref = self._template_path_by_step.get(
                 (self._current_case, step.step_name))
-            if classpath_ref:
-                # Split back into (dir/, file) as getRequestTemplate expects.
-                slash = classpath_ref.rfind("/")
-                tmpl_dir = classpath_ref[:slash + 1]  # includes trailing slash
-                tmpl_file = classpath_ref[slash + 1:]
-            else:
-                tmpl_dir = f"templates/{self.suite_name}/"
-                tmpl_file = f'{sanitize_identifier(step.step_name).lower()}.json'
             payload_var = f"{base}Payload{suf}"
             self._locals_in_method.add(payload_var)
-            lines.append(f'String {payload_var} = RestUtilities.mapJsonValues(')
-            lines.append(f'    RestUtilities.getRequestTemplate("{tmpl_dir}", "{tmpl_file}"),')
-            lines.append(f'    TestSupport.mergedRow(row, ctx), /* strict */ false);')
+            # Prefer the generated Templates.<NAME> constant so the classpath
+            # string never appears as a literal in the emitted Java. Falls
+            # back to the split (dir, file) literals only when either the
+            # step has no dedup entry OR the templates class emitter hasn't
+            # run yet (legacy path).
+            const_name = (self._template_const_by_path.get(classpath_ref)
+                          if classpath_ref else None)
+            if const_name:
+                lines.append(f'String {payload_var} = RestUtilities.mapJsonValues(')
+                lines.append(f'    RestUtilities.getRequestTemplate(Templates.{const_name}),')
+                lines.append(f'    TestSupport.mergedRow(row, ctx), /* strict */ false);')
+            else:
+                if classpath_ref:
+                    slash = classpath_ref.rfind("/")
+                    tmpl_dir = classpath_ref[:slash + 1]
+                    tmpl_file = classpath_ref[slash + 1:]
+                else:
+                    tmpl_dir = f"templates/{self.suite_name}/"
+                    tmpl_file = f'{sanitize_identifier(step.step_name).lower()}.json'
+                lines.append(f'String {payload_var} = RestUtilities.mapJsonValues(')
+                lines.append(f'    RestUtilities.getRequestTemplate("{tmpl_dir}", "{tmpl_file}"),')
+                lines.append(f'    TestSupport.mergedRow(row, ctx), /* strict */ false);')
             body_var = payload_var
             if self._resolver_emitted:
                 # v2 only: runtime dynamic-value pass expands `<<X>>`
@@ -2788,6 +3143,17 @@ public class {class_name} {{
         # Advance the cluster REST-step position so the next call reads
         # assertions from position+1.
         self._current_rest_step_pos += 1
+
+        # Auth-reuse note: originally we tried wrapping token-fetch steps
+        # in `if (!ctx.containsKey("accessToken")) { ... }` to skip a
+        # redundant fetch when @BeforeClass primed via AuthHelper. That
+        # broke compile -- downstream Groovy steps reference the response
+        # variable (`<step>Res`), which the wrap scoped to the block.
+        # Correct fix would hoist the response declaration out of the
+        # guard; deferred. Instead we make @BeforeClass priming
+        # CONDITIONAL on whether the class already has an inline token
+        # fetch (see `emit_test_class_per_suite`) so we never fetch
+        # twice for the same class.
 
         return lines
 
@@ -3352,8 +3718,14 @@ public class {class_name} {{
         keys_java = ", ".join(f'"{k}"' for k in cfg_keys)
         content = f"""package {pkg};
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.Map;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import com.ak.api.config.Config;
 
@@ -3377,6 +3749,14 @@ import com.ak.api.config.Config;
  * SoapUI property namespace). mergedRow expands every dotted key into
  * BOTH forms so #stepName_field# and #stepName.field# both resolve to
  * the same value without every ctx.put needing to double-write.
+ *
+ * testData(row, key) is a separate lookup used by every migrated
+ * `ctx.putIfAbsent` for a SoapUI Properties-step value. Walks:
+ *   1. CSV row cell            (author override per scenario)
+ *   2. Config test_data.<key>  (env override, program_configuration.json)
+ *   3. Bundled defaults JSON   (test_data_defaults/{self.suite_name}.json)
+ *   4. ""                      (empty; caller decides how to handle)
+ * so the emitted Java never carries hardcoded default literals.
  */
 public final class TestSupport {{
 
@@ -3385,7 +3765,53 @@ public final class TestSupport {{
      *  templates can reference them without any explicit ctx.put in the test. */
     private static final String[] CONFIG_KEYS = new String[] {{ {keys_java} }};
 
+    /** Per-suite test-data defaults, loaded once from the bundled JSON.
+     *  Populated in the static initializer; empty when the file is missing
+     *  (converter skipped writing it because the source XML had no
+     *  Properties steps). */
+    private static final Map<String, String> TEST_DATA_DEFAULTS = loadTestDataDefaults();
+
     private TestSupport() {{}}
+
+    /**
+     * Test-data lookup for values that used to be hardcoded literals in
+     * the emitted Java. Called by every migrated `ctx.putIfAbsent` line.
+     * Precedence (first non-empty wins):
+     * <ol>
+     *   <li>{{@code row.get(key)}} -- CSV row cell (author picks per scenario)</li>
+     *   <li>{{@code Config.get("test_data." + key)}} -- env override</li>
+     *   <li>{{@link #TEST_DATA_DEFAULTS}} -- bundled per-suite default</li>
+     *   <li>empty string {{@code ""}}</li>
+     * </ol>
+     */
+    public static String testData(Map<String, String> row, String key) {{
+        if (row != null) {{
+            String v = row.get(key);
+            if (v != null && !v.isEmpty()) return v;
+        }}
+        String cfg = Config.get("test_data." + key, null);
+        if (cfg != null && !cfg.isEmpty()) return cfg;
+        return TEST_DATA_DEFAULTS.getOrDefault(key, "");
+    }}
+
+    private static Map<String, String> loadTestDataDefaults() {{
+        Map<String, String> m = new HashMap<>();
+        String path = "test_data_defaults/{self.suite_name}.json";
+        try (InputStream in = TestSupport.class.getClassLoader()
+                .getResourceAsStream(path)) {{
+            if (in == null) return m;
+            JsonNode root = new ObjectMapper().readTree(in);
+            Iterator<Map.Entry<String, JsonNode>> it = root.fields();
+            while (it.hasNext()) {{
+                Map.Entry<String, JsonNode> e = it.next();
+                m.put(e.getKey(), e.getValue().asText(""));
+            }}
+        }} catch (IOException ignored) {{
+            // File missing / unreadable -> defaults stay empty; row + config
+            // still work as override sources.
+        }}
+        return m;
+    }}
 
     /**
      * Union a CSV row + runtime ctx map + config lookups. Highest-priority
@@ -3517,6 +3943,7 @@ import com.ak.api.rest.clients.{service_class_name};
 import com.ak.api.rest.utilities.Headers;
 import com.ak.api.rest.utilities.RestLoggerUtilityDataHolder;
 import com.ak.api.rest.utilities.RestUtilities;
+import {self.package_root}.templates.{self.suite_name}.Templates;
 
 import io.restassured.response.Response;
 
@@ -3809,6 +4236,194 @@ public final class SetupHelper {{
     # existing callers keep working.
     # =====================================================================
 
+    def emit_test_data_defaults_json(self, migration: dict) -> Optional[str]:
+        """Emit `src/main/resources/test_data_defaults/<suite>.json` -- the
+        bundled data file every migrated `ctx.putIfAbsent` reads through
+        `TestSupport.testData(row, key)`. Keeps the emitted Java sources
+        free of hardcoded default literals: defaults live here as pure
+        data, editable independently of code.
+
+        One flat JSON object mapping `<step_name>.<prop_name>` -> default
+        literal. Empty {} when no PropertiesStep values were classified."""
+        if not migration:
+            return None
+        rel = f"src/main/resources/test_data_defaults/{self.suite_name}.json"
+        defaults = {ctx_key: m['default']
+                    for ctx_key, m in migration.items()}
+        # Emit sorted for deterministic diff-ability across regenerations.
+        payload = json.dumps(
+            {k: defaults[k] for k in sorted(defaults)},
+            indent=2, ensure_ascii=False)
+        self._write(rel, payload + "\n")
+        return rel
+
+    def emit_test_data_config(self, migration: dict) -> Optional[str]:
+        """Emit `src/main/resources/test_data.example.properties` -- a hint
+        file listing every `test_data.*` key the migrated PropertiesStep
+        code will look up via `Config.get(...)`, with its default value
+        pre-filled. Users copy the relevant keys into their real
+        `program_configuration.json` (under a `test_data:` block per env)
+        or `-D` them on the command line to override per env.
+
+        Returns the relative path when the file is written; None when
+        there are no config-destination migrations."""
+        cfg_entries = [
+            (ctx_key, m['default'], m['shape'])
+            for ctx_key, m in (migration or {}).items()
+            if m['destination'] == 'config'
+        ]
+        if not cfg_entries:
+            return None
+        rel = "src/main/resources/test_data.example.properties"
+        lines = [
+            "# Auto-generated by ra_converter -- copy the keys you need",
+            "# into `program_configuration.json` under a `test_data:` block",
+            "# per env, or override individually with `-Dtest_data.<key>=<value>`.",
+            "#",
+            "# Every emitted `ctx.putIfAbsent(...)` for a constant-across-cases",
+            "# SoapUI Properties value now reads through Config, so a single",
+            "# env-specific value can change without editing Java sources.",
+            "#",
+            "# Format: `test_data.<original SoapUI ctx key>=<observed default>`",
+            "",
+        ]
+        for ctx_key, default, shape in sorted(cfg_entries):
+            shape_note = f"  # shape={shape}" if shape != 'literal' else ""
+            lines.append(f"test_data.{ctx_key}={default}{shape_note}")
+        content = "\n".join(lines) + "\n"
+        self._write(rel, content)
+        return rel
+
+    def emit_auth_helper(self) -> str:
+        """Emit `com.ak.api.rest.utilities.AuthHelper` -- a framework-level
+        one-time OAuth 2.0 token bootstrap. Every generated business-area
+        class calls `AuthHelper.primeClientCredentialsToken(ctx)` in its
+        `@BeforeClass` so N @Test methods reuse a single token instead of
+        each re-fetching. Emitted idempotently: overwritten on every run
+        with the current version.
+
+        Config-driven -- reads `api_config.client_id / .client_secret /
+        .token_end_point / .token_route / .grant_type` from Config (the
+        nested-JSON support already wired). No-ops (WARN) when required
+        creds are absent; individual REST-step-level token fetches remain
+        as a fallback so tests that need the pre-existing inline flow
+        keep working.
+
+        Also emits `HeadersHelper` alongside so both helpers ship as a
+        pair -- HeadersHelper.defaultsWithAuth(ctx) collapses the
+        10-line boilerplate header block per method into one call."""
+        pkg = "com.ak.api.rest.utilities"
+        rel = f"src/main/java/{pkg.replace('.', '/')}/AuthHelper.java"
+        content = f"""package {pkg};
+
+import java.util.Map;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import io.restassured.RestAssured;
+import io.restassured.http.ContentType;
+import io.restassured.response.Response;
+
+import com.ak.api.config.Config;
+
+/**
+ * One-time OAuth 2.0 bootstrap. Business-area test classes call
+ * {{@link #primeClientCredentialsToken(Map)}} from {{@code @BeforeClass}}
+ * so every {{@code @Test}} method starts with {{@code ctx.get("accessToken")}}
+ * already populated -- no re-fetch per method.
+ *
+ * <p>Config keys read (from {{@code program_configuration.json}} via
+ * {{@link Config}}):</p>
+ * <ul>
+ *   <li>{{@code api_config.client_id}}</li>
+ *   <li>{{@code api_config.client_secret}}</li>
+ *   <li>{{@code api_config.grant_type}} (default: {{@code client_credentials}})</li>
+ *   <li>{{@code api_config.token_end_point}} (base URL)</li>
+ *   <li>{{@code api_config.token_route}} (path appended to base)</li>
+ * </ul>
+ *
+ * <p>Missing / empty creds -> logs WARN, leaves ctx untouched. Individual
+ * REST steps that fetch a token inline still run in that case (fallback),
+ * so tests never break on absent config -- they just don't benefit from
+ * the class-level token reuse.</p>
+ *
+ * <p>Idempotent: safe to call multiple times. If {{@code ctx}} already
+ * carries a non-empty {{@code accessToken}}, returns immediately.</p>
+ */
+public final class AuthHelper {{
+
+    private static final Logger LOG = LoggerFactory.getLogger(AuthHelper.class);
+
+    private AuthHelper() {{}}
+
+    /**
+     * Fetch a client-credentials OAuth token and store it in {{@code ctx}}
+     * under the key {{@code "accessToken"}}. Safe to call from any
+     * {{@code @BeforeClass}} -- becomes a no-op when the key is already set.
+     */
+    public static void primeClientCredentialsToken(Map<String, String> ctx) {{
+        if (ctx.containsKey("accessToken")
+                && ctx.get("accessToken") != null
+                && !ctx.get("accessToken").isEmpty()) {{
+            LOG.debug("AuthHelper: ctx already has accessToken -- skipping bootstrap");
+            return;
+        }}
+        String clientId     = Config.get("api_config.client_id", "");
+        String clientSecret = Config.get("api_config.client_secret", "");
+        String grantType    = Config.get("api_config.grant_type", "client_credentials");
+        if (clientId.isEmpty() || clientSecret.isEmpty()) {{
+            LOG.warn("AuthHelper: api_config.client_id / client_secret not "
+                    + "configured; leaving ctx.accessToken empty. Tests that "
+                    + "need auth will fall back to fetching a token inline.");
+            return;
+        }}
+        String tokenBase = Config.get("api_config.token_end_point", Config.baseUrl());
+        String tokenRoute = Config.get("api_config.token_route", "");
+        String tokenUrl;
+        if (tokenRoute.isEmpty()) {{
+            tokenUrl = tokenBase;
+        }} else if (tokenBase.endsWith("/") || tokenRoute.startsWith("/")) {{
+            tokenUrl = tokenBase + tokenRoute;
+        }} else {{
+            tokenUrl = tokenBase + "/" + tokenRoute;
+        }}
+
+        try {{
+            Response resp = RestAssured.given()
+                    .contentType(ContentType.URLENC)
+                    .formParam("grant_type",    grantType)
+                    .formParam("client_id",     clientId)
+                    .formParam("client_secret", clientSecret)
+                    .post(tokenUrl);
+
+            int status = resp.getStatusCode();
+            if (status != 200) {{
+                String snippet = resp.asString();
+                if (snippet.length() > 200) snippet = snippet.substring(0, 200) + "...";
+                LOG.warn("AuthHelper: token endpoint {{}} returned HTTP {{}} -- "
+                        + "leaving ctx.accessToken empty (inline fallback will run). "
+                        + "Body: {{}}", tokenUrl, status, snippet);
+                return;
+            }}
+            String token = resp.jsonPath().getString("access_token");
+            if (token == null || token.isEmpty()) {{
+                LOG.warn("AuthHelper: token endpoint {{}} returned 200 but no "
+                        + "access_token field in body -- leaving ctx empty", tokenUrl);
+                return;
+            }}
+            ctx.put("accessToken", token);
+            LOG.info("AuthHelper: primed ctx.accessToken from {{}}", tokenUrl);
+        }} catch (Exception e) {{
+            LOG.warn("AuthHelper: token bootstrap failed against {{}}: {{}} "
+                    + "(inline fallback will run)", tokenUrl, e.getMessage());
+        }}
+    }}
+}}
+"""
+        self._write(rel, content)
+        return rel
+
     def emit_per_method_csv_data_provider(self) -> str:
         """One-time helper class: `PerMethodCsvDataProvider` locates a
         `csv/<ClassSimpleName>/<methodName>.csv` on the classpath from the
@@ -3835,10 +4450,12 @@ import org.testng.annotations.DataProvider;
 /**
  * Convention-based TestNG DataProvider used by every ra_converter-emitted
  * test class. For a test method
- *   {{@code com.ak.api.tests.imported.<suite>.<Class>.<methodName>(Map<String,String> row)}}
+ *   {{@code com.ak.api.tests.imported.<suite>[.<resource>].<Class>.<methodName>(Map<String,String> row)}}
  * this provider loads
- *   {{@code classpath:/csv/<Class>/<methodName>.csv}}
- * and yields one Map<String,String> per data row (header keys, string values).
+ *   {{@code classpath:/csv/<suite>[/<resource>]/<Class>/<methodName>.csv}}
+ * -- the CSV directory tree mirrors the Java sub-package tree so two
+ * `CreateTest` classes in different resource sub-packages don't collide
+ * (they used to, when we keyed on {{@code getSimpleName()}} alone).
  *
  * <p>Blank CSV cells are surfaced as {{@code ""}}; the CSV file itself is required
  * (missing file -> {{@link IllegalStateException}} so a test won't silently pass
@@ -3854,16 +4471,27 @@ public final class PerMethodCsvDataProvider {{
 
     @DataProvider(name = "rows")
     public static Object[][] rows(Method method) {{
-        String cls  = method.getDeclaringClass().getSimpleName();
+        // Derive CSV location from the calling class's FQN so the CSV
+        // directory tree mirrors the Java sub-package tree exactly. We
+        // strip the shared `.tests.imported.` prefix so paths stay
+        // relative to the imported-tests root, then translate `.` -> `/`.
+        String fqn = method.getDeclaringClass().getName();
+        String anchor = ".tests.imported.";
+        int idx = fqn.indexOf(anchor);
+        String subPath = (idx >= 0
+                ? fqn.substring(idx + anchor.length())
+                : method.getDeclaringClass().getSimpleName())
+                .replace('.', '/');
         String meth = method.getName();
-        String resourcePath = "csv/" + cls + "/" + meth + ".csv";
+        String resourcePath = "csv/" + subPath + "/" + meth + ".csv";
 
         InputStream in = Thread.currentThread().getContextClassLoader()
                 .getResourceAsStream(resourcePath);
         if (in == null) {{
             throw new IllegalStateException(
                     "PerMethodCsvDataProvider: no CSV on classpath at " + resourcePath
-                    + " (expected one row per data-driven scenario for @Test " + cls + "#" + meth + ")");
+                    + " (expected one row per data-driven scenario for @Test "
+                    + method.getDeclaringClass().getSimpleName() + "#" + meth + ")");
         }}
 
         List<Map<String, String>> rows = new ArrayList<>();
@@ -4196,11 +4824,22 @@ public final class PlaceholderResolver {{
 
     def emit_test_class_per_suite(self, soapui_suite_name: str,
                                     cases: list[TestCase],
-                                    service_class_name: str) -> tuple[str, str, list[str]]:
-        """Emit ONE Java test class per SoapUI test suite. Every case in
-        the suite becomes a @Test method inside that class; the method
-        name is derived from the case name via `_business_method_name()`
-        so it reads as business intent, not as a ticket ID.
+                                    service_class_name: str,
+                                    class_name_override: Optional[str] = None,
+                                    subpackage_override: Optional[str] = None
+                                    ) -> tuple[str, str, list[str]]:
+        """Emit ONE Java test class per business-area bucket. `cases` is a
+        SUBSET of a SoapUI suite (the cases that share a business intent,
+        e.g. all POST /members tests). Each case becomes a @Test method;
+        the method name is derived from the case name via
+        `_business_method_name()` so it reads as business intent, not as
+        a ticket ID.
+
+        `class_name_override` / `subpackage_override` let the caller
+        decide the emitted class name + optional sub-package (mirroring
+        the URL resource so the file tree reads as a resource catalog).
+        When both are None, falls back to the old one-class-per-suite
+        shape (class named after the SoapUI suite, no sub-package).
 
         Returns (relative_path, class_fqn, method_names_in_emit_order).
         """
@@ -4209,9 +4848,28 @@ public final class PlaceholderResolver {{
         # applied. Collision guard: refuse to overwrite an already-emitted
         # class in the same package -- caller either renamed a suite or
         # this XML has two suites that collapse to the same camel case.
-        raw_class = short_class(soapui_suite_name, self.max_name_len)
+        if class_name_override:
+            raw_class = (class_name_override[:-4]
+                         if class_name_override.endswith("Test")
+                         else class_name_override)
+            # Length shortener so per-bucket class names still fit under
+            # Windows MAX_PATH; hashes the tail like short_class does.
+            if self.max_name_len > 0 and len(raw_class) > self.max_name_len:
+                import hashlib as _hl
+                h = _hl.sha1(raw_class.encode("utf-8")).hexdigest()[:6].upper()
+                head_len = max(1, self.max_name_len - 7)
+                raw_class = f"{raw_class[:head_len]}_{h}"
+        else:
+            raw_class = short_class(soapui_suite_name, self.max_name_len)
         class_name = raw_class if raw_class.endswith("Test") else raw_class + "Test"
-        pkg = f"{self.package_root}.tests.imported.{self.suite_name}"
+        # Base package = <root>.tests.imported.<suite>.  Business-area
+        # buckets nest one level deeper into <suite>.<resource_slug>/ so
+        # the file tree reads as a resource catalog.
+        if subpackage_override:
+            pkg = (f"{self.package_root}.tests.imported."
+                   f"{self.suite_name}.{subpackage_override}")
+        else:
+            pkg = f"{self.package_root}.tests.imported.{self.suite_name}"
         fqn_candidate = f"{pkg}.{class_name}"
         if fqn_candidate in self._emitted_class_fqns:
             # Deterministic suffix from the ORIGINAL suite name (not the
@@ -4227,6 +4885,22 @@ public final class PlaceholderResolver {{
 
         # Prime state so per-method emitters know their audit-ledger cursor.
         self._current_prefix = soapui_suite_name
+
+        # Auth-priming decision: if ANY case in this bucket has an inline
+        # token-fetch REST step (directly OR via a SetupHelper flow whose
+        # setup steps include one), the @BeforeClass call to AuthHelper
+        # would be a REDUNDANT second fetch -- skip it. Priming only helps
+        # classes where no method fetches its own token (e.g. Groovy-only
+        # cleanup classes that still need auth for their downstream
+        # framework calls).
+        has_inline_token_fetch = False
+        for case in cases:
+            for step in case.steps:
+                if isinstance(step, RestStep) and _is_token_fetch_step(step):
+                    has_inline_token_fetch = True
+                    break
+            if has_inline_token_fetch:
+                break
 
         # Cluster cases by REST-step shape (verb + path + body-hash per step)
         # so N cases that share an intent collapse to ONE @Test method with
@@ -4284,20 +4958,57 @@ public final class PlaceholderResolver {{
                     f" *   - {f['id']}: {f['prefix_len']} shared setup steps "
                     f"used by {len(f['cases'])} methods")
 
+        # Business-area layout blurb only when we're actually splitting
+        # by area (caller passed a sub-package). Otherwise fall back to
+        # the flat one-class-per-suite legacy description.
+        if subpackage_override:
+            layout_blurb = [
+                f" * Business-area class: `{subpackage_override}/{class_name}`.",
+                f" * Every @Test method in this file is a scenario for ONE business intent",
+                f" * (HTTP verb + resource). Data-similar scenarios collapse into a single",
+                f" * method with N CSV rows -- add a row to add a scenario, no code change.",
+            ]
+        else:
+            layout_blurb = [
+                f" * ONE Java class -> ONE SoapUI test suite. Each SoapUI test case",
+                f" * becomes one @Test method here; scenario variants (200 / 400 / 403)",
+                f" * are kept as separate methods so failures are addressable per intent.",
+            ]
+
+        csv_dir = (f"{self.suite_name}/{subpackage_override}/{class_name}"
+                   if subpackage_override
+                   else f"{self.suite_name}/{class_name}")
+
+        # @BeforeClass body -- AuthHelper priming is CONDITIONAL. Emit it
+        # only for classes where NO @Test method inlines its own token
+        # fetch (checked above). Priming a class that also fetches inline
+        # would just be a redundant double-fetch.
+        if has_inline_token_fetch:
+            auth_prime_line = (
+                "        // No @BeforeClass auth priming: this class's tests fetch their\n"
+                "        // own token inline (via a token-endpoint REST step or a SetupHelper\n"
+                "        // flow that includes one), so priming here would be a redundant fetch.\n"
+            )
+        else:
+            auth_prime_line = (
+                "        // Prime OAuth token ONCE per class -- every @Test method reuses\n"
+                "        // ctx.get(\"accessToken\") instead of fetching per method. Reads\n"
+                "        // client credentials from Config (`api_config.*`). Safe no-op when\n"
+                "        // config is missing.\n"
+                "        AuthHelper.primeClientCredentialsToken(ctx);\n"
+            )
         header_lines = [
             f" * Auto-generated by ra_converter from SoapUI test suite `{soapui_suite_name}`.",
             f" *",
-            f" * ONE Java class -> ONE SoapUI test suite. Each SoapUI test case",
-            f" * becomes one @Test method here; scenario variants (200 / 400 / 403)",
-            f" * are kept as separate methods so failures are addressable per intent.",
+            *layout_blurb,
             f" *",
-            f" * Data: {{@code csv/{class_name}/<methodName>.csv}} on the classpath.",
+            f" * Data: {{@code csv/{csv_dir}/<methodName>.csv}} on the classpath.",
             f" * Auto-loaded by {{@link {self.package_root}.data.PerMethodCsvDataProvider}}",
             f" * -- no per-class wiring required. Add rows to a CSV to add scenarios.",
         ]
         if flow_blurbs:
             header_lines.append(" *")
-            header_lines.append(" * Shared setup flows in this class:")
+            header_lines.append(" * Shared setup flows (defined in SetupHelper for this suite):")
             header_lines.extend(flow_blurbs)
         header = "\n".join(header_lines)
 
@@ -4317,11 +5028,13 @@ import com.ak.api.data.FakeData;
 import com.ak.api.data.PerMethodCsvDataProvider;
 import com.ak.api.data.PlaceholderResolver;
 import com.ak.api.db.Db;
+import com.ak.api.rest.utilities.AuthHelper;
 import com.ak.api.rest.utilities.Headers;
 import com.ak.api.rest.utilities.RestUtilities;
 import com.ak.api.retry.RetryAnalyzer;
 import {self.package_root}.support.{self.suite_name}.SetupHelper;
 import {self.package_root}.support.{self.suite_name}.TestSupport;
+import {self.package_root}.templates.{self.suite_name}.Templates;
 import com.ak.api.tests.BaseApiTest;
 import com.ak.api.xray.XrayTest;
 
@@ -4347,10 +5060,10 @@ public class {class_name} extends BaseApiTest {{
     private final Map<String, String> ctx = new HashMap<>();
 
     @BeforeClass(alwaysRun = true)
-    public void initClient() {{
+    public void initClientAndAuth() {{
         String baseUrl = Config.get("base_url", Config.baseUrl());
         client = new {service_class_name}(baseUrl);
-        LOG.info("initialised {class_name} against baseUrl={{}}  (auth={{}})",
+{auth_prime_line}        LOG.info("initialised {class_name} against baseUrl={{}}  (auth={{}})",
                 baseUrl, Config.authType());
     }}
 
@@ -4399,9 +5112,12 @@ public class {class_name} extends BaseApiTest {{
         assigned_flow = self._flow_by_case.get(case.name)
         body_lines = [
             id_stmt,
-            '// Prevent state leakage between rows of a multi-scenario method:'
-            ' each row starts with a fresh ctx bag.',
+            '// Prevent state leakage between rows of a multi-scenario method,'
+            ' BUT preserve the class-level accessToken primed by @BeforeClass',
+            '// so each row doesn\'t re-fetch a fresh OAuth token.',
+            'String __auth = ctx.get("accessToken");',
             'ctx.clear();',
+            'if (__auth != null) ctx.put("accessToken", __auth);',
             '// Expand <<faker>> tokens + ${{property}} refs in every CSV cell '
             'so downstream code sees live values, not placeholders.',
             'row = PlaceholderResolver.resolveRow(row, ctx);',
@@ -4532,12 +5248,21 @@ public class {class_name} extends BaseApiTest {{
 
     def emit_csv_per_method(self, class_name: str, method_name: str,
                               cluster: list[TestCase],
-                              stop_markers: dict[str, str] = None) -> str:
-        """Write `src/test/resources/csv/<class_name>/<method_name>.csv` with
-        one row per case in the cluster (a cluster is 1..N SoapUI cases
-        sharing the same REST step shape). Header is stable across runs
-        so adding more scenarios later is a matter of appending rows (no
-        code change).
+                              stop_markers: dict[str, str] = None,
+                              csv_subpackage: Optional[str] = None) -> str:
+        """Write `src/test/resources/csv/<suite>[/<sub>]/<class>/<method>.csv`
+        with one row per case in the cluster (a cluster is 1..N SoapUI
+        cases sharing the same REST step shape). Header is stable across
+        runs so adding more scenarios later is a matter of appending rows
+        (no code change).
+
+        `csv_subpackage` optionally namespaces the CSV under a resource
+        sub-directory (mirrors the Java sub-package layout, so
+        `program_account_member.CreateTest#foo` -> CSV at
+        `csv/<suite>/program_account_member/CreateTest/foo.csv`). Without
+        it, CSVs land at `csv/<suite>/<class>/<method>.csv`. `PerMethod-
+        CsvDataProvider` derives the same path from the calling class's
+        FQN so both sides agree at runtime.
 
         Placeholder-friendly: any CSV cell can hold `<<fakerToken>>` or
         `${{propertyRef}}` -- `PlaceholderResolver.resolveRow` (called at
@@ -4674,6 +5399,31 @@ public class {class_name} extends BaseApiTest {{
         #        expected               -- semicolon combined shortcut
         #        assert_cols_order      -- per-assertion expected values
         #                                  (expected_<step>_<assertion_key>)
+        # Migrated frozen-Properties columns. For every CSV-destination key
+        # in the migration map that ANY case in this cluster uses, add a
+        # column so per-row values reach the emitted `row.getOrDefault(...)`
+        # lookup. Skip keys that no case in the cluster references (avoids
+        # polluting narrow-scope methods with columns that would always be
+        # blank).
+        migrated_cols_order: list[str] = []
+        migrated_vals_per_case: dict[str, list[str]] = {}
+        if self._property_migration:
+            cluster_ctx_keys: set[str] = set()
+            for c in cluster:
+                for step in c.steps:
+                    if isinstance(step, PropertiesStep):
+                        for prop, val in (step.properties or {}).items():
+                            if val:
+                                cluster_ctx_keys.add(f'{step.step_name}.{prop}')
+            for ctx_key in sorted(cluster_ctx_keys):
+                m = self._property_migration.get(ctx_key)
+                if not m or m['destination'] != 'csv':
+                    continue
+                migrated_cols_order.append(ctx_key)
+                migrated_vals_per_case[ctx_key] = [
+                    m['per_case'].get(c.name, "") for c in cluster
+                ]
+
         group_a_meta = [
             "description",        # SoapUI <con:description> text
             "test_case_id",       # original SoapUI case name (per row)
@@ -4681,7 +5431,8 @@ public class {class_name} extends BaseApiTest {{
             "variant",            # scenario disambiguator (from name suffix)
         ]
         group_b_control = stop_col
-        group_c_request = csv_columns + hint_col_names + merged_tpl_cols
+        group_c_request = (csv_columns + hint_col_names + merged_tpl_cols
+                           + migrated_cols_order)
         group_d_expected = ["expected_status_code", "expected"] + assert_cols_order
         cols = group_a_meta + group_b_control + group_c_request + group_d_expected
         header_row = ",".join(cols)
@@ -4734,10 +5485,15 @@ public class {class_name} extends BaseApiTest {{
                 _csv_cell(desc_flat), _csv_cell(c.name),
                 _csv_cell(c.prefix), _csv_cell(variant),
             ]
+            migrated_cells = [
+                _csv_cell(migrated_vals_per_case[col][case_idx])
+                for col in migrated_cols_order
+            ]
             group_c_cells = (
                 ["" for _ in csv_columns] +
                 [_csv_cell(hint) for _, hint in hinted_cols] +
-                merged_tpl_cells
+                merged_tpl_cells +
+                migrated_cells
             )
             group_d_cells = (
                 [_csv_cell(derived_status), _csv_cell(expected_str)] +
@@ -4747,7 +5503,13 @@ public class {class_name} extends BaseApiTest {{
             rows.append(",".join(row_cells))
 
         content = header_row + "\n" + "\n".join(rows) + "\n"
-        rel = f"src/test/resources/csv/{class_name}/{method_name}.csv"
+        # CSV lives under the same package tail its Java class does, so
+        # two `CreateTest.java` files in different sub-packages don't
+        # collide in `csv/`. Loader is `PerMethodCsvDataProvider` and it
+        # derives the SAME layout from the calling class's FQN.
+        _sub = f"/{csv_subpackage}" if csv_subpackage else ""
+        rel = (f"src/test/resources/csv/{self.suite_name}{_sub}/"
+               f"{class_name}/{method_name}.csv")
         self._write(rel, content)
         return rel
 
@@ -4945,6 +5707,183 @@ public class {class_name} extends BaseApiTest {{
                 self._write(f"src/main/resources/{classpath}", e["translated"])
                 hash_to_path[e["hash"]] = classpath
 
+    def emit_templates_class(self) -> Optional[str]:
+        """Emit `com.<pkg>.support.<suite>.Templates` -- a constants class
+        listing every deduped request-body template with a stable logical
+        name that call sites reference instead of the raw string path.
+
+        Design:
+          - One `public static final String <NAME> = "<full classpath>"`
+            per unique template file.
+          - Names derived: `<UPPER_SUBDIR>_<UPPER_BASENAME_WITHOUT_HASH>`.
+            The trailing `_<sha1prefix>` hash is stripped so a template's
+            NAME stays stable across regenerations even when its content
+            (and therefore its hash-suffixed file name) changes. Only the
+            VALUE string updates; every call site keeps compiling.
+          - Collisions after hash-strip disambiguated with `_2`, `_3`, ...
+          - Alphabetically sorted for deterministic diffs.
+
+        Side effect: populates `self._template_const_by_path` -- a
+        {full classpath -> constant name} map. `_render_rest_step_body`
+        consults it to emit `RestUtilities.getRequestTemplate(Templates.<N>)`
+        instead of two literal string args. When the map lookup misses
+        (shouldn't happen; guarded), the emitter falls back to the
+        legacy two-arg literal form.
+
+        Returns the relative path of the emitted file, or None when no
+        templates exist (empty suite)."""
+        # Unique full paths across all (case, step) template assignments.
+        unique_paths = sorted(set(self._template_path_by_step.values()))
+        if not unique_paths:
+            self._template_const_by_path = {}
+            return None
+
+        # Derive stable constant names.
+        # `templates/<suite>/<subdir>/<basename>_<sha1prefix>.<ext>`
+        # -> subdir = `<subdir>`, basename = `<basename>` (hash stripped).
+        # Prefix subdir uppercase + underscore-joined for global uniqueness.
+        seen_names: dict[str, int] = {}
+        const_by_path: dict[str, str] = {}
+        # 10-char lowercase hex tail preceded by `_` is what the emitter
+        # writes; matches `_<8-12 hex>` conservatively to cover renames.
+        _hash_tail_rx = re.compile(r'_[0-9a-f]{6,}$', re.I)
+        for full_path in unique_paths:
+            # `templates/<suite>/<subdir>/<file>.<ext>`
+            parts = full_path.split('/')
+            if len(parts) < 4:
+                # Unexpected shape -- fall back to whole-name uppercased.
+                base = re.sub(r'[^A-Za-z0-9]+', '_',
+                              full_path.rsplit('/', 1)[-1].rsplit('.', 1)[0])
+            else:
+                subdir = parts[-2]
+                file_stem = parts[-1].rsplit('.', 1)[0]
+                # Strip trailing hash suffix so the constant name doesn't
+                # rename every time content hashes shift.
+                file_stem = _hash_tail_rx.sub('', file_stem)
+                base = f'{subdir}_{file_stem}'
+            base = re.sub(r'[^A-Za-z0-9]+', '_', base).strip('_').upper() or 'TEMPLATE'
+            # Java identifier -- leading digit gets underscore prefix.
+            if base[0].isdigit():
+                base = '_' + base
+            # Collision-safe unique suffix. Must guard against BOTH kinds of
+            # collision: (a) two paths reduce to the same base, (b) a base
+            # name that happens to look like `<other_base>_<n>` (e.g. a
+            # template stem ending in `_2` colliding with the counter-2
+            # form of a different base). Walk `n` forward until candidate
+            # is free.
+            candidate = base
+            n = 1
+            while candidate in seen_names:
+                n += 1
+                candidate = f'{base}_{n}'
+            seen_names[candidate] = 1
+            const_by_path[full_path] = candidate
+
+        # Publish so _render_rest_step_body can look up while rendering.
+        self._template_const_by_path = const_by_path
+
+        # Templates lives under its own top-level package (`<root>.templates.<suite>`)
+        # so it reads as a first-class framework concept rather than being
+        # buried under `support`. Other framework artefacts under `support`
+        # (SetupHelper, TestSupport) are per-suite Java LOGIC; Templates
+        # is pure data + belongs alongside `rest.utilities` / `data`.
+        pkg = f'{self.package_root}.templates.{self.suite_name}'
+        rel = f'src/main/java/{pkg.replace(".", "/")}/Templates.java'
+        # Emit sorted by constant NAME for readability.
+        const_lines: list[str] = []
+        for path, name in sorted(const_by_path.items(), key=lambda x: x[1]):
+            const_lines.append(f'    public static final String {name} = "{path}";')
+        body = "\n".join(const_lines)
+        content = f"""package {pkg};
+
+/**
+ * Auto-generated by ra_converter. Constants class listing every deduped
+ * request-body template shipped with this suite. Test methods reference
+ * these constants instead of hardcoding the classpath string, so:
+ * <ul>
+ *   <li>Template renames only touch this file -- call sites don't churn.</li>
+ *   <li>Content-hash changes (which shift the file's suffix) update the
+ *       VALUE here but keep the NAME stable, so no test source changes.</li>
+ *   <li>IDE autocomplete + Find-Usages work for template references.</li>
+ * </ul>
+ *
+ * <p>Layout: {{@code Templates.<UPPER_SUBDIR>_<UPPER_STEP>}}. See any
+ * generated test class for usage:
+ * {{@code RestUtilities.getRequestTemplate(Templates.REALMS_TOKENREQUEST)}}.</p>
+ */
+public final class Templates {{
+
+    private Templates() {{}}
+
+{body}
+}}
+"""
+        self._write(rel, content)
+        return rel
+
+    def emit_suite_readme(self, soapui_suite_name: str,
+                            bucket_manifest: list[dict]) -> str:
+        """Write `src/test/java/<pkg>/README.md` -- a business-friendly
+        table of contents for the emitted business-area classes. Lets a
+        BA / QA lead scan the resource catalog without opening any Java
+        file: one section per resource, one bullet per test class with
+        method count + scenario (row) count.
+
+        `bucket_manifest` -- list of {resource, class, fqn, method_count,
+        multi_row_methods, case_count} dicts assembled by main().
+        """
+        pkg_dir = f"src/test/java/{self.package_root.replace('.', '/')}/tests/imported/{self.suite_name}"
+        rel = f"{pkg_dir}/README.md"
+
+        # Group by resource for the section layout.
+        by_resource: dict[str, list[dict]] = {}
+        resource_order: list[str] = []
+        for entry in bucket_manifest:
+            r = entry["resource"]
+            if r not in by_resource:
+                by_resource[r] = []
+                resource_order.append(r)
+            by_resource[r].append(entry)
+
+        total_classes = len(bucket_manifest)
+        total_methods = sum(e["method_count"] for e in bucket_manifest)
+        total_scenarios = sum(e["case_count"] for e in bucket_manifest)
+
+        lines: list[str] = []
+        lines.append(f"# {soapui_suite_name}")
+        lines.append("")
+        lines.append("Auto-generated business-area catalog for tests imported from ReadyAPI.")
+        lines.append("")
+        lines.append("| Metric | Count |")
+        lines.append("|--------|-------|")
+        lines.append(f"| Business-area classes | {total_classes} |")
+        lines.append(f"| @Test methods (unique intents) | {total_methods} |")
+        lines.append(f"| Scenarios (CSV rows across all methods) | {total_scenarios} |")
+        if total_methods:
+            lines.append(f"| Reuse factor (scenarios per method) | "
+                         f"{(total_scenarios / total_methods):.1f}x |")
+        lines.append("")
+        lines.append("Layout: one folder per REST resource, one `.java` per operation.")
+        lines.append("Add a CSV row under `src/test/resources/csv/<suite>/<resource>/<Class>/`")
+        lines.append("to add a scenario -- no code change required.")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+        for resource in resource_order:
+            entries = by_resource[resource]
+            lines.append(f"## `{resource}/`")
+            lines.append("")
+            lines.append("| Class | @Test methods | Data-driven | Total scenarios |")
+            lines.append("|-------|:-------------:|:-----------:|:---------------:|")
+            for e in entries:
+                dd = f"{e['multi_row_methods']}" if e["multi_row_methods"] else "-"
+                lines.append(f"| `{e['class']}` | {e['method_count']} | {dd} | {e['case_count']} |")
+            lines.append("")
+
+        self._write(rel, "\n".join(lines) + "\n")
+        return rel
+
     def emit_master_suite_xml(self, class_fqns: list[str],
                                 variant: str = "Regression") -> str:
         """Write a master TestNG suite XML at `Suites/<Suite><Variant>.xml`
@@ -5010,32 +5949,36 @@ def _clean_suite_output(output_dir: str, suite_name: str, package_root: str,
     import shutil, glob as _g
     pkg_path = f"src/test/java/{package_root.replace('.', '/')}/tests/imported/{suite_name}"
     support_pkg_path = f"src/main/java/{package_root.replace('.', '/')}/support/{suite_name}"
+    templates_pkg_path = f"src/main/java/{package_root.replace('.', '/')}/templates/{suite_name}"
     imported_pkg_dir = os.path.join(output_dir, pkg_path)
 
-    # v2 (--one-class-per-suite) writes per-method CSVs at
-    # `src/test/resources/csv/<ClassName>/` and master TestNG suites at
-    # `Suites/<PrettySuite>_*.xml`. Class names come from the SoapUI
-    # <testSuite name="..."> attribute -- which may NOT match either the
-    # CLI --suite-name or the XML basename. Enumerate the existing class
-    # files BEFORE wiping the package dir so we scope csv/ + Suites/
-    # cleanup to what actually got written last time.
-    v2_class_names: list[str] = []
-    if os.path.isdir(imported_pkg_dir):
-        for entry in os.listdir(imported_pkg_dir):
-            if entry.endswith(".java"):
-                v2_class_names.append(entry[:-len(".java")])
-
+    # Business-area emission writes:
+    #   - Java under `<pkg>/tests/imported/<suite>/<resource>/<Op>Test.java`
+    #   - CSVs under `src/test/resources/csv/<suite>/<resource>/<Op>Test/*.csv`
+    # Wiping the whole `csv/<suite>/` subtree is simpler + safer than
+    # enumerating classes -- everything the last run wrote for this suite
+    # lives under that one path.
     dirs_to_clean = [
         imported_pkg_dir,
         os.path.join(output_dir, support_pkg_path),
+        os.path.join(output_dir, templates_pkg_path),
+        os.path.join(output_dir, "src/test/resources/csv", suite_name),
         os.path.join(output_dir, "src/test/resources/testdata", suite_name),
         os.path.join(output_dir, "src/main/resources/templates", suite_name),
+        os.path.join(output_dir, "src/main/resources/test_data_defaults", suite_name + ".json"),
         os.path.join(output_dir, "_audit", suite_name),
     ]
-    # Add each v2 class's CSV folder
-    for cls in v2_class_names:
-        dirs_to_clean.append(
-            os.path.join(output_dir, "src/test/resources/csv", cls))
+    # Legacy: older runs wrote CSVs at `csv/<ClassName>/` (flat layout,
+    # no suite dir). Nuke those too so a re-run against an old tree
+    # doesn't leave orphan CSVs alongside the new nested ones.
+    legacy_csv_root = os.path.join(output_dir, "src/test/resources/csv")
+    if os.path.isdir(imported_pkg_dir):
+        for entry in os.listdir(imported_pkg_dir):
+            if entry.endswith(".java"):
+                legacy_cls = entry[:-len(".java")]
+                candidate = os.path.join(legacy_csv_root, legacy_cls)
+                if os.path.isdir(candidate):
+                    dirs_to_clean.append(candidate)
 
     removed = []
     _locked_files: list[str] = []
@@ -5092,17 +6035,9 @@ def _clean_suite_output(output_dir: str, suite_name: str, package_root: str,
             os.remove(p)
             removed.append(p)
 
-    # Master TestNG suite XMLs: scoped per emitted class name (drops the
-    # trailing `Test` and adds `_Regression.xml` / `_Smoke.xml`).
-    for cls in v2_class_names:
-        stem = cls[:-4] if cls.endswith("Test") else cls
-        for glob_pat in (f"Suites/{stem}_*.xml",):
-            for p in _g.glob(os.path.join(output_dir, glob_pat)):
-                os.remove(p)
-                removed.append(p)
-    # Also sweep the legacy heuristic pattern (pretty(suite_name) form)
-    # in case an older run named files that way and enumeration above
-    # doesn't cover them.
+    # Master TestNG suite XMLs are `Suites/<PrettySuite>_<Variant>.xml`,
+    # keyed on suite_name (not on per-class names). Sweep them so a
+    # renamed suite doesn't leave stale XMLs behind.
     pretty = to_camel_case(suite_name, upper_first=True)
     for glob_pat in (f"Suites/{pretty}_*.xml",):
         for p in _g.glob(os.path.join(output_dir, glob_pat)):
@@ -5282,6 +6217,13 @@ def main():
     pr_rel = emitter.emit_placeholder_resolver()
     emitter._resolver_emitted = True
     print(f"[ra_converter] emitted placeholder resolver: {pr_rel}")
+    # AuthHelper -- class-level OAuth token bootstrap. Every emitted
+    # business-area class calls this from @BeforeClass so N @Test methods
+    # reuse one token instead of each re-fetching. Inline token-fetch
+    # REST steps are wrapped in a `!ctx.containsKey("accessToken")` guard
+    # so they run only as a fallback.
+    ah_rel = emitter.emit_auth_helper()
+    print(f"[ra_converter] emitted auth helper: {ah_rel}")
 
     # 1a) Deduped templates emitted FIRST so _template_path_by_step is
     #     populated before ANY step-rendering reads it (SetupHelper AND
@@ -5294,46 +6236,125 @@ def main():
     print(f"[ra_converter] emitted {len(template_map)} deduped templates "
           f"(from {rest_step_ct} REST bodies -> {dedup_pct}% dedup)")
 
-    # 1b) SetupHelper emission runs AFTER template dedup so its shared
-    #     flow methods reference the deduped template paths.
+    # 1a-2) Templates constants class -- MUST run after emit_templates_deduplicated
+    #     populated `_template_path_by_step`, and BEFORE any _render_step
+    #     call (SetupHelper + test-class emitters both look up
+    #     `_template_const_by_path` when rendering REST steps).
+    tmpl_class_rel = emitter.emit_templates_class()
+    if tmpl_class_rel:
+        print(f"[ra_converter] emitted templates constants class: "
+              f"{tmpl_class_rel} "
+              f"({len(emitter._template_const_by_path)} constants -- "
+              f"call sites use Templates.<NAME> instead of literal paths)")
+
+    # 1b) Frozen-Properties migration classifier -- must run BEFORE any
+    #     _render_step call (SetupHelper AND test-class emitters both
+    #     call it, both need `emitter._property_migration` set).
+    emitter._property_migration = _classify_frozen_properties(cases_in_scope)
+    if emitter._property_migration:
+        csv_count = sum(1 for m in emitter._property_migration.values()
+                        if m['destination'] == 'csv')
+        cfg_count = sum(1 for m in emitter._property_migration.values()
+                        if m['destination'] == 'config')
+        print(f"[ra_converter] classified {len(emitter._property_migration)} "
+              f"frozen Property keys: {csv_count} -> CSV column, "
+              f"{cfg_count} -> Config (test_data.*)")
+        # Bundled defaults JSON -- TestSupport.testData(row, key) reads
+        # this at runtime as the lowest-precedence fallback. Keeps the
+        # emitted Java sources free of hardcoded default literals.
+        td_json = emitter.emit_test_data_defaults_json(emitter._property_migration)
+        if td_json:
+            print(f"[ra_converter] emitted test-data defaults JSON: {td_json}")
+        td_rel = emitter.emit_test_data_config(emitter._property_migration)
+        if td_rel:
+            print(f"[ra_converter] emitted test-data hint file: {td_rel} "
+                  f"(paste keys into program_configuration.json for env overrides)")
+
+    # 1c) SetupHelper emission runs AFTER template dedup + migration
+    #     classification so its shared flow methods reference the
+    #     deduped template paths AND emit the migrated putIfAbsent lines.
     if flows:
         helper_rel = emitter.emit_setup_helper(flows, service_class)
         print(f"[ra_converter] emitted setup helper: {helper_rel}")
 
-    # 2) Emit one Java class per SoapUI test suite + CSVs colocated
-    #    under `csv/<ClassName>/`.
+    # 2) Emit one Java class PER BUSINESS AREA (verb + resource) inside
+    #    each SoapUI suite. Package layout:
+    #        <root>.tests.imported.<suite>.<resource_slug>.<Op>Test
+    #    File tree reads as a resource catalog so a business analyst can
+    #    navigate `program_account_member/` -> Create/Update/Delete/... .
+    #    CSVs mirror the same tree so no two `CreateTest` classes collide.
     class_fqns: list[str] = []
     total_methods = 0
     total_rows = 0
+    # Per-suite bucket manifest for the README emission at the end.
+    suite_bucket_manifest: dict[str, list[dict]] = {}
     for soapui_sname, sui_cases in soapui_suites:
-        rel, fqn, method_names = emitter.emit_test_class_per_suite(
-            soapui_sname, sui_cases, service_class)
-        class_fqns.append(fqn)
+        # Bucket cases into (resource_slug, operation_class) so each
+        # emitted class holds ONE business intent, not the whole SoapUI
+        # suite. Cluster mechanics (shape + prefix merge) run inside
+        # `emit_test_class_per_suite` on the bucket's cases.
+        buckets: dict[tuple[str, str], list[TestCase]] = {}
+        bucket_order: list[tuple[str, str]] = []
+        for case in sui_cases:
+            key = _business_bucket_of_case(case)
+            if key not in buckets:
+                buckets[key] = []
+                bucket_order.append(key)
+            buckets[key].append(case)
+        preview = ", ".join(f"{r}/{op}" for r, op in bucket_order[:6])
+        print(f"[ra_converter] SoapUI suite '{soapui_sname}' -> "
+              f"{len(bucket_order)} business-area class(es): {preview}"
+              f"{'...' if len(bucket_order) > 6 else ''}")
+        suite_bucket_manifest[soapui_sname] = []
 
-        # The class emitter set up emitter._clusters + _cluster_to_method
-        # while rendering; reuse them so CSV filenames match the method
-        # names written into the class exactly.
-        class_simple = fqn.rsplit(".", 1)[-1]
-        prefix_merged = 0
-        for idx, cluster in enumerate(emitter._clusters):
-            mname, _status, _variant = emitter._cluster_to_method[idx]
-            sm = emitter._stop_markers_per_cluster.get(idx, {})
-            if sm:
-                prefix_merged += 1
-            emitter.emit_csv_per_method(class_simple, mname, cluster, stop_markers=sm)
-            total_rows += len(cluster)
-        multi = sum(1 for cl in emitter._clusters if len(cl) > 1)
-        print(f"[ra_converter] emitted {fqn}  "
-              f"({len(method_names)} @Test methods, "
-              f"{multi} with >1 CSV row, "
-              f"{prefix_merged} prefix-merged, "
-              f"{sum(len(cl) for cl in emitter._clusters if len(cl) > 1)} rows in shared CSVs)")
-        total_methods += len(method_names)
-    print(f"[ra_converter] total: {len(class_fqns)} class(es), "
+        for (resource_slug, op_class) in bucket_order:
+            area_cases = buckets[(resource_slug, op_class)]
+            rel, fqn, method_names = emitter.emit_test_class_per_suite(
+                soapui_sname, area_cases, service_class,
+                class_name_override=op_class,
+                subpackage_override=resource_slug)
+            class_fqns.append(fqn)
+
+            # `emit_test_class_per_suite` populated emitter._clusters +
+            # _cluster_to_method while rendering; reuse them so CSV
+            # filenames match method names one-for-one.
+            class_simple = fqn.rsplit(".", 1)[-1]
+            prefix_merged = 0
+            for idx, cluster in enumerate(emitter._clusters):
+                mname, _status, _variant = emitter._cluster_to_method[idx]
+                sm = emitter._stop_markers_per_cluster.get(idx, {})
+                if sm:
+                    prefix_merged += 1
+                emitter.emit_csv_per_method(
+                    class_simple, mname, cluster, stop_markers=sm,
+                    csv_subpackage=resource_slug)
+                total_rows += len(cluster)
+            multi = sum(1 for cl in emitter._clusters if len(cl) > 1)
+            print(f"[ra_converter]   {resource_slug}/{class_simple}  "
+                  f"({len(method_names)} @Test method(s), "
+                  f"{multi} with >1 CSV row, "
+                  f"{prefix_merged} prefix-merged)")
+            total_methods += len(method_names)
+            suite_bucket_manifest[soapui_sname].append({
+                "resource": resource_slug,
+                "class": class_simple,
+                "fqn": fqn,
+                "method_count": len(method_names),
+                "multi_row_methods": multi,
+                "case_count": len(area_cases),
+            })
+    print(f"[ra_converter] total: {len(class_fqns)} business-area class(es), "
           f"{total_methods} @Test method(s), "
           f"{total_rows} CSV row(s) across "
           f"{total_methods} CSV file(s) under src/test/resources/csv/  "
           f"(saved {total_rows - total_methods} methods via clustering+prefix-merge)")
+
+    # 2b) Per-suite README.md -- business-friendly table of contents so
+    #     a BA can navigate the resource catalog without opening Java files.
+    for soapui_sname, manifest in suite_bucket_manifest.items():
+        if manifest:
+            readme_rel = emitter.emit_suite_readme(soapui_sname, manifest)
+            print(f"[ra_converter] emitted business-area README: {readme_rel}")
 
     # 3) Env configs (one file per env, containing every distinct config key).
     # When the source XML declares SoapUI environments, use their names as
@@ -5401,6 +6422,27 @@ def main():
           f"(active FULL%: {100*g_full//g_active if g_active else 0}%)")
     print(f"[ra_converter]   unmapped items: {len(ledger.unmapped)} "
           f"(see _audit/unmapped.csv)")
+
+    # Frozen Properties-step literals -- ENV-FROZEN values baked into
+    # each emitted method. Surface prominently: if a test suite ships
+    # 300+ hardcoded IDs/emails/domains and they never get moved into
+    # per-env config, cross-env runs will silently 404 without warning.
+    fp_total = len(ledger.frozen_properties)
+    if fp_total:
+        fp_unique = len({row[5] for row in ledger.frozen_properties})
+        fp_cases = len({row[1] for row in ledger.frozen_properties})
+        fp_multival = 0
+        _tmp: dict = {}
+        for _, _, _, _, val, key in ledger.frozen_properties:
+            _tmp.setdefault(key, set()).add(val)
+        fp_multival = sum(1 for vs in _tmp.values() if len(vs) > 1)
+        print(f"[ra_converter]   frozen Properties.* literals: {fp_total} "
+              f"emissions across {fp_unique} unique ctx keys, {fp_cases} case(s) affected")
+        if fp_multival:
+            print(f"[ra_converter]     ^ {fp_multival} key(s) hold DIFFERENT "
+                  f"values across cases -- strong CSV-column candidates")
+        print(f"[ra_converter]     see _audit/{suite_name}/frozen_properties.csv "
+              f"+ 'Frozen Properties-step literals' section in summary.md")
 
     print()
     print(f"[ra_converter] wrote {len(emitter.written)} files under {args.output}/")

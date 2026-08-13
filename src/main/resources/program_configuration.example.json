@@ -1,0 +1,71 @@
+{
+  "_readme": [
+    "Copy this file to `program_configuration.json` (SAME directory, no `.example`) and",
+    "fill in real credentials. The real file is gitignored so it never gets committed.",
+    "",
+    "Selecting an env: application.properties has `env=stg`. Override with `-Denv=qa`",
+    "or `TEST_ENV=qa`. Only the env block matching the active env is loaded.",
+    "",
+    "Config.get(...) resolves keys as `<subsection>.<field>` (e.g. `api_config.client_id`).",
+    "Legacy aliases still work: c_id -> api_config.client_id, c_sec -> api_config.client_secret,",
+    "salesforce_assertion -> sf_config.assertion, etc.",
+    "",
+    "Derived keys (auto-computed):",
+    "  baseUrl      <- api_config.api_end_point + '/' + api_config.version",
+    "  db.url       <- jdbc:<database.scheme>://<database.host>:<database.port>/<database.schema>",
+    "  db.user      <- database.username",
+    "  db.password  <- database.password",
+    "  db.driver    <- database.driver (default: org.postgresql.Driver)"
+  ],
+  "stg": {
+    "database": {
+      "username": "__SET_ME__",
+      "password": "__SET_ME__",
+      "host":     "__SET_ME__.rds.amazonaws.com",
+      "port":     "5432",
+      "schema":   "__SET_ME__",
+      "scheme":   "postgresql",
+      "driver":   "org.postgresql.Driver"
+    },
+    "api_config": {
+      "api_end_point":   "https://api.example.com/hospitality-internal-all",
+      "version":         "v2",
+      "access_token":    "access_token",
+      "token_end_point": "https://api.example.com/hospitality-internal-all",
+      "token_route":     "realms/applications/token",
+      "client_id":       "__SET_ME__",
+      "client_secret":   "__SET_ME__",
+      "grant_type":      "client_credentials"
+    },
+    "sf_config": {
+      "api_end_point":   "https://your--sandbox.my.salesforce.com",
+      "access_token":    "access_token",
+      "token_end_point": "https://your--sandbox.my.salesforce.com",
+      "grant_type":      "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      "assertion":       "__SET_ME__",
+      "token_route":     "/services/oauth2/token",
+      "ui_lead_url":     "https://your--sandbox.lightning.force.com/lightning/r/Lead/%s/view",
+      "ui_account_url":  "https://your--sandbox.lightning.force.com/lightning/r/Account/%s/view",
+      "ui_username":     "__SET_ME__",
+      "ui_password":     "__SET_ME__"
+    },
+    "kafka_config": {
+      "api_end_point":   "https://api.example.com/hospitality-internal-all",
+      "version":         "v2",
+      "access_token":    "access_token",
+      "token_end_point": "https://api.example.com/hospitality-internal-all",
+      "token_route":     "realms/applications/token",
+      "client_id":       "__SET_ME__",
+      "client_secret":   "__SET_ME__",
+      "grant_type":      "client_credentials"
+    },
+    "xray_api_config": {
+      "api_end_point":     "https://jira.example.com",
+      "route":             "/rest/raven/1.0/import/execution",
+      "token":             "",
+      "testExecutionKey":  ""
+    },
+    "poll_interval": 5,
+    "timeout":       90
+  }
+}

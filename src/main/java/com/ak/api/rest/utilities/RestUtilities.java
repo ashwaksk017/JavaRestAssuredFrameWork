@@ -321,7 +321,17 @@ public class RestUtilities {
     // =====================================================================
 
     public static InputStreamReader getRequestTemplate(String path, String fileName) {
-        String resource = path + fileName;
+        return getRequestTemplate(path + fileName);
+    }
+
+    /**
+     * Single-arg overload: load a template from a full classpath-relative
+     * path (e.g. {@code "templates/<suite>/<subdir>/<file>.json"}).
+     * ra_converter-emitted tests call this via the generated
+     * {@code Templates.<NAME>} constants so the file path never appears
+     * as a literal string in a test method body.
+     */
+    public static InputStreamReader getRequestTemplate(String resource) {
         InputStream in = RestUtilities.class.getClassLoader().getResourceAsStream(resource);
         if (in == null) {
             throw new IllegalArgumentException(
