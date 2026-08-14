@@ -551,7 +551,20 @@ def translate(script: str, response_var_by_step: dict[str, str],
                   "Email", "email", "EmailMember", "guestMemberEmail",
                   "Phone", "phone", "phoneNumber", "hhonorsNumber",
                   "Domain", "domain", "websiteDomain",
-                  "generatedemailAddress", "generatedEmail"]
+                  "generatedemailAddress", "generatedEmail",
+                  # Id-shaped variants -- used as fallback when the
+                  # emitter's hardcoded-id-rewrite pass converted a
+                  # request body's stale hardcoded guestId=1900XXX to a
+                  # #Properties_guestId# placeholder, and no upstream
+                  # extract has populated Properties.guestId yet. Random
+                  # 9-digit -> body sends a fake id, target rejects
+                  # cleanly (404), and the failure is attributable to
+                  # missing upstream data instead of the body having a
+                  # stale valid id pointing at some other account.
+                  "guestId", "guestID", "memberGuestID",
+                  "accountId", "accountID",
+                  "memberId", "memberID",
+                  "partnerAccountId", "partnerAccountID"]
         seen: set = set()
         all_props = []
         for t in set_targets + ALWAYS:

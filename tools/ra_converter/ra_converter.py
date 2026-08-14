@@ -6860,6 +6860,70 @@ public class {class_name} extends BaseApiTest {{
         self._write(rel, content)
         return rel
 
+    _HARDCODED_ID_FIELDS = (
+        # Field-name patterns where a bare 6+ digit value in the SoapUI
+        # request body is almost certainly a stale hardcoded Hilton
+        # resource id (author baked in an id that existed on the day
+        # the test was authored, expired years ago). Rewriting these to
+        # placeholders lets the runtime substitute whatever the current
+        # test's upstream step (HHonorsEnroll response extract, Groovy
+        # DataGenInput, PropertyTransfer) put into ctx -- even if that's
+        # a fresh-random 9-digit from random_email_generator, it beats
+        # a stale valid id that maps to some other account.
+        "guestId", "guestID",
+        "accountId", "accountID",
+        "memberId", "memberID",
+        "hhonorsNumber", "hHonorsNumber",
+        "partnerAccountId", "partnerAccountID",
+        "customerId", "userId",
+    )
+
+    @staticmethod
+    def _placeholder_hardcoded_ids(body_text: str, media_type: str) -> tuple:
+        """Rewrite hardcoded id-shaped values in known id fields inside
+        a JSON request body to framework placeholders. Preserves JSON
+        type: quoted-string ids use ``#Properties_<field>#`` (stays a
+        string); bare-number ids use ``"@Properties_<field>@"`` (the
+        runtime ``mapJsonValues`` P_AT_Q pattern strips the surrounding
+        quotes AND substitutes the numeric value, yielding a valid JSON
+        number). Only touches values that look like ids (6+ digits) so
+        legitimate small numbers (``phoneCountry: 124``, ``postalCode:
+        40515``, ``employeeCount: 0``) are untouched. Fields that
+        already have a placeholder are untouched too.
+
+        Returns (rewritten_text, count_of_replacements).
+        """
+        if not body_text:
+            return body_text, 0
+        mt = (media_type or "").lower()
+        is_json = ("json" in mt or mt.endswith("+json")
+                   or body_text.lstrip().startswith(("{", "[")))
+        if not is_json:
+            return body_text, 0
+        n = 0
+        out = body_text
+        for field in Emitter._HARDCODED_ID_FIELDS:
+            # Match `"<field>": "<6+ digits>"` OR `"<field>": <6+ digits>`
+            # followed by a JSON delimiter. Group 2 = digits if quoted,
+            # group 3 = digits if unquoted; exactly one of them matches
+            # per call. Lookahead on `[,}\s\]]` prevents matching inside
+            # an id like `"guestIdList": 1234567890` where the digits
+            # actually continue a longer string.
+            pattern = re.compile(
+                r'"' + re.escape(field) + r'"\s*:\s*'
+                r'(?:"(\d{6,})"|(\d{6,}))'
+                r'(?=\s*[,}\]\s])'
+            )
+            def _repl(m, _field=field):
+                nonlocal n
+                n += 1
+                if m.group(1):  # quoted
+                    return f'"{_field}": "#Properties_{_field}#"'
+                # unquoted number: @X@ strips the added quotes at runtime
+                return f'"{_field}": "@Properties_{_field}@"'
+            out = pattern.sub(_repl, out)
+        return out, n
+
     def emit_templates_deduplicated(self, cases: list[TestCase]) -> dict[str, str]:
         """Two-tier dedup of request-body templates across the whole suite.
 
@@ -6944,6 +7008,23 @@ public class {class_name} extends BaseApiTest {{
                 if not step.request_body.strip():
                     continue
                 translated, _ph = soapui_body_to_placeholders(step.request_body)
+                # Rewrite hardcoded id-shaped values in known id fields
+                # (guestId / accountId / memberId / etc.) to framework
+                # placeholders so runtime substitution uses the current
+                # test's live ids (from HHonorsEnroll extract or
+                # DataGenInput fallback) instead of stale ids the SoapUI
+                # author hardcoded years ago (which now map to some
+                # other Hilton account -> 404 / 405).
+                translated, __n_ids = Emitter._placeholder_hardcoded_ids(
+                    translated, step.media_type or "application/json")
+                if __n_ids > 0:
+                    self.ledger.add_preflight_finding(
+                        "INFO", "hardcoded-id-rewritten", case.name,
+                        f"REST step `{step.step_name}` request body had "
+                        f"{__n_ids} hardcoded id-shaped value(s) "
+                        f"rewritten to #Properties_<field># / "
+                        f"@Properties_<field>@ so runtime substitution "
+                        f"uses live ids instead of stale hardcoded ones.")
                 # Pick the right file extension for this body's media type
                 # (JSON / XML / form / plain). Non-JSON bodies also skip
                 # JSON canonicalization -- canonicalize would try to parse
