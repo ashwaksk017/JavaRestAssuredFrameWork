@@ -37,3 +37,32 @@ src/test/resources/application-local.properties
 # (with placeholder values) IS committed so contributors see the shape.
 src/main/resources/program_configuration.json
 program_configuration.json
+
+# ra_converter output derived from customer SoapUI project XMLs.
+# The input XML is gitignored (tools/ra_converter/.gitignore), and the
+# EMITTED artifacts (tests, CSVs, request-body templates, audit ledger,
+# flow diagrams, suite XMLs) leak customer-internal API details --
+# endpoint paths, request/response schemas, test-case IDs, hardcoded
+# usernames/emails/IDs. Keep them purely local. Framework files under
+# src/main/java/com/ak/api/{data,reporting,rest/utilities,tests/BaseApiTest}
+# and tools/ra_converter/*.py are committed; suite-scoped outputs below
+# are not.
+_audit/
+_flows/
+Suites/
+src/main/java/com/ak/api/rest/clients/
+src/main/java/com/ak/api/support/
+src/main/java/com/ak/api/templates/
+src/main/resources/templates/
+src/main/resources/test_data_defaults/
+src/main/resources/config/
+src/test/java/com/ak/api/tests/imported/
+src/test/resources/csv/
+src/test/resources/testng-b2b-*.xml
+# Loose top-level request-body templates left over from earlier runs
+# (before the suite-scoped `templates/<suite>/` layout).
+src/main/resources/templates/hhonorsenroll*.json
+src/main/resources/templates/http_request_*.json
+src/main/resources/templates/post_activate.json
+src/main/resources/templates/tokenrequest.json
+src/main/resources/test_data.example.properties

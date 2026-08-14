@@ -10,6 +10,8 @@
 
 package com.ak.api.reporting;
 
+import java.util.concurrent.atomic.AtomicInteger;
+
 import org.testng.ISuite;
 import org.testng.ISuiteListener;
 import org.testng.ITestContext;
@@ -20,18 +22,25 @@ import com.ak.api.rest.utilities.RestUtilities;
 
 public class TestSuiteListener implements ISuiteListener, ITestListener {
 
+    /** Skips deserve their own count -- a suite full of "SKIPPED because
+     *  JDBC mutation not translated" hides silently if we only print
+     *  pass/fail. Auditors need to see coverage loss loudly. */
+    private static final AtomicInteger SKIPPED = new AtomicInteger(0);
+
     @Override
     public void onStart(ISuite suite) {
         RestUtilities.reset();
+        SKIPPED.set(0);
     }
 
     @Override
     public void onFinish(ISuite suite) {
         int p = RestUtilities.getPassed().get();
         int f = RestUtilities.getFailed().get();
-        int total = p + f;
-        System.out.printf("%n=== Suite '%s' -- passed=%d, failed=%d, total=%d ===%n",
-                suite.getName(), p, f, total);
+        int s = SKIPPED.get();
+        int total = p + f + s;
+        System.out.printf("%n=== Suite '%s' -- passed=%d, failed=%d, skipped=%d, total=%d ===%n",
+                suite.getName(), p, f, s, total);
     }
 
     @Override public void onStart(ITestContext context)        { /* no-op */ }
@@ -50,6 +59,6 @@ public class TestSuiteListener implements ISuiteListener, ITestListener {
 
     @Override
     public void onTestSkipped(ITestResult result) {
-        // skips aren't counted as either pass or fail
+        SKIPPED.incrementAndGet();
     }
 }

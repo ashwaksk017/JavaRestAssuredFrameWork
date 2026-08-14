@@ -172,9 +172,17 @@ def _emit_def_publications(script: str, bindings: dict, ctx: dict,
             continue
         resp = _resp_var_for(info["source_step"], ctx)
         dest_key = _dest_key_for_var(script, new_var, step_name_hint)
+        # `RestUtilities.safeJsonExtract` guards against empty / non-JSON
+        # response bodies. Without it, an upstream 409 / 400 with an empty
+        # body would crash the entire test with JsonPathException at the
+        # first jsonPath().getString(...) call. Degrades to "" so downstream
+        # can either detect the missing value OR proceed with a stale
+        # default -- the enclosing test can still complete its remaining
+        # steps or reach a graceful assertion failure.
         out.append(
             f'ctx.put("{dest_key}", "Bearer " + '
-            f'{resp}.jsonPath().getString("{info["jsonpath"]}"));')
+            f'com.ak.api.rest.utilities.RestUtilities.safeJsonExtract('
+            f'{resp}, "{info["jsonpath"]}"));')
         published.add(new_var)
         published.add(src_var)
 
@@ -192,7 +200,8 @@ def _emit_def_publications(script: str, bindings: dict, ctx: dict,
         dest_key = _dest_key_for_var(script, var_name, step_name_hint)
         out.append(
             f'ctx.put("{dest_key}", '
-            f'{resp}.jsonPath().getString("{info["jsonpath"]}"));')
+            f'com.ak.api.rest.utilities.RestUtilities.safeJsonExtract('
+            f'{resp}, "{info["jsonpath"]}"));')
         published.add(var_name)
     return out
 
@@ -238,11 +247,15 @@ def _emit_token_extract(m: re.Match, ctx: dict) -> list[str]:
     # prefix in Java too; otherwise raw. Bare substring match would fire
     # on comments/error strings/unrelated identifiers.
     prefix = '"Bearer " + ' if _has_bearer_concat(ctx.get("_script", "")) else ""
+    # safeJsonExtract returns "" on empty / non-JSON body so a failed token
+    # fetch doesn't crash the enclosing test with JsonPathException.
     return [
         f'// [translated] extract {field} from {step_name} response',
-        f'String extractedToken = {prefix}{resp}.jsonPath().getString("{field}");',
+        f'String extractedToken = {prefix}'
+        f'com.ak.api.rest.utilities.RestUtilities.safeJsonExtract('
+        f'{resp}, "{field}");',
         f'ctx.put("tokenId.GeneratedTokenID", extractedToken);',
-        f'LOG.info("token extracted: {{}}", extractedToken != null ? "<redacted>" : "null");',
+        f'LOG.info("token extracted: {{}}", (extractedToken == null || extractedToken.isEmpty()) ? "null/empty" : "<redacted>");',
     ]
 
 
@@ -458,7 +471,8 @@ def translate(script: str, response_var_by_step: dict[str, str],
             if path:
                 lines.append(
                     f'ctx.put("{_ctx_key(target_step, field)}", '
-                    f'{resp_var}.jsonPath().getString("{path}"));')
+                    f'com.ak.api.rest.utilities.RestUtilities.safeJsonExtract('
+                    f'{resp_var}, "{path}"));')
                 if "setproperty_extract" not in patterns_matched:
                     patterns_matched.append("setproperty_extract")
                 consumed = True
@@ -516,9 +530,18 @@ def translate(script: str, response_var_by_step: dict[str, str],
             '{',
             '    String genUsername = FakeData.username();',
             '    String genEmail = genUsername + "@" + Config.get("ALLOWED_DOMAIN", "example.com");',
-            '    // Update ctx / config with generated values so downstream steps can use them',
+            '    // Update ctx with generated values under BOTH case variants',
+            '    // so downstream templates resolve regardless of whether they',
+            '    // use `#Properties_Username#` (SoapUI CamelCase convention)',
+            '    // or `#Properties_username#` (lowercase, common in CSV cols).',
+            '    // Belt-and-suspenders vs relying on any alias mechanism in',
+            '    // TestSupport.mergedRow to bridge the case-mismatch -- an',
+            '    // alias-based bridge is order-dependent and can be clobbered',
+            '    // by later ctx writes of the same field under the other case.',
             '    ctx.put("Properties.Email", genEmail);',
+            '    ctx.put("Properties.email", genEmail);',
             '    ctx.put("Properties.Username", genUsername);',
+            '    ctx.put("Properties.username", genUsername);',
             '}',
         ])
         _mark("random_email_generator")
@@ -647,16 +670,52 @@ def translate(script: str, response_var_by_step: dict[str, str],
         is_double_str = looks_like_str_double and not has_plus
         is_single_str = looks_like_str_single and not has_plus
         if is_double_str or is_single_str:
-            java_query = query_expr
-            if is_single_str:
-                # Groovy single-quoted string -> Java "..." literal
-                inner = query_expr[1:-1].replace("\\", "\\\\").replace('"', '\\"')
-                java_query = f'"{inner}"'
-            query_for_log = query_expr[1:-1].replace('"', "'")[:60]
+            # Extract the RAW query text (without surrounding Java quotes)
+            # so we can rewrite hardcoded WHERE literals into
+            # #placeholder# refs before wrapping in mapJsonValues.
+            raw_q = query_expr[1:-1]
+            hard_lits = re.findall(
+                r"\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:'([^']+)'|(\d[\d.]*))",
+                raw_q)
+            substituted_cols: list[str] = []
+            transformed = raw_q
+            for col, val, num in hard_lits:
+                if col.lower() in ("null", "true", "false"):
+                    continue
+                if col in substituted_cols:
+                    continue
+                pattern = re.compile(
+                    rf"\b{re.escape(col)}\s*=\s*(?:'[^']+'|\d[\d.]*)")
+                transformed = pattern.sub(f"{col}='#{col}#'", transformed, count=1)
+                substituted_cols.append(col)
+            # Java literal form of the (potentially rewritten) query.
+            trans_inner = transformed.replace("\\", "\\\\").replace('"', '\\"')
+            java_query = f'"{trans_inner}"'
+            query_for_log = transformed.replace('"', "'")[:60]
+            lines.append(f'// [translated] JDBC execute')
+            if substituted_cols:
+                lines.append(
+                    f'// [jdbc] parameterized {len(substituted_cols)} '
+                    f'hardcoded WHERE literal(s) with #placeholder# refs -- '
+                    f'columns: {", ".join(substituted_cols)}. '
+                    f'Populate ctx (via prior REST extract or CSV row) or '
+                    f'the runtime-resolved query will still carry unresolved '
+                    f'`#{substituted_cols[0]}#`.')
             lines.extend([
-                f'// [translated] JDBC execute',
                 f'if (Db.isConfigured()) {{',
-                f'    Db.execute({java_query}{params_java});',
+                # Wrap in mapJsonValues so #X# placeholders resolve from
+                # merged (row + ctx + config) view at runtime; wrap in
+                # try/catch so a single bad SQL doesn't crash the test --
+                # WARN + continue so downstream steps still fire.
+                f'    try {{',
+                f'        String __jdbcSql = RestUtilities.mapJsonValues('
+                f'{java_query}, TestSupport.mergedRow(row, ctx), false);',
+                f'        LOG.info(" .. jdbc SQL: {{}}", __jdbcSql);',
+                f'        Db.execute(__jdbcSql{params_java});',
+                f'    }} catch (Exception __jdbcEx) {{',
+                f'        LOG.warn("JDBC execute failed: {{}}", '
+                f'__jdbcEx.getMessage());',
+                f'    }}',
                 f'}} else {{',
                 f'    LOG.warn("Skipping JDBC step (Db not configured): {query_for_log}");',
                 f'}}',
@@ -686,11 +745,22 @@ def translate(script: str, response_var_by_step: dict[str, str],
                 # rest of the same Groovy script) as "unreachable". LOG
                 # is never null at runtime, but javac can't prove that,
                 # so flow-analysis treats the block as conditional.
+                #
+                # Reset softAssert BEFORE the throw so any accumulated
+                # soft-failures earlier in the test body don't fire in
+                # BaseApiTest.@AfterMethod.assertAll() and flip the
+                # SKIPPED outcome to FAILED (which would then trigger
+                # RetryAnalyzer, then the retried invocation would
+                # re-throw SkipException -- confusing log noise).
                 lines.extend([
                     f'// [jdbc] MUTATION query is a Groovy expression '
                     f'(`{preview_c}`) -- not translated. Downstream REST '
                     f'steps would see PRE-mutation state, causing a '
                     f'cryptic status/body mismatch; SKIP this test loudly.',
+                    f'softAssert = new org.testng.asserts.SoftAssert();  '
+                    f'// discard pending soft failures so assertAll() '
+                    f'in @AfterMethod does not flip SKIPPED -> FAILED',
+                    f'if (holder != null) holder.setSoftAssertRef(softAssert);',
                     f'if (LOG != null) throw new org.testng.SkipException(',
                     f'    "Untranslated JDBC mutation step (`" + '
                     f'"{preview_java}" + "`). Hand-translate the query '

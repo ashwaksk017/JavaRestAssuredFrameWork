@@ -61,7 +61,12 @@ public final class TestCaseLogListener implements ITestListener {
     private void write(ITestResult result, String status) {
         String className  = result.getTestClass().getRealClass().getSimpleName();
         String methodName = result.getMethod().getMethodName();
-        Path out = Paths.get(LOG_DIR, className + "__" + methodName + ".log");
+        // Per-row disambiguator so a data-driven method with N rows
+        // produces N log files instead of TRUNCATING to only the LAST
+        // row's evidence. Same param-hash strategy RetryAnalyzer +
+        // ProgressLogListener use for their per-invocation keys.
+        String rowSuffix = rowSuffix(result);
+        Path out = Paths.get(LOG_DIR, className + "__" + methodName + rowSuffix + ".log");
 
         try {
             Files.createDirectories(out.getParent());
@@ -149,6 +154,23 @@ public final class TestCaseLogListener implements ITestListener {
         } catch (Exception ignore) {
             return s;
         }
+    }
+
+    /**
+     * Build a filename-safe per-invocation suffix. Uses
+     * {@code Arrays.deepHashCode(params)} so different data-provider rows
+     * of the same @Test method get distinct log files, while a retry of
+     * the same row (same params) OVERWRITES its own prior file (which is
+     * what we want -- one file per row, with the latest attempt's data).
+     * Empty string when the method has no params -- keeps legacy naming
+     * for the non-data-driven case.
+     */
+    private static String rowSuffix(ITestResult r) {
+        Object[] params = r.getParameters();
+        if (params == null || params.length == 0) return "";
+        int h = java.util.Arrays.deepHashCode(params);
+        // Use unsigned hex so the suffix is deterministic + short.
+        return "__row" + Integer.toHexString(h & 0x7fffffff);
     }
 
     // ITestContext hooks unused -- keep no-op defaults from interface.

@@ -869,14 +869,66 @@ class AuditLedger:
     # Bidirectional traceability: verify a specific SoapUI case moved to
     # the right place; find which SoapUI cases share a @Test method.
     case_mapping: list[tuple] = field(default_factory=list)
+    # (prefix, case, step_name, step_type, method_or_kind, endpoint_or_query,
+    #  coverage, gap_detail)
+    # One row per SoapUI step (REST/Groovy/Properties/DataSource/Transfer/
+    # Manual/Jdbc). Fills the traceability hole where non-assertion steps
+    # were invisible in the old audit: REST step -> assertion CSV only if
+    # it had assertions, JDBC step -> unmapped.csv only if untranslated,
+    # PropertyTransfer step -> completely silent. Now every step reports.
+    steps: list[tuple] = field(default_factory=list)
+    # (prefix, case, java_method, reason, source_step)
+    # Every ra_converter-emitted `throw new SkipException(...)` -- the
+    # runtime-visible outcome that hides from the audit today because the
+    # throw is assembled from string parts at emit time. Populated by the
+    # emitter site that generates the throw. Rolled into summary.md as
+    # "Cases skipped at runtime".
+    runtime_skips: list[tuple] = field(default_factory=list)
 
     def add_assertion(self, prefix, case, step, soapui_type, cfg,
-                       emitted_java, coverage):
+                       emitted_java, coverage, partial_because=""):
+        """Record a translated (or partially translated) SoapUI assertion.
+        ``partial_because`` is a short human-readable phrase explaining WHY
+        coverage is not FULL (e.g. "content is JSON blob -- deep-diff not
+        translated"). Absent for FULL rows. Piped into unmapped.csv so a
+        QA lead can act on a gap without cross-referencing config_json."""
         self.assertions.append((prefix, case, step, soapui_type,
                                  json.dumps(cfg or {}), emitted_java, coverage))
         if coverage in ("TODO", "STUB", "PARTIAL"):
+            reason = partial_because or self._default_partial_reason(soapui_type, coverage)
             self.unmapped.append((prefix, case, step, "assertion",
-                                   f'{soapui_type} ({coverage})'))
+                                   f'{soapui_type} ({coverage}): {reason}'))
+
+    def _default_partial_reason(self, soapui_type: str, coverage: str) -> str:
+        """Fallback reason text when an emit site did not pass one."""
+        if coverage == "TODO":
+            return f'no recognizer for assertion type "{soapui_type}" -- ' \
+                   f'add a branch in Emitter._render_assertion'
+        if coverage == "STUB":
+            return f'runnable no-op stub emitted; hand-translate required'
+        return f'partial translation -- see config_json in assertions.csv'
+
+    def add_step(self, prefix, case, step_name, step_type, method_or_kind,
+                  endpoint_or_query, coverage, gap_detail=""):
+        """Record one SoapUI step's emit outcome. Populated by every
+        step renderer (REST/Groovy/Properties/DataSource/Transfer/Manual/
+        Jdbc) so the audit shows every step, not just assertions and
+        Groovy. Feeds unmapped.csv when coverage is not FULL."""
+        self.steps.append((prefix, case, step_name, step_type,
+                            method_or_kind, endpoint_or_query, coverage,
+                            gap_detail))
+        if coverage in ("TODO", "STUB", "PARTIAL"):
+            det = gap_detail or f'{step_type} coverage {coverage}'
+            self.unmapped.append((prefix, case, step_name, "step",
+                                   det))
+
+    def add_runtime_skip(self, prefix, case, java_method, reason,
+                          source_step=""):
+        """Record a `throw new SkipException(...)` the emitter inserted
+        so the audit surfaces "cases that will always skip at runtime"
+        instead of that failure mode hiding from the summary."""
+        self.runtime_skips.append((prefix, case, java_method, reason,
+                                    source_step))
 
     def add_groovy(self, prefix, case, step, meta):
         pm = ";".join(meta.get("patterns_matched", [])) or "<none>"
@@ -901,7 +953,14 @@ class AuditLedger:
         """Record where a SoapUI test case ended up in the emitted tree.
         Provides bidirectional traceability -- open the CSV to see which
         SoapUI cases share a method; open a SoapUI case name to find its
-        Java class + method + CSV row."""
+        Java class + method + CSV row. Empty ``expected_status`` is
+        back-filled from the case-name suffix (e.g. `..._200`, `..._404`)
+        so the summary roll-up covers cases whose XML didn't declare it
+        as an explicit status assertion."""
+        if not expected_status:
+            m = re.search(r'_(\d{3})(?:_|$|\W)', soapui_case or "")
+            if m:
+                expected_status = m.group(1)
         self.case_mapping.append((
             soapui_suite, soapui_case, xray_key, java_class_fqn,
             java_method, csv_path, cluster_size, cluster_row_index,
@@ -964,6 +1023,25 @@ class AuditLedger:
              "java_method", "csv_path", "cluster_size",
              "cluster_row_index", "expected_status"],
             self.case_mapping)
+        # Per-step ledger. Every SoapUI step of every case appears here
+        # (REST/Groovy/Properties/DataSource/Transfer/Manual/Jdbc), not
+        # just the ones that had assertions or that failed to translate.
+        # Enables "which steps didn't fully translate?" queries the old
+        # audit could not answer.
+        self._write_csv(
+            os.path.join(base, "steps.csv"),
+            ["prefix", "case", "step_name", "step_type",
+             "method_or_kind", "endpoint_or_query", "coverage",
+             "gap_detail"],
+            self.steps)
+        # Cases whose @Test body ends with `throw new SkipException` --
+        # they will always skip at runtime regardless of env. Kept in
+        # their own ledger so summary.md can loudly report coverage loss
+        # (a pass=0/fail=0/skip=48 suite otherwise hides the truth).
+        self._write_csv(
+            os.path.join(base, "runtime_skips.csv"),
+            ["prefix", "case", "java_method", "reason", "source_step"],
+            self.runtime_skips)
 
         # ---- summary.md -------------------------------------------------
         def _counts(rows, cov_index):
@@ -1029,6 +1107,13 @@ class AuditLedger:
             distinct_classes = len({row[3] for row in self.case_mapping})
             distinct_methods = len({(row[3], row[4]) for row in self.case_mapping})
             shared_methods = sum(1 for row in self.case_mapping if row[6] > 1)
+            # Expected-status roll-up (from `expected_status` col, back-filled
+            # by add_case_mapping from the case-name `_NNN` suffix when
+            # the XML didn't declare it explicitly).
+            status_counts: dict[str, int] = defaultdict(int)
+            for row in self.case_mapping:
+                st = (row[8] or "").strip() or "(unknown)"
+                status_counts[st] += 1
             lines.extend([
                 "## ReadyAPI -> REST Assured case mapping",
                 "",
@@ -1043,7 +1128,114 @@ class AuditLedger:
                 f"- Cases that share a data-driven method (cluster_size > 1): "
                 f"**{shared_methods}**",
                 "",
+                "> ⚠ `xray_key` column in the CSV holds the SoapUI case_id "
+                "(what `@XrayTest(...)` in the emitted Java carries). It is NOT "
+                "a real Jira/Xray issue key -- Xray sync via this column will "
+                "not resolve to tickets. Populate a genuine key by adding a "
+                "`<con:properties>` entry named `xray_key` to each case in the "
+                "SoapUI XML, or hand-edit `case_to_method_mapping.csv` post-run.",
+                "",
+                "### Test counts by expected status",
+                "",
+                "| Status | Cases |",
+                "|---|---:|",
             ])
+            for st in sorted(status_counts, key=lambda k: (k == "(unknown)", k)):
+                lines.append(f"| {st} | {status_counts[st]} |")
+            lines.append("")
+
+        # ---- Per-case assertion coverage roll-up ---------------------
+        # Rolls the flat `assertions.csv` up per case so a QA lead can
+        # scan "which cases have PARTIAL assertions that need eyes?"
+        # without pivoting the flat CSV in Excel. Top 25 by PARTIAL+TODO
+        # count -- the cases most worth reviewing.
+        if self.assertions:
+            case_cov: dict[tuple, dict[str, int]] = defaultdict(
+                lambda: defaultdict(int))
+            for prefix, case, _step, _t, _cfg, _emit, cov in self.assertions:
+                case_cov[(prefix, case)][cov] += 1
+            ranked = sorted(
+                case_cov.items(),
+                key=lambda kv: -(kv[1].get("PARTIAL", 0) + kv[1].get("TODO", 0)
+                                 + kv[1].get("STUB", 0)))
+            worth_reviewing = [
+                (k, v) for k, v in ranked
+                if (v.get("PARTIAL", 0) + v.get("TODO", 0) + v.get("STUB", 0)) > 0]
+            lines.extend([
+                "## Per-case assertion coverage (top 25 by gap count)",
+                "",
+                "> Cases with the most non-FULL assertions. Empty section = "
+                "every case's assertions translated FULL.",
+                "",
+                "| Prefix | Case | FULL | PARTIAL | STUB | TODO | SKIPPED |",
+                "|---|---|---:|---:|---:|---:|---:|",
+            ])
+            for (prefix, case), c in worth_reviewing[:25]:
+                lines.append(
+                    f"| {prefix} | {case} | {c.get('FULL', 0)} | "
+                    f"{c.get('PARTIAL', 0)} | {c.get('STUB', 0)} | "
+                    f"{c.get('TODO', 0)} | {c.get('SKIPPED', 0)} |")
+            if not worth_reviewing:
+                lines.append("| _(none)_ | -- | -- | -- | -- | -- | -- |")
+            lines.append("")
+
+        # ---- Runtime-skip inventory ---------------------------------
+        if self.runtime_skips:
+            skip_by_reason: dict[str, int] = defaultdict(int)
+            for _p, _c, _m, reason, _src in self.runtime_skips:
+                skip_by_reason[reason[:80]] += 1
+            # One case can have multiple emit-sites for SkipException (each
+            # Groovy step throws), but only the FIRST throw is reachable at
+            # runtime (rest javac-suppressed). "Cases" = distinct (prefix,
+            # case) pairs; "Skip-emit sites" = raw row count.
+            distinct_cases = len({(p, c) for p, c, *_ in self.runtime_skips})
+            lines.extend([
+                "## Cases skipped at runtime",
+                "",
+                "> The emitter inserted a `throw new SkipException(...)` for "
+                "these cases. They will ALWAYS skip regardless of environment "
+                "-- silent capacity loss unless surfaced here. Full list in "
+                "`runtime_skips.csv`.",
+                "",
+                f"- Cases with runtime skip: **{distinct_cases}** distinct case(s) "
+                f"({len(self.runtime_skips)} emit-site(s) total, "
+                f"only the first per method is reachable at runtime)",
+                f"- Distinct skip reasons: **{len(skip_by_reason)}**",
+                "",
+                "### Top skip reasons",
+                "",
+                "| Skips | Reason (truncated) |",
+                "|---:|---|",
+            ])
+            for reason, n in sorted(skip_by_reason.items(), key=lambda x: -x[1])[:10]:
+                r = reason.replace("|", "\\|")
+                lines.append(f"| {n} | {r} |")
+            lines.append("")
+
+        # ---- Per-step coverage roll-up ------------------------------
+        if self.steps:
+            step_type_cov: dict[str, dict[str, int]] = defaultdict(
+                lambda: defaultdict(int))
+            for _p, _c, _sn, step_type, _mk, _eq, cov, _gd in self.steps:
+                step_type_cov[step_type][cov] += 1
+            lines.extend([
+                "## Per-step coverage by step type",
+                "",
+                "> Every SoapUI step (REST / Groovy / Properties / DataSource / "
+                "PropertyTransfer / Manual / JDBC) accounted for. Full detail "
+                "in `steps.csv`.",
+                "",
+                "| Step type | Total | FULL | PARTIAL | STUB | TODO | SKIPPED |",
+                "|---|---:|---:|---:|---:|---:|---:|",
+            ])
+            for step_type in sorted(step_type_cov):
+                c = step_type_cov[step_type]
+                total = sum(c.values())
+                lines.append(
+                    f"| {step_type} | {total} | {c.get('FULL', 0)} | "
+                    f"{c.get('PARTIAL', 0)} | {c.get('STUB', 0)} | "
+                    f"{c.get('TODO', 0)} | {c.get('SKIPPED', 0)} |")
+            lines.append("")
 
         # ---- frozen Properties-step literals -------------------------
         # SoapUI Properties-step defaults emitted as ctx.putIfAbsent
@@ -1340,7 +1532,10 @@ def soapui_expr_to_java(expr: str) -> str:
     def _step_response(m):
         step = sanitize_identifier(m.group(1))
         path = _translate_soapui_jsonpath(m.group(2))
-        return f'{step}Res.jsonPath().getString("{path}")'
+        # Route through safeJsonExtract so an upstream 4xx that returned
+        # an empty/HTML body degrades to "" here instead of crashing the
+        # whole test with an unchecked JsonPathException.
+        return f'com.ak.api.rest.utilities.RestUtilities.safeJsonExtract({step}Res, "{path}")'
     e = _STEP_RESPONSE_RX.sub(_step_response, e)
     e = _STEP_PROP_RX.sub(
         lambda m: f'TestSupport.ctxGet(ctx, "{m.group(1)}.{m.group(2)}")', e)
@@ -1351,8 +1546,10 @@ def soapui_expr_to_java(expr: str) -> str:
     starts_with_known = any(e.startswith(p) for p in
                             ("config.get", "TestSupport.ctxGet"))
     # If we substituted a step-response ref, `e` starts with a Java
-    # identifier (e.g. `enroll_guestRes.jsonPath()...`) -- treat as raw.
-    if re.match(r'^[A-Za-z_][A-Za-z0-9_]*Res\.jsonPath', e):
+    # expression (e.g. `RestUtilities.safeJsonExtract(enroll_guestRes, ...)`
+    # or legacy `enroll_guestRes.jsonPath()...`) -- treat as raw.
+    if (re.match(r'^[A-Za-z_][A-Za-z0-9_]*Res\.jsonPath', e)
+            or e.startswith('com.ak.api.rest.utilities.RestUtilities.safeJsonExtract')):
         return e
     return f'"{e}"' if not starts_with_known else e
 
@@ -2952,11 +3149,17 @@ public class {class_name} {{
                 self.ledger.add_frozen_property(
                     self._current_prefix, self._current_case,
                     step.step_name, prop, val, ctx_key)
-                # Single emission shape regardless of destination -- the
-                # runtime helper walks the precedence chain and finds the
-                # right value. No hardcoded literal in the emitted Java.
+                # putIfNonEmpty -- do NOT plant an empty value into ctx
+                # even if testData walks the whole precedence chain and
+                # finds nothing. If we planted empties, ctxGet's
+                # "primary key present" short-circuit would mistake a
+                # missing-default for a "Groovy extract wrote empty"
+                # signal and refuse to alias-walk -- the exact bug the
+                # ctxGet fix was meant to solve. Skipping the put here
+                # lets a downstream ctxGet fall through to a sibling
+                # key populated by a Groovy extract with the actual value.
                 lines.append(
-                    f'ctx.putIfAbsent("{ctx_key}", '
+                    f'TestSupport.putIfNonEmpty(ctx, "{ctx_key}", '
                     f'TestSupport.testData(row, "{ctx_key}"));')
         elif isinstance(step, DataSourceStep):
             lines.append(
@@ -2979,10 +3182,71 @@ public class {class_name} {{
                 f'// [manualTestStep] {step.step_name} -- documentation '
                 f'only (no runtime action): {desc_short}')
         elif isinstance(step, JdbcStep):
-            q_escaped = _jlit((step.query or "").replace("\r", " ").replace("\n", " "))
+            raw_q = (step.query or "").replace("\r", " ").replace("\n", " ")
+            q_escaped = _jlit(raw_q)
+            # Detect hardcoded numeric literals in WHERE clauses -- these
+            # were frozen from the SoapUI author's dev-time data (e.g.
+            # `where account_id=2000008886`) and won't match anything on
+            # a fresh env. Convert each `<column> = <literal>` to a
+            # placeholder `<column> = '#<column>#'` so PlaceholderResolver
+            # can substitute at runtime from ctx. The emitted comment
+            # points to the column names authors should populate via
+            # a preceding REST-step extract or CSV row cell.
+            hard_lits = re.findall(
+                r"\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:'([^']+)'|(\d[\d.]*))",
+                raw_q)
+            hard_ids = [(col, val or num) for col, val, num in hard_lits
+                        if col.lower() not in ("null", "true", "false")]
+            transformed_q = raw_q
+            substituted_cols: list[str] = []
+            for col, val in hard_ids:
+                # Only rewrite the FIRST occurrence of each column so a
+                # `WHERE a=1 AND b=2` becomes `WHERE a='#a#' AND b='#b#'`
+                # but a repeated `a=1 OR a=2` doesn't double-substitute.
+                if col in substituted_cols:
+                    continue
+                pattern = re.compile(
+                    rf"\b{re.escape(col)}\s*=\s*(?:'[^']+'|\d[\d.]*)")
+                transformed_q = pattern.sub(
+                    f"{col}='#{col}#'", transformed_q, count=1)
+                substituted_cols.append(col)
+            trans_escaped = _jlit(transformed_q)
             lines.append(f'// [jdbc step] {step.step_name}')
+            if substituted_cols:
+                lines.append(
+                    f'// [jdbc] parameterized {len(substituted_cols)} '
+                    f'hardcoded WHERE literal(s) with #placeholder# refs -- '
+                    f'columns: {", ".join(substituted_cols)}. Original SQL: '
+                    f'{raw_q[:120].replace(chr(10), " ")}')
+                lines.append(
+                    f'// [jdbc] Populate ctx (via prior REST extract or '
+                    f'CSV row cell) for these keys, or the runtime-resolved '
+                    f'query will still carry `#{substituted_cols[0]}#` '
+                    f'unresolved -- watch the WARN from mapJsonValues.')
             lines.append('if (Db.isConfigured()) {')
-            lines.append(f'    Db.execute("{q_escaped}");')
+            # RestUtilities.mapJsonValues expands #X# placeholders against
+            # a merged (row + ctx + config) view so a query like
+            # `where account_id='#accountID#'` resolves to the value
+            # captured earlier in the test. Non-strict: unresolved keys
+            # fall back to "null" and WARN so operators see the gap.
+            lines.append(
+                f'    try {{')
+            lines.append(
+                f'        String __jdbcSql_{sanitize_identifier(step.step_name)} = '
+                f'RestUtilities.mapJsonValues('
+                f'"{trans_escaped}", TestSupport.mergedRow(row, ctx), false);')
+            lines.append(
+                f'        LOG.info(" .. jdbc SQL: {{}}", '
+                f'__jdbcSql_{sanitize_identifier(step.step_name)});')
+            lines.append(
+                f'        Db.execute(__jdbcSql_{sanitize_identifier(step.step_name)});')
+            lines.append(
+                f'    }} catch (Exception __jdbcEx) {{')
+            lines.append(
+                f'        LOG.warn("JDBC step `{_jlit(step.step_name)}` failed: {{}}", '
+                f'__jdbcEx.getMessage());')
+            lines.append(
+                f'    }}')
             lines.append('} else {')
             lines.append(
                 f'    LOG.warn("Skipping JDBC step (Db not configured): '
@@ -3091,7 +3355,106 @@ public class {class_name} {{
             lines.append(f'LOG.warn("skipped {cls_name} step: {_jlit(step_name)}");')
             self.ledger.add_unknown_step(
                 self._current_prefix, self._current_case, step_name, cls_name)
+        # ---- steps.csv ledger: one row per SoapUI step regardless of type
+        self._record_step_in_ledger(step)
         return lines
+
+    def _record_step_in_ledger(self, step) -> None:
+        """Emit exactly one steps.csv row per _render_step invocation.
+        Maps step class -> (step_type, coverage, endpoint_or_query, method_or_kind).
+        Coverage is inferred from step type; STUB/SKIPPED steps auto-populate
+        `unmapped.csv` via AuditLedger.add_step's internal gap tracking."""
+        step_name = getattr(step, "step_name", "") or ""
+        if isinstance(step, RestStep):
+            self.ledger.add_step(
+                self._current_prefix, self._current_case, step_name,
+                "REST", step.http_method or "?", step.resource_path or "",
+                "FULL", "")
+        elif isinstance(step, GroovyStep):
+            # groovy.csv carries the FULL/PARTIAL/STUB breakdown for the
+            # translator's own recognizers. Mirror the last-seen coverage
+            # (best guess) so steps.csv stays consistent.
+            cov = "FULL"
+            for r in reversed(self.ledger.groovy):
+                if r[1] == self._current_case and r[2] == step_name:
+                    cov = r[4]
+                    break
+            self.ledger.add_step(
+                self._current_prefix, self._current_case, step_name,
+                "GROOVY", "-", "-", cov, "")
+        elif isinstance(step, PropertiesStep):
+            self.ledger.add_step(
+                self._current_prefix, self._current_case, step_name,
+                "PROPS", "-",
+                f"{len(step.properties or {})} prop(s)",
+                "FULL", "")
+        elif isinstance(step, DataSourceStep):
+            cov = "STUB" if step.file_path else "FULL"
+            gap = (f"external file `{step.file_path}` not migrated"
+                   if step.file_path else "")
+            self.ledger.add_step(
+                self._current_prefix, self._current_case, step_name,
+                "DATASOURCE", step.ds_type or "-", step.file_path or "-",
+                cov, gap)
+        elif isinstance(step, TransferStep):
+            cov = "FULL" if step.transfers else "STUB"
+            self.ledger.add_step(
+                self._current_prefix, self._current_case, step_name,
+                "TRANSFER", "-",
+                f"{len(step.transfers or [])} transfer(s)",
+                cov, "")
+        elif isinstance(step, ManualStep):
+            self.ledger.add_step(
+                self._current_prefix, self._current_case, step_name,
+                "MANUAL", "-",
+                (step.description or "")[:60],
+                "SKIPPED", "documentation only -- no runtime action")
+        elif isinstance(step, JdbcStep):
+            preview = (step.query or "").replace("\n", " ")[:60]
+            self.ledger.add_step(
+                self._current_prefix, self._current_case, step_name,
+                "JDBC", "-", preview, "FULL", "")
+        elif isinstance(step, CallTestCaseStep):
+            self.ledger.add_step(
+                self._current_prefix, self._current_case, step_name,
+                "CALLTESTCASE", "-",
+                f"{step.target_test_suite}/{step.target_test_case}",
+                "STUB",
+                "SoapUI calltestcase -- extract target into shared helper by hand")
+        elif isinstance(step, DelayStep):
+            self.ledger.add_step(
+                self._current_prefix, self._current_case, step_name,
+                "DELAY", "-", f"{step.delay_ms}ms", "FULL", "")
+        elif isinstance(step, GotoStep):
+            self.ledger.add_step(
+                self._current_prefix, self._current_case, step_name,
+                "GOTO", "-",
+                f"{len(step.conditions)} condition(s)",
+                "STUB", "Java has no goto -- manual refactor into if/loop required")
+        elif isinstance(step, SoapRequestStep):
+            self.ledger.add_step(
+                self._current_prefix, self._current_case, step_name,
+                "SOAP", "POST", step.endpoint or "-", "FULL", "")
+        elif isinstance(step, HttpRequestStep):
+            self.ledger.add_step(
+                self._current_prefix, self._current_case, step_name,
+                "HTTP", step.http_method or "GET", step.endpoint or "-",
+                "FULL", "")
+        elif isinstance(step, MockResponseStep):
+            self.ledger.add_step(
+                self._current_prefix, self._current_case, step_name,
+                "MOCK", "-", "-", "STUB",
+                "SoapUI mock-server step -- not runnable in REST Assured")
+        elif isinstance(step, JmsStep):
+            self.ledger.add_step(
+                self._current_prefix, self._current_case, step_name,
+                "JMS", step.direction or "-", step.destination or "-",
+                "STUB", "REST Assured does not cover JMS -- manual translation")
+        else:
+            self.ledger.add_step(
+                self._current_prefix, self._current_case, step_name,
+                type(step).__name__, "-", "-", "STUB",
+                "no recognizer -- runnable no-op stub emitted")
 
     def _uniq_local(self, base: str) -> str:
         """Return a unique local-var name for the current test method,
@@ -3501,8 +3864,9 @@ public class {class_name} {{
             # cell -> treat as missing so the fallback fires (not parseInt("")).
             return ([
                 f'String rawStatus_{vsid} = row.get("{col_name}");',
-                f'int expected_{vsid} = (rawStatus_{vsid} == null || rawStatus_{vsid}.isEmpty()) '
-                f'? exp.getInt("statusCode", {first_code}) : Integer.parseInt(rawStatus_{vsid}.trim());',
+                f'int expected_{vsid} = com.ak.api.rest.utilities.RestUtilities'
+                f'.parseIntOrDefault(rawStatus_{vsid}, '
+                f'exp.getInt("statusCode", {first_code}), "{col_name}");',
                 f'softAssert.assertEquals({response_var}.statusCode(), expected_{vsid}, "expected status for {step_name}");',
             ], "FULL")
         if t == "Invalid HTTP Status Codes":
@@ -3521,7 +3885,8 @@ public class {class_name} {{
             if content_raw.startswith(("{", "[")):
                 return ([
                     f'// [JsonPath Match] content is JSON blob -- checking existence only:',
-                    f'softAssert.assertNotNull({response_var}.jsonPath().get("{path}"), "JsonPath present: {path}");',
+                    f'softAssert.assertNotNull(com.ak.api.rest.utilities.RestUtilities'
+                    f'.safeJsonGet({response_var}, "{path}"), "JsonPath present: {path}");',
                 ], "PARTIAL")
             if "${" in content_raw:
                 # SoapUI property expansion in expected value -- keep runtime
@@ -3530,13 +3895,15 @@ public class {class_name} {{
                 return ([
                     f'String expected_{vsid} = row.getOrDefault("{col_name}", '
                     f'String.valueOf({java_expr}));',
-                    f'softAssert.assertEquals({response_var}.jsonPath().getString("{path}"), '
+                    f'softAssert.assertEquals(com.ak.api.rest.utilities.RestUtilities'
+                    f'.safeJsonExtract({response_var}, "{path}"), '
                     f'expected_{vsid}, "JsonPath Match: {path}");',
                 ], "FULL")
             content = _jlit(content_raw)
             return ([
                 f'String expected_{vsid} = {_row_expr(content)};',
-                f'softAssert.assertEquals({response_var}.jsonPath().getString("{path}"), '
+                f'softAssert.assertEquals(com.ak.api.rest.utilities.RestUtilities'
+                f'.safeJsonExtract({response_var}, "{path}"), '
                 f'expected_{vsid}, "JsonPath Match: {path}");',
             ], "FULL")
         if t == "JsonPath Existence Match":
@@ -3546,7 +3913,8 @@ public class {class_name} {{
             # behavior.
             return ([
                 f'if (!"false".equalsIgnoreCase(row.getOrDefault("{col_name}", "true"))) {{',
-                f'    softAssert.assertNotNull({response_var}.jsonPath().get("{path}"), '
+                f'    softAssert.assertNotNull(com.ak.api.rest.utilities.RestUtilities'
+                f'.safeJsonGet({response_var}, "{path}"), '
                 f'"JsonPath exists: {path}");',
                 f'}}',
             ], "FULL")
@@ -3555,12 +3923,13 @@ public class {class_name} {{
             expected_raw = (cfg.get("expectedCount", "") or cfg.get("content", "") or "0").strip()
             expected_int = expected_raw if expected_raw.lstrip("-").isdigit() else "0"
             return ([
-                f'Object count_{vsid} = {response_var}.jsonPath().get("{path}");',
+                f'Object count_{vsid} = com.ak.api.rest.utilities.RestUtilities'
+                f'.safeJsonGet({response_var}, "{path}");',
                 f'int actualCount_{vsid} = count_{vsid} instanceof java.util.List ? '
                 f'((java.util.List<?>) count_{vsid}).size() : (count_{vsid} == null ? 0 : 1);',
                 f'String rawExp_{vsid} = row.get("{col_name}");',
-                f'int expectedCount_{vsid} = (rawExp_{vsid} == null || rawExp_{vsid}.isEmpty()) '
-                f'? {expected_int} : Integer.parseInt(rawExp_{vsid}.trim());',
+                f'int expectedCount_{vsid} = com.ak.api.rest.utilities.RestUtilities'
+                f'.parseIntOrDefault(rawExp_{vsid}, {expected_int}, "{col_name}");',
                 f'softAssert.assertEquals(actualCount_{vsid}, expectedCount_{vsid}, '
                 f'"JsonPath Count for {path}");',
             ], "FULL")
@@ -3568,7 +3937,8 @@ public class {class_name} {{
             path = _jlit(_jsonpath_to_gpath(cfg.get("path", "")))
             content = _jlit(cfg.get("content", ""))
             return ([
-                f'String matched_{vsid} = {response_var}.jsonPath().getString("{path}");',
+                f'String matched_{vsid} = com.ak.api.rest.utilities.RestUtilities'
+                f'.safeJsonExtract({response_var}, "{path}");',
                 f'String pattern_{vsid} = {_row_expr(content)};',
                 f'softAssert.assertTrue(matched_{vsid} != null && matched_{vsid}.matches(pattern_{vsid}), '
                 f'"JsonPath regex: {path}");',
@@ -3598,8 +3968,8 @@ public class {class_name} {{
             sla = cfg.get("SLA", cfg.get("sla", "1000"))
             return ([
                 f'String rawSla_{vsid} = row.get("{col_name}");',
-                f'long sla_{vsid} = (rawSla_{vsid} == null || rawSla_{vsid}.isEmpty()) '
-                f'? {sla}L : Long.parseLong(rawSla_{vsid}.trim());',
+                f'long sla_{vsid} = com.ak.api.rest.utilities.RestUtilities'
+                f'.parseLongOrDefault(rawSla_{vsid}, {sla}L, "{col_name}");',
                 f'softAssert.assertTrue({response_var}.time() <= sla_{vsid}, "SLA " + sla_{vsid} + "ms");',
             ], "FULL")
         if t == "SOAP Response":
@@ -3663,7 +4033,8 @@ public class {class_name} {{
             v = f"{vsid}_msg{idx}"
             fallback = _jlit(expected)
             lines.append(
-                f'String actual_{v} = {response_var}.jsonPath().getString("{_jlit(jpath)}");')
+                f'String actual_{v} = com.ak.api.rest.utilities.RestUtilities'
+                f'.safeJsonExtract({response_var}, "{_jlit(jpath)}");')
             lines.append(
                 f'String expected_{v} = (row.get("{col_name}") == null || '
                 f'row.get("{col_name}").isEmpty()) ? "{fallback}" : row.get("{col_name}");')
@@ -3706,7 +4077,8 @@ public class {class_name} {{
             v = f"{vsid}_dm{idx}"
             fallback = _jlit(expected)
             lines.append(
-                f'String actual_{v} = {response_var}.jsonPath().getString("{_jlit(path)}");')
+                f'String actual_{v} = com.ak.api.rest.utilities.RestUtilities'
+                f'.safeJsonExtract({response_var}, "{_jlit(path)}");')
             lines.append(
                 f'String expected_{v} = (row.get("{col_name}") == null || '
                 f'row.get("{col_name}").isEmpty()) ? "{fallback}" : row.get("{col_name}");')
@@ -3898,13 +4270,32 @@ public class {class_name} {{
 
     def _render_groovy_translated(self, step: GroovyStep) -> list[str]:
         """Feed the Groovy translator; runnable stub if nothing matches.
-        Also logs each block to the audit ledger."""
+        Also logs each block to the audit ledger, including a runtime-skip
+        entry when the translator emitted a `throw new SkipException(...)`
+        (typically for an untranslated JDBC mutation) so the summary can
+        surface silent capacity loss."""
         from groovy_translator import translate as translate_groovy
         lines, meta = translate_groovy(
             step.script or "", self.response_var_by_step,
             step_name_hint=step.step_name)
         self.ledger.add_groovy(
             self._current_prefix, self._current_case, step.step_name, meta)
+        # Detect emitted SkipException throws so the audit tracks them as
+        # runtime skips. Concatenates every string-literal chunk inside
+        # the throw() call so multi-part " + " concats (used by the
+        # groovy_translator's mutation-jdbc emitter) surface the FULL
+        # reason text in runtime_skips.csv, not just the first literal.
+        joined = "\n".join(lines)
+        for m in re.finditer(
+                r'throw\s+new\s+org\.testng\.SkipException\((.*?)\);',
+                joined, flags=re.DOTALL):
+            args = m.group(1)
+            parts = re.findall(r'"([^"\\]*(?:\\.[^"\\]*)*)"', args)
+            reason = "".join(parts).strip() or args.strip()[:120]
+            self.ledger.add_runtime_skip(
+                self._current_prefix, self._current_case,
+                getattr(self, "_current_method", "?"),
+                reason, step.step_name)
         return lines
 
     def _render_transfer_translated(self, step: TransferStep) -> list[str]:
@@ -3923,7 +4314,8 @@ public class {class_name} {{
                     jp = src_path.lstrip("$.")
                     lines.append(
                         f'ctx.put("{tgt_step}.{tgt_path}", '
-                        f'{src_resp}.jsonPath().getString("{jp}"));')
+                        f'com.ak.api.rest.utilities.RestUtilities'
+                        f'.safeJsonExtract({src_resp}, "{jp}"));')
                 else:
                     lines.append(
                         f'ctx.put("{tgt_step}.{tgt_path}", '
@@ -4027,8 +4419,16 @@ public final class TestSupport {{
      */
     public static String ctxGet(Map<String, String> ctx, String primaryKey) {{
         if (ctx == null || primaryKey == null) return "";
-        String v = ctx.get(primaryKey);
-        if (v != null && !v.isEmpty()) return v;
+        // KNOWN-EMPTY signal: if the primary key was explicitly written to
+        // ctx with an empty value (typically by safeJsonExtract after an
+        // upstream 4xx returned an empty/HTML body), do NOT alias-walk --
+        // substituting a stale hardcoded ID from a sibling key would mask
+        // the upstream failure as a Hilton-API bug and pump requests at
+        // random resources. Empty-known beats any inferred alias.
+        if (ctx.containsKey(primaryKey)) {{
+            String direct = ctx.get(primaryKey);
+            return direct == null ? "" : direct;
+        }}
         // Extract the trailing field name after the last dot.
         int lastDot = primaryKey.lastIndexOf('.');
         String field = (lastDot >= 0) ? primaryKey.substring(lastDot + 1) : primaryKey;
@@ -4146,6 +4546,16 @@ public final class TestSupport {{
      *       converter's own placeholder naming)</li>
      *   <li>hash-neutral form:    dashes collapsed to underscores in both above</li>
      * </ul>
+     *
+     * <p>Case-mismatch aliasing (e.g. {{@code Properties.Username}} vs
+     * {{@code Properties.username}}) is intentionally NOT expanded here:
+     * a case-flip alias would cause a later {{@code put}} of the
+     * lower-case key to OVERWRITE a genuine value written earlier
+     * under the upper-case key (LinkedHashMap iteration order fires
+     * the two direct writes in insertion sequence, so the case-flip
+     * alias of the second write clobbers the direct value of the
+     * first). Case-mismatch resolution lives in {{@link #ctxGet}}
+     * (per-lookup, walk alternatives at read time) instead.</p>
      */
     private static void putWithAliases(Map<String, String> merged, String key, String value) {{
         if (key == null) return;
@@ -4154,6 +4564,21 @@ public final class TestSupport {{
         if (!underscoreForm.equals(key)) merged.put(underscoreForm, value);
         String dotForm = key.replace('-', '_');
         if (!dotForm.equals(key) && !dotForm.equals(underscoreForm)) merged.put(dotForm, value);
+    }}
+
+    /**
+     * Set {{@code ctx[key] = value}} ONLY if value is non-empty AND the
+     * key isn't already present. Used by the emitter's Properties-step
+     * defaults path so an absent default doesn't plant an empty string
+     * into ctx (which would defeat {{@link #ctxGet}}'s "primary key
+     * present" short-circuit and force it to return "" instead of
+     * alias-walking to find a Groovy-extracted value under a sibling
+     * key).
+     */
+    public static void putIfNonEmpty(Map<String, String> ctx, String key, String value) {{
+        if (ctx == null || key == null) return;
+        if (value == null || value.isEmpty()) return;
+        ctx.putIfAbsent(key, value);
     }}
 }}
 """
@@ -4672,8 +5097,22 @@ public final class AuthHelper {{
                     + "need auth will fall back to fetching a token inline.");
             return;
         }}
-        String tokenBase = Config.get("api_config.token_end_point", Config.baseUrl());
+        String tokenBase = Config.get("api_config.token_end_point", "");
         String tokenRoute = Config.get("api_config.token_route", "");
+        // Landmine: if BOTH keys are empty, refuse to POST creds against
+        // baseUrl -- doing so silently uploaded the client_id/secret to
+        // the API root, which returns 404/415 and leaves the accessToken
+        // empty. That failure mode is easy to blame on the target API
+        // when the real cause is missing config.
+        if (tokenBase.isEmpty() && tokenRoute.isEmpty()) {{
+            LOG.warn("AuthHelper: neither `api_config.token_end_point` nor "
+                    + "`api_config.token_route` is set in program_configuration.json "
+                    + "-- refusing to POST client_id/client_secret to baseUrl "
+                    + "(would exfiltrate creds to the wrong endpoint). Set at "
+                    + "least one and re-run.");
+            return;
+        }}
+        if (tokenBase.isEmpty()) tokenBase = Config.baseUrl();
         String tokenUrl;
         if (tokenRoute.isEmpty()) {{
             tokenUrl = tokenBase;
@@ -4700,7 +5139,7 @@ public final class AuthHelper {{
                         + "Body: {{}}", tokenUrl, status, snippet);
                 return;
             }}
-            String token = resp.jsonPath().getString("access_token");
+            String token = com.ak.api.rest.utilities.RestUtilities.safeJsonExtract(resp, "access_token");
             if (token == null || token.isEmpty()) {{
                 LOG.warn("AuthHelper: token endpoint {{}} returned 200 but no "
                         + "access_token field in body -- leaving ctx empty", tokenUrl);
@@ -4823,15 +5262,27 @@ public final class PerMethodCsvDataProvider {{
     }}
 
     /**
-     * Minimal RFC-4180-ish CSV splitter: honors double-quoted fields
+     * Strict RFC-4180-ish CSV splitter: honors double-quoted fields
      * (with embedded commas and "" escaped quotes). Sufficient for
      * ra_converter-generated CSVs, which are hand-written or exported
      * from SoapUI -- neither introduces multi-line fields.
+     *
+     * <p>Enter-quotes-only-at-cell-start: previous version toggled
+     * {{@code inQuotes}} on any {{@code "}} character, which meant a
+     * mid-cell stray quote (from a translation bug, an unescaped
+     * user-typed value, or a "Bearer abc\\"def" style token) flipped
+     * the parser into quoted mode for the remainder of the line --
+     * every subsequent comma became data, cells shifted left, and
+     * downstream {{@code Integer.parseInt}} on the wrong cell crashed
+     * with NumberFormatException, triggering the RetryAnalyzer 2x per
+     * bad row. Now: {{@code "}} only enters quoted mode when it is the
+     * FIRST character of a cell; a mid-cell {{@code "}} is literal.</p>
      */
     private static String[] splitCsvLine(String line) {{
         List<String> out = new ArrayList<>();
         StringBuilder cur = new StringBuilder();
         boolean inQuotes = false;
+        boolean atCellStart = true;
         for (int i = 0; i < line.length(); i++) {{
             char c = line.charAt(i);
             if (inQuotes) {{
@@ -4849,11 +5300,14 @@ public final class PerMethodCsvDataProvider {{
                 if (c == ',') {{
                     out.add(cur.toString());
                     cur.setLength(0);
-                }} else if (c == '"') {{
+                    atCellStart = true;
+                    continue;
+                }} else if (c == '"' && atCellStart) {{
                     inQuotes = true;
                 }} else {{
                     cur.append(c);
                 }}
+                atCellStart = false;
             }}
         }}
         out.add(cur.toString());
@@ -5390,7 +5844,12 @@ public class {class_name} extends BaseApiTest {{
 
     private {service_class_name} client;
     /** Runtime context bag: IDs/tokens carried between setup calls within one test. */
-    private final Map<String, String> ctx = new HashMap<>();
+    // LinkedHashMap so putWithAliases in TestSupport.mergedRow iterates
+    // ctx in INSERTION order. Case-flip aliases rely on the ctx.put site
+    // (runtime-generated value) firing AFTER the row-time entry so its
+    // aliases overwrite the older CSV value. HashMap's arbitrary iteration
+    // order broke that guarantee.
+    private final Map<String, String> ctx = new java.util.LinkedHashMap<>();
 
     @BeforeClass(alwaysRun = true)
     public void initClientAndAuth() {{
@@ -5428,6 +5887,10 @@ public class {class_name} extends BaseApiTest {{
         the method when `row["_stop_after"]` equals the step's name.
         """
         self._current_case = case.name
+        # Populated so runtime_skips.csv rows can name the containing @Test
+        # method -- without this, every runtime_skips row carries "?" and
+        # the audit can't jump you to the code.
+        self._current_method = method_name
         self._reset_per_method_state()
         stop_markers = stop_markers or {}
         emit_stop_checks = bool(stop_markers)
@@ -6378,9 +6841,19 @@ public class ProgressLogListener implements ITestListener {{
                 + "#" + r.getMethod().getMethodName() + "@" + r.hashCode();
     }}
 
+    /**
+     * Per-INVOCATION key. Includes a hash of the data-provider parameters
+     * so different CSV rows of the same @Test method own different
+     * attempt counters. Without the params hash, `[attempt N]` inflated
+     * with every row for data-driven tests -- a method with 20 rows
+     * showed `[attempt 20]` on the last row even though no retry ever
+     * happened. Only true retries (RetryAnalyzer re-invoking with the
+     * same params) share a counter now.
+     */
     private String methodKey(ITestResult r) {{
         return r.getTestClass().getRealClass().getName()
-                + "#" + r.getMethod().getMethodName();
+                + "#" + r.getMethod().getMethodName()
+                + "@" + java.util.Arrays.deepHashCode(r.getParameters());
     }}
 
     private String label(ITestResult r) {{
@@ -6411,13 +6884,20 @@ public class ProgressLogListener implements ITestListener {{
     private static final java.util.Set<String> STARTED_LOGGED =
         java.util.Collections.newSetFromMap(new ConcurrentHashMap<>());
 
+    /** Started-set key = class+method only (no params). One STARTED banner
+     *  per @Test method for the WHOLE run, regardless of rows / retries. */
+    private String startedKey(ITestResult r) {{
+        return r.getTestClass().getRealClass().getName()
+                + "#" + r.getMethod().getMethodName();
+    }}
+
     @Override
     public void onTestStart(ITestResult r) {{
         STARTS.put(key(r), System.currentTimeMillis());
         ATTEMPTS.computeIfAbsent(methodKey(r),
                 k -> new java.util.concurrent.atomic.AtomicInteger(0))
                 .incrementAndGet();
-        if (STARTED_LOGGED.add(methodKey(r))) {{
+        if (STARTED_LOGGED.add(startedKey(r))) {{
             LOG.info("[TEST] STARTED  {{}}  (thread={{}})",
                     label(r), Thread.currentThread().getName());
         }}
@@ -6465,6 +6945,14 @@ public class ProgressLogListener implements ITestListener {{
 
     @Override
     public void onStart(ITestContext context) {{
+        // Reset per-<test> state so a long-lived JVM (Surefire fork reuse
+        // across two <test> blocks, or `mvn -Dtest=Foo test surefire:test`
+        // rerun in the same fork) starts fresh: STARTED banners re-fire
+        // per <test> block, and stale attempt counters from a prior block
+        // don't leak into the new one's [attempt N] annotations.
+        STARTED_LOGGED.clear();
+        ATTEMPTS.clear();
+        STARTS.clear();
         LOG.info("[TEST] ==== SUITE START: {{}} (thread-count={{}}) ====",
                 context.getName(), context.getSuite().getXmlSuite().getThreadCount());
     }}

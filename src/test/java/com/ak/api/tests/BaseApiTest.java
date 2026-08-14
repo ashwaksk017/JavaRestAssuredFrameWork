@@ -24,6 +24,7 @@ package com.ak.api.tests;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.AfterMethod;
@@ -65,8 +66,22 @@ public abstract class BaseApiTest {
     // Suite-scoped bootstrap
     // =====================================================================
 
+    /** Idempotency guard -- @BeforeSuite is an INSTANCE method, so TestNG
+     *  fires it once per concrete subclass. Without this guard, every one
+     *  of the ~22 imported test classes appended its own AllureRestAssured
+     *  + RestAssuredRecordingFilter to the global RestAssured.filters()
+     *  chain, and each HTTP call was then recorded N times in Extent /
+     *  Allure -- reads exactly like the run is "looping". */
+    private static final AtomicBoolean BOOTSTRAPPED = new AtomicBoolean(false);
+
     @BeforeSuite(alwaysRun = true)
     public void bootstrapRestAssured() {
+        if (!BOOTSTRAPPED.compareAndSet(false, true)) {
+            // Another subclass already ran the bootstrap -- global state
+            // is process-wide, no reason to redo it or (worse) chain more
+            // filters onto RestAssured.filters().
+            return;
+        }
         RestAssured.baseURI = Config.baseUrl();
         RestAssured.useRelaxedHTTPSValidation();
 
@@ -88,12 +103,15 @@ public abstract class BaseApiTest {
 
         // Global filters -- Allure attaches automatically, our filter feeds the
         // ReportBuffer that the Extent listener drains at test end.
-        RestAssured.filters(
+        // replaceFiltersWith (not filters) so a re-invocation would REPLACE
+        // rather than APPEND -- second layer of defense against duplication.
+        RestAssured.replaceFiltersWith(
                 new AllureRestAssured(),
                 new RestAssuredRecordingFilter()
         );
 
-        System.out.printf("[BaseApiTest] env=%s baseUrl=%s authType=%s%n",
+        System.out.printf("[BaseApiTest] env=%s baseUrl=%s authType=%s "
+                + "(bootstrap ran once; filters=2)%n",
                 Config.env(), Config.baseUrl(), Config.authType());
     }
 

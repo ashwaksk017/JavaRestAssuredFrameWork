@@ -267,6 +267,92 @@ public class RestUtilities {
     }
 
     /**
+     * Safe JSON-path extract for Groovy-translated response reads. Guards
+     * against empty / non-JSON / null response bodies so the enclosing test
+     * doesn't crash with `JsonPathException: Failed to parse the JSON
+     * document` when an upstream call returned HTTP 400/409/500 with an
+     * empty or HTML error body. The Groovy translator emits every response
+     * extract through this helper so a failed upstream degrades to
+     * `ctx.get(key) == ""` downstream (which further callers can then
+     * handle) instead of the whole test aborting.
+     *
+     * @return the extracted value, or {@code ""} if the body is empty or
+     *         the path fails to resolve. Never null.
+     */
+    public static String safeJsonExtract(io.restassured.response.Response res, String jsonPath) {
+        if (res == null) return "";
+        try {
+            String body = res.getBody() == null ? null : res.getBody().asString();
+            if (body == null || body.isEmpty()) {
+                return "";
+            }
+            String v = res.jsonPath().getString(jsonPath);
+            return v == null ? "" : v;
+        } catch (Exception e) {
+            LOG.warn("safeJsonExtract(path='{}') failed on HTTP {}: {}",
+                    jsonPath, res.getStatusCode(), e.getMessage());
+            return "";
+        }
+    }
+
+    /**
+     * Safe JSON-path Object lookup for use in {@code softAssert.assertNotNull(...)}
+     * checks and count assertions. Returns null on any parse failure so the
+     * assertion fails cleanly ("field not present") instead of the whole
+     * test aborting with an unchecked {@code JsonPathException}. Empty body
+     * -> null. Path doesn't resolve -> null.
+     */
+    public static Object safeJsonGet(io.restassured.response.Response res, String jsonPath) {
+        if (res == null) return null;
+        try {
+            String body = res.getBody() == null ? null : res.getBody().asString();
+            if (body == null || body.isEmpty()) return null;
+            return res.jsonPath().get(jsonPath);
+        } catch (Exception e) {
+            LOG.warn("safeJsonGet(path='{}') failed on HTTP {}: {}",
+                    jsonPath, res.getStatusCode(), e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Parse a CSV cell as int, falling back to {@code fallback} on
+     * null/empty/malformed. Logs a WARN with {@code context} (typically the
+     * CSV column name) when parsing fails so a bad cell is diagnosable
+     * without hunting through a NumberFormatException stacktrace.
+     *
+     * <p>Used by the ra_converter emitter for every {@code expected_..._status_code}
+     * and {@code expected_count_...} cell so a stray non-numeric value in
+     * one CSV cell doesn't cascade into a per-row 3x retry storm.
+     */
+    public static int parseIntOrDefault(String raw, int fallback, String context) {
+        if (raw == null) return fallback;
+        String s = raw.trim();
+        if (s.isEmpty()) return fallback;
+        try {
+            return Integer.parseInt(s);
+        } catch (NumberFormatException e) {
+            LOG.warn("parseIntOrDefault: CSV cell `{}` = \"{}\" is not a valid int; "
+                    + "falling back to {}", context, s, fallback);
+            return fallback;
+        }
+    }
+
+    /** {@link #parseIntOrDefault(String, int, String)} for long values. */
+    public static long parseLongOrDefault(String raw, long fallback, String context) {
+        if (raw == null) return fallback;
+        String s = raw.trim();
+        if (s.isEmpty()) return fallback;
+        try {
+            return Long.parseLong(s);
+        } catch (NumberFormatException e) {
+            LOG.warn("parseLongOrDefault: CSV cell `{}` = \"{}\" is not a valid long; "
+                    + "falling back to {}", context, s, fallback);
+            return fallback;
+        }
+    }
+
+    /**
      * JSON-string-escape {@code raw} so it is safe to drop verbatim between
      * literal "..." in a JSON template. Handles quotes, backslashes, newlines,
      * tabs, and control chars via Jackson.
