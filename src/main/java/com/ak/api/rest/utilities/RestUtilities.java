@@ -173,24 +173,47 @@ public class RestUtilities {
         // control chars) or the resulting payload is invalid JSON. The %pct%
         // and @at@ variants replace the entire "..."-token and expect scalar
         // literals (true/false/0.5/42), so they pass through untouched.
-        schema = substitute(schema, P_HASH,  dataMap, strict ? null : "null",  unresolved, /* jsonEscape = */ true);
-        schema = substitute(schema, P_PCT_Q, dataMap, strict ? null : "false", unresolved, /* jsonEscape = */ false);
-        schema = substitute(schema, P_AT_Q,  dataMap, strict ? null : "0",     unresolved, /* jsonEscape = */ false);
+        //
+        // Iterate until the schema is STABLE: the ra_converter's CSV
+        // sometimes stores nested placeholder values (e.g. a
+        // `tpl_username` cell that literally holds `#Properties_username#`,
+        // which in turn resolves from another CSV column). Without
+        // recursion, the outer placeholder gets replaced with the inner
+        // placeholder verbatim and Hilton's API sees `"username":
+        // "#Properties_username#"` and rejects with a regex validation
+        // failure. Bounded at 8 iterations to prevent runaway self-refs.
+        //
+        // Loop body always passes null as `fallback` so unresolved
+        // placeholders stay literal -- lets a subsequent iteration
+        // resolve them if a resolved value itself contained a placeholder.
+        // Only after the schema is stable do we (in non-strict mode) do a
+        // FINAL pass with the string fallback so truly-unresolved
+        // placeholders become `"null"` / `"false"` / `"0"` instead of
+        // leaking as literal `#X#` to the server.
+        final int MAX_ITERS = 8;
+        int iter;
+        for (iter = 0; iter < MAX_ITERS; iter++) {
+            String prev = schema;
+            unresolved.clear();
+            schema = substitute(schema, P_HASH,  dataMap, null, unresolved, /* jsonEscape = */ true);
+            schema = substitute(schema, P_PCT_Q, dataMap, null, unresolved, /* jsonEscape = */ false);
+            schema = substitute(schema, P_AT_Q,  dataMap, null, unresolved, /* jsonEscape = */ false);
+            if (schema.equals(prev)) break;
+        }
+        if (!strict && !unresolved.isEmpty()) {
+            unresolved.clear();
+            schema = substitute(schema, P_HASH,  dataMap, "null",  unresolved, /* jsonEscape = */ true);
+            schema = substitute(schema, P_PCT_Q, dataMap, "false", unresolved, /* jsonEscape = */ false);
+            schema = substitute(schema, P_AT_Q,  dataMap, "0",     unresolved, /* jsonEscape = */ false);
+        }
 
         if (!unresolved.isEmpty()) {
             if (strict) {
                 throw new UnresolvedPlaceholderException(
                         "Unresolved placeholders: " + new HashSet<>(unresolved));
             }
-            // Non-strict path: WARN with the exact placeholder set so a
-            // silent "null" / "false" / "0" substitution isn't invisible.
-            // Prior behaviour was to substitute the fallback and log nothing
-            // -- callers would then see a 400 with a schema-validation error
-            // and no way to know why. Now the log line pinpoints the missing
-            // keys. Also dedupe so a template using #x# five times only
-            // reports #x# once per request.
-            LOG.warn("mapJsonValues: {} unresolved placeholder(s), substituted fallback: {}",
-                    unresolved.size(),
+            LOG.warn("mapJsonValues: {} unresolved placeholder(s) after {} iteration(s), substituted fallback: {}",
+                    unresolved.size(), (iter + 1),
                     new java.util.TreeSet<>(unresolved));
         }
         return schema;
