@@ -1582,6 +1582,21 @@ def collect_shared_rest_steps(cases: list[TestCase], min_occurrences: int = 2) -
 _PROJ_PROP_RX = re.compile(r"\$\{#Project#([A-Za-z0-9_.-]+)\}")
 _SCOPE_PROP_RX = re.compile(
     r"\$\{#(TestSuite|TestCase|Global|Env|MockService)#([A-Za-z0-9_.-]+)\}")
+# `${#[suite#case#step]#property}` -- SoapUI cross-testcase property
+# reference. Emitted by the SoapUI UI when an author drags a property
+# from a DIFFERENT test case into a header/body cell. The framework
+# treats every test method as scope-independent, but every case's
+# `<step>.<property>` value is namespaced identically in ctx by our
+# emitted Groovy translations (see e.g. `ctx.put("tokenId.
+# GeneratedTokenID", ...)`), so the suite+case wrapper is dropped
+# and only `<step>.<property>` matters at read time.
+#
+# Real example that surfaced this: `${#[regression#token_generation#
+# tokenId]#GeneratedTokenID}` in the Authorization header of every
+# REST step in the accountmemberregression suite -- untranslated, this
+# went to the wire as a literal Bearer value and every call 401'd.
+_CROSS_TC_RX = re.compile(
+    r"\$\{#\[[^\]]+#(?P<step>[A-Za-z0-9_.-]+)\]#(?P<prop>[A-Za-z0-9_.-]+)\}")
 # `${step#Response#<jsonPath>}` -- SoapUI's shorthand for "read a value
 # out of another step's response body via JsonPath". The jsonPath can
 # contain any char except `}` (e.g. `$['guestId']`, `$.foo.bar`, `$[0]`).
@@ -1632,6 +1647,13 @@ def soapui_expr_to_java(expr: str) -> str:
     if expr is None:
         return "null"
     e = expr
+    # Cross-testcase reference must run BEFORE the other scoped patterns
+    # because its content contains `#` separators that would otherwise be
+    # partially consumed. suite/case components are dropped -- ctx is
+    # scope-flat per emitted test method.
+    e = _CROSS_TC_RX.sub(
+        lambda m: f'TestSupport.ctxGet(ctx, "{m.group("step")}.{m.group("prop")}")',
+        e)
     e = _PROJ_PROP_RX.sub(lambda m: f'config.get("{m.group(1)}")', e)
     # Scoped non-Project props all resolve from mergedRow's config/ctx bag:
     # TestSuite/TestCase properties -> ctx (published by setup); Global/Env
@@ -3614,6 +3636,26 @@ public class {class_name} {{
                         f"program_configuration.json -- they will "
                         f"resolve to empty at runtime.")
                     break
+        # Untranslated SoapUI cross-testcase refs in a header value.
+        # Pattern `${#[suite#case#step]#property}` -- if soapui_expr_to_java
+        # ever fails to translate one, it reaches the emit as a literal
+        # string. Historical bug: 300 cases had this in their Authorization
+        # header and all 300 REST calls 401'd. Now caught here so the
+        # preflight surfaces any regression BEFORE runtime.
+        for s in steps_to_render:
+            if not isinstance(s, RestStep):
+                continue
+            for hname, hval in (getattr(s, "headers", None) or {}).items():
+                if hval and _CROSS_TC_RX.search(hval):
+                    self.ledger.add_preflight_finding(
+                        "HIGH", "untranslated-cross-tc-ref", case.name,
+                        f"REST step `{s.step_name}` header `{hname}` "
+                        f"contains SoapUI cross-testcase ref `{hval[:80]}` "
+                        f"-- would go to the wire literally without "
+                        f"translation (auth 401). Ensure "
+                        f"soapui_expr_to_java's _CROSS_TC_RX regex "
+                        f"matched this variant.")
+                    return
         # Step-response refs whose source step isn't in the current case
         # body -- e.g. `${otherStep#Response#$['id']}` where otherStep
         # doesn't appear before this reference. Compile ok, runtime will
