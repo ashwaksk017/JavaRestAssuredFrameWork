@@ -200,21 +200,30 @@ public class RestUtilities {
             schema = substitute(schema, P_AT_Q,  dataMap, null, unresolved, /* jsonEscape = */ false);
             if (schema.equals(prev)) break;
         }
-        if (!strict && !unresolved.isEmpty()) {
+        // Snapshot the unresolved set BEFORE the fallback pass -- the
+        // fallback pass calls substitute() with a non-null fallback,
+        // which doesn't populate unresolvedSink (see substitute() line
+        // where `if (fallback == null) unresolvedSink.add(...)`). Without
+        // the snapshot, the WARN below never fires and truly-unresolved
+        // placeholders silently become "null" / "false" / "0" in the
+        // outbound body -- exactly the silent-fallback shape we fixed
+        // for the CSV double-placeholder bug.
+        List<String> unresolvedSnapshot = new ArrayList<>(unresolved);
+        if (!strict && !unresolvedSnapshot.isEmpty()) {
             unresolved.clear();
             schema = substitute(schema, P_HASH,  dataMap, "null",  unresolved, /* jsonEscape = */ true);
             schema = substitute(schema, P_PCT_Q, dataMap, "false", unresolved, /* jsonEscape = */ false);
             schema = substitute(schema, P_AT_Q,  dataMap, "0",     unresolved, /* jsonEscape = */ false);
         }
 
-        if (!unresolved.isEmpty()) {
+        if (!unresolvedSnapshot.isEmpty()) {
             if (strict) {
                 throw new UnresolvedPlaceholderException(
-                        "Unresolved placeholders: " + new HashSet<>(unresolved));
+                        "Unresolved placeholders: " + new HashSet<>(unresolvedSnapshot));
             }
             LOG.warn("mapJsonValues: {} unresolved placeholder(s) after {} iteration(s), substituted fallback: {}",
-                    unresolved.size(), (iter + 1),
-                    new java.util.TreeSet<>(unresolved));
+                    unresolvedSnapshot.size(), (iter + 1),
+                    new java.util.TreeSet<>(unresolvedSnapshot));
         }
         return schema;
     }
@@ -235,7 +244,13 @@ public class RestUtilities {
         while (m.find()) {
             String key = m.group(1);
             String value = dataMap.get(key);
-            if (value == null) {
+            // Treat empty-string values as UNRESOLVED. `TestSupport.testData`
+            // returns "" when no source has a value for a key; propagating
+            // that empty string into the JSON body produces silent "field
+            // present but empty" failures on the server (400 "must match
+            // regex") with no framework signal. Route empty through the
+            // fallback / unresolvedSink path so it's visible in the WARN.
+            if (value == null || value.isEmpty()) {
                 if (fallback == null) {
                     unresolvedSink.add(m.group());
                     m.appendReplacement(out, Matcher.quoteReplacement(m.group()));

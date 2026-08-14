@@ -2929,6 +2929,13 @@ public class {class_name} {{
             # effect is attributable in the log stream.
             lines.append(
                 f'LOG.info(" .. groovy step: {_jlit(step.step_name)}");')
+            # Allure step marker so translated Groovy work (token extract,
+            # data-gen, DB operations) shows up as its own node in the
+            # Allure report tree instead of collapsing into the enclosing
+            # REST step's attachments.
+            lines.append(
+                f'io.qameta.allure.Allure.step('
+                f'"groovy: {_jlit(step.step_name)}");')
             lines.extend(self._render_groovy_translated(step))
         elif isinstance(step, PropertiesStep):
             lines.append(f'// [properties step] {step.step_name} -- values '
@@ -3270,12 +3277,20 @@ public class {class_name} {{
         lines.append(
             f'LOG.info(" -> {step.http_method} {step.resource_path}  '
             f'(step={_jlit(step.step_name)})");')
-        # Log the outgoing request body (when present) at DEBUG so it's
-        # invisible on normal runs but easily enabled for diagnostics via
-        # `-Dorg.slf4j.simpleLogger.log.<pkg>=DEBUG`. Also log at INFO
-        # for now while the auth/payload flow is being validated -- we
-        # switch to DEBUG once tests are green. Guarded to `body_var`
-        # since GET calls skip the payload.
+        # Allure step banner for the REST call. AllureRestAssured filter
+        # (wired globally in BaseApiTest) auto-attaches request + response
+        # bodies to the CALLING step; the .step() call groups them under a
+        # human-readable label in the report tree ("HHonorsEnroll: POST
+        # /realms/guests/enroll" instead of a bare RestAssured entry).
+        allure_label = (
+            f"{step.step_name}: {step.http_method} {step.resource_path}"
+        )[:120]
+        lines.append(
+            f'io.qameta.allure.Allure.step("{_jlit(allure_label)}");')
+        # Log the outgoing request body (when present) so the value that
+        # went to the server is visible both in the console AND (via
+        # AllureRestAssured filter) in the Allure attachment. Guarded to
+        # `body_var` since GET calls skip the payload.
         if verb_expects_body and body_var != '""':
             lines.append(
                 f'LOG.info(" .. request body ({{}} chars): {{}}", '
@@ -4779,6 +4794,14 @@ public final class PerMethodCsvDataProvider {{
             if (headerLine == null) {{
                 throw new IllegalStateException("PerMethodCsvDataProvider: empty CSV " + resourcePath);
             }}
+            // Strip UTF-8 BOM (﻿) if present. Excel + Notepad on
+            // Windows save CSVs as UTF-8-with-BOM by default; without
+            // this strip the first header cell becomes "﻿<name>"
+            // and every `row.get("<name>")` returns null, silently
+            // routing tests to fallback defaults with no error.
+            if (headerLine.length() > 0 && headerLine.charAt(0) == '\\uFEFF') {{
+                headerLine = headerLine.substring(1);
+            }}
             String[] header = splitCsvLine(headerLine);
             String line;
             while ((line = br.readLine()) != null) {{
@@ -4923,9 +4946,15 @@ public final class PlaceholderResolver {{
     // <<X>> or <<X(args)>>
     private static final Pattern FAKER_TOKEN =
         Pattern.compile("<<([A-Za-z_][A-Za-z0-9_]*)(?:\\\\(([^)]*)\\\\))?>>");
-    // ${{X}} -- key may include dots + underscores + digits + dashes
+    // ${{X}} -- key may include dots + underscores + digits + dashes + `#`.
+    // The `#` accommodates SoapUI-style scoped refs (`${{step#field}}`,
+    // `${{Properties#Domain}}`) that reach us verbatim from imported test
+    // data. Without `#` in the char class the entire token was a literal
+    // non-match, so cells like `expected_..._domain=${{Properties#Domain}}`
+    // stayed as raw strings and failed later assertions with confusing
+    // "expected `${{Properties#Domain}}` but was `<real value>`" diffs.
     private static final Pattern DOLLAR_REF =
-        Pattern.compile("\\\\$\\\\{{([A-Za-z_][A-Za-z0-9_.-]*)\\\\}}");
+        Pattern.compile("\\\\$\\\\{{([A-Za-z_][A-Za-z0-9_.#-]*)\\\\}}");
 
     /** Run pass 1 then pass 2. Safe to call on already-resolved text
      *  (idempotent -- no faker tokens or ${{}} refs to match). */
@@ -4982,11 +5011,29 @@ public final class PlaceholderResolver {{
         Matcher m = DOLLAR_REF.matcher(text);
         StringBuilder out = new StringBuilder();
         while (m.find()) {{
-            String key = m.group(1);
-            String value = ctx == null ? null : ctx.get(key);
-            if (value == null) value = autoGenerate(key, ctx);
-            if (value == null) {{
-                // Unknown key -- leave the literal ${{X}} alone
+            String rawKey = m.group(1);
+            // SoapUI-style scoped refs (`Properties#Domain`, `step#field`)
+            // come through with `#` separators. ctx uses `.` -- try both
+            // forms so a value stored under `Properties.Domain` resolves
+            // whether the template writes `${{Properties#Domain}}` or
+            // `${{Properties.Domain}}`.
+            String value = null;
+            if (ctx != null) {{
+                value = ctx.get(rawKey);
+                if ((value == null || value.isEmpty()) && rawKey.indexOf('#') >= 0) {{
+                    value = ctx.get(rawKey.replace('#', '.'));
+                }}
+                if ((value == null || value.isEmpty()) && rawKey.indexOf('#') >= 0) {{
+                    value = ctx.get(rawKey.replace('#', '_'));
+                }}
+            }}
+            if (value == null || value.isEmpty()) value = autoGenerate(rawKey, ctx);
+            if (value == null || value.isEmpty()) {{
+                // Unresolved OR resolved-to-empty -- leave the literal
+                // ${{X}} in place so it's visible as a marker in the
+                // request log rather than silently emitting `""` into
+                // the JSON body (which servers reject with "must match
+                // regex" and no framework signal).
                 m.appendReplacement(out, Matcher.quoteReplacement(m.group()));
             }} else {{
                 m.appendReplacement(out, Matcher.quoteReplacement(value));
@@ -5414,6 +5461,26 @@ public class {class_name} extends BaseApiTest {{
             'so downstream code sees live values, not placeholders.',
             'row = PlaceholderResolver.resolveRow(row, ctx);',
             'Expected exp = expected(row);',
+            # Allure metadata: after row is finalized. `final` capture so
+            # the lambda that updates the Allure test-case model can
+            # reference it (Java's effectively-final rule -- `row` gets
+            # reassigned above, so it's not effectively final). Also set
+            # the display name to the SoapUI case name so multi-row
+            # methods show one Allure node per row.
+            'final java.util.Map<String, String> __rowForAllure = row;',
+            'final String __testCaseIdForAllure = testCaseId;',
+            'io.qameta.allure.Allure.getLifecycle().updateTestCase(tc -> {',
+            '    tc.setName(__testCaseIdForAllure);',
+            '    if (__rowForAllure != null) {',
+            '        for (java.util.Map.Entry<String, String> __e : __rowForAllure.entrySet()) {',
+            '            String __v = __e.getValue();',
+            '            if (__v == null || __v.isEmpty()) continue;',
+            '            String __d = __v.length() > 120 ? __v.substring(0, 120) + "..." : __v;',
+            '            tc.getParameters().add(new io.qameta.allure.model.Parameter()'
+            '.setName(__e.getKey()).setValue(__d));',
+            '        }',
+            '    }',
+            '});',
             '',
         ]
         if emit_stop_checks:
@@ -6210,21 +6277,30 @@ public final class Templates {{
     <parameter name="testSuite" value="{variant.lower()}"/>
 
     <listeners>
-        <!-- Allure is auto-loaded via ServiceLoader (allure-testng SPI file).
-             Declaring it explicitly here caused surefire to register it 3x,
-             producing repeated `Ignoring duplicate listener` warnings on
-             every run. Left commented as reference. -->
-        <!-- <listener class-name="io.qameta.allure.testng.AllureTestNg"/> -->
+        <!-- Allure is auto-loaded via ServiceLoader (allure-testng SPI file);
+             Allure attachments for every REST call come from the
+             AllureRestAssured filter wired in BaseApiTest.bootstrapRestAssured. -->
         <!-- Progress banner listener: emitted by ra_converter (see
              emit_progress_listener). Prints class + method + timing to
              the mvn console so parallel classes are attributable. -->
         <listener class-name="com.ak.api.reporting.ProgressLogListener"/>
-        <!-- OPTIONAL reference-framework integrations. Uncomment ONLY after
-             adding the matching classes under src/main/java/com/ak/api/
-             reporting/ (TestNG will fail-fast with ClassNotFound otherwise).
+        <!-- Suite-level counters + reset (src/test/java/com/ak/api/reporting/
+             TestSuiteListener.java). Advances pass/fail counters via TestNG
+             callbacks so a test that throws before reaching assertAll still
+             counts as failed. -->
+        <listener class-name="com.ak.api.reporting.TestSuiteListener"/>
+        <!-- Per-test flow logging (TestCaseLogListener). Emits banner-separated
+             per-test log files under logs/<Class>.log listing every REST
+             exchange captured via RestAssuredRecordingFilter. -->
+        <listener class-name="com.ak.api.reporting.TestCaseLogListener"/>
+        <!-- ExtentReports HTML writer. Reads ReportBuffer (populated by
+             RestAssuredRecordingFilter) at test end and attaches every
+             request/response body to the ExtentTest node with pretty-
+             printed JSON. Output: extent-reports/<timestamp>-Extent.html. -->
         <listener class-name="com.ak.api.reporting.ExtentReportListener"/>
+        <!-- Xray results pusher (JIRA Xray integration). No-op when
+             xray.enabled=false in application.properties (default). -->
         <listener class-name="com.ak.api.reporting.XrayReportListener"/>
-        -->
     </listeners>
 
     <test name="{suite_display}Tests">
