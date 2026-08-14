@@ -61,7 +61,7 @@ public final class PerMethodCsvDataProvider {
 
         List<Map<String, String>> rows = new ArrayList<>();
         try (BufferedReader br = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
-            String headerLine = br.readLine();
+            String headerLine = readLogicalCsvRow(br);
             if (headerLine == null) {
                 throw new IllegalStateException("PerMethodCsvDataProvider: empty CSV " + resourcePath);
             }
@@ -75,7 +75,7 @@ public final class PerMethodCsvDataProvider {
             }
             String[] header = splitCsvLine(headerLine);
             String line;
-            while ((line = br.readLine()) != null) {
+            while ((line = readLogicalCsvRow(br)) != null) {
                 if (line.isEmpty()) continue;
                 String[] cells = splitCsvLine(line);
                 Map<String, String> row = new LinkedHashMap<>();
@@ -94,21 +94,74 @@ public final class PerMethodCsvDataProvider {
     }
 
     /**
-     * Strict RFC-4180-ish CSV splitter: honors double-quoted fields
-     * (with embedded commas and "" escaped quotes). Sufficient for
-     * ra_converter-generated CSVs, which are hand-written or exported
-     * from SoapUI -- neither introduces multi-line fields.
+     * Read ONE logical CSV row -- keeps reading physical lines and
+     * joining them with newline until the accumulated content has all
+     * quoted cells closed. Handles the ra_converter output where
+     * request-body CSV cells contain embedded newlines (pretty-printed
+     * JSON): without this, {@link BufferedReader#readLine} splits a
+     * single logical row into N physical rows, the downstream loop sees
+     * N fragmentary rows (mostly empty), TestNG fires the @Test N times
+     * against near-duplicate params -- inflating the ProgressLogListener
+     * ATTEMPTS counter and causing "attempt 15" banners for a method
+     * that should have run 1-2 CSV rows.
      *
-     * <p>Enter-quotes-only-at-cell-start: previous version toggled
-     * {@code inQuotes} on any {@code "} character, which meant a
-     * mid-cell stray quote (from a translation bug, an unescaped
-     * user-typed value, or a "Bearer abc\"def" style token) flipped
-     * the parser into quoted mode for the remainder of the line --
-     * every subsequent comma became data, cells shifted left, and
-     * downstream {@code Integer.parseInt} on the wrong cell crashed
-     * with NumberFormatException, triggering the RetryAnalyzer 2x per
-     * bad row. Now: {@code "} only enters quoted mode when it is the
-     * FIRST character of a cell; a mid-cell {@code "} is literal.</p>
+     * @return the fully-assembled logical row, or {@code null} at EOF
+     */
+    private static String readLogicalCsvRow(BufferedReader br) throws java.io.IOException {
+        String first = br.readLine();
+        if (first == null) return null;
+        StringBuilder buf = new StringBuilder(first);
+        while (!balancedQuotes(buf)) {
+            String next = br.readLine();
+            if (next == null) break;
+            buf.append('\n').append(next);
+        }
+        return buf.toString();
+    }
+
+    /**
+     * True iff every {@code "} in {@code s} that opens a quoted field
+     * has a matching close-quote (per the strict cell-start rule used
+     * by {@link #splitCsvLine}). Used to decide whether the logical
+     * row is complete after {@code readLine}.
+     */
+    private static boolean balancedQuotes(CharSequence s) {
+        boolean inQuotes = false;
+        boolean atCellStart = true;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (inQuotes) {
+                if (c == '"') {
+                    if (i + 1 < s.length() && s.charAt(i + 1) == '"') {
+                        i++;
+                    } else {
+                        inQuotes = false;
+                        atCellStart = false;
+                    }
+                }
+            } else {
+                if (c == ',') {
+                    atCellStart = true;
+                } else if (c == '"' && atCellStart) {
+                    inQuotes = true;
+                } else {
+                    atCellStart = false;
+                }
+            }
+        }
+        return !inQuotes;
+    }
+
+    /**
+     * Strict RFC-4180-ish CSV splitter: honors double-quoted fields
+     * (with embedded commas, newlines, and "" escaped quotes).
+     * Multi-line quoted fields must be pre-assembled by
+     * {@link #readLogicalCsvRow}; this method operates on a single
+     * logical row (embedded newlines within cells are preserved).
+     *
+     * <p>Enter-quotes-only-at-cell-start: a stray {@code "} mid-cell
+     * is treated as literal so a malformed cell doesn't shift the
+     * remaining cells left.</p>
      */
     private static String[] splitCsvLine(String line) {
         List<String> out = new ArrayList<>();

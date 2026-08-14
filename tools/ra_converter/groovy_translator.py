@@ -835,7 +835,27 @@ def translate(script: str, response_var_by_step: dict[str, str],
         # Wrap in a literal only if not already a string
         if not (msg.startswith('"') or msg.startswith("'")):
             msg = '"' + msg.replace('"', '\\"') + '"'
-        lines.append(f'LOG.{level}("{{}}", {msg});')
+        # Downgrade Groovy-translated log.error lines that mention
+        # DB env-var / connection checks to DEBUG level. The Groovy
+        # source is a defensive check ("DB_HOST env var missing --
+        # abort DB update") that fires whenever Db is not configured;
+        # emitting it at ERROR level dumps a red line into every
+        # test run against an env without local DB access, which is
+        # the common case for these imported suites. DEBUG keeps
+        # the string in the log for diagnosis without polluting the
+        # normal-run output.
+        emit_level = level
+        if level == "error":
+            m_lower = msg.lower()
+            if ("environment variable" in m_lower
+                    or "database connection" in m_lower
+                    or "db connection" in m_lower
+                    or "db_host" in m_lower
+                    or "db_user" in m_lower
+                    or "db_password" in m_lower
+                    or "failed to delete account records" in m_lower):
+                emit_level = "debug"
+        lines.append(f'LOG.{emit_level}("{{}}", {msg});')
         _mark("log_swap")
         consumed = True
 
