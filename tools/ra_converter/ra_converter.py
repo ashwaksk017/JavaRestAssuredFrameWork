@@ -3270,6 +3270,16 @@ public class {class_name} {{
         lines.append(
             f'LOG.info(" -> {step.http_method} {step.resource_path}  '
             f'(step={_jlit(step.step_name)})");')
+        # Log the outgoing request body (when present) at DEBUG so it's
+        # invisible on normal runs but easily enabled for diagnostics via
+        # `-Dorg.slf4j.simpleLogger.log.<pkg>=DEBUG`. Also log at INFO
+        # for now while the auth/payload flow is being validated -- we
+        # switch to DEBUG once tests are green. Guarded to `body_var`
+        # since GET calls skip the payload.
+        if verb_expects_body and body_var != '""':
+            lines.append(
+                f'LOG.info(" .. request body ({{}} chars): {{}}", '
+                f'{body_var}.length(), {body_var});')
         lines.append(f'long {elapsed_var} = System.currentTimeMillis();')
         lines.append(f'Response {response_var} = client.{method_name_java}({", ".join(call_args)});')
         lines.append(
@@ -3277,6 +3287,25 @@ public class {class_name} {{
             f'(step={_jlit(step.step_name)})", '
             f'{response_var}.getStatusCode(), '
             f'System.currentTimeMillis() - {elapsed_var});')
+        # Failure-body log: on any non-2xx, print the response body so the
+        # server's error message reaches the console without hunting through
+        # the RestUtilities log file. Truncated to avoid flooding on huge
+        # HTML error pages. 2xx skips this entirely (keeps success runs quiet).
+        lines.append(
+            f'if ({response_var}.getStatusCode() >= 400) {{'
+        )
+        lines.append(
+            f'    String __body_{elapsed_var} = RestUtilities.getResponseAsString({response_var});'
+        )
+        lines.append(
+            f'    if (__body_{elapsed_var} != null && __body_{elapsed_var}.length() > 800) '
+            f'__body_{elapsed_var} = __body_{elapsed_var}.substring(0, 800) + "... (truncated)";'
+        )
+        lines.append(
+            f'    LOG.warn(" .. response body (HTTP {{}}): {{}}", '
+            f'{response_var}.getStatusCode(), __body_{elapsed_var});'
+        )
+        lines.append('}')
         lines.append(f'RestUtilities.logResponseBody(testCaseId, holder, RestUtilities.getResponseAsString({response_var}));')
 
         # Assertions:
