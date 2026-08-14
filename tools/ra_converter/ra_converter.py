@@ -6298,15 +6298,21 @@ public class ProgressLogListener implements ITestListener {{
         ATTEMPTS.remove(methodKey(r));
     }}
 
+    // Simple approach: log STARTED once EVER per (class, method) --
+    // never clear the seen-set. Multi-row data-driven methods thus show
+    // ONE STARTED line + N terminal outcomes (one per row). Retries
+    // don't re-log STARTED because the key is already seen. Cleaner and
+    // resistant to TestNG's flaky wasRetried() semantics.
+    private static final java.util.Set<String> STARTED_LOGGED =
+        java.util.Collections.newSetFromMap(new ConcurrentHashMap<>());
+
     @Override
     public void onTestStart(ITestResult r) {{
         STARTS.put(key(r), System.currentTimeMillis());
-        int attempt = ATTEMPTS.computeIfAbsent(methodKey(r),
-                k -> new java.util.concurrent.atomic.AtomicInteger(0)).incrementAndGet();
-        // Only log STARTED on the first attempt. Retries are silent at
-        // start; the terminal PASSED/FAILED line reports the final
-        // outcome + attempt count so users see the retry story once.
-        if (attempt == 1) {{
+        ATTEMPTS.computeIfAbsent(methodKey(r),
+                k -> new java.util.concurrent.atomic.AtomicInteger(0))
+                .incrementAndGet();
+        if (STARTED_LOGGED.add(methodKey(r))) {{
             LOG.info("[TEST] STARTED  {{}}  (thread={{}})",
                     label(r), Thread.currentThread().getName());
         }}
@@ -6315,9 +6321,8 @@ public class ProgressLogListener implements ITestListener {{
     @Override
     public void onTestSuccess(ITestResult r) {{
         int attempt = currentAttempt(r);
-        clearAttempts(r);
         if (attempt > 1) {{
-            LOG.info("[TEST] PASSED   {{}}  ({{}}ms) [passed after {{}} attempts]",
+            LOG.info("[TEST] PASSED   {{}}  ({{}}ms) [attempt {{}}]",
                     label(r), elapsedMs(r), attempt);
         }} else {{
             LOG.info("[TEST] PASSED   {{}}  ({{}}ms)", label(r), elapsedMs(r));
@@ -6330,31 +6335,27 @@ public class ProgressLogListener implements ITestListener {{
         Throwable t = r.getThrowable();
         String msg = (t == null) ? "(no throwable)" : t.getClass().getSimpleName()
                 + ": " + (t.getMessage() == null ? "" : t.getMessage());
-        // Failures that will retry are silent at INFO (still DEBUG-visible).
-        // Terminal FAILED (retry exhausted OR no retry) logs at WARN with
-        // the attempt count so users see how many tries it took to give up.
-        if (r.wasRetried()) {{
-            LOG.debug("[TEST] retry-failed  {{}}  ({{}}ms) attempt={{}} -- {{}}",
-                    label(r), elapsedMs(r), attempt, msg);
-        }} else {{
-            clearAttempts(r);
-            String attemptNote = (attempt > 1) ? " [after " + attempt + " attempts]" : "";
-            LOG.warn("[TEST] FAILED   {{}}  ({{}}ms){{}} -- {{}}",
-                    label(r), elapsedMs(r), attemptNote, msg);
-        }}
+        // Log every FAILED at WARN with attempt count. Users see the
+        // retry story in the [Retry] lines RetryAnalyzer prints AND in
+        // the attempt=N here. Silencing intermediate failures based on
+        // wasRetried() is unreliable in TestNG (see prior bug), so we
+        // log all failures and let the reader spot the pattern.
+        LOG.warn("[TEST] FAILED   {{}}  ({{}}ms) [attempt {{}}] -- {{}}",
+                label(r), elapsedMs(r), attempt, msg);
     }}
 
     @Override
     public void onTestSkipped(ITestResult r) {{
-        // Suppress intermediate SKIPPED entries from RetryAnalyzer cycles
-        // (TestNG's flow: run -> mark SKIPPED -> retry -> repeat). Only
-        // real skips (dependency failures, disabled tests) log at INFO.
-        if (r.wasRetried()) {{
-            elapsedMs(r);  // drain STARTS
+        int attempt = currentAttempt(r);
+        // Skips triggered by RetryAnalyzer's failure-then-retry cycle
+        // show 0ms elapsed. Suppress those; the surrounding [Retry] and
+        // FAILED lines already tell the story.
+        long elapsed = elapsedMs(r);
+        if (elapsed < 5) {{
             return;
         }}
-        clearAttempts(r);
-        LOG.info("[TEST] SKIPPED  {{}}  ({{}}ms)", label(r), elapsedMs(r));
+        LOG.info("[TEST] SKIPPED  {{}}  ({{}}ms) [attempt {{}}]",
+                label(r), elapsed, attempt);
     }}
 
     @Override
