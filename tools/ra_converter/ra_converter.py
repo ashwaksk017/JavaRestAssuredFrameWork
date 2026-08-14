@@ -2095,6 +2095,54 @@ def _is_token_fetch_step(step: "RestStep") -> bool:
     return "username" in corpus and "password" in corpus
 
 
+def _hoist_token_fetch_steps(steps: list) -> list:
+    """Reorder ``steps`` so any OAuth-token-fetch REST step (and its
+    immediately-following ``Token``-flavor Groovy extractor) runs FIRST.
+
+    Motivation: SoapUI test authors sometimes place the ``tokenRequest``
+    step near the END of a case (e.g. position 28 of 30), relying on
+    project-level ``#Project#Token`` state persisted from a previous
+    test case's run to authenticate the EARLIER REST steps of the
+    current case. Framework has no cross-case project state; without a
+    hoist, every earlier REST step 401s because ``ctx.accessToken`` is
+    empty. Reordering preserves author intent (the token step still
+    runs, its response still updates ctx) but populates the token
+    BEFORE auth-dependent steps fire.
+
+    Only the FIRST token-fetch step is hoisted (multi-token cases are
+    rare; hoisting all would reorder them among each other). The
+    Groovy successor is hoisted only when it looks like an extractor
+    (name matches ``Token`` case-insensitively, or its script parses
+    the response's ``access_token`` field). Everything else keeps
+    original SoapUI order.
+
+    Returns a NEW list. Original ``steps`` is not mutated.
+    """
+    idx_token = -1
+    for i, s in enumerate(steps):
+        if isinstance(s, RestStep) and _is_token_fetch_step(s):
+            idx_token = i
+            break
+    # No token step, or already early enough (first 2 REST steps) -- no-op.
+    if idx_token < 0:
+        return steps
+    rest_step_positions = [i for i, s in enumerate(steps) if isinstance(s, RestStep)]
+    if idx_token in rest_step_positions[:2]:
+        return steps
+    hoisted = [steps[idx_token]]
+    # Grab the immediately-following Groovy step iff it looks like a Token extractor.
+    if idx_token + 1 < len(steps):
+        nxt = steps[idx_token + 1]
+        if isinstance(nxt, GroovyStep):
+            name_l = (getattr(nxt, "step_name", "") or "").lower()
+            script_l = (getattr(nxt, "script", "") or "").lower()
+            if ("token" in name_l or "access_token" in script_l):
+                hoisted.append(nxt)
+    hoisted_names = {id(x) for x in hoisted}
+    rest = [s for s in steps if id(s) not in hoisted_names]
+    return hoisted + rest
+
+
 def _business_bucket_of_case(case: "TestCase") -> tuple[str, str]:
     """Business-area (resource_slug, operation_class) for a whole case.
 
@@ -6032,7 +6080,19 @@ public class {class_name} extends BaseApiTest {{
                     'if (!__stopAfter.isEmpty() && __restStepIdx >= '
                     'Integer.parseInt(__stopAfter)) { return; }')
             body_lines.append('')
-        for step in case.steps[skip_count:]:
+        # ---- Auth-hoist: if the case has an OAuth-token-fetch REST step
+        # that the SoapUI author placed LATE in the sequence (not in the
+        # first 2 REST steps), every prior REST step 401s because ctx.
+        # accessToken is empty. Hoist the token step + its immediately-
+        # following "Token" Groovy step (which extracts access_token into
+        # ctx) to the FRONT of the run-order so auth-dependent steps
+        # succeed. Only applies when there's no SetupHelper.flow prefix
+        # (skip_count == 0) and no prefix-merge stop-markers (which would
+        # break under positional reorder).
+        steps_to_render = case.steps[skip_count:]
+        if skip_count == 0 and not emit_stop_checks:
+            steps_to_render = _hoist_token_fetch_steps(steps_to_render)
+        for step in steps_to_render:
             body_lines.extend(self._render_step(step, service_class_name))
             # Prefix-merge early-return: after each REST step, check whether
             # this row's cumulative REST-step count has hit the `_stop_after`
