@@ -112,7 +112,60 @@ public final class Db {
     }
 
     public static int execute(String sql, Object... params) {
+        String reason = unsafeSqlReason(sql);
+        if (reason != null) {
+            // Refuse to run malformed SQL against the DB -- the driver
+            // would reject it with a cryptic 22P02 / 42601 anyway, and
+            // spamming a real DB with garbage each run is wasteful.
+            // Logs a clear WARN and returns 0 (no rows affected) so the
+            // Groovy-translated caller's try/catch behaves like an empty
+            // result set.
+            org.slf4j.LoggerFactory.getLogger(Db.class)
+                    .warn("Db.execute: refusing to run malformed SQL -- {}. SQL: {}",
+                          reason, sql);
+            return 0;
+        }
         return configured().executeStatement(sql, params);
+    }
+
+    /**
+     * Detect SQL strings the framework knows will fail at the driver:
+     * <ul>
+     *   <li>Unresolved SoapUI refs still in the SQL ({@code ${...}})</li>
+     *   <li>Placeholder-fallback values -- {@code mapJsonValues} writes
+     *       the literal string {@code null} when a {@code #placeholder#}
+     *       can't be resolved. A SQL like
+     *       {@code select * from account where account_id='null'} then
+     *       hits {@code invalid input syntax for type bigint: "null"}.</li>
+     *   <li>Zero-arg SELECT into {@link #execute} (should be
+     *       {@link #queryAll})</li>
+     * </ul>
+     * Returns a short human reason when unsafe, {@code null} when clean.
+     */
+    public static String unsafeSqlReason(String sql) {
+        if (sql == null || sql.isEmpty()) return "empty SQL";
+        String stripped = sql.trim();
+        if (stripped.contains("${")) return "SQL contains untranslated SoapUI ref `${...}`";
+        // Detect the mapJsonValues null-substitution fallback: any
+        // `= 'null'` or `IN ('null'` etc. that came from an unresolved
+        // #placeholder#. Real NULL comparisons use `IS NULL` / `IS NOT
+        // NULL`, so a literal 'null' string in a WHERE clause is
+        // ~always the fallback marker, not intended data.
+        String lowered = stripped.toLowerCase();
+        if (lowered.contains("='null'") || lowered.contains("= 'null'")
+                || lowered.contains("in ('null'")) {
+            return "SQL has 'null' literal from unresolved #placeholder# (mapJsonValues fallback)";
+        }
+        // Db.execute is for INSERT/UPDATE/DELETE/DDL. A SELECT here means
+        // the caller translated `sql.execute` from Groovy but should have
+        // used queryAll -- the driver returns a ResultSet and Statement
+        // .execute() reports [0100E] "A result was returned when none
+        // was expected". Emit a clear WARN so the SoapUI translation is
+        // fixable.
+        if (lowered.startsWith("select ")) {
+            return "SQL is a SELECT -- use Db.queryAll(...) instead of Db.execute(...)";
+        }
+        return null;
     }
 
     public static boolean exists(String sql, Object... params) {

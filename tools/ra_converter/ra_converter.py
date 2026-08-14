@@ -3636,6 +3636,54 @@ public class {class_name} {{
                         f"program_configuration.json -- they will "
                         f"resolve to empty at runtime.")
                     break
+        # JDBC preflight: query left with untranslated `${...}` after
+        # translation. Would fail at DB driver with syntax error 42601.
+        # (Runtime Db.execute now refuses these too, but flagging at emit
+        # gives you a preflight.md entry to fix the SoapUI XML or add a
+        # translator recognizer for the ref shape.)
+        for s in steps_to_render:
+            if isinstance(s, JdbcStep):
+                q = (s.query or "")
+                if "${" in q:
+                    self.ledger.add_preflight_finding(
+                        "HIGH", "jdbc-untranslated-soapui-ref", case.name,
+                        f"JDBC step `{s.step_name}` query still contains "
+                        f"SoapUI ref `${{...}}` after translation: "
+                        f"`{q[:80]}` -- runtime Db.execute will refuse "
+                        f"this SQL. Fix the translator recognizer or "
+                        f"hand-edit the SoapUI XML to inline the value.")
+                    break
+        # Duplicate-cell-in-multiple-REST-bodies: two REST steps in the
+        # same case whose request-body templates BOTH reference the same
+        # `Properties.<field>` cell (typically username / email). If the
+        # first REST creates a unique resource under that value, the
+        # second REST tries to create the SAME resource and gets a
+        # "not unique" 400 -- observed in token/CreateTest where
+        # HHonorsEnroll + MemberHHonorsEnroll both used `#tpl_username#
+        # = #Properties_usernamemember#` and one succeeded / the other
+        # 400'd.
+        unique_fields = ("username", "email", "hhonorsnumber", "guestid",
+                         "accountid", "memberid")
+        seen_field_to_step: dict[str, str] = {}
+        for s in steps_to_render:
+            if not isinstance(s, RestStep):
+                continue
+            body = (getattr(s, "request_body", "") or "").lower()
+            for f in unique_fields:
+                pat = f"properties_{f}#"  # matches #Properties_username#
+                if pat in body:
+                    prior = seen_field_to_step.get(f)
+                    if prior and prior != s.step_name:
+                        self.ledger.add_preflight_finding(
+                            "MEDIUM", "duplicate-unique-field-across-steps",
+                            case.name,
+                            f"Both REST step `{prior}` and `{s.step_name}` "
+                            f"reference the same `Properties.{f}` cell in "
+                            f"their request bodies. If the first creates a "
+                            f"resource under that value the second will hit "
+                            f"a `not unique` 4xx.")
+                        break
+                    seen_field_to_step.setdefault(f, s.step_name)
         # Untranslated SoapUI cross-testcase refs in a header value.
         # Pattern `${#[suite#case#step]#property}` -- if soapui_expr_to_java
         # ever fails to translate one, it reaches the emit as a literal
