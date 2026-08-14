@@ -2095,6 +2095,33 @@ def _is_token_fetch_step(step: "RestStep") -> bool:
     return "username" in corpus and "password" in corpus
 
 
+def _find_canonical_token_pair(cases: list) -> tuple:
+    """Scan ``cases`` for the first (tokenRequest REST step, Token Groovy
+    extractor) pair and return it. Groovy extractor is optional -- if the
+    tokenRequest step isn't immediately followed by a Groovy step that
+    parses ``access_token``, only the REST step is returned as
+    ``(rest_step, None)``.
+
+    Returns ``(None, None)`` when no case in the suite has a token step.
+    Used to synthesize a token-fetch preamble for cases that lack their
+    own token step (relied on cross-case #Project#Token state in SoapUI).
+    """
+    for case in cases:
+        steps = getattr(case, "steps", None) or []
+        for i, s in enumerate(steps):
+            if isinstance(s, RestStep) and _is_token_fetch_step(s):
+                extractor = None
+                if i + 1 < len(steps):
+                    nxt = steps[i + 1]
+                    if isinstance(nxt, GroovyStep):
+                        name_l = (getattr(nxt, "step_name", "") or "").lower()
+                        script_l = (getattr(nxt, "script", "") or "").lower()
+                        if ("token" in name_l or "access_token" in script_l):
+                            extractor = nxt
+                return (s, extractor)
+    return (None, None)
+
+
 def _hoist_token_fetch_steps(steps: list) -> list:
     """Reorder ``steps`` so any OAuth-token-fetch REST step (and its
     immediately-following ``Token``-flavor Groovy extractor) runs FIRST.
@@ -6092,6 +6119,22 @@ public class {class_name} extends BaseApiTest {{
         steps_to_render = case.steps[skip_count:]
         if skip_count == 0 and not emit_stop_checks:
             steps_to_render = _hoist_token_fetch_steps(steps_to_render)
+            # ---- Auth-inject: if the case has NO token-fetch step at all
+            # (i.e. SoapUI author relied on cross-case #Project#Token
+            # persisted state), prepend a synthetic tokenRequest step
+            # cloned from another case in the same suite. Framework has no
+            # cross-case project state, so without this every REST step
+            # 401s. Only fires when a canonical pair was found for the
+            # suite (skipped for edge cases with no token step anywhere).
+            has_own_token = any(
+                isinstance(s, RestStep) and _is_token_fetch_step(s)
+                for s in steps_to_render)
+            canonical = getattr(self, "_canonical_token_pair", (None, None))
+            if not has_own_token and canonical and canonical[0] is not None:
+                injected = [canonical[0]]
+                if canonical[1] is not None:
+                    injected.append(canonical[1])
+                steps_to_render = injected + steps_to_render
         for step in steps_to_render:
             body_lines.extend(self._render_step(step, service_class_name))
             # Prefix-merge early-return: after each REST step, check whether
@@ -7444,6 +7487,16 @@ def main():
     # Per-suite bucket manifest for the README emission at the end.
     suite_bucket_manifest: dict[str, list[dict]] = {}
     for soapui_sname, sui_cases in soapui_suites:
+        # Suite-wide canonical (tokenRequest, Token-Groovy-extractor) pair.
+        # Used by _render_test_method_v2 to inject a token-fetch preamble
+        # for cases that have NO tokenRequest step of their own -- those
+        # cases relied on SoapUI's cross-case #Project#Token state (a token
+        # persisted in project scope from a PRIOR case's run) which the
+        # framework does not replicate; without a synthetic prepend they
+        # 401 on every REST call. Pair reused verbatim from another case in
+        # the same suite so the JSON body / headers / client method stay
+        # identical to the SoapUI author's intent.
+        emitter._canonical_token_pair = _find_canonical_token_pair(sui_cases)
         # Bucket cases into (resource_slug, operation_class) so each
         # emitted class holds ONE business intent, not the whole SoapUI
         # suite. Cluster mechanics (shape + prefix merge) run inside
