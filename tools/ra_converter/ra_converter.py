@@ -4776,8 +4776,14 @@ public class {class_name} {{
                 # If it starts with $. treat as JsonPath.
                 if src_path.startswith("$"):
                     jp = src_path.lstrip("$.")
+                    # putIfNonEmpty: a failed upstream response yields
+                    # empty safeJsonExtract, which -- if planted with
+                    # plain ctx.put -- would block downstream ctxGet
+                    # alias-walk (empty primary key blocks the walk).
+                    # Skipping the put lets the alias walk find a
+                    # fallback under a sibling id key.
                     lines.append(
-                        f'ctx.put("{tgt_step}.{tgt_path}", '
+                        f'TestSupport.putIfNonEmpty(ctx, "{tgt_step}.{tgt_path}", '
                         f'com.ak.api.rest.utilities.RestUtilities'
                         f'.safeJsonExtract({src_resp}, "{jp}"));')
                 else:

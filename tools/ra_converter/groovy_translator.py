@@ -179,10 +179,21 @@ def _emit_def_publications(script: str, bindings: dict, ctx: dict,
         # can either detect the missing value OR proceed with a stale
         # default -- the enclosing test can still complete its remaining
         # steps or reach a graceful assertion failure.
-        out.append(
-            f'ctx.put("{dest_key}", "Bearer " + '
-            f'com.ak.api.rest.utilities.RestUtilities.safeJsonExtract('
-            f'{resp}, "{info["jsonpath"]}"));')
+        # Extract into a local first so we can guard on empty. Writing
+        # `"Bearer "` alone (when the extract fails) to ctx would poison
+        # the auth header for every downstream call AND (per the empty-
+        # ctx-value semantics) block ctxGet's alias-walk from finding a
+        # fallback token key. Skip the put on empty extract instead --
+        # ctxGet will alias-walk to another Token-bearing key OR return
+        # "" and the caller's assertion fires cleanly.
+        out.extend([
+            f'{{',
+            f'    String __ext_{new_var} = com.ak.api.rest.utilities.RestUtilities.safeJsonExtract('
+            f'{resp}, "{info["jsonpath"]}");',
+            f'    if (__ext_{new_var} != null && !__ext_{new_var}.isEmpty()) '
+            f'ctx.put("{dest_key}", "Bearer " + __ext_{new_var});',
+            f'}}',
+        ])
         published.add(new_var)
         published.add(src_var)
 
@@ -198,8 +209,14 @@ def _emit_def_publications(script: str, bindings: dict, ctx: dict,
             continue
         resp = _resp_var_for(info["source_step"], ctx)
         dest_key = _dest_key_for_var(script, var_name, step_name_hint)
+        # Guard on empty extract: don't plant an empty value in ctx --
+        # that would block ctxGet's alias-walk from finding a fallback
+        # value under a sibling key (Properties.accountId etc.) and the
+        # downstream URL would send an empty path segment (`//`) that
+        # produces a confusing 404 from the target. Skip the put and
+        # let alias-walk find the fallback.
         out.append(
-            f'ctx.put("{dest_key}", '
+            f'TestSupport.putIfNonEmpty(ctx, "{dest_key}", '
             f'com.ak.api.rest.utilities.RestUtilities.safeJsonExtract('
             f'{resp}, "{info["jsonpath"]}"));')
         published.add(var_name)
