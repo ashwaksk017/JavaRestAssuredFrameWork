@@ -338,6 +338,60 @@ public class RestUtilities {
         }
     }
 
+    /**
+     * Sanity-check a resolved REST URL right before the HTTP call. Logs a
+     * LOUD WARN when the URL still has {@code {…}} placeholders (an
+     * upstream substitution missed one) or empty path segments
+     * ({@code //} outside the scheme -- from a {@code .replace("{id}",
+     * "")} where the ctx value was empty). The call still proceeds so
+     * the test sees the target's error (usually 404 / 405), but the
+     * WARN gives a single-line attribution instead of debugging why the
+     * server rejected an apparently-innocuous URL. Called by every
+     * emitted @Test method between path build and client.method(...).
+     *
+     * <p>Guards against the class of bug where an earlier REST step
+     * returned 4xx, the extract-into-ctx yielded empty, and the next
+     * step's URL substituted an empty id -- the wire sees
+     * {@code /guests//businesses/} and Hilton returns 404 / 405, but
+     * the log line shows the template so the root cause is hidden.
+     */
+    public static void assertPathResolved(String verb, String stepName, String resolvedPath) {
+        if (resolvedPath == null || resolvedPath.isEmpty()) {
+            LOG.warn("assertPathResolved: {} `{}` produced an EMPTY URL -- "
+                    + "check that the client method received non-null path args",
+                    verb, stepName);
+            return;
+        }
+        // Lingering `{name}` = a substitution was skipped (path-param
+        // list didn't include this key). Rare but possible when the
+        // SoapUI resource path had a param name the emitter's regex
+        // didn't catch (e.g. `{{name}}` or non-alphanumeric names).
+        java.util.regex.Matcher m =
+                java.util.regex.Pattern.compile("\\{[A-Za-z0-9_-]+\\}")
+                        .matcher(resolvedPath);
+        if (m.find()) {
+            LOG.warn("assertPathResolved: {} `{}` still has unresolved "
+                    + "path placeholder `{}` in URL `{}` -- request will "
+                    + "hit whatever endpoint the target maps that literal to",
+                    verb, stepName, m.group(), resolvedPath);
+            return;
+        }
+        // Empty path segment -- `//` outside the URI scheme's `://`.
+        // Scan for `//` that isn't preceded by `:` (scheme separator).
+        int idx = 0;
+        while ((idx = resolvedPath.indexOf("//", idx)) >= 0) {
+            if (idx == 0 || resolvedPath.charAt(idx - 1) != ':') {
+                LOG.warn("assertPathResolved: {} `{}` URL has an EMPTY "
+                        + "path segment (upstream extract likely returned "
+                        + "empty for a required id): `{}`. Server will "
+                        + "likely return 404 / 405.",
+                        verb, stepName, resolvedPath);
+                return;
+            }
+            idx += 2;
+        }
+    }
+
     /** {@link #parseIntOrDefault(String, int, String)} for long values. */
     public static long parseLongOrDefault(String raw, long fallback, String context) {
         if (raw == null) return fallback;

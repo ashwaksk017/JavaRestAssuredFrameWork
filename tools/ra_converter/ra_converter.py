@@ -3441,24 +3441,36 @@ public class {class_name} {{
             # `where account_id='#accountID#'` resolves to the value
             # captured earlier in the test. Non-strict: unresolved keys
             # fall back to "null" and WARN so operators see the gap.
+            sid = sanitize_identifier(step.step_name)
+            lines.append(f'    try {{')
             lines.append(
-                f'    try {{')
-            lines.append(
-                f'        String __jdbcSql_{sanitize_identifier(step.step_name)} = '
+                f'        String __jdbcSql_{sid} = '
                 f'RestUtilities.mapJsonValues('
                 f'"{trans_escaped}", TestSupport.mergedRow(row, ctx), false);')
+            # Sanity-check FIRST so an unsafe SQL emits ONE clean WARN
+            # line with the reason, instead of LOG.info(SQL) followed by
+            # Db.execute\'s own refuse-WARN (two lines that read as if we
+            # tried the query then something failed).
             lines.append(
-                f'        LOG.info(" .. jdbc SQL: {{}}", '
-                f'__jdbcSql_{sanitize_identifier(step.step_name)});')
+                f'        String __jdbcReason_{sid} = com.ak.api.db.Db.unsafeSqlReason(__jdbcSql_{sid});')
             lines.append(
-                f'        Db.execute(__jdbcSql_{sanitize_identifier(step.step_name)});')
+                f'        if (__jdbcReason_{sid} != null) {{')
             lines.append(
-                f'    }} catch (Exception __jdbcEx) {{')
+                f'            LOG.warn(" .. jdbc SKIPPED ({{}}): {{}}", '
+                f'__jdbcReason_{sid}, __jdbcSql_{sid});')
+            lines.append(
+                f'        }} else {{')
+            lines.append(
+                f'            LOG.info(" .. jdbc SQL: {{}}", __jdbcSql_{sid});')
+            lines.append(
+                f'            Db.execute(__jdbcSql_{sid});')
+            lines.append(
+                f'        }}')
+            lines.append(f'    }} catch (Exception __jdbcEx) {{')
             lines.append(
                 f'        LOG.warn("JDBC step `{_jlit(step.step_name)}` failed: {{}}", '
                 f'__jdbcEx.getMessage());')
-            lines.append(
-                f'    }}')
+            lines.append(f'    }}')
             lines.append('} else {')
             lines.append(
                 f'    LOG.warn("Skipping JDBC step (Db not configured): '
@@ -4009,9 +4021,30 @@ public class {class_name} {{
         # stand out. `_uniq_local` walks _2/_3/... until unique so
         # multiple REST calls in one method never clash on this local.
         elapsed_var = self._uniq_local(f"__restT_{base}")
+        # Build the RESOLVED URL at runtime so the log shows the actual
+        # path (with substituted values) instead of the template with
+        # literal `{guestId}` braces -- previously misleading when the
+        # log said `-> DELETE /guests/{guestId}/...` while the wire
+        # actually got `/guests//...` from an empty substitution.
+        # Also runs a sanity check: empty path segments (`//`) and any
+        # lingering `{...}` mean the caller passed empty ctx values,
+        # will 404 / 405 at the target -- WARN with the offending URL
+        # so the failure is attributable BEFORE the HTTP call.
+        resolved_path_expr = f'"{step.resource_path}"'
+        for i, p in enumerate(path_param_names):
+            resolved_path_expr = (f'{resolved_path_expr}.replace('
+                                   f'"{{{p}}}", '
+                                   f'({path_args[i]}) == null ? "" : ({path_args[i]}))')
+        resolved_url_var = self._uniq_local(f"__resolvedUrl_{base}")
         lines.append(
-            f'LOG.info(" -> {step.http_method} {step.resource_path}  '
-            f'(step={_jlit(step.step_name)})");')
+            f'String {resolved_url_var} = {resolved_path_expr};')
+        lines.append(
+            f'RestUtilities.assertPathResolved('
+            f'"{step.http_method}", "{_jlit(step.step_name)}", '
+            f'{resolved_url_var});')
+        lines.append(
+            f'LOG.info(" -> {step.http_method} {{}}  '
+            f'(step={_jlit(step.step_name)})", {resolved_url_var});')
         # Allure step banner for the REST call. AllureRestAssured filter
         # (wired globally in BaseApiTest) auto-attaches request + response
         # bodies to the CALLING step; the .step() call groups them under a

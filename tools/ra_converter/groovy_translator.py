@@ -773,8 +773,19 @@ def translate(script: str, response_var_by_step: dict[str, str],
                 f'    try {{',
                 f'        String __jdbcSql = RestUtilities.mapJsonValues('
                 f'{java_query}, TestSupport.mergedRow(row, ctx), false);',
-                f'        LOG.info(" .. jdbc SQL: {{}}", __jdbcSql);',
-                f'        Db.execute(__jdbcSql{params_java});',
+                # Check unsafe-SQL FIRST so a refused query emits ONE
+                # clean WARN with the reason, not LOG.info(SQL) then
+                # Db.execute\'s own refuse-WARN (two lines that read as
+                # "we ran it and then it failed" when we actually never
+                # attempted it).
+                f'        String __jdbcReason = com.ak.api.db.Db.unsafeSqlReason(__jdbcSql);',
+                f'        if (__jdbcReason != null) {{',
+                f'            LOG.warn(" .. jdbc SKIPPED ({{}}): {{}}", '
+                f'__jdbcReason, __jdbcSql);',
+                f'        }} else {{',
+                f'            LOG.info(" .. jdbc SQL: {{}}", __jdbcSql);',
+                f'            Db.execute(__jdbcSql{params_java});',
+                f'        }}',
                 f'    }} catch (Exception __jdbcEx) {{',
                 f'        LOG.warn("JDBC execute failed: {{}}", '
                 f'__jdbcEx.getMessage());',
