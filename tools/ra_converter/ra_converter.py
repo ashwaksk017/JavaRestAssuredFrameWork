@@ -3407,21 +3407,53 @@ public class {class_name} {{
             hard_lits = re.findall(
                 r"\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:'([^']+)'|(\d[\d.]*))",
                 raw_q)
-            hard_ids = [(col, val or num) for col, val, num in hard_lits
-                        if col.lower() not in ("null", "true", "false")]
+            # Only parameterize STALE-ID-SHAPED literals -- 6+ digit
+            # numbers on id-shaped column names. Enum values
+            # (status='active', web_site='foo.com') MUST stay as-is:
+            # the SoapUI author intended those, and no upstream step
+            # populates them in ctx, so parameterizing creates `null`
+            # fallbacks that Db.execute then refuses.
+            ID_COL_HINTS = ("id", "guest", "account", "member", "hhonors",
+                            "hilton", "partner", "customer", "user")
             transformed_q = raw_q
             substituted_cols: list[str] = []
-            for col, val in hard_ids:
-                # Only rewrite the FIRST occurrence of each column so a
-                # `WHERE a=1 AND b=2` becomes `WHERE a='#a#' AND b='#b#'`
-                # but a repeated `a=1 OR a=2` doesn't double-substitute.
+            for col, val, num in hard_lits:
+                col_l = col.lower()
+                if col_l in ("null", "true", "false"):
+                    continue
                 if col in substituted_cols:
                     continue
+                literal = num or val
+                looks_like_id = len(literal) >= 6 and literal.isdigit()
+                col_hints_id = any(h in col_l for h in ID_COL_HINTS)
+                if not (looks_like_id and col_hints_id):
+                    continue  # keep literal, do not parameterize
                 pattern = re.compile(
                     rf"\b{re.escape(col)}\s*=\s*(?:'[^']+'|\d[\d.]*)")
                 transformed_q = pattern.sub(
                     f"{col}='#{col}#'", transformed_q, count=1)
                 substituted_cols.append(col)
+            # Translate SoapUI refs `${...}` inside the SQL to
+            # framework placeholders so mapJsonValues resolves them at
+            # runtime (otherwise Db.unsafeSqlReason refuses the SQL for
+            # containing untranslated `${...}`).
+            transformed_q = re.sub(
+                r'\$\{#(?:TestCase|TestSuite|Global|Env|MockService)#'
+                r'([A-Za-z0-9_.-]+)\}',
+                lambda m: '#' + m.group(1).replace('.', '_') + '#',
+                transformed_q)
+            transformed_q = re.sub(
+                r'\$\{#Project#([A-Za-z0-9_.-]+)\}',
+                lambda m: '#' + m.group(1).replace('.', '_') + '#',
+                transformed_q)
+            transformed_q = re.sub(
+                r'\$\{([A-Za-z_][A-Za-z0-9_]*)#([A-Za-z0-9_.-]+)\}',
+                lambda m: '#' + m.group(1) + '_' + m.group(2).replace('.', '_') + '#',
+                transformed_q)
+            transformed_q = re.sub(
+                r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}',
+                lambda m: '#' + m.group(1) + '#',
+                transformed_q)
             trans_escaped = _jlit(transformed_q)
             lines.append(f'// [jdbc step] {step.step_name}')
             if substituted_cols:
@@ -3957,6 +3989,33 @@ public class {class_name} {{
         for p in path_param_names:
             # Look up in step.path_params for the ${...} expression, then translate
             expr = step.path_params.get(p, f'${{Properties#{p}}}')
+            # Analogous rewrite to _placeholder_hardcoded_ids for request
+            # bodies: if the SoapUI author baked a stale 6+ digit id
+            # literal into the URL path (`/guests/567456/...`), swap it
+            # for a ctx lookup so runtime substitution uses the current
+            # test's live id (from Groovy extract OR
+            # random_email_generator fallback). Applies only to id-shaped
+            # param names to avoid touching legitimate small numeric
+            # segments like `/v2/`.
+            ID_NAMES = {"guestId", "guestID", "accountId", "accountID",
+                        "memberId", "memberID", "hhonorsNumber",
+                        "hHonorsNumber", "partnerAccountId",
+                        "partnerAccountID", "customerId", "userId"}
+            expr_stripped = (expr or "").strip().strip('"').strip("'")
+            if (p in ID_NAMES and expr_stripped.isdigit()
+                    and len(expr_stripped) >= 6
+                    and "${" not in expr):
+                # Rewrite to a Properties ref -- soapui_expr_to_java will
+                # then emit `TestSupport.ctxGet(ctx, "Properties.<name>")`
+                # which reads from the merged runtime bag (Groovy extracts
+                # win over random_email_generator fallback ids).
+                expr = "${#TestCase#Properties." + p + "}"
+                self.ledger.add_preflight_finding(
+                    "INFO", "hardcoded-path-id-rewritten",
+                    self._current_case,
+                    f"REST step `{step.step_name}` URL had hardcoded id "
+                    f"`{p}={expr_stripped}` in the path template. "
+                    f"Rewritten to Properties.{p} so runtime uses live id.")
             path_args.append(soapui_expr_to_java(expr))
 
         # Token / Authorization header resolution priority:

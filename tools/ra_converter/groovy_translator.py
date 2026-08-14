@@ -755,15 +755,57 @@ def translate(script: str, response_var_by_step: dict[str, str],
                 raw_q)
             substituted_cols: list[str] = []
             transformed = raw_q
+            # Only parameterize STALE-ID-SHAPED literals -- 6+ digit
+            # numbers, typically Hilton internal ids that expired years
+            # ago. Enum values (status='active', web_site='foo.com',
+            # code='XYZ') MUST stay as-is: the SoapUI author intended
+            # those literals, and no upstream step populates them in
+            # ctx, so parameterizing them creates `null` fallbacks that
+            # Db.execute then refuses.
+            ID_COL_HINTS = ("id", "guest", "account", "member", "hhonors",
+                            "hilton", "partner", "customer", "user")
             for col, val, num in hard_lits:
-                if col.lower() in ("null", "true", "false"):
+                col_l = col.lower()
+                if col_l in ("null", "true", "false"):
                     continue
                 if col in substituted_cols:
                     continue
+                literal = num or val
+                looks_like_id = len(literal) >= 6 and literal.isdigit()
+                col_hints_id = any(h in col_l for h in ID_COL_HINTS)
+                if not (looks_like_id and col_hints_id):
+                    continue  # keep the literal, don't parameterize
                 pattern = re.compile(
                     rf"\b{re.escape(col)}\s*=\s*(?:'[^']+'|\d[\d.]*)")
                 transformed = pattern.sub(f"{col}='#{col}#'", transformed, count=1)
                 substituted_cols.append(col)
+            # Translate SoapUI-style refs left in the SQL to framework
+            # placeholders so `mapJsonValues` resolves them at runtime.
+            # Common patterns seen in imported suites:
+            #   ${Properties#guestID}    -> #Properties_guestID#
+            #   ${#TestCase#Properties#X} -> #Properties_X#
+            #   ${#Project#Y}             -> #Y#
+            # Without this, Db.unsafeSqlReason (correctly) refuses the
+            # SQL for containing `${...}` even though the intent is a
+            # runtime substitution the framework CAN handle.
+            transformed = re.sub(
+                r'\$\{#(?:TestCase|TestSuite|Global|Env|MockService)#'
+                r'([A-Za-z0-9_.-]+)\}',
+                lambda m: '#' + m.group(1).replace('.', '_') + '#',
+                transformed)
+            transformed = re.sub(
+                r'\$\{#Project#([A-Za-z0-9_.-]+)\}',
+                lambda m: '#' + m.group(1).replace('.', '_') + '#',
+                transformed)
+            transformed = re.sub(
+                r'\$\{([A-Za-z_][A-Za-z0-9_]*)#([A-Za-z0-9_.-]+)\}',
+                lambda m: '#' + m.group(1) + '_' + m.group(2).replace('.', '_') + '#',
+                transformed)
+            # Bare ${var}
+            transformed = re.sub(
+                r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}',
+                lambda m: '#' + m.group(1) + '#',
+                transformed)
             # Java literal form of the (potentially rewritten) query.
             trans_inner = transformed.replace("\\", "\\\\").replace('"', '\\"')
             java_query = f'"{trans_inner}"'
