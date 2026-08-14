@@ -486,8 +486,15 @@ def translate(script: str, response_var_by_step: dict[str, str],
                 continue
             path = _extract_jsonpath_from_expr(expr, script)
             if path:
+                # putIfNonEmpty (not ctx.put): if the upstream response
+                # was 4xx and safeJsonExtract returns "", writing "" to
+                # ctx would block ctxGet's alias-walk downstream and the
+                # next URL substitution for this field would produce an
+                # empty path segment (`//`). Skipping the put lets the
+                # walk fall back to a sibling key (e.g.
+                # Properties.accountId from random_email_generator).
                 lines.append(
-                    f'ctx.put("{_ctx_key(target_step, field)}", '
+                    f'TestSupport.putIfNonEmpty(ctx, "{_ctx_key(target_step, field)}", '
                     f'com.ak.api.rest.utilities.RestUtilities.safeJsonExtract('
                     f'{resp_var}, "{path}"));')
                 if "setproperty_extract" not in patterns_matched:
