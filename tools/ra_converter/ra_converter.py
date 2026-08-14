@@ -1604,8 +1604,8 @@ _CROSS_TC_RX = re.compile(
 # group excludes `#` -- it would fail to match this shape but be
 # checked first anyway; keeping the response one earlier removes any
 # ordering surprise.
-_STEP_RESPONSE_RX = re.compile(r"\$\{([A-Za-z0-9_-]+)#Response#([^}]+)\}")
-_STEP_PROP_RX = re.compile(r"\$\{([A-Za-z0-9_-]+)#([A-Za-z0-9_.-]+)\}")
+_STEP_RESPONSE_RX = re.compile(r"\$\{([A-Za-z0-9_ -]+?)#Response#([^}]+)\}")
+_STEP_PROP_RX = re.compile(r"\$\{([A-Za-z0-9_ -]+?)#([A-Za-z0-9_.-]+)\}")
 # Bare `${var}` -- only match identifiers that AREN'T already caught
 # by one of the scoped patterns above. SoapUI uses this for TestCase-
 # level property lookup by default. Skips `${=groovy}` (starts with =)
@@ -1712,7 +1712,30 @@ def soapui_body_to_placeholders(body: str) -> tuple[str, list[str]]:
         placeholders.append(var)
         return f"#{var}#"
     def _step(m):
-        var = f"{m.group(1)}_{m.group(2)}".replace(".", "_").replace("-", "_")
+        # Step names with spaces are sanitized (space -> underscore)
+        # to match the Java identifier form used everywhere else.
+        step_id = re.sub(r"[^A-Za-z0-9_]", "_", m.group(1).strip())
+        var = f"{step_id}_{m.group(2)}".replace(".", "_").replace("-", "_")
+        placeholders.append(var)
+        return f"#{var}#"
+    def _step_response(m):
+        # `${step#Response#$['field']}` -- SoapUI shorthand for reading
+        # a value out of another step's response via JsonPath. Runtime
+        # substitution reads from ctx under `<sanitized_step>_<field>`
+        # -- populated by the REST step's auto-extract-to-ctx emit
+        # (see _render_rest_step_body). Without translating, the raw
+        # `${...}` reaches the wire and the target rejects the payload
+        # (or JSON parse-fails on the leading `{` of an unquoted ref).
+        step_id = re.sub(r"[^A-Za-z0-9_]", "_", m.group(1).strip())
+        # Strip JsonPath syntax to a bare field name matching how the
+        # extract-to-ctx will publish it (see _translate_soapui_jsonpath).
+        raw_path = m.group(2).strip()
+        field = raw_path.lstrip("$").lstrip(".")
+        # Unwrap `['name']` / `["name"]`
+        field = re.sub(r"\['?([^'\]]+)'?\]", r".\1", field)
+        field = re.sub(r'\["?([^"\]]+)"?\]', r".\1", field)
+        field = field.lstrip(".").replace(".", "_").replace("-", "_")
+        var = f"{step_id}_Response_{field}" if field else f"{step_id}_Response"
         placeholders.append(var)
         return f"#{var}#"
     def _bare(m):
@@ -1729,6 +1752,10 @@ def soapui_body_to_placeholders(body: str) -> tuple[str, list[str]]:
 
     translated = _PROJ_PROP_RX.sub(_proj, body or "")
     translated = _SCOPE_PROP_RX.sub(_scoped, translated)
+    # STEP_RESPONSE must run BEFORE STEP_PROP because both start with
+    # `${<step>#`; STEP_PROP would match up to the first `#` and eat the
+    # `Response` as the property name, giving the wrong translation.
+    translated = _STEP_RESPONSE_RX.sub(_step_response, translated)
     translated = _STEP_PROP_RX.sub(_step, translated)
     translated = _GROOVY_EXPR_RX.sub(_groovy, translated)
     # Bare ${var} runs LAST so scoped patterns get first pass.
@@ -2986,8 +3013,28 @@ def _assert_default_value(a: "Assertion") -> str:
 
 def _csv_cell(value: str) -> str:
     """Quote a CSV cell when it contains a comma, quote, or newline.
-    Doubles existing quotes per RFC 4180. Bare values pass through."""
+    Doubles existing quotes per RFC 4180. Bare values pass through.
+
+    Any {@code ${...}} SoapUI reference in the cell (from assertion
+    expected-value paths, hardcoded body literals that copied a
+    project-scope ref, etc.) is translated to a framework
+    ``#placeholder#`` first so ``mapJsonValues`` can resolve it at
+    runtime. Without this, cells like ``${Properties#Domain}`` or
+    ``${PropertiesDetails#accountID}`` reach the wire verbatim and
+    every assertion / body-cell that reads them mismatches.
+    """
     s = "" if value is None else str(value)
+    # Translate SoapUI refs before quoting -- soapui_body_to_placeholders
+    # handles the same regex families used everywhere else (Project /
+    # scoped / step-response / step-prop / bare / groovy).
+    if "${" in s:
+        s, _ph = soapui_body_to_placeholders(s)
+    # Cell that IS the literal word "null" (baked in by SoapUI author
+    # via placeholder that never resolved on their end) reads at runtime
+    # as the string "null" and mapJsonValues splices it into JSON where
+    # a real value is expected. Empty out so the id fallback kicks in.
+    if s.strip().lower() == "null":
+        s = ""
     if any(c in s for c in (",", '"', "\n", "\r")):
         return '"' + s.replace('"', '""') + '"'
     return s
