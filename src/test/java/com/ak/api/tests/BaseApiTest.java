@@ -82,6 +82,26 @@ public abstract class BaseApiTest {
             // filters onto RestAssured.filters().
             return;
         }
+        // Preflight: catch placeholder / missing config BEFORE the first
+        // HTTP call so the failure is ONE clear "edit program_configuration
+        // .json" banner instead of N per-test UnknownHostException / 401
+        // stacktraces. Non-strict: log LOUDLY and continue (so a user who
+        // deliberately runs against a mock endpoint can still proceed).
+        java.util.List<String> preflightIssues = Config.preflightIssues();
+        if (!preflightIssues.isEmpty()) {
+            System.err.println();
+            System.err.println("################################################################");
+            System.err.println("# CONFIG PREFLIGHT FAILED  (" + preflightIssues.size()
+                    + " issue" + (preflightIssues.size() == 1 ? "" : "s") + ")");
+            System.err.println("# All tests will likely fail with UnknownHostException / 401.");
+            System.err.println("# Fix these in src/main/resources/program_configuration.json:");
+            System.err.println("################################################################");
+            for (String issue : preflightIssues) {
+                System.err.println("#  * " + issue);
+            }
+            System.err.println("################################################################");
+            System.err.println();
+        }
         RestAssured.baseURI = Config.baseUrl();
         RestAssured.useRelaxedHTTPSValidation();
 

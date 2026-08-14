@@ -884,6 +884,13 @@ class AuditLedger:
     # emitter site that generates the throw. Rolled into summary.md as
     # "Cases skipped at runtime".
     runtime_skips: list[tuple] = field(default_factory=list)
+    # (severity, category, case, detail)
+    # Preflight-lint findings: bug patterns detected at emit time that
+    # would cause runtime failures. Auto-applied fixes (token hoist,
+    # token inject) are recorded here too so a QA lead can see WHAT the
+    # converter had to work around. Rendered as `preflight.md` +
+    # rolled into `summary.md`.
+    preflight: list[tuple] = field(default_factory=list)
 
     def add_assertion(self, prefix, case, step, soapui_type, cfg,
                        emitted_java, coverage, partial_because=""):
@@ -929,6 +936,17 @@ class AuditLedger:
         instead of that failure mode hiding from the summary."""
         self.runtime_skips.append((prefix, case, java_method, reason,
                                     source_step))
+
+    def add_preflight_finding(self, severity, category, case, detail):
+        """Record a preflight-lint finding: a bug pattern detected at
+        conversion time that WOULD cause runtime failures. Severity in
+        {BLOCKER, HIGH, MEDIUM, LOW, INFO}. Category is a short slug
+        (e.g. 'token-hoist-applied', 'token-injected', 'missing-config-key',
+        'unresolved-groovy-project-ref'). Piped into preflight.md so a
+        QA lead can scan the class of bugs BEFORE running the suite."""
+        if not hasattr(self, "preflight"):
+            self.preflight = []
+        self.preflight.append((severity, category, case, detail))
 
     def add_groovy(self, prefix, case, step, meta):
         pm = ";".join(meta.get("patterns_matched", [])) or "<none>"
@@ -984,6 +1002,74 @@ class AuditLedger:
             w.writerow(header)
             for r in rows:
                 w.writerow(r)
+
+    def _write_preflight_md(self, base: str, rows: list) -> None:
+        """Human-readable preflight report. Sits next to summary.md so a
+        QA lead can scan `preflight.md` BEFORE running the suite and know
+        which categories of failure to expect (and which auto-fixes the
+        emitter already applied)."""
+        severities = ["BLOCKER", "HIGH", "MEDIUM", "LOW", "INFO"]
+        by_sev = {s: [] for s in severities}
+        by_cat = defaultdict(int)
+        for sev, cat, case, det in rows:
+            by_sev.setdefault(sev, []).append((cat, case, det))
+            by_cat[cat] += 1
+        lines = [
+            "# Preflight report",
+            "",
+            "> Bug-pattern scan run at conversion time. Findings here map to",
+            "> known classes of runtime failure -- fix or acknowledge each",
+            "> BEFORE running the suite. Auto-applied fixes (token-hoist,",
+            "> token-inject) are listed too so you know what the emitter",
+            "> did on your behalf.",
+            "",
+            f"- Total findings: **{len(rows)}**",
+            f"- Blockers: **{len(by_sev.get('BLOCKER', []))}** "
+            "(runtime WILL fail without manual action)",
+            f"- Auto-fixes applied: "
+            f"**{by_cat.get('token-hoist-applied', 0)}** hoist + "
+            f"**{by_cat.get('token-injected', 0)}** inject",
+            "",
+            "## Findings by category",
+            "",
+            "| Category | Count | Meaning |",
+            "|---|---:|---|",
+        ]
+        MEANINGS = {
+            "token-hoist-applied": "tokenRequest reordered to run first",
+            "token-injected": "synthetic tokenRequest cloned from suite",
+            "missing-token-with-no-canonical": "no token step + no template to clone -- REST will 401",
+            "jdbc-mutation-skip": "untranslated Groovy JDBC mutation -- test throws SkipException",
+            "unresolved-project-ref": "Groovy uses `#Project#Foo` not in Config -- resolves empty",
+            "unresolved-step-ref": "`${step#Response#...}` refers to step not in the same method",
+        }
+        for cat, n in sorted(by_cat.items(), key=lambda x: -x[1]):
+            meaning = MEANINGS.get(cat, "(no meaning registered)")
+            lines.append(f"| {cat} | {n} | {meaning} |")
+        if not by_cat:
+            lines.append("| _(no findings)_ | 0 | -- |")
+        lines.append("")
+        for sev in severities:
+            items = by_sev.get(sev, [])
+            if not items:
+                continue
+            lines.extend([
+                f"## {sev} ({len(items)})",
+                "",
+                "| Category | Case | Detail |",
+                "|---|---|---|",
+            ])
+            for cat, case, det in items[:50]:
+                det_short = (det or "").replace("|", "\\|")[:160]
+                case_short = (case or "")[:60]
+                lines.append(f"| {cat} | {case_short} | {det_short} |")
+            if len(items) > 50:
+                lines.append(f"| ... | ... | _(+{len(items) - 50} more in preflight.csv)_ |")
+            lines.append("")
+        os.makedirs(base, exist_ok=True)
+        with open(os.path.join(base, "preflight.md"), "w",
+                  encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
 
     def write(self, output_dir: str, source_xml: str, generated_at: str,
                suite_name: str = "") -> None:
@@ -1042,6 +1128,18 @@ class AuditLedger:
             os.path.join(base, "runtime_skips.csv"),
             ["prefix", "case", "java_method", "reason", "source_step"],
             self.runtime_skips)
+        # Preflight lint findings -- bug patterns detected at emit time
+        # (see AuditLedger.add_preflight_finding). Written whether or not
+        # findings exist so a QA lead can trust "empty preflight.csv =
+        # nothing flagged" instead of second-guessing whether the check ran.
+        pre_rows = getattr(self, "preflight", [])
+        self._write_csv(
+            os.path.join(base, "preflight.csv"),
+            ["severity", "category", "case", "detail"],
+            pre_rows)
+        # Also emit a human-readable preflight.md scoped to the top
+        # findings-by-severity + auto-fixes summary.
+        self._write_preflight_md(base, pre_rows)
 
         # ---- summary.md -------------------------------------------------
         def _counts(rows, cov_index):
@@ -1070,6 +1168,22 @@ class AuditLedger:
         a_active = a_total - a_counts.get("SKIPPED", 0)
         g_active = g_total - g_counts.get("SKIPPED", 0)
 
+        # Preflight callout at TOP of summary so it can't be missed.
+        pre_rows = getattr(self, "preflight", []) or []
+        pre_blockers = sum(1 for r in pre_rows if r[0] == "BLOCKER")
+        pre_high = sum(1 for r in pre_rows if r[0] == "HIGH")
+        pre_auto = sum(1 for r in pre_rows
+                       if r[1] in ("token-hoist-applied", "token-injected"))
+        preflight_callout = []
+        if pre_rows:
+            preflight_callout = [
+                f"> **Preflight**: {len(pre_rows)} finding(s) "
+                f"(**{pre_blockers} BLOCKER** / {pre_high} HIGH / "
+                f"{pre_auto} auto-fix). "
+                f"Open `preflight.md` before running the suite.",
+                "",
+            ]
+
         lines = [
             f"# ra_converter audit report",
             "",
@@ -1077,6 +1191,7 @@ class AuditLedger:
             f"- Source XML: `{source_xml}`",
             f"- Output root: `{output_dir}`",
             "",
+            *preflight_callout,
             "## Coverage summary",
             "",
             "> `SKIPPED` = items disabled in the SoapUI XML (author intent) and",
@@ -3433,6 +3548,98 @@ public class {class_name} {{
         # ---- steps.csv ledger: one row per SoapUI step regardless of type
         self._record_step_in_ledger(step)
         return lines
+
+    def _preflight_scan_case(self, case, steps_to_render, skip_count,
+                              emit_stop_checks) -> None:
+        """Detect known bug-pattern classes for this case and log them to
+        the audit ledger. Called BEFORE emission so the preflight report
+        also reflects the auto-applied fixes (hoist, inject) that follow.
+
+        Categories detected here (fixes recorded by the caller after they
+        actually apply): jdbc-mutation-skip, unresolved-project-ref,
+        unresolved-step-ref, missing-token-with-no-canonical (case has no
+        token step AND the suite has no canonical pair to inject -- test
+        will 401 with no auto-fix available).
+        """
+        # Missing-token without a canonical to inject from = untriaged failure.
+        has_own_token = any(
+            isinstance(s, RestStep) and _is_token_fetch_step(s)
+            for s in steps_to_render)
+        canonical = getattr(self, "_canonical_token_pair", (None, None))
+        if (not has_own_token and canonical == (None, None)
+                and any(isinstance(s, RestStep) for s in steps_to_render)
+                and skip_count == 0 and not emit_stop_checks):
+            self.ledger.add_preflight_finding(
+                "BLOCKER", "missing-token-with-no-canonical", case.name,
+                "Case needs auth (has REST steps) but has NO tokenRequest "
+                "step and no other case in the same suite has one either. "
+                "Framework cannot auto-inject. Every REST call will 401 "
+                "unless you hand-add a tokenRequest step or wire an "
+                "AuthHelper for this suite.")
+        # JDBC-mutation Skip: any Groovy sql.execute with mutation keywords.
+        # Tracked already via runtime_skips ledger; add a preflight so the
+        # count is visible in preflight.md too.
+        mutation_kws = ("update", "insert", "delete", "upsert", "merge",
+                        "cleanup", "clean_data", "seed")
+        for s in steps_to_render:
+            if isinstance(s, GroovyStep):
+                sn = (getattr(s, "step_name", "") or "").lower()
+                if any(kw in sn for kw in mutation_kws) and "sql.execute" in (
+                        getattr(s, "script", "") or ""):
+                    self.ledger.add_preflight_finding(
+                        "HIGH", "jdbc-mutation-skip", case.name,
+                        f"Groovy step `{s.step_name}` calls sql.execute "
+                        f"with a mutation query the emitter cannot "
+                        f"translate. Test will throw SkipException at "
+                        f"runtime after any side-effect REST calls "
+                        f"already fired against the target env.")
+                    break
+        # Unresolved #Project#Foo Groovy refs -- SoapUI project-level
+        # properties that the framework has no map for. Values default to
+        # empty at runtime -> downstream body cells / SQL placeholders
+        # unresolved -> silent broken payloads.
+        for s in steps_to_render:
+            if isinstance(s, GroovyStep):
+                script = getattr(s, "script", "") or ""
+                proj_refs = re.findall(
+                    r'#Project#([A-Za-z_][A-Za-z0-9_]*)', script)
+                if proj_refs:
+                    uniq = ", ".join(sorted(set(proj_refs))[:4])
+                    self.ledger.add_preflight_finding(
+                        "MEDIUM", "unresolved-project-ref", case.name,
+                        f"Groovy step `{s.step_name}` references "
+                        f"SoapUI project-scope property `#Project#` "
+                        f"({uniq}). Framework maps Project scope to "
+                        f"Config, but these key(s) aren't in "
+                        f"program_configuration.json -- they will "
+                        f"resolve to empty at runtime.")
+                    break
+        # Step-response refs whose source step isn't in the current case
+        # body -- e.g. `${otherStep#Response#$['id']}` where otherStep
+        # doesn't appear before this reference. Compile ok, runtime will
+        # have an empty extract.
+        emitted_step_names = {
+            getattr(s, "step_name", "") for s in steps_to_render
+            if isinstance(s, RestStep)}
+        for s in steps_to_render:
+            body = ""
+            if isinstance(s, RestStep):
+                body = (getattr(s, "request_body", "") or "") + \
+                       (getattr(s, "resource_path", "") or "")
+            elif isinstance(s, GroovyStep):
+                body = getattr(s, "script", "") or ""
+            for m in re.finditer(
+                    r'\$\{([A-Za-z0-9_-]+)#Response#', body):
+                src = m.group(1)
+                if src and src not in emitted_step_names:
+                    self.ledger.add_preflight_finding(
+                        "LOW", "unresolved-step-ref", case.name,
+                        f"Step body references `${{{src}#Response#...}}` "
+                        f"but no step named `{src}` is emitted in the "
+                        f"same @Test method. Runtime value will be "
+                        f"empty; downstream extraction/assertion may "
+                        f"silently fail.")
+                    return  # one per case is enough
 
     def _record_step_in_ledger(self, step) -> None:
         """Emit exactly one steps.csv row per _render_step invocation.
@@ -6117,8 +6324,32 @@ public class {class_name} extends BaseApiTest {{
         # (skip_count == 0) and no prefix-merge stop-markers (which would
         # break under positional reorder).
         steps_to_render = case.steps[skip_count:]
+        # ---- Preflight lint: proactively detect known bug-patterns in
+        # this case's step sequence and log them to the audit BEFORE
+        # emitting Java. Categories:
+        #   token-hoist-applied  = auto-reordered token step to position 0
+        #   token-injected       = synthesized token step (case had none)
+        #   jdbc-mutation-skip   = case will throw SkipException at runtime
+        #   unresolved-project-ref = Groovy references #Project#Foo that
+        #                            we cannot translate (needs manual)
+        #   unresolved-step-ref  = ${step#Response#field} reaches outside
+        #                          the emit method scope (compile ok, run
+        #                          ok but the value will be empty)
+        # Findings are cheap to add; author scans preflight.md before
+        # running to know which categories of failure to expect.
+        self._preflight_scan_case(case, steps_to_render, skip_count,
+                                    emit_stop_checks)
         if skip_count == 0 and not emit_stop_checks:
+            pre_hoist_order = list(steps_to_render)
             steps_to_render = _hoist_token_fetch_steps(steps_to_render)
+            if steps_to_render is not pre_hoist_order and steps_to_render != pre_hoist_order:
+                self.ledger.add_preflight_finding(
+                    "MEDIUM", "token-hoist-applied", case.name,
+                    "SoapUI author placed the tokenRequest step later "
+                    "than position 2 in the REST-step order. Emitter "
+                    "hoisted it to position 0 so earlier REST calls do "
+                    "not 401. Original SoapUI intent preserved (step "
+                    "still fires; response still populates ctx).")
             # ---- Auth-inject: if the case has NO token-fetch step at all
             # (i.e. SoapUI author relied on cross-case #Project#Token
             # persisted state), prepend a synthetic tokenRequest step
@@ -6135,6 +6366,13 @@ public class {class_name} extends BaseApiTest {{
                 if canonical[1] is not None:
                     injected.append(canonical[1])
                 steps_to_render = injected + steps_to_render
+                self.ledger.add_preflight_finding(
+                    "HIGH", "token-injected", case.name,
+                    "Case had NO tokenRequest step of its own -- SoapUI "
+                    "author relied on cross-case #Project#Token state "
+                    "that the framework does not replicate. Emitter "
+                    "injected a synthetic tokenRequest (cloned from "
+                    "another case in the same suite) at position 0.")
         for step in steps_to_render:
             body_lines.extend(self._render_step(step, service_class_name))
             # Prefix-merge early-return: after each REST step, check whether

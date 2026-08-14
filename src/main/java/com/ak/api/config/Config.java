@@ -260,6 +260,94 @@ public final class Config {
     }
 
     // ---------------------------------------------------------------------
+    // Preflight validation
+    // ---------------------------------------------------------------------
+
+    /**
+     * Scan required credentials + endpoint config for placeholder or
+     * obviously-invalid values that would cause tests to fail at the FIRST
+     * HTTP call with a confusing error (UnknownHostException for
+     * `api.example.com`, HTTP 401 for `__SET_ME__`). Returns a list of
+     * human-readable failure reasons; empty list = green preflight.
+     *
+     * <p>Detects:</p>
+     * <ul>
+     *   <li>Placeholder values: {@code __SET_ME__}, {@code CHANGEME},
+     *       {@code your-value-here}, {@code <fill-in>}, {@code TODO}</li>
+     *   <li>Example-domain hosts: {@code example.com}, {@code example.org},
+     *       {@code your-api-host.com}</li>
+     *   <li>Missing required keys: empty {@code api_config.client_id},
+     *       {@code api_config.client_secret}, {@code api_config.api_end_point}</li>
+     * </ul>
+     *
+     * <p>Called by {@code BaseApiTest.@BeforeSuite} before RestAssured is
+     * bootstrapped so a failure fires ONE clear message instead of N
+     * per-test {@code UnknownHostException} stacktraces.
+     */
+    public static java.util.List<String> preflightIssues() {
+        java.util.List<String> issues = new java.util.ArrayList<>();
+        String[] requiredKeys = {
+                "api_config.client_id",
+                "api_config.client_secret",
+                "api_config.api_end_point"
+        };
+        String[] placeholders = {
+                "__SET_ME__", "CHANGEME", "changeme", "your-value-here",
+                "<fill-in>", "TODO", "REPLACE_ME"
+        };
+        String[] fakeHosts = {
+                "example.com", "example.org", "your-api-host.com",
+                "api.example.com", "yourdomain.com"
+        };
+        for (String key : requiredKeys) {
+            String v = get(key, "");
+            if (v == null || v.isEmpty()) {
+                issues.add("required config key `" + key + "` is missing or empty");
+                continue;
+            }
+            for (String ph : placeholders) {
+                if (v.contains(ph)) {
+                    issues.add("config key `" + key + "` still has placeholder value `"
+                            + v + "` -- edit program_configuration.json before running");
+                    break;
+                }
+            }
+            if (key.equals("api_config.api_end_point")) {
+                String lower = v.toLowerCase();
+                for (String fake : fakeHosts) {
+                    if (lower.contains(fake)) {
+                        issues.add("api_config.api_end_point `" + v
+                                + "` points at a placeholder host -- edit "
+                                + "program_configuration.json with a real endpoint");
+                        break;
+                    }
+                }
+            }
+        }
+        // Password / username preflight -- only if the token endpoint uses a
+        // JSON-password grant (Hilton-style). Empty is fine for pure
+        // client_credentials flows.
+        String username = get("api_config.username", get("username", ""));
+        String password = get("api_config.password", get("password", ""));
+        for (String ph : placeholders) {
+            if (username.contains(ph)) {
+                issues.add("api_config.username still has placeholder value `"
+                        + username + "`");
+                break;
+            }
+        }
+        for (String ph : placeholders) {
+            if (password.contains(ph)) {
+                issues.add("api_config.password still has placeholder value `***" +
+                        (password.length() > 4 ? password.substring(password.length() - 4) : "")
+                        + "`");
+                break;
+            }
+        }
+        return issues;
+    }
+
+    // ---------------------------------------------------------------------
     // Generic key access
     // ---------------------------------------------------------------------
 
