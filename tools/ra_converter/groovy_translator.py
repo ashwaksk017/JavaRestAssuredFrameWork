@@ -525,74 +525,87 @@ def translate(script: str, response_var_by_step: dict[str, str],
     # declarations don't collide if the same generator Groovy block appears
     # twice inside one test method.
     if _EMAIL_ASSIGN_RX.search(script) or "generatedEmail" in script:
-        # Enumerate EVERY setPropertyValue target in the Groovy source so
-        # variants like Properties.usernamemember, Properties.Username2,
-        # Properties.EmailMember, Properties.NewEmail, Properties.Firstname1
-        # each get their OWN freshly-generated value instead of relying on
-        # a stale CSV cell. Without this, a case with 2 REST steps that
-        # both use different property variants (HHonorsEnroll uses
-        # Properties.usernamemember; MemberHHonorsEnroll uses
-        # Properties.Username) would only refresh ONE and the other keeps
-        # the CSV "eryi" -- collides on the target API with
-        # "Username is not unique" 400.
+        # Enumerate EVERY setPropertyValue target in the Groovy source
+        # (Username, Username2, Domain, Email, Phone, guestMemberEmail,
+        # etc.) so each gets its OWN freshly-generated value keyed by
+        # its NAME SHAPE:
+        #   phone / phonenumber                -> 9-digit numeric string
+        #   domain / websitedomain / weburl    -> "word.com"
+        #   email / *email* / *emailaddress*   -> "word@allowed-domain"
+        #   *guestid* / *memberid* / hhonors*  -> 9-digit numeric string
+        #   everything else                    -> username-shaped alphanum
+        # Also always populate common variants that SoapUI templates ask
+        # for even when DataGenInput doesn't set them explicitly:
+        # usernamemember / usernameM / EmailMember / guestMemberEmail --
+        # the SoapUI author's original CSV had stale values for these
+        # that would collide on the target API's uniqueness checks.
         set_targets = []
         for m in re.finditer(
                 r'setPropertyValue\s*\(\s*["\']([A-Za-z_][A-Za-z0-9_]*)["\']',
                 script):
             set_targets.append(m.group(1))
-        # De-dup preserving order, exclude the always-emitted defaults.
-        seen = {"Username", "username", "Email", "email"}
-        variant_props = []
-        for t in set_targets:
+        # Add always-populated safety variants regardless of the source
+        # script's contents. Prevents "usernamemember stays stale" bugs
+        # when the template references a variant SoapUI never populated.
+        ALWAYS = ["Username", "username", "usernamemember", "usernameM",
+                  "Email", "email", "EmailMember", "guestMemberEmail",
+                  "Phone", "phone", "phoneNumber", "hhonorsNumber",
+                  "Domain", "domain", "websiteDomain",
+                  "generatedemailAddress", "generatedEmail"]
+        seen: set = set()
+        all_props = []
+        for t in set_targets + ALWAYS:
             if t in seen:
                 continue
             seen.add(t)
-            variant_props.append(t)
+            all_props.append(t)
+
+        def _generator_expr(prop: str) -> str:
+            """Return a Java expression producing an appropriately-shaped
+            value for the property. Semantic-shape mapping so a `Phone`
+            variant gets a numeric string, `Domain` gets `word.com`, etc."""
+            p = prop.lower()
+            if "phone" in p or p == "hhonorsnumber":
+                # 9-digit numeric. FakeData.faker().numerify seeds a
+                # random digit per '#'. Bounded to the shape most APIs
+                # accept.
+                return 'FakeData.faker().numerify("#########")'
+            if "guestid" in p or "memberid" in p or "accountid" in p:
+                return 'FakeData.faker().numerify("#########")'
+            if p in ("domain", "websitedomain", "weburl"):
+                return 'FakeData.username() + ".com"'
+            if "email" in p:
+                return ('FakeData.username() + "@" + '
+                        'Config.get("ALLOWED_DOMAIN", "example.com")')
+            return 'FakeData.username()'
+
         variant_lines: list[str] = []
-        for prop in variant_props:
-            plow = prop.lower()
-            if "email" in plow:
-                variant_lines.append(
-                    f'    String genV_{prop} = FakeData.username() '
-                    f'+ "@" + Config.get("ALLOWED_DOMAIN", "example.com");')
-            else:
-                # firstname/lastname/other name-shaped fields: reuse
-                # FakeData.username() -- yields a short alphanumeric string
-                # that is unique per call, valid as any identifier the
-                # target API accepts. FakeData doesn't expose separate
-                # firstName/lastName generators; adding them isn't worth
-                # the churn when a random string works for enrollment.
-                variant_lines.append(
-                    f'    String genV_{prop} = FakeData.username();')
-            variant_lines.append(
-                f'    ctx.put("Properties.{prop}", genV_{prop});')
+        for prop in all_props:
+            # SoapUI ${#Project#ALLOWED_DOMAINS} resolves to a comma-list
+            # in the source script, but ctx / config doesn't have that
+            # here -- use ALLOWED_DOMAIN (single). Domain gets a stable
+            # value shared across variants so all "domain" references in
+            # a case agree.
+            expr = _generator_expr(prop)
+            varname = f'genV_{re.sub(r"[^A-Za-z0-9_]", "_", prop)}'
+            variant_lines.append(f'    String {varname} = {expr};')
+            variant_lines.append(f'    ctx.put("Properties.{prop}", {varname});')
             # Also case-flipped tail so lowercase / CamelCase templates both hit.
             flipped = (prop[0].swapcase() + prop[1:]) if prop else prop
             if flipped and flipped != prop:
                 variant_lines.append(
-                    f'    ctx.put("Properties.{flipped}", genV_{prop});')
+                    f'    ctx.put("Properties.{flipped}", {varname});')
 
         lines.extend([
-            '// [translated] random email + username generator',
+            '// [translated] random email + username + variant generator',
             '{',
-            '    String genUsername = FakeData.username();',
-            '    String genEmail = genUsername + "@" + Config.get("ALLOWED_DOMAIN", "example.com");',
-            '    // Update ctx with generated values under BOTH case variants',
-            '    // so downstream templates resolve regardless of whether they',
-            '    // use `#Properties_Username#` (SoapUI CamelCase convention)',
-            '    // or `#Properties_username#` (lowercase, common in CSV cols).',
-            '    ctx.put("Properties.Email", genEmail);',
-            '    ctx.put("Properties.email", genEmail);',
-            '    ctx.put("Properties.Username", genUsername);',
-            '    ctx.put("Properties.username", genUsername);',
+            '    // Every variant gets a NAME-SHAPE-appropriate generator',
+            '    // (phones = digits, domains = word.com, emails = word@domain,',
+            '    // ids = 9-digit numeric, everything else = alphanum).',
+            '    // Both case variants of each key are populated so',
+            '    // #Properties_Username# and #Properties_username# both resolve.',
         ])
-        if variant_lines:
-            lines.append(
-                f'    // Additional variant properties discovered in the '
-                f'Groovy source ({len(variant_props)}): each gets its OWN '
-                f'freshly-generated value so multi-user test flows do not '
-                f'collide on "not unique" 4xx.')
-            lines.extend(variant_lines)
+        lines.extend(variant_lines)
         lines.append('}')
         _mark("random_email_generator")
         consumed = True
