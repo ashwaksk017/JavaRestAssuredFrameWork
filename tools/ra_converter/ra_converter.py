@@ -4273,6 +4273,12 @@ public class {class_name} {{
                 '// [regen] fresh username/email/phone/domain '
                 'before this step\'s body -- prevents shared-generator '
                 'collisions across sibling REST steps.')
+            # Dump ctx BEFORE regen so a diff vs the post-regen dump
+            # shows exactly which keys got refreshed (and confirms the
+            # ctx.put calls actually took effect against LiveMap).
+            lines.append(
+                f'TestSupport.traceCtx(ctx, "before-regen:'
+                f'{_jlit(step.step_name)}");')
             lines.append('TestSupport.regenRandomProperties(ctx);')
             # Diagnostic log at the call site: makes it unmistakable in
             # the test log whether the regen actually fired for this
@@ -4286,6 +4292,9 @@ public class {class_name} {{
                 f'Properties.Username={{}} Properties.Email={{}}", '
                 f'ctx.get("Properties.Username"), '
                 f'ctx.get("Properties.Email"));')
+            lines.append(
+                f'TestSupport.traceCtx(ctx, "after-regen:'
+                f'{_jlit(step.step_name)}");')
         if verb_expects_body and has_source_body:
             # Template location resolution:
             #   v2 mode (--one-class-per-suite): emit_templates_deduplicated
@@ -4320,6 +4329,15 @@ public class {class_name} {{
                 lines.append(f'String {payload_var} = RestUtilities.mapJsonValues(')
                 lines.append(f'    RestUtilities.getRequestTemplate("{tmpl_dir}", "{tmpl_file}"),')
                 lines.append(f'    TestSupport.mergedRow(row, ctx), /* strict */ false);')
+            # Post-mapJsonValues intermediate payload -- captures what
+            # #X# resolution produced BEFORE PlaceholderResolver.resolveAll's
+            # <<faker>> + ${ref} + hash-ref pass runs. If this shows the
+            # fresh value and the final body doesn't, the drift is in
+            # PlaceholderResolver; if this shows stale, mergedRow /
+            # mapJsonValues is the culprit.
+            lines.append(
+                f'LOG.info(" .. [after-mapJsonValues] step={_jlit(step.step_name)} '
+                f'({{}} chars): {{}}", {payload_var}.length(), {payload_var});')
             body_var = payload_var
             if self._resolver_emitted:
                 # v2 only: runtime dynamic-value pass expands `<<X>>`
@@ -5556,6 +5574,42 @@ public final class TestSupport {{
         if (ctx == null || key == null) return;
         if (value == null || value.isEmpty()) return;
         ctx.putIfAbsent(key, value);
+    }}
+
+    /**
+     * Dump every ctx entry whose KEY starts with one of the prefixes
+     * a REST-step body would care about (Properties.*, tokenId.*,
+     * PropertiesDetails.*). Sorted so successive dumps compare
+     * cleanly with `diff` in the log. Used as a tracing helper --
+     * emitter drops calls to this around each regen + before
+     * mergedRow so a stale value's origin is unambiguous.
+     */
+    public static void traceCtx(Map<String, String> ctx, String tag) {{
+        org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(TestSupport.class);
+        if (ctx == null || ctx.isEmpty()) {{
+            log.info(" .. [ctx@{{}}] <empty>", tag);
+            return;
+        }}
+        java.util.TreeMap<String, String> sorted = new java.util.TreeMap<>();
+        for (Map.Entry<String, String> e : ctx.entrySet()) {{
+            String k = e.getKey();
+            if (k == null) continue;
+            if (k.startsWith("Properties") || k.startsWith("tokenId")
+                    || k.startsWith("PropertiesDetails")
+                    || k.startsWith("PropertiesGuestId")) {{
+                sorted.put(k, e.getValue());
+            }}
+        }}
+        if (sorted.isEmpty()) {{
+            log.info(" .. [ctx@{{}}] <no Properties/tokenId keys>", tag);
+            return;
+        }}
+        StringBuilder sb = new StringBuilder(sorted.size() * 40);
+        for (Map.Entry<String, String> e : sorted.entrySet()) {{
+            sb.append("\\n     ").append(e.getKey()).append(" = ")
+              .append(e.getValue());
+        }}
+        log.info(" .. [ctx@{{}}] ({{}} keys):{{}}", tag, sorted.size(), sb);
     }}
 
     /**
