@@ -7252,18 +7252,31 @@ public class {class_name} extends BaseApiTest {{
     def _emit_tier1_for(self, entries: list[dict], hash_to_path: dict[str, str]) -> None:
         """Exact-body dedup helper used by both JSON singleton groups and
         the non-JSON fallback path. Writes each unique body once and maps
-        every (case, step) to it. Uses the per-entry `ext` field for the
-        file extension so XML/form/plain bodies land as `.xml`/`.form`/
-        `.txt` instead of `.json`."""
+        every (case, step) to the same classpath -- the file the FIRST
+        entry for that hash wrote. Prior version regenerated the
+        classpath per-entry using the per-step sanitized name, so when
+        two steps had the same body hash (e.g. `http_request_200_3` and
+        `http_request_200_3 3`), the first step wrote a file and the
+        second step registered its OWN filename in _template_path_by_step
+        without writing -- runtime got IllegalArgumentException `Template
+        not found on classpath: <second-step-name>_<hash>.json`.
+        Uses the per-entry `ext` field so XML/form/plain bodies land as
+        `.xml`/`.form`/`.txt` instead of `.json`."""
         for e in entries:
-            classpath_dir = f"templates/{self.suite_name}/{e['bucket']}/"
-            ext = e.get("ext", "json")
-            classpath_file = f"{sanitize_identifier(e['step']).lower()}_{e['hash']}.{ext}"
-            classpath = classpath_dir + classpath_file
-            self._template_path_by_step[(e["case"], e["step"])] = classpath
-            if e["hash"] not in hash_to_path:
+            if e["hash"] in hash_to_path:
+                # Same-body dedup: reuse the classpath the FIRST entry
+                # with this hash wrote; the file already exists on disk.
+                classpath = hash_to_path[e["hash"]]
+            else:
+                # First time we've seen this body -- write it and record
+                # the classpath under the hash for future dedup hits.
+                classpath_dir = f"templates/{self.suite_name}/{e['bucket']}/"
+                ext = e.get("ext", "json")
+                classpath_file = f"{sanitize_identifier(e['step']).lower()}_{e['hash']}.{ext}"
+                classpath = classpath_dir + classpath_file
                 self._write(f"src/main/resources/{classpath}", e["translated"])
                 hash_to_path[e["hash"]] = classpath
+            self._template_path_by_step[(e["case"], e["step"])] = classpath
 
     def emit_templates_class(self) -> Optional[str]:
         """Emit `com.<pkg>.support.<suite>.Templates` -- a constants class
