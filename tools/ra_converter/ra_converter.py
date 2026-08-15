@@ -4953,6 +4953,12 @@ public final class TestSupport {{
      * step doesn't beat a Groovy-captured value under a sibling key.
      */
     public static String ctxGet(Map<String, String> ctx, String primaryKey) {{
+        String raw = ctxGetRaw(ctx, primaryKey);
+        return expandPlaceholders(ctx, raw);
+    }}
+
+    /** Raw lookup without placeholder expansion (package-private). */
+    static String ctxGetRaw(Map<String, String> ctx, String primaryKey) {{
         if (ctx == null || primaryKey == null) return "";
         // KNOWN-EMPTY signal: if the primary key was explicitly written to
         // ctx with an empty value (typically by safeJsonExtract after an
@@ -4990,6 +4996,42 @@ public final class TestSupport {{
         if (bare != null && !bare.isEmpty()) return bare;
         return "";
     }}
+
+    /**
+     * Recursively expand {{@code #Key#}} and {{@code @Key@}} refs in
+     * the value against ctx. Bounded at 5 iterations to break cycles.
+     * URL path substitution reads ctx directly (NOT through
+     * mapJsonValues), so without this expansion the emitter's CSV
+     * id-shape rewrite (which replaces stale ids like
+     * {{@code PropertiesDetails.accountID = 2000016128}} with
+     * {{@code @Properties_accountID@}}) would send the literal
+     * placeholder in the URL path.
+     */
+    private static String expandPlaceholders(Map<String, String> ctx, String value) {{
+        if (value == null || value.isEmpty()) return value == null ? "" : value;
+        if (value.indexOf('#') < 0 && value.indexOf('@') < 0) return value;
+        String cur = value;
+        for (int i = 0; i < 5; i++) {{
+            String next = HASH_REF.matcher(cur).replaceAll(m -> {{
+                String key = m.group(1);
+                String v = ctxGetRaw(ctx, key);
+                return v == null ? "" : java.util.regex.Matcher.quoteReplacement(v);
+            }});
+            next = AT_REF.matcher(next).replaceAll(m -> {{
+                String key = m.group(1);
+                String v = ctxGetRaw(ctx, key);
+                return v == null ? "" : java.util.regex.Matcher.quoteReplacement(v);
+            }});
+            if (next.equals(cur)) return next;
+            cur = next;
+        }}
+        return cur;
+    }}
+
+    private static final java.util.regex.Pattern HASH_REF =
+            java.util.regex.Pattern.compile("#([A-Za-z0-9_.-]+)#");
+    private static final java.util.regex.Pattern AT_REF =
+            java.util.regex.Pattern.compile("@([A-Za-z0-9_.-]+)@");
 
     private static String flipTrailingCase(String field) {{
         if (field == null || field.length() < 2) return null;
