@@ -722,6 +722,156 @@ _STEP_PARSERS = {
 }
 
 
+# Numeric segments treated as hardcoded ids (6+ digits).
+# Bare 5-digit-or-shorter segments stay literal to avoid touching
+# API version markers (`v2`), port fragments, or short SKUs.
+_HARDCODED_PATH_ID_RX = re.compile(r"^\d{6,}$")
+
+
+def _normalize_hardcoded_path_ids(resource_path: str,
+                                  path_params: dict) -> tuple[str, dict, list]:
+    """Rewrite bare numeric-id segments to {paramName} placeholders and
+    add matching Properties refs to path_params. Only fires on segments
+    of 6+ digits so version markers (`v2`), short numeric SKUs, and
+    port fragments are left alone.
+
+    Prior emit only rewrote hardcoded ids when the URL already had a
+    matching `{X}` template -- SoapUI URLs like
+    `/guests/076187465/businesses` (no braces) shipped the stale id
+    verbatim, then `http_request_200_1` hit a non-existent guest and
+    cascaded 400/404 through every downstream step that depended on
+    its response.
+
+    Returns (new_path, updated_path_params, rewrite_log). Callers can
+    surface rewrite_log via the audit ledger."""
+    if not resource_path or '/' not in resource_path:
+        return resource_path, path_params or {}, []
+    segments = resource_path.split('/')
+    new_segments: list[str] = []
+    new_params = dict(path_params) if path_params else {}
+    used_names = set(new_params.keys())
+    rewrites: list[tuple[str, str, str]] = []  # (segment, param, orig_value)
+    for i, seg in enumerate(segments):
+        if not _HARDCODED_PATH_ID_RX.fullmatch(seg):
+            new_segments.append(seg)
+            continue
+        # Derive param name from the preceding non-empty segment.
+        parent = ""
+        for j in range(i - 1, -1, -1):
+            if segments[j] and not segments[j].startswith('{'):
+                parent = segments[j]
+                break
+        # Naive English singularization; keeps 'businesses' -> 'businesse'
+        # imperfect but stable + collision-safe. Path-arg lookup goes
+        # through Properties.<name> so the exact singular form doesn't
+        # need to match a domain vocabulary.
+        singular = parent[:-1] if parent.endswith('s') and len(parent) > 1 else parent
+        base_name = f"{singular}Id" if singular else "id"
+        # Collision-resolve: guestId, guestId2, guestId3 ...
+        param_name = base_name
+        n = 2
+        while param_name in used_names:
+            param_name = f"{base_name}{n}"
+            n += 1
+        used_names.add(param_name)
+        new_segments.append("{" + param_name + "}")
+        new_params[param_name] = "${#TestCase#Properties." + param_name + "}"
+        rewrites.append((seg, param_name, seg))
+    return '/'.join(new_segments), new_params, rewrites
+
+
+def normalize_hardcoded_path_ids_in_place(cases: list) -> list:
+    """Walk every RestStep in every case and mutate resource_path +
+    path_params to replace bare hardcoded numeric ids with {param}
+    templates. Runs BEFORE `collect_shared_rest_steps` so client
+    method grouping (keyed by (method_name, resource_path)) sees the
+    normalized form -- otherwise the emitted client method signature
+    would be based on the raw literal path but call sites would use
+    the normalized template, breaking the (op, path) lookup.
+
+    Returns a flat list of rewrites: [(case_name, step_name, seg, param)]
+    for the audit ledger to log."""
+    all_rewrites: list[tuple[str, str, str, str]] = []
+    for case in cases:
+        for step in getattr(case, 'steps', []):
+            if not isinstance(step, RestStep):
+                continue
+            new_path, new_params, rewrites = _normalize_hardcoded_path_ids(
+                step.resource_path, step.path_params)
+            if rewrites:
+                step.resource_path = new_path
+                step.path_params = new_params
+                for seg, param, orig in rewrites:
+                    all_rewrites.append(
+                        (case.name, step.step_name, orig, param))
+    return all_rewrites
+
+
+_EMBEDDED_DOLLAR_REF_RX = re.compile(r"\$\{[^}]+\}")
+
+
+def normalize_dollar_refs_in_resource_paths(cases: list) -> int:
+    """Rewrite SoapUI `${...}` refs embedded in a resource_path to
+    `{paramName}` java-template braces, adding matching path_params
+    entries with the ORIGINAL `${...}` value preserved. Downstream
+    path-arg processing calls soapui_expr_to_java on those preserved
+    refs -- which already handles `${step#Response#$.X}`
+    (safeJsonExtract), `${step#property}` (ctxGet), etc.
+
+    Prior emit quoted the path verbatim -- SoapUI paths like
+    `/guests/${HHonorsEnroll#Response#$.guestId}/members` shipped
+    the `${...}` literal on the wire, always 404. Runs BEFORE
+    collect_shared_rest_steps so client method grouping keys agree
+    with the normalized template.
+
+    Returns the count of steps whose resource_path was rewritten."""
+    changed = 0
+    for case in cases:
+        for step in getattr(case, 'steps', []):
+            if not isinstance(step, RestStep):
+                continue
+            path = step.resource_path or ""
+            if "${" not in path:
+                continue
+            existing = set(re.findall(r"\{([A-Za-z0-9_]+)\}", path))
+            existing |= set((step.path_params or {}).keys())
+            new_params = dict(step.path_params) if step.path_params else {}
+            touched = False
+
+            def _replace(m):
+                nonlocal touched
+                orig = m.group(0)
+                inner = orig[2:-1]  # strip ${...}
+                # Best-effort param name from the last identifier
+                # inside the ref. Falls back to `pathArg` on exotic
+                # shapes. Collision-resolves with numeric suffix so
+                # multiple embedded refs get unique names.
+                tail = re.split(r"[#.$'\"\[\]]", inner)
+                base = ""
+                for tok in reversed(tail):
+                    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", tok or ""):
+                        base = tok
+                        break
+                if not base:
+                    base = "pathArg"
+                name = base
+                n = 2
+                while name in existing:
+                    name = f"{base}{n}"
+                    n += 1
+                existing.add(name)
+                new_params[name] = orig
+                touched = True
+                return "{" + name + "}"
+
+            new_path = _EMBEDDED_DOLLAR_REF_RX.sub(_replace, path)
+            if touched:
+                step.resource_path = new_path
+                step.path_params = new_params
+                changed += 1
+    return changed
+
+
 def parse_test_suite(xml_path: str) -> list[TestCase]:
     """Parse a SoapUI test suite XML and return all test cases as IR.
     Legacy entry point: returns cases from the FIRST <con:testSuite> only
@@ -3103,6 +3253,12 @@ class Emitter:
         # without a body still has to pass "" if the client was emitted
         # from a case whose PATCH had a body).
         self.client_takes_body: dict[tuple[str, str], bool] = {}
+        # And whether that client method takes a `Map<String,String>
+        # queryParams` arg. When ANY step referencing this op declares
+        # <con:parameters> entries that don't map to path/header slots,
+        # every emitted call site for the shared client method must
+        # pass a map (possibly empty) so the signature is uniform.
+        self.client_takes_query: dict[tuple[str, str], bool] = {}
         # Populated by main() before emit_test_class runs. Maps case name to
         # the flow dict (or missing = no shared flow covers this case).
         self._flow_by_case: dict[str, dict] = {}
@@ -3243,6 +3399,14 @@ class Emitter:
             # And whether the signature includes a requestBody arg -- the
             # call site must match this decision or the compile breaks.
             self.client_takes_body[(op_name, path)] = step.http_method in ("POST", "PUT", "PATCH")
+            # Union of query-param keys across every step sharing this op.
+            # ANY step with query params flips the shared client method to
+            # accept a map; steps with no params pass an empty map. Prior
+            # emit ignored <con:parameters> entirely, silently shipping
+            # `.get(baseUrl + "/search")` for `GET /search?filter=X`.
+            self.client_takes_query[(op_name, path)] = any(
+                bool(getattr(s, "query_params", None))
+                for (_, s) in occurrences)
             java_method = self._render_client_method(effective_op, path, step, override_name=java_name)
             methods.append(java_method)
 
@@ -3300,10 +3464,19 @@ public class {class_name} {{
         path_param_map = {p: sanitize_identifier(p) for p in raw_path_params}
         java_path_params = ", ".join(
             f"String {path_param_map[p]}" for p in raw_path_params)
-        # Build method params: (String token, [path_params...], [String body if POST/PUT/PATCH])
+        # Build method params: (String token, [path_params...],
+        # [Map<String,String> queryParams if op has any], [String body
+        # if POST/PUT/PATCH])
         params = ["String token"]
         if java_path_params:
             params.append(java_path_params)
+        # Query params: consult the shared-client shape flag rather than
+        # this one step's declaration, so a client method shared across
+        # cases keeps a stable signature.
+        client_key = (op_name, path)
+        takes_query = self.client_takes_query.get(client_key, bool(step.query_params))
+        if takes_query:
+            params.append("Map<String, String> queryParams")
         needs_body = verb in ("POST", "PUT", "PATCH")
         if needs_body:
             params.append("String requestBody")
@@ -3349,14 +3522,22 @@ public class {class_name} {{
         body_chain = ".body(requestBody)" if needs_body else ""
         content_chain = (f".contentType({content_type_expr})"
                          if needs_body else "")
+        # `.queryParams(map)` is null-safe: RestAssured's Map<String,?>
+        # overload iterates entries and skips a null map cleanly. Only
+        # emit the chain segment when the shared client method declares
+        # the arg, to avoid an unbound `queryParams` compile error in
+        # signatures that don't take one.
+        query_chain = ".queryParams(queryParams)" if takes_query else ""
         verb_call = verb.lower()
         if verb == "GET":
             call = ('Response res = RestAssured.given()\n'
                     '                .headers(headers)\n'
+                    f'                {query_chain}\n'
                     '                .get(baseUrl + path);')
         elif verb == "DELETE":
             call = ('Response res = RestAssured.given()\n'
                     '                .headers(headers)\n'
+                    f'                {query_chain}\n'
                     '                .delete(baseUrl + path);')
         elif verb in ("POST", "PUT", "PATCH"):
             # Use the direct RestAssured chain uniformly (no more
@@ -3364,6 +3545,7 @@ public class {class_name} {{
             call = ('Response res = RestAssured.given()\n'
                     '                .headers(headers)\n'
                     f'                {content_chain}\n'
+                    f'                {query_chain}\n'
                     f'                {body_chain}\n'
                     f'                .{verb_call}(baseUrl + path);')
         else:
@@ -4125,6 +4307,32 @@ public class {class_name} {{
             (step.method_name, step.resource_path),
             to_camel_case(step.method_name or step.step_name, upper_first=False))
         call_args = [token_expr] + path_args
+        # Query params (shared-shape decision): if the client method
+        # declared the map arg, EVERY call site must pass one -- steps
+        # without their own <con:parameters> hand in an empty map so
+        # the signature is uniform. Values are translated through the
+        # same substitution pipeline as body payloads (${...} -> #X#
+        # placeholders) and resolved at runtime via
+        # PlaceholderResolver.resolveAll against the row+ctx merged
+        # view, so faker tokens, cross-step refs, and CSV overrides
+        # all work consistently with what body substitution does.
+        client_takes_query = self.client_takes_query.get(
+            (step.method_name, step.resource_path),
+            bool(step.query_params))
+        if client_takes_query:
+            qp_var = self._uniq_local(f"__queryParams_{base}")
+            lines.append(
+                f'java.util.Map<String, String> {qp_var} = '
+                f'new java.util.LinkedHashMap<>();')
+            for qk, qv in (step.query_params or {}).items():
+                translated, _ = soapui_body_to_placeholders(qv or "")
+                lines.append(
+                    f'{qp_var}.put("{_jlit(qk)}", '
+                    f'PlaceholderResolver.resolveAll('
+                    f'RestUtilities.mapJsonValues('
+                    f'"{_jlit(translated)}", '
+                    f'TestSupport.mergedRow(row, ctx), false), ctx));')
+            call_args.append(qp_var)
         # Call site must match the client method's ACTUAL signature (which
         # was decided by the first occurrence of the op). The step's own
         # verb inference can disagree, but we defer to what the client emitter
@@ -4160,8 +4368,15 @@ public class {class_name} {{
                                    f'"{{{p}}}", '
                                    f'({path_args[i]}) == null ? "" : ({path_args[i]}))')
         resolved_url_var = self._uniq_local(f"__resolvedUrl_{base}")
+        # Wrap in PlaceholderResolver.resolveAll so #X# / @X@ refs
+        # translated from ${step#Response#$.field} / ${step#property}
+        # by normalize_dollar_refs_in_resource_paths resolve against
+        # ctx before the URL fires. No-op on paths with no such refs
+        # (fast-path returns the string unchanged when there's no `#`
+        # or `@`).
         lines.append(
-            f'String {resolved_url_var} = {resolved_path_expr};')
+            f'String {resolved_url_var} = '
+            f'PlaceholderResolver.resolveAll({resolved_path_expr}, ctx);')
         lines.append(
             f'RestUtilities.assertPathResolved('
             f'"{step.http_method}", "{_jlit(step.step_name)}", '
@@ -5012,20 +5227,37 @@ public final class TestSupport {{
         if (value.indexOf('#') < 0 && value.indexOf('@') < 0) return value;
         String cur = value;
         for (int i = 0; i < 5; i++) {{
-            String next = HASH_REF.matcher(cur).replaceAll(m -> {{
-                String key = m.group(1);
-                String v = ctxGetRaw(ctx, key);
-                return v == null ? "" : java.util.regex.Matcher.quoteReplacement(v);
-            }});
-            next = AT_REF.matcher(next).replaceAll(m -> {{
-                String key = m.group(1);
-                String v = ctxGetRaw(ctx, key);
-                return v == null ? "" : java.util.regex.Matcher.quoteReplacement(v);
-            }});
+            String next = expandOnce(cur, HASH_REF, ctx);
+            next = expandOnce(next, AT_REF, ctx);
             if (next.equals(cur)) return next;
             cur = next;
         }}
         return cur;
+    }}
+
+    /**
+     * Replace matches of {{@code pattern}} only when ctxGetRaw returns a
+     * non-empty value; otherwise leave the placeholder literal so
+     * {{@code assertPathResolved}} can surface the unresolved key at
+     * request time. Prior impl substituted "" on unknown keys, which
+     * silently produced {{@code /guests//accounts}} and masked the
+     * upstream extract failure as a target-server 404.
+     */
+    private static String expandOnce(String text, java.util.regex.Pattern pattern,
+                                     Map<String, String> ctx) {{
+        java.util.regex.Matcher m = pattern.matcher(text);
+        StringBuilder out = new StringBuilder();
+        while (m.find()) {{
+            String key = m.group(1);
+            String v = ctxGetRaw(ctx, key);
+            if (v == null || v.isEmpty()) {{
+                m.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(m.group()));
+            }} else {{
+                m.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(v));
+            }}
+        }}
+        m.appendTail(out);
+        return out.toString();
     }}
 
     private static final java.util.regex.Pattern HASH_REF =
@@ -8074,6 +8306,25 @@ def main():
               f"-> {len(clusters_preview)} @Test methods "
               f"({sum(1 for cl in clusters_preview if len(cl) > 1)} "
               f"with >1 CSV row)")
+
+    # Normalize hardcoded ids baked into resource_path segments BEFORE
+    # collect_shared_rest_steps builds the (op, path) map, or the
+    # client method signature (frozen off the raw literal path) won't
+    # match the normalized template that call sites use downstream.
+    _path_id_rewrites = normalize_hardcoded_path_ids_in_place(cases_in_scope)
+    if _path_id_rewrites:
+        print(f"[ra_converter] normalized {len(_path_id_rewrites)} hardcoded "
+              f"path id(s) to Properties refs across "
+              f"{len(set(r[0] for r in _path_id_rewrites))} case(s)")
+    # Translate embedded ${...} refs in resource_paths to #X# form so
+    # runtime PlaceholderResolver.resolveAll (wrapped around the URL
+    # builder in _render_rest_step_body) can resolve them against ctx.
+    # Also runs BEFORE collect_shared_rest_steps so client grouping
+    # sees the normalized path shape.
+    _path_dollar_count = normalize_dollar_refs_in_resource_paths(cases_in_scope)
+    if _path_dollar_count:
+        print(f"[ra_converter] translated ${{...}} refs in {_path_dollar_count} "
+              f"resource_path(s) to #X# placeholders")
 
     # ONE shared client covering every REST op across ALL prefixes in scope.
     # Cross-prefix dedup: if two prefixes both hit /token, they share the same

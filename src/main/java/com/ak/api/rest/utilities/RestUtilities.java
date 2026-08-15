@@ -390,7 +390,35 @@ public class RestUtilities {
             }
             idx += 2;
         }
+        // Leftover `#Key#` / `@Key@` from expandPlaceholders' 5-iter cap
+        // or a placeholder pointing at a ctx key that was never populated.
+        // Without this branch, the placeholder gets URL-encoded to
+        // `%23Key%23` and the server returns a bland 404 with no signal
+        // that the framework failed to substitute a value.
+        java.util.regex.Matcher hm = HASH_PATH_PLACEHOLDER.matcher(resolvedPath);
+        if (hm.find()) {
+            LOG.warn("assertPathResolved: {} `{}` URL still has unresolved "
+                    + "placeholder `{}` in `{}` -- ctx has no non-empty "
+                    + "value for that key; upstream Groovy/PropertyTransfer "
+                    + "likely didn't run or extracted nothing. Server 404 "
+                    + "will follow.",
+                    verb, stepName, hm.group(), resolvedPath);
+            return;
+        }
+        java.util.regex.Matcher am = AT_PATH_PLACEHOLDER.matcher(resolvedPath);
+        if (am.find()) {
+            LOG.warn("assertPathResolved: {} `{}` URL still has unresolved "
+                    + "placeholder `{}` in `{}` -- ctx has no non-empty "
+                    + "value for that key. Server 404 will follow.",
+                    verb, stepName, am.group(), resolvedPath);
+            return;
+        }
     }
+
+    private static final java.util.regex.Pattern HASH_PATH_PLACEHOLDER =
+            java.util.regex.Pattern.compile("#[A-Za-z0-9_.-]+#");
+    private static final java.util.regex.Pattern AT_PATH_PLACEHOLDER =
+            java.util.regex.Pattern.compile("@[A-Za-z0-9_.-]+@");
 
     /** {@link #parseIntOrDefault(String, int, String)} for long values. */
     public static long parseLongOrDefault(String raw, long fallback, String context) {
