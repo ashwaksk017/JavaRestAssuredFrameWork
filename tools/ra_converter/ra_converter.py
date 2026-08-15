@@ -6065,22 +6065,43 @@ public final class PlaceholderResolver {{
         if (text.indexOf('#') < 0 && text.indexOf('@') < 0) return text;
         String cur = text;
         for (int i = 0; i < 5; i++) {{
-            String next = HASH_REF.matcher(cur).replaceAll(m -> lookupCtx(ctx, m.group(1)));
-            next = AT_REF.matcher(next).replaceAll(m -> lookupCtx(ctx, m.group(1)));
+            String next = replaceIfKnown(cur, HASH_REF, ctx);
+            next = replaceIfKnown(next, AT_REF, ctx);
             if (next.equals(cur)) return next;
             cur = next;
         }}
         return cur;
     }}
 
-    private static String lookupCtx(Map<String, String> ctx, String rawKey) {{
-        String v = null;
-        if (ctx != null) {{
-            v = ctx.get(rawKey);
-            if (v == null || v.isEmpty()) v = ctx.get(rawKey.replace('_', '.'));
-            if (v == null || v.isEmpty()) v = ctx.get(rawKey.replace('.', '_'));
+    /**
+     * Iterate matches of {{@code pattern}} in {{@code text}}; substitute
+     * only when ctx has a NON-EMPTY value for the key. Placeholders
+     * whose key isn't in ctx yet are LEFT UNCHANGED so a later
+     * consumer (mapJsonValues, ctxGet) can still resolve them once
+     * ctx is populated (e.g. Groovy DataGenInput fires after resolveRow).
+     * Eagerly replacing with "" wipes the placeholder and permanently
+     * breaks later resolution.
+     */
+    private static String replaceIfKnown(String text, Pattern pattern,
+                                         Map<String, String> ctx) {{
+        Matcher m = pattern.matcher(text);
+        StringBuilder out = new StringBuilder();
+        while (m.find()) {{
+            String rawKey = m.group(1);
+            String v = null;
+            if (ctx != null) {{
+                v = ctx.get(rawKey);
+                if (v == null || v.isEmpty()) v = ctx.get(rawKey.replace('_', '.'));
+                if (v == null || v.isEmpty()) v = ctx.get(rawKey.replace('.', '_'));
+            }}
+            if (v == null || v.isEmpty()) {{
+                m.appendReplacement(out, Matcher.quoteReplacement(m.group()));
+            }} else {{
+                m.appendReplacement(out, Matcher.quoteReplacement(v));
+            }}
         }}
-        return v == null ? "" : Matcher.quoteReplacement(v);
+        m.appendTail(out);
+        return out.toString();
     }}
 
     private static final Pattern HASH_REF =

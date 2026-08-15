@@ -71,13 +71,74 @@ public final class PlaceholderResolver {
     private static final Pattern DOLLAR_REF =
         Pattern.compile("\\$\\{([A-Za-z_][A-Za-z0-9_.#-]*)\\}");
 
-    /** Run pass 1 then pass 2. Safe to call on already-resolved text
-     *  (idempotent -- no faker tokens or ${} refs to match). */
+    /** Run pass 1, pass 2, then pass 3. Safe to call on already-resolved
+     *  text (idempotent -- no faker tokens, ${}, #X#, or @X@ refs to match). */
     public static String resolveAll(String text, Map<String, String> ctx) {
         if (text == null || text.isEmpty()) return text;
         String phase1 = resolveFakerTokens(text);
-        return resolveDollarRefs(phase1, ctx);
+        String phase2 = resolveDollarRefs(phase1, ctx);
+        return resolveHashAtRefs(phase2, ctx);
     }
+
+    /**
+     * Pass 3: framework-native {@code #Key#} and {@code @Key@} refs.
+     * mapJsonValues handles these for body templates at HTTP-call time,
+     * but CSV cells that reach OTHER consumers (assertion emit reads
+     * {@code row.getOrDefault(col, ...)} verbatim; URL path
+     * substitution calls {@code TestSupport.ctxGet}) never went
+     * through mapJsonValues -- literal {@code #Properties_Domain#}
+     * in an assertion cell would compare against the actual response
+     * value and mismatch every time. Bounded at 5 iterations. No-op
+     * when text has no {@code #} or {@code @} chars.
+     */
+    public static String resolveHashAtRefs(String text, Map<String, String> ctx) {
+        if (text == null || text.isEmpty()) return text;
+        if (text.indexOf('#') < 0 && text.indexOf('@') < 0) return text;
+        String cur = text;
+        for (int i = 0; i < 5; i++) {
+            String next = replaceIfKnown(cur, HASH_REF, ctx);
+            next = replaceIfKnown(next, AT_REF, ctx);
+            if (next.equals(cur)) return next;
+            cur = next;
+        }
+        return cur;
+    }
+
+    /**
+     * Iterate matches of {@code pattern} in {@code text}; substitute
+     * only when ctx has a NON-EMPTY value for the key. Placeholders
+     * whose key isn't in ctx yet are LEFT UNCHANGED so a later
+     * consumer (mapJsonValues, ctxGet) can still resolve them once
+     * ctx is populated (e.g. Groovy DataGenInput fires after resolveRow).
+     * Eagerly replacing with "" wipes the placeholder and permanently
+     * breaks later resolution.
+     */
+    private static String replaceIfKnown(String text, Pattern pattern,
+                                         Map<String, String> ctx) {
+        Matcher m = pattern.matcher(text);
+        StringBuilder out = new StringBuilder();
+        while (m.find()) {
+            String rawKey = m.group(1);
+            String v = null;
+            if (ctx != null) {
+                v = ctx.get(rawKey);
+                if (v == null || v.isEmpty()) v = ctx.get(rawKey.replace('_', '.'));
+                if (v == null || v.isEmpty()) v = ctx.get(rawKey.replace('.', '_'));
+            }
+            if (v == null || v.isEmpty()) {
+                m.appendReplacement(out, Matcher.quoteReplacement(m.group()));
+            } else {
+                m.appendReplacement(out, Matcher.quoteReplacement(v));
+            }
+        }
+        m.appendTail(out);
+        return out.toString();
+    }
+
+    private static final Pattern HASH_REF =
+            Pattern.compile("#([A-Za-z0-9_.-]+)#");
+    private static final Pattern AT_REF =
+            Pattern.compile("@([A-Za-z0-9_.-]+)@");
 
     /**
      * Expand every cell of a CSV row: {@code <<X>>} faker tokens become
