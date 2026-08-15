@@ -472,9 +472,125 @@ _LOG_RX = re.compile(
     re.IGNORECASE)
 
 
-# 8. context.expand('${#Project#X}')  -> Config.get("X", "")
-_CONTEXT_EXPAND_RX = re.compile(
-    r"context\.expand\(\s*['\"]\$\{#Project#(?P<var>[A-Za-z_][A-Za-z0-9_]*)\}['\"]\s*\)")
+# 8. context.expand('${...}')  -- SoapUI's runtime ref expander.
+# Covers every scoped ref shape (Project, TestCase/TestSuite/Global/Env
+# scoped, cross-step, bare identifier). The narrow #Project-only pattern
+# previously defined here was declared but never referenced in
+# translate(); every context.expand call in the suite was silently
+# dropped, and `def X = context.expand('${Properties#Domain}')`
+# left `X` undefined in Java scope -- downstream references to `X`
+# (in SQL binds, log lines, etc.) fell through as bare identifiers
+# and either broke compile or lost the value entirely.
+_CONTEXT_EXPAND_ANY_RX = re.compile(
+    r"context\.expand\(\s*['\"](?P<ref>\$\{[^}]+\})['\"]\s*\)")
+# Binding form: `def X = context.expand('${...}')`. Captures the local
+# name so the emitter can lift it into a Java String local AND
+# publish it to ctx under its own name, so both direct references
+# (`sql.execute("... = ?", [X])` -> our #ident# rewrite finds `X` in
+# ctx) and re-refs (`context.expand('${X}')`) resolve.
+_DEF_CONTEXT_EXPAND_RX = re.compile(
+    r"def\s+(?P<var>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+    r"context\.expand\(\s*['\"](?P<ref>\$\{[^}]+\})['\"]\s*\)")
+
+
+def _translate_soapui_jsonpath(path: str) -> str:
+    """Local copy of ra_converter's helper (importing from ra_converter
+    would create a cycle -- ra_converter imports this module). Strips
+    leading `$.` / `$` and unwraps `['x']` / `["x"]` -> `.x`.
+
+    Groovy single-quoted string literals in the SoapUI XML often
+    carry escaped quotes (`$[\\'x\\']`) that reach us verbatim as
+    `$[\\'x\\']`. Unescape before the bracket regex or the strip
+    silently misses and leaves `[\\'x\\']` in the output path."""
+    p = (path or "").strip()
+    p = p.replace("\\'", "'").replace('\\"', '"')
+    if p.startswith("$."):
+        p = p[2:]
+    elif p.startswith("$"):
+        p = p[1:]
+    p = re.sub(r"\['([^']+)'\]", r".\1", p)
+    p = re.sub(r'\["([^"]+)"\]', r".\1", p)
+    return p.lstrip(".")
+
+
+def _translate_soapui_ref_to_java_expr(
+        ref_text: str,
+        response_var_by_step: Optional[dict] = None) -> str:
+    """Translate a bare SoapUI `${...}` ref to the Java expression
+    that produces its value at runtime. Handles every common scoped
+    form; falls back to a ctx-lookup on the raw inner text (which
+    resolves to "" if nothing matches -- safer than a bare identifier
+    reference the Java compiler would reject).
+
+    Pass `response_var_by_step` so `${Step#Response#<jsonPath>}` can
+    route to `safeJsonExtract(<step>Res, path)` when the step's
+    response variable is in scope. Without the map (or if the step
+    is out of scope), the ref falls back to a ctx lookup on a
+    synthesized `step.responsefield` key -- which will resolve iff
+    a PropertyTransfer previously published it.
+
+    Kept local to groovy_translator to avoid a circular import with
+    ra_converter (which itself imports this module). Regex family
+    intentionally mirrors ra_converter's soapui_expr_to_java so
+    both paths translate identically."""
+    inner = ref_text.strip()
+    if inner.startswith("${") and inner.endswith("}"):
+        inner = inner[2:-1]
+    # ${#Project#X} -> Config.get("X", "")
+    m = re.fullmatch(r"#Project#([A-Za-z0-9_.-]+)", inner)
+    if m:
+        return f'Config.get("{m.group(1)}", "")'
+    # ${#TestCase#Properties#X} / ${#TestSuite#X} -> ctx read via
+    # the trailing property key
+    m = re.fullmatch(
+        r"#(?:TestCase|TestSuite|MockService)#([A-Za-z0-9_.-]+)#"
+        r"([A-Za-z0-9_.-]+)", inner)
+    if m:
+        return f'TestSupport.ctxGet(ctx, "{m.group(1)}.{m.group(2)}")'
+    m = re.fullmatch(
+        r"#(?:TestCase|TestSuite|MockService)#([A-Za-z0-9_.-]+)", inner)
+    if m:
+        return f'TestSupport.ctxGet(ctx, "{m.group(1)}")'
+    # ${#Global#X} / ${#Env#X} -> Config.get (Global + Env are project-
+    # level configs, not per-test ctx)
+    m = re.fullmatch(r"#(?:Global|Env)#([A-Za-z0-9_.-]+)", inner)
+    if m:
+        return f'Config.get("{m.group(1)}", "")'
+    # ${Step#Response#<jsonPath>} -- SoapUI's cross-step JSON extract.
+    # Route to safeJsonExtract when the source step's response is in
+    # scope; otherwise fall back to a ctx read on a synthesized key
+    # (which resolves if a PropertyTransfer published it earlier).
+    m = re.fullmatch(
+        r"([A-Za-z_][A-Za-z0-9_ -]*)#Response#(.+)", inner)
+    if m:
+        step_raw, path = m.group(1), m.group(2)
+        step_safe = re.sub(r"[^A-Za-z0-9_]", "_", step_raw)
+        resp_var = (response_var_by_step or {}).get(step_raw)
+        if not resp_var:
+            resp_var = (response_var_by_step or {}).get(step_safe)
+        if resp_var:
+            jp = _translate_soapui_jsonpath(path)
+            return (f'com.ak.api.rest.utilities.RestUtilities'
+                    f'.safeJsonExtract({resp_var}, "{jp}")')
+        # Response var out of scope: settle for a ctx read under a
+        # synthetic key. Author can wire a PropertyTransfer to
+        # publish it.
+        jp = _translate_soapui_jsonpath(path)
+        key_field = re.sub(r"[^A-Za-z0-9_]", "_", jp)
+        return f'TestSupport.ctxGet(ctx, "{step_safe}.{key_field}")'
+    # ${Step#Field} -> ctxGet("Step.Field")
+    m = re.fullmatch(
+        r"([A-Za-z_][A-Za-z0-9_]*)#([A-Za-z0-9_.-]+)", inner)
+    if m:
+        return f'TestSupport.ctxGet(ctx, "{m.group(1)}.{m.group(2)}")'
+    # ${Var} bare -- read from ctx directly
+    m = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_.-]*)", inner)
+    if m:
+        return f'TestSupport.ctxGet(ctx, "{m.group(1)}")'
+    # Unknown shape -- best-effort ctx read on the raw inner. Returns
+    # "" if not found; better than emitting a Java compile error.
+    escaped = inner.replace('\\', '\\\\').replace('"', '\\"')
+    return f'TestSupport.ctxGet(ctx, "{escaped}")'
 
 
 # ---------------------------------------------------------------------------
@@ -501,6 +617,60 @@ def translate(script: str, response_var_by_step: dict[str, str],
     }
     patterns_matched: list[str] = []
     consumed = False
+
+    # ---- `def X = context.expand('${...}')` bindings. Runs FIRST so
+    # each var lands in ctx before sql.execute's bind-list rewrite
+    # (finding #7) or a later context.expand looks for it.
+    # Wrapped in a `{...}` scope block so multiple Groovy steps in
+    # the same @Test method don't collide on locals like `dbUrl`
+    # (each step's block emits its own idempotent local + ctx.put).
+    # Downstream refs to `X` in emitted Java should read `ctx.get`
+    # or use `#X#` placeholders -- the raw Java local is a
+    # translation artifact, not a public contract.
+    _context_expand_vars: list[tuple[str, str, str]] = []
+    for m in _DEF_CONTEXT_EXPAND_RX.finditer(script):
+        var = m.group("var")
+        if any(v[0] == var for v in _context_expand_vars):
+            continue
+        java_expr = _translate_soapui_ref_to_java_expr(
+            m.group("ref"), response_var_by_step)
+        _context_expand_vars.append((var, java_expr, m.group("ref")))
+    if _context_expand_vars:
+        lines.append('{')
+        for var, java_expr, ref in _context_expand_vars:
+            lines.append(
+                f'    // [translated] def {var} = context.expand({ref})')
+            lines.append(f'    String {var} = {java_expr};')
+            lines.append(
+                f'    TestSupport.putIfNonEmpty(ctx, "{var}", {var});')
+        lines.append('}')
+        patterns_matched.append("context_expand_def")
+        consumed = True
+
+    # ---- Bare `context.expand('${...}')` calls that WEREN'T bound to a
+    # `def X`. Rare (usually the return value's discarded in Groovy)
+    # but worth flagging so the emit's diff shows the untranslated
+    # side effect. Value goes into a synthetic ctx key derived from
+    # the ref content so later ctxGet-style probes can find it.
+    for m in _CONTEXT_EXPAND_ANY_RX.finditer(script):
+        # Skip anything already handled by the DEF branch above.
+        start = m.start()
+        # Cheap check: is the preceding chunk a `def X =`?
+        head = script[max(0, start - 60):start]
+        if re.search(r"def\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*$", head):
+            continue
+        java_expr = _translate_soapui_ref_to_java_expr(
+            m.group("ref"), response_var_by_step)
+        # Synthesize a stable key from the ref so multiple bare
+        # expands in one script don't stomp each other.
+        key_seed = re.sub(r"[^A-Za-z0-9_]", "_", m.group("ref").strip("${}"))
+        lines.append(
+            f'// [translated] bare context.expand({m.group("ref")})')
+        lines.append(
+            f'TestSupport.putIfNonEmpty(ctx, "_ctxexpand.{key_seed}", '
+            f'{java_expr});')
+        patterns_matched.append("context_expand_bare")
+        consumed = True
 
     # ---- Def-var tracing: recognize `def X = <expr>` chains rooted in a step
     # response, and publish each extracted var to ctx under
