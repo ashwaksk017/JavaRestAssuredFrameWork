@@ -4274,6 +4274,18 @@ public class {class_name} {{
                 'before this step\'s body -- prevents shared-generator '
                 'collisions across sibling REST steps.')
             lines.append('TestSupport.regenRandomProperties(ctx);')
+            # Diagnostic log at the call site: makes it unmistakable in
+            # the test log whether the regen actually fired for this
+            # step, AND what value ended up in ctx. Prior symptom: both
+            # enroll bodies showed identical username/email even though
+            # the emitter said regen was in place -- turned out the
+            # user's downloaded emit was stale. This line collapses that
+            # ambiguity into one grep-able log entry per REST step.
+            lines.append(
+                f'LOG.info(" .. [regen] step={_jlit(step.step_name)} '
+                f'Properties.Username={{}} Properties.Email={{}}", '
+                f'ctx.get("Properties.Username"), '
+                f'ctx.get("Properties.Email"));')
         if verb_expects_body and has_source_body:
             # Template location resolution:
             #   v2 mode (--one-class-per-suite): emit_templates_deduplicated
