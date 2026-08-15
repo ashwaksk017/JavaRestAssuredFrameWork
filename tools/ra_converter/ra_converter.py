@@ -3011,30 +3011,48 @@ def _assert_default_value(a: "Assertion") -> str:
     return ""
 
 
-def _csv_cell(value: str) -> str:
+def _csv_cell(value: str, col_name: str = "") -> str:
     """Quote a CSV cell when it contains a comma, quote, or newline.
     Doubles existing quotes per RFC 4180. Bare values pass through.
 
-    Any {@code ${...}} SoapUI reference in the cell (from assertion
-    expected-value paths, hardcoded body literals that copied a
-    project-scope ref, etc.) is translated to a framework
-    ``#placeholder#`` first so ``mapJsonValues`` can resolve it at
-    runtime. Without this, cells like ``${Properties#Domain}`` or
-    ``${PropertiesDetails#accountID}`` reach the wire verbatim and
-    every assertion / body-cell that reads them mismatches.
+    Two runtime-safety transforms applied before quoting:
+
+    * ``${...}`` SoapUI refs translated to framework ``#placeholder#``
+      via ``soapui_body_to_placeholders`` (so ``mapJsonValues`` can
+      resolve them at runtime).
+    * Bare 6+ digit numeric strings in ID-named columns
+      (``guestId``, ``accountID``, ``memberId``, ``hhonorsNumber``,
+      etc.) rewritten to ``@Properties_<field>@`` so the runtime
+      substitution reads a fresh id from ctx (populated by
+      random_email_generator or a Groovy extract) instead of the
+      SoapUI author's stale hardcoded value that now points at a
+      different account on the target env. Column name lookup uses
+      the CSV header (``col_name`` param) rather than value shape
+      alone to avoid rewriting legitimate small numerics like
+      ``postalCode: 40515``.
+    * Literal ``null`` string emptied so mapJsonValues doesn't splice
+      the word "null" into JSON where an id is expected.
     """
     s = "" if value is None else str(value)
-    # Translate SoapUI refs before quoting -- soapui_body_to_placeholders
-    # handles the same regex families used everywhere else (Project /
-    # scoped / step-response / step-prop / bare / groovy).
     if "${" in s:
         s, _ph = soapui_body_to_placeholders(s)
-    # Cell that IS the literal word "null" (baked in by SoapUI author
-    # via placeholder that never resolved on their end) reads at runtime
-    # as the string "null" and mapJsonValues splices it into JSON where
-    # a real value is expected. Empty out so the id fallback kicks in.
     if s.strip().lower() == "null":
         s = ""
+    # Id-shape rewrite: SoapUI author baked stale Hilton ids into CSV
+    # cells (e.g. PropertiesDetails.accountID = 2000016128). Runtime
+    # would use these literals, target 404s. Swap for @Properties_X@
+    # placeholder so ctxGet returns a live value.
+    if col_name and s and s.strip().isdigit() and len(s.strip()) >= 6:
+        col_l = col_name.lower()
+        ID_HINTS = ("guestid", "accountid", "memberid", "hhonorsnumber",
+                    "hhonors_number", "partneraccountid", "customerid",
+                    "userid", "hilton_member_id", "hiltonmemberid")
+        if any(h in col_l for h in ID_HINTS):
+            # Strip the trailing prefix segment (`PropertiesDetails.` etc.)
+            # so the placeholder maps to the bare field name that
+            # random_email_generator + ctxGet's alias-walk understand.
+            field = col_name.rsplit(".", 1)[-1] if "." in col_name else col_name
+            s = f'@Properties_{field}@'
     if any(c in s for c in (",", '"', "\n", "\r")):
         return '"' + s.replace('"', '""') + '"'
     return s
@@ -6924,11 +6942,11 @@ public class {class_name} extends BaseApiTest {{
             expected_str = ";".join(expected_bits)
 
             assert_cells = [
-                _csv_cell(assert_vals_per_case[col][case_idx])
+                _csv_cell(assert_vals_per_case[col][case_idx], col)
                 for col in assert_cols_order
             ]
             merged_tpl_cells = [
-                _csv_cell(merged_tpl_vals[col][case_idx])
+                _csv_cell(merged_tpl_vals[col][case_idx], col)
                 for col in merged_tpl_cols
             ]
             stop_cell = [_csv_cell(stop_markers.get(c.name, ""))] if stop_markers else []
@@ -6945,7 +6963,7 @@ public class {class_name} extends BaseApiTest {{
                 _csv_cell(c.prefix), _csv_cell(variant),
             ]
             migrated_cells = [
-                _csv_cell(migrated_vals_per_case[col][case_idx])
+                _csv_cell(migrated_vals_per_case[col][case_idx], col)
                 for col in migrated_cols_order
             ]
             group_c_cells = (
