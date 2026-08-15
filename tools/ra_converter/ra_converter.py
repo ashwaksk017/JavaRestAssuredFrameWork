@@ -6619,6 +6619,34 @@ public class {class_name} extends BaseApiTest {{
                 if canonical[1] is not None:
                     injected.append(canonical[1])
                 steps_to_render = injected + steps_to_render
+                # Cross-case template-registry copy: the injected step
+                # object is CLONED from another case, so its template
+                # path was registered under (canonical_case, step_name),
+                # NOT (this case, step_name). Without copying the entry,
+                # _render_rest_step_body's lookup for the classpath
+                # (self._template_path_by_step.get((self._current_case,
+                # step.step_name))) misses, and the emitter falls back
+                # to a flat classpath `templates/<suite>/<step>.json`
+                # that no writer ever creates -- runtime dies with
+                # `IllegalArgumentException: Template not found on
+                # classpath`. Same bug class as the same-body dedup
+                # mismatch fixed in _emit_tier1_for. Copy every injected
+                # step's registration (path + merged cells) under this
+                # case's name so the lookup hits the ALREADY-WRITTEN file.
+                for inj in injected:
+                    if not isinstance(inj, RestStep):
+                        continue
+                    for (src_case, src_step), path in list(
+                            self._template_path_by_step.items()):
+                        if src_step == inj.step_name and src_case != case.name:
+                            self._template_path_by_step.setdefault(
+                                (case.name, inj.step_name), path)
+                            merged = getattr(self, "_merged_template_cells", {})
+                            cells = merged.get((src_case, inj.step_name))
+                            if cells is not None:
+                                merged.setdefault(
+                                    (case.name, inj.step_name), cells)
+                            break
                 self.ledger.add_preflight_finding(
                     "HIGH", "token-injected", case.name,
                     "Case had NO tokenRequest step of its own -- SoapUI "
