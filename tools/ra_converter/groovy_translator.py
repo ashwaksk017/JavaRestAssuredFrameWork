@@ -513,12 +513,20 @@ def translate(script: str, response_var_by_step: dict[str, str],
     # ---- Location-header slice pattern
     # Wrap in a `{}` scope so `locHeader_X` and `parts_X` don't collide
     # when the same header-slice Groovy block appears in multiple steps.
-    for m in _LOC_HEADER_SPLIT_RX.finditer(script):
-        _, strip, _, splitter, idx = m.group(1), m.group(2), m.group(3), \
-                                     m.group(4), m.group(5)
-        lines.append(
-            f'// [translated] location-header slice: '
-            f'.replace("{strip}", "").split("{splitter}")[{idx}]')
+    _loc_matches = list(_LOC_HEADER_SPLIT_RX.finditer(script))
+    if _loc_matches:
+        # Slice-idx per-match is emitted for diagnostics; the actual
+        # publication index per setPropertyValue is re-parsed from that
+        # target's expr below, so one Groovy step can publish multiple
+        # header parts (guestId, memberId, ...) from ONE location header.
+        for m in _loc_matches:
+            _, strip, _, splitter, idx = m.group(1), m.group(2), \
+                m.group(3), m.group(4), m.group(5)
+            lines.append(
+                f'// [translated] location-header slice: '
+                f'.replace("{strip}", "").split("{splitter}")[{idx}]')
+        m0 = _loc_matches[0]
+        strip0, splitter0, fallback_idx = m0.group(2), m0.group(4), m0.group(5)
         # Find the location header source step + header name
         hm = _HEADER_RX.search(script)
         if hm:
@@ -531,15 +539,34 @@ def translate(script: str, response_var_by_step: dict[str, str],
                 f'    String locHeader_{hdr_id} = {resp_var}.header("{hdr}");',
                 f'    String[] parts_{hdr_id} = '
                 f'locHeader_{hdr_id} == null ? new String[0] : '
-                f'locHeader_{hdr_id}.replace("{strip}", "").split("{splitter}");',
+                f'locHeader_{hdr_id}.replace("{strip0}", "").split("{splitter0}");',
             ])
+            # Prior bug: `field != hdr` filter dropped every publication,
+            # because the setPropertyValue *target* field (e.g.
+            # `hilton-member-id`) is intentionally NAMED DIFFERENTLY from
+            # the source header (`hilton-member-location`). Result: ctx
+            # never received guestId / memberId, downstream URLs
+            # collapsed to `//` and cascaded 404/405 across the case.
+            # Now: emit for every non-empty setPropertyValue in this
+            # script; per-target [N] index parsed from its own expr so
+            # one header can feed multiple ctx keys.
+            _idx_in_expr_rx = re.compile(r"\[\s*(\d+)\s*\]")
             for target_step, field, expr in _find_setproperty_targets(script):
-                if expr in ('""', "''") or field != hdr:
+                if expr in ('""', "''"):
                     continue
+                mi = _idx_in_expr_rx.search(expr)
+                use_idx = mi.group(1) if mi else fallback_idx
+                # putIfNonEmpty, not ctx.put -- if the upstream response
+                # was 4xx the header is null, parts is [], and even a
+                # guarded length check can produce "" from a stray "//".
+                # Writing "" would block ctxGet's alias-walk on the next
+                # URL substitution and cascade to `//` empty path
+                # segments downstream.
                 lines.append(
-                    f'    if (parts_{hdr_id}.length > {idx}) '
-                    f'ctx.put("{_ctx_key(target_step, field)}", '
-                    f'parts_{hdr_id}[{idx}]);')
+                    f'    if (parts_{hdr_id}.length > {use_idx}) '
+                    f'TestSupport.putIfNonEmpty(ctx, '
+                    f'"{_ctx_key(target_step, field)}", '
+                    f'parts_{hdr_id}[{use_idx}]);')
             lines.append('}')
         _mark("location_header_slice")
         consumed = True
