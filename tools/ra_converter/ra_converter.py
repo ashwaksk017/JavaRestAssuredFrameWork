@@ -478,16 +478,39 @@ def _parse_transfer_step(step_el: ET.Element) -> TransferStep:
     ts = TransferStep(step_name=step_name)
     cfg_el = step_el.find("con:config", NS)
     if cfg_el is not None:
-        for xfer in cfg_el.findall(".//con:transfer", NS):
-            src = xfer.find("con:sourceStepName", NS)
+        # SoapUI stores each transfer as ONE `<con:transfers>` element
+        # (plural is the type-attribute-carrier, not a container -- the
+        # step element can have several sibling `<con:transfers>`
+        # children, one per transfer). Prior code looked for
+        # `<con:transfer>` (singular) and always found zero -- every
+        # PropertyTransfer step therefore emitted an empty stub with
+        # no ctx.put and the audit logged them as SKIPPED.
+        # Also: field names are `sourceStep` / `targetStep`, NOT
+        # `sourceStepName` / `targetStepName`. `<con:type>` carries
+        # the path language (JSONPATH / XPATH). `<con:targetType>`
+        # is the target property NAME when `<con:targetPath>` is empty
+        # (surprising, but matches SoapUI runtime semantics).
+        for xfer in cfg_el.findall(".//con:transfers", NS):
+            src = xfer.find("con:sourceStep", NS)
             src_path = xfer.find("con:sourcePath", NS)
-            tgt = xfer.find("con:targetStepName", NS)
+            src_type = xfer.find("con:sourceType", NS)
+            src_lang = xfer.find("con:type", NS)
+            tgt = xfer.find("con:targetStep", NS)
             tgt_path = xfer.find("con:targetPath", NS)
+            tgt_type = xfer.find("con:targetType", NS)
+            # SoapUI writes the target property name in one of two
+            # places depending on how the transfer was authored:
+            # targetPath if non-empty, else targetType. Consumer code
+            # uses whichever is set to build the ctx key.
+            tp = _text(tgt_path) or _text(tgt_type)
             ts.transfers.append({
                 "source_step": _text(src),
                 "source_path": _text(src_path),
+                "source_type": _text(src_type),
+                "source_path_language": _text(src_lang),
                 "target_step": _text(tgt),
-                "target_path": _text(tgt_path),
+                "target_path": tp,
+                "target_type": _text(tgt_type),
             })
     return ts
 
@@ -5043,38 +5066,103 @@ public class {class_name} {{
         return lines
 
     def _render_transfer_translated(self, step: TransferStep) -> list[str]:
-        """Turn SoapUI PropertyTransfer into ctx.put(target, source-jsonpath)."""
+        """Turn SoapUI PropertyTransfer into a ctx.put backed by an
+        extract expression suited to the source's actual shape:
+
+        - source_path starts with `$` OR language=JSONPATH ->
+          safeJsonExtract with `_translate_soapui_jsonpath` (handles
+          `$['x']` bracket syntax that the prior lstrip("$.") crude
+          strip mangled)
+        - language=HEADER OR path looks like a header name and source
+          is a REST response -> response.header(name)
+        - source_type=Property OR source_step names a Properties/Data
+          step -> ctxGet(ctx, "sourceStep.sourcePath") reads the
+          upstream Properties value out of ctx
+        - source_path empty -> transfer entire body via .asString()
+
+        Prior emit gave up on every non-JsonPath case with a
+        `// [transfer] no response found` stub, silently losing the
+        publication -- downstream URLs / SQL then saw empty ctx keys
+        and cascaded 404/skip warnings. Audit measured 327 SKIPPED
+        transfers under the old code path."""
         lines = [f'// [transfer step] {step.step_name}']
         for t in step.transfers:
             src_step = t.get("source_step", "")
-            src_path = t.get("source_path", "")
+            src_path = t.get("source_path", "") or ""
+            src_type = (t.get("source_type", "") or "").strip()
+            src_lang = (t.get("source_path_language", "") or "").strip().upper()
             tgt_step = t.get("target_step", "")
             tgt_path = t.get("target_path", "")
+            ctx_key = f"{tgt_step}.{tgt_path}" if tgt_path else tgt_step
             src_resp = self.response_var_by_step.get(src_step)
-            if src_resp and src_path:
-                # Best-effort: SoapUI paths are usually JsonPath or XPath.
-                # If it starts with $. treat as JsonPath.
-                if src_path.startswith("$"):
-                    jp = src_path.lstrip("$.")
-                    # putIfNonEmpty: a failed upstream response yields
-                    # empty safeJsonExtract, which -- if planted with
-                    # plain ctx.put -- would block downstream ctxGet
-                    # alias-walk (empty primary key blocks the walk).
-                    # Skipping the put lets the alias walk find a
-                    # fallback under a sibling id key.
-                    lines.append(
-                        f'TestSupport.putIfNonEmpty(ctx, "{tgt_step}.{tgt_path}", '
-                        f'com.ak.api.rest.utilities.RestUtilities'
-                        f'.safeJsonExtract({src_resp}, "{jp}"));')
-                else:
-                    lines.append(
-                        f'ctx.put("{tgt_step}.{tgt_path}", '
-                        f'{src_resp}.asString());  '
-                        f'// TODO: extract subpath if needed ({src_path})')
-            else:
+
+            # (1) Property-source: read from ctx directly, no response
+            # var needed. Handles Properties/DataGen steps whose
+            # sourceStep isn't a REST call.
+            if src_type.lower() in ("property", "properties") or (
+                    not src_resp and src_path and not src_path.startswith("$")
+                    and src_lang not in ("JSONPATH", "XPATH", "HEADER")):
                 lines.append(
-                    f'// [transfer] no response found for source step '
-                    f'"{src_step}"; skipping ctx.put("{tgt_step}.{tgt_path}", ...)')
+                    f'TestSupport.putIfNonEmpty(ctx, "{_jlit(ctx_key)}", '
+                    f'TestSupport.ctxGet(ctx, "{_jlit(src_step)}.{_jlit(src_path)}"));')
+                continue
+
+            if not src_resp:
+                # No response variable in scope (source step ran in a
+                # different method OR was skipped by cluster grouping).
+                # Emit a comment so the gap is visible in the diff.
+                lines.append(
+                    f'// [transfer] no response var in scope for source step '
+                    f'"{_jlit(src_step)}" (path=`{_jlit(src_path)}` lang=`{_jlit(src_lang or "?")}`); '
+                    f'target `{_jlit(ctx_key)}` will stay unset -- caller '
+                    f'may hit ctxGet fallback or an empty URL segment.')
+                continue
+
+            # (2) Empty source_path -> transfer the entire body.
+            if not src_path:
+                lines.append(
+                    f'TestSupport.putIfNonEmpty(ctx, "{_jlit(ctx_key)}", '
+                    f'{src_resp}.asString());')
+                continue
+
+            # (3) Header extract -- explicit language OR the path is a
+            # bare header-name shape (no `$`, no `.`, no `[`, no `/`).
+            looks_like_header = (
+                bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", src_path))
+                and src_lang != "JSONPATH" and src_lang != "XPATH")
+            if src_lang == "HEADER" or looks_like_header:
+                lines.append(
+                    f'TestSupport.putIfNonEmpty(ctx, "{_jlit(ctx_key)}", '
+                    f'{src_resp}.header("{_jlit(src_path)}"));')
+                continue
+
+            # (4) JsonPath (either explicit language or starts with `$`).
+            if src_lang == "JSONPATH" or src_path.startswith("$"):
+                jp = _translate_soapui_jsonpath(src_path)
+                lines.append(
+                    f'TestSupport.putIfNonEmpty(ctx, "{_jlit(ctx_key)}", '
+                    f'com.ak.api.rest.utilities.RestUtilities'
+                    f'.safeJsonExtract({src_resp}, "{_jlit(jp)}"));')
+                continue
+
+            # (5) XPath -- best-effort xmlPath extract via RestAssured.
+            # Falls back to raw body if the response isn't XML.
+            if src_lang == "XPATH" or src_path.startswith("/"):
+                lines.append(
+                    f'try {{ TestSupport.putIfNonEmpty(ctx, "{_jlit(ctx_key)}", '
+                    f'{src_resp}.xmlPath().getString("{_jlit(src_path)}")); }} '
+                    f'catch (Exception __xpEx) {{ '
+                    f'LOG.warn("transfer xpath `{_jlit(src_path)}` failed on '
+                    f'{{}}: {{}}", "{_jlit(src_step)}", __xpEx.getMessage()); }}')
+                continue
+
+            # Fallback: unknown shape -- publish the whole body but
+            # comment the raw path for author review.
+            lines.append(
+                f'TestSupport.putIfNonEmpty(ctx, "{_jlit(ctx_key)}", '
+                f'{src_resp}.asString()); '
+                f'// [transfer] unknown source-path shape `{_jlit(src_path)}` '
+                f'(lang=`{_jlit(src_lang or "?")}`) -- publishing whole body')
         return lines
 
     # -- TestSupport helper (framework additive) ---------------------------

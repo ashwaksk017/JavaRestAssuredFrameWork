@@ -407,6 +407,65 @@ _SQL_EXECUTE_RX = re.compile(
     r"sql\.execute\(\s*(?P<query>[^)]+)\)", re.IGNORECASE)
 
 
+def _normalize_jdbc_query(raw_q: str) -> tuple[str, list]:
+    """Rewrite a raw SQL string to a `#placeholder#`-friendly form so
+    downstream mapJsonValues resolves references at runtime. Returns
+    (transformed_query, substituted_id_columns).
+
+    - Stale-id-shaped WHERE literals (6+ digit numeric bound to id-hinted
+      columns) get parameterized to `col='#col#'` so a fresh runtime
+      value can plug in via ctx / row / config.
+    - SoapUI ${#TestCase#Properties#X} / ${#Project#Y} / ${step#Y} /
+      bare ${var} refs become #Properties_X# / #Y# / #step_Y# / #var#
+      so Db.unsafeSqlReason doesn't refuse the SQL for containing
+      unresolved `${...}` even though the framework can handle them."""
+    ID_COL_HINTS = ("id", "guest", "account", "member", "hhonors",
+                    "hilton", "partner", "customer", "user")
+    hard_lits = re.findall(
+        r"\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:'([^']+)'|(\d[\d.]*))", raw_q)
+    substituted_cols: list[str] = []
+    transformed = raw_q
+    for col, val, num in hard_lits:
+        col_l = col.lower()
+        if col_l in ("null", "true", "false"):
+            continue
+        if col in substituted_cols:
+            continue
+        literal = num or val
+        looks_like_id = len(literal) >= 6 and literal.isdigit()
+        col_hints_id = any(h in col_l for h in ID_COL_HINTS)
+        if not (looks_like_id and col_hints_id):
+            continue
+        pattern = re.compile(
+            rf"\b{re.escape(col)}\s*=\s*(?:'[^']+'|\d[\d.]*)")
+        transformed = pattern.sub(f"{col}='#{col}#'", transformed, count=1)
+        substituted_cols.append(col)
+    transformed = re.sub(
+        r'\$\{#(?:TestCase|TestSuite|Global|Env|MockService)#'
+        r'([A-Za-z0-9_.-]+)\}',
+        lambda m: '#' + m.group(1).replace('.', '_') + '#',
+        transformed)
+    transformed = re.sub(
+        r'\$\{#Project#([A-Za-z0-9_.-]+)\}',
+        lambda m: '#' + m.group(1).replace('.', '_') + '#',
+        transformed)
+    transformed = re.sub(
+        r'\$\{([A-Za-z_][A-Za-z0-9_]*)#([A-Za-z0-9_.-]+)\}',
+        lambda m: '#' + m.group(1) + '_' + m.group(2).replace('.', '_') + '#',
+        transformed)
+    transformed = re.sub(
+        r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}',
+        lambda m: '#' + m.group(1) + '#',
+        transformed)
+    return transformed, substituted_cols
+
+
+def _java_string_literal(raw: str) -> str:
+    """Wrap a raw string as a Java `"..."` literal, escaping the
+    minimum set (backslash + double quote)."""
+    return '"' + raw.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 # 7. log.info / log.error
 _LOG_RX = re.compile(
     r"log\.(?P<level>info|warn|error|debug)\s*\(\s*(?P<msg>.+?)\s*\)",
@@ -762,11 +821,55 @@ def translate(script: str, response_var_by_step: dict[str, str],
             else:
                 # Not a list literal -- treat as unsafe.
                 params_translatable = False
+        idents_for_substitute: list[str] = []
         if not params_translatable:
             preview_p = (args_expr or "")[:60].replace("*/", "* /")
-            lines.append(
-                f'// [jdbc] params expression contains Groovy identifiers '
-                f'(`{preview_p}`) -- skipping bind values')
+            # Extract bare identifiers from the bind list so we can
+            # rewrite the SQL's `?` placeholders to `#ident#` refs --
+            # mapJsonValues then resolves each against ctx / row /
+            # config at runtime. Without this rewrite the WARN above
+            # is followed by Db.execute-with-no-binds, which throws
+            # a PreparedStatement unbound-parameter error swallowed as
+            # a second WARN; the intent (fill in these values) is
+            # entirely lost.
+            if args_expr and args_expr.startswith("[") and args_expr.endswith("]"):
+                inner = args_expr[1:-1]
+                parts, depth, buf, in_str = [], 0, "", None
+                for ch in inner:
+                    if in_str:
+                        if ch == in_str:
+                            in_str = None
+                        buf += ch
+                    elif ch in ('"', "'"):
+                        in_str = ch; buf += ch
+                    elif ch in "([":
+                        depth += 1; buf += ch
+                    elif ch in ")]":
+                        depth -= 1; buf += ch
+                    elif ch == "," and depth == 0:
+                        parts.append(buf.strip()); buf = ""
+                    else:
+                        buf += ch
+                if buf.strip():
+                    parts.append(buf.strip())
+                for p in parts:
+                    m_id = re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", p)
+                    if m_id:
+                        idents_for_substitute.append(m_id.group(0))
+                    else:
+                        idents_for_substitute.append("")  # placeholder-of-nothing
+            if idents_for_substitute:
+                idents_shown = ", ".join(
+                    f"#{n}#" if n else "?" for n in idents_for_substitute)
+                lines.append(
+                    f'// [jdbc] params list contains Groovy identifiers '
+                    f'(`{preview_p}`); rewriting `?` bind placeholders '
+                    f'to `#ident#` refs so mapJsonValues resolves at '
+                    f'runtime: [{idents_shown}]')
+            else:
+                lines.append(
+                    f'// [jdbc] params expression contains Groovy identifiers '
+                    f'(`{preview_p}`) -- skipping bind values')
             params_java = ""
         # Determine whether the query is a Java-safe expression.
         # Safe: a string literal like "SELECT 1" or 'SELECT 1' (with Groovy
@@ -801,6 +904,27 @@ def translate(script: str, response_var_by_step: dict[str, str],
             # so we can rewrite hardcoded WHERE literals into
             # #placeholder# refs before wrapping in mapJsonValues.
             raw_q = query_expr[1:-1]
+            # Rewrite each `?` bind slot with the corresponding
+            # identifier from the [ident1, ident2, ...] list as
+            # `'#ident#'` -- mapJsonValues resolves at runtime. Only
+            # kicks in when the bind list contained bare identifiers
+            # that couldn't be inlined as Java literals (Groovy scope
+            # values we can't recreate at compile-time). Wraps each
+            # sub in quotes so bareword substitution stays SQL-safe;
+            # numeric columns tolerate quoted values on all target
+            # drivers used by this framework.
+            if idents_for_substitute:
+                _idx_holder = [0]
+                def _sub_qmark(_m):
+                    i = _idx_holder[0]
+                    _idx_holder[0] += 1
+                    if i >= len(idents_for_substitute):
+                        return "?"  # more ? than binds; leave unbound
+                    name = idents_for_substitute[i]
+                    if not name:
+                        return "?"  # non-identifier slot; can't refify
+                    return f"'#{name}#'"
+                raw_q = re.sub(r"\?", _sub_qmark, raw_q)
             hard_lits = re.findall(
                 r"\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:'([^']+)'|(\d[\d.]*))",
                 raw_q)
@@ -964,6 +1088,142 @@ def translate(script: str, response_var_by_step: dict[str, str],
                 ])
         _mark("jdbc_execute")
         consumed = True
+
+    # ---- JDBC read: `sql.rows("Q")` -> Db.queryAll, `sql.firstRow("Q")`
+    # -> Db.queryOne. Prior emitter had NO recognizer for either; every
+    # invitation_key / memberDetails lookup that used them silently
+    # dropped, downstream ctxGet found nothing, and the next REST step
+    # sent empty ids.
+    _row_var_counter = 0
+    for method_name, java_helper, result_type in (
+            ("rows", "queryAll", "java.util.List<java.util.Map<String, Object>>"),
+            ("firstRow", "queryOne", "java.util.Map<String, Object>")):
+        for groups, args_body in _balanced_arg_call(
+                script, rf"sql\.{method_name}\("):
+            query = args_body.strip()
+            # Split at top-level comma into (query, param-list).
+            depth = 0
+            in_str = None
+            query_expr, args_expr = query, None
+            for k, ch in enumerate(query):
+                if in_str:
+                    if ch == in_str and query[k-1:k] != "\\":
+                        in_str = None
+                elif ch in ('"', "'"):
+                    in_str = ch
+                elif ch in "([":
+                    depth += 1
+                elif ch in ")]":
+                    depth -= 1
+                elif ch == "," and depth == 0:
+                    query_expr = query[:k].strip()
+                    args_expr = query[k + 1:].strip()
+                    break
+            # Only translate quoted string queries (no bare identifiers /
+            # runtime-string-concat), matching sql.execute's gate.
+            looks_str = (len(query_expr) >= 2
+                         and query_expr[0] in ('"', "'")
+                         and query_expr[-1] == query_expr[0]
+                         and query_expr[0] not in query_expr[1:-1])
+            if not looks_str:
+                preview = query_expr[:80].replace("\\", "\\\\").replace('"', '\\"')
+                lines.append(
+                    f'// [jdbc] sql.{method_name}(...) query is a Groovy '
+                    f'expression (`{preview}`) -- not translated. Hand-wire '
+                    f'Db.{java_helper}(...) with the concrete SQL.')
+                continue
+            raw_q = query_expr[1:-1]
+            transformed, subs = _normalize_jdbc_query(raw_q)
+            java_query = _java_string_literal(transformed)
+            _row_var_counter += 1
+            # Namespace the local by step_name_hint -- translate() runs
+            # once per Groovy step but the counter resets each call,
+            # so two Groovy steps that each call sql.firstRow would
+            # both produce __jdbcFirstrow_1 and javac rejects the
+            # duplicate declaration. Sanitize hint via a simple keep-
+            # alnum filter (identifiers only, no regex import needed
+            # beyond the module-level re.)
+            step_tag = re.sub(r"[^A-Za-z0-9_]", "_", step_name_hint or "s")
+            result_var = f"__jdbc{method_name.capitalize()}_{step_tag}_{_row_var_counter}"
+            # Groovy `[a, b]` bind-list -> Java varargs. Only bind
+            # simple literals; a bare identifier means the caller
+            # relied on Groovy scope we can't recreate in Java.
+            bind_java = ""
+            if args_expr:
+                if args_expr.startswith("[") and args_expr.endswith("]"):
+                    inner = args_expr[1:-1].strip()
+                    parts, depth, buf, in_str = [], 0, "", None
+                    for ch in inner:
+                        if in_str:
+                            if ch == in_str:
+                                in_str = None
+                            buf += ch
+                        elif ch in ('"', "'"):
+                            in_str = ch; buf += ch
+                        elif ch in "([":
+                            depth += 1; buf += ch
+                        elif ch in ")]":
+                            depth -= 1; buf += ch
+                        elif ch == "," and depth == 0:
+                            parts.append(buf.strip()); buf = ""
+                        else:
+                            buf += ch
+                    if buf.strip():
+                        parts.append(buf.strip())
+                    safe = []
+                    ok = True
+                    for p in parts:
+                        if ((p.startswith('"') and p.endswith('"'))
+                                or (p.startswith("'") and p.endswith("'"))
+                                or p in ("null",)
+                                or p.lstrip("-").replace(".", "").isdigit()):
+                            if p.startswith("'"):
+                                p = '"' + p[1:-1].replace('"', '\\"') + '"'
+                            safe.append(p)
+                        else:
+                            ok = False
+                            break
+                    if ok and safe:
+                        bind_java = ", " + ", ".join(safe)
+                    elif not ok:
+                        lines.append(
+                            f'// [jdbc] sql.{method_name} bind list contains '
+                            f'Groovy identifiers -- omitting bind values')
+            lines.append(f'// [translated] JDBC {method_name} -> {java_helper}')
+            if subs:
+                lines.append(
+                    f'// [jdbc] parameterized {len(subs)} hardcoded WHERE '
+                    f'literal(s) with #placeholder# refs -- columns: '
+                    f'{", ".join(subs)}. Populate ctx or the runtime-'
+                    f'resolved query will still carry unresolved.')
+            lines.extend([
+                f'{result_type} {result_var} = null;',
+                f'if (Db.isConfigured()) {{',
+                f'    try {{',
+                f'        String __jdbcSql = RestUtilities.mapJsonValues('
+                f'{java_query}, TestSupport.mergedRow(row, ctx), false);',
+                f'        String __jdbcReason = com.ak.api.db.Db.unsafeSqlReason(__jdbcSql);',
+                f'        if (__jdbcReason != null) {{',
+                f'            LOG.warn(" .. jdbc SKIPPED ({{}}): {{}}", '
+                f'__jdbcReason, __jdbcSql);',
+                f'        }} else {{',
+                f'            LOG.info(" .. jdbc {method_name} SQL: {{}}", __jdbcSql);',
+                f'            {result_var} = Db.{java_helper}(__jdbcSql{bind_java});',
+                f'            LOG.info(" .. jdbc {method_name} returned {{}} '
+                f'row(s)/field(s)", {result_var} == null ? 0 : '
+                f'({"1" if method_name == "firstRow" else result_var + ".size()"}));',
+                f'        }}',
+                f'    }} catch (Exception __jdbcEx) {{',
+                f'        LOG.warn("JDBC {method_name} failed: {{}}", '
+                f'__jdbcEx.getMessage());',
+                f'    }}',
+                f'}} else {{',
+                f'    LOG.warn("Skipping JDBC {method_name} step '
+                f'(Db not configured)");',
+                f'}}',
+            ])
+            _mark(f"jdbc_{method_name}")
+            consumed = True
 
     # ---- log.info / log.error direct swap (SLF4J-compatible).
     # Uses paren-balanced walker so args with nested calls / GString
