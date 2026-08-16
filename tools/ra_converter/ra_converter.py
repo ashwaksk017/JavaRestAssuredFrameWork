@@ -5600,6 +5600,18 @@ public final class TestSupport {{
         if (ctx == null || key == null) return;
         if (value == null || value.isEmpty()) return;
         ctx.put(key, value);
+        // Also publish under the trailing-D/d case-flipped alias so a
+        // template that references the OTHER casing of an id field
+        // (Properties.guestId vs Properties.guestID) sees this
+        // extract's value instead of the DataGenInput generator's
+        // fake fallback under the sibling key. flipTrailingCase
+        // returns null for non-id fields (last char isn't D or d) so
+        // this is a no-op for Username/Email/etc. -- targeted at
+        // exactly the case-mismatch class ctxGet's short-circuit
+        // ("primary key present, don't alias-walk") can't fix on its
+        // own once the sibling has a stale non-empty value.
+        String flipped = flipTrailingCase(key);
+        if (flipped != null && !flipped.equals(key)) ctx.put(flipped, value);
     }}
 
     /**
@@ -5662,37 +5674,61 @@ public final class TestSupport {{
      */
     public static void regenRandomProperties(Map<String, String> ctx) {{
         if (ctx == null) return;
-        String uname = FakeData.username();
-        String allowed = Config.get("ALLOWED_DOMAIN", "example.com");
-        String email = FakeData.username() + "@" + allowed;
-        String phone = FakeData.faker().numerify("#########");
+        // Fresh domain drives BOTH email and every domain-linked field
+        // (websiteDomain, emailDomains[], weburl) so a single request
+        // body stays internally consistent. Prior behaviour: email
+        // used a fixed Config.ALLOWED_DOMAIN while websiteDomain used a
+        // fresh random word.com, so POST /businesses bodies had
+        // ownerEmailAddress=user@example.com but emailDomains=
+        // [lorena.doyle.com] and Hilton rejected with 400 "Email
+        // address domain must match an allowed domain within program
+        // account", cascading 404s across every downstream step
+        // (200_2 GET, 200_3/4/5 POST members, 204 DELETE).
         String domain = FakeData.username() + ".com";
+        String uname = FakeData.username();
+        String email = FakeData.username() + "@" + domain;
+        String phone = FakeData.faker().numerify("#########");
         String hhon = FakeData.faker().numerify("#########");
-        // Username variants
+        // Username variants -- covers BOTH case forms the DataGenInput
+        // generator writes (first-char case-flipped). If a template
+        // references the sibling casing (e.g. Properties.Usernamemember
+        // vs Properties.usernamemember), missing the flip would leave
+        // that variant stuck at the generator's initial random value.
         ctx.put("Properties.Username", uname);
         ctx.put("Properties.username", uname);
+        ctx.put("Properties.Username2", uname);
+        ctx.put("Properties.username2", uname);
         ctx.put("Properties.usernamemember", uname);
+        ctx.put("Properties.Usernamemember", uname);
         ctx.put("Properties.usernameM", uname);
-        // Email variants
+        ctx.put("Properties.UsernameM", uname);
+        // Email variants -- both case forms of every variant so a
+        // template using Properties.emailMember (lower e) gets the
+        // fresh value, not the DataGenInput stale.
         ctx.put("Properties.Email", email);
         ctx.put("Properties.email", email);
-        ctx.put("Properties.EmailMember", email);
-        ctx.put("Properties.guestMemberEmail", email);
-        ctx.put("Properties.generatedEmail", email);
-        ctx.put("Properties.generatedemailAddress", email);
-        ctx.put("Properties.emailAddress", email);
         ctx.put("Properties.EmailAddress", email);
+        ctx.put("Properties.emailAddress", email);
+        ctx.put("Properties.EmailMember", email);
+        ctx.put("Properties.emailMember", email);
+        ctx.put("Properties.GuestMemberEmail", email);
+        ctx.put("Properties.guestMemberEmail", email);
+        ctx.put("Properties.GeneratedEmail", email);
+        ctx.put("Properties.generatedEmail", email);
+        ctx.put("Properties.GeneratedemailAddress", email);
+        ctx.put("Properties.generatedemailAddress", email);
         // Phone variants
         ctx.put("Properties.Phone", phone);
         ctx.put("Properties.phone", phone);
-        ctx.put("Properties.phoneNumber", phone);
         ctx.put("Properties.PhoneNumber", phone);
-        // Domain variants (used as bare domain AND embedded in email)
+        ctx.put("Properties.phoneNumber", phone);
+        // Domain variants (bare + embedded-in-email + web-facing)
         ctx.put("Properties.Domain", domain);
         ctx.put("Properties.domain", domain);
-        ctx.put("Properties.websiteDomain", domain);
         ctx.put("Properties.WebsiteDomain", domain);
+        ctx.put("Properties.websiteDomain", domain);
         ctx.put("Properties.weburl", domain);
+        ctx.put("Properties.Weburl", domain);
         // hhonorsNumber variants
         ctx.put("Properties.hhonorsNumber", hhon);
         ctx.put("Properties.HhonorsNumber", hhon);
