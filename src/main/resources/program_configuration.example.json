@@ -10,14 +10,44 @@
     "Legacy aliases still work: c_id -> api_config.client_id, c_sec -> api_config.client_secret,",
     "salesforce_assertion -> sf_config.assertion, etc.",
     "",
-    "Derived keys (auto-computed):",
-    "  baseUrl      <- api_config.api_end_point + '/' + api_config.version",
-    "  db.url       <- jdbc:<database.scheme>://<database.host>:<database.port>/<database.schema>",
-    "  db.user      <- database.username",
-    "  db.password  <- database.password",
-    "  db.driver    <- database.driver (default: org.postgresql.Driver)"
+    "======================================================================",
+    "DATABASE WIRING (required for any test with JDBC steps)",
+    "======================================================================",
+    "The `database` block below is REQUIRED for any imported SoapUI test that",
+    "runs a `sql.execute` / `sql.rows` / `sql.firstRow` Groovy step. Without",
+    "it, `Db.isConfigured()` returns false and every JDBC step is silently",
+    "skipped -- you will see this in the log:",
+    "    .. jdbc SKIPPED (DB not configured): <sql>",
+    "and any REST step that depends on the JDBC step's state change (activate",
+    "account, seed a member row, etc.) will 404 downstream against still-",
+    "unprovisioned state.",
+    "",
+    "Derived from the `database` subfields at Config-load time (do NOT set",
+    "these directly -- the derivation fills them in):",
+    "  db.url       = jdbc:<database.scheme>://<database.host>:<database.port>/<database.schema>",
+    "  db.user      = database.username",
+    "  db.password  = database.password",
+    "  db.driver    = database.driver   (default: org.postgresql.Driver)",
+    "",
+    "PostgreSQL driver is bundled in pom.xml. For MySQL / Oracle / SQL Server,",
+    "add the matching driver dependency AND set `scheme` + `driver` accordingly:",
+    "  MySQL       scheme=mysql          driver=com.mysql.cj.jdbc.Driver",
+    "  Oracle      scheme=oracle:thin:@  driver=oracle.jdbc.OracleDriver",
+    "  SQL Server  scheme=sqlserver      driver=com.microsoft.sqlserver.jdbc.SQLServerDriver",
+    "======================================================================",
+    "",
+    "Other derived keys (auto-computed):",
+    "  baseUrl      <- api_config.api_end_point + '/' + api_config.version"
   ],
   "stg": {
+
+    "__DATABASE_BLOCK_README__": [
+      "REQUIRED for JDBC steps -- see the `_readme` at the top of this file",
+      "for the full explanation. Leave `__SET_ME__` placeholders in place",
+      "if you have no DB access; JDBC steps will skip cleanly and any",
+      "test that depends on DB state changes will 404 downstream. Fill",
+      "in real values to unlock those tests."
+    ],
     "database": {
       "username": "__SET_ME__",
       "password": "__SET_ME__",
@@ -27,6 +57,7 @@
       "scheme":   "postgresql",
       "driver":   "org.postgresql.Driver"
     },
+
     "api_config": {
       "api_end_point":   "https://api.example.com/hospitality-internal-all",
       "version":         "v2",
