@@ -421,6 +421,75 @@ _LOC_HEADER_SPLIT_RX = re.compile(
     r"(\w+)\[0\]\.replace\(['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]*)['\"]\)\.split\(['\"]([^'\"]+)['\"]\)\s*\[\s*(\d+)\s*\]")
 
 
+def _slice_derived_vars(script: str) -> dict[str, str]:
+    """Return dict[var_name -> index] for every def-var that ultimately
+    holds a specific slice of a location-header split. Used to filter
+    the location-header slice emit loop so it only publishes for
+    setPropertyValue targets whose expr traces back to the slice.
+
+    Handles the three shapes real SoapUI authors write:
+
+        // Inline:
+        def hiltonMemberId = loc[0].replace(...).split("/")[4]
+        //  ^^^^^^^^^^^^^^                                  ^ index recorded here
+
+        // Split-then-index:
+        def parts        = loc[0].replace(...).split("/")   // split_result, no index
+        def hiltonMemberId = parts[4]                        // slice with index
+
+        // Alias:
+        def hMemberId = hiltonMemberId                       // propagates index
+
+    Returns index as a string (matching the [N] group's raw form).
+    Bare split-result vars WITHOUT a specific index aren't returned
+    here -- the emitter needs an explicit [N] to know which segment
+    to publish. `setPropertyValue("field", parts)` (no index) would
+    publish the whole array's toString(), which is never useful.
+    """
+    slice_vars: dict[str, str] = {}
+    split_result_vars: set[str] = set()
+
+    # Pass 1: direct split assignments (may have a trailing [N] or not)
+    #   def X = <anything>.split(<anything>)          -> split_result
+    #   def X = <anything>.split(<anything>)[N]       -> slice with index N
+    split_rx = re.compile(
+        r'def\s+(\w+)\s*=\s*[^\n;]*?\.split\([^)]*\)(\s*\[\s*(\d+)\s*\])?')
+    for m in split_rx.finditer(script):
+        var = m.group(1)
+        idx = m.group(3)
+        if idx is not None:
+            slice_vars[var] = idx
+        else:
+            split_result_vars.add(var)
+
+    # Pass 2: index-into-split-result assignments
+    #   def X = <split_result_var>[N]                  -> slice with index N
+    idx_rx = re.compile(r'def\s+(\w+)\s*=\s*(\w+)\s*\[\s*(\d+)\s*\]')
+    for m in idx_rx.finditer(script):
+        var, src, idx = m.group(1), m.group(2), m.group(3)
+        if src in split_result_vars:
+            slice_vars[var] = idx
+
+    # Pass 3: propagate through simple aliases (multiple iterations
+    # handle chains like `def a = parts[4]; def b = a; def c = b`).
+    alias_rx = re.compile(
+        r'def\s+(\w+)\s*=\s*(\w+)(?:\.toString\(\))?(?:\.trim\(\))?\s*(?:$|;|\r|\n)',
+        re.MULTILINE)
+    for _ in range(3):
+        changed = False
+        for m in alias_rx.finditer(script + "\n"):
+            var, src = m.group(1), m.group(2)
+            if var in slice_vars or var == src:
+                continue
+            if src in slice_vars:
+                slice_vars[var] = slice_vars[src]
+                changed = True
+        if not changed:
+            break
+
+    return slice_vars
+
+
 # 6. JDBC:
 #    def sql = Sql.newInstance(...)
 #    sql.execute("...")  OR  sql.rows("...")
@@ -796,15 +865,62 @@ def translate(script: str, response_var_by_step: dict[str, str],
             # the source header (`hilton-member-location`). Result: ctx
             # never received guestId / memberId, downstream URLs
             # collapsed to `//` and cascaded 404/405 across the case.
-            # Now: emit for every non-empty setPropertyValue in this
-            # script; per-target [N] index parsed from its own expr so
-            # one header can feed multiple ctx keys.
+            #
+            # Filter: only emit for targets whose EXPR references the
+            # slice output. Prior iteration looped every setPropertyValue
+            # in the script and clobbered targets sourced from OTHER
+            # extract paths -- e.g. `PropertiesDetails.accountID` gets
+            # its real value from a JSON PropertyTransfer on the same
+            # step's response body, but this loop would then overwrite
+            # with `parts[4]` (the hilton-member-id slice), producing
+            # `PropertiesDetails.accountID = 329335` for a real
+            # accountId of, say, 10500XXXXXX. Every downstream
+            # `GET /businesses/<id>` and `POST /guests/../businesses/<id>/members`
+            # 404'd on the wrong id.
+            #
+            # Slice-derivation trace covers the three real-world shapes:
+            #   (a) inline:  setPropertyValue("f", loc[0].replace(...).split("/")[4])
+            #   (b) def-var: def parts = loc[0].split(...); setPropertyValue("f", parts[4])
+            #   (c) alias:   def x = parts[4]; setPropertyValue("f", x)
+            # Targets whose expr matches none of these (bare identifier
+            # of a JSON-extracted var, `jsonObj.field`, etc.) are
+            # deliberately skipped -- some other emit path
+            # (setproperty_extract JSON, PropertyTransfer, def
+            # publication) owns them.
+            _slice_vars = _slice_derived_vars(script)
             _idx_in_expr_rx = re.compile(r"\[\s*(\d+)\s*\]")
+            _bare_var_rx = re.compile(
+                r'^(\w+)(?:\.toString\(\))?(?:\.trim\(\))?$')
             for target_step, field, expr in _find_setproperty_targets(script):
                 if expr in ('""', "''"):
                     continue
-                mi = _idx_in_expr_rx.search(expr)
-                use_idx = mi.group(1) if mi else fallback_idx
+                use_idx = None
+                # (a) inline slice pattern in the expr itself
+                if _LOC_HEADER_SPLIT_RX.search(expr):
+                    m_inline = _LOC_HEADER_SPLIT_RX.search(expr)
+                    use_idx = m_inline.group(5)
+                else:
+                    # (b) def-var with explicit index: `parts[4]`
+                    m_bare = _bare_var_rx.match(expr.strip())
+                    if m_bare and m_bare.group(1) in _slice_vars:
+                        # (c) alias / already-indexed slice-derived var
+                        use_idx = _slice_vars[m_bare.group(1)]
+                    else:
+                        # Also allow `<split_result_var>[N]` inline
+                        m_indexed = re.match(
+                            r'^(\w+)\s*\[\s*(\d+)\s*\](?:\.toString\(\))?'
+                            r'(?:\.trim\(\))?$',
+                            expr.strip())
+                        if m_indexed:
+                            # The inner var may be a split_result (bare
+                            # split without index) -- also slice-derived
+                            # even though not in the map yet. Heuristic:
+                            # trust the [N] on the expr since the outer
+                            # slice pattern is confirmed in this script.
+                            use_idx = m_indexed.group(2)
+                if use_idx is None:
+                    # Not slice-derived -- another emit path handles it.
+                    continue
                 # putExtracted -- overwrite whatever stale generator-
                 # default id ctx already has under this key. Empty-
                 # guard still applies (parts[N] may be "" if the
