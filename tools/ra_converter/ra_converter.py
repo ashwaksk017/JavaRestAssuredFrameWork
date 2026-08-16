@@ -5200,7 +5200,7 @@ public class {class_name} {{
                     not src_resp and src_path and not src_path.startswith("$")
                     and src_lang not in ("JSONPATH", "XPATH", "HEADER")):
                 lines.append(
-                    f'TestSupport.putIfNonEmpty(ctx, "{_jlit(ctx_key)}", '
+                    f'TestSupport.putExtracted(ctx, "{_jlit(ctx_key)}", '
                     f'TestSupport.ctxGet(ctx, "{_jlit(src_step)}.{_jlit(src_path)}"));')
                 continue
 
@@ -5218,7 +5218,7 @@ public class {class_name} {{
             # (2) Empty source_path -> transfer the entire body.
             if not src_path:
                 lines.append(
-                    f'TestSupport.putIfNonEmpty(ctx, "{_jlit(ctx_key)}", '
+                    f'TestSupport.putExtracted(ctx, "{_jlit(ctx_key)}", '
                     f'{src_resp}.asString());')
                 continue
 
@@ -5229,7 +5229,7 @@ public class {class_name} {{
                 and src_lang != "JSONPATH" and src_lang != "XPATH")
             if src_lang == "HEADER" or looks_like_header:
                 lines.append(
-                    f'TestSupport.putIfNonEmpty(ctx, "{_jlit(ctx_key)}", '
+                    f'TestSupport.putExtracted(ctx, "{_jlit(ctx_key)}", '
                     f'{src_resp}.header("{_jlit(src_path)}"));')
                 continue
 
@@ -5237,7 +5237,7 @@ public class {class_name} {{
             if src_lang == "JSONPATH" or src_path.startswith("$"):
                 jp = _translate_soapui_jsonpath(src_path)
                 lines.append(
-                    f'TestSupport.putIfNonEmpty(ctx, "{_jlit(ctx_key)}", '
+                    f'TestSupport.putExtracted(ctx, "{_jlit(ctx_key)}", '
                     f'com.ak.api.rest.utilities.RestUtilities'
                     f'.safeJsonExtract({src_resp}, "{_jlit(jp)}"));')
                 continue
@@ -5246,7 +5246,7 @@ public class {class_name} {{
             # Falls back to raw body if the response isn't XML.
             if src_lang == "XPATH" or src_path.startswith("/"):
                 lines.append(
-                    f'try {{ TestSupport.putIfNonEmpty(ctx, "{_jlit(ctx_key)}", '
+                    f'try {{ TestSupport.putExtracted(ctx, "{_jlit(ctx_key)}", '
                     f'{src_resp}.xmlPath().getString("{_jlit(src_path)}")); }} '
                     f'catch (Exception __xpEx) {{ '
                     f'LOG.warn("transfer xpath `{_jlit(src_path)}` failed on '
@@ -5256,7 +5256,7 @@ public class {class_name} {{
             # Fallback: unknown shape -- publish the whole body but
             # comment the raw path for author review.
             lines.append(
-                f'TestSupport.putIfNonEmpty(ctx, "{_jlit(ctx_key)}", '
+                f'TestSupport.putExtracted(ctx, "{_jlit(ctx_key)}", '
                 f'{src_resp}.asString()); '
                 f'// [transfer] unknown source-path shape `{_jlit(src_path)}` '
                 f'(lang=`{_jlit(src_lang or "?")}`) -- publishing whole body')
@@ -5574,6 +5574,32 @@ public final class TestSupport {{
         if (ctx == null || key == null) return;
         if (value == null || value.isEmpty()) return;
         ctx.putIfAbsent(key, value);
+    }}
+
+    /**
+     * Publish a value extracted from a live REST response (or Groovy
+     * mid-flow computation) into ctx. Semantics: OVERWRITE existing
+     * value iff the new value is non-empty. Distinct from
+     * {{@link #putIfNonEmpty}} which uses putIfAbsent and is meant for
+     * seeding generator defaults; using that method for extracts
+     * causes the "fresh response id gets shadowed by stale generator
+     * default" cascade (Properties.guestID stayed as
+     * DataGenInput's fake random id even after HHonorsEnroll
+     * responded, so every downstream URL 400'd or 404'd on the
+     * fake).
+     *
+     * <p>Skips the write when the extract returned empty so a 4xx
+     * upstream doesn't silently plant "" into ctx -- ctxGet's
+     * "primary key present" short-circuit would then refuse to
+     * alias-walk and downstream URL substitution would collapse to
+     * `//`. Empty-extract falls through to whatever value was there
+     * before (usually the generator default), which is safer than
+     * empty.</p>
+     */
+    public static void putExtracted(Map<String, String> ctx, String key, String value) {{
+        if (ctx == null || key == null) return;
+        if (value == null || value.isEmpty()) return;
+        ctx.put(key, value);
     }}
 
     /**

@@ -186,12 +186,20 @@ def _emit_def_publications(script: str, bindings: dict, ctx: dict,
         # fallback token key. Skip the put on empty extract instead --
         # ctxGet will alias-walk to another Token-bearing key OR return
         # "" and the caller's assertion fires cleanly.
+        # putExtracted handles the empty-guard AND overwrite semantics
+        # in one call -- same result as the earlier inline
+        # `if (X != null && !X.isEmpty()) ctx.put(...)` but consistent
+        # with every other extract site in the emitter. Bearer prefix
+        # is only added when the extract yielded a value; otherwise the
+        # put is skipped so a downstream Auth header falls back to
+        # ctxGet's alias-walk.
         out.extend([
             f'{{',
             f'    String __ext_{new_var} = com.ak.api.rest.utilities.RestUtilities.safeJsonExtract('
             f'{resp}, "{info["jsonpath"]}");',
-            f'    if (__ext_{new_var} != null && !__ext_{new_var}.isEmpty()) '
-            f'ctx.put("{dest_key}", "Bearer " + __ext_{new_var});',
+            f'    TestSupport.putExtracted(ctx, "{dest_key}", '
+            f'(__ext_{new_var} == null || __ext_{new_var}.isEmpty()) '
+            f'? __ext_{new_var} : "Bearer " + __ext_{new_var});',
             f'}}',
         ])
         published.add(new_var)
@@ -215,8 +223,14 @@ def _emit_def_publications(script: str, bindings: dict, ctx: dict,
         # downstream URL would send an empty path segment (`//`) that
         # produces a confusing 404 from the target. Skip the put and
         # let alias-walk find the fallback.
+        # putExtracted (not putIfNonEmpty): the extract's value IS the
+        # authoritative one for this run -- clobber whatever stale
+        # generator-default id ctx has under this key. Prior
+        # putIfNonEmpty (=putIfAbsent) kept Properties.guestID pinned
+        # to DataGenInput's fake random and cascaded 400/404 across
+        # every downstream URL substitution.
         out.append(
-            f'TestSupport.putIfNonEmpty(ctx, "{dest_key}", '
+            f'TestSupport.putExtracted(ctx, "{dest_key}", '
             f'com.ak.api.rest.utilities.RestUtilities.safeJsonExtract('
             f'{resp}, "{info["jsonpath"]}"));')
         published.add(var_name)
@@ -266,12 +280,19 @@ def _emit_token_extract(m: re.Match, ctx: dict) -> list[str]:
     prefix = '"Bearer " + ' if _has_bearer_concat(ctx.get("_script", "")) else ""
     # safeJsonExtract returns "" on empty / non-JSON body so a failed token
     # fetch doesn't crash the enclosing test with JsonPathException.
+    # putExtracted (not raw ctx.put): an empty extract must NOT plant
+    # "" into tokenId.GeneratedTokenID -- ctxGet's "primary key
+    # present" short-circuit would then refuse to alias-walk to any
+    # other Bearer-token key and every subsequent request would fire
+    # with an empty Authorization header (401 cascade masquerading as
+    # endpoint failures). Skip the put on empty; downstream falls
+    # through to whatever token key was populated earlier.
     return [
         f'// [translated] extract {field} from {step_name} response',
         f'String extractedToken = {prefix}'
         f'com.ak.api.rest.utilities.RestUtilities.safeJsonExtract('
         f'{resp}, "{field}");',
-        f'ctx.put("tokenId.GeneratedTokenID", extractedToken);',
+        f'TestSupport.putExtracted(ctx, "tokenId.GeneratedTokenID", extractedToken);',
         f'LOG.info("token extracted: {{}}", (extractedToken == null || extractedToken.isEmpty()) ? "null/empty" : "<redacted>");',
     ]
 
@@ -715,15 +736,14 @@ def translate(script: str, response_var_by_step: dict[str, str],
                 continue
             path = _extract_jsonpath_from_expr(expr, script)
             if path:
-                # putIfNonEmpty (not ctx.put): if the upstream response
-                # was 4xx and safeJsonExtract returns "", writing "" to
-                # ctx would block ctxGet's alias-walk downstream and the
-                # next URL substitution for this field would produce an
-                # empty path segment (`//`). Skipping the put lets the
-                # walk fall back to a sibling key (e.g.
-                # Properties.accountId from random_email_generator).
+                # putExtracted (overwrite iff non-empty): the extract's
+                # value IS authoritative for this run and MUST clobber
+                # whatever generator-default id ctx has under this key.
+                # Empty-guard still applies -- a 4xx response returning
+                # "" won't plant an empty in ctx (which would break
+                # ctxGet's alias-walk and cascade `//` empty segments).
                 lines.append(
-                    f'TestSupport.putIfNonEmpty(ctx, "{_ctx_key(target_step, field)}", '
+                    f'TestSupport.putExtracted(ctx, "{_ctx_key(target_step, field)}", '
                     f'com.ak.api.rest.utilities.RestUtilities.safeJsonExtract('
                     f'{resp_var}, "{path}"));')
                 if "setproperty_extract" not in patterns_matched:
@@ -785,15 +805,15 @@ def translate(script: str, response_var_by_step: dict[str, str],
                     continue
                 mi = _idx_in_expr_rx.search(expr)
                 use_idx = mi.group(1) if mi else fallback_idx
-                # putIfNonEmpty, not ctx.put -- if the upstream response
-                # was 4xx the header is null, parts is [], and even a
-                # guarded length check can produce "" from a stray "//".
-                # Writing "" would block ctxGet's alias-walk on the next
-                # URL substitution and cascade to `//` empty path
-                # segments downstream.
+                # putExtracted -- overwrite whatever stale generator-
+                # default id ctx already has under this key. Empty-
+                # guard still applies (parts[N] may be "" if the
+                # slice fell off the end or upstream 4xx returned no
+                # header); putExtracted skips the empty write so
+                # ctxGet's alias-walk can still fall through.
                 lines.append(
                     f'    if (parts_{hdr_id}.length > {use_idx}) '
-                    f'TestSupport.putIfNonEmpty(ctx, '
+                    f'TestSupport.putExtracted(ctx, '
                     f'"{_ctx_key(target_step, field)}", '
                     f'parts_{hdr_id}[{use_idx}]);')
             lines.append('}')
