@@ -5559,6 +5559,42 @@ public final class TestSupport {{
         if (!underscoreForm.equals(key)) merged.put(underscoreForm, value);
         String dotForm = key.replace('-', '_');
         if (!dotForm.equals(key) && !dotForm.equals(underscoreForm)) merged.put(dotForm, value);
+        // Snake-case bare alias of the trailing FIELD, so a SQL
+        // placeholder like `#account_id#` (SoapUI script uses the DB
+        // column name) resolves against a ctx key like
+        // `PropertiesDetails.accountID` or `Properties.accountId`.
+        // Without this, mapJsonValues looked up "account_id" verbatim,
+        // found nothing, substituted the "null" fallback, and the
+        // JDBC layer refused the query with
+        //   "SQL has 'null' literal from unresolved #placeholder#".
+        // Iteration order in ctx is insertion order (LinkedHashMap),
+        // so if a PropertyTransfer write comes AFTER a generator
+        // fake write for the same field, the extract's real value
+        // wins on the shared snake alias.
+        int lastDot = key.lastIndexOf('.');
+        String field = (lastDot >= 0) ? key.substring(lastDot + 1) : key;
+        String snake = camelToSnakeLower(field);
+        if (snake != null && !snake.equals(field)
+                && !snake.equals(key) && !snake.equals(underscoreForm)) {{
+            merged.put(snake, value);
+        }}
+    }}
+
+    /** camelCase / PascalCase / camelID -> snake_case_lower. Inserts an
+     *  underscore before every uppercase letter preceded by a lowercase
+     *  letter, then lowercases the whole thing. Handles trailing all-caps
+     *  abbreviations by treating them as one word (accountID -> account_id,
+     *  not account_i_d) via the lookahead. Returns null on null/empty. */
+    private static String camelToSnakeLower(String s) {{
+        if (s == null || s.isEmpty()) return null;
+        // Insert `_` before capital-preceded-by-lowercase, and also
+        // before a trailing capital-followed-by-lowercase in an ALLCAPS
+        // run (splits ID before a following word, keeps ID together at
+        // the end).
+        String withUnderscores = s
+                .replaceAll("([a-z0-9])([A-Z])", "$1_$2")
+                .replaceAll("([A-Z]+)([A-Z][a-z])", "$1_$2");
+        return withUnderscores.toLowerCase();
     }}
 
     /**
