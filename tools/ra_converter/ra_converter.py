@@ -3570,8 +3570,33 @@ class Emitter:
         """CamelCase short form of `name` for Java class + filename."""
         return short_class(name, self.max_name_len)
 
+    # Bundled framework Java files that are pure-framework-generic
+    # (contain NO per-suite content). When one of these is being
+    # emitted and already exists on disk, `_write` SKIPs to preserve
+    # any hand-edits (audit fixes, per-project tweaks). User forces a
+    # re-emit by deleting the file. Suite-specific bundled files
+    # (TestSupport.java, SetupHelper.java, Templates.java) are NOT in
+    # this set -- they MUST regenerate per suite because their bundled
+    # content varies with the SoapUI input XML.
+    _AUTHOR_EDITABLE_BASENAMES = frozenset({
+        "AuthHelper.java",
+        "PerMethodCsvDataProvider.java",
+        "PlaceholderResolver.java",
+        "ProgressLogListener.java",
+    })
+
     def _write(self, rel_path: str, content: str) -> str:
         abs_path = os.path.join(self.output_dir, rel_path)
+        # SKIP-IF-EXISTS for author-editable framework files. Centralized
+        # here so every emit site benefits without needing per-site edits
+        # to the (many) bundled-string emitters. Prints a visible line
+        # so the intent is clear in the conversion tail.
+        if os.path.basename(rel_path) in self._AUTHOR_EDITABLE_BASENAMES:
+            if os.path.exists(abs_path):
+                print(f"[ra_converter] SKIP (author-editable, exists): {rel_path}"
+                      f" -- delete file to re-emit the bundled version.")
+                self.written.append(rel_path)
+                return abs_path
         # Windows caps traditional paths at MAX_PATH (260 chars). Suite +
         # long test-case names easily overflow that. `\\?\` prefixes tell
         # Windows to skip the check; harmless everywhere else.
