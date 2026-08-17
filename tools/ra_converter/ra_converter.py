@@ -6412,17 +6412,24 @@ public final class TestSupport {{
      */
     public static void regenRandomProperties(Map<String, String> ctx) {{
         if (ctx == null) return;
-        // Fresh domain drives BOTH email and every domain-linked field
-        // (websiteDomain, emailDomains[], weburl) so a single request
-        // body stays internally consistent. Prior behaviour: email
-        // used a fixed Config.ALLOWED_DOMAIN while websiteDomain used a
-        // fresh random word.com, so POST /businesses bodies had
-        // ownerEmailAddress=user@example.com but emailDomains=
-        // [lorena.doyle.com] and Hilton rejected with 400 "Email
-        // address domain must match an allowed domain within program
-        // account", cascading 404s across every downstream step
-        // (200_2 GET, 200_3/4/5 POST members, 204 DELETE).
-        String domain = FakeData.username() + ".com";
+        // Domain source: prefer the SoapUI-frozen Properties.Hardcodeddomain
+        // (author-picked "allowed" domain that Hilton stg has pre-registered
+        // as a valid emailDomain -- e.g. `vjuum.com`, `dpptd.com`). Falls
+        // back to a fresh random word.com only when the frozen value is
+        // absent. Prior behaviour ALWAYS used FakeData.username()+".com"
+        // which produced fresh random domains like `abe.greenfelder.com`
+        // that Hilton stg rejects with 400 "Email address domain must
+        // match an allowed domain within program account" -- because
+        // some templates hardcode the emailDomains array to literal
+        // "vjuum.com" while ownerEmailAddress uses the (now-random)
+        // Properties.hardcodedemail. Preserving the frozen value keeps
+        // the request body coherent with the author's intent AND with
+        // the pre-registered stg domain allowlist.
+        String frozen = ctx.getOrDefault("Properties.Hardcodeddomain",
+                        ctx.getOrDefault("Properties.hardcodeddomain",
+                        ctx.getOrDefault("Properties.websitedomain", "")));
+        String domain = (frozen != null && !frozen.isEmpty())
+                ? frozen : FakeData.username() + ".com";
         String uname = FakeData.username();
         String email = FakeData.username() + "@" + domain;
         String phone = FakeData.faker().numerify("#########");
