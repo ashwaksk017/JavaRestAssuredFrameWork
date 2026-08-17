@@ -1950,11 +1950,17 @@ def translate(script: str, response_var_by_step: dict[str, str],
     #                       "def X = ..." lines guarantee for the common
     #                       "context.expand" pattern)
     #   $obj.foo, $obj[i], $obj?.x -> skip with comment (Groovy-only chain)
+    #   \$name (backslash-escaped)  -> leave literal; NOT interpolation
     # Prior behaviour emitted `"$email"` VERBATIM as a Java string
     # literal, so the log line read `... email: $email` instead of the
     # actual value.
-    _GS_BARE_NAME_RE = re.compile(r"\$([A-Za-z_][A-Za-z_0-9]*)(?![.\[A-Za-z_0-9])")
-    _GS_CHAIN_RE     = re.compile(r"\$[A-Za-z_][A-Za-z_0-9]*[.\[]")
+    #
+    # `(?<!\\)` negative-lookbehind guards against escaped `\$name` --
+    # Groovy treats `\$` as a literal `$` (no interpolation), and we
+    # must NOT translate `"\$name"` to `+ name +` (that would inject
+    # a runtime value where the author wanted a literal `$name`).
+    _GS_BARE_NAME_RE = re.compile(r"(?<!\\)\$([A-Za-z_][A-Za-z_0-9]*)(?![.\[A-Za-z_0-9])")
+    _GS_CHAIN_RE     = re.compile(r"(?<!\\)\$[A-Za-z_][A-Za-z_0-9]*[.\[]")
     for groups, args_body in _balanced_arg_call(
             script, r"log\.(info|warn|error|debug)\("):
         level = groups[0].lower()
@@ -2022,13 +2028,16 @@ def translate(script: str, response_var_by_step: dict[str, str],
                     # Segments keep any pre-existing backslash-escapes
                     # (\\" \\n etc.) verbatim -- they were part of the
                     # original Groovy string literal and are already
-                    # valid Java escape sequences.
-                    parts.append('"' + seg + '"')
+                    # valid Java escape sequences. EXCEPT `\$` which
+                    # is Groovy-only (Java string literals reject it
+                    # per JLS 3.10.6) -- rewrite to bare `$` (valid
+                    # unescaped in Java literals).
+                    parts.append('"' + seg.replace('\\$', '$') + '"')
                 parts.append(m.group(1))
                 last_end = m.end()
             tail = inner[last_end:]
             if tail:
-                parts.append('"' + tail + '"')
+                parts.append('"' + tail.replace('\\$', '$') + '"')
             translated_expr = " + ".join(parts) if parts else ('"' + inner + '"')
             # Same emit-level downgrade logic as the plain-literal path
             # below -- apply to the ORIGINAL message text (before we
@@ -2051,6 +2060,15 @@ def translate(script: str, response_var_by_step: dict[str, str],
         # Wrap in a literal only if not already a string
         if not (msg.startswith('"') or msg.startswith("'")):
             msg = '"' + msg.replace('"', '\\"') + '"'
+        # Groovy's `\$` escape (literal dollar) is NOT a valid Java
+        # string-literal escape -- Java would reject it as a compile
+        # error (JLS 3.10.6: only \b \t \n \f \r \" \' \\ \0-\7 \u...
+        # are valid). Sanitize to bare `$` which Java string literals
+        # accept unescaped. Only applies to already-quoted messages
+        # (either the branch above quoted it, or the msg arrived
+        # pre-quoted from Groovy source).
+        if (msg.startswith('"') and msg.endswith('"')) or (msg.startswith("'") and msg.endswith("'")):
+            msg = msg.replace('\\$', '$')
         # Downgrade Groovy-translated log.error lines that mention
         # DB env-var / connection checks to DEBUG level. The Groovy
         # source is a defensive check ("DB_HOST env var missing --
