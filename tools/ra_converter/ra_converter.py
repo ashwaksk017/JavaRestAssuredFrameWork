@@ -4110,9 +4110,22 @@ public class {class_name} {{
             # the plain Thread.sleep matches ReadyAPI + covers the race
             # via wall-clock time.
             lines.append(f'// [delay step] {step.step_name} -- sleep {step.delay_ms}ms')
+            # Audit fix #9: bracket ANY sleep >= 5s with LOG.info before
+            # + after so a 61s / 30s / etc. delay reads as intentional
+            # progress in the log instead of an apparent hang. Short
+            # sleeps (< 5s) skip the log noise -- typical test-flow
+            # waits at 2-3s don't need progress markers.
+            if step.delay_ms >= 5000:
+                safe_name = _jlit(step.step_name)
+                lines.append(
+                    f'LOG.info(" .. [delay step] {safe_name} -- sleeping {step.delay_ms}ms (NOT a hang, matches ReadyAPI)");')
             lines.append(f'try {{ Thread.sleep({step.delay_ms}L); }} '
                          f'catch (InterruptedException __ie) {{ '
                          f'Thread.currentThread().interrupt(); }}')
+            if step.delay_ms >= 5000:
+                safe_name = _jlit(step.step_name)
+                lines.append(
+                    f'LOG.info(" .. [delay step] {safe_name} -- awake");')
         elif isinstance(step, GotoStep):
             # goto/conditional-goto can't be mechanically translated into
             # Java (no `goto`; refactoring into if/loop needs human review).
