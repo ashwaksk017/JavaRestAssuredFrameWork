@@ -6640,6 +6640,13 @@ public final class AuthHelper {{
         String tokenUrl;
         if (tokenRoute.isEmpty()) {{
             tokenUrl = tokenBase;
+        }} else if (tokenRoute.startsWith("http://") || tokenRoute.startsWith("https://")) {{
+            // Tier 2 audit fix #3: SoapUI exports commonly stash the entire
+            // token URL in `token_route` (a habit from SoapUI where "token
+            // endpoint" and "token route" are the same property). Detect
+            // the full-URL shape and use it verbatim -- concatenating with
+            // tokenBase would produce `<baseUrl>/https://...` garbage.
+            tokenUrl = tokenRoute;
         }} else if (tokenBase.endsWith("/") || tokenRoute.startsWith("/")) {{
             tokenUrl = tokenBase + tokenRoute;
         }} else {{
@@ -6767,12 +6774,31 @@ public final class PerMethodCsvDataProvider {{
             }}
             String[] header = splitCsvLine(headerLine);
             String line;
+            int rowIndex = 0;
+            org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(PerMethodCsvDataProvider.class);
             while ((line = readLogicalCsvRow(br)) != null) {{
+                rowIndex++;
                 if (line.isEmpty()) continue;
                 String[] cells = splitCsvLine(line);
                 Map<String, String> row = new LinkedHashMap<>();
                 for (int i = 0; i < header.length; i++) {{
                     row.put(header[i], i < cells.length ? cells[i] : "");
+                }}
+                // Tier 1 audit fix #6: warn -- do NOT throw -- when a row
+                // has MORE cells than the header. Silent drop was the
+                // previous behaviour and hid the common authoring mistake
+                // of adding a value column without adding the header
+                // above it (the value ended up as an unattributed trailing
+                // cell, invisible to the test).
+                if (cells.length > header.length) {{
+                    StringBuilder dropped = new StringBuilder();
+                    for (int i = header.length; i < cells.length; i++) {{
+                        if (i > header.length) dropped.append(" | ");
+                        dropped.append(cells[i]);
+                    }}
+                    log.warn("PerMethodCsvDataProvider: row {{}} in {{}} has {{}} cells but header has {{}} columns; "
+                            + "extra cells DROPPED: [{{}}]. Add matching header column(s) or remove trailing cell(s).",
+                            rowIndex, resourcePath, cells.length, header.length, dropped);
                 }}
                 rows.add(row);
             }}
@@ -6803,10 +6829,27 @@ public final class PerMethodCsvDataProvider {{
         String first = br.readLine();
         if (first == null) return null;
         StringBuilder buf = new StringBuilder(first);
+        // Tier 3 audit fix #11: hard cap on physical lines per logical
+        // row. Without this, a source CSV with an unclosed `"` (easy
+        // authoring mistake: pasted JSON with a stray quote) reads to
+        // EOF into one StringBuilder -- OOMs on multi-MB CSVs and TestNG
+        // then reports "0 rows" with no diagnostic. 200 is generous for
+        // pretty-printed JSON payloads but small enough to abort quickly
+        // on malformed input.
+        final int MAX_LINES = 200;
+        int linesRead = 1;
         while (!balancedQuotes(buf)) {{
+            if (linesRead >= MAX_LINES) {{
+                String preview = buf.length() > 200 ? buf.substring(0, 200) + "..." : buf.toString();
+                throw new java.io.IOException(
+                        "CSV row exceeded " + MAX_LINES + " physical lines without "
+                        + "closing a quoted cell -- probable unclosed `\\"` in the "
+                        + "source. Row starts: " + preview);
+            }}
             String next = br.readLine();
             if (next == null) break;
             buf.append('\\n').append(next);
+            linesRead++;
         }}
         return buf.toString();
     }}
