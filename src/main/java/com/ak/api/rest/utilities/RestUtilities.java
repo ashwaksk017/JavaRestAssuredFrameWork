@@ -248,20 +248,24 @@ public class RestUtilities {
             String lower = body.toLowerCase();
             if (lower.contains("member status is invalid")) return true;
             if (lower.contains("status is invalid")) return true;
-            // TOTP freshness race: Hilton's async email pipeline
-            // occasionally writes the fresh OTP to the DB after our
-            // JDBC extract fires. When confirmValidation returns
-            // "totp code is invalid" for a fresh member, retrying
-            // after a small backoff often works because the pipeline
-            // has caught up. Retry alone won't fix it if the OTP is
-            // truly wrong (we'd resubmit the same value), but combined
-            // with the pre-JDBC delay in the emitter (see
-            // groovy_translator.py OTP-extract branch) it materially
-            // reduces flake rate. Safe to include: the assertion
-            // gate in callWithTransientRetry blocks unwanted retries
-            // when the response happened to match the expected code.
-            if (lower.contains("totp code is invalid")) return true;
-            if (lower.contains("otp code is invalid")) return true;
+            // TOTP-invalid deliberately NOT treated as transient.
+            // Prior attempt added "totp code is invalid" to this
+            // pattern set; observed in mavenError40.txt that it
+            // BACKFIRED -- the retry-on-transient wrapper resubmits
+            // the SAME OTP payload (it doesn't re-extract from DB
+            // between attempts), so we brute-force Hilton's OTP
+            // endpoint with the same wrong value 5x, and Hilton's
+            // security layer correctly locks us out with HTTP 401
+            // on the final attempt. Since resubmitting the same
+            // wrong OTP can never succeed (OTP is stateless auth
+            // material), the retry is pure downside: it wastes
+            // 3.8s per failure AND triggers the lockout. Freshness
+            // is handled at the source instead: the poll-until-
+            // stable JDBC extract in groovy_translator.py ensures
+            // we submit the DB's settled value, not a mid-write
+            // intermediate. TOTP-invalid failures beyond that are
+            // genuine (expired OTP, Hilton-side rotation, etc.) --
+            // retrying would not help.
         }
         return false;
     }
