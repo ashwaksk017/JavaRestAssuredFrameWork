@@ -470,6 +470,35 @@ def _parse_datasource_step(step_el: ET.Element) -> DataSourceStep:
             if file_el is not None and file_el.text:
                 ds.file_path = file_el.text.strip()
                 break
+        # Audit fix #6: ReadyAPI JDBC DataSource variant embeds its
+        # config as UNQUALIFIED elements inside <con:configuration>:
+        #    <con:configuration>
+        #      <driver>org.postgresql.Driver</driver>
+        #      <connstr>jdbc:postgresql://...</connstr>
+        #      <pass>...</pass>
+        #      <query>SELECT ...</query>
+        #    </con:configuration>
+        # Prior parser only walked <con:property>, so JDBC DataSource
+        # steps silently emitted with 0 columns and 0 config -- any
+        # ${DataSource#col} ref then resolved to null. Currently the
+        # only JDBC DataSources in accountmemberregression.xml are
+        # `disabled="true"`, so no runtime break, but any enabled JDBC
+        # DataSource in another SoapUI export would silently fail.
+        for cfg_container in cfg_el.findall(".//con:configuration", NS):
+            for jdbc_tag in ("driver", "connstr", "pass", "query"):
+                el = cfg_container.find(jdbc_tag)  # unqualified
+                if el is not None and el.text:
+                    # Store into step's attributes if the shape supports it;
+                    # otherwise stash under the columns list with a
+                    # `_jdbc_<tag>` marker so downstream can reason about it.
+                    marker = f"_jdbc_{jdbc_tag}"
+                    if marker not in ds.columns:
+                        ds.columns.append(marker)
+                    # Track the raw value for the file_path slot when it's
+                    # a connstr (closest match to "external data source
+                    # locator" that DataSourceStep exposes today).
+                    if jdbc_tag == "connstr" and not ds.file_path:
+                        ds.file_path = el.text.strip()
     return ds
 
 
@@ -543,9 +572,25 @@ class JdbcStep:
 
 def _parse_jdbc_step(step_el: ET.Element) -> "JdbcStep":
     cfg_el = step_el.find("con:config", NS)
-    query = _text(cfg_el.find("con:query", NS)) if cfg_el is not None else ""
-    conn = _text(cfg_el.find("con:connectionString", NS)) if cfg_el is not None else ""
-    driver = _text(cfg_el.find("con:driver", NS)) if cfg_el is not None else ""
+    # Audit fix #10: standalone JDBC steps may embed <query>/<driver>/
+    # <connstr> as UNQUALIFIED children (same shape as the JDBC
+    # DataSource variant in #6). Some SoapUI exports use the namespaced
+    # form (<con:query>) while others don't. Check both to catch either
+    # shape -- prior parser missed the unqualified form and emitted
+    # empty query/driver/connection for those steps, producing a JDBC
+    # emit with no SQL to run.
+    def _first(el, tag):
+        # Try namespaced then unqualified. Both forms observed in the wild.
+        found = el.find(f"con:{tag}", NS) if el is not None else None
+        if found is None and el is not None:
+            found = el.find(tag)
+        return _text(found) if found is not None else ""
+    query  = _first(cfg_el, "query")
+    conn   = _first(cfg_el, "connectionString")
+    if not conn:
+        # Unqualified variant uses `connstr` (short form).
+        conn = _first(cfg_el, "connstr")
+    driver = _first(cfg_el, "driver")
     return JdbcStep(
         step_name=step_el.get("name", ""),
         query=query, connection_string=conn, driver=driver)
