@@ -109,17 +109,31 @@ public final class Config {
                 + (programConfig.isEmpty()
                         ? "NOT LOADED (file missing OR active env block missing)"
                         : "loaded (" + programConfig.size() + " keys under `" + envName + "` block)"));
+        // Mirror the new precedence order in baseUrl(): explicit
+        // `baseUrl` wins over derived, derived wins over fallback.
+        // Order MUST match baseUrl() -- keep them in lockstep or the
+        // reported source will lie when both are set.
+        String explicit = get("baseUrl", null);
         String derived = deriveBaseUrl();
         String effective = baseUrl();
         String source;
-        if (isNonEmpty(derived)) {
-            source = "derived from api_config.api_end_point + api_config.version (JSON)";
-        } else if (isNonEmpty(System.getProperty("baseUrl"))) {
+        if (isNonEmpty(System.getProperty("baseUrl"))) {
             source = "-DbaseUrl system property";
         } else if (isNonEmpty(System.getenv("BASEURL"))) {
             source = "BASEURL env var";
         } else if (isNonEmpty(props.getProperty("baseUrl"))) {
             source = "application.properties (or per-env overlay)";
+        } else if (isNonEmpty(explicit)) {
+            // Rare, but possible via a future config source added to
+            // get() -- keep this branch so future additions get a
+            // sensible label instead of falling through to "derived".
+            source = "`baseUrl` key resolved via Config.get() chain";
+        } else if (isNonEmpty(derived)) {
+            // Note the derivation inputs themselves can come from -D
+            // overrides (get() walks the full chain) -- so this label
+            // is deliberately generic. The api_config.* peek block
+            // below shows the actual values that produced this URL.
+            source = "derived from api_config.api_end_point + api_config.version";
         } else {
             source = "BUILT-IN FALLBACK (jsonplaceholder) -- your config is not reaching this code";
         }
@@ -182,19 +196,34 @@ public final class Config {
     }
 
     public static String baseUrl() {
-        // Prefer the derived value from program_configuration.json when
-        // present -- concatenates `api_config.api_end_point` and
-        // `api_config.version` so a single JSON edit points every test
-        // at the right host + API version.
+        // Precedence order (matches the docstring at the top of the
+        // class): explicit `baseUrl` (-D / env / props) wins over the
+        // JSON-derived value, which in turn wins over the built-in
+        // fallback. `get()` walks the full chain, so
+        // `-DbaseUrl=https://alt.example` overrides everything and
+        // `-Dapi_config.api_end_point=https://alt.example` overrides
+        // just the derivation input.
+        //
+        // NOTE: earlier versions read programConfig directly in
+        // deriveBaseUrl(), which silently masked BOTH `-DbaseUrl` and
+        // `-Dapi_config.*` overrides -- the exact opposite of what the
+        // precedence contract promised.
+        String explicit = get("baseUrl", null);
+        if (isNonEmpty(explicit)) return explicit;
         String derived = deriveBaseUrl();
         if (isNonEmpty(derived)) return derived;
-        return get("baseUrl", "https://jsonplaceholder.typicode.com");
+        return "https://jsonplaceholder.typicode.com";
     }
 
     private static String deriveBaseUrl() {
-        String ep = programConfig.get("api_config.api_end_point");
+        // Each component is read via get() so a `-Dapi_config.*`
+        // override is honored per the precedence chain. Reading
+        // programConfig directly (as this used to) would silently
+        // ignore -D flags and env vars aimed at the derivation
+        // inputs.
+        String ep = get("api_config.api_end_point", null);
         if (!isNonEmpty(ep)) return null;
-        String ver = programConfig.get("api_config.version");
+        String ver = get("api_config.version", null);
         if (isNonEmpty(ver)) {
             return ep.replaceAll("/+$", "") + "/" + ver.replaceAll("^/+", "");
         }

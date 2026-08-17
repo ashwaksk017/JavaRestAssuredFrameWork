@@ -23,6 +23,7 @@
 package com.ak.api.tests;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -50,8 +51,23 @@ public abstract class BaseApiTest {
 
     protected static final String LOG_DIR = "logs";
 
-    /** Per-class buffer of holders, flushed to a .log file in @AfterClass. */
-    protected final List<Object> holders = new ArrayList<>();
+    /**
+     * Per-class buffer of holders, flushed to a .log file in @AfterClass.
+     *
+     * <p>Wrapped in {@link Collections#synchronizedList} so a Suites/*.xml
+     * that flips to {@code parallel="methods"} (multiple threads sharing
+     * one test-class instance, each running its own @BeforeMethod) can't
+     * corrupt the list with concurrent {@code add()}. Under the current
+     * {@code parallel="classes"} config, one instance = one thread, so
+     * the sync wrapper has zero contention -- pure defense-in-depth for
+     * a config change we'd otherwise silently mis-behave on.</p>
+     *
+     * <p>@AfterClass iteration is safe even without external synchronization
+     * because TestNG runs @AfterClass after ALL @Before/@After Method
+     * callbacks have completed for that class -- no concurrent mutation
+     * during the log write.</p>
+     */
+    protected final List<Object> holders = Collections.synchronizedList(new ArrayList<>());
 
     /** Current-test holder + softAssert -- reset in @BeforeMethod. */
     protected RestLoggerUtilityDataHolder holder;
@@ -149,6 +165,14 @@ public abstract class BaseApiTest {
         // (TestCaseLogListener + ExtentReportListener) can independently
         // snapshot the same buffer without racing on drain().
         com.ak.api.reporting.ReportBuffer.reset();
+        // Clear Db.NULL_FALLBACK_TRIPPED so a stale flag left by a
+        // prior test on the same thread (Surefire reuses threads for
+        // classes with parallel="classes") cannot falsely trip
+        // unsafeSqlReason on this test's first Db call. mapSqlValues
+        // also clears at its own entry -- this is belt-and-suspenders
+        // for tests that hit Db directly without going through
+        // mapSqlValues (rare but real: fixture-setup queries).
+        com.ak.api.db.Db.clearNullFallbackFlag();
     }
 
     /**
@@ -171,7 +195,18 @@ public abstract class BaseApiTest {
 
     @AfterClass(alwaysRun = true)
     public void writeLogFile() {
-        RestUtilities.createLog(holders, LOG_DIR, this.getClass().getSimpleName());
+        // FQN with dots -> underscores, so two `GetTest` classes in
+        // different sub-packages (common in the ra_converter output --
+        // Suite_A.GetTest and Suite_B.GetTest) don't both write to
+        // `logs/GetTest.log`. Under parallel="classes" that was a
+        // write-race that truncated whichever finished second.
+        // Inner-class `$` also gets normalized so the filename is
+        // safe across Windows + macOS + Linux without any FS-specific
+        // escaping.
+        String safeName = this.getClass().getName()
+                .replace('.', '_')
+                .replace('$', '_');
+        RestUtilities.createLog(holders, LOG_DIR, safeName);
     }
 
     // =====================================================================

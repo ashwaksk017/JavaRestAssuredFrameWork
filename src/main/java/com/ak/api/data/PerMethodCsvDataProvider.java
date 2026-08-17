@@ -75,12 +75,34 @@ public final class PerMethodCsvDataProvider {
             }
             String[] header = splitCsvLine(headerLine);
             String line;
+            int rowIndex = 0;
+            org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(PerMethodCsvDataProvider.class);
             while ((line = readLogicalCsvRow(br)) != null) {
+                rowIndex++;
                 if (line.isEmpty()) continue;
                 String[] cells = splitCsvLine(line);
                 Map<String, String> row = new LinkedHashMap<>();
                 for (int i = 0; i < header.length; i++) {
                     row.put(header[i], i < cells.length ? cells[i] : "");
+                }
+                // Warn -- do NOT throw -- when the row has MORE cells
+                // than the header. Silent drop was the previous
+                // behaviour, and it hid the common authoring mistake
+                // of adding a value column without adding the header
+                // above it (the value ended up as an unattributed
+                // trailing cell, invisible to the test). WARN so a
+                // scanning eye catches it in surefire output; don't
+                // throw so the run still produces useful signal on
+                // the columns that DID line up.
+                if (cells.length > header.length) {
+                    StringBuilder dropped = new StringBuilder();
+                    for (int i = header.length; i < cells.length; i++) {
+                        if (i > header.length) dropped.append(" | ");
+                        dropped.append(cells[i]);
+                    }
+                    log.warn("PerMethodCsvDataProvider: row {} in {} has {} cells but header has {} columns; "
+                            + "extra cells DROPPED: [{}]. Add matching header column(s) or remove trailing cell(s).",
+                            rowIndex, resourcePath, cells.length, header.length, dropped);
                 }
                 rows.add(row);
             }
@@ -111,10 +133,28 @@ public final class PerMethodCsvDataProvider {
         String first = br.readLine();
         if (first == null) return null;
         StringBuilder buf = new StringBuilder(first);
+        // Hard cap on physical lines per logical row. Without this,
+        // a source CSV with an unclosed `"` (easy authoring mistake:
+        // pasted JSON with a stray quote) reads to EOF into one
+        // StringBuilder -- OOMs on multi-MB CSVs and TestNG then
+        // reports "0 rows" with no diagnostic. 200 is generous for
+        // pretty-printed JSON payloads (typical Hilton request body
+        // is 20-40 lines) but small enough to abort quickly on
+        // malformed input.
+        final int MAX_LINES = 200;
+        int linesRead = 1;
         while (!balancedQuotes(buf)) {
+            if (linesRead >= MAX_LINES) {
+                String preview = buf.length() > 200 ? buf.substring(0, 200) + "..." : buf.toString();
+                throw new java.io.IOException(
+                        "CSV row exceeded " + MAX_LINES + " physical lines without "
+                        + "closing a quoted cell -- probable unclosed `\"` in the "
+                        + "source. Row starts: " + preview);
+            }
             String next = br.readLine();
             if (next == null) break;
             buf.append('\n').append(next);
+            linesRead++;
         }
         return buf.toString();
     }

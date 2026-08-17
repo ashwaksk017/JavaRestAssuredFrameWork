@@ -97,6 +97,20 @@ public class RestUtilities {
     private static AtomicInteger failed = new AtomicInteger(0);
     private static AtomicInteger passed = new AtomicInteger(0);
 
+    // Thread-local record of the # of unresolved placeholders left after
+    // the most recent mapJsonValues call on THIS thread. Used by
+    // mapSqlValues to flag Db.NULL_FALLBACK_TRIPPED so unsafeSqlReason
+    // can distinguish `WHERE X='null'` from a real fallback vs a
+    // legitimate literal against a varchar audit column. ThreadLocal so
+    // parallel="classes" runs don't cross-contaminate.
+    private static final ThreadLocal<Integer> LAST_UNRESOLVED_COUNT =
+            ThreadLocal.withInitial(() -> 0);
+
+    /** Framework-internal: last mapJsonValues unresolved-placeholder count on this thread. */
+    public static int lastUnresolvedCount() {
+        return LAST_UNRESOLVED_COUNT.get();
+    }
+
     public static int totalTestCases() {
         return failed.get() + passed.get();
     }
@@ -251,6 +265,13 @@ public class RestUtilities {
         // outbound body -- exactly the silent-fallback shape we fixed
         // for the CSV double-placeholder bug.
         List<String> unresolvedSnapshot = new ArrayList<>(unresolved);
+        // Publish the count to the ThreadLocal so downstream callers
+        // (mapSqlValues -> Db) can decide whether to trip the null-
+        // literal safety check. Set BEFORE the fallback pass so a
+        // subsequent successful pass on this thread can't overwrite
+        // this count to 0 mid-flight; the value read here is the
+        // definitive "was there anything unresolved this call".
+        LAST_UNRESOLVED_COUNT.set(unresolvedSnapshot.size());
         if (!strict && !unresolvedSnapshot.isEmpty()) {
             unresolved.clear();
             schema = substitute(schema, P_HASH,  dataMap, "null",  unresolved, jsonEscape);
@@ -296,8 +317,23 @@ public class RestUtilities {
      */
     public static String mapSqlValues(String sql, Map<String, String> dataMap,
                                        Map<String, String> ctx) throws Exception {
+        // Clear the Db fallback flag BEFORE the substitution runs so a
+        // stale flag from a prior mapSqlValues call on this thread
+        // can't falsely trip unsafeSqlReason on THIS call's clean SQL.
+        // (Defense-in-depth; BaseApiTest.newTestHolder also clears at
+        // per-test boundary.)
+        com.ak.api.db.Db.clearNullFallbackFlag();
         String phase1 = mapJsonValues(sql, dataMap, /* strict = */ false,
                                        /* jsonEscape = */ false);
+        // mapJsonValues just published the unresolved count on THIS
+        // thread's LAST_UNRESOLVED_COUNT. If any placeholder was
+        // unresolved, the fallback pass just wrote the literal `null`
+        // in its place -- and any raw `'#X#'` in the SQL is now
+        // `'null'`. Flag Db so unsafeSqlReason knows to trip on that
+        // pattern (see Db.NULL_FALLBACK_TRIPPED for full rationale).
+        if (lastUnresolvedCount() > 0) {
+            com.ak.api.db.Db.markNullFallbackTripped();
+        }
         return com.ak.api.data.PlaceholderResolver.resolveAll(phase1, ctx);
     }
 

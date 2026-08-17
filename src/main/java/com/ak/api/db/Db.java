@@ -58,6 +58,44 @@ import com.ak.api.config.Config;
 
 public final class Db {
 
+    // ---------------------------------------------------------------
+    // Thread-local fallback signal
+    // ---------------------------------------------------------------
+    // Set by RestUtilities.mapSqlValues after its underlying
+    // mapJsonValues reports one or more unresolved #placeholder#
+    // substitutions -- those get replaced with the literal string
+    // `null`, which combined with the raw SQL's surrounding quotes
+    // (`WHERE email='#email#'` -> `WHERE email='null'`) is the exact
+    // bug pattern unsafeSqlReason catches.
+    //
+    // Without this flag, unsafeSqlReason would refuse ANY SQL with
+    // `='null'` -- including the perfectly legitimate case where a
+    // varchar audit column literally stores the string "null" and the
+    // author wrote `WHERE status='null'` directly. That produced silent
+    // 0-row results and made tests pass on wrong data.
+    //
+    // ThreadLocal so parallel="classes" runs don't cross-contaminate:
+    // one class's mapSqlValues fallback should not affect another
+    // class's Db call. Also cleared in BaseApiTest.newTestHolder as
+    // defense-in-depth against thread reuse across tests.
+    private static final ThreadLocal<Boolean> NULL_FALLBACK_TRIPPED =
+            ThreadLocal.withInitial(() -> Boolean.FALSE);
+
+    /** Framework-internal -- called by RestUtilities.mapSqlValues. */
+    public static void markNullFallbackTripped() {
+        NULL_FALLBACK_TRIPPED.set(Boolean.TRUE);
+    }
+
+    /** Framework-internal -- called by RestUtilities.mapSqlValues + BaseApiTest.newTestHolder. */
+    public static void clearNullFallbackFlag() {
+        NULL_FALLBACK_TRIPPED.set(Boolean.FALSE);
+    }
+
+    /** Non-consuming peek -- used by unsafeSqlReason variants. */
+    public static boolean isNullFallbackTripped() {
+        return Boolean.TRUE.equals(NULL_FALLBACK_TRIPPED.get());
+    }
+
     private final String url;
     private final String user;
     private final String pass;
@@ -151,10 +189,18 @@ public final class Db {
         // #placeholder#. Real NULL comparisons use `IS NULL` / `IS NOT
         // NULL`, so a literal 'null' string in a WHERE clause is
         // ~always the fallback marker, not intended data.
+        //
+        // GATED on isNullFallbackTripped(): only trigger when we KNOW
+        // RestUtilities.mapSqlValues just fired the fallback path on
+        // this thread. Otherwise a legitimate `WHERE status='null'`
+        // against a varchar audit column that literally stores the
+        // string "null" would be wrongly blocked (returning 0 rows +
+        // silently passing on wrong data).
         String lowered = stripped.toLowerCase();
-        if (lowered.contains("='null'") || lowered.contains("= 'null'")
-                || lowered.contains("in ('null'")) {
-            return "SQL has 'null' literal from unresolved #placeholder# (mapJsonValues fallback)";
+        if (isNullFallbackTripped()
+                && (lowered.contains("='null'") || lowered.contains("= 'null'")
+                        || lowered.contains("in ('null'"))) {
+            return "SQL has 'null' literal from unresolved #placeholder# (mapJsonValues fallback fired on this thread)";
         }
         // Db.execute is for INSERT/UPDATE/DELETE/DDL. A SELECT here means
         // the caller translated `sql.execute` from Groovy but should have
@@ -181,10 +227,14 @@ public final class Db {
         if (sql == null || sql.isEmpty()) return "empty SQL";
         String stripped = sql.trim();
         if (stripped.contains("${")) return "SQL contains untranslated SoapUI ref `${...}`";
+        // Same fallback-flag gate as unsafeSqlReason -- see the comment
+        // there for why the raw pattern-match had unacceptable false
+        // positives on `WHERE varchar_col='null'` audit-column SQL.
         String lowered = stripped.toLowerCase();
-        if (lowered.contains("='null'") || lowered.contains("= 'null'")
-                || lowered.contains("in ('null'")) {
-            return "SQL has 'null' literal from unresolved #placeholder# (mapJsonValues fallback)";
+        if (isNullFallbackTripped()
+                && (lowered.contains("='null'") || lowered.contains("= 'null'")
+                        || lowered.contains("in ('null'"))) {
+            return "SQL has 'null' literal from unresolved #placeholder# (mapJsonValues fallback fired on this thread)";
         }
         return null;
     }

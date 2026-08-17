@@ -59,14 +59,23 @@ public final class TestCaseLogListener implements ITestListener {
     // -----------------------------------------------------------------------
 
     private void write(ITestResult result, String status) {
+        // FQN with dots -> underscores so two `GetTest` classes in
+        // different sub-packages (common in the ra_converter output)
+        // don't overwrite each other's per-method logs under
+        // parallel="classes". Header label still uses the short name
+        // (that's what a human wants to see); only the filename gets
+        // the FQN treatment.
         String className  = result.getTestClass().getRealClass().getSimpleName();
+        String fileClass  = result.getTestClass().getRealClass().getName()
+                .replace('.', '_')
+                .replace('$', '_');
         String methodName = result.getMethod().getMethodName();
         // Per-row disambiguator so a data-driven method with N rows
         // produces N log files instead of TRUNCATING to only the LAST
         // row's evidence. Same param-hash strategy RetryAnalyzer +
         // ProgressLogListener use for their per-invocation keys.
         String rowSuffix = rowSuffix(result);
-        Path out = Paths.get(LOG_DIR, className + "__" + methodName + rowSuffix + ".log");
+        Path out = Paths.get(LOG_DIR, fileClass + "__" + methodName + rowSuffix + ".log");
 
         try {
             Files.createDirectories(out.getParent());
