@@ -3825,18 +3825,25 @@ public class {class_name} {{
 
     def _wrap_rest_call_for_retry(self, lines, deadline_ms, step_name):
         """Post-process REST step lines to wrap the `Response Xres = client.callX(...);`
-        line in a Supplier<Response> + retry-on-transient loop.
+        line in a call to `RestUtilities.callWithTransientRetry`.
 
-        Called from _render_step when the preceding DelayStep set
-        self._pending_retry_deadline_ms. Matches the SINGLE client-call
-        line by regex (the shape emitted by _render_rest_step_body's
-        Response-assignment) and swaps it for a lambda-based invoker +
-        while-loop that retries on RestUtilities.isTransientResponse.
+        The framework helper (defined in RestUtilities.java) does the
+        actual retry loop: fires the Supplier, retries on transient
+        responses (5xx / 429 / 400+"invalid" body per
+        `isTransientResponse`) up to `deadline_ms` with 500ms backoff.
+        This method just rewrites the emit-site to be a one-line call
+        to that helper -- previously this method inline-emitted ~15
+        lines of retry logic per REST step, which was noisy and
+        error-prone to maintain.
 
-        The retry deadline is `deadline_ms` (the original SoapUI delay).
-        Backoff between attempts is 500ms. Idempotent on lines that do
-        not contain a client call (rare -- happens on stub / auth-error
-        emit paths): returns lines unchanged.
+        Emitted (before -> after):
+            Response Xres = client.callX(...);
+        becomes:
+            Response Xres = RestUtilities.callWithTransientRetry(
+                    "X", 5000L, () -> client.callX(...));
+
+        Idempotent on lines that do not contain a client call (rare --
+        stub / auth-error emit paths): returns lines unchanged.
         """
         call_re = re.compile(r"^(\s*)(Response \w+Res)\s*=\s*(client\.[^;]+);\s*$")
         safe_step = re.sub(r"[^A-Za-z0-9_]", "_", step_name) or "step"
@@ -3848,39 +3855,14 @@ public class {class_name} {{
                 out.append(line)
                 continue
             indent, var_decl, call_expr = m.groups()
-            res_var = var_decl.split()[-1]
             out.append(
-                f"{indent}// [retry-on-transient] preceding step was a "
-                f"delay (budget {deadline_ms}ms). Skip the fixed wait; "
-                f"fire this call and retry only on transient signals "
-                f"(5xx / 429 / 400+\"Member status is invalid\") -- fast "
-                f"case: 200 first try, zero wait; slow case: back off "
-                f"500ms and retry within budget.")
+                f"{indent}// [retry-on-transient] universal wrapper -- retries "
+                f"ONLY on 5xx / 429 / 400+\"invalid\" body (see "
+                f"RestUtilities.isTransientResponse). Deadline {deadline_ms}ms; "
+                f"tune with -Dtest.transientRetryDeadlineMs=<ms>.")
             out.append(
-                f"{indent}java.util.function.Supplier<Response> __invoker_{safe_step} "
-                f"= () -> {call_expr};")
-            out.append(f"{indent}{var_decl} = __invoker_{safe_step}.get();")
-            out.append(
-                f"{indent}long __rtDeadline_{safe_step} = System.currentTimeMillis() + {deadline_ms}L;")
-            out.append(f"{indent}int __rtAttempts_{safe_step} = 1;")
-            out.append(
-                f"{indent}while (com.ak.api.rest.utilities.RestUtilities.isTransientResponse({res_var}) "
-                f"&& System.currentTimeMillis() < __rtDeadline_{safe_step}) {{")
-            out.append(
-                f"{indent}    LOG.info(\" .. [retry-on-transient] step={safe_step} "
-                f"attempt={{}} status={{}} -- transient, backing off 500ms\", "
-                f"__rtAttempts_{safe_step}, {res_var}.getStatusCode());")
-            out.append(
-                f"{indent}    try {{ Thread.sleep(500L); }} "
-                f"catch (InterruptedException __ie) {{ Thread.currentThread().interrupt(); break; }}")
-            out.append(f"{indent}    {res_var} = __invoker_{safe_step}.get();")
-            out.append(f"{indent}    __rtAttempts_{safe_step}++;")
-            out.append(f"{indent}}}")
-            out.append(
-                f"{indent}if (__rtAttempts_{safe_step} > 1) "
-                f"LOG.info(\" .. [retry-on-transient] step={safe_step} "
-                f"finished after {{}} attempt(s), final status={{}}\", "
-                f"__rtAttempts_{safe_step}, {res_var}.getStatusCode());")
+                f"{indent}{var_decl} = com.ak.api.rest.utilities.RestUtilities."
+                f"callWithTransientRetry(\"{safe_step}\", {deadline_ms}L, () -> {call_expr});")
             wrapped = True
         return out
 
@@ -3889,7 +3871,28 @@ public class {class_name} {{
         AND SetupHelper emission so bug fixes benefit both."""
         lines: list[str] = []
         if isinstance(step, RestStep):
-            lines.extend(self._render_rest_step_body(step, service_class_name))
+            rest_lines = self._render_rest_step_body(step, service_class_name)
+            # Universal retry-on-transient: every REST call is wrapped
+            # in a framework helper (RestUtilities.callWithTransientRetry)
+            # that retries on transient responses (5xx / 429 / 400 body
+            # containing "invalid") up to a 5s deadline with 500ms
+            # backoff. Safe by construction -- isTransientResponse is
+            # narrow enough that expected 4xx negative-test responses
+            # (401, 403, 404, 422) DO NOT trigger retries.
+            #
+            # Addresses the Hilton stg "Member status is invalid" race:
+            # a business creation POST fired too soon after a prior
+            # test's activate hits stg's not-yet-committed state and
+            # returns 400 with that specific "invalid" body. Retry
+            # loop absorbs it once stg catches up.
+            #
+            # Deadline is configurable at runtime via
+            # `-Dtest.transientRetryDeadlineMs=<ms>`; 0 disables retry
+            # entirely (opt-out for suites where the extra latency
+            # isn't worth the resilience trade-off).
+            rest_lines = self._wrap_rest_call_for_retry(
+                rest_lines, 5000, step.step_name)
+            lines.extend(rest_lines)
         elif isinstance(step, GroovyStep):
             # Console marker so a groovy-side hang or long-running side
             # effect is attributable in the log stream.

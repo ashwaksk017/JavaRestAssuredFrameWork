@@ -145,6 +145,70 @@ public class RestUtilities {
      *         {@code false} when the response is authoritative (retry
      *         would waste time or mask a real failure)
      */
+    /**
+     * Universal retry-on-transient wrapper for a REST call. Fires the
+     * caller-provided Supplier; if the response is transient (per
+     * {@link #isTransientResponse}) and the deadline hasn't been
+     * reached, backs off 500ms and retries. Used by every
+     * ra_converter-emitted REST step so a Hilton stg race that returns
+     * a transient 400 "Member status is invalid" (or a 5xx / 429) is
+     * absorbed automatically instead of failing the test.
+     *
+     * <p>Retry only triggers on the narrow "transient" pattern (5xx,
+     * 429, or 400 with body containing "invalid" -- see
+     * isTransientResponse). Expected 4xx negative-test responses (401,
+     * 403, 404, 422) return authoritative and are NOT retried.</p>
+     *
+     * <p>Configurable via {@code -Dtest.transientRetryDeadlineMs=<N>}
+     * on the mvn command line. Default {@code deadlineMs} the caller
+     * passes is typically 5000ms. Set to 0 to opt out of retry for
+     * that specific call.</p>
+     *
+     * @param stepName    human-friendly name for retry log lines
+     * @param deadlineMs  total ms budget from first-call to last-retry;
+     *                    500ms backoff between attempts
+     * @param caller      Supplier that fires the REST call; MUST be
+     *                    idempotent (which POST-that-creates isn't
+     *                    strictly, but Hilton's create-business is
+     *                    idempotent under the "already-invalid-state"
+     *                    error path we're targeting)
+     * @return final Response (after retry loop terminates)
+     */
+    public static io.restassured.response.Response callWithTransientRetry(
+            String stepName, long deadlineMs,
+            java.util.function.Supplier<io.restassured.response.Response> caller) {
+        // -Dtest.transientRetryDeadlineMs overrides the emitted default
+        // so users can tune per environment without regenerating tests.
+        // Cap at the CALLER's default when the -D override is not set
+        // (the emitted deadlineMs represents the audit-derived guess for
+        // "how long stg needs to commit"). Negative override = disable.
+        long override = com.ak.api.config.Config.getInt(
+                "test.transientRetryDeadlineMs", -1);
+        long budgetMs = (override >= 0) ? override : deadlineMs;
+        long deadline = System.currentTimeMillis() + budgetMs;
+        long backoffMs = 500L;
+        int attempts = 1;
+        io.restassured.response.Response res = caller.get();
+        while (isTransientResponse(res)
+                && System.currentTimeMillis() < deadline) {
+            LOG.info(" .. [retry-on-transient] step={} attempt={} status={} -- transient, backing off {}ms",
+                    stepName, attempts, res.getStatusCode(), backoffMs);
+            try {
+                Thread.sleep(backoffMs);
+            } catch (InterruptedException __ie) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+            attempts++;
+            res = caller.get();
+        }
+        if (attempts > 1) {
+            LOG.info(" .. [retry-on-transient] step={} finished after {} attempt(s), final status={}",
+                    stepName, attempts, res.getStatusCode());
+        }
+        return res;
+    }
+
     public static boolean isTransientResponse(io.restassured.response.Response res) {
         if (res == null) return false;
         int status = res.getStatusCode();
