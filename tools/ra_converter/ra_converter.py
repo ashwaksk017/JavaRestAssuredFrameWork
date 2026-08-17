@@ -4550,23 +4550,44 @@ public class {class_name} {{
             f'(step={_jlit(step.step_name)})", '
             f'{response_var}.getStatusCode(), '
             f'System.currentTimeMillis() - {elapsed_var});')
-        # Failure-body log: on any non-2xx, print the response body so the
-        # server's error message reaches the console without hunting through
-        # the RestUtilities log file. Truncated to avoid flooding on huge
-        # HTML error pages. 2xx skips this entirely (keeps success runs quiet).
+        # Response-body log: ALWAYS print the body so downstream JsonPath
+        # assertions failing with `actual=[]` are debuggable. Prior emit
+        # printed 4xx only to keep 2xx runs quiet -- but when a 200
+        # response's shape doesn't match the SoapUI author's expected
+        # JsonPath, the assertion shows `expected=X actual=` (empty) with
+        # no visibility into what the response actually contained.
+        # WARN for 4xx (loud, unusual), INFO for 2xx/3xx (routine
+        # trace). Truncated to 800 chars either way to avoid flooding
+        # on huge HTML error pages or fat success payloads.
         lines.append(
-            f'if ({response_var}.getStatusCode() >= 400) {{'
+            f'{{'
         )
         lines.append(
             f'    String __body_{elapsed_var} = RestUtilities.getResponseAsString({response_var});'
         )
         lines.append(
-            f'    if (__body_{elapsed_var} != null && __body_{elapsed_var}.length() > 800) '
+            f'    if (__body_{elapsed_var} == null) __body_{elapsed_var} = "<null>";'
+        )
+        lines.append(
+            f'    if (__body_{elapsed_var}.length() > 800) '
             f'__body_{elapsed_var} = __body_{elapsed_var}.substring(0, 800) + "... (truncated)";'
         )
         lines.append(
-            f'    LOG.warn(" .. response body (HTTP {{}}): {{}}", '
+            f'    if ({response_var}.getStatusCode() >= 400) {{'
+        )
+        lines.append(
+            f'        LOG.warn(" .. response body (HTTP {{}}): {{}}", '
             f'{response_var}.getStatusCode(), __body_{elapsed_var});'
+        )
+        lines.append(
+            f'    }} else {{'
+        )
+        lines.append(
+            f'        LOG.info(" .. response body (HTTP {{}}): {{}}", '
+            f'{response_var}.getStatusCode(), __body_{elapsed_var});'
+        )
+        lines.append(
+            f'    }}'
         )
         lines.append('}')
         lines.append(f'RestUtilities.logResponseBody(testCaseId, holder, RestUtilities.getResponseAsString({response_var}));')
