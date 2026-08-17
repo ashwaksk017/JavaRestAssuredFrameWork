@@ -181,17 +181,34 @@ public final class Headers {
      */
     private static Map<String, String> readTextKeyValue(String pathOrResource, char separator) {
         Map<String, String> out = new LinkedHashMap<>();
+        org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(Headers.class);
         try (InputStream in = openStream(pathOrResource);
              java.io.BufferedReader br = new java.io.BufferedReader(
                      new java.io.InputStreamReader(in, StandardCharsets.UTF_8))) {
             String line;
+            int lineNo = 0;
             while ((line = br.readLine()) != null) {
+                lineNo++;
                 String trimmed = line.trim();
                 if (trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith("!")) {
                     continue;
                 }
                 int idx = trimmed.indexOf(separator);
-                if (idx <= 0) continue; // no separator or empty key -- skip
+                if (idx <= 0) {
+                    // Warn -- do NOT throw -- when a non-comment,
+                    // non-blank line has no separator (or an empty key
+                    // before the separator). Silent drop was the
+                    // previous behaviour, and it hid the common
+                    // authoring mistake of writing
+                    //     X-Api-Key qa-key-123     (space, not `:`)
+                    // -- the header was never applied and the test
+                    // failed with an uncorrelated 401. WARN so a
+                    // scanning eye catches it in surefire output.
+                    log.warn("Headers.readTextKeyValue: {}:{} skipped (no `{}` separator "
+                            + "or empty key): `{}`",
+                            pathOrResource, lineNo, separator, trimmed);
+                    continue;
+                }
                 String key = trimmed.substring(0, idx).trim();
                 String value = trimmed.substring(idx + 1).trim();
                 if (!key.isEmpty()) {

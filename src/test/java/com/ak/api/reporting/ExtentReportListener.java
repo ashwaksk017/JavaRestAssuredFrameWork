@@ -50,6 +50,26 @@ public class ExtentReportListener implements ITestListener, ISuiteListener {
     public void onStart(ISuite suite) {
         if (!Config.extentEnabled()) return;
 
+        // Multi-suite guard: onFinish(ISuite) below flushes the
+        // completed suite's report, BUT a testng.xml with N sibling
+        // <suite> tags fires onStart(suite2) BEFORE onFinish(suite1)
+        // is called for suite1 in some runners -- so the reassignment
+        // below would drop suite1's report on the floor before it ever
+        // wrote to disk. Flushing here defends against that ordering:
+        // even if we replace the reference immediately, suite1's HTML
+        // is already on disk. Idempotent -- extent.flush() on an
+        // already-flushed instance is a no-op.
+        if (extent != null) {
+            try {
+                extent.flush();
+            } catch (Exception e) {
+                // Best-effort flush -- don't let a broken prior report
+                // prevent the next suite from starting cleanly.
+                System.err.println("[ExtentReportListener] prior suite flush failed: "
+                        + e.getMessage());
+            }
+        }
+
         File dir = new File(REPORT_DIR);
         if (!dir.exists()) dir.mkdirs();
 

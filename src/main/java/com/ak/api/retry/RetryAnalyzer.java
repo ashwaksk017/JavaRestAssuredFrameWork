@@ -31,6 +31,16 @@ public class RetryAnalyzer implements IRetryAnalyzer {
 
     private static final Map<String, Integer> ATTEMPTS_BY_KEY = new ConcurrentHashMap<>();
 
+    // Bounded to keep memory finite over long CI runs. A test that
+    // fails-once-then-succeeds never has its counter removed (TestNG
+    // does not call retry() on success), so each such flake plants an
+    // entry that lives forever -- across Surefire fork reuse this
+    // grows unbounded. When the map crosses MAX_ENTRIES we clear it
+    // wholesale: cheap, and the only user-visible effect is that any
+    // in-flight retry sequence gets 1 extra retry (counter reset to
+    // 0). Trivial trade-off vs. an OOM in a long CI run.
+    private static final int MAX_ENTRIES = 1000;
+
     private static String key(ITestResult r) {
         return r.getTestClass().getRealClass().getName()
                 + "#" + r.getMethod().getMethodName()
@@ -39,6 +49,11 @@ public class RetryAnalyzer implements IRetryAnalyzer {
 
     @Override
     public boolean retry(ITestResult result) {
+        // Bounded-eviction sweep. Cheap size() on ConcurrentHashMap
+        // and clear() is O(n) but only triggers at the cap.
+        if (ATTEMPTS_BY_KEY.size() > MAX_ENTRIES) {
+            ATTEMPTS_BY_KEY.clear();
+        }
         int max = Config.retryMaxCount();
         String k = key(result);
         int attempts = ATTEMPTS_BY_KEY.getOrDefault(k, 0);
