@@ -382,15 +382,49 @@ public final class Config {
     // Generic key access
     // ---------------------------------------------------------------------
 
+    /**
+     * OS-reserved environment variable names that collide with common
+     * config keys after the `dots-to-underscores + uppercase` transform.
+     * When a lookup for `key` would resolve to one of these names, the
+     * env-var precedence step is SKIPPED so a Windows machine's OS-set
+     * USERNAME (e.g. "ashwa") does not silently masquerade as the SFDC
+     * `sf_config.ui_username` alias-target for `username`.
+     *
+     * <p>Audit finding #3: `Config.get("username")` -> envKey `USERNAME`
+     * -> `System.getenv("USERNAME")` returns the Windows OS user.
+     * `TestSupport.mergedRow` then injects that OS user into every REST
+     * request body that references `#username#`. Silent test-data
+     * corruption. Same shadow existed for `password`, `home`, `path`,
+     * and other short single-token keys.</p>
+     *
+     * <p>Users who genuinely want to pass credentials via env var can
+     * use the nested form (`API_CONFIG_USERNAME`, `SF_CONFIG_UI_USERNAME`,
+     * etc.) which is uppercased from the nested JSON path and cannot
+     * collide with an OS-set variable of the same name.</p>
+     */
+    private static final java.util.Set<String> OS_RESERVED_ENV_NAMES = java.util.Set.of(
+            "USER", "USERNAME", "PASSWORD",
+            "HOME", "PATH", "PWD", "SHELL", "LANG", "LOGNAME",
+            "OS", "TEMP", "TMP",
+            "USERDOMAIN", "USERPROFILE", "COMPUTERNAME",
+            "APPDATA", "LOCALAPPDATA", "PROGRAMFILES", "PROGRAMDATA",
+            "SYSTEMDRIVE", "SYSTEMROOT", "WINDIR"
+    );
+
     public static String get(String key, String fallback) {
         // 1. -Dkey
         String sys = System.getProperty(key);
         if (isNonEmpty(sys)) return sys;
 
-        // 2. env var (dots -> underscores, uppercased)
+        // 2. env var (dots -> underscores, uppercased) -- BUT skip
+        // lookup for OS-reserved names. See OS_RESERVED_ENV_NAMES
+        // Javadoc for the audit rationale (#3: Windows USERNAME/HOME/
+        // etc. would silently masquerade as request-body values).
         String envKey = key.replace('.', '_').toUpperCase();
-        String env = System.getenv(envKey);
-        if (isNonEmpty(env)) return env;
+        if (!OS_RESERVED_ENV_NAMES.contains(envKey)) {
+            String env = System.getenv(envKey);
+            if (isNonEmpty(env)) return env;
+        }
 
         // 3. program_configuration.json (env-scoped, flattened)
         String pc = programConfig.get(key);
