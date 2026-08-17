@@ -1054,6 +1054,10 @@ def translate(script: str, response_var_by_step: dict[str, str],
     # SkipException only ONCE -- subsequent throws are unreachable and
     # javac rejects them. Track whether we've emitted a throw already.
     _skip_thrown = False
+    # Shared counter for SELECT-routed result vars, so `sql.execute(SELECT)`
+    # and later `sql.rows`/`sql.firstRow` locals don't collide when a
+    # single Groovy script mixes them.
+    _row_var_counter = 0
     for groups, args_body in _balanced_arg_call(script, r"sql\.execute\("):
         query = args_body.strip()
         # Detect Groovy list-arg syntax: `sql.execute("QUERY", [p1, p2])`
@@ -1300,36 +1304,82 @@ def translate(script: str, response_var_by_step: dict[str, str],
                     f'Populate ctx (via prior REST extract or CSV row) or '
                     f'the runtime-resolved query will still carry unresolved '
                     f'`#{substituted_cols[0]}#`.')
-            lines.extend([
-                f'if (Db.isConfigured()) {{',
-                # Wrap in mapJsonValues so #X# placeholders resolve from
-                # merged (row + ctx + config) view at runtime; wrap in
-                # try/catch so a single bad SQL doesn't crash the test --
-                # WARN + continue so downstream steps still fire.
-                f'    try {{',
-                f'        String __jdbcSql = RestUtilities.mapJsonValues('
-                f'{java_query}, TestSupport.mergedRow(row, ctx), false);',
-                # Check unsafe-SQL FIRST so a refused query emits ONE
-                # clean WARN with the reason, not LOG.info(SQL) then
-                # Db.execute\'s own refuse-WARN (two lines that read as
-                # "we ran it and then it failed" when we actually never
-                # attempted it).
-                f'        String __jdbcReason = com.ak.api.db.Db.unsafeSqlReason(__jdbcSql);',
-                f'        if (__jdbcReason != null) {{',
-                f'            LOG.warn(" .. jdbc SKIPPED ({{}}): {{}}", '
-                f'__jdbcReason, __jdbcSql);',
-                f'        }} else {{',
-                f'            LOG.info(" .. jdbc SQL: {{}}", __jdbcSql);',
-                f'            Db.execute(__jdbcSql{params_java});',
-                f'        }}',
-                f'    }} catch (Exception __jdbcEx) {{',
-                f'        LOG.warn("JDBC execute failed: {{}}", '
-                f'__jdbcEx.getMessage());',
-                f'    }}',
-                f'}} else {{',
-                f'    LOG.warn("Skipping JDBC step (Db not configured): {query_for_log}");',
-                f'}}',
-            ])
+            # SoapUI authors colloquially write `sql.execute("SELECT ...")`
+            # for read queries (Groovy is loose about it). Db.execute is
+            # for INSERT/UPDATE/DELETE only -- .executeUpdate() returns
+            # a rowcount and the driver rejects a SELECT with
+            #   "A result was returned when none was expected"
+            # Db.unsafeSqlReason correctly refuses SELECTs-in-execute
+            # to keep the driver from throwing, but the JDBC step then
+            # silently no-ops. Route the SELECT variant to
+            # Db.queryAll(...) so the query actually runs; log the row
+            # count so the trace shows the query fired. Non-SELECT
+            # queries keep the existing Db.execute path.
+            is_select_query = bool(re.match(
+                r"\s*(?:with\b.*?\bselect|select)\b",
+                transformed, re.IGNORECASE | re.DOTALL))
+            if is_select_query:
+                _row_var_counter += 1
+                step_tag = re.sub(r"[^A-Za-z0-9_]", "_", step_name_hint or "s")
+                result_var = (f"__jdbcRows_{step_tag}_"
+                              f"{_row_var_counter}")
+                lines.extend([
+                    f'java.util.List<java.util.Map<String, Object>> '
+                    f'{result_var} = null;',
+                    f'if (Db.isConfigured()) {{',
+                    f'    try {{',
+                    f'        String __jdbcSql = RestUtilities.mapJsonValues('
+                    f'{java_query}, TestSupport.mergedRow(row, ctx), false);',
+                    f'        String __jdbcReason = com.ak.api.db.Db.unsafeSqlReason(__jdbcSql);',
+                    f'        if (__jdbcReason != null) {{',
+                    f'            LOG.warn(" .. jdbc SKIPPED ({{}}): {{}}", '
+                    f'__jdbcReason, __jdbcSql);',
+                    f'        }} else {{',
+                    f'            LOG.info(" .. jdbc SQL: {{}}", __jdbcSql);',
+                    f'            {result_var} = Db.queryAll(__jdbcSql'
+                    f'{params_java});',
+                    f'            LOG.info(" .. jdbc rows returned: {{}}", '
+                    f'{result_var} == null ? 0 : {result_var}.size());',
+                    f'        }}',
+                    f'    }} catch (Exception __jdbcEx) {{',
+                    f'        LOG.warn("JDBC queryAll failed: {{}}", '
+                    f'__jdbcEx.getMessage());',
+                    f'    }}',
+                    f'}} else {{',
+                    f'    LOG.warn("Skipping JDBC step (Db not configured): {query_for_log}");',
+                    f'}}',
+                ])
+            else:
+                lines.extend([
+                    f'if (Db.isConfigured()) {{',
+                    # Wrap in mapJsonValues so #X# placeholders resolve from
+                    # merged (row + ctx + config) view at runtime; wrap in
+                    # try/catch so a single bad SQL doesn't crash the test --
+                    # WARN + continue so downstream steps still fire.
+                    f'    try {{',
+                    f'        String __jdbcSql = RestUtilities.mapJsonValues('
+                    f'{java_query}, TestSupport.mergedRow(row, ctx), false);',
+                    # Check unsafe-SQL FIRST so a refused query emits ONE
+                    # clean WARN with the reason, not LOG.info(SQL) then
+                    # Db.execute\'s own refuse-WARN (two lines that read as
+                    # "we ran it and then it failed" when we actually never
+                    # attempted it).
+                    f'        String __jdbcReason = com.ak.api.db.Db.unsafeSqlReason(__jdbcSql);',
+                    f'        if (__jdbcReason != null) {{',
+                    f'            LOG.warn(" .. jdbc SKIPPED ({{}}): {{}}", '
+                    f'__jdbcReason, __jdbcSql);',
+                    f'        }} else {{',
+                    f'            LOG.info(" .. jdbc SQL: {{}}", __jdbcSql);',
+                    f'            Db.execute(__jdbcSql{params_java});',
+                    f'        }}',
+                    f'    }} catch (Exception __jdbcEx) {{',
+                    f'        LOG.warn("JDBC execute failed: {{}}", '
+                    f'__jdbcEx.getMessage());',
+                    f'    }}',
+                    f'}} else {{',
+                    f'    LOG.warn("Skipping JDBC step (Db not configured): {query_for_log}");',
+                    f'}}',
+                ])
         else:
             # Query is a Groovy variable / expression we can't safely inline.
             preview_c = query_expr.replace("*/", "* /")[:80]
@@ -1400,7 +1450,9 @@ def translate(script: str, response_var_by_step: dict[str, str],
     # invitation_key / memberDetails lookup that used them silently
     # dropped, downstream ctxGet found nothing, and the next REST step
     # sent empty ids.
-    _row_var_counter = 0
+    # `_row_var_counter` is declared above at the top of the JDBC block
+    # so sql.execute(SELECT)-routed locals share the same numbering
+    # sequence and can't collide when a script mixes sql.execute + sql.rows.
     for method_name, java_helper, result_type in (
             ("rows", "queryAll", "java.util.List<java.util.Map<String, Object>>"),
             ("firstRow", "queryOne", "java.util.Map<String, Object>")):
