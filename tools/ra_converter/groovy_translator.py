@@ -1904,9 +1904,47 @@ def translate(script: str, response_var_by_step: dict[str, str],
             for outer, field in captured_vars:
                 lines.append(
                     f'                        Object __v_{outer} = __row.get("{field}");')
-                lines.append(
-                    f'                        if (__v_{outer} != null) '
-                    f'{outer} = String.valueOf(__v_{outer});')
+                # Leading-zero preservation for fixed-width code-like
+                # values (TOTP, OTP, PIN, verification codes). Prior
+                # emit was `String.valueOf(__v_outer)` which prints
+                # an Integer of `7582` as `"7582"` -- correct Java, but
+                # the source DB column stores a 6-digit code; if the
+                # numeric value is < 100000 (roughly 10% of OTPs), the
+                # emitted string is 4 or 5 chars and Hilton stg rejects
+                # with "TOTP code is invalid". Symptom that hit us at
+                # 15:37:34 in mavenError38.txt (Active test) -- OTP
+                # `7582` sent, endpoint expected `007582`. Restore the
+                # zero-pad ONLY when the outer var / column name looks
+                # like a code (contains `otp`, `pin`, `code`) so we
+                # don't accidentally pad legitimate ids that happen to
+                # be numeric but do NOT have leading zeros in the
+                # original DB representation.
+                _is_code_like = any(
+                    kw in outer.lower() or kw in field.lower()
+                    for kw in ("otp", "pin", "code", "totp"))
+                if _is_code_like:
+                    lines.append(
+                        f'                        if (__v_{outer} != null) {{')
+                    lines.append(
+                        f'                            if (__v_{outer} instanceof Number) {{')
+                    # Numeric column: zero-pad to 6 digits (Hilton
+                    # OTP standard). If a future project uses a
+                    # different width, add a config override.
+                    lines.append(
+                        f'                                {outer} = String.format('
+                        f'"%06d", ((Number) __v_{outer}).longValue());')
+                    lines.append(
+                        f'                            }} else {{')
+                    lines.append(
+                        f'                                {outer} = String.valueOf(__v_{outer});')
+                    lines.append(
+                        f'                            }}')
+                    lines.append(
+                        f'                        }}')
+                else:
+                    lines.append(
+                        f'                        if (__v_{outer} != null) '
+                        f'{outer} = String.valueOf(__v_{outer});')
                 # Diagnostic: log the EXTRACTED column value + the Java var
                 # it landed in. Currently a Hilton-stg-rejected TOTP was
                 # invisible because we only logged the row count; now the
