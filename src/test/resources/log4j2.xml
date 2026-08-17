@@ -10,6 +10,9 @@
   To revert to lean output: change every DEBUG below to INFO.
   To go even louder (wire-level HTTP): change io.restassured to
   info (or debug) and org.apache.http to info.
+
+  Note: XML comments cannot contain the string of two consecutive
+  hyphens, so this block uses single dashes throughout.
 -->
 <Configuration status="WARN">
     <Appenders>
@@ -18,10 +21,10 @@
         </Console>
     </Appenders>
     <Loggers>
-        <!-- Framework code -- shows retry-on-transient attempts,
+        <!-- Framework code: shows retry-on-transient attempts,
              placeholder resolution, delay-step timing, all diagnostics. -->
         <Logger name="com.ak.api" level="debug"/>
-        <!-- Emitted test classes under imported.* -- shows every step's
+        <!-- Emitted test classes under imported.*: shows every step's
              request/response body dump. Already emits at INFO by default;
              DEBUG surfaces any extra diagnostic the translator marked
              at that level (e.g. downgraded "Failed to delete..." lines
