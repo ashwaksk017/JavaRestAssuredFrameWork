@@ -947,10 +947,28 @@ def parse_test_suites(xml_path: str) -> list[tuple[str, list[TestCase]]]:
         return []
 
     out: list[tuple[str, list[TestCase]]] = []
+    _skipped_suites: list[str] = []
+    _skipped_cases: list[tuple[str, str]] = []
+    _skipped_steps: list[tuple[str, str, str]] = []
     for ts_el in ts_elements:
         suite_name = ts_el.get("name", "") or "unnamed_suite"
+        # SoapUI/ReadyAPI honors `disabled="true"` at three levels
+        # (testSuite / testCase / testStep). A disabled test in the
+        # ReadyAPI UI does NOT run; before this filter the converter
+        # emitted disabled cases anyway, so tests the author had
+        # explicitly turned off (e.g., because the API contract
+        # changed and the assertions were stale) still ran against
+        # stg and produced misleading failures. Skip disabled items
+        # entirely and stash a summary the caller prints so the
+        # exclusions are visible.
+        if ts_el.get("disabled", "").lower() == "true":
+            _skipped_suites.append(suite_name)
+            continue
         cases: list[TestCase] = []
         for tc_el in ts_el.findall("con:testCase", NS):
+            if tc_el.get("disabled", "").lower() == "true":
+                _skipped_cases.append((suite_name, tc_el.get("name", "")))
+                continue
             desc_el = tc_el.find("con:description", NS)
             # Test-management annotations (Zephyr / JIRA) live as XML
             # attributes on the `<con:testCase>` element. Empty defaults
@@ -987,6 +1005,11 @@ def parse_test_suites(xml_path: str) -> list[tuple[str, list[TestCase]]]:
                 tm_extras=tm_extras,
             )
             for step_el in tc_el.findall("con:testStep", NS):
+                if step_el.get("disabled", "").lower() == "true":
+                    _skipped_steps.append(
+                        (suite_name, tc_el.get("name", ""),
+                         step_el.get("name", "")))
+                    continue
                 step_type = step_el.get("type", "")
                 parser = _STEP_PARSERS.get(step_type)
                 if parser is None:
@@ -1000,6 +1023,28 @@ def parse_test_suites(xml_path: str) -> list[tuple[str, list[TestCase]]]:
                     tc.steps.append(parser(step_el))
             cases.append(tc)
         out.append((suite_name, cases))
+    # Print a one-shot exclusion summary so `disabled="true"` items
+    # aren't silently dropped -- ops needs to know which cases the
+    # author took offline. Stdout so the ra_converter run banner
+    # captures it alongside the rest of the emit-time output.
+    if _skipped_suites or _skipped_cases or _skipped_steps:
+        print(f"[ra_converter] SoapUI `disabled=\"true\"` exclusions "
+              f"(not emitted): "
+              f"{len(_skipped_suites)} suite(s), "
+              f"{len(_skipped_cases)} case(s), "
+              f"{len(_skipped_steps)} step(s)")
+        for sn in _skipped_suites[:5]:
+            print(f"    [suite disabled] {sn}")
+        if len(_skipped_suites) > 5:
+            print(f"    ... and {len(_skipped_suites) - 5} more suite(s)")
+        for sn, cn in _skipped_cases[:20]:
+            print(f"    [case disabled]  {sn} / {cn}")
+        if len(_skipped_cases) > 20:
+            print(f"    ... and {len(_skipped_cases) - 20} more case(s)")
+        for sn, cn, stn in _skipped_steps[:20]:
+            print(f"    [step disabled]  {sn} / {cn} / {stn}")
+        if len(_skipped_steps) > 20:
+            print(f"    ... and {len(_skipped_steps) - 20} more step(s)")
     return out
 
 
