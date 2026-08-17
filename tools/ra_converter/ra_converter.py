@@ -1836,7 +1836,15 @@ _CROSS_TC_RX = re.compile(
 # group excludes `#` -- it would fail to match this shape but be
 # checked first anyway; keeping the response one earlier removes any
 # ordering surprise.
-_STEP_RESPONSE_RX = re.compile(r"\$\{([A-Za-z0-9_ -]+?)#Response#([^}]+)\}")
+# Audit fix #1: broadened to also match SoapUI's ResponseAsXml / ResponseAsJson
+# variants (96 occurrences in the accountmemberregression project). Group 2
+# captures the variant (empty string for the default Response; "AsXml",
+# "AsJson", "Headers", "AsHtml" for the alternates); group 3 captures the
+# path expression. The emitter uses the variant to pick the right extractor
+# (safeJsonExtract for Response/AsJson, XPath-leaf heuristic for AsXml,
+# res.getHeader for Headers).
+_STEP_RESPONSE_RX = re.compile(
+    r"\$\{([A-Za-z0-9_ -]+?)#Response(AsXml|AsJson|Headers|AsHtml)?#([^}]+)\}")
 _STEP_PROP_RX = re.compile(r"\$\{([A-Za-z0-9_ -]+?)#([A-Za-z0-9_.-]+)\}")
 # Bare `${var}` -- only match identifiers that AREN'T already caught
 # by one of the scoped patterns above. SoapUI uses this for TestCase-
@@ -1898,9 +1906,41 @@ def soapui_expr_to_java(expr: str) -> str:
     e = _SCOPE_PROP_RX.sub(_scoped, e)
     # `${step#Response#$jsonPath}` -- resolves against the emitted response
     # variable (in scope only within the same test method).
+    # Audit fix #1: also handle ResponseAsXml/AsJson/Headers/AsHtml. The
+    # regex now captures the variant as group 2; extractor differs per
+    # variant.
     def _step_response(m):
         step = sanitize_identifier(m.group(1))
-        path = _translate_soapui_jsonpath(m.group(2))
+        variant = m.group(2) or ""  # "" for the default Response
+        path_raw = m.group(3)
+        if variant == "Headers":
+            # Response header lookup -- SoapUI ${step#ResponseHeaders#Name}
+            # returns the header value; RestAssured Response exposes
+            # .getHeader(name) which returns null when missing.
+            header = path_raw.strip().replace('"', '\\"')
+            return f'({step}Res.getHeader("{header}") == null ? "" : {step}Res.getHeader("{header}"))'
+        if variant in ("AsXml", "AsHtml"):
+            # SoapUI XPath -- extract the LAST identifier from the path
+            # (typical shape: "declare namespace ns1='...'; //ns1:Response
+            # [1]/ns1:accountId[1]"). Hilton APIs return JSON in stg even
+            # when the SoapUI project was captured against an XML-shaped
+            # earlier version, so extracting via the JSON field of the
+            # same name (accountId, memberId, etc.) is the pragmatic
+            # bridge. Falls back to safeJsonExtract with the leaf name.
+            expr = path_raw
+            if "declare namespace" in expr and ";" in expr:
+                expr = expr.split(";", 1)[1].strip()
+            segments = expr.split("/")
+            leaf = segments[-1] if segments else expr
+            if ":" in leaf:
+                leaf = leaf.split(":", 1)[-1]
+            leaf = re.sub(r"\[\d+\]", "", leaf).strip()
+            if not leaf:
+                leaf = "unknown"
+            return f'com.ak.api.rest.utilities.RestUtilities.safeJsonExtract({step}Res, "{leaf}")'
+        # Default: Response / AsJson -- existing safeJsonExtract with
+        # translated JSONPath.
+        path = _translate_soapui_jsonpath(path_raw)
         # Route through safeJsonExtract so an upstream 4xx that returned
         # an empty/HTML body degrades to "" here instead of crashing the
         # whole test with an unchecked JsonPathException.
@@ -1958,15 +1998,40 @@ def soapui_body_to_placeholders(body: str) -> tuple[str, list[str]]:
         # (see _render_rest_step_body). Without translating, the raw
         # `${...}` reaches the wire and the target rejects the payload
         # (or JSON parse-fails on the leading `{` of an unquoted ref).
+        #
+        # Audit fix #1: regex now captures the variant as group 2 (empty
+        # for the plain Response form; "AsXml"/"AsJson"/"Headers"/
+        # "AsHtml" for the alternates). Group 3 is the path expression.
+        # For AsXml/AsHtml, extract the LAST XPath leaf and use that
+        # as the placeholder-name suffix (Hilton APIs return JSON with
+        # matching field names).
         step_id = re.sub(r"[^A-Za-z0-9_]", "_", m.group(1).strip())
-        # Strip JsonPath syntax to a bare field name matching how the
-        # extract-to-ctx will publish it (see _translate_soapui_jsonpath).
-        raw_path = m.group(2).strip()
-        field = raw_path.lstrip("$").lstrip(".")
-        # Unwrap `['name']` / `["name"]`
-        field = re.sub(r"\['?([^'\]]+)'?\]", r".\1", field)
-        field = re.sub(r'\["?([^"\]]+)"?\]', r".\1", field)
-        field = field.lstrip(".").replace(".", "_").replace("-", "_")
+        variant = m.group(2) or ""
+        raw_path = m.group(3).strip()
+        if variant in ("AsXml", "AsHtml"):
+            expr = raw_path
+            if "declare namespace" in expr and ";" in expr:
+                expr = expr.split(";", 1)[1].strip()
+            segments = expr.split("/")
+            leaf = segments[-1] if segments else expr
+            if ":" in leaf:
+                leaf = leaf.split(":", 1)[-1]
+            leaf = re.sub(r"\[\d+\]", "", leaf).strip()
+            if not leaf:
+                leaf = "unknown"
+            field = leaf.replace(".", "_").replace("-", "_")
+        elif variant == "Headers":
+            # Header refs land as a `_Header_<name>` suffix; runtime
+            # substitution needs a separate ctx-put step but at least
+            # the placeholder shape is stable.
+            field = f"Header_{raw_path.strip().replace('-', '_').replace('.', '_')}"
+        else:
+            # Default Response / AsJson: strip JsonPath syntax to bare
+            # field name matching _translate_soapui_jsonpath.
+            field = raw_path.lstrip("$").lstrip(".")
+            field = re.sub(r"\['?([^'\]]+)'?\]", r".\1", field)
+            field = re.sub(r'\["?([^"\]]+)"?\]', r".\1", field)
+            field = field.lstrip(".").replace(".", "_").replace("-", "_")
         var = f"{step_id}_Response_{field}" if field else f"{step_id}_Response"
         placeholders.append(var)
         return f"#{var}#"

@@ -624,6 +624,25 @@ public class RestUtilities {
                     verb, stepName, fm.group(), resolvedPath);
             return;
         }
+        // Audit fix #8: catch untranslated `${step#ResponseAsXml#...}` /
+        // `${step#ResponseHeaders#...}` / `declare namespace` fragments.
+        // These come from SoapUI test steps that reference an upstream
+        // response via ResponseAsXml (XPath), ResponseAsJson, or headers
+        // and the translator failed to substitute (either the ref didn't
+        // match the recognizer regex OR the upstream step wasn't emitted
+        // in the same method scope). Without this branch, the entire
+        // XPath expression gets URL-encoded and shipped to the API,
+        // producing a bland 404 with no framework signal.
+        if (resolvedPath.contains("${") || resolvedPath.contains("#Response")
+                || resolvedPath.contains("declare namespace")) {
+            LOG.warn("assertPathResolved: {} `{}` URL contains untranslated "
+                    + "SoapUI response-ref residue in `{}` -- the translator "
+                    + "did not substitute an upstream `${{step#ResponseAsXml#...}}` "
+                    + "or `${{step#ResponseHeaders#...}}` reference. Server "
+                    + "will return a bland 404 as this literal is URL-encoded.",
+                    verb, stepName, resolvedPath);
+            return;
+        }
     }
 
     private static final java.util.regex.Pattern HASH_PATH_PLACEHOLDER =
