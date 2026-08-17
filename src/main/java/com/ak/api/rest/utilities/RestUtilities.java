@@ -285,6 +285,37 @@ public class RestUtilities {
                 throw new UnresolvedPlaceholderException(
                         "Unresolved placeholders: " + new HashSet<>(unresolvedSnapshot));
             }
+            // c.HYBRID (audit): DataSource-derived placeholders
+            // (`#datasource_XXX_field#`) come from a SoapUI DataSource
+            // step that reads an external Excel/CSV file at test time.
+            // The framework does NOT run those external DataSources;
+            // it expects the CSV row to carry the values under
+            // matching column names. When one of these is unresolved,
+            // emit a SEPARATE actionable WARN pointing at the CSV
+            // column the author needs to populate -- otherwise the
+            // generic mapJsonValues WARN buries the specific
+            // "populate this cell" guidance among the general list.
+            java.util.Set<String> dsMissing = new java.util.TreeSet<>();
+            for (String raw : unresolvedSnapshot) {
+                // raw is e.g. "#datasource_200_confNumber#" -- strip
+                // the delimiter chars for the column-name suggestion.
+                String stripped = raw;
+                if (stripped.startsWith("#") && stripped.endsWith("#") && stripped.length() > 2) {
+                    stripped = stripped.substring(1, stripped.length() - 1);
+                }
+                if (stripped.startsWith("datasource_")) {
+                    dsMissing.add(stripped);
+                }
+            }
+            if (!dsMissing.isEmpty()) {
+                LOG.warn("mapJsonValues: {} DataSource-derived placeholder(s) unresolved -- "
+                        + "populate the matching CSV column(s) for this test's data row "
+                        + "OR set -D<name>=<value> on the mvn command line. "
+                        + "Columns needed: {}. "
+                        + "(Source: SoapUI DataSource step; framework does not run "
+                        + "external DataSources -- values must live in the CSV row.)",
+                        dsMissing.size(), dsMissing);
+            }
             LOG.warn("mapJsonValues: {} unresolved placeholder(s) after {} iteration(s), substituted fallback: {}",
                     unresolvedSnapshot.size(), (iter + 1),
                     new java.util.TreeSet<>(unresolvedSnapshot));
