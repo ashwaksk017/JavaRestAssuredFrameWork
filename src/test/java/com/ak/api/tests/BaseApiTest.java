@@ -158,7 +158,15 @@ public abstract class BaseApiTest {
      */
     @AfterMethod(alwaysRun = true)
     public void assertAll() {
-        softAssert.assertAll();
+        // Null-guard: softAssert is created in @BeforeMethod; if that
+        // never ran (rare -- BeforeSuite threw, a subclass @BeforeClass
+        // threw, or the framework was misconfigured), assertAll would
+        // NPE here and TestNG would count it as a config failure that
+        // masks the ACTUAL root cause. Skip cleanly if softAssert is
+        // still null.
+        if (softAssert != null) {
+            softAssert.assertAll();
+        }
     }
 
     @AfterClass(alwaysRun = true)

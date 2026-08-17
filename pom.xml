@@ -199,6 +199,23 @@
                     <systemPropertyVariables>
                         <allure.results.directory>${project.build.directory}/allure-results</allure.results.directory>
                     </systemPropertyVariables>
+                    <!-- TestNG configFailurePolicy=continue so an @AfterMethod
+                         failure (typically softAssert.assertAll throwing on
+                         accumulated soft-assertion failures) does NOT skip
+                         every subsequent @Test in the same class. Applies
+                         when `mvn test -Dtest=X` bypasses the Suites/*.xml
+                         (those already carry configfailurepolicy=continue
+                         but only take effect via -DsuiteXmlFile). Without
+                         this, a 4-@Test class with one soft-assertion
+                         failure reports "1 fail + 3 skipped", misleading
+                         because the remaining tests would give independent
+                         signal against the same API. -->
+                    <properties>
+                        <property>
+                            <name>configfailurepolicy</name>
+                            <value>continue</value>
+                        </property>
+                    </properties>
                 </configuration>
                 <dependencies>
                     <dependency>

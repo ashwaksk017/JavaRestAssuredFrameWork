@@ -3422,12 +3422,15 @@ class Emitter:
         # Keys are the REST-step position index in cluster[0]'s step
         # sequence; values are the UNION of unique Assertion objects
         # across every case in the current cluster at that position.
-        # _render_rest_step_body reads this instead of step.assertions
-        # so cluster members' extra assertions don't silently vanish.
-        self._cluster_asserts_by_pos: dict[int, list] = {}
-        # Running counter incremented inside _render_rest_step_body so
-        # it can index into _cluster_asserts_by_pos. Reset per method.
-        self._current_rest_step_pos: int = 0
+        # Cluster-union of assertions was deleted -- per-case emit is
+        # correct (a sibling case's assertion shouldn't leak into
+        # another case's step whose response doesn't contain the
+        # asserted field). Fields kept as `None` so any accidental
+        # future reader hits a NoneType error rather than silently
+        # reintroducing the aggregation. When it's safe to purge, drop
+        # these + the `_union_cluster_asserts` method definition.
+        self._cluster_asserts_by_pos = None
+        self._current_rest_step_pos = 0
 
     def _short(self, name: str) -> str:
         """Filesystem-safe short form of `name`. Records the mapping so
@@ -3955,10 +3958,15 @@ public class {class_name} {{
             self._locals_in_method.add(payload_var)
             url_var = f'{sanitize_identifier(step.step_name)}Url'
             self._locals_in_method.add(url_var)
+            # SOAP body is XML, NOT JSON -- values containing `"` or
+            # `\` must NOT be JSON-escaped (would land as `\"`/`\\` in
+            # the XML envelope and blow up the SOAP parser). Pass
+            # jsonEscape=false to mapJsonValues.
             lines.append(
                 f'String {payload_var} = PlaceholderResolver.resolveAll('
                 f'RestUtilities.mapJsonValues("{body_lit}", '
-                f'TestSupport.mergedRow(row, ctx), false), ctx);')
+                f'TestSupport.mergedRow(row, ctx), '
+                f'/* strict */ false, /* jsonEscape */ false), ctx);')
             lines.append(
                 f'String {url_var} = PlaceholderResolver.resolveAll('
                 f'"{ep_lit}", ctx);')
@@ -4007,10 +4015,18 @@ public class {class_name} {{
             if has_body:
                 payload_var = f'{sanitize_identifier(step.step_name)}Payload'
                 self._locals_in_method.add(payload_var)
+                # jsonEscape only when the raw HTTP request declares a
+                # JSON media type. Anything else (XML / form-encoded /
+                # text) must NOT be JSON-escaped -- a value containing
+                # `"` or `\` would land as `\"` / `\\` in the wire
+                # payload and blow up the server parser.
+                _media = (step.media_type or "").lower()
+                _json_ctx = "true" if "json" in _media else "false"
                 lines.append(
                     f'String {payload_var} = PlaceholderResolver.resolveAll('
                     f'RestUtilities.mapJsonValues("{body_lit}", '
-                    f'TestSupport.mergedRow(row, ctx), false), ctx);')
+                    f'TestSupport.mergedRow(row, ctx), '
+                    f'/* strict */ false, /* jsonEscape */ {_json_ctx}), ctx);')
                 body_chain = f'.body({payload_var})'
             else:
                 body_chain = ""
@@ -4564,12 +4580,17 @@ public class {class_name} {{
                 f'new java.util.LinkedHashMap<>();')
             for qk, qv in (step.query_params or {}).items():
                 translated, _ = soapui_body_to_placeholders(qv or "")
+                # jsonEscape=false: query params are URL-encoded
+                # downstream by RestAssured; JSON-escaping a value
+                # containing `"` before URL encoding would produce
+                # `%5C%22` on the wire (wrong -- should be `%22`).
                 lines.append(
                     f'{qp_var}.put("{_jlit(qk)}", '
                     f'PlaceholderResolver.resolveAll('
                     f'RestUtilities.mapJsonValues('
                     f'"{_jlit(translated)}", '
-                    f'TestSupport.mergedRow(row, ctx), false), ctx));')
+                    f'TestSupport.mergedRow(row, ctx), '
+                    f'/* strict */ false, /* jsonEscape */ false), ctx));')
             call_args.append(qp_var)
         # Call site must match the client method's ACTUAL signature (which
         # was decided by the first occurrence of the op). The step's own
@@ -4690,16 +4711,18 @@ public class {class_name} {{
         lines.append(f'RestUtilities.logResponseBody(testCaseId, holder, RestUtilities.getResponseAsString({response_var}));')
 
         # Assertions:
-        # Prefer the UNION of active assertions computed across the whole
-        # cluster (populated by `_union_cluster_asserts` in
-        # `emit_test_class_per_suite`) so a cluster member's extra
-        # assertions don't silently vanish. Fall back to just this
-        # step's own assertions when not in cluster mode.
-        assertions_to_emit = (
-            self._cluster_asserts_by_pos.get(self._current_rest_step_pos)
-            if self._cluster_asserts_by_pos else None)
-        if assertions_to_emit is None:
-            assertions_to_emit = [a for a in step.assertions if not a.disabled]
+        # Emit ONLY this case's own assertions (not the cluster union).
+        # Prior union-across-cluster-members design was well-intentioned
+        # ("don't silently lose sibling cases' extra assertions") but
+        # caused false failures: sibling case B might attach a
+        # MessageContent-accountStatus assertion to step X, but case A's
+        # step X response doesn't contain that field, so cross-mixing
+        # the assertion fired against the wrong response and reported
+        # spurious "expected [X] but found []". SoapUI author's intent
+        # is per-case -- assertions attached to a specific case's step
+        # apply to THAT case only. Cases sharing a cluster contribute
+        # CSV ROWS (different data), not different assertion shapes.
+        assertions_to_emit = [a for a in step.assertions if not a.disabled]
         # `assertion_index` counts only ACTIVE assertions (skipped ones
         # don't consume an index) so the CSV column names stay stable
         # even if a SoapUI author toggles a disabled assertion on later.
@@ -4926,8 +4949,17 @@ public class {class_name} {{
                         f'com.ak.api.rest.utilities.RestUtilities'
                         f'.safeJsonExtract({response_var}, "{path}"));')
                 return (pre_lines + [
-                    f'String expected_{vsid} = row.getOrDefault("{col_name}", '
-                    f'String.valueOf({java_expr}));',
+                    # Empty-as-missing: treat blank CSV cell as "no
+                    # override" so the ${...} fallback fires. Prior
+                    # `getOrDefault` returned the empty string when the
+                    # cell was present-but-empty, and the assertion
+                    # then compared response.field vs "" and always
+                    # failed. Every other assertion helper (via
+                    # `_row_expr`) already does this null-or-empty
+                    # ternary; this branch was the odd one out.
+                    f'String expected_{vsid} = (row.get("{col_name}") == null || '
+                    f'row.get("{col_name}").isEmpty() ? '
+                    f'String.valueOf({java_expr}) : row.get("{col_name}"));',
                     f'LOG.info(" .. [assert] {path} expected={{}} actual={{}}", '
                     f'expected_{vsid}, com.ak.api.rest.utilities.RestUtilities'
                     f'.safeJsonExtract({response_var}, "{path}"));',
@@ -7190,13 +7222,14 @@ public final class PlaceholderResolver {{
         for idx, cluster in enumerate(self._clusters):
             final_name, status_code, variant = self._cluster_to_method[idx]
             method_names.append(final_name)
-            # Precompute UNION of assertions across all cluster cases at
-            # each REST-step position so _render_rest_step_body emits every
-            # unique assertion (not just cluster[0]'s). Members' extra
-            # assertions become CSV-conditional -- their default from the
-            # source case is baked in, but rows for other cases can leave
-            # the cell blank to skip.
-            self._cluster_asserts_by_pos = self._union_cluster_asserts(cluster)
+            # Cluster-union of assertions REMOVED (per-case emit only).
+            # Kept the field as None so _render_rest_step_body's read
+            # (which now always uses `step.assertions`) can be audited
+            # for any accidental re-introduction. The
+            # `_union_cluster_asserts` method is dead but kept in
+            # source for now with a deprecation note so a future
+            # reviewer sees the design decision.
+            self._cluster_asserts_by_pos = None
             # Use the first case as the "template" case for step rendering.
             # In merged clusters the FIRST case is always the LONGEST (the
             # base cluster from `_merge_prefix_clusters`), so its steps are
