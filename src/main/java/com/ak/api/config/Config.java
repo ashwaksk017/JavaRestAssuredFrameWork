@@ -109,11 +109,11 @@ public final class Config {
                 + (programConfig.isEmpty()
                         ? "NOT LOADED (file missing OR active env block missing)"
                         : "loaded (" + programConfig.size() + " keys under `" + envName + "` block)"));
-        // Mirror the new precedence order in baseUrl(): explicit
-        // `baseUrl` wins over derived, derived wins over fallback.
-        // Order MUST match baseUrl() -- keep them in lockstep or the
-        // reported source will lie when both are set.
-        String explicit = get("baseUrl", null);
+        // Mirror the corrected precedence in baseUrl(): -D / env win
+        // over JSON derivation, which wins over application.properties
+        // baseUrl, which wins over the built-in fallback. Order MUST
+        // match baseUrl() -- keep them in lockstep or the reported
+        // source will lie when multiple sources are set.
         String derived = deriveBaseUrl();
         String effective = baseUrl();
         String source;
@@ -121,19 +121,14 @@ public final class Config {
             source = "-DbaseUrl system property";
         } else if (isNonEmpty(System.getenv("BASEURL"))) {
             source = "BASEURL env var";
-        } else if (isNonEmpty(props.getProperty("baseUrl"))) {
-            source = "application.properties (or per-env overlay)";
-        } else if (isNonEmpty(explicit)) {
-            // Rare, but possible via a future config source added to
-            // get() -- keep this branch so future additions get a
-            // sensible label instead of falling through to "derived".
-            source = "`baseUrl` key resolved via Config.get() chain";
         } else if (isNonEmpty(derived)) {
-            // Note the derivation inputs themselves can come from -D
-            // overrides (get() walks the full chain) -- so this label
-            // is deliberately generic. The api_config.* peek block
-            // below shows the actual values that produced this URL.
-            source = "derived from api_config.api_end_point + api_config.version";
+            // The derivation inputs themselves respect -D / env / JSON
+            // via get(), so a `-Dapi_config.api_end_point=...` override
+            // shows up here as a derived URL. The api_config.* peek
+            // block below reveals the specific values that produced it.
+            source = "derived from api_config.api_end_point + api_config.version (JSON or -Dapi_config.* overrides)";
+        } else if (isNonEmpty(props.getProperty("baseUrl"))) {
+            source = "application.properties (or per-env overlay) -- fallback because JSON derivation produced nothing";
         } else {
             source = "BUILT-IN FALLBACK (jsonplaceholder) -- your config is not reaching this code";
         }
@@ -196,22 +191,29 @@ public final class Config {
     }
 
     public static String baseUrl() {
-        // Precedence order (matches the docstring at the top of the
-        // class): explicit `baseUrl` (-D / env / props) wins over the
-        // JSON-derived value, which in turn wins over the built-in
-        // fallback. `get()` walks the full chain, so
-        // `-DbaseUrl=https://alt.example` overrides everything and
-        // `-Dapi_config.api_end_point=https://alt.example` overrides
-        // just the derivation input.
+        // Corrected precedence (was regressed in the previous audit
+        // sweep -- see hotfix commit):
+        //   1. -DbaseUrl  (CLI-explicit override, highest)
+        //   2. BASEURL    (env-explicit override)
+        //   3. JSON-derived from api_config.*  (primary config source)
+        //   4. application.properties baseUrl  (pre-JSON default fallback)
+        //   5. built-in ultimate fallback
         //
-        // NOTE: earlier versions read programConfig directly in
-        // deriveBaseUrl(), which silently masked BOTH `-DbaseUrl` and
-        // `-Dapi_config.*` overrides -- the exact opposite of what the
-        // precedence contract promised.
-        String explicit = get("baseUrl", null);
-        if (isNonEmpty(explicit)) return explicit;
+        // Widening step 1-4 to a single `get("baseUrl")` call (as the
+        // prior audit attempt did) was WRONG: get() walks props last
+        // and returns the first non-empty hit, so an application
+        // .properties `baseUrl=...` (typically a stale template
+        // default) silently masked the JSON-derived environment
+        // endpoint. That regressed every test against real APIs to
+        // 404 vs jsonplaceholder. props MUST be lower than JSON here.
+        String sysBase = System.getProperty("baseUrl");
+        if (isNonEmpty(sysBase)) return sysBase;
+        String envBase = System.getenv("BASEURL");
+        if (isNonEmpty(envBase)) return envBase;
         String derived = deriveBaseUrl();
         if (isNonEmpty(derived)) return derived;
+        String propBase = props.getProperty("baseUrl");
+        if (isNonEmpty(propBase)) return propBase;
         return "https://jsonplaceholder.typicode.com";
     }
 
