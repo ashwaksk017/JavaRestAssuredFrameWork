@@ -290,13 +290,39 @@ def _parse_rest_step(step_el: ET.Element) -> RestStep:
 
     # Split params: path (referenced in resource_path as {name}), header (well-known),
     # remaining -> query.
+    # Bug #2 fix: SoapUI's <con:parameters> is a flat list -- SoapUI itself
+    # relies on a service-definition `style` attr to route each entry to
+    # header vs query, but the exported project XML doesn't carry that
+    # metadata reliably. Prior whitelist of 6 names left everything else
+    # (Hilton-Operator-DutyCode, X-JWT-Assertion, Hilton-Operator-Location,
+    # X-Correlation-Id-Extension, etc.) landing as ?queryKey=val on the
+    # wire, while ReadyAPI actually sent them as HTTP headers. Effect:
+    # some Hilton APIs use these for duty-code routing / auth, so a
+    # misrouted request returns 401/403/data-wrong-shape.
+    #
+    # Heuristic (HTTP naming convention beats guessing):
+    #   1. exact match on the well-known whitelist  -> header
+    #   2. contains "-" (Title-Case-With-Hyphens)   -> header
+    #   3. starts with "X-" or "x-" case-ins        -> header (RFC 6648)
+    #   4. otherwise                                -> query
+    # Query params are conventionally camelCase / snake_case, no hyphens,
+    # so no false positives against real query params.
     path_params, headers, query_params = {}, {}, {}
     header_names = {"authorization", "content-type", "accept", "correlationid",
                     "x-correlation-id", "x-request-id"}
+    def _looks_like_header(key: str) -> bool:
+        kl = (key or "").lower()
+        if kl in header_names:
+            return True
+        if "-" in key:
+            return True
+        if kl.startswith("x-"):
+            return True
+        return False
     for k, v in all_params.items():
         if f"{{{k}}}" in resource_path:
             path_params[k] = v
-        elif k.lower() in header_names:
+        elif _looks_like_header(k):
             headers[k] = v
         else:
             query_params[k] = v
@@ -835,6 +861,15 @@ def _normalize_hardcoded_path_ids(resource_path: str,
     rewrites: list[tuple[str, str, str]] = []  # (segment, param, orig_value)
     for i, seg in enumerate(segments):
         if not _HARDCODED_PATH_ID_RX.fullmatch(seg):
+            new_segments.append(seg)
+            continue
+        # Bug A #1 fix (pre-pass): skip rewrite when the segment is a
+        # run of identical digits (`8888888888`, `9999999999999`,
+        # `1111111111`). Author-picked "guaranteed non-existent" ids
+        # for `_notexist_` / `_invalid_` / negative test cases --
+        # rewriting to a ctx lookup defeats the test's whole point.
+        # Mirrors the guard at the emit-site rewrite (line ~4809).
+        if len(set(seg)) == 1:
             new_segments.append(seg)
             continue
         # Derive param name from the preceding non-empty segment.
@@ -3384,7 +3419,17 @@ def _assert_default_value(a: "Assertion") -> str:
     cfg = a.config or {}
     if t == "Valid HTTP Status Codes":
         codes = (cfg.get("codes", "") or "").strip()
-        return re.split(r"[,\s]+", codes)[0] if codes else "200"
+        # Bug #4 fix: for multi-code assertions (e.g. `200, 201, 206, 204`),
+        # emit an EMPTY CSV default so the runtime's Set.contains fallback
+        # fires at assertion time. If we defaulted to the first code, the
+        # emitted `if (rawStatus != null && !rawStatus.isEmpty())` branch
+        # would take the strict assertEquals(actual, first_code) path,
+        # bypassing the multi-code accept-any semantics entirely.
+        code_list = [c for c in re.split(r"[,\s]+", codes)
+                     if c and c.strip().lstrip("-").isdigit()]
+        if len(code_list) > 1:
+            return ""  # let runtime Set.contains handle it
+        return code_list[0] if code_list else "200"
     if t == "Invalid HTTP Status Codes":
         return (cfg.get("codes", "") or "").strip()
     if t in ("JsonPath Match", "JsonPath RegEx Match"):
@@ -3499,6 +3544,15 @@ class Emitter:
         # every emitted call site for the shared client method must
         # pass a map (possibly empty) so the signature is uniform.
         self.client_takes_query: dict[tuple[str, str], bool] = {}
+        # Bug #2 fix: extra HTTP headers beyond the standard set
+        # (Authorization / Content-Type / Accept / Correlation-Id).
+        # When ANY step under this op declares custom headers
+        # (Hilton-Operator-DutyCode, X-JWT-Assertion, etc.), the client
+        # method must accept a `Map<String,String> extraHeaders` arg
+        # so per-step values reach the wire. Same shared-signature
+        # invariant as client_takes_query: every call site passes a
+        # map (possibly empty) once the op is flagged.
+        self.client_takes_extra_headers: dict[tuple[str, str], bool] = {}
         # Populated by main() before emit_test_class runs. Maps case name to
         # the flow dict (or missing = no shared flow covers this case).
         self._flow_by_case: dict[str, dict] = {}
@@ -3675,6 +3729,19 @@ class Emitter:
             self.client_takes_query[(op_name, path)] = any(
                 bool(getattr(s, "query_params", None))
                 for (_, s) in occurrences)
+            # Bug #2 fix: flag the client method to accept extraHeaders
+            # when ANY step under this op declares non-standard headers.
+            # "Authorization" is intentionally NOT counted -- the base
+            # client method already handles it via the `token` param.
+            def _has_extra_headers(s):
+                hs = getattr(s, "headers", None) or {}
+                for k in hs:
+                    if k.lower() == "authorization":
+                        continue
+                    return True
+                return False
+            self.client_takes_extra_headers[(op_name, path)] = any(
+                _has_extra_headers(s) for (_, s) in occurrences)
             java_method = self._render_client_method(effective_op, path, step, override_name=java_name)
             methods.append(java_method)
 
@@ -3745,6 +3812,13 @@ public class {class_name} {{
         takes_query = self.client_takes_query.get(client_key, bool(step.query_params))
         if takes_query:
             params.append("Map<String, String> queryParams")
+        # Bug #2: extraHeaders slot for custom HTTP headers beyond the
+        # standard Authorization / Content-Type / Accept / Correlation-Id.
+        # Same shared-signature invariant as queryParams.
+        takes_extra_headers = self.client_takes_extra_headers.get(
+            client_key, False)
+        if takes_extra_headers:
+            params.append("Map<String, String> extraHeaders")
         needs_body = verb in ("POST", "PUT", "PATCH")
         if needs_body:
             params.append("String requestBody")
@@ -3784,6 +3858,15 @@ public class {class_name} {{
         headers.put("Content-Type", "{raw_mt}");
         headers.put("Accept", "{raw_mt}");
         headers.put("Authorization", {auth_expr});"""
+        # Bug #2: after building the base headers, merge per-step
+        # extraHeaders on top so a call-site override (e.g. custom
+        # Hilton-Operator-DutyCode) reaches the wire. Base headers are
+        # mutable in both branches; JSON branch's Headers.builder().build()
+        # returns a HashMap (see Headers.java), so putAll is safe.
+        if takes_extra_headers:
+            headers_block += (
+                "\n        if (extraHeaders != null && !extraHeaders.isEmpty()) "
+                "{ headers.putAll(extraHeaders); }")
 
         # Call site per verb -- ContentType is set explicitly on every
         # body-bearing verb so it matches the headers map above.
@@ -3921,17 +4004,29 @@ public class {class_name} {{
             # Extract expected status from step's Valid HTTP Status
             # Codes assertion (first code, if any). -1 disables the
             # gate (retry on transient regardless of what we got).
+            # Bug #3 fix: when the assertion accepts multiple codes
+            # (e.g. `<codes>200, 201, 206, 204</codes>`), we CANNOT
+            # pass any single code as the "expected" -- a legitimate
+            # 201 would then be treated as unexpected and the retry
+            # would burn the full 15s deadline retrying an already-
+            # authoritative response. Use -1 (disable gate) so retry
+            # fires only on the transient signature (5xx / 429 / 400+
+            # "invalid" body), which is safe for multi-code steps.
             expected_status = -1
             for _a in (step.assertions or []):
                 if getattr(_a, "type", "") == "Valid HTTP Status Codes":
                     _codes = (_a.config.get("codes", "") or "").strip() if getattr(_a, "config", None) else ""
                     if _codes:
-                        _first = re.split(r"[,\s]+", _codes)[0]
-                        try:
-                            expected_status = int(_first)
-                            break
-                        except (TypeError, ValueError):
-                            pass
+                        _code_list = [c for c in re.split(r"[,\s]+", _codes)
+                                      if c and c.strip().lstrip("-").isdigit()]
+                        if len(_code_list) == 1:
+                            try:
+                                expected_status = int(_code_list[0])
+                            except (TypeError, ValueError):
+                                pass
+                        # else: multi-code -> leave expected_status=-1
+                        # so retry gate falls back to transient-only.
+                        break
             rest_lines = self._wrap_rest_call_for_retry(
                 rest_lines, 15000, step.step_name, expected_status)
             lines.extend(rest_lines)
@@ -4799,9 +4894,20 @@ public class {class_name} {{
                         "hHonorsNumber", "partnerAccountId",
                         "partnerAccountID", "customerId", "userId"}
             expr_stripped = (expr or "").strip().strip('"').strip("'")
+            # Bug A guard: skip rewrite when the value is a run of
+            # identical digits (e.g. `8888888888`, `9999999999999`,
+            # `1111111111`). Those are author-picked "guaranteed
+            # non-existent" ids for `_notexist_` / `_invalid_` /
+            # negative test cases -- rewriting them to a live ctx
+            # value defeats the whole point of the test (which
+            # expects the endpoint to return 404 / 400 for the fake).
+            is_test_fake = (expr_stripped.isdigit()
+                            and len(expr_stripped) >= 6
+                            and len(set(expr_stripped)) == 1)
             if (p in ID_NAMES and expr_stripped.isdigit()
                     and len(expr_stripped) >= 6
-                    and "${" not in expr):
+                    and "${" not in expr
+                    and not is_test_fake):
                 # Rewrite to a Properties ref -- soapui_expr_to_java will
                 # then emit `TestSupport.ctxGet(ctx, "Properties.<name>")`
                 # which reads from the merged runtime bag (Groovy extracts
@@ -4813,6 +4919,14 @@ public class {class_name} {{
                     f"REST step `{step.step_name}` URL had hardcoded id "
                     f"`{p}={expr_stripped}` in the path template. "
                     f"Rewritten to Properties.{p} so runtime uses live id.")
+            elif is_test_fake:
+                self.ledger.add_preflight_finding(
+                    "INFO", "hardcoded-path-id-preserved-as-testfake",
+                    self._current_case,
+                    f"REST step `{step.step_name}` URL param `{p}="
+                    f"{expr_stripped}` looks like a deliberate test-fake "
+                    f"(all-same digit). Preserved literal so negative "
+                    f"tests still hit a guaranteed-nonexistent resource.")
             path_args.append(soapui_expr_to_java(expr))
 
         # Token / Authorization header resolution priority:
@@ -4842,6 +4956,19 @@ public class {class_name} {{
                     f'// [auth override] step declares OAuth 2.0 profile "'
                     f'{_jlit(step.auth_profile.get("profile_name", ""))}"')
                 token_expr = f'"Bearer {tok}"'
+            elif atype.lower() in ("no authorization", "none", ""):
+                # Bug #6: SoapUI's "No Authorization" profile explicitly
+                # suppresses the Authorization header. Prior emit fell to
+                # the else branch which silently reused the ctx bearer
+                # token -- so any negative test designed to prove 401/403
+                # on missing auth actually sent a valid bearer and got a
+                # 200. Emit empty token so no Authorization header is
+                # sent, matching SoapUI's actual wire behavior.
+                lines.append(
+                    f'// [auth override] step declares "No Authorization" -- '
+                    f'sending WITHOUT bearer token so negative auth tests '
+                    f'get the intended 401/403 from the server.')
+                token_expr = '""'
             else:
                 lines.append(
                     f'// [auth override] step declares "'
@@ -4888,6 +5015,31 @@ public class {class_name} {{
                     f'TestSupport.mergedRow(row, ctx), '
                     f'/* strict */ false, /* jsonEscape */ false), ctx));')
             call_args.append(qp_var)
+        # Bug #2: extraHeaders (same shared-shape invariant as query).
+        # If the client method declares the extraHeaders arg, EVERY
+        # call site must pass one. Steps with no custom headers hand
+        # in an empty map so the signature stays uniform.
+        client_takes_extra_headers = self.client_takes_extra_headers.get(
+            (step.method_name, step.resource_path), False)
+        if client_takes_extra_headers:
+            eh_var = self._uniq_local(f"__extraHeaders_{base}")
+            lines.append(
+                f'java.util.Map<String, String> {eh_var} = '
+                f'new java.util.LinkedHashMap<>();')
+            for hk, hv in (step.headers or {}).items():
+                if hk.lower() == "authorization":
+                    continue  # handled via token param
+                translated, _ = soapui_body_to_placeholders(hv or "")
+                # jsonEscape=false: header values ship raw; JSON-escaping
+                # would produce `\"` in the header value and confuse HTTP.
+                lines.append(
+                    f'{eh_var}.put("{_jlit(hk)}", '
+                    f'PlaceholderResolver.resolveAll('
+                    f'RestUtilities.mapJsonValues('
+                    f'"{_jlit(translated)}", '
+                    f'TestSupport.mergedRow(row, ctx), '
+                    f'/* strict */ false, /* jsonEscape */ false), ctx));')
+            call_args.append(eh_var)
         # Call site must match the client method's ACTUAL signature (which
         # was decided by the first occurrence of the op). The step's own
         # verb inference can disagree, but we defer to what the client emitter
@@ -5188,7 +5340,31 @@ public class {class_name} {{
             # got 400" -- attributed to the wrong side. With -1,
             # runtime emits an actionable "assertion SKIPPED" WARN
             # instead of a bogus failure.
-            first_code = re.split(r"[,\s]+", codes)[0] if codes else "-1"
+            code_list = [c for c in re.split(r"[,\s]+", codes)
+                         if c and c.strip().lstrip("-").isdigit()]
+            first_code = code_list[0] if code_list else "-1"
+            # Bug C fix: SoapUI's "Valid HTTP Status Codes" assertion
+            # accepts ANY of the listed codes (e.g. `<codes>200, 201,
+            # 206, 204</codes>` passes on any 2xx). Prior emit took
+            # only the first code and silently failed on the others.
+            # When >1 code declared, emit a Set.contains membership
+            # check instead of an assertEquals on the first code.
+            # CSV override (`expected_<step>_status_code`) still wins
+            # when non-empty AND overrides with a strict single value.
+            if len(code_list) > 1:
+                valid_set_lit = ("java.util.Set.of("
+                                 + ", ".join(code_list) + ")")
+                return ([
+                    f'String rawStatus_{vsid} = row.get("{col_name}");',
+                    f'java.util.Set<Integer> validCodes_{vsid} = {valid_set_lit};',
+                    f'if (rawStatus_{vsid} != null && !rawStatus_{vsid}.isEmpty()) {{',
+                    f'    int expected_{vsid} = com.ak.api.rest.utilities.RestUtilities'
+                    f'.parseIntOrDefault(rawStatus_{vsid}, {first_code}, "{col_name}");',
+                    f'    softAssert.assertEquals({response_var}.statusCode(), expected_{vsid}, "expected status for {step_name} (CSV override of multi-code {code_list})");',
+                    f'}} else {{',
+                    f'    softAssert.assertTrue(validCodes_{vsid}.contains({response_var}.statusCode()), "expected status for {step_name} in {code_list} but got " + {response_var}.statusCode());',
+                    f'}}',
+                ], "FULL")
             # Two-tier lookup: the standalone `expected_<step>_status_code`
             # column wins; otherwise fall back to `exp.getInt("statusCode", ...)`
             # which parses the legacy `expected` combined column. Empty
@@ -6289,8 +6465,46 @@ public final class TestSupport {{
         ctx.put("Properties.domain", domain);
         ctx.put("Properties.WebsiteDomain", domain);
         ctx.put("Properties.websiteDomain", domain);
+        ctx.put("Properties.websitedomain", domain);
         ctx.put("Properties.weburl", domain);
         ctx.put("Properties.Weburl", domain);
+        // "Hardcoded" domain/email variants -- named "hardcoded" in SoapUI
+        // because the author froze them as static test-case Properties, BUT
+        // some request bodies mix them with the regen'd Email/websiteDomain
+        // in the same JSON (e.g., ownerEmailAddress=${{Properties#Email}},
+        // emailDomains=[${{Properties#Hardcodeddomain}}]). If we regen one
+        // side and leave the other at its static value, Hilton stg rejects
+        // with 400 "Email address domain must match an allowed domain
+        // within program account". Keep the whole domain cluster coherent.
+        //
+        // username1 / username2: SoapUI author used the EMAIL LOCAL-PART
+        // (`9ory0xrak` in `9ory0xrak@dpptd.com`) as a stand-alone identity
+        // in later request bodies. If we regen Email to a fresh local-part
+        // but leave username1 / username2 at the static frozen value,
+        // downstream steps that expect (localPart + domain) to reconstruct
+        // the same email get a stranger. Derive both from the FRESH local
+        // part so email = "<localPart>@<domain>" AND username1 = localPart
+        // stay identity-consistent across the whole test method.
+        //
+        // updatedemail: some flows mutate the primary email and expect the
+        // update to carry the fresh identity; keep it on the same domain
+        // cluster too.
+        String localPart = FakeData.username();
+        String hcEmail = localPart + "@" + domain;
+        ctx.put("Properties.hardcodedemail", hcEmail);
+        ctx.put("Properties.Hardcodedemail", hcEmail);
+        ctx.put("Properties.Hardcodeddomain", domain);
+        ctx.put("Properties.hardcodeddomain", domain);
+        ctx.put("Properties.username1", localPart);
+        ctx.put("Properties.Username1", localPart);
+        ctx.put("Properties.username2", localPart);
+        // NOTE: Username2 (capital U) is already claimed by the top-of-
+        // block username variants; do NOT overwrite it here.
+        String updatedEmail = "bh" + localPart + "jff@" + domain;
+        ctx.put("Properties.updatedemail", updatedEmail);
+        ctx.put("Properties.Updatedemail", updatedEmail);
+        ctx.put("Properties.updatedmailAddress", updatedEmail);
+        ctx.put("Properties.UpdatedmailAddress", updatedEmail);
         // hhonorsNumber variants
         ctx.put("Properties.hhonorsNumber", hhon);
         ctx.put("Properties.HhonorsNumber", hhon);
@@ -8257,8 +8471,21 @@ public class {class_name} extends BaseApiTest {{
                         continue
                     if a.type == "Valid HTTP Status Codes":
                         codes = (a.config.get("codes", "") or "").strip()
-                        first_code = re.split(r"[,\s]+", codes)[0] if codes else "200"
-                        expected_bits.append(f"statusCode:{first_code}")
+                        code_list = [c for c in re.split(r"[,\s]+", codes)
+                                     if c and c.strip().lstrip("-").isdigit()]
+                        first_code = code_list[0] if code_list else "200"
+                        # Bug C fix: preserve multi-code intent in the
+                        # author-visible `expected` column with `|`-sep
+                        # so a CSV editor can see the full accept-list.
+                        # Runtime path still takes first_code for the
+                        # single-code assertion; multi-code assertion
+                        # (validCodes_ Set) is emitted separately at
+                        # the assertion-emit site (see _emit_assertion
+                        # "Valid HTTP Status Codes" branch).
+                        combined = ("|".join(code_list)
+                                    if len(code_list) > 1
+                                    else first_code)
+                        expected_bits.append(f"statusCode:{combined}")
                         if not derived_status:
                             derived_status = first_code
             expected_str = ";".join(expected_bits)
@@ -8368,6 +8595,13 @@ public class {class_name} extends BaseApiTest {{
             )
             def _repl(m, _field=field):
                 nonlocal n
+                digits = m.group(1) or m.group(2)
+                # Bug A guard: skip rewrite when the value is a run of
+                # identical digits (e.g. "8888888888", "9999999999999").
+                # Author-picked "guaranteed non-existent" ids for negative
+                # tests -- rewriting them defeats the test purpose.
+                if digits and len(set(digits)) == 1:
+                    return m.group(0)
                 n += 1
                 if m.group(1):  # quoted
                     return f'"{_field}": "#Properties_{_field}#"'
