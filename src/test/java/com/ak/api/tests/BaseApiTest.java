@@ -155,8 +155,45 @@ public abstract class BaseApiTest {
     // Per-test lifecycle
     // =====================================================================
 
+    /**
+     * Tracks whether this @BeforeMethod fire is the FIRST invocation on
+     * this class instance -- used to skip the inter-method cool-down for
+     * the very first test so we don't add wasted wall-clock time when
+     * only one test method runs. TestNG creates one instance per test
+     * class, so this scopes correctly per class.
+     */
+    private boolean firstTestOnThisInstance = true;
+
     @BeforeMethod(alwaysRun = true)
     public void newTestHolder() {
+        // ReadyAPI-style test isolation cool-down:
+        //   ReadyAPI users typically run test cases INTERACTIVELY (clicking
+        //   Run on one case at a time) or via a suite runner with larger
+        //   inter-test overhead -- effectively pacing them. Our TestNG
+        //   runner fires @Test methods back-to-back in the SAME JVM +
+        //   SAME class instance, sometimes with only ~30ms between them.
+        //   Hilton stg (and similar shared external environments) has
+        //   session-state commit lag -- a business created + activated in
+        //   test N may not be fully committed on stg by the time test N+1
+        //   fires its own "create business" against the SAME owner email.
+        //   Symptom: the second test's POST returns 400 "Member status is
+        //   invalid" while the first + fourth pass cleanly.
+        //   Fix: sleep briefly before each @Test method (except the very
+        //   first) to give the external env time to settle. Configurable
+        //   via -Dtest.interMethodCoolDownMs (default 3000ms = 3s).
+        //   Set to 0 to opt out entirely for suites that don't need it.
+        if (!firstTestOnThisInstance) {
+            int coolDownMs = Config.getInt("test.interMethodCoolDownMs", 3000);
+            if (coolDownMs > 0) {
+                try {
+                    Thread.sleep(coolDownMs);
+                } catch (InterruptedException __ie) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }
+        firstTestOnThisInstance = false;
+
         holder = new RestLoggerUtilityDataHolder();
         softAssert = new SoftAssert();
         holder.setSoftAssertRef(softAssert);
