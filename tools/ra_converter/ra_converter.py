@@ -4820,6 +4820,17 @@ public class {class_name} {{
             lines.append(
                 f'TestSupport.traceCtx(ctx, "after-regen:'
                 f'{_jlit(step.step_name)}");')
+        else:
+            # Diagnostic: even for non-regen steps, dump ctx immediately
+            # before the REST call so a placeholder-resolution mismatch
+            # (e.g. `#Properties_totpCodeDB#` reading a stale value or
+            # unrelated key via alias-walk) is attributable to a specific
+            # step. Prior emit only fired ctx dumps around regen calls,
+            # leaving no visibility into the ctx state feeding the
+            # payload for steps that pass through untouched.
+            lines.append(
+                f'TestSupport.traceCtx(ctx, "before:'
+                f'{_jlit(step.step_name)}");')
         if verb_expects_body and has_source_body:
             # Template location resolution:
             #   v2 mode (--one-class-per-suite): emit_templates_deduplicated
@@ -6022,6 +6033,12 @@ import com.ak.api.data.FakeData;
  */
 public final class TestSupport {{
 
+    /** SLF4J logger for framework-level diagnostics (putExtracted writes,
+     *  putExtracted skips, ctx alias-walks). Emits at DEBUG so the volume
+     *  stays low; enable com.ak.api.** = DEBUG in log4j2.xml to see. */
+    private static final org.slf4j.Logger LOG =
+            org.slf4j.LoggerFactory.getLogger(TestSupport.class);
+
     /** Placeholder keys the converter identified as config-driven for this
      *  imported test suite. mergedRow proactively pulls these from Config so
      *  templates can reference them without any explicit ctx.put in the test. */
@@ -6336,7 +6353,23 @@ public final class TestSupport {{
      */
     public static void putExtracted(Map<String, String> ctx, String key, String value) {{
         if (ctx == null || key == null) return;
-        if (value == null || value.isEmpty()) return;
+        if (value == null || value.isEmpty()) {{
+            // Diagnostic: extract returned empty -- log so a silent
+            // "fell through to stale generator default" bug is visible
+            // instead of appearing as a downstream 400 with mystery
+            // origin. Common cause: safeJsonExtract on a 4xx response
+            // body that had no JSON field for `key`.
+            LOG.debug(" .. [putExtracted SKIPPED] key={{}} value=<empty> "
+                    + "(ctx keeps its prior value, if any -- typically a "
+                    + "stale generator default from DataGenInput regen)", key);
+            return;
+        }}
+        // Diagnostic: publish the ctx write so a placeholder-resolution
+        // bug (where a subsequent step reads a DIFFERENT key) is
+        // attributable. Log at DEBUG to keep INFO output lean; DEBUG is
+        // enabled for com.ak.api.** in the framework log4j2.xml default.
+        LOG.debug(" .. [putExtracted] {{}} <- {{}}", key,
+                value.length() > 60 ? value.substring(0, 60) + "..." : value);
         ctx.put(key, value);
         // Also publish under the trailing-D/d case-flipped alias so a
         // template that references the OTHER casing of an id field
@@ -6428,8 +6461,8 @@ public final class TestSupport {{
         String frozen = ctx.getOrDefault("Properties.Hardcodeddomain",
                         ctx.getOrDefault("Properties.hardcodeddomain",
                         ctx.getOrDefault("Properties.websitedomain", "")));
-        String domain = (frozen != null && !frozen.isEmpty())
-                ? frozen : FakeData.username() + ".com";
+        boolean usingFrozenDomain = (frozen != null && !frozen.isEmpty());
+        String domain = usingFrozenDomain ? frozen : FakeData.username() + ".com";
         String uname = FakeData.username();
         String email = FakeData.username() + "@" + domain;
         String phone = FakeData.faker().numerify("#########");
@@ -6498,20 +6531,37 @@ public final class TestSupport {{
         // cluster too.
         String localPart = FakeData.username();
         String hcEmail = localPart + "@" + domain;
-        ctx.put("Properties.hardcodedemail", hcEmail);
-        ctx.put("Properties.Hardcodedemail", hcEmail);
-        ctx.put("Properties.Hardcodeddomain", domain);
-        ctx.put("Properties.hardcodeddomain", domain);
+        // Bug D++ fix: only write to Hardcodeddomain/hardcodedemail when we
+        // actually got a FROZEN value from ctx. When we fell back to a
+        // random domain (empty ctx path -- typically the very first regen
+        // during test setup, before the main @Test method's CSV
+        // putIfNonEmpty seeding has run), leaving these keys ABSENT lets
+        // the subsequent putIfNonEmpty (uses putIfAbsent under the hood)
+        // successfully seed the CSV value like "vjuum.com" -- which the
+        // NEXT regen call reads as `frozen` and preserves. Prior behavior
+        // wrote a random domain to Hardcodeddomain here, poisoning the
+        // key so putIfAbsent no-op'd and the CSV value never landed.
+        // username1 / username2 / updatedemail follow the same rule --
+        // they're the coherent-cluster siblings; if we have no frozen
+        // anchor we shouldn't fabricate them either.
+        if (usingFrozenDomain) {{
+            ctx.put("Properties.hardcodedemail", hcEmail);
+            ctx.put("Properties.Hardcodedemail", hcEmail);
+            ctx.put("Properties.Hardcodeddomain", domain);
+            ctx.put("Properties.hardcodeddomain", domain);
+        }}
         ctx.put("Properties.username1", localPart);
         ctx.put("Properties.Username1", localPart);
         ctx.put("Properties.username2", localPart);
         // NOTE: Username2 (capital U) is already claimed by the top-of-
         // block username variants; do NOT overwrite it here.
         String updatedEmail = "bh" + localPart + "jff@" + domain;
-        ctx.put("Properties.updatedemail", updatedEmail);
-        ctx.put("Properties.Updatedemail", updatedEmail);
-        ctx.put("Properties.updatedmailAddress", updatedEmail);
-        ctx.put("Properties.UpdatedmailAddress", updatedEmail);
+        if (usingFrozenDomain) {{
+            ctx.put("Properties.updatedemail", updatedEmail);
+            ctx.put("Properties.Updatedemail", updatedEmail);
+            ctx.put("Properties.updatedmailAddress", updatedEmail);
+            ctx.put("Properties.UpdatedmailAddress", updatedEmail);
+        }}
         // hhonorsNumber variants
         ctx.put("Properties.hhonorsNumber", hhon);
         ctx.put("Properties.HhonorsNumber", hhon);

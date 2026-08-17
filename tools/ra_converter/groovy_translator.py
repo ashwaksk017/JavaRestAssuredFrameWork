@@ -1874,6 +1874,12 @@ def translate(script: str, response_var_by_step: dict[str, str],
         for outer, field in captured_vars:
             lines.append(f'    String {outer} = "";')
         lines.extend([
+            # Diagnostic: log the Db.isConfigured decision + which DB URL
+            # the framework will hit BEFORE the branch, so a mismatch (wrong
+            # env or misconfigured connection) is visible even when the
+            # branch takes "not configured" path.
+            f'    LOG.info(" .. jdbc Db.isConfigured={{}} dbUrl={{}}", Db.isConfigured(), '
+            f'com.ak.api.config.Config.get("db.url", com.ak.api.config.Config.get("DB_URL", "<unset>")));',
             f'    if (Db.isConfigured()) {{',
             f'        try {{',
             f'            String __jdbcSql = RestUtilities.mapSqlValues('
@@ -1901,6 +1907,14 @@ def translate(script: str, response_var_by_step: dict[str, str],
                 lines.append(
                     f'                        if (__v_{outer} != null) '
                     f'{outer} = String.valueOf(__v_{outer});')
+                # Diagnostic: log the EXTRACTED column value + the Java var
+                # it landed in. Currently a Hilton-stg-rejected TOTP was
+                # invisible because we only logged the row count; now the
+                # actual DB-returned value is on the record.
+                lines.append(
+                    f'                        LOG.info(" .. jdbc extract "'
+                    f' + "{outer}=<column:{field}>=" + '
+                    f'({outer} == null || {outer}.isEmpty() ? "<empty>" : {outer}));')
             lines.append(
                 f'                    }}')
             lines.append(
@@ -1912,7 +1926,9 @@ def translate(script: str, response_var_by_step: dict[str, str],
             f'__jdbcEx.getMessage());',
             f'        }}',
             f'    }} else {{',
-            f'        LOG.warn("Skipping JDBC eachRow step (Db not configured)");',
+            f'        LOG.warn("Skipping JDBC eachRow step (Db not configured -- '
+            f'set db.url + db.user + db.password in program_configuration.json '
+            f'OR DB_URL/DB_USER/DB_PASSWORD env vars)");',
             f'    }}',
         ])
         # Look ahead for setPropertyValue("<prop>", <captured_var>) calls
