@@ -3848,24 +3848,26 @@ public class {class_name} {{
         # consumption so it applies to exactly one step.
         self._pending_retry_deadline_ms = 0
 
-    def _wrap_rest_call_for_retry(self, lines, deadline_ms, step_name):
+    def _wrap_rest_call_for_retry(self, lines, deadline_ms, step_name, expected_status=-1):
         """Post-process REST step lines to wrap the `Response Xres = client.callX(...);`
         line in a call to `RestUtilities.callWithTransientRetry`.
 
-        The framework helper (defined in RestUtilities.java) does the
-        actual retry loop: fires the Supplier, retries on transient
-        responses (5xx / 429 / 400+"invalid" body per
-        `isTransientResponse`) up to `deadline_ms` with 500ms backoff.
-        This method just rewrites the emit-site to be a one-line call
-        to that helper -- previously this method inline-emitted ~15
-        lines of retry logic per REST step, which was noisy and
-        error-prone to maintain.
+        Emits the 4-arg form of the helper so a negative test that
+        EXPECTS a specific transient-looking code (e.g. Reject's
+        post_account_403 expects HTTP 400 with body "Member status is
+        invalid" -- both fields of the transient signature) does NOT
+        retry the authoritative expected answer. Prior 3-arg form
+        wasted 5+ seconds per negative test retrying the correct
+        answer 7 times.
 
         Emitted (before -> after):
             Response Xres = client.callX(...);
         becomes:
             Response Xres = RestUtilities.callWithTransientRetry(
-                    "X", 5000L, () -> client.callX(...));
+                    "X", <deadlineMs>L, <expectedStatus>, () -> client.callX(...));
+
+        Pass expected_status = -1 to disable the gate (retry always
+        fires on transient regardless of what we got).
 
         Idempotent on lines that do not contain a client call (rare --
         stub / auth-error emit paths): returns lines unchanged.
@@ -3882,12 +3884,13 @@ public class {class_name} {{
             indent, var_decl, call_expr = m.groups()
             out.append(
                 f"{indent}// [retry-on-transient] universal wrapper -- retries "
-                f"ONLY on 5xx / 429 / 400+\"invalid\" body (see "
-                f"RestUtilities.isTransientResponse). Deadline {deadline_ms}ms; "
-                f"tune with -Dtest.transientRetryDeadlineMs=<ms>.")
+                f"ONLY on 5xx / 429 / 400+\"invalid\" body AND ONLY when "
+                f"response != expected ({expected_status}). Deadline "
+                f"{deadline_ms}ms; tune with -Dtest.transientRetryDeadlineMs=<ms>.")
             out.append(
                 f"{indent}{var_decl} = com.ak.api.rest.utilities.RestUtilities."
-                f"callWithTransientRetry(\"{safe_step}\", {deadline_ms}L, () -> {call_expr});")
+                f"callWithTransientRetry(\"{safe_step}\", {deadline_ms}L, "
+                f"{expected_status}, () -> {call_expr});")
             wrapped = True
         return out
 
@@ -3897,26 +3900,40 @@ public class {class_name} {{
         lines: list[str] = []
         if isinstance(step, RestStep):
             rest_lines = self._render_rest_step_body(step, service_class_name)
-            # Universal retry-on-transient: every REST call is wrapped
-            # in a framework helper (RestUtilities.callWithTransientRetry)
-            # that retries on transient responses (5xx / 429 / 400 body
-            # containing "invalid") up to a 5s deadline with 500ms
-            # backoff. Safe by construction -- isTransientResponse is
-            # narrow enough that expected 4xx negative-test responses
-            # (401, 403, 404, 422) DO NOT trigger retries.
+            # Universal retry-on-transient with expected-status gate.
             #
-            # Addresses the Hilton stg "Member status is invalid" race:
-            # a business creation POST fired too soon after a prior
-            # test's activate hits stg's not-yet-committed state and
-            # returns 400 with that specific "invalid" body. Retry
-            # loop absorbs it once stg catches up.
+            # Retry fires only when BOTH:
+            #   (a) response is transient (5xx / 429 / 400 with "invalid"
+            #       body per RestUtilities.isTransientResponse), AND
+            #   (b) response status != the expected status this step
+            #       was configured to receive.
+            # The (b) gate is critical: SoapUI negative tests
+            # (post_account_403, post_account_notexist_403, etc.) EXPECT
+            # 4xx codes that also happen to match the transient signature
+            # (e.g., 400 with "Member status is invalid" body). Without
+            # this gate we retried the authoritative expected answer 7
+            # times over 5.5 seconds, wasting wall-clock every negative
+            # test.
             #
-            # Deadline is configurable at runtime via
-            # `-Dtest.transientRetryDeadlineMs=<ms>`; 0 disables retry
-            # entirely (opt-out for suites where the extra latency
-            # isn't worth the resilience trade-off).
+            # Deadline bumped from 5000ms -> 15000ms because the observed
+            # Hilton stg state-commit window in the reference project is
+            # 15-30s. Tune runtime with -Dtest.transientRetryDeadlineMs.
+            # Extract expected status from step's Valid HTTP Status
+            # Codes assertion (first code, if any). -1 disables the
+            # gate (retry on transient regardless of what we got).
+            expected_status = -1
+            for _a in (step.assertions or []):
+                if getattr(_a, "type", "") == "Valid HTTP Status Codes":
+                    _codes = (_a.config.get("codes", "") or "").strip() if getattr(_a, "config", None) else ""
+                    if _codes:
+                        _first = re.split(r"[,\s]+", _codes)[0]
+                        try:
+                            expected_status = int(_first)
+                            break
+                        except (TypeError, ValueError):
+                            pass
             rest_lines = self._wrap_rest_call_for_retry(
-                rest_lines, 5000, step.step_name)
+                rest_lines, 15000, step.step_name, expected_status)
             lines.extend(rest_lines)
         elif isinstance(step, GroovyStep):
             # Console marker so a groovy-side hang or long-running side

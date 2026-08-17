@@ -177,11 +177,33 @@ public class RestUtilities {
     public static io.restassured.response.Response callWithTransientRetry(
             String stepName, long deadlineMs,
             java.util.function.Supplier<io.restassured.response.Response> caller) {
-        // -Dtest.transientRetryDeadlineMs overrides the emitted default
-        // so users can tune per environment without regenerating tests.
-        // Cap at the CALLER's default when the -D override is not set
-        // (the emitted deadlineMs represents the audit-derived guess for
-        // "how long stg needs to commit"). Negative override = disable.
+        // Legacy 3-arg form -- no expected-status gate. Kept for
+        // backward compatibility with any hand-written test that
+        // calls this directly. Prefer the 4-arg form (below).
+        return callWithTransientRetry(stepName, deadlineMs, -1, caller);
+    }
+
+    /**
+     * Retry wrapper WITH expected-status gate. If the response's status
+     * equals {@code expectedStatus}, retry is SKIPPED regardless of
+     * whether isTransientResponse would trigger -- the response IS the
+     * authoritative expected answer.
+     *
+     * <p>Rationale: SoapUI negative tests (post_account_403,
+     * post_account_notexist_403, etc.) EXPECT specific 4xx codes.
+     * Hilton returns them with a "Member status is invalid" body that
+     * matches isTransientResponse's transient pattern -- without this
+     * gate, we retry the authoritative negative-test answer 10 times
+     * over the deadline, wasting wall-clock and eventually giving up
+     * with the same expected code. The `post_account_403` step ate
+     * 5.5s of retry loop in a prior run for exactly this reason.</p>
+     *
+     * <p>Pass {@code expectedStatus = -1} to disable the gate (retry
+     * on transient regardless of what we got).</p>
+     */
+    public static io.restassured.response.Response callWithTransientRetry(
+            String stepName, long deadlineMs, int expectedStatus,
+            java.util.function.Supplier<io.restassured.response.Response> caller) {
         long override = com.ak.api.config.Config.getInt(
                 "test.transientRetryDeadlineMs", -1);
         long budgetMs = (override >= 0) ? override : deadlineMs;
@@ -190,9 +212,10 @@ public class RestUtilities {
         int attempts = 1;
         io.restassured.response.Response res = caller.get();
         while (isTransientResponse(res)
+                && res.getStatusCode() != expectedStatus
                 && System.currentTimeMillis() < deadline) {
-            LOG.info(" .. [retry-on-transient] step={} attempt={} status={} -- transient, backing off {}ms",
-                    stepName, attempts, res.getStatusCode(), backoffMs);
+            LOG.info(" .. [retry-on-transient] step={} attempt={} status={} (expected={}) -- transient, backing off {}ms",
+                    stepName, attempts, res.getStatusCode(), expectedStatus, backoffMs);
             try {
                 Thread.sleep(backoffMs);
             } catch (InterruptedException __ie) {
