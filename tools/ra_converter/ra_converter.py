@@ -588,7 +588,21 @@ def _parse_delay_step(step_el: ET.Element) -> "DelayStep":
     cfg_el = step_el.find("con:config", NS)
     delay_ms = 0
     if cfg_el is not None:
-        raw = _text(cfg_el.find("con:delay", NS)) or cfg_el.get("delay", "0")
+        # ReadyAPI exports the delay as an UNQUALIFIED `<delay>N</delay>`
+        # child element (no `con:` namespace prefix), NOT as a namespaced
+        # `<con:delay>` or an attribute. Prior code only checked the
+        # namespaced form + attribute form -- both miss the actual XML
+        # shape, so every delay step silently emitted `Thread.sleep(0L)`.
+        # Symptom: race between HHonorsEnroll and the immediately-following
+        # POST /guests/.../businesses call, which stg then rejects with
+        # "Member status is invalid" because the enrolled member record
+        # isn't fully committed yet. ReadyAPI honored the delay; our
+        # tests skipped it -> "ReadyAPI passes but our tests fail" divergence.
+        raw = _text(cfg_el.find("delay"))  # unnamed child (actual shape)
+        if raw is None:
+            raw = _text(cfg_el.find("con:delay", NS))  # namespaced (older exports)
+        if raw is None:
+            raw = cfg_el.get("delay", "0")  # attribute form (fallback)
         try:
             delay_ms = int(raw)
         except (TypeError, ValueError):
