@@ -1940,6 +1940,21 @@ def translate(script: str, response_var_by_step: dict[str, str],
     # ---- log.info / log.error direct swap (SLF4J-compatible).
     # Uses paren-balanced walker so args with nested calls / GString
     # interpolations don't terminate the match early.
+    #
+    # GString handling (b.TRANSLATE audit fix):
+    #   ${expr}          -> if expr is a bare identifier, translate to
+    #                       Java + concat; else skip with comment (safe)
+    #   $identifier      -> bare-name shorthand; translated to Java
+    #                       + concat (the identifier must be a declared
+    #                       local in the same block, which the emitted
+    #                       "def X = ..." lines guarantee for the common
+    #                       "context.expand" pattern)
+    #   $obj.foo, $obj[i], $obj?.x -> skip with comment (Groovy-only chain)
+    # Prior behaviour emitted `"$email"` VERBATIM as a Java string
+    # literal, so the log line read `... email: $email` instead of the
+    # actual value.
+    _GS_BARE_NAME_RE = re.compile(r"\$([A-Za-z_][A-Za-z_0-9]*)(?![.\[A-Za-z_0-9])")
+    _GS_CHAIN_RE     = re.compile(r"\$[A-Za-z_][A-Za-z_0-9]*[.\[]")
     for groups, args_body in _balanced_arg_call(
             script, r"log\.(info|warn|error|debug)\("):
         level = groups[0].lower()
@@ -1948,6 +1963,11 @@ def translate(script: str, response_var_by_step: dict[str, str],
         # ${...} interpolation -- those identifiers don't exist in Java
         # scope. Preserve the intent as a comment; skip emission.
         has_interp = "${" in msg
+        # Bare `$ident` shorthand (no braces). Chain forms `$obj.field`
+        # or `$arr[i]` fall through to the skip path with the ${...}
+        # forms since they aren't safely translatable to Java.
+        has_shorthand_chain = bool(_GS_CHAIN_RE.search(msg))
+        has_shorthand_bare  = bool(_GS_BARE_NAME_RE.search(msg))
         # Detect concatenation with an unquoted identifier: `"..." + var`
         has_var_concat = False
         stripped = msg.strip()
@@ -1979,9 +1999,53 @@ def translate(script: str, response_var_by_step: dict[str, str],
                 if p and not (p.startswith('"') or p.startswith("'") or p.isdigit()):
                     has_var_concat = True
                     break
-        if has_interp or has_var_concat:
+        if has_interp or has_var_concat or has_shorthand_chain:
             preview = stripped[:80].replace('*/', '* /')
             lines.append(f'// [log.{level}] skipped (references Groovy-only vars): {preview}')
+            consumed = True
+            continue
+        # b.TRANSLATE: bare `$ident` shorthand in a string literal --
+        # rewrite as Java `"..." + ident + "..."` concat. Requires:
+        #  - msg IS a string literal (starts + ends with `"`)
+        #  - all shorthand refs are simple bare names (no `.` / `[`)
+        #    which the has_shorthand_chain check above already gated
+        if has_shorthand_bare and (
+                (msg.startswith('"') and msg.endswith('"'))
+                or (msg.startswith("'") and msg.endswith("'"))):
+            outer_quote = msg[0]
+            inner = msg[1:-1]
+            parts = []
+            last_end = 0
+            for m in _GS_BARE_NAME_RE.finditer(inner):
+                seg = inner[last_end:m.start()]
+                if seg:
+                    # Segments keep any pre-existing backslash-escapes
+                    # (\\" \\n etc.) verbatim -- they were part of the
+                    # original Groovy string literal and are already
+                    # valid Java escape sequences.
+                    parts.append('"' + seg + '"')
+                parts.append(m.group(1))
+                last_end = m.end()
+            tail = inner[last_end:]
+            if tail:
+                parts.append('"' + tail + '"')
+            translated_expr = " + ".join(parts) if parts else ('"' + inner + '"')
+            # Same emit-level downgrade logic as the plain-literal path
+            # below -- apply to the ORIGINAL message text (before we
+            # split into parts) so the substring match works.
+            emit_level_gs = level
+            if level == "error":
+                m_lower = inner.lower()
+                if ("environment variable" in m_lower
+                        or "database connection" in m_lower
+                        or "db connection" in m_lower
+                        or "db_host" in m_lower
+                        or "db_user" in m_lower
+                        or "db_password" in m_lower
+                        or "failed to delete account records" in m_lower):
+                    emit_level_gs = "debug"
+            lines.append(f'LOG.{emit_level_gs}("{{}}", {translated_expr});')
+            _mark("log_swap_gstring")
             consumed = True
             continue
         # Wrap in a literal only if not already a string
