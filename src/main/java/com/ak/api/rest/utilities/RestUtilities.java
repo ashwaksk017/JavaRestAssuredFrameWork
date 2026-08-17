@@ -111,6 +111,60 @@ public class RestUtilities {
         return LAST_UNRESOLVED_COUNT.get();
     }
 
+    /**
+     * Detect a "transient" HTTP response -- one that a retry-loop should
+     * consider re-firing the same request for. Used by the ra_converter-
+     * emitted retry-on-transient wrapper on REST steps that immediately
+     * follow a SoapUI DelayStep (SoapUI author added the delay because the
+     * following call needs time for upstream state to commit; instead of
+     * waiting the full delay blindly, we fire the call and retry only on
+     * transient signals so the happy path takes zero wait).
+     *
+     * <p>Categories of transient recognized:</p>
+     * <ul>
+     *   <li>HTTP 5xx  -- server error, standard retry candidate</li>
+     *   <li>HTTP 429  -- rate limit, back off + retry</li>
+     *   <li>HTTP 400 with body containing "Member status is invalid"
+     *       (Hilton-specific: fires when POST /guests/../businesses is
+     *       called before the just-enrolled member record has committed)</li>
+     *   <li>HTTP 400 with body containing "not found" AND we're on a
+     *       state-dependent POST (rare but occurs when a downstream
+     *       resource isn't fully visible yet)</li>
+     * </ul>
+     *
+     * <p>Deliberately DOES NOT retry:</p>
+     * <ul>
+     *   <li>Any 2xx / 3xx -- success/redirect</li>
+     *   <li>HTTP 4xx other than the specific 400 patterns above -- these
+     *       are almost always the AUTHORITATIVE answer (401 no auth, 403
+     *       forbidden, 404 not found, 422 validation); retrying wastes
+     *       time and can mask real test-data failures</li>
+     * </ul>
+     *
+     * @return {@code true} when the caller should retry this request;
+     *         {@code false} when the response is authoritative (retry
+     *         would waste time or mask a real failure)
+     */
+    public static boolean isTransientResponse(io.restassured.response.Response res) {
+        if (res == null) return false;
+        int status = res.getStatusCode();
+        if (status >= 500 && status < 600) return true;
+        if (status == 429) return true;
+        if (status == 400) {
+            String body;
+            try {
+                body = res.getBody() == null ? "" : res.getBody().asString();
+            } catch (Exception e) {
+                return false;
+            }
+            if (body == null) return false;
+            String lower = body.toLowerCase();
+            if (lower.contains("member status is invalid")) return true;
+            if (lower.contains("status is invalid")) return true;
+        }
+        return false;
+    }
+
     public static int totalTestCases() {
         return failed.get() + passed.get();
     }

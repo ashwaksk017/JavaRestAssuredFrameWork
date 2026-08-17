@@ -3706,6 +3706,73 @@ public class {class_name} {{
         # Reset the cluster REST-step position counter so the next method
         # walks _cluster_asserts_by_pos from position 0 again.
         self._current_rest_step_pos = 0
+        # DelayStep -> next-REST-step retry-on-transient hand-off:
+        # when a DelayStep sets this, the very next RestStep's client
+        # call gets wrapped in a Supplier + isTransientResponse retry
+        # loop with this ms as the deadline budget. Cleared after
+        # consumption so it applies to exactly one step.
+        self._pending_retry_deadline_ms = 0
+
+    def _wrap_rest_call_for_retry(self, lines, deadline_ms, step_name):
+        """Post-process REST step lines to wrap the `Response Xres = client.callX(...);`
+        line in a Supplier<Response> + retry-on-transient loop.
+
+        Called from _render_step when the preceding DelayStep set
+        self._pending_retry_deadline_ms. Matches the SINGLE client-call
+        line by regex (the shape emitted by _render_rest_step_body's
+        Response-assignment) and swaps it for a lambda-based invoker +
+        while-loop that retries on RestUtilities.isTransientResponse.
+
+        The retry deadline is `deadline_ms` (the original SoapUI delay).
+        Backoff between attempts is 500ms. Idempotent on lines that do
+        not contain a client call (rare -- happens on stub / auth-error
+        emit paths): returns lines unchanged.
+        """
+        call_re = re.compile(r"^(\s*)(Response \w+Res)\s*=\s*(client\.[^;]+);\s*$")
+        safe_step = re.sub(r"[^A-Za-z0-9_]", "_", step_name) or "step"
+        out = []
+        wrapped = False
+        for line in lines:
+            m = call_re.match(line)
+            if not m or wrapped:
+                out.append(line)
+                continue
+            indent, var_decl, call_expr = m.groups()
+            res_var = var_decl.split()[-1]
+            out.append(
+                f"{indent}// [retry-on-transient] preceding step was a "
+                f"delay (budget {deadline_ms}ms). Skip the fixed wait; "
+                f"fire this call and retry only on transient signals "
+                f"(5xx / 429 / 400+\"Member status is invalid\") -- fast "
+                f"case: 200 first try, zero wait; slow case: back off "
+                f"500ms and retry within budget.")
+            out.append(
+                f"{indent}java.util.function.Supplier<Response> __invoker_{safe_step} "
+                f"= () -> {call_expr};")
+            out.append(f"{indent}{var_decl} = __invoker_{safe_step}.get();")
+            out.append(
+                f"{indent}long __rtDeadline_{safe_step} = System.currentTimeMillis() + {deadline_ms}L;")
+            out.append(f"{indent}int __rtAttempts_{safe_step} = 1;")
+            out.append(
+                f"{indent}while (com.ak.api.rest.utilities.RestUtilities.isTransientResponse({res_var}) "
+                f"&& System.currentTimeMillis() < __rtDeadline_{safe_step}) {{")
+            out.append(
+                f"{indent}    LOG.info(\" .. [retry-on-transient] step={safe_step} "
+                f"attempt={{}} status={{}} -- transient, backing off 500ms\", "
+                f"__rtAttempts_{safe_step}, {res_var}.getStatusCode());")
+            out.append(
+                f"{indent}    try {{ Thread.sleep(500L); }} "
+                f"catch (InterruptedException __ie) {{ Thread.currentThread().interrupt(); break; }}")
+            out.append(f"{indent}    {res_var} = __invoker_{safe_step}.get();")
+            out.append(f"{indent}    __rtAttempts_{safe_step}++;")
+            out.append(f"{indent}}}")
+            out.append(
+                f"{indent}if (__rtAttempts_{safe_step} > 1) "
+                f"LOG.info(\" .. [retry-on-transient] step={safe_step} "
+                f"finished after {{}} attempt(s), final status={{}}\", "
+                f"__rtAttempts_{safe_step}, {res_var}.getStatusCode());")
+            wrapped = True
+        return out
 
     def _render_step(self, step, service_class_name: str) -> list[str]:
         """Render one step's Java lines. Shared by test-method emission
@@ -3962,6 +4029,21 @@ public class {class_name} {{
             lines.append(
                 f'LOG.warn("STUB calltestcase {_jlit(step.target_test_case or step.step_name)}");')
         elif isinstance(step, DelayStep):
+            # Emit Thread.sleep of the configured delay_ms -- matches
+            # ReadyAPI's behavior exactly. The upstream "wire the following
+            # REST step's client call in retry-on-transient" approach was
+            # reverted: SoapUI authors don't always place the delay
+            # IMMEDIATELY before the actually-race-prone step (the
+            # accountmemberregression project puts the 5s wait before
+            # Partition_before_http_request_200 for Kafka offset reasons,
+            # but the step that races is http_request_pending_200 which
+            # comes 2 steps later). Wrapping only the immediate-next REST
+            # step therefore doesn't protect the actually-failing call.
+            # A future improvement would be a UNIVERSAL retry-on-transient
+            # wrapper on every REST call (safe because isTransientResponse
+            # is narrow: 5xx, 429, or 400 with "invalid" body). For now,
+            # the plain Thread.sleep matches ReadyAPI + covers the race
+            # via wall-clock time.
             lines.append(f'// [delay step] {step.step_name} -- sleep {step.delay_ms}ms')
             lines.append(f'try {{ Thread.sleep({step.delay_ms}L); }} '
                          f'catch (InterruptedException __ie) {{ '
