@@ -7531,7 +7531,16 @@ public class {class_name} extends BaseApiTest {{
     // (runtime-generated value) firing AFTER the row-time entry so its
     // aliases overwrite the older CSV value. HashMap's arbitrary iteration
     // order broke that guarantee.
-    private final Map<String, String> ctx = new java.util.LinkedHashMap<>();
+    // Wrapped in Collections.synchronizedMap so a Suites/*.xml that
+    // ever flips to parallel="methods" (multiple threads sharing one
+    // test-class instance, each running its own @BeforeMethod) cannot
+    // corrupt ctx with concurrent put/clear. Under the current
+    // parallel="classes" config, one instance = one thread, so the
+    // sync wrapper has zero contention -- defense-in-depth for a
+    // config change we would otherwise silently mis-behave on. Same
+    // landmine class as BaseApiTest.holders (which was defused in the
+    // Tier 1 audit sweep).
+    private final Map<String, String> ctx = java.util.Collections.synchronizedMap(new java.util.LinkedHashMap<>());
 
     @BeforeClass(alwaysRun = true)
     public void initClientAndAuth() {{

@@ -161,8 +161,18 @@ public abstract class BaseApiTest {
      * the very first test so we don't add wasted wall-clock time when
      * only one test method runs. TestNG creates one instance per test
      * class, so this scopes correctly per class.
+     *
+     * <p>AtomicBoolean so a Suites/*.xml that flips to parallel="methods"
+     * can't race two @BeforeMethod threads into both seeing `true` and
+     * both skipping the cool-down. `compareAndSet(true, false)` returns
+     * true exactly ONCE across all concurrent calls -- the winner skips
+     * the sleep, all others sleep. Under the current parallel="classes"
+     * config this is uncontended -- pure defense-in-depth. Matches the
+     * `holders → synchronizedList` and translator-side `ctx →
+     * synchronizedMap` pattern for other parallel-methods landmines.</p>
      */
-    private boolean firstTestOnThisInstance = true;
+    private final java.util.concurrent.atomic.AtomicBoolean firstTestOnThisInstance =
+            new java.util.concurrent.atomic.AtomicBoolean(true);
 
     @BeforeMethod(alwaysRun = true)
     public void newTestHolder() {
@@ -182,7 +192,12 @@ public abstract class BaseApiTest {
         //   first) to give the external env time to settle. Configurable
         //   via -Dtest.interMethodCoolDownMs (default 3000ms = 3s).
         //   Set to 0 to opt out entirely for suites that don't need it.
-        if (!firstTestOnThisInstance) {
+        // compareAndSet(true, false) returns true EXACTLY ONCE across
+        // concurrent @BeforeMethod calls on the same instance -- so the
+        // "first" test skips the cool-down and all subsequent tests
+        // (including retries + parallel="methods" siblings) sleep.
+        boolean wasFirst = firstTestOnThisInstance.compareAndSet(true, false);
+        if (!wasFirst) {
             int coolDownMs = Config.getInt("test.interMethodCoolDownMs", 3000);
             if (coolDownMs > 0) {
                 try {
@@ -192,7 +207,6 @@ public abstract class BaseApiTest {
                 }
             }
         }
-        firstTestOnThisInstance = false;
 
         holder = new RestLoggerUtilityDataHolder();
         softAssert = new SoftAssert();
