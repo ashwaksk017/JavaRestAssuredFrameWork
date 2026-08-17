@@ -3773,6 +3773,16 @@ public class {class_name} {{
                 lambda m: '#' + m.group(1) + '#',
                 transformed_q)
             trans_escaped = _jlit(transformed_q)
+            # SELECT-vs-mutation routing: SoapUI dedicated JDBC steps
+            # commonly issue read queries too ("check account exists"),
+            # and Db.execute is INSERT/UPDATE/DELETE only (uses
+            # .executeUpdate() which the driver rejects for SELECT with
+            # "A result was returned when none was expected"). Match the
+            # sql.execute("SELECT ...") -> Db.queryAll routing added to
+            # the Groovy translator so both emit paths behave the same.
+            _is_select_step = bool(re.match(
+                r"\s*(?:with\b.*?\bselect|select)\b",
+                transformed_q, re.IGNORECASE | re.DOTALL))
             lines.append(f'// [jdbc step] {step.step_name}')
             if substituted_cols:
                 lines.append(
@@ -3785,13 +3795,17 @@ public class {class_name} {{
                     f'CSV row cell) for these keys, or the runtime-resolved '
                     f'query will still carry `#{substituted_cols[0]}#` '
                     f'unresolved -- watch the WARN from mapJsonValues.')
+            sid = sanitize_identifier(step.step_name)
+            if _is_select_step:
+                lines.append(
+                    f'java.util.List<java.util.Map<String, Object>> '
+                    f'__jdbcRows_{sid} = null;')
             lines.append('if (Db.isConfigured()) {')
             # RestUtilities.mapJsonValues expands #X# placeholders against
             # a merged (row + ctx + config) view so a query like
             # `where account_id='#accountID#'` resolves to the value
             # captured earlier in the test. Non-strict: unresolved keys
             # fall back to "null" and WARN so operators see the gap.
-            sid = sanitize_identifier(step.step_name)
             lines.append(f'    try {{')
             lines.append(
                 f'        String __jdbcSql_{sid} = '
@@ -3812,8 +3826,15 @@ public class {class_name} {{
                 f'        }} else {{')
             lines.append(
                 f'            LOG.info(" .. jdbc SQL: {{}}", __jdbcSql_{sid});')
-            lines.append(
-                f'            Db.execute(__jdbcSql_{sid});')
+            if _is_select_step:
+                lines.append(
+                    f'            __jdbcRows_{sid} = Db.queryAll(__jdbcSql_{sid});')
+                lines.append(
+                    f'            LOG.info(" .. jdbc rows returned: {{}}", '
+                    f'__jdbcRows_{sid} == null ? 0 : __jdbcRows_{sid}.size());')
+            else:
+                lines.append(
+                    f'            Db.execute(__jdbcSql_{sid});')
             lines.append(
                 f'        }}')
             lines.append(f'    }} catch (Exception __jdbcEx) {{')
