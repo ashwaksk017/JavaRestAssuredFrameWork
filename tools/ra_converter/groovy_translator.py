@@ -2000,6 +2000,35 @@ def translate(script: str, response_var_by_step: dict[str, str],
                         f'                            }} else {{')
                     lines.append(
                         f'                                {outer} = String.valueOf(__v_{outer});')
+                    # String column path: mirror SoapUI Groovy's
+                    # `emailOtp = emailOtp.padLeft(6, '0')` at
+                    # accountmemberregression.xml GroovyScriptToExtraTOTP.
+                    # The Postgres driver may return `email_otp` as a
+                    # String even when the underlying column is numeric
+                    # -- in that case the DB has already dropped leading
+                    # zeros before we see the value. Hilton stg validates
+                    # OTPs at a fixed 6-char width; a 5-char `"36307"`
+                    # is rejected as "TOTP code is invalid" even though
+                    # `036307` would validate. Pad after String.valueOf
+                    # so both numeric and string columns end up at the
+                    # canonical width.
+                    lines.append(
+                        f'                                {outer} = {outer}.trim();')
+                    lines.append(
+                        f'                                if (!{outer}.isEmpty() '
+                        f'&& {outer}.length() < 6 && {outer}.chars()'
+                        f'.allMatch(Character::isDigit)) {{')
+                    lines.append(
+                        f'                                    String __padded = '
+                        f'String.format("%6s", {outer}).replace(\' \', \'0\');')
+                    lines.append(
+                        f'                                    LOG.info(" .. [OTP pad] '
+                        f'expanding {{}}-char DB value \'{{}}\' -> \'{{}}\'", '
+                        f'{outer}.length(), {outer}, __padded);')
+                    lines.append(
+                        f'                                    {outer} = __padded;')
+                    lines.append(
+                        f'                                }}')
                     lines.append(
                         f'                            }}')
                     lines.append(
