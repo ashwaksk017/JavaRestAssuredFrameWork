@@ -81,7 +81,17 @@ public class RestUtilities {
     //   UPDATE account SET status='L' WHERE account_id='@Properties_accountID@'
     // hits driver [22P02] `invalid input syntax for type bigint`
     // because `@Properties_accountID@` stayed literal.
-    private static final Pattern P_AT_BARE = Pattern.compile("@([A-Za-z0-9_.-]+)@");
+    //
+    // Boundary anchors: `(?<![A-Za-z0-9])` before + `(?![A-Za-z0-9])`
+    // after ensure the ref sits at an identifier boundary. Prior naive
+    // pattern greedy-matched `@id@` inside `guest@id@partner` (unusual
+    // but possible in email chains / composite keys) and silently
+    // substituted → fallback `"0"` planted in the output. The anchors
+    // don't break the intended usage: SQL `'@X@'` has `'` (non-alnum)
+    // on both sides; URLs `/foo/@X@/bar` have `/`. Whitespace, punctuation,
+    // and start/end of string all pass the negative-lookahead check.
+    private static final Pattern P_AT_BARE = Pattern.compile(
+            "(?<![A-Za-z0-9])@([A-Za-z0-9_.-]+)@(?![A-Za-z0-9])");
 
     // -------- Counters (P2.18: suite-level via listener; kept here for callers) --------
     private static AtomicInteger failed = new AtomicInteger(0);

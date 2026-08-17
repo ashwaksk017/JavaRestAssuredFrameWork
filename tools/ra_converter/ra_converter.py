@@ -3934,18 +3934,42 @@ public class {class_name} {{
             # SOAP request: send raw XML body with text/xml content-type.
             # Uses generic RestAssured; assumes framework's request-spec
             # allows a body + endpoint override.
-            body_lit = _jlit((step.request_body or "").strip())
-            ep_lit = _jlit(step.endpoint or "")
+            # Body + endpoint MUST go through the same substitution
+            # pipeline as REST steps: mapJsonValues (row + ctx + config
+            # merged view) for #X#/@X@/%X%, then PlaceholderResolver.
+            # resolveAll for <<X>> faker + leftover ${X}. Prior emit
+            # shipped `body_lit` verbatim, so a SOAP body like
+            #   <soap:Envelope>...<accountId>#Properties_accountID#</accountId>...
+            # sent the literal `#Properties_accountID#` to the server.
+            body_raw, _ph = soapui_body_to_placeholders(
+                (step.request_body or "").strip())
+            body_lit = _jlit(body_raw)
+            ep_raw = step.endpoint or ""
+            ep_lit = _jlit(ep_raw)
             lines.append(f'// [soaprequest] {step.step_name} '
                          f'(operation={_jlit(step.operation)})')
             resp_var = f"{sanitize_identifier(step.step_name)}Res"
             self._locals_in_method.add(resp_var)
             self.response_var_by_step[step.step_name] = resp_var
+            payload_var = f'{sanitize_identifier(step.step_name)}Payload'
+            self._locals_in_method.add(payload_var)
+            url_var = f'{sanitize_identifier(step.step_name)}Url'
+            self._locals_in_method.add(url_var)
+            lines.append(
+                f'String {payload_var} = PlaceholderResolver.resolveAll('
+                f'RestUtilities.mapJsonValues("{body_lit}", '
+                f'TestSupport.mergedRow(row, ctx), false), ctx);')
+            lines.append(
+                f'String {url_var} = PlaceholderResolver.resolveAll('
+                f'"{ep_lit}", ctx);')
+            lines.append(
+                f'RestUtilities.assertPathResolved("POST", '
+                f'"{_jlit(step.step_name)}", {url_var});')
             lines.append(
                 f'Response {resp_var} = io.restassured.RestAssured.given()'
                 f'.contentType("{step.media_type}")'
-                f'.body("{body_lit}")'
-                f'.post("{ep_lit}");')
+                f'.body({payload_var})'
+                f'.post({url_var});')
             lines.append(
                 f'RestUtilities.logResponseBody(testCaseId, holder, '
                 f'RestUtilities.getResponseAsString({resp_var}));')
@@ -3958,20 +3982,42 @@ public class {class_name} {{
         elif isinstance(step, HttpRequestStep):
             # Raw HTTP (not REST-resource-backed). Emit a generic given()
             # call to the endpoint with the right verb + body.
-            body_lit = _jlit((step.request_body or "").strip())
+            # Same substitution wrap as REST + SOAP steps -- prior emit
+            # shipped `body_lit` and `ep_lit` verbatim so `#X#` / `${X}`
+            # / `<<X>>` refs never resolved.
+            body_raw, _ph = soapui_body_to_placeholders(
+                (step.request_body or "").strip())
+            body_lit = _jlit(body_raw)
             ep_lit = _jlit(step.endpoint or "")
             verb = (step.http_method or "GET").lower()
             has_body = step.http_method in ("POST", "PUT", "PATCH") and step.request_body.strip()
             lines.append(f'// [httprequest] {step.step_name} '
-                         f'({step.http_method} {ep_lit})')
+                         f'({step.http_method} {step.endpoint or ""})')
             resp_var = f"{sanitize_identifier(step.step_name)}Res"
             self._locals_in_method.add(resp_var)
             self.response_var_by_step[step.step_name] = resp_var
-            body_chain = f'.body("{body_lit}")' if has_body else ""
+            url_var = f'{sanitize_identifier(step.step_name)}Url'
+            self._locals_in_method.add(url_var)
+            lines.append(
+                f'String {url_var} = PlaceholderResolver.resolveAll('
+                f'"{ep_lit}", ctx);')
+            lines.append(
+                f'RestUtilities.assertPathResolved("{step.http_method or "GET"}", '
+                f'"{_jlit(step.step_name)}", {url_var});')
+            if has_body:
+                payload_var = f'{sanitize_identifier(step.step_name)}Payload'
+                self._locals_in_method.add(payload_var)
+                lines.append(
+                    f'String {payload_var} = PlaceholderResolver.resolveAll('
+                    f'RestUtilities.mapJsonValues("{body_lit}", '
+                    f'TestSupport.mergedRow(row, ctx), false), ctx);')
+                body_chain = f'.body({payload_var})'
+            else:
+                body_chain = ""
             lines.append(
                 f'Response {resp_var} = io.restassured.RestAssured.given()'
                 f'.contentType("{step.media_type}"){body_chain}'
-                f'.{verb}("{ep_lit}");')
+                f'.{verb}({url_var});')
             lines.append(
                 f'RestUtilities.logResponseBody(testCaseId, holder, '
                 f'RestUtilities.getResponseAsString({resp_var}));')
