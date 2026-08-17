@@ -4777,9 +4777,42 @@ public class {class_name} {{
                 # SoapUI property expansion in expected value -- keep runtime
                 # substitution behavior; still parameterizable via CSV column.
                 java_expr = soapui_expr_to_java(content_raw)
-                return ([
+                pre_lines: list[str] = []
+                # If the fallback resolves to a ctxGet(K) that a LATER step
+                # populates from THIS response (typical SoapUI pattern:
+                # Groovy accountDetails extracts response.accountId ->
+                # ctx["PropertiesDetails.accountID"], and the assertion for
+                # the SAME response asserts jsonpath accountId against
+                # ${PropertiesDetails#accountID}), populate that ctx key
+                # NOW from the response so the assertion isn't racing the
+                # later step. Prior behaviour: ctxGet fired before the
+                # Groovy extract, returned a generator default (e.g.
+                # `658716206`), and assertions failed spuriously with
+                # "expected [<generator-random>] but found [<real
+                # response id>]" -- confusing since neither is user-visible.
+                # Emits ONE putExtracted per (K, path) pair -- idempotent
+                # with the later Groovy step, which re-writes the same value.
+                m_ctx = re.match(
+                    r'^\s*TestSupport\.ctxGet\(ctx,\s*"([^"]+)"\)\s*$',
+                    java_expr)
+                if m_ctx:
+                    hoisted_key = m_ctx.group(1)
+                    pre_lines.append(
+                        f'// [assert-hoist] pre-populate ctx.'
+                        f'{hoisted_key} from this response so the '
+                        f'${{{content_raw[2:-1]}}} fallback resolves to '
+                        f'the extracted value, not a stale generator '
+                        f'default from before the later Groovy extract.')
+                    pre_lines.append(
+                        f'TestSupport.putExtracted(ctx, "{_jlit(hoisted_key)}", '
+                        f'com.ak.api.rest.utilities.RestUtilities'
+                        f'.safeJsonExtract({response_var}, "{path}"));')
+                return (pre_lines + [
                     f'String expected_{vsid} = row.getOrDefault("{col_name}", '
                     f'String.valueOf({java_expr}));',
+                    f'LOG.info(" .. [assert] {path} expected={{}} actual={{}}", '
+                    f'expected_{vsid}, com.ak.api.rest.utilities.RestUtilities'
+                    f'.safeJsonExtract({response_var}, "{path}"));',
                     f'softAssert.assertEquals(com.ak.api.rest.utilities.RestUtilities'
                     f'.safeJsonExtract({response_var}, "{path}"), '
                     f'expected_{vsid}, "JsonPath Match: {path}");',
@@ -4787,6 +4820,9 @@ public class {class_name} {{
             content = _jlit(content_raw)
             return ([
                 f'String expected_{vsid} = {_row_expr(content)};',
+                f'LOG.info(" .. [assert] {path} expected={{}} actual={{}}", '
+                f'expected_{vsid}, com.ak.api.rest.utilities.RestUtilities'
+                f'.safeJsonExtract({response_var}, "{path}"));',
                 f'softAssert.assertEquals(com.ak.api.rest.utilities.RestUtilities'
                 f'.safeJsonExtract({response_var}, "{path}"), '
                 f'expected_{vsid}, "JsonPath Match: {path}");',
