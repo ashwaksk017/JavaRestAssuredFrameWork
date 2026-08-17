@@ -81,6 +81,14 @@ public final class AuthHelper {
         String tokenUrl;
         if (tokenRoute.isEmpty()) {
             tokenUrl = tokenBase;
+        } else if (tokenRoute.startsWith("http://") || tokenRoute.startsWith("https://")) {
+            // SoapUI exports commonly stash the entire token URL in the
+            // `token_route` field (a habit from the SoapUI project XML
+            // where "token endpoint" and "token route" are the same
+            // property). Detect the full-URL shape and use it verbatim
+            // -- otherwise we'd concatenate to `<baseUrl>/https://...`
+            // and POST client_id/client_secret to a garbage endpoint.
+            tokenUrl = tokenRoute;
         } else if (tokenBase.endsWith("/") || tokenRoute.startsWith("/")) {
             tokenUrl = tokenBase + tokenRoute;
         } else {

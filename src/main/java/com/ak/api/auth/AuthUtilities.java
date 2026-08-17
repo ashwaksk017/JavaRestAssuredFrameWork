@@ -15,6 +15,7 @@ package com.ak.api.auth;
 
 import static io.restassured.RestAssured.given;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.HashMap;
@@ -68,7 +69,12 @@ public final class AuthUtilities {
     public static String basic(String username, String password) {
         if (username == null || username.isBlank()) return null;
         String raw = username + ":" + (password == null ? "" : password);
-        return "Basic " + Base64.getEncoder().encodeToString(raw.getBytes());
+        // Explicit UTF-8: matches RFC 7617's recommended encoding and
+        // avoids the platform-default landmine where the same non-ASCII
+        // password base64-encodes differently on Windows (CP1252) vs
+        // Linux CI (UTF-8). Symptom without this: auth works on the
+        // author's laptop, 401s on the CI runner with no other change.
+        return "Basic " + Base64.getEncoder().encodeToString(raw.getBytes(StandardCharsets.UTF_8));
     }
 
     /**
@@ -108,9 +114,22 @@ public final class AuthUtilities {
             }
 
             String accessToken = res.jsonPath().getString("access_token");
-            int expiresIn = res.jsonPath().getInt("expires_in");
             if (accessToken == null) {
                 throw new IllegalStateException("OAuth2 token response missing access_token");
+            }
+            // expires_in is OPTIONAL in some OAuth2 provider responses
+            // (parts of Azure AD send `expires_at` epoch instead;
+            // certain Okta configs omit it entirely). Older code called
+            // getInt() which throws JsonPathException on missing --
+            // that failed the ENTIRE suite with a confusing error.
+            // Default to 3600s (1 hour) when absent -- worst case the
+            // cache expires ahead of the actual token, we re-fetch,
+            // and the run continues.
+            int expiresIn;
+            try {
+                expiresIn = res.jsonPath().getInt("expires_in");
+            } catch (Exception e) {
+                expiresIn = 3600;
             }
             cachedOauth2Token = accessToken;
             cachedOauth2Expiry = Instant.now().plusSeconds(expiresIn);
