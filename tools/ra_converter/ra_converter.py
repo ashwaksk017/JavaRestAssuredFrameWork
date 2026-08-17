@@ -5167,6 +5167,18 @@ public class {class_name} {{
             f'    }}'
         )
         lines.append('}')
+        # Gap #4 fix: dump response headers at DEBUG so a downstream
+        # groovy extract that reads `hilton-member-location` /
+        # `x-hilton-*` / auth challenge headers can be traced. Currently
+        # we only log the body; when the extract fails silently (header
+        # missing / wrong case / different value than expected), the
+        # only visible symptom is a downstream URL producing 404.
+        # DEBUG level to keep default log volume unchanged.
+        lines.append(
+            f'if (LOG.isDebugEnabled()) {{ '
+            f'LOG.debug(" .. response headers: {{}}", '
+            f'{response_var}.getHeaders()); }}'
+        )
         lines.append(f'RestUtilities.logResponseBody(testCaseId, holder, RestUtilities.getResponseAsString({response_var}));')
 
         # Assertions:
@@ -6504,6 +6516,7 @@ public final class TestSupport {{
         ctx.put("Properties.Domain", domain);
         ctx.put("Properties.domain", domain);
         ctx.put("Properties.WebsiteDomain", domain);
+        ctx.put("Properties.Websitedomain", domain);
         ctx.put("Properties.websiteDomain", domain);
         ctx.put("Properties.websitedomain", domain);
         ctx.put("Properties.weburl", domain);
