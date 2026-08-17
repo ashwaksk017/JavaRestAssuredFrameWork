@@ -168,6 +168,27 @@ public final class Db {
         return null;
     }
 
+    /**
+     * Same as {@link #unsafeSqlReason} but WITHOUT the SELECT-vs-execute
+     * check. Callers dispatching to {@link #queryAll} / {@link #queryOne}
+     * already handle SELECT correctly; the SELECT reason exists only to
+     * catch misroutes into {@link #execute} (which uses executeUpdate and
+     * would then throw "A result was returned when none was expected").
+     * Otherwise-identical checks: empty SQL, untranslated `${...}` refs,
+     * and `= 'null'` fallback from unresolved placeholders.
+     */
+    public static String unsafeSqlReasonForQuery(String sql) {
+        if (sql == null || sql.isEmpty()) return "empty SQL";
+        String stripped = sql.trim();
+        if (stripped.contains("${")) return "SQL contains untranslated SoapUI ref `${...}`";
+        String lowered = stripped.toLowerCase();
+        if (lowered.contains("='null'") || lowered.contains("= 'null'")
+                || lowered.contains("in ('null'")) {
+            return "SQL has 'null' literal from unresolved #placeholder# (mapJsonValues fallback)";
+        }
+        return null;
+    }
+
     public static boolean exists(String sql, Object... params) {
         return configured().rowExists(sql, params);
     }

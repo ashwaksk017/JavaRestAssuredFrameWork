@@ -3860,8 +3860,14 @@ public class {class_name} {{
             # line with the reason, instead of LOG.info(SQL) followed by
             # Db.execute\'s own refuse-WARN (two lines that read as if we
             # tried the query then something failed).
+            # SELECT steps route to Db.queryAll -- use the ForQuery
+            # variant of the sanity check so the SELECT-vs-execute
+            # reason (only relevant for Db.execute misroutes) doesn't
+            # spuriously refuse a correctly-routed queryAll.
+            _sanity_fn = ("unsafeSqlReasonForQuery" if _is_select_step
+                          else "unsafeSqlReason")
             lines.append(
-                f'        String __jdbcReason_{sid} = com.ak.api.db.Db.unsafeSqlReason(__jdbcSql_{sid});')
+                f'        String __jdbcReason_{sid} = com.ak.api.db.Db.{_sanity_fn}(__jdbcSql_{sid});')
             lines.append(
                 f'        if (__jdbcReason_{sid} != null) {{')
             lines.append(

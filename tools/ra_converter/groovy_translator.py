@@ -1474,7 +1474,11 @@ def translate(script: str, response_var_by_step: dict[str, str],
                     f'    try {{',
                     f'        String __jdbcSql = RestUtilities.mapJsonValues('
                     f'{java_query}, TestSupport.mergedRow(row, ctx), false);',
-                    f'        String __jdbcReason = com.ak.api.db.Db.unsafeSqlReason(__jdbcSql);',
+                    # unsafeSqlReasonForQuery -- caller dispatches to Db.queryAll
+                    # so the SELECT-vs-execute reason from the full check would
+                    # spuriously refuse (the check is meant to catch misroutes
+                    # into Db.execute, not this correctly-routed path).
+                    f'        String __jdbcReason = com.ak.api.db.Db.unsafeSqlReasonForQuery(__jdbcSql);',
                     f'        if (__jdbcReason != null) {{',
                     f'            LOG.warn(" .. jdbc SKIPPED ({{}}): {{}}", '
                     f'__jdbcReason, __jdbcSql);',
@@ -1704,7 +1708,8 @@ def translate(script: str, response_var_by_step: dict[str, str],
                 f'    try {{',
                 f'        String __jdbcSql = RestUtilities.mapJsonValues('
                 f'{java_query}, TestSupport.mergedRow(row, ctx), false);',
-                f'        String __jdbcReason = com.ak.api.db.Db.unsafeSqlReason(__jdbcSql);',
+                # Db.queryAll / Db.queryOne callers use ForQuery variant.
+                f'        String __jdbcReason = com.ak.api.db.Db.unsafeSqlReasonForQuery(__jdbcSql);',
                 f'        if (__jdbcReason != null) {{',
                 f'            LOG.warn(" .. jdbc SKIPPED ({{}}): {{}}", '
                 f'__jdbcReason, __jdbcSql);',
@@ -1873,7 +1878,8 @@ def translate(script: str, response_var_by_step: dict[str, str],
             f'        try {{',
             f'            String __jdbcSql = RestUtilities.mapJsonValues('
             f'{java_query}, TestSupport.mergedRow(row, ctx), false);',
-            f'            String __jdbcReason = com.ak.api.db.Db.unsafeSqlReason(__jdbcSql);',
+            # sql.eachRow dispatches to Db.queryAll -- ForQuery variant.
+            f'            String __jdbcReason = com.ak.api.db.Db.unsafeSqlReasonForQuery(__jdbcSql);',
             f'            if (__jdbcReason != null) {{',
             f'                LOG.warn(" .. jdbc SKIPPED ({{}}): {{}}", '
             f'__jdbcReason, __jdbcSql);',

@@ -72,6 +72,16 @@ public class RestUtilities {
     private static final Pattern P_HASH   = Pattern.compile("#([A-Za-z0-9_.-]+)#");
     private static final Pattern P_PCT_Q  = Pattern.compile("\"%([A-Za-z0-9_.-]+)%\"");
     private static final Pattern P_AT_Q   = Pattern.compile("\"@([A-Za-z0-9_.-]+)@\"");
+    // Bare `@X@` (no surrounding double-quotes) covers SQL / URL /
+    // plain-text contexts where the ref is single-quoted (`'@X@'` in
+    // SQL WHERE clauses) or unquoted (URL path segments). Runs AFTER
+    // P_AT_Q so JSON scalar substitution still takes precedence when
+    // the ref is inside a double-quoted string (`"@42@"` -> `42`,
+    // not `"42"`). Symptom without this: SQL like
+    //   UPDATE account SET status='L' WHERE account_id='@Properties_accountID@'
+    // hits driver [22P02] `invalid input syntax for type bigint`
+    // because `@Properties_accountID@` stayed literal.
+    private static final Pattern P_AT_BARE = Pattern.compile("@([A-Za-z0-9_.-]+)@");
 
     // -------- Counters (P2.18: suite-level via listener; kept here for callers) --------
     private static AtomicInteger failed = new AtomicInteger(0);
@@ -198,6 +208,7 @@ public class RestUtilities {
             schema = substitute(schema, P_HASH,  dataMap, null, unresolved, /* jsonEscape = */ true);
             schema = substitute(schema, P_PCT_Q, dataMap, null, unresolved, /* jsonEscape = */ false);
             schema = substitute(schema, P_AT_Q,  dataMap, null, unresolved, /* jsonEscape = */ false);
+            schema = substitute(schema, P_AT_BARE, dataMap, null, unresolved, /* jsonEscape = */ false);
             if (schema.equals(prev)) break;
         }
         // Snapshot the unresolved set BEFORE the fallback pass -- the
@@ -214,6 +225,7 @@ public class RestUtilities {
             schema = substitute(schema, P_HASH,  dataMap, "null",  unresolved, /* jsonEscape = */ true);
             schema = substitute(schema, P_PCT_Q, dataMap, "false", unresolved, /* jsonEscape = */ false);
             schema = substitute(schema, P_AT_Q,  dataMap, "0",     unresolved, /* jsonEscape = */ false);
+            schema = substitute(schema, P_AT_BARE, dataMap, "0",   unresolved, /* jsonEscape = */ false);
         }
 
         if (!unresolvedSnapshot.isEmpty()) {
