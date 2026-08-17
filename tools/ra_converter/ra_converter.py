@@ -3854,8 +3854,8 @@ public class {class_name} {{
             lines.append(f'    try {{')
             lines.append(
                 f'        String __jdbcSql_{sid} = '
-                f'RestUtilities.mapJsonValues('
-                f'"{trans_escaped}", TestSupport.mergedRow(row, ctx), false);')
+                f'RestUtilities.mapSqlValues('
+                f'"{trans_escaped}", TestSupport.mergedRow(row, ctx), ctx);')
             # Sanity-check FIRST so an unsafe SQL emits ONE clean WARN
             # line with the reason, instead of LOG.info(SQL) followed by
             # Db.execute\'s own refuse-WARN (two lines that read as if we

@@ -165,7 +165,7 @@ public class RestUtilities {
 
     /** Non-strict: unresolved placeholders default to null / false / 0 (reference behavior). */
     public static String mapJsonValues(String schema, Map<String, String> dataMap) throws Exception {
-        return mapJsonValues(schema, dataMap, /* strict = */ false);
+        return mapJsonValues(schema, dataMap, /* strict = */ false, /* jsonEscape = */ true);
     }
 
     /**
@@ -174,6 +174,27 @@ public class RestUtilities {
      *               behavior: #x# -> null, %x% -> false, @x@ -> 0.
      */
     public static String mapJsonValues(String schema, Map<String, String> dataMap, boolean strict) throws Exception {
+        return mapJsonValues(schema, dataMap, strict, /* jsonEscape = */ true);
+    }
+
+    /**
+     * SQL / URL / plain-text callers pass {@code jsonEscape = false} so a
+     * substituted value containing {@code "} or {@code \} isn't JSON-escaped
+     * (which would land as {@code \"} / {@code \\} in the SQL literal and
+     * blow up the DB driver's syntax check). JSON body callers keep the
+     * default (true).
+     *
+     * @param strict when true, throws UnresolvedPlaceholderException on any unresolved
+     *               placeholder (recommended). When false, mimics the reference's fallback
+     *               behavior: #x# -> null, %x% -> false, @x@ -> 0.
+     * @param jsonEscape when true, substituted values are JSON-string-escaped
+     *               (correct for `"#X#"` inside a JSON body). When false,
+     *               values pass through verbatim (correct for SQL / URL /
+     *               shell / query-string contexts where JSON escaping would
+     *               corrupt the output).
+     */
+    public static String mapJsonValues(String schema, Map<String, String> dataMap,
+                                        boolean strict, boolean jsonEscape) throws Exception {
         if (dataMap == null) dataMap = Map.of();
 
         List<String> unresolved = new ArrayList<>();
@@ -205,7 +226,7 @@ public class RestUtilities {
         for (iter = 0; iter < MAX_ITERS; iter++) {
             String prev = schema;
             unresolved.clear();
-            schema = substitute(schema, P_HASH,  dataMap, null, unresolved, /* jsonEscape = */ true);
+            schema = substitute(schema, P_HASH,  dataMap, null, unresolved, jsonEscape);
             schema = substitute(schema, P_PCT_Q, dataMap, null, unresolved, /* jsonEscape = */ false);
             schema = substitute(schema, P_AT_Q,  dataMap, null, unresolved, /* jsonEscape = */ false);
             schema = substitute(schema, P_AT_BARE, dataMap, null, unresolved, /* jsonEscape = */ false);
@@ -222,7 +243,7 @@ public class RestUtilities {
         List<String> unresolvedSnapshot = new ArrayList<>(unresolved);
         if (!strict && !unresolvedSnapshot.isEmpty()) {
             unresolved.clear();
-            schema = substitute(schema, P_HASH,  dataMap, "null",  unresolved, /* jsonEscape = */ true);
+            schema = substitute(schema, P_HASH,  dataMap, "null",  unresolved, jsonEscape);
             schema = substitute(schema, P_PCT_Q, dataMap, "false", unresolved, /* jsonEscape = */ false);
             schema = substitute(schema, P_AT_Q,  dataMap, "0",     unresolved, /* jsonEscape = */ false);
             schema = substitute(schema, P_AT_BARE, dataMap, "0",   unresolved, /* jsonEscape = */ false);
@@ -246,6 +267,28 @@ public class RestUtilities {
 
     public static String mapJsonValues(Reader reader, Map<String, String> dataMap, boolean strict) throws Exception {
         return mapJsonValues(readAll(reader), dataMap, strict);
+    }
+
+    /**
+     * SQL-context placeholder substitution: runs {@link #mapJsonValues} with
+     * {@code jsonEscape = false} (SQL literals must not JSON-escape a value
+     * containing {@code "} or {@code \}) then pipes the result through
+     * {@link com.ak.api.data.PlaceholderResolver#resolveAll} so any
+     * {@code <<X>>} faker tokens or leftover {@code ${X}} refs also resolve.
+     *
+     * <p>SQL emit sites (Groovy sql.execute / sql.rows / sql.firstRow /
+     * sql.eachRow / dedicated JDBC steps) all call this instead of the
+     * bare {@link #mapJsonValues}. Prior behaviour: JDBC SQL only ran
+     * through mapJsonValues, which json-escaped values and never
+     * resolved {@code <<X>>} -- so a SoapUI cell like
+     * {@code WHERE email='<<uuid>>'} shipped the literal to the DB and
+     * blew up with a syntax error.
+     */
+    public static String mapSqlValues(String sql, Map<String, String> dataMap,
+                                       Map<String, String> ctx) throws Exception {
+        String phase1 = mapJsonValues(sql, dataMap, /* strict = */ false,
+                                       /* jsonEscape = */ false);
+        return com.ak.api.data.PlaceholderResolver.resolveAll(phase1, ctx);
     }
 
     private static String substitute(String schema, Pattern pattern, Map<String, String> dataMap,
@@ -425,12 +468,41 @@ public class RestUtilities {
                     verb, stepName, am.group(), resolvedPath);
             return;
         }
+        // Also catch SoapUI-style `${X}` refs that PlaceholderResolver's
+        // resolveDollarRefs intentionally leaves literal when the key
+        // isn't in ctx -- without this warn, they URL-encode as
+        // `%24%7BX%7D` and land as a mystery 404 with no framework
+        // attribution.
+        java.util.regex.Matcher dm = DOLLAR_PATH_PLACEHOLDER.matcher(resolvedPath);
+        if (dm.find()) {
+            LOG.warn("assertPathResolved: {} `{}` URL still has unresolved "
+                    + "SoapUI ref `{}` in `{}` -- ctx has no non-empty "
+                    + "value for that key. Server 404 will follow.",
+                    verb, stepName, dm.group(), resolvedPath);
+            return;
+        }
+        // Same for `<<X>>` faker tokens that leaked past resolveAll (usually
+        // because the CSV cell wasn't run through resolveRow; rare but
+        // worth flagging with a clear message rather than a URL-encoded
+        // `%3C%3CX%3E%3E` server-side 404).
+        java.util.regex.Matcher fm = FAKER_PATH_PLACEHOLDER.matcher(resolvedPath);
+        if (fm.find()) {
+            LOG.warn("assertPathResolved: {} `{}` URL still has unresolved "
+                    + "faker token `{}` in `{}` -- resolveAll didn't fire "
+                    + "or the token isn't in FAKER_TOKEN dispatch.",
+                    verb, stepName, fm.group(), resolvedPath);
+            return;
+        }
     }
 
     private static final java.util.regex.Pattern HASH_PATH_PLACEHOLDER =
             java.util.regex.Pattern.compile("#[A-Za-z0-9_.-]+#");
     private static final java.util.regex.Pattern AT_PATH_PLACEHOLDER =
             java.util.regex.Pattern.compile("@[A-Za-z0-9_.-]+@");
+    private static final java.util.regex.Pattern DOLLAR_PATH_PLACEHOLDER =
+            java.util.regex.Pattern.compile("\\$\\{[^}]+\\}");
+    private static final java.util.regex.Pattern FAKER_PATH_PLACEHOLDER =
+            java.util.regex.Pattern.compile("<<[A-Za-z_][A-Za-z0-9_]*(?:\\([^)]*\\))?>>");
 
     /** {@link #parseIntOrDefault(String, int, String)} for long values. */
     public static long parseLongOrDefault(String raw, long fallback, String context) {

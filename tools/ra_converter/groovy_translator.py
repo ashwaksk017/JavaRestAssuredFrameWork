@@ -1472,8 +1472,8 @@ def translate(script: str, response_var_by_step: dict[str, str],
                     f'{result_var} = null;',
                     f'if (Db.isConfigured()) {{',
                     f'    try {{',
-                    f'        String __jdbcSql = RestUtilities.mapJsonValues('
-                    f'{java_query}, TestSupport.mergedRow(row, ctx), false);',
+                    f'        String __jdbcSql = RestUtilities.mapSqlValues('
+                    f'{java_query}, TestSupport.mergedRow(row, ctx), ctx);',
                     # unsafeSqlReasonForQuery -- caller dispatches to Db.queryAll
                     # so the SELECT-vs-execute reason from the full check would
                     # spuriously refuse (the check is meant to catch misroutes
@@ -1505,8 +1505,8 @@ def translate(script: str, response_var_by_step: dict[str, str],
                     # try/catch so a single bad SQL doesn't crash the test --
                     # WARN + continue so downstream steps still fire.
                     f'    try {{',
-                    f'        String __jdbcSql = RestUtilities.mapJsonValues('
-                    f'{java_query}, TestSupport.mergedRow(row, ctx), false);',
+                    f'        String __jdbcSql = RestUtilities.mapSqlValues('
+                    f'{java_query}, TestSupport.mergedRow(row, ctx), ctx);',
                     # Check unsafe-SQL FIRST so a refused query emits ONE
                     # clean WARN with the reason, not LOG.info(SQL) then
                     # Db.execute\'s own refuse-WARN (two lines that read as
@@ -1706,8 +1706,8 @@ def translate(script: str, response_var_by_step: dict[str, str],
                 f'{result_type} {result_var} = null;',
                 f'if (Db.isConfigured()) {{',
                 f'    try {{',
-                f'        String __jdbcSql = RestUtilities.mapJsonValues('
-                f'{java_query}, TestSupport.mergedRow(row, ctx), false);',
+                f'        String __jdbcSql = RestUtilities.mapSqlValues('
+                f'{java_query}, TestSupport.mergedRow(row, ctx), ctx);',
                 # Db.queryAll / Db.queryOne callers use ForQuery variant.
                 f'        String __jdbcReason = com.ak.api.db.Db.unsafeSqlReasonForQuery(__jdbcSql);',
                 f'        if (__jdbcReason != null) {{',
@@ -1876,8 +1876,8 @@ def translate(script: str, response_var_by_step: dict[str, str],
         lines.extend([
             f'    if (Db.isConfigured()) {{',
             f'        try {{',
-            f'            String __jdbcSql = RestUtilities.mapJsonValues('
-            f'{java_query}, TestSupport.mergedRow(row, ctx), false);',
+            f'            String __jdbcSql = RestUtilities.mapSqlValues('
+            f'{java_query}, TestSupport.mergedRow(row, ctx), ctx);',
             # sql.eachRow dispatches to Db.queryAll -- ForQuery variant.
             f'            String __jdbcReason = com.ak.api.db.Db.unsafeSqlReasonForQuery(__jdbcSql);',
             f'            if (__jdbcReason != null) {{',
