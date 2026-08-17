@@ -248,6 +248,20 @@ public class RestUtilities {
             String lower = body.toLowerCase();
             if (lower.contains("member status is invalid")) return true;
             if (lower.contains("status is invalid")) return true;
+            // TOTP freshness race: Hilton's async email pipeline
+            // occasionally writes the fresh OTP to the DB after our
+            // JDBC extract fires. When confirmValidation returns
+            // "totp code is invalid" for a fresh member, retrying
+            // after a small backoff often works because the pipeline
+            // has caught up. Retry alone won't fix it if the OTP is
+            // truly wrong (we'd resubmit the same value), but combined
+            // with the pre-JDBC delay in the emitter (see
+            // groovy_translator.py OTP-extract branch) it materially
+            // reduces flake rate. Safe to include: the assertion
+            // gate in callWithTransientRetry blocks unwanted retries
+            // when the response happened to match the expected code.
+            if (lower.contains("totp code is invalid")) return true;
+            if (lower.contains("otp code is invalid")) return true;
         }
         return false;
     }

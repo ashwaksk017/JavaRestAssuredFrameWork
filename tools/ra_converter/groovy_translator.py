@@ -1873,6 +1873,42 @@ def translate(script: str, response_var_by_step: dict[str, str],
         lines.append('{')
         for outer, field in captured_vars:
             lines.append(f'    String {outer} = "";')
+        # OTP/verification-code freshness: Hilton stg's async email
+        # pipeline writes the fresh OTP to the DB milliseconds AFTER
+        # the create-account call returns. When our JDBC query races
+        # the pipeline, we can get a STALE OTP (from a pre-populated
+        # default row, or from a prior test's data). Symptom:
+        # confirmValidation returns HTTP 400 "TOTP code is invalid".
+        # Observed rate: ~10-15% per test run.
+        #
+        # Mitigation: for queries that fetch OTP-like columns, add a
+        # 3-second pre-delay BEFORE the initial JDBC query to give
+        # Hilton's pipeline time to settle. Detection heuristic: the
+        # SQL text contains `email_otp` or a target var name contains
+        # `otp`/`totp`/`pin`/`code`. Additive to the existing 5s
+        # `[delay step]` between HHonorsEnroll and Partition_before,
+        # so total pipeline settle = ~5s + partition-scan-time + 3s
+        # = comfortably above Hilton's observed ~2-4s window.
+        _query_low = (java_query or "").lower()
+        _targets_low = " ".join(f"{o} {f}" for (o, f) in captured_vars).lower()
+        _is_otp_extract = (
+            "email_otp" in _query_low
+            or "otp_code" in _query_low
+            or any(kw in _targets_low for kw in
+                   ("otp", "totp", "pin", "verification"))
+        )
+        # Identify the OTP-like capture var for stability check (usually
+        # the first captured var like `emailOtp`). Fallback to first
+        # capture. Only used when _is_otp_extract is true.
+        _otp_check_var = None
+        if _is_otp_extract and captured_vars:
+            for _o, _f in captured_vars:
+                if any(kw in _o.lower() or kw in _f.lower()
+                       for kw in ("otp", "totp", "pin", "code")):
+                    _otp_check_var = _o
+                    break
+            if _otp_check_var is None:
+                _otp_check_var = captured_vars[0][0]
         lines.extend([
             # Diagnostic: log the Db.isConfigured decision + which DB URL
             # the framework will hit BEFORE the branch, so a mismatch (wrong
@@ -1891,10 +1927,37 @@ def translate(script: str, response_var_by_step: dict[str, str],
             f'__jdbcReason, __jdbcSql);',
             f'            }} else {{',
             f'                LOG.info(" .. jdbc eachRow SQL: {{}}", __jdbcSql);',
-            f'                {result_var} = Db.queryAll(__jdbcSql);',
-            f'                LOG.info(" .. jdbc eachRow returned {{}} row(s)", '
-            f'{result_var} == null ? 0 : {result_var}.size());',
         ])
+        # Poll-until-stable wrapper for OTP extracts. Runs the queryAll +
+        # row-extract loop up to 4 times, waiting 2s between polls. Uses
+        # two consecutive matching values on the OTP-check var as the
+        # "stable" signal. Handles Hilton's async email pipeline race
+        # where our JDBC query occasionally beats the OTP-write:
+        #   attempt 1 returns stale/default value X
+        #   attempt 2 (after 2s) returns fresh value Y (X != Y -> keep polling)
+        #   attempt 3 (after another 2s) also returns Y (Y == Y -> STABLE, use Y)
+        # In the happy path where OTP is already stable, attempt 2 matches
+        # attempt 1 immediately -> total added time = 2s per OTP test.
+        # Worst case (all 4 attempts, no stability) = 6s + final use of
+        # the last value we saw. Localized to _is_otp_extract queries.
+        if _is_otp_extract and _otp_check_var:
+            lines.append(
+                f'                String __otp_prev_{_otp_check_var} = null;')
+            lines.append(
+                f'                int __otp_max = 4;')
+            lines.append(
+                f'                for (int __otp_attempt = 1; __otp_attempt <= __otp_max; __otp_attempt++) {{')
+            lines.append(
+                f'                    {result_var} = Db.queryAll(__jdbcSql);')
+            lines.append(
+                f'                    LOG.info(" .. jdbc eachRow attempt {{}} returned {{}} row(s)", '
+                f'__otp_attempt, {result_var} == null ? 0 : {result_var}.size());')
+        else:
+            lines.extend([
+                f'                {result_var} = Db.queryAll(__jdbcSql);',
+                f'                LOG.info(" .. jdbc eachRow returned {{}} row(s)", '
+                f'{result_var} == null ? 0 : {result_var}.size());',
+            ])
         if captured_vars and result_var:
             lines.append(
                 f'                if ({result_var} != null) {{')
@@ -1957,6 +2020,47 @@ def translate(script: str, response_var_by_step: dict[str, str],
                 f'                    }}')
             lines.append(
                 f'                }}')
+        # Close the OTP poll loop opened above: stability check + sleep
+        # between attempts, then loop end. Uses `emailOtp` (or whatever
+        # _otp_check_var resolved to) as the stability signal.
+        if _is_otp_extract and _otp_check_var:
+            _v = _otp_check_var
+            lines.append(
+                f'                    if (__otp_attempt > 1 && {_v} != null '
+                f'&& !{_v}.isEmpty() && {_v}.equals(__otp_prev_{_v})) {{')
+            lines.append(
+                f'                        LOG.info(" .. [OTP poll] STABLE '
+                f'after {{}} polls: {_v}={{}}", __otp_attempt, {_v});')
+            lines.append(
+                f'                        break;')
+            lines.append(
+                f'                    }}')
+            lines.append(
+                f'                    if (__otp_attempt > 1) {{')
+            lines.append(
+                f'                        LOG.info(" .. [OTP poll] attempt '
+                f'{{}} {_v}={{}} (previous={{}}) -- NOT stable, will re-poll", '
+                f'__otp_attempt, {_v}, __otp_prev_{_v});')
+            lines.append(
+                f'                    }}')
+            lines.append(
+                f'                    __otp_prev_{_v} = {_v};')
+            lines.append(
+                f'                    if (__otp_attempt < __otp_max) {{')
+            lines.append(
+                f'                        try {{ Thread.sleep(2000L); }} '
+                f'catch (InterruptedException __ie) {{ '
+                f'Thread.currentThread().interrupt(); break; }}')
+            lines.append(
+                f'                    }} else {{')
+            lines.append(
+                f'                        LOG.warn(" .. [OTP poll] EXHAUSTED '
+                f'{{}} attempts without stability -- using last value: {_v}={{}}", '
+                f'__otp_max, {_v});')
+            lines.append(
+                f'                    }}')
+            lines.append(
+                f'                }}')  # close for loop
         lines.extend([
             f'            }}',
             f'        }} catch (Exception __jdbcEx) {{',
