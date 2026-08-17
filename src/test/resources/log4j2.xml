@@ -1,4 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  DEBUG-enabled verbose config for troubleshooting the current
+  Hilton stg test run. Framework loggers (com.ak.api.**) at DEBUG
+  so retry-on-transient attempts, per-step diagnostics, and
+  placeholder-resolution details are all visible. HTTP client
+  libraries stay at WARN to prevent HttpClient wire-level noise
+  from drowning the useful signal.
+
+  To revert to lean output: change every DEBUG below to INFO.
+  To go even louder (wire-level HTTP): change io.restassured to
+  info (or debug) and org.apache.http to info.
+-->
 <Configuration status="WARN">
     <Appenders>
         <Console name="Console" target="SYSTEM_OUT">
@@ -6,8 +18,21 @@
         </Console>
     </Appenders>
     <Loggers>
+        <!-- Framework code -- shows retry-on-transient attempts,
+             placeholder resolution, delay-step timing, all diagnostics. -->
+        <Logger name="com.ak.api" level="debug"/>
+        <!-- Emitted test classes under imported.* -- shows every step's
+             request/response body dump. Already emits at INFO by default;
+             DEBUG surfaces any extra diagnostic the translator marked
+             at that level (e.g. downgraded "Failed to delete..." lines
+             from the b'.PROPER narrow fix). -->
+        <Logger name="com.ak.api.tests" level="debug"/>
+        <!-- Keep HTTP-client noise quiet. Bump these to info/debug ONLY
+             if you need to inspect the raw wire (connection reuse,
+             DNS, TLS handshakes). -->
         <Logger name="io.restassured" level="warn"/>
         <Logger name="org.apache.http" level="warn"/>
+        <Logger name="org.apache.hc" level="warn"/>
         <Root level="info">
             <AppenderRef ref="Console"/>
         </Root>
