@@ -53,6 +53,44 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 public final class Config {
 
+    /**
+     * OS-reserved environment variable names that collide with common
+     * config keys after the `dots-to-underscores + uppercase` transform.
+     * When a lookup for `key` would resolve to one of these names, the
+     * env-var precedence step is SKIPPED so a Windows machine's OS-set
+     * USERNAME (e.g. "ashwa") does not silently masquerade as the SFDC
+     * `sf_config.ui_username` alias-target for `username`.
+     *
+     * <p>Audit finding #3: `Config.get("username")` -> envKey `USERNAME`
+     * -> `System.getenv("USERNAME")` returns the Windows OS user.
+     * `TestSupport.mergedRow` then injects that OS user into every REST
+     * request body that references `#username#`. Silent test-data
+     * corruption. Same shadow existed for `password`, `home`, `path`,
+     * and other short single-token keys.</p>
+     *
+     * <p>Users who genuinely want to pass credentials via env var can
+     * use the nested form (`API_CONFIG_USERNAME`, `SF_CONFIG_UI_USERNAME`,
+     * etc.) which is uppercased from the nested JSON path and cannot
+     * collide with an OS-set variable of the same name.</p>
+     *
+     * <p>MUST be declared BEFORE the static initializer blocks below,
+     * because those blocks call {@code get()} (via
+     * {@code logStartupDiagnostics} -> {@code baseUrl} ->
+     * {@code deriveBaseUrl}), and Java initializes static fields in
+     * source-order. Declaring this AFTER the static blocks was the
+     * regression fixed post-audit -- caused a class-init NPE that
+     * silently propagated as `NoClassDefFoundError` in every test
+     * that touched Config.</p>
+     */
+    private static final java.util.Set<String> OS_RESERVED_ENV_NAMES = java.util.Set.of(
+            "USER", "USERNAME", "PASSWORD",
+            "HOME", "PATH", "PWD", "SHELL", "LANG", "LOGNAME",
+            "OS", "TEMP", "TMP",
+            "USERDOMAIN", "USERPROFILE", "COMPUTERNAME",
+            "APPDATA", "LOCALAPPDATA", "PROGRAMFILES", "PROGRAMDATA",
+            "SYSTEMDRIVE", "SYSTEMROOT", "WINDIR"
+    );
+
     private static final Properties props = new Properties();
     // Flattened env-scoped view of program_configuration.json. Keys are
     // dot-joined (e.g. `api_config.client_id`). Empty when the file is
@@ -381,35 +419,6 @@ public final class Config {
     // ---------------------------------------------------------------------
     // Generic key access
     // ---------------------------------------------------------------------
-
-    /**
-     * OS-reserved environment variable names that collide with common
-     * config keys after the `dots-to-underscores + uppercase` transform.
-     * When a lookup for `key` would resolve to one of these names, the
-     * env-var precedence step is SKIPPED so a Windows machine's OS-set
-     * USERNAME (e.g. "ashwa") does not silently masquerade as the SFDC
-     * `sf_config.ui_username` alias-target for `username`.
-     *
-     * <p>Audit finding #3: `Config.get("username")` -> envKey `USERNAME`
-     * -> `System.getenv("USERNAME")` returns the Windows OS user.
-     * `TestSupport.mergedRow` then injects that OS user into every REST
-     * request body that references `#username#`. Silent test-data
-     * corruption. Same shadow existed for `password`, `home`, `path`,
-     * and other short single-token keys.</p>
-     *
-     * <p>Users who genuinely want to pass credentials via env var can
-     * use the nested form (`API_CONFIG_USERNAME`, `SF_CONFIG_UI_USERNAME`,
-     * etc.) which is uppercased from the nested JSON path and cannot
-     * collide with an OS-set variable of the same name.</p>
-     */
-    private static final java.util.Set<String> OS_RESERVED_ENV_NAMES = java.util.Set.of(
-            "USER", "USERNAME", "PASSWORD",
-            "HOME", "PATH", "PWD", "SHELL", "LANG", "LOGNAME",
-            "OS", "TEMP", "TMP",
-            "USERDOMAIN", "USERPROFILE", "COMPUTERNAME",
-            "APPDATA", "LOCALAPPDATA", "PROGRAMFILES", "PROGRAMDATA",
-            "SYSTEMDRIVE", "SYSTEMROOT", "WINDIR"
-    );
 
     public static String get(String key, String fallback) {
         // 1. -Dkey
