@@ -2033,7 +2033,19 @@ def translate(script: str, response_var_by_step: dict[str, str],
                     # per JLS 3.10.6) -- rewrite to bare `$` (valid
                     # unescaped in Java literals).
                     parts.append('"' + seg.replace('\\$', '$') + '"')
-                parts.append(m.group(1))
+                # Identifier lookup via TestSupport.ctxGet -- NOT bare
+                # local reference. Reason: `def X = ...` translations
+                # declare X inside an inner `{...}` scope block that
+                # closes before subsequent log lines at the outer method
+                # level. A bare `+ X +` there fails to compile
+                # (`cannot find symbol: variable X`). The framework's
+                # every-def-mirrors-to-ctx pattern (putIfNonEmpty right
+                # after each def) makes ctxGet(ctx, "X") return the same
+                # value that the local held, so this is behaviour-
+                # preserving AND compile-safe regardless of the log
+                # line's scope depth. Missing keys yield "" (safe log
+                # output) rather than NPE.
+                parts.append(f'TestSupport.ctxGet(ctx, "{m.group(1)}")')
                 last_end = m.end()
             tail = inner[last_end:]
             if tail:
