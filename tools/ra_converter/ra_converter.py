@@ -5162,17 +5162,40 @@ public class {class_name} {{
 
         if t == "Valid HTTP Status Codes":
             codes = (cfg.get("codes", "") or "").strip()
-            first_code = re.split(r"[,\s]+", codes)[0] if codes else "200"
+            # Audit fix #7: when the SoapUI assertion has NO configured
+            # codes (author left the assertion but never set an expected
+            # value), use -1 as the emit-time sentinel instead of
+            # defaulting to 200. Prior default silently made every
+            # unconfigured step expect 200, so a negative test that
+            # correctly returned 400 would fail as "expected 200 but
+            # got 400" -- attributed to the wrong side. With -1,
+            # runtime emits an actionable "assertion SKIPPED" WARN
+            # instead of a bogus failure.
+            first_code = re.split(r"[,\s]+", codes)[0] if codes else "-1"
             # Two-tier lookup: the standalone `expected_<step>_status_code`
             # column wins; otherwise fall back to `exp.getInt("statusCode", ...)`
             # which parses the legacy `expected` combined column. Empty
             # cell -> treat as missing so the fallback fires (not parseInt("")).
+            #
+            # Runtime guard: when the resolved expected is < 0 (SoapUI
+            # codes empty AND CSV cell empty AND expected column has no
+            # statusCode) -> WARN + SKIP the assertion. Applies only
+            # when NO source of truth exists; the typical case (any of
+            # the three configured) fires the assertion normally.
             return ([
                 f'String rawStatus_{vsid} = row.get("{col_name}");',
                 f'int expected_{vsid} = com.ak.api.rest.utilities.RestUtilities'
                 f'.parseIntOrDefault(rawStatus_{vsid}, '
                 f'exp.getInt("statusCode", {first_code}), "{col_name}");',
-                f'softAssert.assertEquals({response_var}.statusCode(), expected_{vsid}, "expected status for {step_name}");',
+                f'if (expected_{vsid} < 0) {{',
+                f'    LOG.warn(" .. [status-code assert SKIPPED] step={step_name} '
+                f'-- no expected status configured (SoapUI codes empty, CSV '
+                f'column `{col_name}` empty, and `expected` column has no '
+                f'`statusCode:`). Populate one of these sources to enable '
+                f'the assertion. Actual status was {{}}.", {response_var}.statusCode());',
+                f'}} else {{',
+                f'    softAssert.assertEquals({response_var}.statusCode(), expected_{vsid}, "expected status for {step_name}");',
+                f'}}',
             ], "FULL")
         if t == "Invalid HTTP Status Codes":
             codes = (cfg.get("codes", "") or "").strip()
