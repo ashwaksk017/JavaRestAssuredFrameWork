@@ -3843,6 +3843,38 @@ public class {class_name} {{
                     f'CSV row cell) for these keys, or the runtime-resolved '
                     f'query will still carry `#{substituted_cols[0]}#` '
                     f'unresolved -- watch the WARN from mapJsonValues.')
+            # d.HINT: ordering hint for placeholders that ReadyAPI test
+            # authors commonly populate LATER in the flow (e.g. HHonorsEnroll
+            # response yields guestId; a DELETE that references guest_id
+            # BEFORE HHonorsEnroll will trip the null-fallback safety net).
+            # Heuristic list -- not a cross-step scan -- so no false positives
+            # on early-set placeholders, but only catches names we know are
+            # typically late-set. Keeps the safety net advisory in the emitted
+            # Java so authors can see it at code-review time, not just at
+            # runtime via the mapJsonValues WARN.
+            _late_set_hints = {
+                "guestID":         "usually populated by an /enroll or /guests POST response",
+                "guestId":         "usually populated by an /enroll or /guests POST response",
+                "accountID":       "usually populated by a /businesses or /accounts POST response",
+                "accountId":       "usually populated by a /businesses or /accounts POST response",
+                "memberID":        "usually populated by a /members POST response",
+                "memberId":        "usually populated by a /members POST response",
+                "hilton_member_id":"usually populated by a member-related POST response",
+                "hiltonmemberid":  "usually populated by a member-related POST response",
+                "hilton_account_id":"usually populated by an /accounts POST response",
+                "hiltonaccountid": "usually populated by an /accounts POST response",
+            }
+            _all_ph_here = set(re.findall(r"#([A-Za-z0-9_]+)#", transformed_q))
+            _late_ph_hits = [p for p in _all_ph_here if p in _late_set_hints]
+            if _late_ph_hits:
+                for _p in _late_ph_hits:
+                    lines.append(
+                        f'// [ordering hint] `#{_p}#` -- {_late_set_hints[_p]}. '
+                        f'If this JDBC step runs BEFORE that POST in the flow, '
+                        f'mapSqlValues will fallback to `null` and the SQL '
+                        f'will be SKIPPED at runtime by the safety net. '
+                        f'Check step ordering in your source SoapUI project '
+                        f'if 0-row results are unexpected.')
             sid = sanitize_identifier(step.step_name)
             if _is_select_step:
                 lines.append(
