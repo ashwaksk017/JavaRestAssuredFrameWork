@@ -8342,7 +8342,15 @@ public final class Templates {{
 
         content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">
-<suite name="{suite_display}" parallel="classes" thread-count="3">
+<!-- configfailurepolicy="continue" so an @AfterMethod failure (typically
+     softAssert.assertAll() throwing on accumulated soft-assertion failures)
+     doesn't cause TestNG to SKIP every subsequent @Test method in the same
+     class. Prior default ("skip") turned a class with 4 @Test methods and
+     one assertion failure into 1 fail + 3 skipped -- misleading because the
+     remaining tests would have provided independent signal against the same
+     API. With "continue", each @Test runs on its own merit; soft failures
+     stay per-scenario. -->
+<suite name="{suite_display}" parallel="classes" thread-count="3" configfailurepolicy="continue">
 
     <parameter name="testSuite" value="{variant.lower()}"/>
 

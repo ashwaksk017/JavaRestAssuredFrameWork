@@ -98,6 +98,25 @@ def _trace_groovy_defs(script: str) -> dict:
         if parent:
             b[m.group(1)] = {"kind": "response_str",
                               "source_step": parent.get("source_step")}
+    # ctx-property read via .getPropertyValue("<field>") on a known
+    # step_ref for ANY field (other than "response" -- that's handled
+    # above and means the raw body). SoapUI Groovy authors read
+    # arbitrary properties this way to pull an id captured by an
+    # earlier setPropertyValue step, then use it in a SQL query or
+    # request body. Without this branch the assignment was silently
+    # dropped and the downstream `def sql = ... + guestID` produced
+    # a `null` value in the query.
+    for m in re.finditer(
+        r'def\s+(\w+)\s*=\s*(\w+)\.getPropertyValue\(["\']([^"\']+)["\']\)',
+        script):
+        new_var, parent_var, field = m.group(1), m.group(2), m.group(3)
+        if field == "response":
+            continue  # handled by the response_str branch above
+        parent = b.get(parent_var)
+        if parent and parent.get("kind") == "step_ref" and new_var not in b:
+            b[new_var] = {"kind": "ctx_property",
+                          "source_step": parent.get("source_step"),
+                          "field": field}
     # parsed_json via JsonSlurper().parseText(<response_str_var>)
     for m in re.finditer(
         r'def\s+(\w+)\s*=\s*(?:new\s+)?[Jj]son[Ss]lurper\w*\s*(?:\(\))?\s*\.parseText\(\s*(\w+)\s*\)',
@@ -234,7 +253,116 @@ def _emit_def_publications(script: str, bindings: dict, ctx: dict,
             f'com.ak.api.rest.utilities.RestUtilities.safeJsonExtract('
             f'{resp}, "{info["jsonpath"]}"));')
         published.add(var_name)
+
+    # 3) ctx_property reads -- `def X = <stepRef>.getPropertyValue("<field>")`.
+    # Emit as a Java local String that reads via ctxGet so downstream
+    # code in the same Groovy step (typically a SQL query built via
+    # string concat) can reference X. Also stash into ctx under the
+    # source step's namespace so cross-step reads find it too. Wrapped
+    # in a `{...}` scope block per var so multiple Groovy steps in the
+    # SAME @Test method (each with its own `def guestID = ...`) don't
+    # collide on the local declaration -- javac rejects redeclared
+    # method-scope locals.
+    for var_name, info in bindings.items():
+        if info.get("kind") != "ctx_property":
+            continue
+        if var_name in published:
+            continue
+        src_step = info.get("source_step") or step_name_hint
+        field = info.get("field", "")
+        # ctxGet resolves the ${SourceStep#field} shape via its
+        # alias-walk (dot / underscore / case-flip) so a value written
+        # under `SourceStep.field` or `SourceStep_field` both surface.
+        out.append(
+            f'// [translated] def {var_name} = <{src_step}>.getPropertyValue("{field}")')
+        out.append('{')
+        out.append(
+            f'    String {var_name} = TestSupport.ctxGet(ctx, "{src_step}.{field}");')
+        out.append(
+            f'    TestSupport.putIfNonEmpty(ctx, "{src_step}.{field}", {var_name});')
+        # ALSO publish under the bare Groovy-var name so a downstream
+        # SQL query built via `"..." + <var>` (flattened to `'#<var>#'`
+        # by _try_flatten_concat_sql) resolves against mergedRow. Without
+        # this, mergedRow only sees the namespaced key and the raw
+        # `#guestID#` placeholder falls to the null-fallback path.
+        out.append(
+            f'    TestSupport.putIfNonEmpty(ctx, "{var_name}", {var_name});')
+        out.append('}')
+        published.add(var_name)
+
     return out
+
+
+# ---------------------------------------------------------------------------
+# SQL query preprocessing (concat-flattening for sql.eachRow / execute etc.)
+# ---------------------------------------------------------------------------
+
+def _try_flatten_concat_sql(expr: str) -> Optional[str]:
+    """Given a Groovy string-concat expression like
+        "select ... where account_id = " + guestID + " and status = 'A'"
+    return a single SQL literal with each concatenated bare-identifier
+    segment replaced by a `'#<ident>#'` placeholder that mapJsonValues
+    resolves at runtime. Returns None if any concat part isn't a
+    string literal or a bare identifier -- those would need a Java
+    expression we can't safely inline.
+
+    Example:
+        input:  '"select foo = " + guestID + " and bar = " + accountID'
+        output: 'select foo = \'#guestID#\' and bar = \'#accountID#\''
+    """
+    if expr is None:
+        return None
+    e = expr.strip()
+    if not e or ("+" not in e):
+        return None
+    # Split on top-level `+`
+    parts: list[str] = []
+    depth = 0
+    in_str = None
+    buf = ""
+    for k, ch in enumerate(e):
+        if in_str:
+            buf += ch
+            if ch == in_str and e[k - 1:k] != "\\":
+                in_str = None
+        elif ch in ('"', "'"):
+            in_str = ch
+            buf += ch
+        elif ch in "([{":
+            depth += 1
+            buf += ch
+        elif ch in ")]}":
+            depth -= 1
+            buf += ch
+        elif ch == "+" and depth == 0:
+            parts.append(buf.strip())
+            buf = ""
+        else:
+            buf += ch
+    if buf.strip():
+        parts.append(buf.strip())
+    if len(parts) < 2:
+        return None
+    out_parts: list[str] = []
+    for p in parts:
+        if not p:
+            return None
+        # String literal (double or single quoted, no nested quotes of same kind)
+        if ((p.startswith('"') and p.endswith('"'))
+                or (p.startswith("'") and p.endswith("'"))):
+            # Strip surrounding quotes -- we'll re-wrap the whole thing later.
+            out_parts.append(p[1:-1])
+        elif re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", p):
+            # Bare identifier -- mapJsonValues placeholder. Wrap in
+            # single quotes because SQL WHERE clauses expect string
+            # or numeric literals; single-quoting is safe for both
+            # under all target DB drivers we support (Postgres +
+            # MySQL treat '<digits>' the same as <digits> in
+            # equality comparisons).
+            out_parts.append(f"'#{p}#'")
+        else:
+            return None
+    return "".join(out_parts)
 
 
 # ---------------------------------------------------------------------------
@@ -700,6 +828,16 @@ def translate(script: str, response_var_by_step: dict[str, str],
     if not script or not script.strip():
         return [], {"patterns_matched": [], "coverage": "FULL", "preview": ""}
 
+    # Strip Groovy `import` lines from consideration -- they never
+    # translate to Java (Java has its own import mechanism above the
+    # method body). Prior behaviour: unhandled imports counted toward
+    # the "unrecognized text" tally and could tip coverage from FULL
+    # to STUB, or fire the fallback stub emitter for otherwise-
+    # translatable scripts. Removed for pattern-matching purposes ONLY;
+    # doesn't touch the source variable passed around by other stages.
+    script = re.sub(r"^\s*import\s+[A-Za-z0-9_.]+\s*$", "",
+                    script, flags=re.MULTILINE)
+
     lines: list[str] = [f'// [groovy] {step_name_hint} -- auto-translated']
     ctx = {
         "response_var_by_step": response_var_by_step or {},
@@ -1058,7 +1196,13 @@ def translate(script: str, response_var_by_step: dict[str, str],
     # and later `sql.rows`/`sql.firstRow` locals don't collide when a
     # single Groovy script mixes them.
     _row_var_counter = 0
-    for groups, args_body in _balanced_arg_call(script, r"sql\.execute\("):
+    # `sql.executeUpdate("...")` is the same shape as sql.execute for
+    # our purposes -- both dispatch to Db.execute (INSERT/UPDATE/DELETE)
+    # or Db.queryAll (SELECT) based on the SELECT detection below. The
+    # audit found ~550 sql.executeUpdate occurrences in the suite that
+    # would otherwise silently no-op.
+    for groups, args_body in _balanced_arg_call(
+            script, r"sql\.(?:execute|executeUpdate|executeInsert)\("):
         query = args_body.strip()
         # Detect Groovy list-arg syntax: `sql.execute("QUERY", [p1, p2])`
         # -> translate to Java varargs. Groovy's `[...]` list literal isn't
@@ -1582,6 +1726,210 @@ def translate(script: str, response_var_by_step: dict[str, str],
             ])
             _mark(f"jdbc_{method_name}")
             consumed = True
+
+    # ---- JDBC read: `sql.eachRow(query) { row -> body }` -> Db.queryAll
+    # + Java for-loop over rows. Prior emitter had NO recognizer for
+    # sql.eachRow. The whole DB fetch was silently dropped, and any
+    # subsequent setPropertyValue that captured a per-row value (typical
+    # TOTP-extraction pattern) published the generator's fake random
+    # instead of the real DB value -- so downstream POST /confirmValidation
+    # returned 400 "TOTP code is invalid" every run.
+    #
+    # Handles:
+    #   sql.eachRow("SELECT literal") { row -> outer = row.field.toString() }
+    #   sql.eachRow(sql_query) { row -> outer = row.field }
+    #      where earlier: def sql_query = "select ... = " + guestID
+    # Query can be a bare-var whose def is a string concat -- we resolve
+    # it and flatten via _try_flatten_concat_sql. Concatenated identifiers
+    # become `'#ident#'` placeholders that mapJsonValues resolves at
+    # runtime; the identifiers themselves must be present in ctx (typical
+    # earlier `def guestID = <stepRef>.getPropertyValue("hilton-member-id")`
+    # which _emit_def_publications now writes via ctxGet).
+    #
+    # After emitting the for-loop, look ahead in the script for
+    # `setPropertyValue("<prop>", <captured_var>)` calls that publish the
+    # closure's captured value to a properties step. Emit
+    # `putExtracted(ctx, "<step>.<prop>", <captured_var>)` for each --
+    # this is what makes the extracted TOTP visible to the next REST
+    # step's body substitution.
+    def _resolve_query_arg_to_sql(qe: str) -> Optional[str]:
+        """Return raw SQL text (with #placeholders#) for a sql.eachRow arg
+        that's either a quoted literal, a top-level concat, or a bare
+        identifier that's `def`'d to a concat earlier. Returns None when
+        the arg is a Groovy expression we can't safely inline."""
+        qe = qe.strip()
+        # 1. Quoted literal (single or double)
+        if (len(qe) >= 2 and qe[0] in ('"', "'")
+                and qe[-1] == qe[0]
+                and qe[0] not in qe[1:-1]):
+            return qe[1:-1]
+        # 2. String concat
+        flat = _try_flatten_concat_sql(qe)
+        if flat is not None:
+            return flat
+        # 3. Bare identifier -> resolve via def
+        m_ident = re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", qe)
+        if m_ident:
+            m_def = re.search(
+                rf"def\s+{re.escape(qe)}\s*=\s*(.+?)(?:$|;|\r|\n)",
+                script + "\n")
+            if m_def:
+                rhs = m_def.group(1).strip()
+                # RHS may itself be a quoted literal or a concat
+                if (len(rhs) >= 2 and rhs[0] in ('"', "'")
+                        and rhs[-1] == rhs[0]
+                        and rhs[0] not in rhs[1:-1]):
+                    return rhs[1:-1]
+                flat = _try_flatten_concat_sql(rhs)
+                if flat is not None:
+                    return flat
+        return None
+
+    for groups, args_body in _balanced_arg_call(
+            script, r"sql\.eachRow\("):
+        # sql.eachRow(<query>) { <row_var> -> <body> }
+        # `args_body` covers just the paren-args, up to the closing `)`.
+        # The closure body follows: `{ <row_var> -> ... }`. Find it by
+        # locating the exact call in the script and walking past it.
+        query_expr = args_body.strip()
+        raw_sql = _resolve_query_arg_to_sql(query_expr)
+        if raw_sql is None:
+            preview = query_expr[:80].replace("\\", "\\\\").replace('"', '\\"')
+            lines.append(
+                f'// [jdbc] sql.eachRow(...) query `{preview}` is a Groovy '
+                f'expression we cannot safely inline -- hand-wire '
+                f'Db.queryAll(...) with the concrete SQL to run this step.')
+            continue
+        # Locate the closure block that follows this eachRow call. The
+        # regex takes the FIRST `{ <row_var> -> ... }` occurrence after
+        # the eachRow call site in the script. Groovy authors typically
+        # write eachRow on one line + closure body indented on the next,
+        # so a simple non-greedy match on `\{[^}]*\}` covers the common
+        # single-statement body ("outer = row.field.toString()") without
+        # tripping on nested braces (rare in short DB-fetch closures).
+        # Try both single-line and multi-line closure shapes.
+        row_var, closure_body = None, ""
+        # Find where args_body's call ends in the script, then scan
+        # forward for `{ <ident> -> ... }`.
+        # Use a paren-balanced position from `sql.eachRow(` occurrences
+        # -- but simpler: just search for a `{` right after `sql.eachRow(<qe>)`.
+        # This heuristic is good enough for the observed pattern:
+        eachrow_hit = re.search(
+            rf"sql\.eachRow\({re.escape(query_expr)}\)\s*\{{"
+            r"\s*(\w+)\s*->\s*([^}]+)\}",
+            script)
+        if eachrow_hit:
+            row_var, closure_body = eachrow_hit.group(1), eachrow_hit.group(2)
+        transformed, subs = _normalize_jdbc_query(raw_sql)
+        java_query = _java_string_literal(transformed)
+        _row_var_counter += 1
+        step_tag = re.sub(r"[^A-Za-z0-9_]", "_", step_name_hint or "s")
+        result_var = f"__jdbcEachrow_{step_tag}_{_row_var_counter}"
+        # Parse closure body for `<outer> = <row_var>.<field>[.toString()][.trim()]`
+        # assignments. `outer` gets Java-declared here (String) so
+        # downstream setPropertyValue references compile. If the outer
+        # was defined earlier with `def outer = ''` in Groovy, the
+        # emitter already emitted `String outer = "";` (via other
+        # recognizers) OR the def is untranslated -- either way,
+        # inserting `String outer = ...` here in a fresh scope block
+        # keeps javac happy.
+        captured_vars: list[tuple[str, str]] = []  # [(outer_var, field)]
+        if closure_body and row_var:
+            body_txt = closure_body.strip()
+            # Split on ; and newlines
+            for stmt in re.split(r"[;\n]", body_txt):
+                s = stmt.strip()
+                # <outer> = <row_var>.<field>[.toString()][.trim()]
+                m_ass = re.match(
+                    rf"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+                    rf"{re.escape(row_var)}\.([A-Za-z_][A-Za-z0-9_]*)"
+                    r"(?:\.toString\(\))?(?:\.trim\(\))?\s*$",
+                    s)
+                if m_ass:
+                    captured_vars.append((m_ass.group(1), m_ass.group(2)))
+        lines.append(f'// [translated] JDBC eachRow -> Db.queryAll + for-loop')
+        if subs:
+            lines.append(
+                f'// [jdbc] parameterized {len(subs)} hardcoded WHERE '
+                f'literal(s) with #placeholder# refs -- columns: '
+                f'{", ".join(subs)}. Populate ctx or the runtime-'
+                f'resolved query will still carry unresolved.')
+        lines.append(f'java.util.List<java.util.Map<String, Object>> '
+                     f'{result_var} = null;')
+        # Declare captured vars as Java locals (empty string default) so
+        # they're in scope for subsequent setPropertyValue emits below.
+        # Use `String __eachCap_<name>` to sidestep collision with the
+        # Groovy-original bare name (which the emitter may or may not
+        # have declared; if it did, javac would reject a redeclaration).
+        # But downstream setPropertyValue uses the RAW name -- so we
+        # need the raw name in scope. Wrap the whole thing in a scope
+        # block so a "String outer = ..." here doesn't collide with an
+        # outer def elsewhere in the same @Test method.
+        lines.append('{')
+        for outer, field in captured_vars:
+            lines.append(f'    String {outer} = "";')
+        lines.extend([
+            f'    if (Db.isConfigured()) {{',
+            f'        try {{',
+            f'            String __jdbcSql = RestUtilities.mapJsonValues('
+            f'{java_query}, TestSupport.mergedRow(row, ctx), false);',
+            f'            String __jdbcReason = com.ak.api.db.Db.unsafeSqlReason(__jdbcSql);',
+            f'            if (__jdbcReason != null) {{',
+            f'                LOG.warn(" .. jdbc SKIPPED ({{}}): {{}}", '
+            f'__jdbcReason, __jdbcSql);',
+            f'            }} else {{',
+            f'                LOG.info(" .. jdbc eachRow SQL: {{}}", __jdbcSql);',
+            f'                {result_var} = Db.queryAll(__jdbcSql);',
+            f'                LOG.info(" .. jdbc eachRow returned {{}} row(s)", '
+            f'{result_var} == null ? 0 : {result_var}.size());',
+        ])
+        if captured_vars and result_var:
+            lines.append(
+                f'                if ({result_var} != null) {{')
+            lines.append(
+                f'                    for (java.util.Map<String, Object> __row : '
+                f'{result_var}) {{')
+            for outer, field in captured_vars:
+                lines.append(
+                    f'                        Object __v_{outer} = __row.get("{field}");')
+                lines.append(
+                    f'                        if (__v_{outer} != null) '
+                    f'{outer} = String.valueOf(__v_{outer});')
+            lines.append(
+                f'                    }}')
+            lines.append(
+                f'                }}')
+        lines.extend([
+            f'            }}',
+            f'        }} catch (Exception __jdbcEx) {{',
+            f'            LOG.warn("JDBC eachRow failed: {{}}", '
+            f'__jdbcEx.getMessage());',
+            f'        }}',
+            f'    }} else {{',
+            f'        LOG.warn("Skipping JDBC eachRow step (Db not configured)");',
+            f'    }}',
+        ])
+        # Look ahead for setPropertyValue("<prop>", <captured_var>) calls
+        # in the script and emit putExtracted publications. This mirrors
+        # what my setproperty_extract loop does for JSON-derived vars,
+        # extended to sql.eachRow-captured vars. Runs inside the same
+        # scope block so `outer` is still in scope.
+        if captured_vars:
+            for target_step, field, expr in _find_setproperty_targets(script):
+                if expr in ('""', "''"):
+                    continue
+                # Strip trailing .toString()/.trim() before comparing
+                bare = re.sub(
+                    r"(\.toString\(\))?(\.trim\(\))?\s*$", "", expr.strip())
+                for outer, _fld in captured_vars:
+                    if bare == outer:
+                        lines.append(
+                            f'    TestSupport.putExtracted(ctx, '
+                            f'"{_ctx_key(target_step, field)}", {outer});')
+                        break
+        lines.append('}')
+        _mark("jdbc_eachRow")
+        consumed = True
 
     # ---- log.info / log.error direct swap (SLF4J-compatible).
     # Uses paren-balanced walker so args with nested calls / GString
