@@ -667,6 +667,25 @@ public class RestUtilities {
                     verb, stepName, m.group(), resolvedPath);
             return;
         }
+        // Trailing empty segment: URL ends in `/` but the template
+        // had a `{param}` after that slash which resolved to empty.
+        // Symptom: `/businesses/` instead of `/businesses/{accountId}`.
+        // Hilton silently treats this as the LIST endpoint and returns
+        // 206 (Partial Content, paginated) instead of the intended
+        // single-resource 200/404 -- so the assertion fails on the
+        // wrong axis (206 vs 200) and we chase a false status-code
+        // bug when the real fault is a missing path arg. Observed in
+        // full-run.log where `GET /businesses/` returned 206 x 10.
+        if (resolvedPath.length() > 1 && resolvedPath.endsWith("/")) {
+            LOG.warn("assertPathResolved: {} `{}` URL has a TRAILING "
+                    + "empty path segment (upstream extract returned "
+                    + "empty for a required trailing id): `{}`. Server "
+                    + "will likely respond with the LIST endpoint's "
+                    + "response (206) or 404. Root cause is missing "
+                    + "value for the last {{param}} slot.",
+                    verb, stepName, resolvedPath);
+            return;
+        }
         // Empty path segment -- `//` outside the URI scheme's `://`.
         // Scan for `//` that isn't preceded by `:` (scheme separator).
         int idx = 0;
