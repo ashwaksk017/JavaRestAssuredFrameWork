@@ -3577,6 +3577,11 @@ class Emitter:
         # with the current prefix/case.
         self._current_prefix: str = ""
         self._current_case: str = ""
+        # R7 fix: current test case object, populated by
+        # _render_test_method_v2 for _render_rest_step_body's cross-step
+        # response-ref auto-extract scan. See rendering block for full
+        # rationale.
+        self._current_case_obj: Optional["TestCase"] = None
         # Populated by emit_templates_deduplicated (v2 mode). Keyed by
         # (case_name, step_name) so per-step template path lookups get
         # the ACTUAL dedup'd path -- not the flat legacy guess. Empty in
@@ -5212,6 +5217,103 @@ public class {class_name} {{
             self.ledger.add_assertion(
                 self._current_prefix, self._current_case, step.step_name,
                 a.type, a.config, " ".join(emitted), coverage)
+
+        # R7 auto-extract: scan the rest of the case's steps for
+        # `${<this-step>#Response#<field>}` cross-step references and
+        # emit putExtracted for each unique field, keyed under
+        # `<sanitized_step_name>_Response_<sanitized_field>`. This is
+        # the runtime companion to `_STEP_RESPONSE_RX`'s translation of
+        # the SoapUI ref into a `#step_Response_field#` placeholder --
+        # without this extract, the placeholder resolves to "null" at
+        # mapJsonValues time and downstream URLs / bodies use empty
+        # values (100+ unresolved refs observed in full-run.log:
+        # #http_request_200_2_Response_inviteKey#, #MemberHHonorsEnroll_2_
+        # Response_guestId#, etc.). Extract handles the plain Response
+        # form; ResponseAsXml / ResponseAsJson / Headers variants share
+        # the same placeholder-name pattern so they benefit too.
+        _step_obj = self._current_case_obj
+        if _step_obj is not None:
+            _needed_fields: dict[str, str] = {}  # placeholder_key -> field_path
+            _current_sanitized = re.sub(
+                r"[^A-Za-z0-9_]", "_", step.step_name.strip())
+            # Scan every step's body/query/headers/path_params for refs
+            # to THIS step's response. Include this step's own body too
+            # (a step referencing its own request body's response would
+            # be rare but possible).
+            for _st in _step_obj.steps:
+                _texts: list[str] = []
+                if isinstance(_st, RestStep):
+                    _texts.append(_st.request_body or "")
+                    for _v in (getattr(_st, "query_params", None) or {}).values():
+                        _texts.append(_v or "")
+                    for _v in (getattr(_st, "headers", None) or {}).values():
+                        _texts.append(_v or "")
+                    for _v in (getattr(_st, "path_params", None) or {}).values():
+                        _texts.append(_v or "")
+                elif isinstance(_st, GroovyStep):
+                    _texts.append(_st.script or "")
+                _blob = "\n".join(_texts)
+                if not _blob:
+                    continue
+                for _m in _STEP_RESPONSE_RX.finditer(_blob):
+                    _src_step = _m.group(1).strip()
+                    _variant = _m.group(2) or ""
+                    _path_raw = _m.group(3).strip()
+                    _src_sanitized = re.sub(
+                        r"[^A-Za-z0-9_]", "_", _src_step)
+                    if _src_sanitized != _current_sanitized:
+                        continue
+                    # Build the placeholder key the same way
+                    # soapui_body_to_placeholders builds it (see
+                    # `_step_response` in that function). Plain
+                    # Response uses the raw path with dots/hyphens
+                    # normalized to underscore.
+                    if _variant in ("AsXml", "AsHtml"):
+                        _expr = _path_raw
+                        if "declare namespace" in _expr and ";" in _expr:
+                            _expr = _expr.split(";", 1)[1].strip()
+                        _segments = _expr.split("/")
+                        _leaf = _segments[-1] if _segments else _expr
+                        if ":" in _leaf:
+                            _leaf = _leaf.split(":", 1)[-1]
+                        _leaf = re.sub(r"\[\d+\]", "", _leaf).strip() or "unknown"
+                        _field_key = _leaf.replace(".", "_").replace("-", "_")
+                    elif _variant == "Headers":
+                        _field_key = (
+                            "Header_" + _path_raw.strip()
+                                .replace("-", "_").replace(".", "_"))
+                    else:
+                        _field = _path_raw.lstrip("$").lstrip(".")
+                        _field = re.sub(r"\['?([^'\]]+)'?\]", r".\1", _field)
+                        _field = re.sub(r'\["?([^"\]]+)"?\]', r".\1", _field)
+                        _field = _field.lstrip(".").replace(".", "_").replace("-", "_")
+                        _field_key = _field
+                    _ph_key = f"{_src_sanitized}_Response_{_field_key}" if _field_key else f"{_src_sanitized}_Response"
+                    # For the actual extract, use the DOTTED path form
+                    # that safeJsonExtract expects.
+                    if _variant in ("AsXml", "AsHtml", "Headers"):
+                        # Headers use response.getHeader; XPath-on-JSON
+                        # falls back to safeJsonExtract on the leaf.
+                        _extract_field = _field_key.replace("Header_", "")
+                    else:
+                        _extract_field = _field_key.replace("_", ".")
+                    _needed_fields[_ph_key] = _extract_field
+            if _needed_fields:
+                lines.append(
+                    f'// [auto-extract] populate ctx with {len(_needed_fields)} '
+                    f'cross-step response ref(s) referenced by later steps')
+                for _ph_key, _field in _needed_fields.items():
+                    if _ph_key.endswith("_Response"):
+                        # Whole response as string
+                        lines.append(
+                            f'TestSupport.putExtracted(ctx, "{_ph_key}", '
+                            f'com.ak.api.rest.utilities.RestUtilities'
+                            f'.getResponseAsString({response_var}));')
+                    else:
+                        lines.append(
+                            f'TestSupport.putExtracted(ctx, "{_ph_key}", '
+                            f'com.ak.api.rest.utilities.RestUtilities'
+                            f'.safeJsonExtract({response_var}, "{_jlit(_field)}"));')
 
         # Advance the cluster REST-step position so the next call reads
         # assertions from position+1.
@@ -8209,6 +8311,15 @@ public class {class_name} extends BaseApiTest {{
         the method when `row["_stop_after"]` equals the step's name.
         """
         self._current_case = case.name
+        # R7 fix: store the case object so _render_rest_step_body can
+        # scan all steps for cross-step `${STEP#Response#FIELD}`
+        # placeholder references. Prior emit produced the placeholder
+        # `#STEP_Response_FIELD#` in body/query/path templates but never
+        # emitted the extract code that would populate ctx under that
+        # key. Full-run.log showed 100+ unresolved cross-step
+        # placeholders across the suite. See _render_rest_step_body's
+        # end-of-step auto-extract block.
+        self._current_case_obj = case
         # Populated so runtime_skips.csv rows can name the containing @Test
         # method -- without this, every runtime_skips row carries "?" and
         # the audit can't jump you to the code.
