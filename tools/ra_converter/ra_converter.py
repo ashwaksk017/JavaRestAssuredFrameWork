@@ -5592,9 +5592,20 @@ public class {class_name} {{
                     # failed. Every other assertion helper (via
                     # `_row_expr`) already does this null-or-empty
                     # ternary; this branch was the odd one out.
-                    f'String expected_{vsid} = (row.get("{col_name}") == null || '
+                    #
+                    # R10-1 fix: wrap the WHOLE ternary in
+                    # PlaceholderResolver.resolveAll so a CSV cell
+                    # containing `#Properties_Domain#` gets resolved
+                    # to the ctx value. Prior emit only wrapped the
+                    # non-hoist path (via _row_expr) and left this
+                    # hoist path unresolved. 300+ assertions failed
+                    # with `expected [#Properties_Domain#] but found
+                    # [<real value>]` because of this gap. Idempotent
+                    # on plain literals (no #/@/$ ref chars).
+                    f'String expected_{vsid} = PlaceholderResolver.resolveAll('
+                    f'(row.get("{col_name}") == null || '
                     f'row.get("{col_name}").isEmpty() ? '
-                    f'String.valueOf({java_expr}) : row.get("{col_name}"));',
+                    f'String.valueOf({java_expr}) : row.get("{col_name}")), ctx);',
                     f'LOG.info(" .. [assert] {path} expected={{}} actual={{}}", '
                     f'expected_{vsid}, com.ak.api.rest.utilities.RestUtilities'
                     f'.safeJsonExtract({response_var}, "{path}"));',
@@ -5602,7 +5613,22 @@ public class {class_name} {{
                     f'.safeJsonExtract({response_var}, "{path}"), '
                     f'expected_{vsid}, "JsonPath Match: {path}");',
                 ], "FULL")
-            content = _jlit(content_raw)
+            # R10-2 fix: SoapUI JsonPath Match content for string
+            # expected values arrives quoted from the XML (e.g. `"SMBE"`
+            # or `"active"`). safeJsonExtract returns the UNQUOTED
+            # string value from the response body. Prior emit compared
+            # `"\"SMBE\""` (5 chars) vs `"SMBE"` (4 chars) and always
+            # failed with `expected ["SMBE"] but found [SMBE]` (30+
+            # observed occurrences). Strip a matched surrounding pair
+            # of double-quotes OR single-quotes before jlit-escaping.
+            # Skip strip when content is a JSON object/array literal
+            # (already handled above by the startswith(("{", "[")) branch).
+            _content_normalized = content_raw
+            if (len(_content_normalized) >= 2
+                    and ((_content_normalized[0] == '"' and _content_normalized[-1] == '"')
+                         or (_content_normalized[0] == "'" and _content_normalized[-1] == "'"))):
+                _content_normalized = _content_normalized[1:-1]
+            content = _jlit(_content_normalized)
             return ([
                 f'String expected_{vsid} = {_row_expr(content)};',
                 f'LOG.info(" .. [assert] {path} expected={{}} actual={{}}", '
@@ -6868,7 +6894,19 @@ public final class TestSupport {{
             step_lines: list[str] = [
                 # `exp` is normally provided by BaseApiTest.expected(row) but
                 # SetupHelper is static -- re-derive from the row cell.
-                'Expected exp = Expected.from(row == null ? null : row.get("expected"));',
+                #
+                # R10-4 fix: use an EMPTY Expected here (ignore the row's
+                # `expected` column) so setup steps like `tokenRequest`
+                # always fall back to the SoapUI XML declared status
+                # (typically 200) rather than the test-case-level
+                # expected (e.g. 403 for a `_403` negative test). Prior
+                # behaviour: a `_403` case's `expected` column bled the
+                # 403 into tokenRequest's assertion, and every setup
+                # tokenRequest fired `expected status for tokenRequest
+                # expected [403] but found [200]`. Setup is not the SUT
+                # here -- the case-level expected belongs to the LATER
+                # scenario-specific step, not the shared setup chain.
+                'Expected exp = Expected.from(null);',
                 '',
             ]
             for step in flow["template_case"].steps[:flow["prefix_len"]]:
