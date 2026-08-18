@@ -5627,10 +5627,29 @@ public class {class_name} {{
             lines.append(
                 f'String expected_{v} = (row.get("{col_name}") == null || '
                 f'row.get("{col_name}").isEmpty()) ? "{fallback}" : row.get("{col_name}");')
-            if operator.strip() == "!=":
+            op_norm = operator.strip().lower()
+            if op_norm == "!=":
                 lines.append(
                     f'softAssert.assertNotEquals(actual_{v}, expected_{v}, '
                     f'"MessageContent != for {_jlit(elem_name)}");')
+            elif op_norm in ("exists", "notnull", "not null", "not-null"):
+                # GAP-5 fix: SoapUI's MessageContentAssertion has an
+                # `exists` operator that asserts the field is present
+                # (non-null). Prior emit compared the extracted value to
+                # the literal string "exists" via the else branch's
+                # assertEquals -- silent false-fail on any real value.
+                # Emit assertNotNull instead. 35 elements in the source
+                # XML use this operator; without the fix they all
+                # spuriously fail once real data comes back.
+                lines.append(
+                    f'softAssert.assertNotNull(actual_{v}, '
+                    f'"MessageContent exists for {_jlit(elem_name)}");')
+            elif op_norm in ("contains", "~"):
+                # Also honor the "contains" operator variant.
+                lines.append(
+                    f'softAssert.assertTrue(actual_{v} != null && '
+                    f'actual_{v}.contains(expected_{v}), '
+                    f'"MessageContent contains for {_jlit(elem_name)}");')
             else:
                 lines.append(
                     f'softAssert.assertEquals(actual_{v}, expected_{v}, '
@@ -5671,6 +5690,14 @@ public class {class_name} {{
             lines.append(
                 f'String expected_{v} = (row.get("{col_name}") == null || '
                 f'row.get("{col_name}").isEmpty()) ? "{fallback}" : row.get("{col_name}");')
+            # GAP-4 fix: DataAndMetadataAssertion.operatorId encoding
+            # (from SoapUI's DataAndMetadataAssertion.OperatorType enum).
+            # Prior emit only recognized 1/2/3 and defaulted the rest to
+            # assertEquals -- 40 elements in the source XML use ops 9/10/
+            # 12 (matches / exists / is-null variants), all producing
+            # meaningless assertEquals("actual", literal string). Now
+            # handles the common non-trivial ops; unknown ops WARN + skip
+            # instead of silent-wrong assertion.
             if op == "2":  # not equals
                 lines.append(
                     f'softAssert.assertNotEquals(actual_{v}, expected_{v}, '
@@ -5680,10 +5707,46 @@ public class {class_name} {{
                     f'softAssert.assertTrue(actual_{v} != null && '
                     f'actual_{v}.contains(expected_{v}), '
                     f'"DataAndMetadata contains for {_jlit(elem_name)}");')
-            else:  # default: equals
+            elif op == "4":  # not contains
+                lines.append(
+                    f'softAssert.assertTrue(actual_{v} == null || '
+                    f'!actual_{v}.contains(expected_{v}), '
+                    f'"DataAndMetadata not-contains for {_jlit(elem_name)}");')
+            elif op == "5":  # matches (regex)
+                lines.append(
+                    f'softAssert.assertTrue(actual_{v} != null && '
+                    f'actual_{v}.matches(expected_{v}), '
+                    f'"DataAndMetadata matches for {_jlit(elem_name)}");')
+            elif op == "6":  # not matches
+                lines.append(
+                    f'softAssert.assertTrue(actual_{v} == null || '
+                    f'!actual_{v}.matches(expected_{v}), '
+                    f'"DataAndMetadata not-matches for {_jlit(elem_name)}");')
+            elif op == "9":  # exists / not null
+                lines.append(
+                    f'softAssert.assertNotNull(actual_{v}, '
+                    f'"DataAndMetadata exists for {_jlit(elem_name)}");')
+            elif op == "10":  # does not exist / is null
+                lines.append(
+                    f'softAssert.assertTrue(actual_{v} == null || '
+                    f'actual_{v}.isEmpty(), '
+                    f'"DataAndMetadata not-exists for {_jlit(elem_name)}");')
+            elif op == "12":  # empty / is-null-or-empty
+                lines.append(
+                    f'softAssert.assertTrue(actual_{v} == null || '
+                    f'actual_{v}.isEmpty(), '
+                    f'"DataAndMetadata is-empty for {_jlit(elem_name)}");')
+            elif op == "1":  # equals
                 lines.append(
                     f'softAssert.assertEquals(actual_{v}, expected_{v}, '
                     f'"DataAndMetadata = for {_jlit(elem_name)}");')
+            else:  # unknown op: WARN + skip (do NOT silent-equals)
+                lines.append(
+                    f'LOG.warn(" .. [DataAndMetadata assertion SKIPPED] '
+                    f'unknown operatorId={op} for element {_jlit(elem_name)} '
+                    f'-- extend _render_data_and_metadata_assertion to '
+                    f'support this op. Actual={{}}, expected={{}}.", '
+                    f'actual_{v}, expected_{v});')
         return (lines, "FULL")
 
     # Pattern library for GroovyScriptAssertion translation. Each entry is
@@ -5829,6 +5892,75 @@ public class {class_name} {{
                 f'// [GroovyScriptAssertion] response body contains: {token_preview}',
                 f'softAssert.assertTrue({response_var}.asString().contains("{token}"), '
                 f'"body contains: {token_preview}");',
+            ], "FULL")
+
+        # GAP-3 fix: `assert <expr>.contains("literal")` where <expr>
+        # traces back to a JsonSlurper.parseText() call. Handles both
+        # direct and via-intermediate-variable forms:
+        #
+        #   Form A (direct):
+        #       def json = new JsonSlurper().parseText(context.response)
+        #       assert json.packages.packageName.contains("H4LE")
+        #
+        #   Form B (intermediate var):
+        #       def json = new JsonSlurper().parseText(context.response)
+        #       def operationIds = json.context?.operationId
+        #       assert operationIds.contains("MergeProgramAccountMemberGuestProfile")
+        #
+        # Prior emit stubbed the whole assertion because the SoapUI script
+        # imported XSSFWorkbook (dead import) and no other pattern matched.
+        # Now recognize both shapes: extract via safeJsonExtract on the
+        # resolved field path, then Java .contains().
+        _resolved_gpath = None
+        _resolved_token = None
+        # Discover JsonSlurper-bound var names (usually `json`)
+        json_vars = set(
+            m2.group("var") for m2 in re.finditer(
+                r'def\s+(?P<var>[A-Za-z_][A-Za-z_0-9]*)\s*=\s*'
+                r'new\s+(?:groovy\.json\.)?JsonSlurper\(\)\s*\.parseText',
+                script))
+        # For any `def X = <json_var>.<path>` intermediate, remember X -> path
+        intermediates: dict = {}
+        for jv in json_vars:
+            for m3 in re.finditer(
+                    rf'def\s+(?P<var>[A-Za-z_][A-Za-z_0-9]*)\s*=\s*'
+                    rf'{re.escape(jv)}\.(?P<path>[A-Za-z_][A-Za-z_0-9.?\[\]]*)',
+                    script):
+                intermediates[m3.group("var")] = m3.group("path")
+        # Try Form A: direct assert on json var.path
+        for jv in json_vars:
+            m = re.search(
+                rf'assert\s+{re.escape(jv)}\.(?P<path>[A-Za-z_][A-Za-z_0-9.?\[\]]*)'
+                rf'\.contains\(\s*["\'](?P<t>[^"\']+)["\']\s*\)', sanitized)
+            if m:
+                _resolved_gpath = m.group("path")
+                _resolved_token = m.group("t")
+                break
+        # Try Form B: assert on intermediate var
+        if _resolved_gpath is None:
+            for iv, ipath in intermediates.items():
+                m = re.search(
+                    rf'assert\s+{re.escape(iv)}\.contains\('
+                    rf'\s*["\'](?P<t>[^"\']+)["\']\s*\)', sanitized)
+                if m:
+                    _resolved_gpath = ipath
+                    _resolved_token = m.group("t")
+                    break
+        if _resolved_gpath and _resolved_token:
+            # Normalize GPath to safeJsonExtract-compatible dotted path:
+            # strip `?.` null-safe operators, and drop simple `[N]` list
+            # indices (safeJsonExtract handles `field.0.subfield` OR the
+            # standard GPath form -- keep the raw path for readability).
+            gpath = _resolved_gpath.replace("?.", ".").strip(".")
+            token = _jlit(_resolved_token)
+            token_preview = _jlit(_resolved_token[:40])
+            return ([
+                f'// [GroovyScriptAssertion] json.{gpath}.contains: {token_preview}',
+                f'String __gpAct_{vsid} = com.ak.api.rest.utilities.RestUtilities'
+                f'.safeJsonExtract({response_var}, "{_jlit(gpath)}");',
+                f'softAssert.assertTrue(__gpAct_{vsid} != null && '
+                f'__gpAct_{vsid}.contains("{token}"), '
+                f'"json.{gpath} contains: {token_preview}");',
             ], "FULL")
 
         # Nothing matched -- WARN at runtime + attach the raw Groovy to

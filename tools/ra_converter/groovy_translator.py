@@ -2124,6 +2124,89 @@ def translate(script: str, response_var_by_step: dict[str, str],
         _mark("jdbc_eachRow")
         consumed = True
 
+    # ---- GAP-1: LocalDate.now().plusX(N).format(...)
+    # -> Java's identical java.time.LocalDate + DateTimeFormatter APIs.
+    # Two Groovy shapes to recognize:
+    #   (a) inline formatter:
+    #       def arrival = LocalDate.now().plusDays(30)
+    #                         .format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
+    #   (b) pre-declared formatter var (the actual shape in this XML):
+    #       def formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
+    #       def arrival   = LocalDate.now().plusDays(10).format(formatter)
+    # Prior emit was a NO-OP -- Properties.ArrivalDate never set -- so
+    # downstream `GET /shop/props/{propCode}?arrivalDate=` sent empty
+    # params and Hilton returned 400. Affects the 3 spenddetail tests
+    # (B2B-7941, B2B-7942 LTA, B2B-7942 H4B) plus several B2B-4484
+    # forceenroll invite-key tests per the 296-case audit.
+    #
+    # Emit inside a scope block so multiple date defs across multiple
+    # Groovy steps don't collide on locals. First scan for formatter
+    # var declarations, then LocalDate expressions that reference them
+    # OR use an inline DateTimeFormatter.ofPattern.
+    _FORMATTER_DECL_RX = re.compile(
+        r'def\s+(?P<name>[A-Za-z_][A-Za-z_0-9]*)\s*=\s*'
+        r'(?:java\.time\.format\.)?DateTimeFormatter\.ofPattern\('
+        r'\s*["\'](?P<fmt>[^"\']+)["\']\s*\)')
+    formatter_by_name: dict[str, str] = {}
+    for m in _FORMATTER_DECL_RX.finditer(script):
+        formatter_by_name[m.group("name")] = m.group("fmt")
+
+    # LocalDate expression accepts BOTH inline ofPattern(...) AND a bare
+    # identifier that we can look up in formatter_by_name.
+    _DATE_ARITH_RX = re.compile(
+        r'def\s+(?P<var>[A-Za-z_][A-Za-z_0-9]*)\s*=\s*'
+        r'(?:java\.time\.)?LocalDate\.now\(\)'
+        r'(?P<chain>(?:\.(?:plus|minus)(?:Days|Weeks|Months|Years)\(\s*-?\d+\s*\))*)'
+        r'\.format\(\s*'
+        r'(?:'
+        r'  (?:java\.time\.format\.)?DateTimeFormatter\.ofPattern\('
+        r'    \s*["\'](?P<inline_fmt>[^"\']+)["\']\s*\)'
+        r'  |'
+        r'  (?P<fmt_ref>[A-Za-z_][A-Za-z_0-9]*)'
+        r')'
+        r'\s*\)', re.VERBOSE)
+    date_arith_vars: list[str] = []
+    for m in _DATE_ARITH_RX.finditer(script):
+        var = m.group("var")
+        chain = m.group("chain")
+        inline_fmt = m.group("inline_fmt")
+        fmt_ref = m.group("fmt_ref")
+        fmt = inline_fmt if inline_fmt else formatter_by_name.get(fmt_ref or "")
+        if not fmt:
+            # Formatter reference not resolvable -- skip this var to
+            # avoid emitting a Java line that references a Groovy-only
+            # identifier. Downstream setPropertyValue will fall through
+            # to the STUB path so the parity gap stays visible.
+            continue
+        fmt_esc = fmt.replace('"', '\\"')
+        # First occurrence starts a scope block for the var declarations.
+        if not date_arith_vars:
+            lines.append('{ // [groovy] LocalDate arithmetic -> java.time')
+        date_arith_vars.append(var)
+        lines.append(
+            f'    String {var} = java.time.LocalDate.now(){chain}'
+            f'.format(java.time.format.DateTimeFormatter.ofPattern("{fmt_esc}"));')
+        lines.append(
+            f'    LOG.info(" .. [groovy date] {var}={{}} (fmt=\\"{fmt_esc}\\")", {var});')
+    if date_arith_vars:
+        # Look ahead for setPropertyValue("<prop>", <var>) that publishes
+        # the computed date into a Properties step -- mirror the pattern
+        # used by the JDBC eachRow emit above.
+        for target_step, field, expr in _find_setproperty_targets(script):
+            if expr in ('""', "''"):
+                continue
+            bare = re.sub(
+                r"(\.toString\(\))?(\.trim\(\))?\s*$", "", expr.strip())
+            for var in date_arith_vars:
+                if bare == var:
+                    lines.append(
+                        f'    TestSupport.putExtracted(ctx, '
+                        f'"{_ctx_key(target_step, field)}", {var});')
+                    break
+        lines.append('}')
+        _mark("groovy_date_arithmetic")
+        consumed = True
+
     # ---- log.info / log.error direct swap (SLF4J-compatible).
     # Uses paren-balanced walker so args with nested calls / GString
     # interpolations don't terminate the match early.
