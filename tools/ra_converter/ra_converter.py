@@ -5345,11 +5345,26 @@ public class {class_name} {{
             """Java expression that reads the expected value from CSV row
             with `fallback_literal` (already _jlit-escaped) as the default.
             Treats empty-string cells as MISSING so an empty CSV cell
-            triggers the fallback (matches user intent: blank = 'no override')."""
+            triggers the fallback (matches user intent: blank = 'no override').
+
+            Wraps the ternary in PlaceholderResolver.resolveAll so any
+            `#Key#` / `@Key@` / `${scope#var}` placeholders in the CSV cell
+            OR the fallback literal get resolved against ctx BEFORE the
+            comparison. Prior emit passed the raw ternary through, so an
+            expected value like `#Properties_Domain#` reached softAssert
+            as the literal 8-char string and always failed against the
+            actual response value like `mary.ryan.com`. Observed in
+            mavenError41.txt UpdateTest Run 4:
+              JsonPath Match: emailDomains[0]
+                expected [#Properties_Domain#] but found [mary.ryan.com]
+            PlaceholderResolver.resolveAll is idempotent on strings with
+            no ref chars, so plain expected values like `pending`,
+            `owner`, `active` pass through unchanged."""
             # ternary keeps this a one-line expression usable inline as an arg
             return (
+                f'PlaceholderResolver.resolveAll('
                 f'(row.get("{col_name}") == null || row.get("{col_name}").isEmpty() '
-                f'? "{fallback_literal}" : row.get("{col_name}"))'
+                f'? "{fallback_literal}" : row.get("{col_name}")), ctx)'
             )
 
         if t == "Valid HTTP Status Codes":
@@ -5624,9 +5639,15 @@ public class {class_name} {{
             lines.append(
                 f'String actual_{v} = com.ak.api.rest.utilities.RestUtilities'
                 f'.safeJsonExtract({response_var}, "{_jlit(jpath)}");')
+            # Wrap expected in PlaceholderResolver.resolveAll so any
+            # #Key#/@Key@/${{scope#var}} in the CSV cell or fallback
+            # gets resolved against ctx before comparison. Same fix as
+            # _row_expr; MessageContent uses a direct ternary here so
+            # needs its own wrapping.
             lines.append(
-                f'String expected_{v} = (row.get("{col_name}") == null || '
-                f'row.get("{col_name}").isEmpty()) ? "{fallback}" : row.get("{col_name}");')
+                f'String expected_{v} = PlaceholderResolver.resolveAll('
+                f'(row.get("{col_name}") == null || '
+                f'row.get("{col_name}").isEmpty()) ? "{fallback}" : row.get("{col_name}"), ctx);')
             op_norm = operator.strip().lower()
             if op_norm == "!=":
                 lines.append(
@@ -5687,9 +5708,12 @@ public class {class_name} {{
             lines.append(
                 f'String actual_{v} = com.ak.api.rest.utilities.RestUtilities'
                 f'.safeJsonExtract({response_var}, "{_jlit(path)}");')
+            # Wrap expected in PlaceholderResolver.resolveAll -- see the
+            # MessageContentAssertion emit for full rationale. Same fix.
             lines.append(
-                f'String expected_{v} = (row.get("{col_name}") == null || '
-                f'row.get("{col_name}").isEmpty()) ? "{fallback}" : row.get("{col_name}");')
+                f'String expected_{v} = PlaceholderResolver.resolveAll('
+                f'(row.get("{col_name}") == null || '
+                f'row.get("{col_name}").isEmpty()) ? "{fallback}" : row.get("{col_name}"), ctx);')
             # GAP-4 fix: DataAndMetadataAssertion.operatorId encoding
             # (from SoapUI's DataAndMetadataAssertion.OperatorType enum).
             # Prior emit only recognized 1/2/3 and defaulted the rest to
