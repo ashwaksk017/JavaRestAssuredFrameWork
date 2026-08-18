@@ -1214,6 +1214,68 @@ def translate(script: str, response_var_by_step: dict[str, str],
         _mark("random_alpha_generator")
         consumed = True
 
+    # ---- SoapUI numeric-random pattern:
+    #   def randomNumber = (Math.random() * 1e15 as long).toString().padLeft(10, '0')
+    #   ... optional sql.execute("INSERT INTO whitelist ...") ...
+    #   propertiesStep.setPropertyValue("travelAgentID", randomNumber)
+    # -> Java: `long __rand = (long)(Math.random() * 1e15);
+    #          String randomNumber = String.format("%010d", __rand);`
+    # 88 occurrences in accountmemberregression XML (all travelAgentID
+    # generation). Prior emit dropped the def entirely -> the downstream
+    # setPropertyValue was skipped by _find_setproperty_targets since
+    # `randomNumber` was undefined -> Properties.travelAgentID stayed at
+    # the static CSV literal (e.g. "38478687"), Hilton stg had that
+    # value already registered from prior test runs, and every POST
+    # /travelagencies with that hardcoded ID returned HTTP 400 "Agency
+    # already exists with travelAgentId" (12 failures observed in
+    # full-run.log).
+    #
+    # Emit inside a scope block; also honor any subsequent
+    # setPropertyValue that references this def-var, matching the same
+    # pattern as jdbc_eachRow / groovy_date_arithmetic. The whitelist
+    # INSERT is handled separately by the sql.execute translator pattern;
+    # if that DB step succeeds we get full parity, if it fails Hilton
+    # may still reject the fresh ID as "not whitelisted" but at least
+    # the error will be different from the current "already exists".
+    _NUMERIC_RANDOM_RX = re.compile(
+        r'def\s+(?P<var>[A-Za-z_][A-Za-z_0-9]*)\s*=\s*'
+        r'\(\s*Math\.random\(\)\s*\*\s*1e(?P<exp>\d+)\s+as\s+long\s*\)'
+        r'\.toString\(\)'
+        r'(?:\.padLeft\(\s*(?P<pad>\d+)\s*,\s*[\'"]0[\'"]\s*\))?')
+    num_random_vars: list[str] = []
+    for m in _NUMERIC_RANDOM_RX.finditer(script):
+        var = m.group("var")
+        exp = m.group("exp")
+        pad = m.group("pad") or "1"
+        if not num_random_vars:
+            lines.append('{ // [groovy] Math.random -> java.lang.Math')
+        num_random_vars.append(var)
+        lines.append(
+            f'    long __rand_{var} = (long)(Math.random() * 1e{exp});')
+        lines.append(
+            f'    String {var} = String.format('
+            f'"%0{pad}d", __rand_{var});')
+        lines.append(
+            f'    LOG.info(" .. [groovy random] {var}={{}} '
+            f'(from Math.random() * 1e{exp}, padLeft {pad})", {var});')
+    if num_random_vars:
+        # Wire subsequent setPropertyValue targets that reference these
+        # vars -- same walker as jdbc_eachRow and date_arithmetic.
+        for target_step, field, expr in _find_setproperty_targets(script):
+            if expr in ('""', "''"):
+                continue
+            bare = re.sub(
+                r"(\.toString\(\))?(\.trim\(\))?\s*$", "", expr.strip())
+            for var in num_random_vars:
+                if bare == var:
+                    lines.append(
+                        f'    TestSupport.putExtracted(ctx, '
+                        f'"{_ctx_key(target_step, field)}", {var});')
+                    break
+        lines.append('}')
+        _mark("groovy_numeric_random")
+        consumed = True
+
     # ---- JDBC (uses paren-balanced walker; safe with nested parens)
     # Guard: a script with multiple mutation JDBC calls must throw
     # SkipException only ONCE -- subsequent throws are unreachable and
