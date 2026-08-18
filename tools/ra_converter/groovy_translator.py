@@ -466,7 +466,12 @@ def _balanced_arg_call(script: str, call_prefix_rx: str) -> list[tuple[str, ...]
 
 
 def _find_setproperty_targets(script: str) -> list[tuple[str, str, str]]:
-    """Find every setPropertyValue("field", expr) with proper paren balance."""
+    """Find every setPropertyValue("field", expr) with proper paren balance.
+    R6-2 fix: also recognizes `context.testCase.setPropertyValue(...)`
+    and `testRunner.testCase.setPropertyValue(...)`. Both write into the
+    test-case scope (SoapUI concept) -- we route them to the canonical
+    "Properties" target step, matching how the emit puts test-case-level
+    properties into ctx under `Properties.<field>`."""
     results: list[tuple[str, str, str]] = []
     # First locate: `def X = testRunner.testCase.getTestStepByName("TARGET_STEP")`
     step_bindings: dict[str, str] = {}
@@ -474,10 +479,26 @@ def _find_setproperty_targets(script: str) -> list[tuple[str, str, str]]:
         r"def\s+(\w+)\s*=\s*testRunner\.testCase\.getTestStepByName\(['\"]([^'\"]+)['\"]\)",
         script):
         step_bindings[m.group(1)] = m.group(2)
-    # Then: `X.setPropertyValue("field", expr)` with paren-balanced expr
-    for (groups, args_body) in _balanced_arg_call(
-            script, r"(\w+)\.setPropertyValue\("):
-        var = groups[0]
+    # Then: `X.setPropertyValue("field", expr)` with paren-balanced expr.
+    # The prefix regex now matches:
+    #   - `<localvar>.setPropertyValue(...)`  (existing)
+    #   - `context.testCase.setPropertyValue(...)`  (R6-2 new)
+    #   - `testRunner.testCase.setPropertyValue(...)`  (R6-2 new)
+    prefix_rx = (
+        r"(?:"
+        r"(\w+)\.setPropertyValue\("
+        r"|"
+        r"(context)\.testCase\.setPropertyValue\("
+        r"|"
+        r"(testRunner)\.testCase\.setPropertyValue\("
+        r")"
+    )
+    for (groups, args_body) in _balanced_arg_call(script, prefix_rx):
+        # groups is a tuple of ALL capture groups (in prefix_rx order).
+        # Exactly one is non-None for each match.
+        var = next((g for g in groups if g), None)
+        if not var:
+            continue
         # Split "field", expr -- but only on the FIRST comma at depth 0
         depth = 0
         split_at = -1
@@ -499,7 +520,13 @@ def _find_setproperty_targets(script: str) -> list[tuple[str, str, str]]:
             continue
         field_lit = args_body[:split_at].strip().strip('"').strip("'")
         expr = args_body[split_at + 1:].strip()
-        target_step = step_bindings.get(var)
+        # Route context.testCase / testRunner.testCase writes to the
+        # canonical "Properties" step -- matches how test-case level
+        # props are exposed in ctx across the framework.
+        if var in ("context", "testRunner"):
+            target_step = "Properties"
+        else:
+            target_step = step_bindings.get(var)
         if target_step:
             results.append((target_step, field_lit, expr))
     return results
@@ -1729,6 +1756,66 @@ def translate(script: str, response_var_by_step: dict[str, str],
                 f'(Db not configured)");',
                 f'}}',
             ])
+            # R6-1 fix: for sql.firstRow, walk the script for
+            # `<groovyVar> = <resultLocal>.<field>` assignments and emit
+            # Java extract + putExtracted for any downstream
+            # setPropertyValue that references those vars. Prior emit
+            # stopped after Db.queryOne, so the invitation_key /
+            # memberDetails.status extract was dropped silently and every
+            # downstream URL that read `{inviteKey}` collapsed to
+            # `/businesses/memberinvites/` -> 404.
+            if method_name == "firstRow":
+                # Find the "result" local Groovy assigned this firstRow to:
+                # `def result = sql.firstRow(...)`. Only need one -- the
+                # emit uses `result_var` (our Java name) for the actual
+                # data, but the Groovy body references its local name.
+                _pref = args_body  # already visited
+                # Scan the whole script for `def <local> = sql.firstRow(<matching>)`.
+                _local_from_result: list[str] = []
+                for _dm in re.finditer(
+                    r"def\s+(?P<local>[A-Za-z_][A-Za-z_0-9]*)\s*=\s*"
+                    r"sql\.firstRow\(",
+                    script):
+                    _local_from_result.append(_dm.group("local"))
+                extracted_vars: dict[str, str] = {}  # groovy_var -> column
+                for _local in _local_from_result:
+                    # Match `<var> = <local>.<field>` (with optional
+                    # `def` for typed locals). Also handles trailing
+                    # .toString().trim() / no chain.
+                    for _am in re.finditer(
+                        rf"(?:def\s+)?(?P<var>[A-Za-z_][A-Za-z_0-9]*)\s*=\s*"
+                        rf"{re.escape(_local)}\.(?P<field>[A-Za-z_][A-Za-z_0-9]*)"
+                        rf"(?:\.toString\(\))?(?:\.trim\(\))?\s*(?:$|[;\r\n])",
+                        script, re.MULTILINE):
+                        extracted_vars[_am.group("var")] = _am.group("field")
+                # Emit the Java extract for each captured var.
+                if extracted_vars:
+                    lines.append('if ({} != null) {{'.format(result_var))
+                    for _gvar, _field in extracted_vars.items():
+                        lines.append(
+                            f'    String {_gvar} = {result_var}.get('
+                            f'"{_field}") == null ? "" : String.valueOf('
+                            f'{result_var}.get("{_field}"));')
+                        lines.append(
+                            f'    LOG.info(" .. jdbc firstRow extract "'
+                            f' + "{_gvar}=<column:{_field}>=" + '
+                            f'({_gvar}.isEmpty() ? "<empty>" : {_gvar}));')
+                    # Look for setPropertyValue targets whose expr is one
+                    # of the extracted vars -- emit putExtracted for
+                    # each. Uses the same _find_setproperty_targets
+                    # helper that now also recognizes
+                    # context.testCase.setPropertyValue (R6-2 fix).
+                    for target_step, field, expr in _find_setproperty_targets(script):
+                        if expr in ('""', "''"):
+                            continue
+                        bare = re.sub(
+                            r"(\.toString\(\))?(\.trim\(\))?\s*$",
+                            "", expr.strip())
+                        if bare in extracted_vars:
+                            lines.append(
+                                f'    TestSupport.putExtracted(ctx, '
+                                f'"{_ctx_key(target_step, field)}", {bare});')
+                    lines.append('}')
             _mark(f"jdbc_{method_name}")
             consumed = True
 

@@ -118,6 +118,17 @@ public final class Config {
         LEGACY_ALIASES.put("xray.baseUrl",         "xray_api_config.api_end_point");
         LEGACY_ALIASES.put("xray.token",           "xray_api_config.token");
         LEGACY_ALIASES.put("xray.testExecutionKey","xray_api_config.testExecutionKey");
+        // R6-4 fix: SoapUI Groovy uses UPPERCASE `${#Project#DB_URL}` etc.
+        // The converter translates these to `Config.get("DB_URL", "")`, but
+        // the framework's actual DB config lives under lowercase `db.url`
+        // etc. (see the `db.url` block above at line 36+). Prior emit
+        // returned empty for all four -- silent no-op on any groovy step
+        // that read `ctx.get("dbUrl")` or similar. Alias-map so both the
+        // SoapUI-style key and the framework-canonical key resolve.
+        LEGACY_ALIASES.put("DB_URL",               "db.url");
+        LEGACY_ALIASES.put("DB_USER",              "db.user");
+        LEGACY_ALIASES.put("DB_PASSWORD",          "db.password");
+        LEGACY_ALIASES.put("DB_DRIVER",            "db.driver");
     }
 
     static {
