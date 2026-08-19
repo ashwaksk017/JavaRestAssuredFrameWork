@@ -1285,6 +1285,169 @@ def translate(script: str, response_var_by_step: dict[str, str],
     # and later `sql.rows`/`sql.firstRow` locals don't collide when a
     # single Groovy script mixes them.
     _row_var_counter = 0
+
+    # ---- Round-13 fix: 1-level constant propagation for Groovy locals
+    # so `sql.execute(<VAR>)` and `sql.executeUpdate(<VAR>)` compose
+    # correctly instead of hitting the "unsafe-Groovy-expression" branch
+    # and throwing SkipException.
+    #
+    # Motivation: the accountmemberregression XML has 49 places where the
+    # SoapUI author writes
+    #     def PropertiesPropertyVal = testRunner.testCase.getTestStepByName("PropertiesaccountID")
+    #     def accountID = PropertiesPropertyVal.getPropertyValue("accountID")
+    #     def sql_query = "update account set status='L' where account_id=" + accountID
+    #     def result = sql.execute(sql_query)
+    # ReadyAPI runs this fine; our converter emitted SkipException
+    # ("Untranslated JDBC mutation") for all 49 -> ~50 test runs lost.
+    #
+    # Recognized shapes (build a symbol table, resolve `sql.execute(V)`):
+    #   (1) def X = testRunner.testCase.getTestStepByName("STEP")
+    #        -> alias X -> step "STEP"
+    #   (2) def Y = X.getPropertyValue("FIELD")  (X from #1)
+    #        -> Y -> Java: TestSupport.ctxGet(ctx, "STEP.FIELD")
+    #   (3) def Z = context.expand( '${STEP#FIELD}' )
+    #        -> Z -> Java: TestSupport.ctxGet(ctx, "STEP.FIELD")
+    #   (4) def Z = context.expand( '${Properties#F}' )
+    #        -> Z -> Java: TestSupport.ctxGet(ctx, "Properties.F")
+    #   (5) def SQL = "..." + Y + "..." + Z + "..."  (each Y/Z from #2/#3)
+    #        -> SQL -> Java: "..." + <expr(Y)> + "..." + <expr(Z)> + "..."
+    #
+    # Any identifier we can't resolve leaves that VAR out of the table;
+    # `sql.execute(<VAR>)` falls back to the existing SkipException path
+    # (safe -- we don't silently emit a broken SQL literal).
+    _step_aliases: dict[str, str] = {}
+    _local_java: dict[str, str] = {}
+
+    for m in re.finditer(
+            r'def\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*testRunner\.testCase\.'
+            r'getTestStepByName\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)',
+            script):
+        _step_aliases[m.group(1)] = m.group(2)
+
+    def _ctx_java(step: str, field: str) -> str:
+        # Same ctx key shape our REST/property-extract emit uses.
+        # `_jlit`-esque escape (backslash + doublequote only).
+        k = f"{step}.{field}".replace("\\", "\\\\").replace('"', '\\"')
+        return f'TestSupport.ctxGet(ctx, "{k}")'
+
+    for m in re.finditer(
+            r'def\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*'
+            r'([A-Za-z_][A-Za-z0-9_]*)\.getPropertyValue\s*\(\s*'
+            r'[\'"]([^\'"]+)[\'"]\s*\)',
+            script):
+        var, alias, field = m.group(1), m.group(2), m.group(3)
+        step = _step_aliases.get(alias)
+        if step:
+            _local_java[var] = _ctx_java(step, field)
+
+    # context.expand('${STEP#FIELD}') or ${Properties#F} -- the two shapes
+    # SoapUI's Groovy loves. Anything with more `#` segments (cross-case
+    # refs, project refs) is left out; those are handled correctly by the
+    # existing #-placeholder rewrite for literal SQL, but as a
+    # symbol-table entry we'd be guessing at ctx layout.
+    for m in re.finditer(
+            r'def\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*context\.expand\s*\(\s*'
+            r'[\'"]\$\{([A-Za-z_][A-Za-z0-9_]*)#([A-Za-z0-9_.-]+)\}[\'"]\s*\)',
+            script):
+        var, step, field = m.group(1), m.group(2), m.group(3)
+        _local_java[var] = _ctx_java(step, field)
+
+    def _compose_java_from_concat(rhs: str) -> str | None:
+        """Split a Groovy string-concat expression at top-level `+`,
+        then rebuild it as a Java string expression -- literal chunks
+        stay quoted with escapes, bare identifiers are replaced by
+        their `_local_java` mapping. Returns None if any identifier
+        chunk can't be resolved.
+
+        Also expands `${VAR}` GString interpolations embedded INSIDE a
+        double-quoted literal chunk -- so pattern B (e.g.
+        `sql.executeUpdate("UPDATE ... web_site='${domain}'")`) works
+        even though the SQL is a single literal from the parser's POV.
+        """
+        parts: list[str] = []
+        depth = 0
+        in_str = None
+        buf = ""
+        for k, ch in enumerate(rhs):
+            if in_str:
+                buf += ch
+                if ch == in_str and rhs[k-1:k] != "\\":
+                    in_str = None
+            elif ch in ('"', "'"):
+                in_str = ch
+                buf += ch
+            elif ch in "([":
+                depth += 1
+                buf += ch
+            elif ch in ")]":
+                depth -= 1
+                buf += ch
+            elif ch == "+" and depth == 0:
+                parts.append(buf.strip())
+                buf = ""
+            else:
+                buf += ch
+        if buf.strip():
+            parts.append(buf.strip())
+
+        out: list[str] = []
+        for p in parts:
+            if not p:
+                continue
+            if (p.startswith('"') and p.endswith('"')) or \
+                    (p.startswith("'") and p.endswith("'")):
+                inner = p[1:-1]
+                # GString expansion: '...${var}...' -> string chunks + java
+                # expr for each `${var}` where var is in _local_java. Any
+                # unresolved var forces this whole rhs to be un-composable.
+                pos = 0
+                subparts: list[str] = []
+                aborted = False
+                for gm in re.finditer(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}', inner):
+                    lit = inner[pos:gm.start()]
+                    if lit:
+                        subparts.append('"' + lit.replace("\\", "\\\\").replace('"', '\\"') + '"')
+                    ref = gm.group(1)
+                    if ref not in _local_java:
+                        aborted = True
+                        break
+                    subparts.append(_local_java[ref])
+                    pos = gm.end()
+                if aborted:
+                    return None
+                tail = inner[pos:]
+                if tail:
+                    subparts.append('"' + tail.replace("\\", "\\\\").replace('"', '\\"') + '"')
+                if not subparts:
+                    subparts = ['""']
+                out.append(" + ".join(subparts))
+            elif re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", p):
+                if p not in _local_java:
+                    return None
+                out.append(_local_java[p])
+            else:
+                # Something more complex (function call, arithmetic).
+                # Not attempted -- fall back to Skip.
+                return None
+        return " + ".join(out) if out else None
+
+    # Third pass: `def SQL = "..." + X + "..."` -- allows RHS to reference
+    # earlier symbol-table entries. Multi-line-friendly: the RHS is read
+    # up to the next `\n` that isn't inside a quoted string.
+    _DEF_ASSIGN_RX = re.compile(
+        r'(?m)^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$')
+    for m in _DEF_ASSIGN_RX.finditer(script):
+        var, rhs = m.group(1), m.group(2).strip()
+        if var in _local_java:
+            continue  # already resolved by an earlier pattern above
+        # Only try composed strings (needs top-level `+` or a quoted
+        # start) -- skip everything else so we don't shadow existing
+        # patterns.
+        if not (rhs.startswith('"') or rhs.startswith("'")):
+            continue
+        composed = _compose_java_from_concat(rhs)
+        if composed:
+            _local_java[var] = composed
     # `sql.executeUpdate("...")` is the same shape as sql.execute for
     # our purposes -- both dispatch to Db.execute (INSERT/UPDATE/DELETE)
     # or Db.queryAll (SELECT) based on the SELECT detection below. The
@@ -1437,6 +1600,41 @@ def translate(script: str, response_var_by_step: dict[str, str],
                 elif ch == "+" and depth == 0:
                     return True
             return False
+        # Round-13: if the query is a bare identifier that resolves via
+        # the symbol table we just built, emit direct Java concat and
+        # short-circuit to the working Db.execute emit. Skip the whole
+        # "quoted literal" analysis below -- we already have Java in hand.
+        # Same guards as the literal path (Db.isConfigured + try/catch +
+        # unsafeSqlReason check) so a malformed composition still yields
+        # a clean WARN rather than a raw driver exception.
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", query_expr) \
+                and query_expr in _local_java:
+            composed_java = _local_java[query_expr]
+            preview_c = (query_expr + " -> composed")[:80].replace("*/", "* /")
+            lines.extend([
+                f'// [translated] JDBC execute (from Groovy local `{query_expr}`)',
+                f'if (Db.isConfigured()) {{',
+                f'    try {{',
+                f'        String __jdbcSql = {composed_java};',
+                f'        String __jdbcReason = com.ak.api.db.Db.unsafeSqlReason(__jdbcSql);',
+                f'        if (__jdbcReason != null) {{',
+                f'            LOG.warn(" .. jdbc SKIPPED ({{}}): {{}}", '
+                f'__jdbcReason, __jdbcSql);',
+                f'        }} else {{',
+                f'            LOG.info(" .. jdbc SQL: {{}}", __jdbcSql);',
+                f'            Db.execute(__jdbcSql);',
+                f'        }}',
+                f'    }} catch (Exception __jdbcEx) {{',
+                f'        LOG.warn("JDBC execute failed: {{}}", __jdbcEx.getMessage());',
+                f'    }}',
+                f'}} else {{',
+                f'    LOG.warn("Skipping JDBC step (Db not configured): local `{query_expr}` -> composed SQL");',
+                f'}}',
+            ])
+            _mark("jdbc_execute_composed_local")
+            consumed = True
+            continue
+
         looks_like_str_double = len(query_expr) >= 2 and query_expr[0] == '"' and query_expr[-1] == '"'
         looks_like_str_single = len(query_expr) >= 2 and query_expr[0] == "'" and query_expr[-1] == "'"
         has_plus = _has_top_level_plus(query_expr)

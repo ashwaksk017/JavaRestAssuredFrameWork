@@ -24,6 +24,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 
+import org.testng.IConfigurationListener;
 import org.testng.ISuite;
 import org.testng.ISuiteListener;
 import org.testng.ITestContext;
@@ -39,7 +40,7 @@ import com.aventstack.extentreports.markuputils.MarkupHelper;
 import com.aventstack.extentreports.reporter.ExtentSparkReporter;
 import com.aventstack.extentreports.reporter.configuration.Theme;
 
-public class ExtentReportListener implements ITestListener, ISuiteListener {
+public class ExtentReportListener implements ITestListener, ISuiteListener, IConfigurationListener {
 
     private static final String REPORT_DIR = "extent-reports";
     private static ExtentReports extent;
@@ -143,6 +144,59 @@ public class ExtentReportListener implements ITestListener, ISuiteListener {
         if (extent != null) {
             extent.flush();
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // @AfterMethod-failure hook: keep Extent's pass/fail totals honest.
+    //
+    // BaseApiTest.assertAll() is wired as an @AfterMethod. When soft
+    // assertions have failed, it throws AFTER the @Test method has already
+    // returned "success" -- so TestNG has ALREADY fired onTestSuccess and
+    // ExtentReportListener has ALREADY stamped the node "pass". The
+    // subsequent throw fires onConfigurationFailure (not onTestFailure),
+    // which no built-in ExtentReports listener honors.
+    //
+    // Effect on the report if we do nothing: dashboard shows ~200/302 as
+    // "passed" when Allure and testng-results.xml both correctly show
+    // ~50-60 more failures. The Extent HTML is *self-consistent* -- open
+    // any listed "pass" and you can see the exchange bodies -- but the
+    // top-of-report count reads too optimistic and stakeholders trust it.
+    //
+    // Fix: when TestNG reports a configuration failure whose method is a
+    // known assert-flush hook (naming convention: `assertAll` in
+    // BaseApiTest), demote the CURRENT test node from pass to fail and
+    // attach the thrown assertion. Idempotent -- Extent tolerates a
+    // second .fail() on an already-stamped node, and the assertion text
+    // supersedes the prior "Passed" marker in the report UI.
+    //
+    // Not caught by demote-on-any-config-failure: @BeforeMethod failures
+    // (setup crashes) already flow through onTestSkipped correctly.
+    // Restricting the demote to `assertAll` keeps the semantic clean.
+    // ---------------------------------------------------------------------
+    @Override
+    public void onConfigurationFailure(ITestResult result) {
+        if (extent == null) return;
+        String cfgMethod = result.getMethod() == null
+                ? "" : result.getMethod().getMethodName();
+        if (!"assertAll".equals(cfgMethod)) return;
+
+        ExtentTest t = currentTest.get();
+        if (t == null) return;
+        t.fail("Failed at @AfterMethod assertAll(): "
+                + safeMessage(result.getThrowable()));
+        if (result.getThrowable() != null) {
+            t.fail(result.getThrowable());
+        }
+    }
+
+    @Override
+    public void onConfigurationSuccess(ITestResult result) {
+        // no-op
+    }
+
+    @Override
+    public void onConfigurationSkip(ITestResult result) {
+        // no-op
     }
 
     // ---------------------------------------------------------------------
