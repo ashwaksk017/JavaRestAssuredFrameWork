@@ -1925,6 +1925,15 @@ _CROSS_TC_RX = re.compile(
 # res.getHeader for Headers).
 _STEP_RESPONSE_RX = re.compile(
     r"\$\{([A-Za-z0-9_ -]+?)#Response(AsXml|AsJson|Headers|AsHtml)?#([^}]+)\}")
+# P3: SoapUI's `${STEP#RawRequest#JSONPATH}` reads a value from a prior
+# step's RESOLVED REQUEST PAYLOAD (typical PATCH/PUT round-trip
+# verification: "did the field I sent come back in the response"). We
+# match this before _STEP_PROP_RX runs (which would grab up to the first
+# `#` and mis-slice the JSONPath argument), and route matching refs
+# through a companion resolver that reads from the cached payload
+# variable emitted per REST step.
+_STEP_RAWREQUEST_RX = re.compile(
+    r"\$\{([A-Za-z0-9_ -]+?)#RawRequest#([^}]+)\}")
 _STEP_PROP_RX = re.compile(r"\$\{([A-Za-z0-9_ -]+?)#([A-Za-z0-9_.-]+)\}")
 # Bare `${var}` -- only match identifiers that AREN'T already caught
 # by one of the scoped patterns above. SoapUI uses this for TestCase-
@@ -2108,11 +2117,38 @@ def soapui_body_to_placeholders(body: str) -> tuple[str, list[str]]:
         else:
             # Default Response / AsJson: strip JsonPath syntax to bare
             # field name matching _translate_soapui_jsonpath.
-            field = raw_path.lstrip("$").lstrip(".")
+            # Round-11 Gap #1 fix: SoapUI XML often stores single quotes
+            # escaped as `\'` (`$[\\'memberId\\']`) which reaches us
+            # verbatim after XML parse. The bracket-quote regex below
+            # requires literal `'` and DOESN'T match `\'` -- so the
+            # backslash-quote pair leaked into the emitted ctx key
+            # (`http_request_pending_200_Response_[\\'memberId\\']`)
+            # and into safeJsonExtract's path arg, both of which then
+            # returned empty and 16 downstream refs stayed unresolved
+            # in full-run1.log. Unescape first so the regex sees plain
+            # `['memberId']` and strips cleanly to `memberId`.
+            field = raw_path.replace("\\'", "'").replace('\\"', '"')
+            field = field.lstrip("$").lstrip(".")
             field = re.sub(r"\['?([^'\]]+)'?\]", r".\1", field)
             field = re.sub(r'\["?([^"\]]+)"?\]', r".\1", field)
             field = field.lstrip(".").replace(".", "_").replace("-", "_")
         var = f"{step_id}_Response_{field}" if field else f"{step_id}_Response"
+        placeholders.append(var)
+        return f"#{var}#"
+    def _step_rawrequest(m):
+        # P3: `${STEP#RawRequest#JSONPATH}` -- reads from the RESOLVED
+        # request payload of a prior step. Emit shape mirrors
+        # `_step_response`: `#STEP_RawRequest_FIELD#` placeholder that
+        # the auto-extract pass will populate from
+        # `<step>PayloadResolved` (String local) via
+        # RestUtilities.safeJsonExtractFromString.
+        step_id = re.sub(r"[^A-Za-z0-9_]", "_", m.group(1).strip())
+        raw_path = m.group(2).strip()
+        field = raw_path.lstrip("$").lstrip(".")
+        field = re.sub(r"\['?([^'\]]+)'?\]", r".\1", field)
+        field = re.sub(r'\["?([^"\]]+)"?\]', r".\1", field)
+        field = field.lstrip(".").replace(".", "_").replace("-", "_")
+        var = f"{step_id}_RawRequest_{field}" if field else f"{step_id}_RawRequest"
         placeholders.append(var)
         return f"#{var}#"
     def _bare(m):
@@ -2129,10 +2165,13 @@ def soapui_body_to_placeholders(body: str) -> tuple[str, list[str]]:
 
     translated = _PROJ_PROP_RX.sub(_proj, body or "")
     translated = _SCOPE_PROP_RX.sub(_scoped, translated)
-    # STEP_RESPONSE must run BEFORE STEP_PROP because both start with
-    # `${<step>#`; STEP_PROP would match up to the first `#` and eat the
-    # `Response` as the property name, giving the wrong translation.
+    # STEP_RESPONSE and STEP_RAWREQUEST must run BEFORE STEP_PROP because
+    # all three start with `${<step>#`; STEP_PROP would match up to the
+    # first `#` and eat the `Response`/`RawRequest` as the property name,
+    # giving the wrong translation. Order between RESPONSE and
+    # RAWREQUEST doesn't matter (regex mutually exclusive).
     translated = _STEP_RESPONSE_RX.sub(_step_response, translated)
+    translated = _STEP_RAWREQUEST_RX.sub(_step_rawrequest, translated)
     translated = _STEP_PROP_RX.sub(_step, translated)
     translated = _GROOVY_EXPR_RX.sub(_groovy, translated)
     # Bare ${var} runs LAST so scoped patterns get first pass.
@@ -3298,15 +3337,20 @@ def _jsonpath_to_gpath(path: str) -> str:
     Idempotent: paths already in GPath form pass through untouched."""
     if not path:
         return path
+    # Groovy single-quoted string literals in the SoapUI XML often
+    # carry escaped quotes (`$[\\'x\\']`) that reach us verbatim as
+    # `$[\\'x\\']` after XML parsing. Unescape BEFORE the bracket-
+    # regex or the strip silently misses and leaves `[\\'x\\']` in
+    # the output path. Same technique as _translate_soapui_jsonpath.
+    p = path.replace("\\'", "'").replace('\\"', '"')
     # Bail out early on unsupported syntax so we don't mistranslate --
     # let the caller notice a passthrough and either fail loud at
     # runtime or hand-fix. Detection is intentionally conservative.
-    if (".." in path
-            or "[?(" in path
-            or re.search(r"\[[^]]*,[^]]*\]", path)  # union: [a,b] or ['a','b']
-            or re.search(r"\[\([^)]*\)\]", path)):  # script index: [(expr)]
-        return path  # leave unchanged; runtime will surface the issue
-    p = path
+    if (".." in p
+            or "[?(" in p
+            or re.search(r"\[[^]]*,[^]]*\]", p)  # union: [a,b] or ['a','b']
+            or re.search(r"\[\([^)]*\)\]", p)):  # script index: [(expr)]
+        return p  # leave unchanged; runtime will surface the issue
     # Strip leading $ (root indicator; GPath doesn't use it)
     if p.startswith("$"):
         p = p[1:]
@@ -3407,6 +3451,18 @@ def _assert_element_cols(a: "Assertion", step_name: str) -> list[tuple[str, str]
         col = (f"expected_{sanitize_identifier(step_name)}"
                f"_{prefix}_{sanitize_identifier(elem_name)}")
         val = el.get("expectedValue", "") or el.get("content", "")
+        # F5 fix: strip surrounding JSON string quotes when the SoapUI
+        # expectedValue is a quoted string literal (e.g. `"active"`).
+        # Same rationale as the JsonPath Match strip in
+        # _assert_default_value at line ~3435. Prior emit wrote the
+        # quoted form to CSV -> runtime compared `"\"X\""` vs actual
+        # `"X"` -> tautological mismatch. Skips strip when content is
+        # a JSON object/array literal (starts with `{`/`[`).
+        if (len(val) >= 2
+                and ((val[0] == '"' and val[-1] == '"')
+                     or (val[0] == "'" and val[-1] == "'"))
+                and not val[1:-1].startswith(("{", "["))):
+            val = val[1:-1]
         out.append((col, val))
     return out
 
@@ -4094,6 +4150,27 @@ public class {class_name} {{
                 lines.append(
                     f'TestSupport.putIfNonEmpty(ctx, "{ctx_key}", '
                     f'TestSupport.testData(row, "{ctx_key}"));')
+                # Round-11 Gap #2 fix: PropertiesStep XML declares a
+                # default `<con:value>` per property (e.g. `hilton-member-id
+                # = 226793`, `accountID = 2000226248`). Prior emit ONLY
+                # seeded via testData(row, key) which returns "" when
+                # neither CSV nor Config carries the key -- the SoapUI
+                # XML default was silently dropped, so any downstream
+                # `${PropertiesDetails#hilton-member-id}` ref found ctx
+                # empty (or holding a stale value) and cascaded 42
+                # unresolved placeholder failures across the run.
+                #
+                # Fix: after the testData seed, plant the XML default
+                # as a LAST-RESORT via putIfAbsent -- won't overwrite a
+                # live extract from a Groovy step that ran earlier and
+                # won't clobber a per-row CSV override, but gives the
+                # SoapUI XML shape a fallback when everything else is
+                # empty. This mirrors SoapUI's own runtime where the
+                # Properties step's `<con:value>` is a starting point
+                # that later steps may replace.
+                lines.append(
+                    f'TestSupport.putIfNonEmpty(ctx, "{ctx_key}", '
+                    f'"{_jlit(val)}");')
         elif isinstance(step, DataSourceStep):
             lines.append(
                 f'// [datasource step] {step.step_name} -- iteration comes '
@@ -5277,7 +5354,11 @@ public class {class_name} {{
                 for _m in _STEP_RESPONSE_RX.finditer(_blob):
                     _src_step = _m.group(1).strip()
                     _variant = _m.group(2) or ""
-                    _path_raw = _m.group(3).strip()
+                    # Round-11 Gap #1 fix: unescape XML-escaped
+                    # backslash-quotes so the field-normalization
+                    # regexes below actually match `['x']` shapes.
+                    _path_raw = _m.group(3).strip().replace(
+                        "\\'", "'").replace('\\"', '"')
                     _src_sanitized = re.sub(
                         r"[^A-Za-z0-9_]", "_", _src_step)
                     if _src_sanitized != _current_sanitized:
@@ -5333,6 +5414,91 @@ public class {class_name} {{
                             f'TestSupport.putExtracted(ctx, "{_ph_key}", '
                             f'com.ak.api.rest.utilities.RestUtilities'
                             f'.safeJsonExtract({response_var}, "{_jlit(_field)}"));')
+
+            # P3 auto-extract: same shape as Response above, but for
+            # `${STEP#RawRequest#JSONPATH}` cross-step refs. Source is
+            # the RESOLVED request payload (Java String local) not the
+            # response body. Only fires for THIS step if a payload var
+            # is in scope (POST/PUT/PATCH with a body). Retrieval uses
+            # safeJsonExtractFromString since JsonPath.from(String) is
+            # the RestAssured entry point for a raw JSON string.
+            #
+            # F1 fix: use base+suf naming to match the payload var
+            # declared at line ~4935 (`{base}Payload{suf}Resolved`) --
+            # `_step_suffix` returns "" for the first occurrence and
+            # "_2", "_3", ... for repeated step names in the same
+            # class. Using sanitize_identifier(step.step_name) alone
+            # would miss the suffix and break javac on any test that
+            # has the same step name twice (common in clusters).
+            _payload_var_resolved = None
+            if verb_expects_body and has_source_body and self._resolver_emitted:
+                _payload_var_resolved = f"{base}Payload{suf}Resolved"
+            _needed_rawreq: dict[str, str] = {}
+            if _step_obj is not None and _payload_var_resolved:
+                for _st in _step_obj.steps:
+                    _texts: list[str] = []
+                    if isinstance(_st, RestStep):
+                        _texts.append(_st.request_body or "")
+                        for _v in (getattr(_st, "query_params", None) or {}).values():
+                            _texts.append(_v or "")
+                        for _v in (getattr(_st, "headers", None) or {}).values():
+                            _texts.append(_v or "")
+                        for _v in (getattr(_st, "path_params", None) or {}).values():
+                            _texts.append(_v or "")
+                    elif isinstance(_st, GroovyStep):
+                        _texts.append(_st.script or "")
+                    _blob = "\n".join(_texts)
+                    if not _blob:
+                        continue
+                    for _m in _STEP_RAWREQUEST_RX.finditer(_blob):
+                        _src_step = _m.group(1).strip()
+                        _path_raw = _m.group(2).strip()
+                        _src_sanitized = re.sub(
+                            r"[^A-Za-z0-9_]", "_", _src_step)
+                        if _src_sanitized != _current_sanitized:
+                            continue
+                        # Same sanitization as _step_rawrequest in
+                        # soapui_body_to_placeholders so keys match.
+                        _field_norm = _path_raw.lstrip("$").lstrip(".")
+                        _field_norm = re.sub(
+                            r"\['?([^'\]]+)'?\]", r".\1", _field_norm)
+                        _field_norm = re.sub(
+                            r'\["?([^"\]]+)"?\]', r".\1", _field_norm)
+                        _field_key = _field_norm.lstrip(".").replace(
+                            ".", "_").replace("-", "_")
+                        _ph_key = (
+                            f"{_src_sanitized}_RawRequest_{_field_key}"
+                            if _field_key else f"{_src_sanitized}_RawRequest")
+                        # F2 fix: translate the SoapUI JSONPath to
+                        # RestAssured GPath form before passing to
+                        # JsonPath.getString. SoapUI stores paths as
+                        # `$[0]['value']` / `$['emailAddress']` --
+                        # RestAssured JsonPath expects `[0].value` /
+                        # `emailAddress` (dotted GPath, no `$.` prefix,
+                        # no `['x']` bracket-quote syntax). Prior emit
+                        # passed the raw SoapUI path -> getString
+                        # returned null -> "" -> silent data loss.
+                        # `_jsonpath_to_gpath` (line ~3309) is the
+                        # canonical helper for this conversion (handles
+                        # $['a']['b'].c -> a.b.c, $[*]['x'] -> [*].x,
+                        # backslash-escaped quotes from XML, etc.).
+                        _gpath = _jsonpath_to_gpath(_path_raw)
+                        _needed_rawreq[_ph_key] = _gpath
+            if _needed_rawreq:
+                lines.append(
+                    f'// [auto-extract-rawreq] populate ctx with '
+                    f'{len(_needed_rawreq)} cross-step RawRequest ref(s)')
+                for _ph_key, _gpath in _needed_rawreq.items():
+                    if _ph_key.endswith("_RawRequest") or not _gpath:
+                        lines.append(
+                            f'TestSupport.putExtracted(ctx, "{_ph_key}", '
+                            f'{_payload_var_resolved});')
+                    else:
+                        lines.append(
+                            f'TestSupport.putExtracted(ctx, "{_ph_key}", '
+                            f'com.ak.api.rest.utilities.RestUtilities'
+                            f'.safeJsonExtractFromString('
+                            f'{_payload_var_resolved}, "{_jlit(_gpath)}"));')
 
         # Advance the cluster REST-step position so the next call reads
         # assertions from position+1.

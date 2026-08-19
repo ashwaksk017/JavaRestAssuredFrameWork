@@ -587,6 +587,30 @@ public class RestUtilities {
     }
 
     /**
+     * P3 fix: safe JSON-path extract from a raw JSON STRING (not a Response).
+     * Powers `${STEP#RawRequest#JSONPATH}` cross-step refs, where the source
+     * of truth is the RESOLVED REQUEST PAYLOAD (a String local in the
+     * emitted @Test method) rather than a Response body. RestAssured's
+     * JsonPath supports being seeded from a raw String -- we wrap it in
+     * the same defensive envelope as {@link #safeJsonExtract} so an empty
+     * / non-JSON / bad-path input degrades to {@code ""} rather than
+     * aborting the whole test.
+     */
+    public static String safeJsonExtractFromString(String jsonText, String jsonPath) {
+        if (jsonText == null || jsonText.isEmpty()) return "";
+        try {
+            io.restassured.path.json.JsonPath jp =
+                    io.restassured.path.json.JsonPath.from(jsonText);
+            String v = jp.getString(jsonPath);
+            return v == null ? "" : v;
+        } catch (Exception e) {
+            LOG.warn("safeJsonExtractFromString(path='{}') failed: {}",
+                    jsonPath, e.getMessage());
+            return "";
+        }
+    }
+
+    /**
      * Safe JSON-path Object lookup for use in {@code softAssert.assertNotNull(...)}
      * checks and count assertions. Returns null on any parse failure so the
      * assertion fails cleanly ("field not present") instead of the whole
