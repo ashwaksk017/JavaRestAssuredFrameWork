@@ -108,9 +108,28 @@ public final class FakeData {
         return f().internet().emailAddress();
     }
 
-    /** A username-safe token (lowercase alphanumeric + underscores). */
+    /** A username-safe token (lowercase alphanumeric + underscores).
+     *
+     *  Round-12 fix: previously delegated to {@code Datafaker.internet()
+     *  .username()} which draws from a BOUNDED corpus (~500 first-names
+     *  × ~500 last-names dictionary). Against a long-lived stg tenant
+     *  (Hilton) that accumulates prior test users, the corpus overlap
+     *  caused 88 x HTTP 409 CONFLICT on {@code MemberHHonorsEnroll} in
+     *  a single 30-min run -- names like {@code quiana.schoen} kept
+     *  repeating across tests. The SoapUI reference project's
+     *  {@code DataGenInput} Groovy uses {@code new Random()} to build
+     *  a 4-char lowercase string (26^4 = 457K) plus a tearDown JDBC
+     *  cleanup between runs -- we don't have the cleanup so we need
+     *  more entropy up front.
+     *
+     *  Switched to {@code regexify("[a-z]{6}")} for 26^6 ~= 309M
+     *  combinations. That's ~700x SoapUI's per-name entropy and enough
+     *  to make same-tenant collisions vanishingly rare across the
+     *  test-run cadence we expect. Format stays lowercase-alpha so
+     *  Hilton stg's username-shape validators keep accepting it.
+     */
     public static String username() {
-        return f().internet().username();
+        return f().regexify("[a-z]{6}");
     }
 
     /** A firstName + lastName. */

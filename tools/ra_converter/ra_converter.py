@@ -5069,26 +5069,59 @@ public class {class_name} {{
                     f'{_jlit(step.auth_profile.get("profile_name", ""))}"')
                 token_expr = f'"Bearer {tok}"'
             elif atype.lower() in ("no authorization", "none", ""):
-                # Bug #6: SoapUI's "No Authorization" profile explicitly
-                # suppresses the Authorization header. Prior emit fell to
-                # the else branch which silently reused the ctx bearer
-                # token -- so any negative test designed to prove 401/403
-                # on missing auth actually sent a valid bearer and got a
-                # 200. Emit empty token so no Authorization header is
-                # sent, matching SoapUI's actual wire behavior.
-                lines.append(
-                    f'// [auth override] step declares "No Authorization" -- '
-                    f'sending WITHOUT bearer token so negative auth tests '
-                    f'get the intended 401/403 from the server.')
-                token_expr = '""'
+                # Bug #6 (round 12 revision): SoapUI's `authType=No
+                # Authorization` governs the AUTH PROFILE injector
+                # (Basic/OAuth credential machinery) -- it does NOT
+                # strip user-declared Authorization HEADERS. Prior emit
+                # (commit e90a23d) blanketly emitted `token_expr = '""'`
+                # and only re-checked step.headers with a case-SENSITIVE
+                # "Authorization" key. In this XML, positive tests like
+                # `CreateAccount_200` declare `<con:entry key=
+                # "authorization" value="${tokenId#GeneratedTokenID}"/>`
+                # (LOWERCASE `authorization`), which our Bug #2 parser
+                # routes into step.headers as-is. The case-sensitive
+                # check missed it, `token_expr` stayed `""`, and the
+                # server returned HTTP 401 "Missing Credentials" on 24
+                # POSITIVE tests. ReadyAPI handles this correctly
+                # because at runtime SoapUI wires user-declared header
+                # parameters BEFORE consulting the auth profile.
+                #
+                # Fix: mark as no-auth ONLY if no step-level Authorization
+                # parameter is present (any case). If one IS present, the
+                # explicit header wins -- fall through to the check
+                # below which now scans case-insensitively.
+                _has_explicit_auth = any(
+                    (k or "").lower() == "authorization"
+                    for k in (step.headers or {}))
+                if _has_explicit_auth:
+                    lines.append(
+                        f'// [auth override] step declares "No Authorization" '
+                        f'PROFILE but ALSO carries an explicit `authorization` '
+                        f'header parameter -- honoring the explicit header.')
+                    # token_expr stays at the default ctx lookup; the
+                    # explicit-header check below overwrites it.
+                else:
+                    lines.append(
+                        f'// [auth override] step declares "No Authorization" -- '
+                        f'sending WITHOUT bearer token so negative auth tests '
+                        f'get the intended 401/403 from the server.')
+                    token_expr = '""'
             else:
                 lines.append(
                     f'// [auth override] step declares "'
                     f'{_jlit(atype or step.auth_profile.get("profile_name", ""))}" '
                     f'auth profile -- not auto-translated; falling back to '
                     f'ctx token. Wire up manually if needed.')
-        if "Authorization" in step.headers:
-            token_expr = soapui_expr_to_java(step.headers["Authorization"])
+        # Round-12 fix: case-INSENSITIVE Authorization header lookup.
+        # SoapUI's `<con:entry key="authorization" ...>` is lowercase;
+        # prior `"Authorization" in step.headers` was case-sensitive
+        # and missed it. Same table for both branches: use whichever
+        # cased key the XML actually declared.
+        _auth_key = next(
+            (k for k in (step.headers or {})
+             if (k or "").lower() == "authorization"), None)
+        if _auth_key:
+            token_expr = soapui_expr_to_java(step.headers[_auth_key])
 
         # Use the client's ACTUAL method name (populated by emit_service_client),
         # not a re-derived guess -- fixes the "client.method1()" call bug.
