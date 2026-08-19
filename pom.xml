@@ -239,4 +239,53 @@
             </plugin>
         </plugins>
     </build>
+
+    <!-- Opt-in retry-dedup profile: strips old retry attempts from
+         target/allure-results/ so the Allure Overview headline count
+         reflects UNIQUE tests, not raw invocations. See
+         tools/allure_dedup_retries.py for the full rationale + trade-
+         off (retry telemetry is lost). Wire into any allure command:
+             mvn test "-DsuiteXmlFile=Suites/Foo.xml" -Pdedup
+             mvn allure:serve -Pdedup
+         The dedup runs in the `verify` phase (after `test`, before
+         allure:report / allure:serve, which sit outside the default
+         lifecycle) so it fires exactly once per Maven invocation. -->
+    <profiles>
+        <profile>
+            <id>dedup</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.1.1</version>
+                        <executions>
+                            <execution>
+                                <id>allure-dedup-retries</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>python</executable>
+                                    <arguments>
+                                        <argument>${project.basedir}/tools/allure_dedup_retries.py</argument>
+                                        <argument>${project.build.directory}/allure-results</argument>
+                                    </arguments>
+                                    <!-- Report Allure-results absence as a
+                                         no-op, not a build failure. Users
+                                         invoking allure:serve directly (skip
+                                         test phase) will hit this. -->
+                                    <successCodes>
+                                        <successCode>0</successCode>
+                                        <successCode>2</successCode>
+                                    </successCodes>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>
