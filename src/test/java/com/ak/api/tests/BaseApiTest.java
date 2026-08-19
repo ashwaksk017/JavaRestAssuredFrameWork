@@ -141,8 +141,20 @@ public abstract class BaseApiTest {
         // ReportBuffer that the Extent listener drains at test end.
         // replaceFiltersWith (not filters) so a re-invocation would REPLACE
         // rather than APPEND -- second layer of defense against duplication.
+        //
+        // Round-13 fix: AllureRestAssured's default attachment names are the
+        // HTTP method for the request ("POST", "GET") and the response status
+        // line for the response ("HTTP/1.1 200 OK"). In the Allure UI's test-
+        // body tree that reads like a raw curl trace and buries the fact that
+        // it IS the response body. Rename to plain "Request" / "Response" so
+        // a stakeholder scanning the tree sees what each attachment holds
+        // without having to click it open first. The status line is still
+        // visible inside the attachment (first line of the body preview).
+        AllureRestAssured allureFilter = new AllureRestAssured()
+                .setRequestAttachmentName("Request")
+                .setResponseAttachmentName("Response");
         RestAssured.replaceFiltersWith(
-                new AllureRestAssured(),
+                allureFilter,
                 new RestAssuredRecordingFilter()
         );
 
