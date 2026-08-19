@@ -3433,7 +3433,26 @@ def _assert_default_value(a: "Assertion") -> str:
     if t == "Invalid HTTP Status Codes":
         return (cfg.get("codes", "") or "").strip()
     if t in ("JsonPath Match", "JsonPath RegEx Match"):
-        return (cfg.get("content", "") or "").strip()
+        # P1 fix (R10-2 completion): strip surrounding JSON string
+        # quotes from the SoapUI content before writing to CSV.
+        # SoapUI XML stores string-valued expected as `"active"` etc.
+        # -- if we put the quoted form in the CSV cell, the runtime
+        # `row.get(col)` reads the quoted string and softAssert
+        # compares `"\"active\""` (6 chars) vs `"active"` (6 chars).
+        # 384 residual failures observed in full-run1.log:
+        #   JsonPath Match: status expected ["active"] but found [active]
+        #   JsonPath Match: role expected ["owner"] but found [owner]
+        # Prior R10-2 fix stripped quotes at the FALLBACK path only;
+        # this completes the fix at CSV EMIT so both CSV-override and
+        # fallback take the unquoted form. Skips strip when value is
+        # a JSON object/array literal (starts with `{`/`[`).
+        _raw = (cfg.get("content", "") or "").strip()
+        if (len(_raw) >= 2
+                and ((_raw[0] == '"' and _raw[-1] == '"')
+                     or (_raw[0] == "'" and _raw[-1] == "'"))
+                and not _raw[1:-1].startswith(("{", "["))):
+            _raw = _raw[1:-1]
+        return _raw
     if t == "JsonPath Existence Match":
         return "true"
     if t == "JsonPath Count":

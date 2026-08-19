@@ -124,6 +124,35 @@ public final class PlaceholderResolver {
                 v = ctx.get(rawKey);
                 if (v == null || v.isEmpty()) v = ctx.get(rawKey.replace('_', '.'));
                 if (v == null || v.isEmpty()) v = ctx.get(rawKey.replace('.', '_'));
+                // P2 fix: SoapUI keys that contain hyphens (like
+                // `PropertiesDetails.hilton-member-id`) get flattened to
+                // underscores when the SoapUI ref is translated to a
+                // #Key# placeholder (`#PropertiesDetails_hilton_member_id#`).
+                // The alias walk above only tries `_->.`; the trailing
+                // segment `hilton_member_id` after splitting on the
+                // FIRST dot needs `_` reverted to `-` because that's how
+                // the extract wrote it (`ctx.put("PropertiesDetails.
+                // hilton-member-id", ...)`).
+                //
+                // Try: split on first `_` -> namespace prefix + trailing;
+                // replace `_` in trailing with `-` and re-join with `.`.
+                //   PropertiesDetails_hilton_member_id
+                //     -> PropertiesDetails.hilton-member-id
+                if (v == null || v.isEmpty()) {
+                    int firstUnderscore = rawKey.indexOf('_');
+                    if (firstUnderscore > 0) {
+                        String namespace = rawKey.substring(0, firstUnderscore);
+                        String tail = rawKey.substring(firstUnderscore + 1)
+                                .replace('_', '-');
+                        v = ctx.get(namespace + "." + tail);
+                    }
+                }
+                // Also try the reverse: hyphen-separated key stored as
+                // dotted trailing (rare, but observed with some
+                // response-extract paths).
+                if (v == null || v.isEmpty()) {
+                    v = ctx.get(rawKey.replace('_', '-'));
+                }
             }
             if (v == null || v.isEmpty()) {
                 m.appendReplacement(out, Matcher.quoteReplacement(m.group()));
