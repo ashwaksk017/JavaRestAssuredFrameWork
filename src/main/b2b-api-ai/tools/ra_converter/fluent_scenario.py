@@ -24,6 +24,22 @@ from typing import Any, Iterable
 
 import phase_vocabulary
 
+# Helpers that exist BOTH on the per-suite TestSupport and on the framework
+# ImportedScenario. A phase body is written against TestSupport; when it is
+# hoisted into framework ScenarioSteps the receiver is swapped (and swapped
+# back for body-fingerprinting). Anything emitted as `TestSupport.<name>(`
+# MUST be listed here or the hoisted copy will not compile -- that is how
+# `putEnvScoped` broke the build when it was first added.
+_DUAL_HOME_HELPERS = (
+    "ctxGet",
+    "putExtracted",
+    "putIfNonEmpty",
+    "mergedRow",
+    "putEnvScoped",
+    "envMap",
+)
+
+
 
 _SKIP_EXTRACT_SUBSTR = (
     "rawrequest", "dburl", "db_user", "dbuser", "dbpassword", "db_password",
@@ -643,10 +659,8 @@ def phase_body_key(lines: list[str]) -> str:
     text = re.sub(r"_[a-f0-9]{8,12}\.json", "_*.json", text)
     text = re.sub(r"\bImportedTemplates\.get\(\"([A-Z0-9_]+)\"\)",
                   r"Templates.\1", text)
-    text = text.replace("ImportedScenario.ctxGet", "TestSupport.ctxGet")
-    text = text.replace("ImportedScenario.putExtracted", "TestSupport.putExtracted")
-    text = text.replace("ImportedScenario.putIfNonEmpty", "TestSupport.putIfNonEmpty")
-    text = text.replace("ImportedScenario.mergedRow", "TestSupport.mergedRow")
+    for _h in _DUAL_HOME_HELPERS:
+        text = text.replace("ImportedScenario." + _h, "TestSupport." + _h)
     text = re.sub(
         r'ImportedScenario\.runSetup\("([^"]+)",\s*',
         r"SetupHelper.\1(",
@@ -663,10 +677,8 @@ def suite_agnostic_body(lines: list[str]) -> list[str]:
             r"(?<!Imported)\bTemplates\.([A-Z0-9_]+)\b",
             r'ImportedTemplates.get("\1")',
             ln)
-        ln = ln.replace("TestSupport.ctxGet", "ImportedScenario.ctxGet")
-        ln = ln.replace("TestSupport.putExtracted", "ImportedScenario.putExtracted")
-        ln = ln.replace("TestSupport.putIfNonEmpty", "ImportedScenario.putIfNonEmpty")
-        ln = ln.replace("TestSupport.mergedRow", "ImportedScenario.mergedRow")
+        for _h in _DUAL_HOME_HELPERS:
+            ln = ln.replace("TestSupport." + _h, "ImportedScenario." + _h)
         ln = re.sub(
             r"\bSetupHelper\.(\w+)\(",
             r'ImportedScenario.runSetup("\1", ',

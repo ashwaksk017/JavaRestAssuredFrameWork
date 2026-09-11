@@ -343,6 +343,109 @@ public final class ImportedScenario {
     }
 
     /**
+     * Publish a ctx value chosen by the ACTIVE ENVIRONMENT.
+     *
+     * <p>ReadyAPI scripts select literals per environment:</p>
+     * <pre>
+     *   def env = context.testCase.testSuite.project
+     *                    .getActiveEnvironment().getName()
+     *   if (env == "EKS_TST")      p.setPropertyValue("topicenv", "programaccounts-test")
+     *   else if (env == "EKS_STG") p.setPropertyValue("topicenv", "programaccounts-stg")
+     * </pre>
+     *
+     * <p>The converter cannot know at emit time which branch runs, so it
+     * emits every branch as a ReadyAPI-label to literal map and resolves
+     * here. Resolution order:</p>
+     * <ol>
+     *   <li>Explicit pin -- a "readyapi_env.&lt;activeEnv&gt;" key in
+     *       program_configuration.json naming the ReadyAPI label.</li>
+     *   <li>Normalised containment -- active "stg" matches ReadyAPI
+     *       "EKS_STG". Needs 2+ alphanumeric chars on both sides so a
+     *       one-letter env name cannot match everything.</li>
+     *   <li>No match -- WARN naming the ctx key, the active env and the
+     *       candidates, then use the first branch. Loud, never silent:
+     *       before this existed these keys got a RANDOM generated value.</li>
+     * </ol>
+     */
+    public static void putEnvScoped(Map<String, String> ctx, String key,
+                                    java.util.LinkedHashMap<String, String> byReadyApiEnv) {
+        if (ctx == null || key == null || byReadyApiEnv == null
+                || byReadyApiEnv.isEmpty()) return;
+        String active = Config.env();
+        String chosen = null;
+        String chosenLabel = null;
+
+        // 1. Explicit pin wins.
+        String pinned = Config.get("readyapi_env." + active, "");
+        if (pinned != null && !pinned.trim().isEmpty()) {
+            for (Map.Entry<String, String> e : byReadyApiEnv.entrySet()) {
+                if (e.getKey().equalsIgnoreCase(pinned.trim())) {
+                    chosen = e.getValue();
+                    chosenLabel = e.getKey();
+                    break;
+                }
+            }
+        }
+
+        // 2. Normalised containment.
+        if (chosen == null) {
+            String a = normalizeEnvName(active);
+            if (a.length() >= 2) {
+                for (Map.Entry<String, String> e : byReadyApiEnv.entrySet()) {
+                    String l = normalizeEnvName(e.getKey());
+                    if (l.length() >= 2 && (l.contains(a) || a.contains(l))) {
+                        chosen = e.getValue();
+                        chosenLabel = e.getKey();
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 3. Undecidable -- say so rather than guess quietly.
+        if (chosen == null) {
+            Map.Entry<String, String> first =
+                    byReadyApiEnv.entrySet().iterator().next();
+            chosen = first.getValue();
+            chosenLabel = first.getKey();
+            LOG.warn(" .. [putEnvScoped] active env '{}' matches none of {}"
+                    + " for ctx key {} -- falling back to ReadyAPI env '{}'."
+                    + " Pin it by adding readyapi_env.{} to"
+                    + " program_configuration.json.",
+                    active, byReadyApiEnv.keySet(), key, chosenLabel, active);
+        }
+
+        LOG.debug(" .. [putEnvScoped] {} <- {}  (active env {} -> ReadyAPI {})",
+                key, chosen, active, chosenLabel);
+        ctx.put(key, chosen);
+    }
+
+    /** Lowercase alphanumerics only, for tolerant env-name comparison. */
+    private static String normalizeEnvName(String s) {
+        if (s == null) return "";
+        StringBuilder sb = new StringBuilder();
+        for (char c : s.toCharArray()) {
+            if (Character.isLetterOrDigit(c)) sb.append(Character.toLowerCase(c));
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Ordered ReadyAPI-env label to literal map, built from alternating
+     * key/value args. Order matters: putEnvScoped falls back to the FIRST
+     * entry when no env matches, and that must be the branch the ReadyAPI
+     * script declared first -- a HashMap would make it arbitrary.
+     */
+    public static java.util.LinkedHashMap<String, String> envMap(String... kv) {
+        java.util.LinkedHashMap<String, String> m = new java.util.LinkedHashMap<>();
+        if (kv == null) return m;
+        for (int i = 0; i + 1 < kv.length; i += 2) {
+            m.put(kv[i], kv[i + 1]);
+        }
+        return m;
+    }
+
+    /**
      * Client-credentials token from ctx.accessToken or {@link TokenCache}
      * when {@code tokenId.GeneratedTokenID} was never written (tokenRequest
      * cache hit + extract miss). Negative auth tests pass a literal empty

@@ -583,6 +583,168 @@ def _find_setproperty_targets(script: str) -> list[tuple[str, str, str]]:
     return results
 
 
+_ENV_BINDING_RX = re.compile(
+    r"def\s+(\w+)\s*=\s*[^\n]*getActiveEnvironment\s*\(\s*\)\s*\.\s*getName\s*\(\s*\)")
+
+_PURE_STRING_RX = re.compile(r"""^(?P<q>['"])(?P<val>(?:[^'"\\]|\\.)*)(?P=q)$""")
+
+
+def _brace_blocks(script: str) -> list[tuple]:
+    """Every ``{...}`` block as ``(open_pos, close_pos, kind, cond)``.
+
+    ``kind`` is ``"if"`` (the brace is the body of an ``if (...)``),
+    ``"else"`` (body of a bare ``else``) or ``"other"`` (closure, method,
+    try/catch, loop -- anything not a two-way branch). ``cond`` carries the
+    ``if`` condition text, else ``""``.
+
+    String literals are skipped so a ``{`` inside a GString or SQL string
+    never opens a phantom block.
+    """
+    blocks: list[tuple] = []
+    stack: list[tuple] = []
+    i, n = 0, len(script)
+    in_str = None
+    while i < n:
+        ch = script[i]
+        if in_str:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == in_str:
+                in_str = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            in_str = ch
+            i += 1
+            continue
+        if ch == "{":
+            before = script[:i].rstrip()
+            kind, cond = "other", ""
+            if before.endswith(")"):
+                # Walk back to the matching "(" then look at the keyword.
+                depth, k = 0, len(before) - 1
+                while k >= 0:
+                    if before[k] == ")":
+                        depth += 1
+                    elif before[k] == "(":
+                        depth -= 1
+                        if depth == 0:
+                            break
+                    k -= 1
+                if k >= 0:
+                    head = before[:k].rstrip()
+                    cond_txt = before[k + 1:-1]
+                    if re.search(r"(?:^|[^A-Za-z0-9_])if$", head):
+                        kind, cond = "if", cond_txt
+            elif re.search(r"(?:^|[^A-Za-z0-9_])else$", before):
+                kind = "else"
+            stack.append((i, kind, cond))
+        elif ch == "}":
+            if stack:
+                open_pos, kind, cond = stack.pop()
+                blocks.append((open_pos, i, kind, cond))
+        i += 1
+    return blocks
+
+
+def _env_literal_publications(script: str) -> tuple:
+    """Split literal ``setPropertyValue("k", "literal")`` calls into the
+    ones that always run and the ones gated on the ReadyAPI environment.
+
+    Returns ``(uncond, envcond)`` where
+
+    * ``uncond`` maps ``(target_step, field) -> literal`` for calls in no
+      ``if``/``else`` block at all (last write wins, matching ReadyAPI).
+    * ``envcond`` maps ``(target_step, field) -> {env_label: literal}`` for
+      calls inside ``if (<envVar> == "LABEL")`` where ``<envVar>`` came from
+      ``getActiveEnvironment().getName()``.
+
+    Everything else -- a literal inside some *other* conditional -- is
+    deliberately dropped rather than guessed at. Publishing a branch value
+    unconditionally would be a new correctness bug; leaving it alone keeps
+    today's behaviour for those.
+
+    Empty literals are skipped throughout: ``setPropertyValue("X", "")`` is
+    ReadyAPI's "clear this property", and ~95% of all literal calls in the
+    reference XMLs are exactly that.
+    """
+    blocks = _brace_blocks(script)
+    branch_blocks = [b for b in blocks if b[2] in ("if", "else")]
+
+    env_vars = set(_ENV_BINDING_RX.findall(script))
+
+    def env_label_for(pos: int):
+        """ReadyAPI env label gating `pos`, or None if not env-gated."""
+        label = None
+        for open_pos, close_pos, kind, cond in branch_blocks:
+            if not (open_pos < pos < close_pos):
+                continue
+            if kind != "if":
+                return None
+            m = re.search(
+                r"(\w+)\s*==\s*['\"]([^'\"]+)['\"]", cond or "")
+            if not m or m.group(1) not in env_vars:
+                return None
+            label = m.group(2)
+        return label
+
+    def branch_depth(pos: int) -> int:
+        return sum(1 for o, c, k, _ in branch_blocks if o < pos < c)
+
+    # Positions: re-find each call so we can locate it in the script.
+    uncond: dict = {}
+    envcond: dict = {}
+    for target_step, field, expr in _find_setproperty_targets(script):
+        m = _PURE_STRING_RX.match(expr.strip())
+        if not m:
+            continue
+        literal = m.group("val")
+        if not literal:
+            continue  # ReadyAPI "clear this property"
+        # Locate this specific call to test its nesting.
+        pat = re.compile(
+            r"setPropertyValue\s*\(\s*['\"]" + re.escape(field)
+            + r"['\"]\s*,\s*" + re.escape(expr.strip()))
+        hit = pat.search(script)
+        if not hit:
+            continue
+        pos = hit.start()
+        label = env_label_for(pos)
+        if label:
+            envcond.setdefault((target_step, field), {})[label] = literal
+        elif branch_depth(pos) == 0:
+            uncond[(target_step, field)] = literal
+    # A field resolved per-environment must not ALSO be published flat.
+    for key in envcond:
+        uncond.pop(key, None)
+    return uncond, envcond
+
+
+def _emit_literal_publication_lines(uncond: dict, envcond: dict) -> list:
+    """Java for the literal publications found by `_env_literal_publications`."""
+    out: list = []
+    for (step, field), literal in sorted(uncond.items()):
+        out.append(
+            f'    TestSupport.putExtracted(ctx, "{step}.{field}", '
+            f'"{_java_escape(literal)}");')
+    for (step, field), by_label in sorted(envcond.items()):
+        # Keep ReadyAPI declaration order -- putEnvScoped's no-match
+        # fallback uses the first entry, so it must be the script's
+        # first branch, not whatever sorts first.
+        entries = ", ".join(
+            f'"{_java_escape(k)}", "{_java_escape(v)}"'
+            for k, v in by_label.items())
+        out.append(
+            f'    TestSupport.putEnvScoped(ctx, "{step}.{field}", '
+            f'TestSupport.envMap({entries}));')
+    return out
+
+
+def _java_escape(s: str) -> str:
+    return (s.replace("\\", "\\\\").replace('"', '\\"')
+             .replace("\r", "").replace("\n", "\\n"))
+
 def _last_nonempty_setproperty(script: str) -> dict[tuple[str, str], str]:
     """ReadyAPI last-write-wins: last nonempty setPropertyValue per (step, field).
 
@@ -1759,6 +1921,13 @@ def translate(script: str, response_var_by_step: dict[str, str],
             covered.add(s)
             if s:
                 covered.add(s[0].swapcase() + s[1:])
+        # Fields the script assigns a STRING LITERAL to are not random
+        # data -- generating one would overwrite the author's value with
+        # e.g. a fake domain. Publish the literal instead (below) and
+        # keep the key out of the generator's extras list.
+        lit_uncond, lit_envcond = _env_literal_publications(script)
+        literal_fields = {f for (_s, f) in lit_uncond}
+        literal_fields |= {f for (_s, f) in lit_envcond}
         extras = []
         extra_seen = set()
         for t in set_targets:
@@ -1767,6 +1936,8 @@ def translate(script: str, response_var_by_step: dict[str, str],
             extra_seen.add(t)
             if t in covered:
                 continue
+            if t in literal_fields:
+                continue
             extras.append(t)
         if extras:
             extra_lits = ", ".join(f'"{t}"' for t in extras)
@@ -1774,6 +1945,12 @@ def translate(script: str, response_var_by_step: dict[str, str],
                 f'    CtxFields.generateStandard(ctx, "Properties", {extra_lits});')
         else:
             lines.append('    CtxFields.generateStandard(ctx, "Properties");')
+        # Author-set string literals win over anything generated above.
+        lit_lines = _emit_literal_publication_lines(lit_uncond, lit_envcond)
+        if lit_lines:
+            lines.append('    // [translated] setPropertyValue(<key>, "<literal>")')
+            lines.extend(lit_lines)
+            _mark("literal_setproperty")
         overlay = _space_concat_overlay_lines(script, last_setproperty)
         if overlay:
             lines.extend(overlay)

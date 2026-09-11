@@ -1225,3 +1225,204 @@ if __name__ == "__main__":
     if failed:
         sys.exit(1)
     print(f"{len(tests)} passed")
+
+
+# ---------------------------------------------------------------------------
+# Mutating-SQL clustering guard (_mutation_shape_sig)
+#
+# Regression: ReadyAPI cases `B2B-1877_post_activate_account_
+# lowConfidenceCompanyMatch_empty` (DBupdate sets status='L') and
+# `..._rejected` (sets status='R') have an identical REST contract, so they
+# clustered into one @Test + 2 CSV rows. The emitted method ran cluster[0]'s
+# script body for BOTH rows, so row 2 set the account to *limited* and then
+# asserted `status == "rejected"` -> "expected [rejected] ... found [false]".
+# ---------------------------------------------------------------------------
+
+def _groovy_update(status, extra=""):
+    return ra_converter.GroovyStep("DBupdate", (
+        'def websiteDomain = context.expand( "${Properties#websiteDomain}" )\n'
+        'def accountUpdate = sql.executeUpdate("UPDATE account SET status='
+        + repr(status).replace('"', "'") + extra
+        + ' WHERE web_site=${websiteDomain}")\n'
+        'log.info(accountUpdate)'))
+
+
+def test_different_mutating_sql_splits_cluster():
+    """status='L' and status='R' must not share a @Test method."""
+    empty = _case(
+        "B2B-1877_post_activate_account_lowConfidenceCompanyMatch_empty",
+        [_rest_step(), _groovy_update("L", " ,attestation_failure_reason = ''")])
+    rejected = _case(
+        "B2B-1877_post_activate_account_lowConfidenceCompanyMatch_rejected",
+        [_rest_step(), _groovy_update("R", " ,reject_Reason = 'x'")])
+    clusters = ra_converter._cluster_cases_by_shape([empty, rejected])
+    assert len(clusters) == 2, [[c.name for c in cl] for cl in clusters]
+
+
+def test_same_mutating_sql_still_clusters():
+    """Identical mutation -> still one @Test + 2 CSV rows."""
+    a = _case("B2B-1_H4B_x_200", [_rest_step(), _groovy_update("L")])
+    b = _case("B2B-1_LTA_x_200", [_rest_step(), _groovy_update("L")])
+    clusters = ra_converter._cluster_cases_by_shape([a, b])
+    assert len(clusters) == 1, [[c.name for c in cl] for cl in clusters]
+
+
+def test_mutation_differing_only_in_expansion_still_clusters():
+    """A value that becomes a CSV cell must not split the cluster."""
+    a = _case("B2B-2_H4B_x_200", [_rest_step(), ra_converter.GroovyStep(
+        "DBupdate", 'sql.executeUpdate("UPDATE account SET s=1 '
+                    'WHERE web_site=${Properties#domainA}")')])
+    b = _case("B2B-2_LTA_x_200", [_rest_step(), ra_converter.GroovyStep(
+        "DBupdate", 'sql.executeUpdate("UPDATE account SET s=1 '
+                    'WHERE web_site=${Properties#domainB}")')])
+    assert (ra_converter._mutation_shape_sig(a)
+            == ra_converter._mutation_shape_sig(b))
+    assert len(ra_converter._cluster_cases_by_shape([a, b])) == 1
+
+
+def test_commented_out_mutation_does_not_split():
+    """A commented-out UPDATE changes nothing at runtime."""
+    a = _case("B2B-3_H4B_x_200", [_rest_step(), ra_converter.GroovyStep(
+        "g", 'log.info("hi")')])
+    b = _case("B2B-3_LTA_x_200", [_rest_step(), ra_converter.GroovyStep(
+        "g", '// sql.executeUpdate("UPDATE account SET s=1")\nlog.info("hi")')])
+    assert ra_converter._mutation_shape_sig(b) == ()
+    assert len(ra_converter._cluster_cases_by_shape([a, b])) == 1
+
+
+def test_mutation_present_vs_absent_splits():
+    """One case wiping a table must not share a @Test with one that doesn't."""
+    a = _case("B2B-4_H4B_x_200", [_rest_step(), ra_converter.GroovyStep(
+        "g", 'sql.execute("DELETE FROM account")')])
+    b = _case("B2B-4_LTA_x_200", [_rest_step(), ra_converter.GroovyStep(
+        "g", 'log.info("no db work")')])
+    assert len(ra_converter._cluster_cases_by_shape([a, b])) == 2
+
+
+def test_select_only_groovy_is_not_a_mutation():
+    """Reads never split a cluster."""
+    c = _case("B2B-5_x_200", [_rest_step(), ra_converter.GroovyStep(
+        "g", 'def r = sql.rows("SELECT * FROM account WHERE id=1")')])
+    assert ra_converter._mutation_shape_sig(c) == ()
+
+
+def test_prefix_merge_refuses_conflicting_mutation():
+    """A shorter case whose mutation differs is not folded into a longer one.
+
+    The merged method runs the LONGER case's body, so folding would leave
+    the DB in the longer case's state before the shorter's assertions.
+    """
+    long_case = _case("B2B-6_post_account_200_H4B", [
+        _rest_step(path="/businesses"), _groovy_update("L"),
+        _rest_step(path="/businesses/{accountId}")])
+    short_case = _case("B2B-6_post_account_200_LTA", [
+        _rest_step(path="/businesses"), _groovy_update("R")])
+    merged = ra_converter._merge_prefix_clusters([[long_case], [short_case]])
+    assert len(merged) == 2, [[c.name for c in cl] for cl, _ in merged]
+
+
+def test_prefix_merge_still_folds_matching_mutation():
+    long_case = _case("B2B-7_post_account_200_H4B", [
+        _rest_step(path="/businesses"), _groovy_update("L"),
+        _rest_step(path="/businesses/{accountId}")])
+    short_case = _case("B2B-7_post_account_200_LTA", [
+        _rest_step(path="/businesses"), _groovy_update("L")])
+    merged = ra_converter._merge_prefix_clusters([[long_case], [short_case]])
+    assert len(merged) == 1, [[c.name for c in cl] for cl, _ in merged]
+
+
+# ---------------------------------------------------------------------------
+# setPropertyValue(key, "string-literal") publication
+#
+# The translator published `setPropertyValue("k", someVar)` but not
+# `setPropertyValue("k", "literal")`. Literal-valued fields fell through to
+# CtxFields.generateStandard, which filled them with RANDOM data -- so
+# `topicenv` became a fake username instead of "programaccounts-stg", and
+# `Domain` became a fake domain instead of the author's "explorer.de".
+# ---------------------------------------------------------------------------
+
+_ENV_SCRIPT = '''
+def p = testRunner.testCase.getTestStepByName("Properties")
+p.setPropertyValue("Domain", "explorer.de")
+p.setPropertyValue("Email", generatedEmail)
+p.setPropertyValue("GeneratedTokenID", "")
+def env = context.testCase.testSuite.project.getActiveEnvironment ().getName ()
+if(env  ==  "EKS_TST")
+{ log.info("x")
+    p.setPropertyValue("topicenv", "programaccounts-test")
+} else if (env  ==  "EKS_STG")
+{ log.info("x")
+    p.setPropertyValue("topicenv", "programaccounts-stg")
+}
+'''
+
+
+def test_literal_setproperty_published_unconditionally():
+    uncond, envcond = groovy_translator._env_literal_publications(_ENV_SCRIPT)
+    assert uncond[("Properties", "Domain")] == "explorer.de"
+
+
+def test_literal_setproperty_skips_empty_clears():
+    """setPropertyValue("X", "") is ReadyAPI's 'clear' -- not a value."""
+    uncond, _ = groovy_translator._env_literal_publications(_ENV_SCRIPT)
+    assert ("Properties", "GeneratedTokenID") not in uncond
+
+
+def test_literal_setproperty_skips_variable_values():
+    """Variable-valued writes stay with the existing def-publication path."""
+    uncond, _ = groovy_translator._env_literal_publications(_ENV_SCRIPT)
+    assert ("Properties", "Email") not in uncond
+
+
+def test_env_conditional_literals_collected_per_label():
+    _uncond, envcond = groovy_translator._env_literal_publications(_ENV_SCRIPT)
+    assert envcond[("Properties", "topicenv")] == {
+        "EKS_TST": "programaccounts-test",
+        "EKS_STG": "programaccounts-stg",
+    }
+
+
+def test_env_conditional_keeps_readyapi_branch_order():
+    """putEnvScoped's no-match fallback uses the FIRST entry."""
+    _u, envcond = groovy_translator._env_literal_publications(_ENV_SCRIPT)
+    assert list(envcond[("Properties", "topicenv")]) == ["EKS_TST", "EKS_STG"]
+    java = groovy_translator._emit_literal_publication_lines({}, envcond)[0]
+    assert java.index("EKS_TST") < java.index("EKS_STG"), java
+    assert "TestSupport.envMap(" in java
+
+
+def test_non_env_conditional_literal_is_not_published():
+    """A literal in some OTHER branch must not be hoisted out of it."""
+    script = '''
+def p = testRunner.testCase.getTestStepByName("Properties")
+if (resp.status == 400) { p.setPropertyValue("Result", "FAILED") }
+p.setPropertyValue("Domain", "always.com")
+'''
+    uncond, envcond = groovy_translator._env_literal_publications(script)
+    assert ("Properties", "Result") not in uncond
+    assert ("Properties", "Result") not in envcond
+    assert uncond[("Properties", "Domain")] == "always.com"
+
+
+def test_brace_blocks_ignores_braces_inside_strings():
+    """A '{' in a GString/SQL literal must not open a phantom block."""
+    script = 'def q = "SELECT {not a block} FROM t"\nif (a == "X") { y() }'
+    kinds = [k for _o, _c, k, _cond in
+             groovy_translator._brace_blocks(script)]
+    assert kinds == ["if"], kinds
+
+
+def test_literal_fields_excluded_from_random_generation():
+    """The generator must not overwrite an author-set literal."""
+    lines, _meta = groovy_translator.translate(
+        _ENV_SCRIPT, {}, {}, "DataGenInput")
+    java = chr(10).join(lines)
+    gen = [l for l in lines if "generateStandard" in l]
+    assert gen, java
+    # Literal-valued keys must not be handed to the random generator.
+    assert "topicenv" not in gen[0], gen[0]
+    assert '"Domain"' not in gen[0], gen[0]
+    # ...they are published explicitly instead, AFTER the generator runs.
+    assert 'putEnvScoped(ctx, "Properties.topicenv"' in java, java
+    assert 'putExtracted(ctx, "Properties.Domain", "explorer.de")' in java, java
+    assert java.index("generateStandard") < java.index("putEnvScoped"), java

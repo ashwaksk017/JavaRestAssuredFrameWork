@@ -3876,6 +3876,62 @@ def _non_rest_shape_sig(case: "TestCase") -> tuple:
     return tuple(out)
 
 
+_MUTATION_SQL_RX = re.compile(
+    r"(?is)\b(?:UPDATE|INSERT\s+INTO|DELETE\s+FROM|MERGE\s+INTO)\b")
+
+
+def _mutation_shape_sig(case: "TestCase") -> tuple:
+    """Side-effecting SQL of the non-REST steps, placeholders wiped.
+
+    Part of the equal-length clustering key and of the prefix-merge
+    guard. ``_case_body_sig`` deliberately ignores most Groovy/JDBC
+    detail (see its docstring) because those scripts usually only read
+    config and publish Properties that are already CSV cells. That
+    reasoning does NOT hold for statements that MUTATE external state:
+    the emitted @Test runs cluster[0]'s script body for every CSV row,
+    so two cases whose UPDATE/INSERT/DELETE differ would silently put
+    the database into the first case's state and then assert the
+    second's expectation.
+
+    Real example this guards: ReadyAPI cases
+    ``B2B-1877_post_activate_account_lowConfidenceCompanyMatch_empty``
+    (``SET status='L'``) and ``..._rejected`` (``SET status='R'``) have
+    identical REST shape. Merged, row 2 set the account to *limited*
+    and then asserted ``status == "rejected"``.
+
+    Only mutating statements participate, and ``${...}`` expansions are
+    wiped by ``_norm_expandable``, so scripts differing solely in a
+    value that becomes a CSV cell still cluster. Whole-line comments are
+    dropped -- a commented-out UPDATE changes nothing at runtime.
+    """
+    out: list[tuple] = []
+    rest_seen = 0
+    for s in case.steps:
+        if isinstance(s, RestStep):
+            rest_seen += 1
+            continue
+        if isinstance(s, GroovyStep):
+            text = s.script or ""
+        elif isinstance(s, JdbcStep):
+            text = s.query or ""
+        else:
+            continue
+        stmts: list[str] = []
+        for line in text.splitlines():
+            t = line.strip()
+            if t.startswith("//") or t.startswith("*") or t.startswith("/*"):
+                continue
+            m = _MUTATION_SQL_RX.search(t)
+            if m:
+                stmts.append(_norm_expandable(t[m.start():]))
+        if stmts:
+            # Anchor on how many REST steps precede this script: the same
+            # UPDATE run BEFORE vs AFTER a REST call is a different flow,
+            # and the emitted method uses cluster[0]'s step order.
+            out.append((rest_seen, tuple(stmts)))
+    return tuple(out)
+
+
 def _case_body_sig(case: "TestCase") -> tuple:
     """Fingerprint of the REST *request* contract for equal-length clustering.
 
@@ -3886,15 +3942,19 @@ def _case_body_sig(case: "TestCase") -> tuple:
     query-param names. Literal values (body leaves, path/query values,
     expected status / JsonPath) live in CSV.
 
-    Groovy / JDBC / Delay are not in the key: they typically publish
-    Properties already captured as CSV/runtime cells. Assertion *paths*
+    Groovy / JDBC / Delay shape is not in the key: those scripts
+    typically only publish Properties already captured as CSV/runtime
+    cells. Their *mutating* SQL IS in the key via
+    ``_mutation_shape_sig`` -- the emitted method runs cluster[0]'s
+    script body for every row, so cases that leave the database in
+    different states must not share a @Test. Assertion *paths*
     stay in the key so a success JsonPath set is not applied to a sibling
     case that only asserted an error field (Java still emits cluster[0]'s
     asserts). Prefix-merge still uses ``_flow_compat_key``.
     """
     rest_asserts = tuple(
         _assert_path_sig(s) for s in case.steps if isinstance(s, RestStep))
-    return (_rest_shape_sig(case), rest_asserts)
+    return (_rest_shape_sig(case), rest_asserts, _mutation_shape_sig(case))
 
 
 def _rest_shape_sig(case: "TestCase") -> tuple:
@@ -3983,6 +4043,14 @@ def _merge_prefix_clusters(
             # CSV row. H4B vs LTA siblings with the same action *can* merge.
             if _flow_compat_key(clusters[base_idx][0], 4) != _flow_compat_key(
                     clusters[other_idx][0], 4):
+                continue
+            # Mutating SQL must prefix-match too. The merged method runs
+            # the LONGER case's body, so folding in a shorter case whose
+            # UPDATE/INSERT/DELETE differs would leave the database in the
+            # longer case's state before the shorter's assertions run.
+            base_mut = _mutation_shape_sig(clusters[base_idx][0])
+            other_mut = _mutation_shape_sig(clusters[other_idx][0])
+            if base_mut[:len(other_mut)] != other_mut:
                 continue
             # Prefix match -- fold in. Use POSITIONAL step-index (into the
             # LONGER cluster's REST-step sequence) as the stop marker, NOT
@@ -4120,7 +4188,8 @@ def _cluster_cases_by_shape(cases: list["TestCase"]) -> list[list["TestCase"]]:
     parameter *names*. Literal-value diffs become ``#tpl_*#`` / CSV
     cells. Assertion expected values also stay in CSV; only the path
     set must match so a cluster does not silently drop an extra JsonPath
-    check. Groovy/JDBC/Delay differences do not split the cluster.
+    check. Groovy/JDBC/Delay differences do not split the cluster,
+    EXCEPT differing mutating SQL (see ``_mutation_shape_sig``).
 
     Prefix-merge still uses ``_flow_compat_key`` so an unrelated shorter
     REST prefix is not folded into a longer flow.
@@ -8720,6 +8789,109 @@ public final class TestSupport {{
         if (ctx == null || key == null) return;
         if (value == null || value.isEmpty()) return;
         ctx.putIfAbsent(key, value);
+    }}
+
+    /**
+     * Publish a ctx value chosen by the ACTIVE ENVIRONMENT.
+     *
+     * <p>ReadyAPI scripts select literals per environment:</p>
+     * <pre>
+     *   def env = context.testCase.testSuite.project
+     *                    .getActiveEnvironment().getName()
+     *   if (env == "EKS_TST")      p.setPropertyValue("topicenv", "programaccounts-test")
+     *   else if (env == "EKS_STG") p.setPropertyValue("topicenv", "programaccounts-stg")
+     * </pre>
+     *
+     * <p>The converter cannot know at emit time which branch runs, so it
+     * emits every branch as a ReadyAPI-label to literal map and resolves
+     * here. Resolution order:</p>
+     * <ol>
+     *   <li>Explicit pin -- a "readyapi_env.&lt;activeEnv&gt;" key in
+     *       program_configuration.json naming the ReadyAPI label.</li>
+     *   <li>Normalised containment -- active "stg" matches ReadyAPI
+     *       "EKS_STG". Needs 2+ alphanumeric chars on both sides so a
+     *       one-letter env name cannot match everything.</li>
+     *   <li>No match -- WARN naming the ctx key, the active env and the
+     *       candidates, then use the first branch. Loud, never silent:
+     *       before this existed these keys got a RANDOM generated value.</li>
+     * </ol>
+     */
+    public static void putEnvScoped(Map<String, String> ctx, String key,
+                                    java.util.LinkedHashMap<String, String> byReadyApiEnv) {{
+        if (ctx == null || key == null || byReadyApiEnv == null
+                || byReadyApiEnv.isEmpty()) return;
+        String active = Config.env();
+        String chosen = null;
+        String chosenLabel = null;
+
+        // 1. Explicit pin wins.
+        String pinned = Config.get("readyapi_env." + active, "");
+        if (pinned != null && !pinned.trim().isEmpty()) {{
+            for (Map.Entry<String, String> e : byReadyApiEnv.entrySet()) {{
+                if (e.getKey().equalsIgnoreCase(pinned.trim())) {{
+                    chosen = e.getValue();
+                    chosenLabel = e.getKey();
+                    break;
+                }}
+            }}
+        }}
+
+        // 2. Normalised containment.
+        if (chosen == null) {{
+            String a = normalizeEnvName(active);
+            if (a.length() >= 2) {{
+                for (Map.Entry<String, String> e : byReadyApiEnv.entrySet()) {{
+                    String l = normalizeEnvName(e.getKey());
+                    if (l.length() >= 2 && (l.contains(a) || a.contains(l))) {{
+                        chosen = e.getValue();
+                        chosenLabel = e.getKey();
+                        break;
+                    }}
+                }}
+            }}
+        }}
+
+        // 3. Undecidable -- say so rather than guess quietly.
+        if (chosen == null) {{
+            Map.Entry<String, String> first =
+                    byReadyApiEnv.entrySet().iterator().next();
+            chosen = first.getValue();
+            chosenLabel = first.getKey();
+            LOG.warn(" .. [putEnvScoped] active env '{{}}' matches none of {{}}"
+                    + " for ctx key {{}} -- falling back to ReadyAPI env '{{}}'."
+                    + " Pin it by adding readyapi_env.{{}} to"
+                    + " program_configuration.json.",
+                    active, byReadyApiEnv.keySet(), key, chosenLabel, active);
+        }}
+
+        LOG.debug(" .. [putEnvScoped] {{}} <- {{}}  (active env {{}} -> ReadyAPI {{}})",
+                key, chosen, active, chosenLabel);
+        ctx.put(key, chosen);
+    }}
+
+    /**
+     * Ordered ReadyAPI-env label to literal map, built from alternating
+     * key/value args. Order matters: putEnvScoped falls back to the FIRST
+     * entry when no env matches, and that must be the branch the ReadyAPI
+     * script declared first -- a HashMap would make it arbitrary.
+     */
+    public static java.util.LinkedHashMap<String, String> envMap(String... kv) {{
+        java.util.LinkedHashMap<String, String> m = new java.util.LinkedHashMap<>();
+        if (kv == null) return m;
+        for (int i = 0; i + 1 < kv.length; i += 2) {{
+            m.put(kv[i], kv[i + 1]);
+        }}
+        return m;
+    }}
+
+    /** Lowercase alphanumerics only, for tolerant env-name comparison. */
+    private static String normalizeEnvName(String s) {{
+        if (s == null) return "";
+        StringBuilder sb = new StringBuilder();
+        for (char c : s.toCharArray()) {{
+            if (Character.isLetterOrDigit(c)) sb.append(Character.toLowerCase(c));
+        }}
+        return sb.toString();
     }}
 
     /**

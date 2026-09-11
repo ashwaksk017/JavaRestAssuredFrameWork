@@ -120,6 +120,10 @@ def _bodies(text: str, head_rx, group: int = 1):
 
 _WRITE_RX = re.compile(r'putExtracted\(\s*ctx\s*,\s*"([^"]+)"')
 _WRITE_IF_RX = re.compile(r'putIfNonEmpty\(\s*ctx\s*,\s*"([^"]+)"')
+# putEnvScoped publishes an environment-selected literal. It always writes
+# (one branch is chosen, with a WARN + first-branch fallback when the active
+# env matches none), so it is an unconditional producer for its key.
+_WRITE_ENV_RX = re.compile(r'putEnvScoped\(\s*ctx\s*,\s*"([^"]+)"')
 _READ_RX = re.compile(r'ctxGet\(\s*ctx\s*,\s*"([^"]+)"')
 # asString/asLong take several fallback keys; ANY of them satisfying is enough.
 _READ_MULTI_RX = re.compile(r'as(?:String|Long)\(\s*ctx\s*,\s*((?:"[^"]+"\s*,?\s*)+)\)')
@@ -140,7 +144,7 @@ def method_events(body: str) -> list:
     written a few lines above the read.
     """
     events = []
-    for rx in (_WRITE_RX, _WRITE_IF_RX):
+    for rx in (_WRITE_RX, _WRITE_IF_RX, _WRITE_ENV_RX):
         for m in rx.finditer(body):
             events.append((m.start(), "w", m.group(1)))
     for m in _SEED_RX.finditer(body):
@@ -257,9 +261,17 @@ def analyse(root: str) -> tuple:
         # and then its parameters. Anchoring the brace to the same line
         # matched nothing, and every token these flows produce was reported
         # missing: 489 phantom findings.
+        # Key by SUITE + name. Every converted suite emits its own
+        # SetupHelper, and flow names repeat across them (`flow_A` exists in
+        # 3 of the 5 reference suites). Keyed by bare name the last file
+        # walked won, so eadkafkaevents' flow_A -- which seeds Properties.*
+        # -- was overwritten by programaccountregression's, which does not.
+        # Every Properties.* read in the Kafka chains then looked
+        # unsatisfied. Suite comes from .../support/<suite>/SetupHelper.java.
+        suite = os.path.basename(os.path.dirname(path))
         for name, body in _bodies(text, _SETUP_HEAD_RX):
             w, _r, _s = method_effects(body)
-            setup_writes[name] = w
+            setup_writes[(suite, name)] = w
 
     findings = []
     stats = collections.Counter()
@@ -269,14 +281,15 @@ def analyse(root: str) -> tuple:
             (wildcards if k.endswith("*") else available).add(
                 k[:-1] if k.endswith("*") else k)
 
-    def run(events, available, wildcards, on_unsatisfied):
+    def run(events, available, wildcards, on_unsatisfied, suite=""):
         """Replay one method IN ORDER, so a key written a few lines above its
         own read counts as produced."""
         for _off, kind, payload in events:
             if kind == "w":
                 apply([payload], available, wildcards)
             elif kind == "s":
-                apply(setup_writes.get(payload, set()), available, wildcards)
+                apply(setup_writes.get((suite, payload), set()),
+                      available, wildcards)
             elif kind == "r" and not satisfied(payload, available, wildcards):
                 on_unsatisfied(payload)
 
@@ -289,6 +302,17 @@ def analyse(root: str) -> tuple:
         text = _read(path)
         if ".start(row" not in text:
             continue
+        # .../tests/imported/<suite>/<area>/<Class>.java -- the suite segment
+        # picks the right SetupHelper when flow names collide across suites.
+        # Split on the marker, not relpath: _walk_java yields Windows
+        # long-path (\?\C:\...) strings that relpath refuses to compare
+        # against a plain root ("path is on mount ...").
+        norm = path.replace(chr(92), "/")
+        marker = "/tests/imported/"
+        suite = ""
+        if marker in norm:
+            tail = norm.split(marker, 1)[1]
+            suite = tail.split("/")[0] if "/" in tail else ""
         for tname, entry, steps in chains_in(text):
             stats["chains"] += 1
             available: set = set()
@@ -299,7 +323,7 @@ def analyse(root: str) -> tuple:
             # Properties.* read in those chains look unsatisfied.
             boot = reg.get("__bootstrap__" + entry,
                            reg.get("__bootstrap__ScenarioSteps", []))
-            run(boot, available, wildcards, lambda _k: None)
+            run(boot, available, wildcards, lambda _k: None, suite)
             for step in steps:
                 stats["steps"] += 1
 
@@ -311,7 +335,7 @@ def analyse(root: str) -> tuple:
                     })
                     stats["unsatisfied"] += 1
 
-                run(reg.get(step, []), available, wildcards, report)
+                run(reg.get(step, []), available, wildcards, report, suite)
     return findings, stats, reg
 
 

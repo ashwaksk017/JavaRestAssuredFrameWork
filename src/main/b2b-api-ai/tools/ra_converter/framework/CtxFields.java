@@ -250,6 +250,31 @@ public final class CtxFields {
             if (isCapturedSalesforceSessionKey(key)) continue;
             ImportedScenario.putIfNonEmpty(ctx, key, ImportedScenario.testData(row, key));
         }
+        // Underscore-separated CSV columns for the same prefix.
+        //
+        // The converter emits CSV columns for `${Step#field}` references
+        // through two paths. The frozen-Properties path names them with a
+        // DOT (`Properties.Domain`); the placeholder classifier names them
+        // with an UNDERSCORE (`Properties_topicenv`). ctx keys and every
+        // `ctxGet` call use the dot form, so an underscore column was
+        // written to the CSV and then never seeded -- `ctxGet(ctx,
+        // "Properties.topicenv")` returned "" and the Kafka partition URL
+        // lost its topic segment (`/topics//partitions/3`).
+        //
+        // Seed those under the DOTTED ctx key. putIfNonEmpty means a real
+        // dot column already seeded above always wins.
+        if (row != null && keyPrefix.endsWith(".")) {
+            String underscorePrefix =
+                    keyPrefix.substring(0, keyPrefix.length() - 1) + "_";
+            for (String key : row.keySet()) {
+                if (key == null || !key.startsWith(underscorePrefix)) continue;
+                String dotted =
+                        keyPrefix + key.substring(underscorePrefix.length());
+                if (isCapturedSalesforceSessionKey(dotted)) continue;
+                ImportedScenario.putIfNonEmpty(
+                        ctx, dotted, ImportedScenario.testData(row, key));
+            }
+        }
     }
 
     /**
