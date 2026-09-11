@@ -236,7 +236,15 @@ def main() -> int:
     unresolved, dollars, stats, where = scan(args.root)
     ok_ph, ok_ref = ({}, {}) if args.ignore_baseline else load_baseline(args.root)
     new_ph = {k: n for k, n in unresolved.items() if k not in ok_ph}
-    new_ref = {k: n for k, n in dollars.items() if k not in ok_ref}
+    # `PlaceholderResolver.resolveDollarRefs` resolves `${Name#Field}` at
+    # runtime by mapping '#' to '.', so a surviving ref of that shape is
+    # fine -- it is deferred, not broken. Only a ref whose shape its key
+    # pattern CANNOT match is genuinely stuck as literal text, which is
+    # what `${step#Respons['accountID']}` (a typo in the source XML) is.
+    resolvable = re.compile(r"^[A-Za-z_][A-Za-z0-9_.#-]*$")
+    new_ref = {k: n for k, n in dollars.items()
+               if k not in ok_ref and not resolvable.match(k)}
+    deferred = sum(n for k, n in dollars.items() if resolvable.match(k))
     print(f"templates scanned        : {stats['templates']}")
     print(f"java files scanned       : {stats['java_files']}")
     print(f"placeholders seen        : {stats['placeholders']}")
@@ -244,6 +252,7 @@ def main() -> int:
           f"across {len(unresolved)} key(s)")
     print(f"surviving ${{...}} refs    : {sum(dollars.values())} "
           f"across {len(dollars)} ref(s)")
+    print(f"  resolver handles at runtime: {deferred}")
 
     if ok_ph or ok_ref:
         print(f"  accepted (triaged)     : "

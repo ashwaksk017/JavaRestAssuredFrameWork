@@ -155,6 +155,15 @@ def method_events(body: str) -> list:
                 # and #Properties_username# both resolve.
                 events.append((m.start(), "w", f"{prefix}.{variant}"))
     for m in _READ_RX.finditer(body):
+        # A read inside a log statement is not a value reaching a request --
+        # it is a translated Groovy local echoed for diagnostics. Counting
+        # those made 10 log lines look like broken substitutions.
+        _nl = chr(10)
+        line_start = body.rfind(_nl, 0, m.start()) + 1
+        _end = body.find(_nl, m.start())
+        line = body[line_start:_end if _end >= 0 else len(body)].lstrip()
+        if line.startswith(("LOG.", "log.")) or "Allure.step(" in line:
+            continue
         events.append((m.start(), "r", (m.group(1),)))
     for m in _READ_MULTI_RX.finditer(body):
         alts = tuple(re.findall(r'"([^"]+)"', m.group(1)))

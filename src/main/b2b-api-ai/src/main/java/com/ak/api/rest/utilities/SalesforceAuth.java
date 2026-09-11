@@ -104,13 +104,28 @@ public final class SalesforceAuth {
         if (isUnresolvedFormValue(form.get("assertion"))) {
             String configured = Config.get("salesforce_assertion",
                     Config.get("sf_config.assertion", ""));
-            if (configured != null && !configured.isBlank()) {
+            // `Config.isUnset`, not `isBlank`: a stubbed config ships
+            // `__SET_ME__`, which is non-blank. Treating that as configured
+            // sent the literal placeholder to Salesforce as the JWT
+            // assertion, and the only signal was HTTP 400 invalid_client_id
+            // from https://test.salesforce.com -- nothing pointing at an
+            // unedited program_configuration.json.
+            if (!Config.isUnset(configured)) {
                 form.put("assertion", configured);
             } else {
-                LOG.warn("Salesforce JWT assertion is empty or unresolved -- "
-                        + "POST /oauth2/token will fail. Set salesforce_assertion "
-                        + "or sf_config.assertion in program_configuration.json "
-                        + "(do not invent credentials)");
+                // Leave whatever the form carried. Removing the key turns a
+                // precise "assertion is not a JWT" failure into an opaque
+                // null-pointer one, and the caller's own diagnostics read
+                // the value to report on it.
+                LOG.error("Salesforce JWT assertion is not configured (value: {}). "
+                        + "POST /oauth2/token will return 400 invalid_client_id, "
+                        + "and every Salesforce step after it will fail. Set "
+                        + "sf_config.assertion (or salesforce_assertion) in "
+                        + "src/main/resources/program_configuration.json to the "
+                        + "real signed JWT for your connected app -- do not "
+                        + "invent credentials.",
+                        (configured == null || configured.isBlank())
+                                ? "<empty>" : "<placeholder>");
             }
         }
     }

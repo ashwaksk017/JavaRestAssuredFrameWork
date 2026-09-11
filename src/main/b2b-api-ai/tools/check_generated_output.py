@@ -224,7 +224,7 @@ def main() -> int:
     # one suite emits 120 files where it used to emit 567 -- a 447-file drop
     # that is the point of the change, not a crashed emit. The floor still
     # catches a suite that fails to emit at all: a single suite lands at ~474.
-    ap.add_argument("--min-files", type=int, default=350,
+    ap.add_argument("--min-files", type=int, default=20,
                     help="below this, assume a crashed emit")
     args = ap.parse_args()
 
@@ -269,12 +269,31 @@ def main() -> int:
     else:
         print(f"  (no baseline yet -- create with --update-baseline)")
 
-    # 6. volume plausibility -- the crashed-emit signature
-    if stats["files"] < args.min_files:
+    # 6. every input XML produced a suite package -- the crashed-emit
+    #    signature, tested directly.
+    #
+    #    This used to be a fixed file-count floor, which is not scale
+    #    invariant: it has to be lowered every time a smaller set of suites
+    #    is converted, and lowering a guard to make it pass is how a guard
+    #    stops guarding. Three small suites emit 124 files; one large one
+    #    emits 474. Neither number means anything on its own. What DOES
+    #    mean something is a suite in input/ with no emitted package.
+    import glob
+    in_dir = os.path.join(args.root, "tools", "ra_converter", "input")
+    support = os.path.join(args.root, "src", "main", "java",
+                           "com", "ak", "api", "support")
+    xmls = [x for x in glob.glob(os.path.join(in_dir, "*.xml"))]
+    for xml in xmls:
+        suite = os.path.splitext(os.path.basename(xml))[0].lower()
+        if not os.path.isdir(_openable(os.path.join(support, suite))):
+            findings.append(Finding(
+                "SUITE-NOT-EMITTED", os.path.basename(xml),
+                f"no support/{suite}/ package; this suite failed to emit"))
+    if xmls and stats["files"] < args.min_files:
         findings.append(Finding(
             "TOO-FEW-FILES", "(tree)",
-            f"only {stats['files']} generated files (expected >= "
-            f"{args.min_files}); a suite likely failed to emit"))
+            f"only {stats['files']} generated files for {len(xmls)} suite(s) "
+            f"(expected >= {args.min_files}); emit may be truncated"))
 
     by_kind = Counter(f.kind for f in findings)
     if not findings:

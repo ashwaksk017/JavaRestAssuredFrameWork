@@ -1515,11 +1515,64 @@ def translate(script: str, response_var_by_step: dict[str, str],
                     continue
                 loc_pubs.append((use_idx, target_step, field))
             if not loc_pubs:
-                # Slice was parsed but a later write owns the field.
-                # Drop the unused locHeader/parts block (javac unused).
-                lines.append(
-                    '// [translated] location-header slice not published '
-                    '-- later setPropertyValue wins (ReadyAPI last-write)')
+                # No setPropertyValue owns this slice. That does NOT mean the
+                # value is unused: SoapUI exposes a Groovy step's last
+                # expression as its `result` property, and a later step can
+                # read `${<step>#result}`. Dropping the block left 18 such
+                # reads resolving to "" in one suite.
+                #
+                # Publish under `<step>.result`, which is the key the
+                # `${step#result}` translation looks for. Harmless when
+                # nothing reads it -- one extra ctx entry.
+                _res_key = re.sub(r"[^A-Za-z0-9_]", "_",
+                                  (step_name_hint or "").strip())
+                # The index cannot come from `use_idx`: that is bound inside
+                # the setPropertyValue loop, and a script with no
+                # setPropertyValue at all -- exactly the `#result` case --
+                # never enters it. Take it from the script's own slice map.
+                # ...and ONLY when the script publishes nothing at all.
+                # An empty `loc_pubs` has two very different causes: the
+                # script has no setPropertyValue (the `#result` case), or it
+                # has one that a later JSON write wins (the last-write
+                # contract, pinned by
+                # test_groovy_last_write_json_member_id_wins_over_location_guest_slice).
+                # Publishing in the second case resurrects the value the
+                # last-write rule exists to suppress.
+                _result_idx = None
+                if _slice_vars and not _find_setproperty_targets(script):
+                    _result_idx = list(_slice_vars.values())[-1]
+                if _res_key and _result_idx is not None:
+                    use_idx = _result_idx
+                    lines.append(
+                        '// [translated] location-header slice -> '
+                        f'{step_name_hint}#result (no setPropertyValue owns it)')
+                    lines.append('{')
+                    lines.append(
+                        f'    String locHeader_{hdr_id} = {resp_var}.header("{hdr}");')
+                    lines.append(
+                        f'    String[] parts_{hdr_id} = '
+                        f'locHeader_{hdr_id} == null ? new String[0] : '
+                        f'locHeader_{hdr_id}.replace("{strip0}", "").split("{splitter0}");')
+                    # Both spellings: the consumer side renders
+                    # `${get-memberID#result}` with the hyphen intact, while
+                    # sanitised keys use underscores. Publishing one and
+                    # reading the other is the exact defect class this
+                    # session already fixed four times over.
+                    _raw_key = (step_name_hint or "").strip()
+                    for _k in dict.fromkeys([_raw_key, _res_key]):
+                        if not _k:
+                            continue
+                        lines.append(
+                            f'    if (parts_{hdr_id}.length > {use_idx}) '
+                            f'TestSupport.putExtracted(ctx, "{_k}.result", '
+                            f'parts_{hdr_id}[{use_idx}]);')
+                    lines.append('}')
+                else:
+                    # Slice was parsed but a later write owns the field.
+                    # Drop the unused locHeader/parts block (javac unused).
+                    lines.append(
+                        '// [translated] location-header slice not published '
+                        '-- later setPropertyValue wins (ReadyAPI last-write)')
             else:
                 lines.append('{')
                 lines.extend([

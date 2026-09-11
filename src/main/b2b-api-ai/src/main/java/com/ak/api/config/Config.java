@@ -368,12 +368,47 @@ public final class Config {
      * bootstrapped so a failure fires ONE clear message instead of N
      * per-test {@code UnknownHostException} stacktraces.
      */
+    /** Placeholder sentinels a stubbed config ships with. */
+    private static final String[] PLACEHOLDER_VALUES = {
+            "__SET_ME__", "CHANGEME", "changeme", "your-value-here",
+            "<fill-in>", "TODO", "REPLACE_ME"
+    };
+
+    /**
+     * True when a config value is absent OR still a stub.
+     *
+     * A stub is not a value. `sf_config.assertion = __SET_ME__` is
+     * non-blank, so callers that only checked for blank sent the literal
+     * `__SET_ME__` to Salesforce as a JWT assertion and got back an opaque
+     * HTTP 400 invalid_client_id -- with no hint that the cause was an
+     * unedited config.
+     */
+    public static boolean isUnset(String value) {
+        if (value == null || value.isBlank()) {
+            return true;
+        }
+        for (String ph : PLACEHOLDER_VALUES) {
+            if (value.contains(ph)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public static java.util.List<String> preflightIssues() {
         java.util.List<String> issues = new java.util.ArrayList<>();
         String[] requiredKeys = {
                 "api_config.client_id",
                 "api_config.client_secret",
                 "api_config.api_end_point"
+        };
+        // Salesforce JWT-bearer keys. Checked separately below because a
+        // suite with no Salesforce steps must not be blocked by them --
+        // but a suite that DOES use them should hear about it before the
+        // run, not as HTTP 400 invalid_client_id halfway through.
+        String[] salesforceKeys = {
+                "sf_config.assertion",
+                "sf_config.token_end_point"
         };
         String[] placeholders = {
                 "__SET_ME__", "CHANGEME", "changeme", "your-value-here",
@@ -405,6 +440,21 @@ public final class Config {
                                 + "program_configuration.json with a real endpoint");
                         break;
                     }
+                }
+            }
+        }
+        // Salesforce JWT-bearer preflight. Reported only when the suite
+        // actually carries Salesforce config, so a suite without any
+        // Salesforce steps is not blocked by keys it never uses.
+        boolean usesSalesforce = !get("sf_config.token_route", "").isEmpty()
+                || !get("sf_config.grant_type", "").isEmpty();
+        if (usesSalesforce) {
+            for (String key : salesforceKeys) {
+                if (isUnset(get(key, ""))) {
+                    issues.add("config key `" + key + "` is missing or still a "
+                            + "placeholder -- the Salesforce JWT token request "
+                            + "will return HTTP 400 invalid_client_id and every "
+                            + "Salesforce step after it will fail");
                 }
             }
         }
