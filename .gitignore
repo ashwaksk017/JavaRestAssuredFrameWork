@@ -71,7 +71,11 @@ src/main/resources/test_data.example.properties
 # Raw ReadyAPI project exports: Hilton endpoint paths, test-case IDs and
 # hardcoded test emails. The converter reads them locally; they are not
 # needed to build or read the framework.
-src/main/b2b-api-ai/tools/ra_converter/input/
+# Contents only, so the folder stays visible with its README -- git does
+# not descend into an excluded DIRECTORY, so a negation inside one never
+# applies.
+src/main/b2b-api-ai/tools/ra_converter/input/*
+!src/main/b2b-api-ai/tools/ra_converter/input/README.md
 # Working snapshots taken during the refactor session.
 src/main/b2b-api-ai/_rearch_snapshot/
 # Env config -- ships stubbed with __SET_ME__, but never track it.

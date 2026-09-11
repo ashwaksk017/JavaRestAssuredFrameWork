@@ -1,5 +1,8 @@
 # SoapUI project XMLs are inputs, not converter code. Keep local.
-input/
+# Contents only -- git does not descend into an excluded DIRECTORY, so a
+# negation for a file inside `input/` would never apply.
+input/*
+!input/README.md
 
 # Python bytecode cache
 __pycache__/
