@@ -72,6 +72,7 @@ public final class RestStep {
     private static final Logger LOG = LoggerFactory.getLogger(RestStep.class);
     private static final long DEFAULT_RETRY_DEADLINE_MS = 15_000L;
     private static final int BODY_LOG_LIMIT = 800;
+
     private static final ThreadLocal<String> LAST_RESOLVED_BODY =
             ThreadLocal.withInitial(() -> "");
 
@@ -104,6 +105,24 @@ public final class RestStep {
         this.testCaseId = testCaseId;
     }
 
+    /**
+     * Cap a payload for logging.
+     *
+     * <p>The RESPONSE body was capped at {@link #BODY_LOG_LIMIT} but the two
+     * REQUEST-body logs were not, so an oversized request flooded the log
+     * while a response of the same size was truncated. Both request logs
+     * also print the SAME payload -- once after placeholder resolution and
+     * once as it goes out -- so an uncapped body landed in the log twice
+     * per step.</p>
+     */
+    static String capForLog(String s) {
+        if (s == null) {
+            return "<null>";
+        }
+        return s.length() > BODY_LOG_LIMIT
+                ? s.substring(0, BODY_LOG_LIMIT) + "... (truncated)"
+                : s;
+    }
     public static RestStep exec(Map<String, String> ctx, Map<String, String> row,
                                 SoftAssert softAssert,
                                 RestLoggerUtilityDataHolder holder,
@@ -272,7 +291,7 @@ public final class RestStep {
                     RestUtilities.getRequestTemplate(templateResource),
                     ImportedScenario.mergedRow(row, resolveCtx), false);
             LOG.info(" .. [after-mapJsonValues] step={} ({} chars): {}",
-                    stepName, mapped.length(), mapped);
+                    stepName, mapped.length(), capForLog(mapped));
             body = PlaceholderResolver.resolveAll(mapped, resolveCtx);
         }
         LAST_RESOLVED_BODY.set(body);
@@ -294,7 +313,8 @@ public final class RestStep {
             }
         }
         if (!body.isEmpty()) {
-            LOG.info(" .. request body ({} chars): {}", body.length(), body);
+            LOG.info(" .. request body ({} chars): {}", body.length(),
+                    capForLog(body));
         }
 
         final String bodyForCall = body;
@@ -848,9 +868,7 @@ public final class RestStep {
     private void logTruncatedBody(Response res) {
         String body = RestUtilities.getResponseAsString(res);
         if (body == null) body = "<null>";
-        if (body.length() > BODY_LOG_LIMIT) {
-            body = body.substring(0, BODY_LOG_LIMIT) + "... (truncated)";
-        }
+        body = capForLog(body);
         if (res.getStatusCode() >= 400) {
             LOG.warn(" .. response body (HTTP {}): {}", res.getStatusCode(), body);
         } else {

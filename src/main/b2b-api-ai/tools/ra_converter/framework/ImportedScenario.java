@@ -596,12 +596,21 @@ public final class ImportedScenario {
             LOG.info(" .. [ctx@{}] <no Properties/tokenId keys>", tag);
             return;
         }
+        // Full dump only at DEBUG. This fires before AND after regen on
+        // every REST step, and ctx carries 450+ keys by mid-suite, so at
+        // INFO it emitted roughly 950 lines per step -- enough to truncate
+        // a run log and bury the request/response lines that matter.
+        if (!LOG.isDebugEnabled()) {
+            LOG.info(" .. [ctx@{}] {} keys (enable DEBUG on com.ak.api"
+                    + " for the full dump)", tag, sorted.size());
+            return;
+        }
         StringBuilder sb = new StringBuilder(sorted.size() * 40);
         for (Map.Entry<String, String> e : sorted.entrySet()) {
             sb.append("\n     ").append(e.getKey()).append(" = ")
                     .append(e.getValue());
         }
-        LOG.info(" .. [ctx@{}] ({} keys):{}", tag, sorted.size(), sb);
+        LOG.debug(" .. [ctx@{}] ({} keys):{}", tag, sorted.size(), sb);
     }
 
     /**

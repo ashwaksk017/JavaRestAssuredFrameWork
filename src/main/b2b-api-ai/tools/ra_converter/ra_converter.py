@@ -8804,12 +8804,18 @@ public final class TestSupport {{
             log.info(" .. [ctx@{{}}] <no Properties/tokenId keys>", tag);
             return;
         }}
+        // Full dump only at DEBUG -- see ImportedScenario.traceCtx for why.
+        if (!log.isDebugEnabled()) {{
+            log.info(" .. [ctx@{{}}] {{}} keys (enable DEBUG on com.ak.api"
+                    + " for the full dump)", tag, sorted.size());
+            return;
+        }}
         StringBuilder sb = new StringBuilder(sorted.size() * 40);
         for (Map.Entry<String, String> e : sorted.entrySet()) {{
             sb.append("\\n     ").append(e.getKey()).append(" = ")
               .append(e.getValue());
         }}
-        log.info(" .. [ctx@{{}}] ({{}} keys):{{}}", tag, sorted.size(), sb);
+        log.debug(" .. [ctx@{{}}] ({{}} keys):{{}}", tag, sorted.size(), sb);
     }}
 
     /**
