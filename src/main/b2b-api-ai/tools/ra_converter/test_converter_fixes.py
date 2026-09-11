@@ -1426,3 +1426,68 @@ def test_literal_fields_excluded_from_random_generation():
     assert 'putEnvScoped(ctx, "Properties.topicenv"' in java, java
     assert 'putExtracted(ctx, "Properties.Domain", "explorer.de")' in java, java
     assert java.index("generateStandard") < java.index("putEnvScoped"), java
+
+
+# ---------------------------------------------------------------------------
+# Stale author-editable framework files
+#
+# `_AUTHOR_EDITABLE_BASENAMES` are SKIP-IF-EXISTS so author edits survive a
+# reconvert. That silently shipped a broken tree: adding `putEnvScoped` /
+# `envMap` to ImportedScenario meant every EXISTING checkout kept its old
+# copy, the emitted ScenarioSteps called a method that was not there, and
+# `mvn compile` failed -- surfacing as "cannot find symbol" on every
+# OnboardingFlow* entry class, because they all extend it.
+# ---------------------------------------------------------------------------
+
+def test_rev_marker_detects_stale_file(tmp_path):
+    """A bumped framework-rev means refresh, whatever changed inside."""
+    old = tmp_path / "CtxFields.java"
+    old.write_text("package p;\n// ra_converter-framework-rev: 1\nclass X {}\n",
+                   encoding="utf8")
+    bundled = "package p;\n// ra_converter-framework-rev: 2\nclass X {}\n"
+    assert ra_converter._staleness_reason(str(old), bundled)
+
+
+def test_rev_marker_absent_on_disk_is_stale(tmp_path):
+    """A copy from before markers existed reads as rev 0."""
+    old = tmp_path / "CtxFields.java"
+    old.write_text("package p;\nclass X {}\n", encoding="utf8")
+    bundled = "package p;\n// ra_converter-framework-rev: 2\nclass X {}\n"
+    reason = ra_converter._staleness_reason(str(old), bundled)
+    assert reason and "0" in reason
+
+
+def test_current_rev_is_left_alone(tmp_path):
+    """Author edits at the current rev must NOT be clobbered."""
+    cur = tmp_path / "CtxFields.java"
+    cur.write_text("package p;\n// ra_converter-framework-rev: 2\n"
+                   "class X { void myOwnEdit() {} }\n", encoding="utf8")
+    bundled = "package p;\n// ra_converter-framework-rev: 2\nclass X {}\n"
+    assert ra_converter._staleness_reason(str(cur), bundled) is None
+
+
+def test_missing_declaration_detected_when_no_rev_marker():
+    """Fallback for author-editable files emitted as strings (no marker)."""
+    import tempfile, os as _os
+    fd, path = tempfile.mkstemp(suffix=".java")
+    with _os.fdopen(fd, "w", encoding="utf8") as fh:
+        fh.write("package p;\nclass X { public void kept() {} }\n")
+    try:
+        bundled = ("package p;\nclass X { public void kept() {} "
+                   "public static void putEnvScoped(Map a) {} }\n")
+        reason = ra_converter._staleness_reason(path, bundled)
+        assert reason and "putEnvScoped" in reason
+    finally:
+        _os.remove(path)
+
+
+def test_every_bundled_framework_file_carries_a_rev():
+    """A bundled file with no rev cannot signal staleness to existing trees."""
+    import os as _os
+    fw = _os.path.join(_os.path.dirname(_os.path.abspath(ra_converter.__file__)),
+                       "framework")
+    for name in _os.listdir(fw):
+        if not name.endswith(".java"):
+            continue
+        with open(_os.path.join(fw, name), encoding="utf8") as fh:
+            assert ra_converter._FRAMEWORK_REV_RX.search(fh.read()), name

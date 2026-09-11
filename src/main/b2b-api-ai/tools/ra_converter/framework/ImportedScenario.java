@@ -1,5 +1,12 @@
 package com.ak.api.support;
 
+// ra_converter-framework-rev: 2
+// Bumped whenever this bundled file changes. The converter
+// SKIPS author-editable files that already exist, so without a
+// revision it cannot tell an author's edit from a copy left by
+// an older converter -- and an in-method change (no new symbol)
+// would silently never reach existing trees.
+
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;

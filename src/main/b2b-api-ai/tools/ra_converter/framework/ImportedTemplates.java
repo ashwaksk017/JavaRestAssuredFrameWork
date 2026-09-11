@@ -1,5 +1,12 @@
 package com.ak.api.support;
 
+// ra_converter-framework-rev: 2
+// Bumped whenever this bundled file changes. The converter
+// SKIPS author-editable files that already exist, so without a
+// revision it cannot tell an author's edit from a copy left by
+// an older converter -- and an in-method change (no new symbol)
+// would silently never reach existing trees.
+
 /**
  * Resolves {@code Templates.CONSTANT} for the suite bound on this thread
  * so framework-level {@code ScenarioSteps} can share choreography across

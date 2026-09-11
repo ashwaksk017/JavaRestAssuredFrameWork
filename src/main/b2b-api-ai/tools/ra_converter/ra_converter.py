@@ -5309,6 +5309,81 @@ def _catalog_java_bodies(catalog: dict) -> list[str]:
     return texts
 
 
+# Method declarations in a bundled framework file, e.g.
+#     public static void putEnvScoped(Map<String, String> ctx, ...)
+# Deliberately avoids the \b escape: a literal backspace has been baked into
+# this file twice by shell heredocs, and it matches nothing while looking fine.
+_JAVA_DECL_RX = re.compile(
+    r"(?:public|protected|private)\s+(?:static\s+)?(?:final\s+)?"
+    r"[\w.<>\[\], ?]+?\s+(\w+)\s*\(", re.M)
+
+_DECL_SKIP = {"if", "for", "while", "switch", "catch", "return", "new"}
+
+
+_FRAMEWORK_REV_RX = re.compile(r"ra_converter-framework-rev:\s*(\d+)")
+
+
+def _staleness_reason(existing_path: str, bundled: str):
+    """Why the on-disk author-editable file cannot serve the code we emit.
+
+    Two independent signals, because one alone is not enough:
+
+    * Revision marker -- catches ANY change to a bundled framework file,
+      including one made entirely inside an existing method. The
+      `seedFromRow` underscore-column fix added no new symbol, so a
+      declaration check could not see it and the fix would never have
+      reached an existing tree.
+    * Missing declarations -- catches files with no marker at all (the
+      author-editable types emitted as strings rather than bundled), where
+      a newly emitted call would fail to compile.
+
+    Returns a human-readable reason, or None when the file is current.
+    """
+    try:
+        with open(existing_path, encoding="utf-8", errors="replace") as fh:
+            on_disk = fh.read()
+    except OSError:
+        return None
+
+    want = _FRAMEWORK_REV_RX.search(bundled)
+    if want:
+        have = _FRAMEWORK_REV_RX.search(on_disk)
+        have_rev = int(have.group(1)) if have else 0
+        if have_rev < int(want.group(1)):
+            return "framework-rev %s < bundled %s" % (have_rev, want.group(1))
+        return None
+
+    missing = _missing_declarations(existing_path, bundled)
+    if missing:
+        return "missing " + ", ".join(sorted(missing))
+    return None
+
+
+def _missing_declarations(existing_path: str, bundled: str) -> set:
+    """Method names the bundled file declares that the on-disk file lacks.
+
+    Used to tell a genuinely author-edited framework file (keep it) from a
+    stale one left by an older converter (refresh it). Name-level, not
+    signature-level: an overload difference is not what breaks these trees,
+    a wholly absent method is.
+    """
+    try:
+        with open(existing_path, encoding="utf-8", errors="replace") as fh:
+            on_disk = fh.read()
+    except OSError:
+        return set()
+    missing = set()
+    for name in set(_JAVA_DECL_RX.findall(bundled)):
+        if name in _DECL_SKIP:
+            continue
+        # "declared or referenced anywhere" is the right test: the point is
+        # whether javac can resolve the call, not where it is defined.
+        if not re.search(r"(?<![A-Za-z0-9_])" + re.escape(name) + r"\s*\(",
+                         on_disk):
+            missing.add(name)
+    return missing
+
+
 class Emitter:
     def __init__(self, output_dir: str, package_root: str = "com.ak.api",
                  ledger: Optional[AuditLedger] = None,
@@ -5497,10 +5572,34 @@ class Emitter:
         # so the intent is clear in the conversion tail.
         if os.path.basename(rel_path) in self._AUTHOR_EDITABLE_BASENAMES:
             if os.path.exists(abs_path):
-                print(f"[ra_converter] SKIP (author-editable, exists): {rel_path}"
-                      f" -- delete file to re-emit the bundled version.")
-                self.written.append(rel_path)
-                return abs_path
+                # SKIP only while the on-disk copy can still satisfy the code
+                # we are emitting. When the bundled version declares a method
+                # the existing file does not have, that file is STALE: the
+                # generated suites will call a symbol it cannot resolve and
+                # `mvn compile` dies with `cannot find symbol` a long way from
+                # the cause. Refresh it instead, keeping the old copy.
+                #
+                # This is not hypothetical -- shipping `putEnvScoped` / `envMap`
+                # on ImportedScenario broke every tree that already had the
+                # previous ImportedScenario.java, because SKIP meant the new
+                # methods never landed.
+                reason = _staleness_reason(abs_path, content)
+                if reason:
+                    import shutil
+                    backup = abs_path + ".stale.orig"
+                    try:
+                        shutil.copyfile(abs_path, backup)
+                        kept = " previous copy kept as " + os.path.basename(backup) + "."
+                    except OSError as exc:
+                        kept = " (could not back up: %s)" % exc
+                    print(f"[ra_converter] REFRESH (stale author-editable): "
+                          f"{rel_path} -- {reason}.{kept}")
+                    # fall through and write the bundled version
+                else:
+                    print(f"[ra_converter] SKIP (author-editable, exists): {rel_path}"
+                          f" -- delete file to re-emit the bundled version.")
+                    self.written.append(rel_path)
+                    return abs_path
         # Windows caps traditional paths at MAX_PATH (260 chars). Suite +
         # long test-case names easily overflow that. `\\?\` prefixes tell
         # Windows to skip the check; harmless everywhere else.
