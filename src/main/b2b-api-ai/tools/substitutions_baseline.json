@@ -2,7 +2,8 @@
   "_comment": "Placeholders / refs with no producer, each traced to a cause. NOT listed here = build fails.",
   "accepted_dollar_refs": {
     "Properties#generatedemailAddress": "PlaceholderResolver.resolveDollarRefs maps '#'->'.' at runtime, resolving Properties.generatedemailAddress.",
-    "Properties#travelAgentID": "Same: resolved at runtime via '#'->'.'."
+    "Properties#travelAgentID": "Same: resolved at runtime via '#'->'.'.",
+    "get_partner_account#Respons['accountID']": "ReadyAPI source TYPO: the ref is written `#Respons['accountID']` -- missing the `e` and the `#$` separator, so it is not a valid ${step#Response#path} ref. ReadyAPI cannot resolve it either. Report to the suite owner; the converter correctly leaves it literal rather than guessing."
   },
   "accepted_placeholders": {
     "JDBC_validate_otp_after_request_Response_ACCOUNT_MEMBER_INTERNAL_SECURITY_EMAIL_OTP": "OPEN GAP (1x, post_confirm_validation template): a JDBC step's response column referenced from a request body; the JDBC result is not published under this key.",

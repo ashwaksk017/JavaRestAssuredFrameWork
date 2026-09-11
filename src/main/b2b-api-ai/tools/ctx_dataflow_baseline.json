@@ -1,6 +1,10 @@
 {
   "_comment": "Reads with no producer in their chain that were each traced to the ReadyAPI source, not to the converter. A key NOT listed here fails the build.",
   "accepted": {
+    "PropertiesaccountID.accountID": {
+      "count": 3,
+      "reason": "ReadyAPI source: case B2B-4100_amex_backbook_freelist_pan_expire has NO PropertiesaccountID step. Its 14 steps go straight from http_request_200_createAccount (which asserts HTTP 400 -- a negative test) to get_partner_account, whose accountId param references a step that does not exist in the case. ReadyAPI resolves it empty too."
+    },
     "activate_account.accountId": {
       "count": 3,
       "reason": "ReadyAPI source: step exists but nothing publishes an accountId property on it."
@@ -8,6 +12,10 @@
     "employeeProp.hilton-member-id": {
       "count": 3,
       "reason": "ReadyAPI source: step employeeProp is not present in B2B-3233_post_email_domain_travel_coordinator."
+    },
+    "get_request_200_member_details_Response__0__memberId": {
+      "count": 3,
+      "reason": "ReadyAPI source: same case, same shape -- get_request_200_member_details is not one of its steps. Dangling cross-step reference."
     },
     "http_request_200_2.accountId": {
       "count": 6,

@@ -1597,6 +1597,114 @@ def translate(script: str, response_var_by_step: dict[str, str],
         _mark("location_header_slice")
         consumed = True
 
+    # ---- Triple-quoted literal assigned to a def, then interpolated into
+    # SQL:  def honorsSummary = '''{ "summary": {...} }'''
+    # The JDBC flattener turns the interpolation into `#honorsSummary#`, but
+    # nothing emitted the literal, so the INSERT went out with the
+    # placeholder as its value. Runs before the JDBC emit for the same
+    # ordering reason as the SimpleDateFormat block below.
+    _TRIPLE_STR_RX = re.compile(
+        r"def\s+(?P<var>\w+)\s*=\s*(?P<q>'{3}|\"{3})(?P<body>.*?)(?P=q)",
+        re.S)
+    _triple_emitted = []
+    for m in _TRIPLE_STR_RX.finditer(script):
+        var = m.group("var")
+        if var in _triple_emitted:
+            continue
+        # Escape for a Java string literal. Backslash FIRST, or the
+        # escapes added below get double-escaped in turn.
+        _bs = chr(92)
+        _dq = chr(34)
+        lit = (m.group("body")
+               .replace(_bs, _bs + _bs)
+               .replace(_dq, _bs + _dq)
+               .replace(chr(13), "")
+               .replace(chr(10), _bs + "n"))
+        if not _triple_emitted:
+            lines.append("{ // [groovy] triple-quoted literal")
+        _triple_emitted.append(var)
+        lines.append(f'    String {var} = "{lit}";')
+        lines.append(f'    TestSupport.putExtracted(ctx, "{var}", {var});')
+    if _triple_emitted:
+        lines.append("}")
+        _mark("groovy_triple_quoted_literal")
+        consumed = True
+
+    # NOTE ON ORDER: this must run BEFORE the JDBC recognizer. The SQL it
+    # feeds is built earlier in `lines`, so emitting the computation after
+    # it produced a read-before-write -- the UPDATE went out with empty
+    # timestamps even though the values were computed a few lines below.
+    # ---- SimpleDateFormat reformat: parse one pattern, emit another.
+    #
+    #     String createdTimestamp = "Mon Aug 28 20:01:56 IST 2023"
+    #     SimpleDateFormat inputFormat = new SimpleDateFormat("E MMM dd HH:mm:ss z yyyy")
+    #     SimpleDateFormat sqlFormat   = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'")
+    #     Date d   = inputFormat.parse(createdTimestamp)
+    #     String o = sqlFormat.format(d)
+    #
+    # Neither java.time recognizer above matches this -- they key on
+    # LocalDate.now() / Instant.now() -- so the computed value was never
+    # emitted and the JDBC UPDATE that consumes it received "".
+    # The delimiters must be matched as a PAIR. A SimpleDateFormat pattern
+    # routinely embeds single quotes to escape literals --
+    # "yyyy-MM-dd'T'HH:mm:ss'Z'" -- so a mixed ["'] class terminates at the
+    # first inner quote and the pattern is silently truncated.
+    _SDF_DECL_RX = re.compile(
+        r'SimpleDateFormat\s+(?P<name>\w+)\s*=\s*new\s+SimpleDateFormat\(\s*'
+        r'"(?P<pat>[^"]*)"\s*\)')
+    # Single-quoted form. Kept separate rather than alternated inside one
+    # pattern: a Groovy single-quoted pattern cannot itself contain a single
+    # quote, so the two cases have genuinely different bodies.
+    _SDF_DECL_SQ_RX = re.compile(
+        r"SimpleDateFormat\s+(?P<name>\w+)\s*=\s*new\s+SimpleDateFormat\(\s*"
+        r"'(?P<pat>[^']*)'\s*\)")
+    _STR_LIT_RX = re.compile(
+        r'(?:String|def)\s+(?P<var>\w+)\s*=\s*"(?P<val>[^"]*)"\s*;?')
+    _SDF_PARSE_RX = re.compile(
+        r'(?:Date|def)\s+(?P<var>\w+)\s*=\s*(?P<fmt>\w+)\.parse\(\s*(?P<src>[^)]+?)\s*\)')
+    _SDF_FORMAT_RX = re.compile(
+        r'(?:String|def)\s+(?P<var>\w+)\s*=\s*(?P<fmt>\w+)\.format\(\s*(?P<src>\w+)\s*\)')
+
+    _sdf_pat = {m.group("name"): m.group("pat")
+                for rx in (_SDF_DECL_RX, _SDF_DECL_SQ_RX)
+                for m in rx.finditer(script)}
+    if _sdf_pat:
+        _str_lit = {m.group("var"): m.group("val")
+                    for m in _STR_LIT_RX.finditer(script)}
+        _parsed = {m.group("var"): (m.group("fmt"), m.group("src").strip())
+                   for m in _SDF_PARSE_RX.finditer(script)}
+        _sdf_emitted = []
+        for m in _SDF_FORMAT_RX.finditer(script):
+            out_var, out_fmt, src_var = (m.group("var"), m.group("fmt"),
+                                         m.group("src"))
+            if out_fmt not in _sdf_pat or src_var not in _parsed:
+                continue
+            in_fmt, in_src = _parsed[src_var]
+            if in_fmt not in _sdf_pat:
+                continue
+            if in_src in _str_lit:
+                src_expr = '"' + _str_lit[in_src].replace('"', '\\"') + '"'
+            else:
+                # Not a literal -- read whatever earlier emit published.
+                src_expr = f'TestSupport.ctxGet(ctx, "{in_src}")'
+            _in_esc = _sdf_pat[in_fmt].replace('"', '\\"')
+            _out_esc = _sdf_pat[out_fmt].replace('"', '\\"')
+            if not _sdf_emitted:
+                lines.append('{ // [groovy] SimpleDateFormat reformat')
+            _sdf_emitted.append(out_var)
+            lines.append(
+                f'    String {out_var} = new java.text.SimpleDateFormat('
+                f'"{_out_esc}").format(new java.text.SimpleDateFormat('
+                f'"{_in_esc}").parse({src_expr}));')
+            # Publish bare: the SQL that consumes it was flattened to
+            # `#<var>#`, which resolves against ctx by that name.
+            lines.append(
+                f'    TestSupport.putExtracted(ctx, "{out_var}", {out_var});')
+        if _sdf_emitted:
+            lines.append('}')
+            _mark("groovy_simpledateformat")
+            consumed = True
+
     # ---- Random data generator patterns (email + username + string)
     # Wrap in a `{}` block so the local `genUsername`/`genEmail`/`genValue`
     # declarations don't collide if the same generator Groovy block appears
