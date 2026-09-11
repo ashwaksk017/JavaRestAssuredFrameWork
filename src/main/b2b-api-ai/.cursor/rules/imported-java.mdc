@@ -1,0 +1,23 @@
+---
+description: Stop edits to generated imported tests; route fixes to converter or helpers.
+globs: "**/tests/imported/**/*.java,**/support/programaccountregression/**,**/support/accountmemberregression/**,**/support/smbtohwsconsumerregressione2e/**,**/csv/programaccountregression/**,**/csv/accountmemberregression/**,**/csv/smbtohwsconsumerregressione2e/**"
+alwaysApply: false
+---
+
+# Generated import files
+
+These files are **emit output**. A later `--clean` convert deletes them.
+
+```text
+❌ Edit B2B7816*Support.java to hardcode an email
+✅ Overlay Properties.Email in CtxFields / converter identity pack, then reconvert
+```
+
+```text
+❌ Change jsonExists to jsonAbsent in one imported test
+✅ Fix Existence Match emit in ra_converter.py + add a contract test
+```
+
+Runtime-only bugs (token refresh, OTP pad, SQL gate) belong in helpers, not in `*Support.java`.
+Replicate ReadyAPI (last `setPropertyValue` wins). Do not invent a different extract order in Support.
+For a confused emit, use skill `readyapi-restassured-migration`.

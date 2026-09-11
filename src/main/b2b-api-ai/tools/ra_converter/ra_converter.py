@@ -2140,6 +2140,39 @@ _STEP_RESPONSE_RX = re.compile(
     r"\$\{([A-Za-z0-9_ -]+?)#Response(AsXml|AsJson|Headers|AsHtml)?#([^}]+)\}")
 
 
+# The BARE whole-response ref: `${Step#Response}` with no third segment.
+# `_STEP_RESPONSE_RX` requires `#Response#<field>`, so this form matched
+# nothing -- no extract was emitted, and the Groovy that reads it got "".
+# That is how Salesforce/partition responses reached later steps empty.
+_STEP_RESPONSE_BARE_RX = re.compile(
+    r"\$\{([A-Za-z0-9_ -]+?)#Response(AsXml|AsJson|Headers|AsHtml)?\}")
+
+
+# Groovy's own way of asking for a prior step's whole response:
+#   testRunner.testCase.getTestStepByName("STEP").getPropertyValue('response')
+# No `${...}` involved, so neither response regex above sees it and no
+# extract is emitted -- the third syntax for the same value.
+_STEP_RESPONSE_GROOVY_RX = re.compile(
+    r"""getTestStepByName\(\s*['"]([^'"]+)['"]\s*\)"""
+    r"""(?:\s*\.\s*\w+\(\))*"""
+    r"""\s*\.\s*getPropertyValue\(\s*['"]response['"]""",
+    re.IGNORECASE)
+
+
+# The same lookup written as TWO statements -- bind the step to a local,
+# then read its response off that local:
+#     def testStep = testRunner.testCase.getTestStepByName("STEP")
+#     def response = testStep.getPropertyValue("Response")
+# The adjacent-call regex above cannot see this, so no extract was emitted
+# and the response arrived empty.
+_STEP_HANDLE_BIND_RX = re.compile(
+    r"""(?:def\s+)?(\w+)\s*=\s*[^
+]*?getTestStepByName\(\s*['"]([^'"]+)['"]\s*\)""")
+_STEP_HANDLE_RESPONSE_RX = re.compile(
+    r"""(\w+)\s*\.\s*getPropertyValue\(\s*['"]response['"]""",
+    re.IGNORECASE)
+
+
 def _texts_for_response_ref_scan(st) -> list[str]:
     """Bodies / scripts / assertion expected values that may contain
     `${otherStep#Response#$['field']}` (ReadyAPI JsonPath Match content
@@ -2147,6 +2180,12 @@ def _texts_for_response_ref_scan(st) -> list[str]:
     texts: list[str] = []
     if isinstance(st, RestStep):
         texts.append(st.request_body or "")
+        # The URL itself can carry the ref -- `/sobjects/Account/${step#
+        # Response#$['alternateAccounts']['salesforceId']}`. Scanning only
+        # the parameter bags missed those, so the producing step emitted no
+        # extract and the id reached the request empty.
+        texts.append(st.resource_path or "")
+        texts.append(st.original_uri or "")
         for bag in (st.query_params, st.headers, st.path_params):
             if bag:
                 texts.extend(v or "" for v in bag.values())
@@ -2210,6 +2249,30 @@ def _needed_response_extracts(current_step_name: str, case: "TestCase") -> dict[
             else:
                 extract_field = field_key.replace("_", ".")
             needed[ph_key] = extract_field
+        # Bare `${Step#Response}` -- the whole body, no field path.
+        for m in _STEP_RESPONSE_BARE_RX.finditer(blob):
+            src_sanitized = re.sub(r"[^A-Za-z0-9_]", "_", m.group(1).strip())
+            if src_sanitized != current_sanitized:
+                continue
+            needed.setdefault(f"{src_sanitized}_Response", "")
+        # Groovy `getTestStepByName("X").getPropertyValue('response')`.
+        for m in _STEP_RESPONSE_GROOVY_RX.finditer(blob):
+            src_sanitized = re.sub(r"[^A-Za-z0-9_]", "_", m.group(1).strip())
+            if src_sanitized != current_sanitized:
+                continue
+            needed.setdefault(f"{src_sanitized}_Response", "")
+        # ... and the two-statement form via a bound local.
+        handles = {m.group(1): m.group(2)
+                   for m in _STEP_HANDLE_BIND_RX.finditer(blob)}
+        if handles:
+            for m in _STEP_HANDLE_RESPONSE_RX.finditer(blob):
+                src_step = handles.get(m.group(1))
+                if not src_step:
+                    continue
+                src_sanitized = re.sub(r"[^A-Za-z0-9_]", "_", src_step.strip())
+                if src_sanitized != current_sanitized:
+                    continue
+                needed.setdefault(f"{src_sanitized}_Response", "")
     return needed
 
 
@@ -2374,8 +2437,13 @@ def soapui_expr_to_java(expr: str,
             # the key -- same contract as groovy_translator.
             if variant == "Headers":
                 header = path_raw.strip().replace('"', '\\"')
+                # Key must match the auto-extract, which publishes
+                # `<step>_Response_Header_<name>`. A `<step>.Header_<name>`
+                # key was never written by any emit path, so the read
+                # silently returned "" and the header never reached the
+                # request.
                 return _stash(
-                    f'TestSupport.ctxGet(ctx, "{step}.Header_{header}")')
+                    f'TestSupport.ctxGet(ctx, "{step}_Response_Header_{header}")')
             if variant in ("AsXml", "AsHtml"):
                 xpath_expr = path_raw
                 if "declare namespace" in xpath_expr and ";" in xpath_expr:
@@ -2386,10 +2454,12 @@ def soapui_expr_to_java(expr: str,
                     leaf = leaf.split(":", 1)[-1]
                 leaf = re.sub(r"\[\d+\]", "", leaf).strip() or "unknown"
                 key_field = re.sub(r"[^A-Za-z0-9_]", "_", leaf)
-                return _stash(f'TestSupport.ctxGet(ctx, "{step}.{key_field}")')
+                return _stash(
+                    f'TestSupport.ctxGet(ctx, "{step}_Response_{key_field}")')
             path = _translate_soapui_jsonpath(path_raw)
             key_field = re.sub(r"[^A-Za-z0-9_]", "_", path)
-            return _stash(f'TestSupport.ctxGet(ctx, "{step}.{key_field}")')
+            return _stash(
+                f'TestSupport.ctxGet(ctx, "{step}_Response_{key_field}")')
         if variant == "Headers":
             # Response header lookup -- SoapUI ${step#ResponseHeaders#Name}
             # returns the header value; RestAssured Response exposes
@@ -2454,7 +2524,8 @@ def soapui_expr_to_java(expr: str,
                 f'com.ak.api.rest.utilities.RestUtilities'
                 f'.safeJsonExtract({resp_var}, "{path}")')
         key_field = re.sub(r"[^A-Za-z0-9_]", "_", path)
-        return _stash(f'TestSupport.ctxGet(ctx, "{step}.{key_field}")')
+        return _stash(
+            f'TestSupport.ctxGet(ctx, "{step}_Response_{key_field}")')
     e = _STEP_JSONPATH_SHORTHAND_RX.sub(_step_jsonpath_shorthand, e)
     e = _STEP_PROP_RX.sub(
         lambda m: _stash(
@@ -2487,6 +2558,26 @@ def soapui_expr_to_java(expr: str,
     if len(pieces) == 1:
         return pieces[0]
     return " + ".join(pieces)
+
+
+def assertion_fallback_literal(expected: str) -> str:
+    """Java literal for an assertion's expected value, refs translated.
+
+    The raw ReadyAPI value was embedded verbatim, so a fallback such as
+    `${http_request_200_createAccount#Request#$['contactInfo']['name']}`
+    reached runtime unchanged. `PlaceholderResolver.resolveDollarRefs`
+    cannot match that shape -- its key pattern excludes `[`, `'` and `$` --
+    so the assertion compared the LITERAL against the response and failed
+    every time. The XML uses `#Request#` 117 times.
+
+    Translating to the `#step_RawRequest_field#` form the rest of the
+    emitter uses means `resolveHashAtRefs` resolves it from the same ctx
+    keys the auto-extract publishes.
+    """
+    if not expected or "${" not in expected:
+        return _jlit(expected)
+    translated, _ph = soapui_body_to_placeholders(expected)
+    return _jlit(translated)
 
 
 def soapui_body_to_placeholders(body: str) -> tuple[str, list[str]]:
@@ -5012,11 +5103,57 @@ def _extract_paren_args(text: str, open_idx: int) -> tuple[str, int]:
     return text[open_idx + 1:], len(text)
 
 
-def _find_client_calls(text: str) -> list[tuple[str, str]]:
-    """(methodName, rawArgList) for every client/guests/accounts/members.foo(...) call."""
+# java.lang.Object methods can never be declared on the client interface.
+# `getClass` is final, so declaring it is a hard compile error -- and the
+# proxy in DomainApis legitimately calls `raw.getClass()`, which the
+# call-site scan would otherwise read as a client operation.
+_OBJECT_METHODS = frozenset({
+    "getClass", "hashCode", "equals", "toString", "clone", "finalize",
+    "notify", "notifyAll", "wait",
+})
+
+
+# Newline as a name, so generated-Java templates can splice it without a
+# backslash escape -- an escape that loses its raw-string context bakes a
+# control character straight into the emitter.
+NL = chr(10)
+
+# One fluent-name allocator for the WHOLE run.
+#
+# Each suite used to collect votes with its own allocator, and the extra
+# suites' names were re-canonicalised into the lead's afterwards. The
+# per-case emit then ran against the merged allocator, so a non-lead suite's
+# body could resolve to a name carrying no vote from its own suite: absent
+# from `_shared_phases` (too few votes) and skipped by `_suite_local_phases`
+# (wrong prefix). 542 of 566 gate rejections in a two-suite run were exactly
+# that -- `enrollGuest3`, used by 201 cases, ended up on no base at all.
+#
+# Sharing one allocator from before the first collect makes a given body get
+# the same name in every pass and every suite, so votes and emits agree.
+_RUN_FLUENT_REUSE = None
+
+
+def _begin_fluent_run() -> None:
+    """Start a run-scoped allocator shared by every suite's emitter."""
+    global _RUN_FLUENT_REUSE
+    _here = os.path.dirname(os.path.abspath(__file__))
+    if _here not in sys.path:
+        sys.path.insert(0, _here)
+    from method_body_reuse import FluentMethodReuse
+    _RUN_FLUENT_REUSE = FluentMethodReuse()
+
+
+def _find_client_calls(text: str,
+                       needles: tuple = None) -> list[tuple[str, str]]:
+    """(methodName, rawArgList) for every client/guests/accounts/members.foo(...) call.
+
+    `needles` overrides the receivers to look for, so a caller that has
+    worked out how THIS file reaches the client (a field, or an accessor
+    such as `apis.client().`) can find those call sites too.
+    """
     out: list[tuple[str, str]] = []
     i = 0
-    needles = ("client.", "guests.", "accounts.", "members.")
+    needles = needles or ("client.", "guests.", "accounts.", "members.")
     while True:
         j = -1
         needle = None
@@ -5223,10 +5360,26 @@ class Emitter:
         self._fluent_phase_votes: dict = defaultdict(lambda: defaultdict(list))
         self._fluent_verify_votes: dict = defaultdict(lambda: defaultdict(list))
         self._fluent_boot_votes: dict = defaultdict(list)
+        # Suites this process re-converted. A catalog phase whose recorded
+        # cases all live in one of these suites, yet drew no vote this run,
+        # is dead: the suite that put it there no longer renders it.
+        self._converted_suites: set = set()
+        self._pruned_shared_phases: set = set()
+        self._pruned_shared_verifies: set = set()
         self._shared_phases: dict = {}
         self._shared_verifies: dict = {}
         self._shared_bootstrap: dict | None = None
-        self._last_fluent_shared_entry: bool = False
+        # Every bootstrap shared by >=2 cases, best-voted first. Keeping only
+        # one meant a case whose phases were ALL shared still fell back to a
+        # per-case Support class purely because its setup differed.
+        self._shared_bootstraps: list = []
+        self._entry_class_names: list = []
+        self._framework_resp: list = []
+        self._suite_local_phase_index: dict = {}
+        self._suite_local_verify_index: dict = {}
+        # The shared entry class this case uses, or None when it needs
+        # its own Support type.
+        self._last_fluent_shared_entry = None
         self._fluent_method_reuse = None
         self._compare_reuse_applied = False
 
@@ -5264,6 +5417,7 @@ class Emitter:
         "ImportedScenario.java",
         "ImportedTemplates.java",
         "ImportedTestdataCleanup.java",
+        "TestThreadState.java",
     })
 
     def _write(self, rel_path: str, content: str) -> str:
@@ -5524,7 +5678,7 @@ public interface ImportedRestClient {{
         methods: dict[str, tuple[str, str]] = {}
 
         def add(name: str, params: str, prefer: bool = False) -> None:
-            if not name:
+            if not name or name in _OBJECT_METHODS:
                 return
             params = (params or "").strip()
             key = f"{name}|{_imported_client_type_sig(params)}"
@@ -5567,6 +5721,60 @@ public interface ImportedRestClient {{
                     continue
                 for name, args in _find_client_calls(text):
                     add(name, _infer_client_params(args))
+
+        # Every OTHER call site in the tree that reaches the client.
+        #
+        # The interface used to be built only from the catalog,
+        # support/scenario and rest/clients. But `domain/*Api` wrappers and
+        # the hand-written `dsl/` classes are tracked files that accumulate
+        # across every converted suite, and they call the client too.
+        # Converting a single XML -- or losing fluent_catalog.json -- dropped
+        # the declarations they still call, and `mvn compile` failed with
+        # "cannot find symbol" on code the converter itself had emitted.
+        #
+        # Rather than hard-coding directories or receiver names, scan every
+        # file that mentions ImportedRestClient and learn how the tree
+        # reaches the client: a field of that type (`client.foo(...)`) or an
+        # accessor returning it (`apis.client().foo(...)`).
+        #
+        # Receivers are pooled across the WHOLE tree, not per file: the
+        # `client()` accessor is declared in domain/DomainApis.java but
+        # called from dsl/CustomerOnboarding.java, so a per-file pass finds
+        # the declaration and the call site in different files and matches
+        # neither.
+        pkg_dir = os.path.join(
+            self.output_dir,
+            "src/main/java",
+            self.package_root.replace(".", "/"))
+        wrapper_rx = re.compile(
+            r"public Response (\w+)\(([^)]*)\)\s*\{\s*return\s+client\.(\w+)\(")
+        field_rx = re.compile(r"\bImportedRestClient\s+(\w+)\s*[;=,)]")
+        accessor_rx = re.compile(r"\bImportedRestClient\s+(\w+)\s*\(")
+        client_texts: list[str] = []
+        needles: set = set()
+        for dp, _dn, fns in os.walk(pkg_dir):
+            for fn in sorted(fns):
+                if not fn.endswith(".java"):
+                    continue
+                try:
+                    text = open(os.path.join(dp, fn), encoding="utf-8").read()
+                except OSError:
+                    continue
+                if "ImportedRestClient" not in text:
+                    continue
+                client_texts.append(text)
+                needles |= {f"{n}." for n in field_rx.findall(text)}
+                needles |= {f"{n}()." for n in accessor_rx.findall(text)}
+        for text in client_texts:
+            # A wrapper forwarding under the SAME name states the client
+            # signature exactly -- better than inferring it from arguments.
+            for m in wrapper_rx.finditer(text):
+                if m.group(1) == m.group(3):
+                    add(m.group(1), m.group(2).strip())
+            if not needles:
+                continue
+            for name, args in _find_client_calls(text, tuple(sorted(needles))):
+                add(name, _infer_client_params(args))
 
         rx = re.compile(r"public Response (\w+)\(([^)]*)\)")
         clients_dir = os.path.join(
@@ -7622,7 +7830,7 @@ public interface ImportedRestClient {{
             col_name = _multi_element_expected_col(
                 step_name, "msgcontent", idx, elem_name)
             v = f"{vsid}_msg{idx}"
-            fallback = _jlit(expected)
+            fallback = assertion_fallback_literal(expected)
             op_norm = operator.strip().lower()
             if op_norm not in ("=", "==", "equals", ""):
                 lines.append(
@@ -7692,7 +7900,7 @@ public interface ImportedRestClient {{
             col_name = _multi_element_expected_col(
                 step_name, "datameta", idx, elem_name)
             v = f"{vsid}_dm{idx}"
-            fallback = _jlit(expected)
+            fallback = assertion_fallback_literal(expected)
             lines.append(
                 f'String actual_{v} = com.ak.api.rest.utilities.RestUtilities'
                 f'.safeJsonExtract({response_var}, "{_jlit(path)}");')
@@ -9636,6 +9844,12 @@ public final class AuthHelper {{
         "ImportedScenario.java",
         "ImportedTemplates.java",
         "ImportedTestdataCleanup.java",
+        # ImportedScenario calls TestThreadState.softAssert()/holder(). Leaving
+        # it out of this list made every fresh convert emit an ImportedScenario
+        # that referenced a class nobody emitted -- `mvn clean compile` failed
+        # with "cannot find symbol: TestThreadState" on generated code the user
+        # never wrote.
+        "TestThreadState.java",
     )
 
     def emit_framework_support(self) -> list[str]:
@@ -10721,6 +10935,10 @@ public class {class_name} extends BaseApiTest {{
 
     def _method_reuse(self):
         """Body-first fluent names; shared across collect + emit for this run."""
+        if _RUN_FLUENT_REUSE is not None:
+            # One allocator for every suite -- see _begin_fluent_run.
+            self._fluent_method_reuse = _RUN_FLUENT_REUSE
+            return self._fluent_method_reuse
         if self._fluent_method_reuse is None:
             _here = os.path.dirname(os.path.abspath(__file__))
             if _here not in sys.path:
@@ -10757,6 +10975,9 @@ public class {class_name} extends BaseApiTest {{
                 "case": "catalog",
                 "body": body,
                 "resp": resp,
+                # Which suites put this here -- the prune needs it to tell a
+                # phase another suite still inherits from dead residue.
+                "cases": entry.get("cases") or [],
             })
         for vkey, entry in (catalog.get("verifies") or {}).items():
             parts = vkey.split(".", 1)
@@ -10773,6 +10994,7 @@ public class {class_name} extends BaseApiTest {{
                 "case": "catalog",
                 "body": body,
                 "resp": resp,
+                "cases": entry.get("cases") or [],
             })
         boot = catalog.get("bootstrap")
         if boot and boot.get("key"):
@@ -10793,6 +11015,8 @@ public class {class_name} extends BaseApiTest {{
         )
 
         self._method_reuse().seed_catalog(load_fluent_catalog())
+        if self.suite_name:
+            self._converted_suites.add(self.suite_name)
         saved = self.ledger
         self.ledger = _QuietLedger()
         try:
@@ -10803,8 +11027,25 @@ public class {class_name} extends BaseApiTest {{
                 self._current_case_obj = case
                 self._current_method = "collectSharedFluent"
                 self._reset_per_method_state()
+                # Must render the SHAPE the emit pass will render, or the
+                # vote is cast on a body no case ever produces.
+                #
+                # `emit_stop_checks` is not cosmetic: it gates the
+                # `__restStepIdx` guards AND, in `_prepare_method_steps`,
+                # whether token steps are hoisted. Collecting with True while
+                # `emit_test_class_per_suite` passes `bool(stop_markers)` --
+                # empty for every case outside a prefix-merged cluster --
+                # meant the shared body never matched the emitted one:
+                # `_shared_phase_matches` returned False for every phase, so
+                # no per-case class inherited anything, and the name allocator
+                # handed the same body a fresh suffix each pass
+                # (enrollGuest13 -> enrollGuest128).
+                #
+                # False is the shape the overwhelming majority of cases emit.
+                # Cases that DO carry stop markers still render a guarded body
+                # that matches nothing shared, and correctly inline it.
                 plan = self._fluent_render_groups(
-                    case, service_class_name, emit_stop_checks=True)
+                    case, service_class_name, emit_stop_checks=False)
                 prefix = f"{self.suite_name}/"
                 for fname, body in plan["flow_java"]:
                     key = phase_body_key(body)
@@ -10833,6 +11074,7 @@ public class {class_name} extends BaseApiTest {{
     def finalize_shared_fluent_phases(self) -> None:
         """Keep a phase/verify/bootstrap body when >=2 cases render it identically."""
         self._compare_reuse_before_java()
+        self._rekey_votes_to_allocator()
         self._shared_phases = {}
         self._shared_verifies = {}
         self._shared_bootstrap = None
@@ -10885,19 +11127,34 @@ public class {class_name} extends BaseApiTest {{
                 "meth": vmeth,
             }
 
-        boot_pick = pick(self._fluent_boot_votes)
-        if boot_pick:
-            _key, infos = boot_pick
+        self._prune_dead_catalog_entries()
+
+        # Every bootstrap variant that clears the same bar a phase does,
+        # most-used first. 115 distinct bootstraps exist in one suite; with
+        # only the top one kept, 95 cases whose every phase was shared still
+        # emitted a whole per-case Support class just to carry their setup.
+        self._shared_bootstraps = []
+        for _key, infos in sorted(
+                self._fluent_boot_votes.items(),
+                key=lambda kv: (-len(kv[1]), kv[0])):
+            # No >=2 bar here, unlike a phase. A phase shared by one case
+            # costs a method on a base every suite carries; a bootstrap costs
+            # one small entry class in this suite's own package. Requiring
+            # two left 52 cases owning a whole Support class for their setup.
             resp: list[str] = []
             for info in infos:
                 for n in info["resp"]:
                     if n not in resp:
                         resp.append(n)
-            self._shared_bootstrap = {
+            self._shared_bootstraps.append({
                 "body": infos[0]["body"],
                 "cases": {i["case"] for i in infos},
                 "resp": resp,
-            }
+            })
+        self._shared_bootstrap = (
+            self._shared_bootstraps[0] if self._shared_bootstraps else None)
+        self._entry_class_names = []
+        self._derive_entry_class_names()
 
         if shared_names:
             print(f"[ra_converter] shared fluent phases: {len(self._shared_phases)} "
@@ -10910,10 +11167,102 @@ public class {class_name} extends BaseApiTest {{
             print(f"[ra_converter] shared verify helpers: "
                   f"{len(self._shared_verifies)} "
                   f"({', '.join(f'{c}.{m}' for c, m in self._shared_verifies)})")
-        if self._shared_bootstrap:
-            print(f"[ra_converter] shared CustomerOnboarding.bootstrap: "
-                  f"{len(self._shared_bootstrap['cases'])} cases")
+        if self._shared_bootstraps:
+            print(f"[ra_converter] shared bootstraps: "
+                  f"{len(self._shared_bootstraps)} variant(s) -> entry class(es) "
+                  + ", ".join(
+                      f"{self.shared_entry_class(i)}"
+                      f"({len(b['cases'])} case(s))"
+                      for i, b in enumerate(self._shared_bootstraps[:8]))
+                  + ("..." if len(self._shared_bootstraps) > 8 else ""))
         self._save_fluent_catalog()
+
+    def _owning_suites(self, infos: list) -> set:
+        """Suites the catalog says put this entry here."""
+        out = set()
+        for info in infos:
+            for tagged in info.get("cases") or []:
+                suite, sep, _case = str(tagged).partition("/")
+                if sep and suite:
+                    out.add(suite)
+        return out
+
+    def _rekey_votes_to_allocator(self) -> None:
+        """Make the vote store agree with the name allocator.
+
+        `_compare_reuse_before_java` re-canonicalises names body-first, but it
+        rewrites `_shared_phases` only. The vote store kept the OLD names, so
+        `_suite_local_phases` indexed a name against a body the allocator had
+        since moved elsewhere. At emit the allocator returned a different name
+        for that body, the gate found a fingerprint mismatch, and the case
+        fell back to its own Support class -- 160 of 373 rejections in a
+        two-suite run.
+
+        Re-keying every vote through the same allocator makes the votes, the
+        shared phases and the suite-local index describe one naming.
+        """
+        reuse = self._method_reuse()
+        rekeyed: dict = defaultdict(lambda: defaultdict(list))
+        for fname, variants in self._fluent_phase_votes.items():
+            for key, infos in variants.items():
+                body = (infos[0].get("body") if infos else None) or []
+                canon = reuse.flow.reuse_or_allocate(fname, body)
+                rekeyed[canon][key].extend(infos)
+        self._fluent_phase_votes = rekeyed
+
+        rekeyed_v: dict = defaultdict(lambda: defaultdict(list))
+        for vkey, variants in self._fluent_verify_votes.items():
+            vcls, vmeth = (vkey if isinstance(vkey, tuple) and len(vkey) == 2
+                           else (str(vkey).split(".", 1) + ["verifyStep"])[:2])
+            for key, infos in variants.items():
+                body = (infos[0].get("body") if infos else None) or []
+                allocated = reuse.verify.reuse_or_allocate(
+                    f"{vcls}__{vmeth}", body)
+                rekeyed_v[(vcls, allocated.split("__", 1)[-1])][key].extend(infos)
+        self._fluent_verify_votes = rekeyed_v
+
+    def _prune_dead_catalog_entries(self) -> None:
+        """Drop shared methods that only the catalog still claims.
+
+        `_pick_shared_fluent_variant` deliberately keeps a phase whose only
+        vote is `case="catalog"`, because a suite that is NOT part of this
+        conversion may still inherit it from ScenarioSteps. But when the
+        suites that recorded the phase were all re-converted in THIS run and
+        none of them rendered it again, nothing can reference it: it is
+        residue from an older emitter, and leaving it in means ScenarioSteps
+        grows without bound as suites are re-converted.
+
+        Conservative on purpose -- an entry whose owning suites cannot be
+        determined (no recorded cases, e.g. written by an older converter)
+        is KEPT, because we cannot prove nothing references it.
+        """
+        if not self._converted_suites:
+            return
+
+        def dead(fname_votes: dict, name) -> bool:
+            variants = fname_votes.get(name) or {}
+            infos = [i for v in variants.values() for i in v]
+            if any(i.get("case") != "catalog" for i in infos):
+                return False          # a real case voted for it this run
+            owners = self._owning_suites(infos)
+            if not owners:
+                return False          # unattributable -- keep
+            return owners <= self._converted_suites
+
+        for name in [n for n in self._shared_phases
+                     if dead(self._fluent_phase_votes, n)]:
+            self._shared_phases.pop(name, None)
+            self._pruned_shared_phases.add(name)
+        for key in [k for k in self._shared_verifies
+                    if dead(self._fluent_verify_votes, k)]:
+            self._shared_verifies.pop(key, None)
+            self._pruned_shared_verifies.add(f"{key[0]}.{key[1]}")
+
+        if self._pruned_shared_phases or self._pruned_shared_verifies:
+            print(f"[ra_converter] pruned dead shared method(s): "
+                  f"{len(self._pruned_shared_phases)} phase(s), "
+                  f"{len(self._pruned_shared_verifies)} verify helper(s) "
+                  f"— re-converted suites no longer render them")
 
     def _save_fluent_catalog(self) -> None:
         _here = os.path.dirname(os.path.abspath(__file__))
@@ -10927,6 +11276,11 @@ public class {class_name} extends BaseApiTest {{
         cat = load_fluent_catalog()
         for dead in RETIRED_FLUENT_NAMES:
             (cat.get("phases") or {}).pop(dead, None)
+        # Otherwise the next run re-seeds exactly what we just pruned.
+        for dead in self._pruned_shared_phases:
+            (cat.get("phases") or {}).pop(dead, None)
+        for dead in self._pruned_shared_verifies:
+            (cat.get("verifies") or {}).pop(dead, None)
         for fname, info in self._shared_phases.items():
             agnostic = suite_agnostic_body(info["body"])
             prev = cat["phases"].get(fname) or {}
@@ -11007,12 +11361,80 @@ public class {class_name} extends BaseApiTest {{
         return self._fluent_fingerprint(body) == self._fluent_fingerprint(
             shared.get("body") or [])
 
+    def _shared_bootstrap_index(self, body: list[str]) -> int | None:
+        """Which shared bootstrap this case renders, if any."""
+        want = self._fluent_fingerprint(body)
+        for i, boot in enumerate(self._shared_bootstraps):
+            if want == self._fluent_fingerprint(boot.get("body") or []):
+                return i
+        return None
+
+    _ENTRY_FLOW_RX = re.compile(r'runSetup\("(\w+)"|SetupHelper\.(\w+)\(')
+    _ENTRY_GEN_RX = re.compile(r'generateStandard\(ctx,\s*"[^"]*"((?:\s*,\s*"[^"]+")*)\)')
+
+    def _derive_entry_class_names(self) -> None:
+        """Name each entry class after what its bootstrap DOES.
+
+        The first cut numbered them by popularity -- `CustomerOnboarding20`.
+        That was opaque (you could not tell it meant "flow_A, generating
+        updateemail and name") and, worse, unstable: the index came from a
+        usage ranking, so adding one ReadyAPI case could reshuffle the order
+        and renumber unrelated entry classes, churning every test that named
+        them.
+
+        A name built from the setup flow and the generated fields separates
+        77 of 113 outright. The rest fall back to a counter WITHIN their own
+        name group, ordered by body fingerprint, so a new case can only ever
+        append -- it cannot renumber anything that already exists.
+        """
+        _here = os.path.dirname(os.path.abspath(__file__))
+        if _here not in sys.path:
+            sys.path.insert(0, _here)
+        from fluent_scenario import java_ident, phase_body_key
+
+        def descriptor(boot) -> str:
+            text = NL.join(boot.get("body") or [])
+            parts = ["Onboarding"]
+            m = self._ENTRY_FLOW_RX.search(text)
+            if m:
+                flow = m.group(1) or m.group(2) or ""
+                parts.append("".join(w.capitalize()
+                                     for w in re.split(r"[^A-Za-z0-9]+", flow) if w))
+            g = self._ENTRY_GEN_RX.search(text)
+            if g:
+                keys = re.findall(r'"([^"]+)"', g.group(1))
+                # Two is enough to tell most apart; one bootstrap in this
+                # suite generates twenty fields.
+                for k in keys[:2]:
+                    parts.append("".join(w.capitalize()
+                                         for w in re.split(r"[^A-Za-z0-9]+", k) if w))
+            # Drop whole trailing parts rather than slicing a word in half --
+            # a mid-word cut both reads badly and can collide two different
+            # field names onto one truncated prefix.
+            while len("".join(parts)) > 40 and len(parts) > 1:
+                parts.pop()
+            return java_ident("".join(parts) or "Onboarding", "Onboarding")
+
+        groups: dict = {}
+        for i, boot in enumerate(self._shared_bootstraps):
+            groups.setdefault(descriptor(boot), []).append(
+                (phase_body_key(boot.get("body") or []), i))
+        names = [""] * len(self._shared_bootstraps)
+        for base, members in groups.items():
+            for rank, (_key, i) in enumerate(sorted(members)):
+                names[i] = base if rank == 0 else f"{base}{rank + 1}"
+        self._entry_class_names = names
+
+    def shared_entry_class(self, index: int) -> str:
+        """Entry type for a shared bootstrap, named after its setup."""
+        if not self._entry_class_names:
+            self._derive_entry_class_names()
+        if 0 <= index < len(self._entry_class_names):
+            return self._entry_class_names[index]
+        return "Onboarding"
+
     def _shared_bootstrap_matches(self, body: list[str]) -> bool:
-        boot = self._shared_bootstrap
-        if not boot:
-            return False
-        return self._fluent_fingerprint(body) == self._fluent_fingerprint(
-            boot.get("body") or [])
+        return self._shared_bootstrap_index(body) is not None
 
     def _case_uses_shared_phase(self, case: TestCase, fname: str,
                                 body: list[str] | None = None) -> bool:
@@ -11045,18 +11467,26 @@ public class {class_name} extends BaseApiTest {{
         return case.name in boot["cases"] or tagged in boot["cases"]
 
     def _case_uses_only_shared_fluent(self, case: TestCase, flow_java, verify_java,
-                                      bootstrap_lines: list[str] | None = None) -> bool:
-        if not self._shared_phases and not self._shared_bootstrap:
-            return False
-        if not self._shared_bootstrap_matches(bootstrap_lines or []):
-            return False
+                                      bootstrap_lines: list[str] | None = None):
+        """The shared entry class for this case, or None if it needs its own.
+
+        Returns a NAME rather than a bool: with several shared bootstraps the
+        answer is not just "yes", it is "which one".
+        """
+        if not self._shared_bootstraps:
+            return None
+        idx = self._shared_bootstrap_index(bootstrap_lines or [])
+        if idx is None:
+            return None
         for fname, body in flow_java:
-            if not self._shared_phase_matches(fname, body):
-                return False
+            if not (self._shared_phase_matches(fname, body)
+                    or self._suite_phase_matches(fname, body)):
+                    return None
         for vcls, vmeth, body in verify_java:
-            if not self._shared_verify_matches(vcls, vmeth, body):
-                return False
-        return True
+            if not (self._shared_verify_matches(vcls, vmeth, body)
+                    or self._suite_verify_matches(vcls, vmeth, body)):
+                return None
+        return self.shared_entry_class(idx)
 
     def _shared_fluent_pkg(self) -> str:
         return f"{self.package_root}.support.scenario"
@@ -11066,31 +11496,104 @@ public class {class_name} extends BaseApiTest {{
         return "\n".join((pad + ln) if ln else "" for ln in lines)
 
     def emit_shared_fluent_api(self, service_class_name: str) -> list[str]:
-        """Write suite-level ScenarioSteps + CustomerOnboarding + verify types."""
+        """Framework types + this suite's own layer. Single-suite entry point."""
+        framework = self.emit_framework_fluent_api(service_class_name)
+        if not framework:
+            return []
+        return framework + self.emit_suite_fluent_api(service_class_name)
+
+    def emit_framework_fluent_api(self, service_class_name: str) -> list[str]:
+        """ScenarioSteps + shared verify types. Emitted ONCE per conversion."""
         self._compare_reuse_before_java()
         if (not self._shared_phases and not self._shared_verifies
-                and not self._shared_bootstrap):
+                and not self._shared_bootstraps):
             return []
-        written: list[str] = []
-        written.append(self._emit_scenario_steps(service_class_name))
-        written.append(self._emit_suite_customer_onboarding(service_class_name))
+        framework: list[str] = [self._emit_scenario_steps(service_class_name)]
         insights = [(k, v) for k, v in self._shared_verifies.items()
                     if k[0] == "Insights"]
         partners = [(k, v) for k, v in self._shared_verifies.items()
                     if k[0] == "PartnerRelationships"]
         if insights:
-            written.append(self._emit_suite_verify_type(
+            framework.append(self._emit_suite_verify_type(
                 "Insights", insights, service_class_name))
         if partners:
-            written.append(self._emit_suite_verify_type(
+            framework.append(self._emit_suite_verify_type(
                 "PartnerRelationships", partners, service_class_name))
-        return [w for w in written if w]
+        framework = [w for w in framework if w]
+        # Only the framework package is reconciled -- the suite package is
+        # covered by --clean. Must run BEFORE the suite emit so a stale
+        # entry class from an earlier layout does not survive.
+        self._reconcile_shared_fluent_dir(framework)
+        return framework
+
+    def emit_suite_fluent_api(self, service_class_name: str) -> list[str]:
+        """This suite's steps base, entry classes and verify wrappers.
+
+        Emitted once PER SUITE. Folding it into the framework emit meant a
+        multi-suite run -- the documented way to convert -- built these for
+        the lead suite only, and every other suite fell back to a per-case
+        Support class for every case (577 of them in one suite).
+        """
+        # The steps base FIRST: it populates the suite-local indexes the
+        # entry classes and the shared-entry gate both read.
+        suite: list[str] = []
+        base = self._emit_suite_steps_base(service_class_name)
+        if base:
+            suite.append(base)
+            for i in range(max(1, len(self._shared_bootstraps))):
+                suite.append(
+                    self._emit_suite_customer_onboarding(service_class_name, i))
+            suite.extend(self._emit_suite_verify_wrappers(service_class_name))
+        return [w for w in suite if w]
+
+    def _reconcile_shared_fluent_dir(self, written: list) -> None:
+        """Delete anything in support/scenario/ this conversion did not write.
+
+        `--clean` deliberately spares this package -- ScenarioSteps and the
+        fluent catalog accumulate across suites -- so files written by an
+        EARLIER conversion survive into a later one. That is fine for content
+        the new run rewrites, and broken for anything it does not:
+
+            PartnerRelationships.java:11: cannot find symbol
+                symbol: method runVerifySalesforceOwner()
+
+        The wrappers call {@code ScenarioSteps.current().runVerifyX()}, and
+        those runners exist only for verifies the CURRENT run produced.
+        Convert an XML that yields Salesforce verifies, then one that does
+        not, and the leftover wrapper fails to compile.
+
+        Reconciling the whole directory rather than special-casing the two
+        wrappers we happened to hit: any conditionally emitted file has the
+        same exposure, and a list of exceptions would rot as the emitter
+        grows. Everything here is generated, so "not written this run" is
+        sufficient grounds to remove it.
+        """
+        pkg = self._shared_fluent_pkg()
+        rel_dir = f"src/main/java/{pkg.replace('.', '/')}"
+        abs_dir = os.path.join(self.output_dir, rel_dir)
+        if not os.path.isdir(abs_dir):
+            return
+        keep = {os.path.basename(w) for w in written if w}
+        for name in sorted(os.listdir(abs_dir)):
+            if not name.endswith(".java") or name in keep:
+                continue
+            path = os.path.join(abs_dir, name)
+            try:
+                os.remove(path)
+                print(f"[ra_converter] removed stale {rel_dir}/{name} "
+                      f"-- not emitted by this conversion, and its backing "
+                      f"runners no longer exist")
+            except OSError as exc:
+                print(f"[ra_converter] WARNING: could not remove stale "
+                      f"{rel_dir}/{name}: {exc}")
 
     def _emit_scenario_steps(self, service_class_name: str) -> str:
         pkg = self._shared_fluent_pkg()
         resp: list[str] = []
-        if self._shared_bootstrap:
-            for n in self._shared_bootstrap["resp"]:
+        # Every variant, not just the primary: a subclass overriding
+        # bootstrap() still assigns response fields declared up here.
+        for boot in self._shared_bootstraps:
+            for n in boot["resp"]:
                 if n not in resp:
                     resp.append(n)
         for info in self._shared_phases.values():
@@ -11105,6 +11608,9 @@ public class {class_name} extends BaseApiTest {{
             if n not in resp:
                 resp.append(n)
         resp_decls = "\n".join(f"    protected Response {n};" for n in resp)
+        # The suite base extends this one; re-declaring a field there
+        # would hide the parent's and silently split the value in two.
+        self._framework_resp = list(resp)
         boot_body = "        return self();"
         if self._shared_bootstrap:
             boot_body = (
@@ -11221,34 +11727,246 @@ public abstract class ScenarioSteps<S extends ScenarioSteps<S>> {{
         self._write(rel, content)
         return rel
 
-    def _emit_suite_customer_onboarding(self, service_class_name: str) -> str:
-        pkg = self._shared_fluent_pkg()
+    def _emit_suite_steps_base(self, service_class_name: str) -> str:
+        """One steps base per suite, holding the bodies only this suite uses.
+
+        Without it, a case with a single unrendered-elsewhere body needed a
+        whole per-case Support class -- 479 of them, 249 carrying exactly one
+        method. Putting those bodies on the framework `ScenarioSteps`
+        instead would fit ONE suite (509 methods = 8,656 constant-pool
+        entries, 13% of the 65,535 limit, so ~3,850 methods is the ceiling)
+        and overflow it well before the eighteenth.
+        """
+        pkg = self._suite_scenario_pkg()
+        cls = self._suite_steps_class(service_class_name)
+        phases = self._suite_local_phases()
+        verifies = self._suite_local_verifies()
+        self._suite_local_phase_index = {
+            n: self._fluent_fingerprint(b) for n, b in phases.items()}
+        self._suite_local_verify_index = {
+            k: self._fluent_fingerprint(b) for k, b in verifies.items()}
+        if not phases and not verifies:
+            return ""
+
+        _here = os.path.dirname(os.path.abspath(__file__))
+        if _here not in sys.path:
+            sys.path.insert(0, _here)
+        from fluent_scenario import collect_response_fields
+        resp: list[str] = []
+        for body in list(phases.values()) + list(verifies.values()):
+            for n in collect_response_fields(body):
+                if n not in resp and n not in self._framework_resp:
+                    resp.append(n)
+        resp_decls = NL.join(f"    protected Response {n};" for n in resp)
+
+        methods = []
+        for fname, body in sorted(phases.items()):
+            methods.append(
+                f"    public S {fname}() throws Exception {{" + NL
+                + self._indent_java(self._as_self_body(body), 8) + NL
+                + "        return self();" + NL
+                + "    }" + NL)
+        for (vcls, vmeth), body in sorted(verifies.items()):
+            runner = "run" + vmeth[0].upper() + vmeth[1:]
+            methods.append(
+                f"    public void {runner}() throws Exception {{" + NL
+                + self._indent_java(body, 8) + NL
+                + "    }" + NL)
+
         content = f"""package {pkg};
 
 import java.util.Map;
 
+import org.testng.asserts.SoftAssert;
+
+import com.ak.api.config.Config;
+import com.ak.api.data.Expected;
+import com.ak.api.data.FakeData;
+import com.ak.api.data.PlaceholderResolver;
+import com.ak.api.db.Db;
+import com.ak.api.rest.utilities.AuthHelper;
+import com.ak.api.rest.utilities.Headers;
+import com.ak.api.rest.utilities.ResponseAsserts;
+import com.ak.api.rest.utilities.RestLoggerUtilityDataHolder;
+import com.ak.api.rest.utilities.RestStep;
+import com.ak.api.rest.utilities.RestUtilities;
+import com.ak.api.support.CtxFields;
 import com.ak.api.support.ImportedRestClient;
 import com.ak.api.support.ImportedScenario;
+import com.ak.api.support.scenario.ScenarioSteps;
+import com.ak.api.support.{self.suite_name}.SetupHelper;
+import com.ak.api.support.{self.suite_name}.TestSupport;
+import com.ak.api.templates.{self.suite_name}.Templates;
+
+import io.restassured.response.Response;
 
 /**
- * Shared fluent entry across imported suites. Use when every chained
- * phase matches the framework-level identical body. Cases with unique
- * steps still start from their per-case Support subclass.
+ * Fluent steps used only by the {self.suite_name} suite.
+ *
+ * <p>Sits between {{@link ScenarioSteps}} -- which carries the bodies that
+ * several suites render identically -- and this suite's entry classes. A
+ * body only one case renders lives here rather than on the framework base,
+ * which every suite shares and which would overflow the class-file
+ * constant pool if all eighteen suites poured their singletons into it.</p>
  */
-public final class CustomerOnboarding extends ScenarioSteps<CustomerOnboarding> {{
+public abstract class {cls}<S extends {cls}<S>> extends ScenarioSteps<S> {{
+{resp_decls}
 
-    private CustomerOnboarding(ImportedRestClient client,
-                               Map<String, String> ctx,
-                               org.testng.asserts.SoftAssert softAssert,
-                               com.ak.api.rest.utilities.RestLoggerUtilityDataHolder holder) {{
+    protected {cls}(ImportedRestClient client,
+                    Map<String, String> ctx,
+                    SoftAssert softAssert,
+                    RestLoggerUtilityDataHolder holder) {{
         super(client, ctx, softAssert, holder);
     }}
 
-    public static CustomerOnboarding start(Map<String, String> row) throws Exception {{
+{NL.join(methods)}
+}}
+"""
+        rel = f"src/main/java/{pkg.replace('.', '/')}/{cls}.java"
+        self._write(rel, content)
+        return rel
+
+    def _suite_scenario_pkg(self) -> str:
+        return f"{self.package_root}.support.{self.suite_name}.scenario"
+
+    def _suite_steps_class(self, service_class_name: str) -> str:
+        base = (service_class_name or "Suite")
+        if base.endswith("Client"):
+            base = base[:-len("Client")]
+        return f"{base}Steps"
+
+    def _suite_local_phases(self) -> dict:
+        """Bodies THIS suite renders that the framework base does not hold.
+
+        A body rendered by a single case cannot clear the >=2-vote bar for
+        `ScenarioSteps`, and that one method used to force an entire
+        per-case Support class into existence. They belong on a suite-level
+        base instead: hoisting them to the framework base works for one
+        suite and blows the 65535-entry constant pool across eighteen.
+        """
+        out = {}
+        prefix = f"{self.suite_name}/"
+        for fname, variants in self._fluent_phase_votes.items():
+            if fname in self._shared_phases:
+                continue
+            for _key, infos in variants.items():
+                if any(str(i.get("case", "")).startswith(prefix) for i in infos):
+                    out[fname] = infos[0]["body"]
+                    break
+        return out
+
+    def _suite_local_verifies(self) -> dict:
+        out = {}
+        prefix = f"{self.suite_name}/"
+        for key, variants in self._fluent_verify_votes.items():
+            if key in self._shared_verifies:
+                continue
+            for _k, infos in variants.items():
+                if any(str(i.get("case", "")).startswith(prefix) for i in infos):
+                    out[key] = infos[0]["body"]
+                    break
+        return out
+
+    def _suite_phase_matches(self, fname: str, body: list[str]) -> bool:
+        want = self._suite_local_phase_index.get(fname)
+        if want is None:
+            return False
+        return self._fluent_fingerprint(body) == want
+
+    def _suite_verify_matches(self, vcls: str, vmeth: str,
+                              body: list[str]) -> bool:
+        want = self._suite_local_verify_index.get((vcls, vmeth))
+        if want is None:
+            return False
+        return self._fluent_fingerprint(body) == want
+
+    def _emit_suite_customer_onboarding(self, service_class_name: str,
+                                        index: int = 0) -> str:
+        """One entry class per shared bootstrap, over this suite's steps base.
+
+        Index 0 keeps the name `CustomerOnboarding` so the DSL still reads
+        `CustomerOnboarding.start(row)`; later indexes override bootstrap().
+        They live in the SUITE package and extend the suite base, so a chain
+        can call a body only this suite renders without a per-case class.
+        """
+        pkg = self._suite_scenario_pkg()
+        base = self._suite_steps_class(service_class_name)
+        cls = self.shared_entry_class(index)
+        override = ""
+        if 0 < index < len(self._shared_bootstraps):
+            # `SetupHelper.flow_B(client, ...)` wants the concrete suite
+            # client, but `client` here is typed ImportedRestClient. The
+            # agnostic rewrite turns it into
+            # `ImportedScenario.runSetup("flow_B", client, ...)`, which is
+            # what the per-case classes always used.
+            _here = os.path.dirname(os.path.abspath(__file__))
+            if _here not in sys.path:
+                sys.path.insert(0, _here)
+            from fluent_scenario import suite_agnostic_body
+            body = suite_agnostic_body(
+                self._shared_bootstraps[index].get("body") or [])
+            override = (
+                NL + "    @Override" + NL
+                + f"    protected {cls} bootstrap() throws Exception {{" + NL
+                + self._indent_java(body, 8) + NL
+                + "        return self();" + NL
+                + "    }" + NL)
+        # An overridden bootstrap() is arbitrary translated Groovy for THIS
+        # suite -- SetupHelper, Config, TestSupport, CtxFields. Same import
+        # set as the steps base, or 409 "cannot find symbol" across 63 files.
+        content = f"""package {pkg};
+
+import java.util.Map;
+
+import com.ak.api.config.Config;
+import com.ak.api.data.Expected;
+import com.ak.api.data.FakeData;
+import com.ak.api.data.PlaceholderResolver;
+import com.ak.api.db.Db;
+import com.ak.api.rest.utilities.AuthHelper;
+import com.ak.api.rest.utilities.Headers;
+import com.ak.api.rest.utilities.ResponseAsserts;
+import com.ak.api.rest.utilities.RestStep;
+import com.ak.api.rest.utilities.RestUtilities;
+import com.ak.api.support.CtxFields;
+import com.ak.api.support.ImportedRestClient;
+import com.ak.api.support.ImportedScenario;
+import com.ak.api.support.ImportedTemplates;
+import com.ak.api.support.{self.suite_name}.SetupHelper;
+import com.ak.api.support.{self.suite_name}.TestSupport;
+import com.ak.api.templates.{self.suite_name}.Templates;
+
+import io.restassured.response.Response;
+
+/**
+ * Shared fluent entry for the {self.suite_name} suite. Every chained phase
+ * resolves on {{@link {base}}} or the framework base above it, so cases
+ * reaching this entry need no Support class of their own.
+ */
+public final class {cls} extends {base}<{cls}> {{
+
+    private {cls}(ImportedRestClient client,
+                  Map<String, String> ctx,
+                  org.testng.asserts.SoftAssert softAssert,
+                  com.ak.api.rest.utilities.RestLoggerUtilityDataHolder holder) {{
+        super(client, ctx, softAssert, holder);
+    }}
+
+    public static {cls} start(Map<String, String> row) throws Exception {{
+        return start(row, "imported");
+    }}
+
+    /**
+     * @param defaultTestCaseId the ReadyAPI case this chain came from, used
+     *     when the CSV row carries no {{@code test_case_id}}. A shared entry
+     *     serves many cases, so reports would otherwise name none of them.
+     */
+    public static {cls} start(Map<String, String> row,
+                              String defaultTestCaseId) throws Exception {{
         ImportedScenario.Session s = ImportedScenario.current();
-        CustomerOnboarding flow = new CustomerOnboarding(
+        {cls} flow = new {cls}(
                 (ImportedRestClient) s.client, s.ctx, s.softAssert, s.holder);
-        flow.testCaseId = row.getOrDefault("test_case_id", "imported");
+        flow.testCaseId = row.getOrDefault("test_case_id", defaultTestCaseId);
         flow.row = ImportedScenario.begin(flow.ctx, row, flow.testCaseId);
         s.row = flow.row;
         s.testCaseId = flow.testCaseId;
@@ -11258,7 +11976,7 @@ public final class CustomerOnboarding extends ScenarioSteps<CustomerOnboarding> 
         flow.__stopAfter = flow.row.getOrDefault("_stop_after", "");
         return flow.bootstrap();
     }}
-
+{override}
     public record Scenario() {{}}
 
     public Scenario complete() {{
@@ -11267,9 +11985,52 @@ public final class CustomerOnboarding extends ScenarioSteps<CustomerOnboarding> 
     }}
 }}
 """
-        rel = f"src/main/java/{pkg.replace('.', '/')}/CustomerOnboarding.java"
+        rel = f"src/main/java/{pkg.replace('.', '/')}/{cls}.java"
         self._write(rel, content)
         return rel
+
+    def _emit_suite_verify_wrappers(self, service_class_name: str) -> list:
+        """Suite-level Insights / PartnerRelationships.
+
+        One wrapper type per verify class covering EVERY verify this suite
+        uses -- framework-shared and suite-local alike. Splitting them across
+        a framework `Insights` and a suite one would collide on the simple
+        name in any test that needs both.
+        """
+        pkg = self._suite_scenario_pkg()
+        base = self._suite_steps_class(service_class_name)
+        by_cls: dict = {}
+        for (vcls, vmeth) in list(self._shared_verifies) + list(
+                self._suite_local_verify_index):
+            by_cls.setdefault(vcls, set()).add(vmeth)
+        written = []
+        for vcls, meths in sorted(by_cls.items()):
+            methods = []
+            for vmeth in sorted(meths):
+                runner = "run" + vmeth[0].upper() + vmeth[1:]
+                methods.append(
+                    f"    public static void {vmeth}(Object scenario, "
+                    "com.ak.api.data.Expected expected) throws Exception {" + NL
+                    # Cast to the suite base: `ScenarioSteps.current()` is typed
+                    # as the framework base and cannot see suite-local runners.
+                    + f"        (({base}<?>) com.ak.api.support.scenario"
+                      f".ScenarioSteps.current()).{runner}();" + NL
+                    + "    }" + NL)
+            content = f"""package {pkg};
+
+/**
+ * Trailing-GET verify helpers for the {self.suite_name} suite.
+ */
+public final class {vcls} {{
+    private {vcls}() {{}}
+
+{NL.join(methods)}
+}}
+"""
+            rel = f"src/main/java/{pkg.replace('.', '/')}/{vcls}.java"
+            self._write(rel, content)
+            written.append(rel)
+        return written
 
     def _emit_suite_verify_type(self, type_name: str, entries: list,
                                 service_class_name: str) -> str:
@@ -11343,9 +12104,9 @@ public final class {type_name} {{
             case, flow_java, verify_java, plan["bootstrap_lines"])
         if self._last_fluent_shared_entry:
             pending = getattr(self, "_pending_fluent_imports", None)
-            shared_pkg = self._shared_fluent_pkg()
+            shared_pkg = self._suite_scenario_pkg()
             if pending is not None:
-                for fqn in (f"{shared_pkg}.CustomerOnboarding",
+                for fqn in (f"{shared_pkg}.{self._last_fluent_shared_entry}",
                             f"{shared_pkg}.Insights",
                             f"{shared_pkg}.PartnerRelationships"):
                     simple = fqn.rsplit(".", 1)[-1]
@@ -11368,16 +12129,21 @@ public final class {type_name} {{
         fields = fields_from_keys(keys)
         extends_shared = bool(
             self._shared_phases or self._shared_bootstrap or self._shared_verifies)
+        # Filter against BOTH bases. Checking only the framework one made a
+        # fallback class re-declare 86 methods the suite base already had --
+        # covariant overrides that compiled, so nothing caught them.
         unique_flow = unique_method_defs([
             (n, b) for n, b in flow_java
-            if not (extends_shared and self._shared_phase_matches(n, b))])
+            if not (extends_shared and self._shared_phase_matches(n, b))
+            and not self._suite_phase_matches(n, b)])
         unique_verify = unique_verifies([
             (c, m, b) for c, m, b in verify_java
-            if not (extends_shared and self._shared_verify_matches(c, m, b))])
+            if not (extends_shared and self._shared_verify_matches(c, m, b))
+            and not self._suite_verify_matches(c, m, b)])
         parent_resp: set[str] = set()
         if extends_shared:
-            if self._shared_bootstrap:
-                parent_resp.update(self._shared_bootstrap["resp"])
+            for boot in self._shared_bootstraps:
+                parent_resp.update(boot["resp"])
             for info in self._shared_phases.values():
                 parent_resp.update(info["resp"])
             for info in self._shared_verifies.values():
@@ -11496,10 +12262,19 @@ public final class {type_name} {{
         scenario_import = (
             f"import {self.package_root}.support.scenario.ScenarioSteps;\n"
             if extends_shared else "")
+        # A fallback class must extend the SUITE base, not the framework one:
+        # its methods are now filtered against both, so inheriting only the
+        # framework base leaves the suite-local ones unresolvable. Same
+        # package as the base, so no extra import.
+        _suite_base = self._suite_steps_class(service_class_name)
+        _parent = (_suite_base
+                   if (self._suite_local_phase_index
+                       or self._suite_local_verify_index)
+                   else "ScenarioSteps")
         if extends_shared:
             onboarding_decl = (
                 "    public static final class CustomerOnboarding "
-                "extends ScenarioSteps<CustomerOnboarding> {")
+                f"extends {_parent}<CustomerOnboarding> {{")
             onboarding_fields = resp_decls + ("\n" if resp_decls else "")
             onboarding_ctor = (
                 f"        private CustomerOnboarding({service_class_name} client,\n"
@@ -11697,26 +12472,30 @@ public final class {support_name} {{
 
         from fluent_scenario import story_for_case, description_lines
         chain = "".join(f"\n                .{fname}()" for fname, _b in flow_java)
-        entry = ("CustomerOnboarding" if self._last_fluent_shared_entry
-                 else support_name)
+        entry = self._last_fluent_shared_entry or support_name
         verify_calls = []
         for vcls, vmeth, vbody in verify_java:
             if (self._last_fluent_shared_entry
                     or self._shared_verify_matches(vcls, vmeth, vbody)):
                 verify_calls.append(f"{vcls}.{vmeth}(scenario, expected);")
                 pending = getattr(self, "_pending_fluent_imports", None)
-                fqn = f"{self._shared_fluent_pkg()}.{vcls}"
+                fqn = f"{self._suite_scenario_pkg()}.{vcls}"
                 if pending is not None and fqn not in pending:
                     pending.append(fqn)
             else:
                 verify_calls.append(
                     f"{support_name}.{vcls}.{vmeth}(scenario, expected);")
 
+        # A shared entry serves many cases, so it cannot hard-code the
+        # ReadyAPI case id the way a per-case Support class does -- pass it,
+        # or reports and logs would all read "imported".
+        start_extra = (f', "{_jlit(case.name)}"'
+                       if self._last_fluent_shared_entry else "")
         body_lines = [
             f'LOG.info("========== STARTED {method_name} ==========");',
             'Expected expected = expected(row);',
             f'var scenario =',
-            f'        {entry}.start(row){chain}',
+            f'        {entry}.start(row{start_extra}){chain}',
             '                .complete();',
         ]
         if verify_calls:
@@ -13243,6 +14022,7 @@ def _copy_shared_fluent(dst, src) -> None:
     dst._shared_phases = src._shared_phases
     dst._shared_verifies = src._shared_verifies
     dst._shared_bootstrap = src._shared_bootstrap
+    dst._shared_bootstraps = list(getattr(src, '_shared_bootstraps', []) or [])
     dst._fluent_method_reuse = src._fluent_method_reuse
 
 
@@ -13256,7 +14036,24 @@ def _finalize_framework_fluent(preps: list[_PreparedSuite]) -> None:
         if p.service_name:
             lead._catalog_suite_services[p.suite_name] = p.service_name
     lead.finalize_shared_fluent_phases()
-    shared_fluent_files = lead.emit_shared_fluent_api(preps[0].service_class)
+    shared_fluent_files = lead.emit_framework_fluent_api(preps[0].service_class)
+    if shared_fluent_files:
+        # One steps base + entry classes PER SUITE. The lead holds the merged
+        # votes, so borrow its identity for each suite in turn rather than
+        # re-deriving the shared state on every emitter.
+        for p in preps:
+            saved_suite, saved_service = lead.suite_name, lead.service_name
+            lead.suite_name = p.suite_name
+            lead.service_name = p.service_name or lead.service_name
+            shared_fluent_files += lead.emit_suite_fluent_api(p.service_class)
+            # The per-case emit gate reads these; they are computed per suite.
+            p.emitter._suite_local_phase_index = dict(
+                lead._suite_local_phase_index)
+            p.emitter._suite_local_verify_index = dict(
+                lead._suite_local_verify_index)
+            p.emitter._entry_class_names = list(lead._entry_class_names)
+            p.emitter._framework_resp = list(lead._framework_resp)
+            lead.suite_name, lead.service_name = saved_suite, saved_service
     if shared_fluent_files:
         print(f"[ra_converter] emitted shared fluent API: "
               f"{', '.join(shared_fluent_files)}")
@@ -13431,6 +14228,9 @@ def _main_dispatch_inner(args):
                 "[ra_converter] missing support: " + ", ".join(missing))
         return rc
 
+    # Must precede the first collect: names allocated before this point
+    # would not be shared with the other suites.
+    _begin_fluent_run()
     preps: list[_PreparedSuite] = []
     failures: list[tuple[str, str]] = []
     for xml, suite, svc in jobs:

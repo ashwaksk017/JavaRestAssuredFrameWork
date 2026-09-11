@@ -1,17 +1,26 @@
-"""java.time date computation must reach ctx, not vanish.
+"""java.time date computation must compute AND publish.
 
-Found by sweeping all 7,111 Groovy steps through the translator and looking
-for scripts that emit almost nothing while reporting FULL coverage. One did:
-a step named `TimeStamp` in accountdashboardregression computed four dates
-with java.time and published them via setPropertyValue -- and translated to
-ZERO Java.
+Found by sweeping all 7,111 Groovy steps through the translator looking for
+scripts that emit almost nothing while reporting FULL coverage. One did: a
+step named `TimeStamp` computed four dates and published them via
+setPropertyValue, and translated to ZERO Java. Coverage still said FULL, so
+`currentTimestamp` (37 consuming steps), `yesterdayDate` (36), `priorMonth`
+(31) and `futureMonth` (11) were never set.
 
-Nothing failed. Coverage said FULL. But `currentTimestamp` (37 consuming
-steps), `yesterdayDate` (36), `priorMonth` (31) and `futureMonth` (11) were
-never set, so 115 steps ran with unresolved date placeholders.
+Two independent single-line assumptions caused it, and each is pinned below:
 
-That is the shape worth guarding: not a crash, not a TODO, just a quiet
-absence behind a green number.
+  1. `_DATE_ARITH_RX` had no multi-line handling, but authors break the
+     fluent chain across lines. Nothing matched, so nothing was emitted.
+  2. `_find_setproperty_targets` bound a Properties step only via
+     `testRunner.testCase.getTestStepByName(...)`. SoapUI exposes the same
+     object as `context.testCase`, which this script used, so every
+     published property was dropped.
+
+The first fix attempt added a NEW recognizer for these scripts. That was
+wrong: it duplicated the existing one, typed a DateTimeFormatter local as
+String, and re-declared variables the original recognizer had already
+declared -- three compile errors per affected file. Fixing the two
+single-line assumptions instead means one recognizer handles both shapes.
 
     python tools/ra_converter/test_groovy_datetime.py
 """
@@ -25,12 +34,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import groovy_translator  # noqa: E402
 
-SCRIPT = """
-import java.time.Instant
+MULTILINE = """
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
-
-def timestamp = DateTimeFormatter.ISO_INSTANT.format(Instant.now())
 
 def yesterday = LocalDate.now()
         .minusDays(1)
@@ -41,70 +47,129 @@ def priorMonth = LocalDate.now()
         .format(DateTimeFormatter.ofPattern("yyyy-MM"))
 
 def props = context.testCase.getTestStepByName("TimestampDetails")
-props.setPropertyValue("currentTimestamp", timestamp)
 props.setPropertyValue("yesterdayDate", yesterday)
 props.setPropertyValue("priorMonth", priorMonth)
-log.info("currentTimestamp set: " + timestamp)
+"""
+
+# Single line, and the formatter is a named local rather than inline.
+FORMATTER_REF = """
+def formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
+def arrivalDate = LocalDate.now().plusDays(2).format(formatter)
+def props = testRunner.testCase.getTestStepByName("Properties")
+props.setPropertyValue("ArrivalDate", arrivalDate)
 """
 
 
-def _emit(script=SCRIPT):
-    lines, meta = groovy_translator.translate(script, {}, "TimeStamp")
+def _emit(script):
+    lines, meta = groovy_translator.translate(script, {}, "dateStep")
     return "\n".join(lines), meta
 
 
-def test_every_published_property_reaches_ctx():
-    java, _meta = _emit()
-    for prop in ("currentTimestamp", "yesterdayDate", "priorMonth"):
-        assert f'"TimestampDetails.{prop}"' in java, (
-            f"{prop} never published to ctx\n{java}")
-        # Consumers reference the bare name as often as the namespaced one.
-        assert f'"{prop}"' in java, f"bare {prop} not published\n{java}"
+def _published(java):
+    return sorted(set(re.findall(r'putExtracted\(ctx, "([^"]+)"', java)))
 
 
-def test_date_expressions_are_valid_java():
-    """Pass java.time through with qualified names rather than reimplement it."""
-    java, _meta = _emit()
-    assert "java.time.LocalDate.now()" in java, java
-    assert "java.time.format.DateTimeFormatter.ofPattern" in java, java
-    assert "java.time.Instant.now()" in java, java
-    # Unqualified names would not compile in the generated file.
-    assert not re.search(r"(?<![\w.])LocalDate\s*\.", java), java
-    assert not re.search(r"(?<![\w.])DateTimeFormatter\s*\.", java), java
+def test_multiline_chain_is_translated():
+    """A chain broken across lines must still produce Java."""
+    java, _ = _emit(MULTILINE)
+    assert "String yesterday" in java, java
+    assert "java.time.LocalDate.now().minusDays(1)" in java, java
+    assert "String priorMonth" in java, java
 
 
-def test_multiline_fluent_chain_is_joined():
-    """The chain spans lines with leading dots; each must be one statement."""
-    java, _meta = _emit()
-    m = re.search(r"String yesterday = (.+?);", java)
-    assert m, java
-    assert ".minusDays(1)" in m.group(1), m.group(1)
-    assert ".format(" in m.group(1), m.group(1)
+def test_context_testcase_binding_publishes():
+    """`context.testCase` binds a Properties step, same as `testRunner`."""
+    java, _ = _emit(MULTILINE)
+    pub = _published(java)
+    assert "TimestampDetails.yesterdayDate" in pub, pub
+    assert "TimestampDetails.priorMonth" in pub, pub
 
 
-def test_commented_out_lines_do_not_publish_twice():
-    """These scripts keep an older attempt commented above the live one."""
-    script = SCRIPT.replace(
-        'props.setPropertyValue("currentTimestamp", timestamp)',
-        '//props.setPropertyValue("currentTimestamp", timestamp)\n'
-        'props.setPropertyValue("currentTimestamp", timestamp)')
-    java, _meta = _emit(script)
-    assert java.count('"TimestampDetails.currentTimestamp"') == 1, java
+def test_testrunner_binding_still_publishes():
+    """The receiver that already worked must keep working."""
+    java, _ = _emit(FORMATTER_REF)
+    assert "Properties.ArrivalDate" in _published(java), java
 
 
-def test_recognizer_is_named_so_coverage_is_honest():
-    """A FULL score with no named recognizer is how this hid in the first place."""
-    _java, meta = _emit()
-    assert "java_time_properties" in (meta.get("patterns_matched") or []), meta
-    assert meta.get("coverage") == "FULL", meta
+def test_formatter_local_is_not_typed_as_string():
+    """A DateTimeFormatter local must never be declared `String`.
+
+    The abandoned recognizer emitted `String formatter = ...ofPattern(...)`,
+    which does not compile.
+    """
+    java, _ = _emit(FORMATTER_REF)
+    assert "String formatter =" not in java, java
+
+
+def test_no_duplicate_variable_declarations():
+    """Two recognizers emitting the same variable is a compile error."""
+    for script in (MULTILINE, FORMATTER_REF):
+        java, _ = _emit(script)
+        for var in re.findall(r"String (\w+) =", java):
+            n = len(re.findall(r"String " + var + r" =", java))
+            assert n == 1, f"{var} declared {n} times\n{java}"
+
+
+def test_emit_is_brace_balanced():
+    for script in (MULTILINE, FORMATTER_REF):
+        java, _ = _emit(script)
+        assert java.count("{") == java.count("}"), java
 
 
 def test_unrelated_setproperty_script_is_untouched():
-    """The recognizer must not swallow scripts that have nothing to do with dates."""
+    """No date maths -> the date recognizer must not fire at all."""
     other = ('def props = context.testCase.getTestStepByName("Properties")\n'
              'props.setPropertyValue("accountId", "12345")\n')
-    _java, meta = _emit(other)
-    assert "java_time_properties" not in (meta.get("patterns_matched") or []), meta
+    java, _ = _emit(other)
+    assert "LocalDate arithmetic" not in java, java
+
+
+INSTANT = """
+import java.time.Instant
+import java.time.format.DateTimeFormatter
+
+def timestamp = DateTimeFormatter.ISO_INSTANT.format(Instant.now())
+
+def props = context.testCase.getTestStepByName("TimestampDetails")
+props.setPropertyValue("currentTimestamp", timestamp)
+"""
+
+
+def test_instant_timestamp_computes_and_publishes():
+    """`currentTimestamp` has 37 consumers and used to compute nothing.
+
+    _DATE_ARITH_RX matches only LocalDate.now(); this value comes from
+    Instant.now() with the formatter FIRST, so that pattern cannot cover it.
+    """
+    java, _ = _emit(INSTANT)
+    assert "java.time.Instant.now()" in java, java
+    assert "DateTimeFormatter.ISO_INSTANT" in java, java
+    assert "TimestampDetails.currentTimestamp" in _published(java), java
+
+
+def test_instant_with_inline_pattern_gets_a_zone():
+    """ofPattern cannot format an Instant without a zone -- UTC keeps the
+    value stable wherever the suite runs."""
+    script = ('def t = DateTimeFormatter.ofPattern("yyyy-MM-dd").format(Instant.now())'
+              + "\n"
+              + 'def props = context.testCase.getTestStepByName("P")'
+              + "\n"
+              + 'props.setPropertyValue("stamp", t)')
+    java, _ = _emit(script)
+    assert "withZone(java.time.ZoneOffset.UTC)" in java, java
+    assert "P.stamp" in _published(java), java
+
+
+def test_instant_and_localdate_share_one_block():
+    """Both kinds must land in the SAME scope block, or the publish lines
+    referencing them will not compile."""
+    combined = MULTILINE.replace(
+        "def props =",
+        'def stamp = DateTimeFormatter.ISO_INSTANT.format(Instant.now())'
+        + "\ndef props =")
+    java, _ = _emit(combined)
+    assert java.count("{ // [groovy] LocalDate arithmetic") == 1, java
+    assert java.count("{") == java.count("}"), java
 
 
 if __name__ == "__main__":

@@ -682,9 +682,42 @@ def catalog_path(output_dir: str = ".") -> str:
     return os.path.join(here, "fluent_catalog.json")
 
 
+def emitter_version() -> str:
+    """Fingerprint of the code that GENERATES phase bodies.
+
+    The catalog does not merely record which phases exist -- it caches their
+    rendered Java. So a bug fixed in the translator does not reach the output
+    until the cached body is discarded, and the user sees their fix silently
+    fail to take effect.
+
+    That happened: a faulty date recognizer stored Java declaring a
+    DateTimeFormatter as String. Removing the recognizer changed nothing,
+    because three catalog phases kept replaying the broken body -- same
+    compile errors, no explanation in the log.
+
+    `vocabularyVersion` could not catch it: the vocabulary was unchanged.
+    This hashes the emit sources instead, so ANY converter change rebuilds
+    the bodies it could have altered.
+    """
+    import hashlib
+    here = os.path.dirname(os.path.abspath(__file__))
+    h = hashlib.sha1()
+    for name in ("groovy_translator.py", "ra_converter.py", "fluent_scenario.py"):
+        p = os.path.join(here, name)
+        try:
+            with open(p, "rb") as fh:
+                h.update(fh.read())
+        except OSError:
+            # Missing source: fall back to the name so the hash still changes
+            # if a file appears or disappears.
+            h.update(name.encode("utf-8"))
+    return h.hexdigest()[:12]
+
+
 def _empty_catalog() -> dict:
     return {"phases": {}, "verifies": {}, "bootstrap": None, "suites": {},
-            "clientMethods": [], "vocabularyVersion": phase_vocabulary.version()}
+            "clientMethods": [], "vocabularyVersion": phase_vocabulary.version(),
+            "emitterVersion": emitter_version()}
 
 
 def load_fluent_catalog() -> dict:
@@ -708,6 +741,18 @@ def load_fluent_catalog() -> dict:
     #
     # `clientMethods` is keyed by client signature, not phase name, so it
     # survives -- discarding it would needlessly churn generated clients.
+    # The emit code changed -> cached Java bodies may be stale. Rebuild them
+    # rather than replay Java produced by a converter that no longer exists.
+    current_emitter = emitter_version()
+    if data.get("emitterVersion") != current_emitter:
+        kept = data.get("clientMethods", [])
+        stale = len(data.get("phases", {}) or {})
+        data = _empty_catalog()
+        data["clientMethods"] = kept
+        print(f"[fluent_catalog] converter changed -- discarded {stale} cached "
+              f"phase bodies so the new emit takes effect")
+        return data
+
     current = phase_vocabulary.version()
     # A catalog written by a run that had failing suites holds votes computed
     # from partial data. Inheriting those makes the next convert's output

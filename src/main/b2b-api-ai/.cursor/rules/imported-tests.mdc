@@ -1,0 +1,15 @@
+---
+description: Never hand-edit converter-emitted ReadyAPI tests; fix emit via converter + helpers.
+alwaysApply: true
+---
+
+# Imported ReadyAPI tests
+
+- Convert with `tools/ra_converter/`. Do **not** patch Java/CSV/templates under `tests/imported/<suite>/` or `support/<suite>/` to “fix one case”.
+- Change emit in `ra_converter.py` / `groovy_translator.py` / `fluent_scenario.py`, or runtime in helpers (`ImportedScenario`, `CtxFields`, `RestStep`, `ResponseAsserts`, `AuthHelper`, `Db`). Then reconvert **only if asked or required by that emit fix**.
+- Token fetch is setup (`SetupHelper.flow_A` / `AuthHelper`), never a `@Test`. Cleanup is `SuiteCleanup.afterEachTest`, never a `@Test`.
+- Unique `--service-name` per XML. `--clean` wipes that suite’s generated tests/CSVs/templates/`_audit`/`_flows`/SetupHelper/TestSupport/SuiteCleanup. It must **not** delete `support/scenario/` or `fluent_catalog.json`.
+- SKIP-IF-EXISTS (author-editable): `AuthHelper.java`, `PerMethodCsvDataProvider.java`, `PlaceholderResolver.java`, `ProgressLogListener.java`, `CtxFields.java`, `ImportedScenario.java`, `ImportedTemplates.java`, `ImportedTestdataCleanup.java`.
+- Do not invent Salesforce credentials or full Selenium for HWS. Do not expand author-narrowed smoke XMLs (SMB **7816-only**; keep 6801 smoke if present).
+- Do not regress: identity pack, `putExtracted` for `hiltonmemberid`, ReadyAPI last-write-wins on the same property, DataGenInput space-concat `name`/`name2`, `jsonEquals` path mismatch (no sibling-scalar pass), POST `/remove`, token-step skip-regen, Existence Match `content=false` → `jsonAbsent`, member-enroll `Properties.Email` overlay, OTP pad to 6 digits, `unsafeSqlReason` null-fallback gate.
+- Confused converter / TODO stubs: follow skill `readyapi-restassured-migration`.

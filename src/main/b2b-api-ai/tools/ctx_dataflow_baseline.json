@@ -1,0 +1,29 @@
+{
+  "_comment": "Reads with no producer in their chain that were each traced to the ReadyAPI source, not to the converter. A key NOT listed here fails the build.",
+  "accepted": {
+    "activate_account.accountId": {
+      "count": 3,
+      "reason": "ReadyAPI source: step exists but nothing publishes an accountId property on it."
+    },
+    "employeeProp.hilton-member-id": {
+      "count": 3,
+      "reason": "ReadyAPI source: step employeeProp is not present in B2B-3233_post_email_domain_travel_coordinator."
+    },
+    "http_request_200_2.accountId": {
+      "count": 6,
+      "reason": "ReadyAPI source: step http_request_200_2 exists in B2B-4955_get_member_name_field but no Groovy/transfer publishes an accountId property on it."
+    },
+    "http_request_200_2_Get_account_detials_Response_alternateAccounts_salesforceId": {
+      "count": 3,
+      "reason": "ReadyAPI source: dangling cross-step ref, same shape as above."
+    },
+    "http_request_200_2_Response_alternateAccounts_salesforceId": {
+      "count": 3,
+      "reason": "ReadyAPI source: B2B-5484_Active_account_verify_sf_account references step http_request_200_2, which is NOT in that case's step list (dangling ref)."
+    },
+    "memberDetails.result": {
+      "count": 3,
+      "reason": "ReadyAPI source: Groovy step result property is never published by the case."
+    }
+  }
+}

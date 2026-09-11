@@ -1,0 +1,21 @@
+{
+  "_comment": "Placeholders / refs with no producer, each traced to a cause. NOT listed here = build fails.",
+  "accepted_dollar_refs": {
+    "Properties#generatedemailAddress": "PlaceholderResolver.resolveDollarRefs maps '#'->'.' at runtime, resolving Properties.generatedemailAddress.",
+    "Properties#travelAgentID": "Same: resolved at runtime via '#'->'.'."
+  },
+  "accepted_placeholders": {
+    "JDBC_validate_otp_after_request_Response_ACCOUNT_MEMBER_INTERNAL_SECURITY_EMAIL_OTP": "OPEN GAP (1x, post_confirm_validation template): a JDBC step's response column referenced from a request body; the JDBC result is not published under this key.",
+    "Request": "Javadoc/comment text describing SoapUI ref syntax.",
+    "Response": "Javadoc/comment text describing SoapUI ref syntax.",
+    "ResponseAsXml": "Javadoc in RestUtilities describing SoapUI ref syntax, not an emitted placeholder.",
+    "ResponseHeaders": "Javadoc in RestUtilities, as above.",
+    "desiredEmail": "Framework ScenarioSteps doc text.",
+    "olderDate": "Groovy local computed in the same translated block; not a cross-step value.",
+    "placeholder": "Literal word in a Db.java message string.",
+    "qry_http_request_400_1_name": "SalesforceAuth documents #qry_...# as an intentional mapJsonValues fallback marker.",
+    "qry_http_request_400_2_name": "Same as qry_http_request_400_1_name.",
+    "qry_http_request_400_4_name": "Same as qry_http_request_400_1_name.",
+    "testcase_inviteKey": "OPEN GAP (6x, addmember template): no producer anywhere and the name does not appear in the ReadyAPI XML, so the converter synthesised it. The invite key IS captured elsewhere as Properties.inviteKey / <step>_Response_inviteKey. Sent to the server literally until mapped."
+  }
+}

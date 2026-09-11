@@ -54,7 +54,7 @@
         <db.driver>org.postgresql.Driver</db.driver>
         <!-- OpenAPI models from src/main/resources/openapi/*.yaml. Off only if
              you need a compile without the generator plugin. -->
-        <openapi.codegen.skip>false</openapi.codegen.skip>
+        <openapi.codegen.skip>true</openapi.codegen.skip>
         <openapi-generator.version>7.10.0</openapi-generator.version>
     </properties>
 

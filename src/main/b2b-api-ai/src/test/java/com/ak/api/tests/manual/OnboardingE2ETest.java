@@ -2,6 +2,7 @@ package com.ak.api.tests.manual;
 
 import java.util.Map;
 
+import org.testng.SkipException;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.BeforeMethod;
@@ -10,7 +11,7 @@ import org.testng.annotations.Test;
 import com.ak.api.config.Config;
 import com.ak.api.data.PerMethodCsvDataProvider;
 import com.ak.api.dsl.CustomerOnboarding;
-import com.ak.api.rest.clients.ProgramAccountClient;
+import com.ak.api.support.ImportedRestClient;
 import com.ak.api.support.ImportedScenario;
 import com.ak.api.tests.BaseApiTest;
 
@@ -39,7 +40,18 @@ import io.qameta.allure.Story;
 @Feature("Customer onboarding")
 public class OnboardingE2ETest extends BaseApiTest {
 
-    private ProgramAccountClient client;
+    /**
+     * Resolved by NAME, not by type.
+     *
+     * <p>A hand-written test must not import a generated client class: the
+     * class only exists after converting the XML that produced it, so naming
+     * it here makes this file fail to compile for anyone converting a
+     * different suite. The client is looked up reflectively instead, and the
+     * test skips cleanly when that suite has not been converted.</p>
+     *
+     * <p>Override with {@code -Dmanual.client=YourClient}.</p>
+     */
+    private ImportedRestClient client;
 
     /** ctx carries IDs between phases for one test. */
     private final Map<String, String> ctx =
@@ -48,8 +60,25 @@ public class OnboardingE2ETest extends BaseApiTest {
     @BeforeClass(alwaysRun = true)
     public void initClient() {
         String baseUrl = Config.get("base_url", Config.baseUrl());
-        client = com.ak.api.rest.SharedClients.get(
-                "ProgramAccountClient", baseUrl, ProgramAccountClient::new);
+        String name = Config.get("manual.client", "ProgramAccountClient");
+        String fqn = name.contains(".") ? name : "com.ak.api.rest.clients." + name;
+        try {
+            Class<?> type = Class.forName(fqn);
+            client = (ImportedRestClient) com.ak.api.rest.SharedClients.get(
+                    name, baseUrl, url -> {
+                        try {
+                            return type.getConstructor(String.class).newInstance(url);
+                        } catch (ReflectiveOperationException e) {
+                            throw new IllegalStateException(
+                                    "cannot construct " + fqn + "(String baseUrl)", e);
+                        }
+                    });
+        } catch (ClassNotFoundException e) {
+            throw new SkipException(
+                    "Client " + fqn + " is not on the classpath -- convert the "
+                    + "ReadyAPI XML that generates it, or point this test at "
+                    + "another client with -Dmanual.client=<SimpleName>.");
+        }
     }
 
     @BeforeMethod(alwaysRun = true)

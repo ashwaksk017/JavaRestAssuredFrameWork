@@ -219,7 +219,12 @@ def main() -> int:
     ap.add_argument("--root", default=".")
     ap.add_argument("--update-baseline", action="store_true",
                     help="record current hole counts as the new baseline")
-    ap.add_argument("--min-files", type=int, default=500,
+    # 500 was tuned when every ReadyAPI case got its own Support class. Cases
+    # now enter through a shared entry class over a per-suite steps base, so
+    # one suite emits 120 files where it used to emit 567 -- a 447-file drop
+    # that is the point of the change, not a crashed emit. The floor still
+    # catches a suite that fails to emit at all: a single suite lands at ~474.
+    ap.add_argument("--min-files", type=int, default=350,
                     help="below this, assume a crashed emit")
     args = ap.parse_args()
 

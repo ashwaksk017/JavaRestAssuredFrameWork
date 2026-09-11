@@ -285,6 +285,15 @@ def _emit_def_publications(script: str, bindings: dict, ctx: dict,
             continue
         src_step = info.get("source_step") or step_name_hint
         field = info.get("field", "")
+        # `getPropertyValue("response")` is the WHOLE response of a REST
+        # step, not an ordinary custom property. The emitter's auto-extract
+        # publishes that under `<step>_Response`; keying it as
+        # `<step>.Response` like any other field read a key nothing writes,
+        # so the value arrived empty -- the same defect as the `${step#
+        # Response}` form, reached through a third syntax.
+        ctx_key = (f"{re.sub(r'[^A-Za-z0-9_]', '_', src_step)}_Response"
+                   if field.strip().lower() == "response"
+                   else f"{src_step}.{field}")
         # ctxGet resolves the ${SourceStep#field} shape via its
         # alias-walk (dot / underscore / case-flip) so a value written
         # under `SourceStep.field` or `SourceStep_field` both surface.
@@ -292,9 +301,9 @@ def _emit_def_publications(script: str, bindings: dict, ctx: dict,
             f'// [translated] def {var_name} = <{src_step}>.getPropertyValue("{field}")')
         out.append('{')
         out.append(
-            f'    String {var_name} = TestSupport.ctxGet(ctx, "{src_step}.{field}");')
+            f'    String {var_name} = TestSupport.ctxGet(ctx, "{ctx_key}");')
         out.append(
-            f'    TestSupport.putIfNonEmpty(ctx, "{src_step}.{field}", {var_name});')
+            f'    TestSupport.putIfNonEmpty(ctx, "{ctx_key}", {var_name});')
         # ALSO publish under the bare Groovy-var name so a downstream
         # SQL query built via `"..." + <var>` (flattened to `'#<var>#'`
         # by _try_flatten_concat_sql) resolves against mergedRow. Without
@@ -508,8 +517,17 @@ def _find_setproperty_targets(script: str) -> list[tuple[str, str, str]]:
     results: list[tuple[str, str, str]] = []
     # First locate: `def X = testRunner.testCase.getTestStepByName("TARGET_STEP")`
     step_bindings: dict[str, str] = {}
+    # Accept BOTH receivers. SoapUI exposes the same test case as
+    # `testRunner.testCase` and `context.testCase`, and authors use them
+    # interchangeably. Matching only testRunner meant a step written as
+    #     def props = context.testCase.getTestStepByName("TimestampDetails")
+    #     props.setPropertyValue("yesterdayDate", yesterday)
+    # bound nothing, so every property it published was dropped -- silently,
+    # with coverage still FULL. The setPropertyValue half of this function
+    # already accepted both receivers; the binding half did not.
     for m in re.finditer(
-        r"def\s+(\w+)\s*=\s*testRunner\.testCase\.getTestStepByName\(['\"]([^'\"]+)['\"]\)",
+        r"def\s+(\w+)\s*=\s*(?:testRunner|context)\.testCase"
+        r"\.getTestStepByName\(['\"]([^'\"]+)['\"]\)",
         script):
         step_bindings[m.group(1)] = m.group(2)
     # Then: `X.setPropertyValue("field", expr)` with paren-balanced expr.
@@ -1062,12 +1080,28 @@ def _translate_soapui_ref_to_java_expr(
             jp = _translate_soapui_jsonpath(path)
             return (f'com.ak.api.rest.utilities.RestUtilities'
                     f'.safeJsonExtract({resp_var}, "{jp}")')
-        # Response var out of scope: settle for a ctx read under a
-        # synthetic key. Author can wire a PropertyTransfer to
-        # publish it.
+        # Response var out of scope: read it from ctx instead.
+        #
+        # The key MUST be the one the emitter's auto-extract publishes --
+        # `<Step>_Response_<field>`. This used to synthesize
+        # `<Step>.<field>`, which no emit path ever wrote, so the read
+        # returned "" and the captured value never reached the later
+        # request. That is the shape the Salesforce-id reads took.
         jp = _translate_soapui_jsonpath(path)
         key_field = re.sub(r"[^A-Za-z0-9_]", "_", jp)
-        return f'TestSupport.ctxGet(ctx, "{step_safe}.{key_field}")'
+        return f'TestSupport.ctxGet(ctx, "{step_safe}_Response_{key_field}")'
+    # ${Step#Response} -- the whole response body of an earlier REST step.
+    #
+    # Must use the SAME key the emitter's auto-extract publishes,
+    # `<Step>_Response`. Falling through to the generic rule below produced
+    # `<Step>.Response`, which nothing ever wrote: the read silently returned
+    # "" and the value never reached the later request.
+    m = re.fullmatch(
+        r"([A-Za-z_][A-Za-z0-9_ -]*)#Response(?:AsXml|AsJson|Headers|AsHtml)?",
+        inner)
+    if m:
+        step_key = re.sub(r"[^A-Za-z0-9_]", "_", m.group(1).strip())
+        return f'TestSupport.ctxGet(ctx, "{step_key}_Response")'
     # ${Step#Field} -> ctxGet("Step.Field")
     m = re.fullmatch(
         r"([A-Za-z_][A-Za-z0-9_]*)#([A-Za-z0-9_.-]+)", inner)
@@ -1213,84 +1247,6 @@ def translate(script: str, response_var_by_step: dict[str, str],
             f'.extractRatePlanRoomTypePairs(ctx, {resp_var}, "{ns}");')
         patterns_matched.append("room_rate_plan_pairs")
         consumed = True
-
-    # ---- java.time date computation published to a Properties step.
-    #
-    # SoapUI authors compute timestamps in Groovy using java.time and push
-    # them onto a Properties step:
-    #
-    #   def yesterday = LocalDate.now()
-    #           .minusDays(1)
-    #           .format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
-    #   props.setPropertyValue("yesterdayDate", yesterday)
-    #
-    # No recognizer matched this, so the whole step emitted ZERO Java while
-    # still reporting FULL coverage. In accountdashboardregression that left
-    # currentTimestamp / yesterdayDate / priorMonth / futureMonth unset for
-    # 115 consuming steps -- a silent hole, not a visible gap.
-    #
-    # These expressions are pure java.time, which is already valid Java, so
-    # the fix is to pass them through with fully-qualified type names rather
-    # than reimplement date arithmetic inside the translator.
-    elif (re.search(r"\bsetPropertyValue\s*\(", script)
-          and re.search(r"\b(LocalDate|LocalDateTime|Instant)\s*\.\s*now\s*\(",
-                        script)):
-        # Drop commented-out lines FIRST. These scripts routinely keep an
-        # older attempt commented above the live one, and scanning both
-        # published the same property twice.
-        _live = "\n".join(ln for ln in script.splitlines()
-                          if not ln.strip().startswith("//"))
-        # Join leading-dot continuation lines so a multi-line fluent chain
-        # reads as a single expression.
-        joined = re.sub(r"\n\s*\.", ".", _live)
-        target = "Properties"
-        mstep = re.search(r"getTestStepByName\(\s*['\"]([^'\"]+)['\"]", joined)
-        if mstep:
-            target = mstep.group(1)
-
-        def _qualify_time_types(expr: str) -> str:
-            """Fully-qualify java.time types so the expression compiles.
-
-            Longest name first: qualifying LocalDate before LocalDateTime
-            would corrupt the latter into java.time.LocalDateTime -> broken.
-            """
-            for short, fq in (
-                    ("DateTimeFormatter", "java.time.format.DateTimeFormatter"),
-                    ("ChronoUnit", "java.time.temporal.ChronoUnit"),
-                    ("LocalDateTime", "java.time.LocalDateTime"),
-                    ("LocalDate", "java.time.LocalDate"),
-                    ("Instant", "java.time.Instant")):
-                expr = re.sub(r"(?<![\w.])" + short + r"(?=\s*\.)", fq, expr)
-            return expr.strip()
-
-        decls = {}
-        for dm in re.finditer(
-                r"\bdef\s+(\w+)\s*=\s*([^\n;]*?"
-                r"(?:LocalDate|LocalDateTime|Instant|DateTimeFormatter)"
-                r"[^\n;]*)", joined):
-            decls[dm.group(1)] = _qualify_time_types(dm.group(2))
-
-        published = []
-        for sm in re.finditer(
-                r"setPropertyValue\(\s*['\"](\w+)['\"]\s*,\s*(\w+)\s*\)", joined):
-            if sm.group(2) in decls:
-                published.append((sm.group(1), sm.group(2)))
-
-        if decls and published:
-            lines.append("// [translated] java.time date computation -> ctx")
-            for var, expr in decls.items():
-                lines.append(f"String {var} = {expr};")
-            for prop, var in published:
-                lines.append(
-                    f'TestSupport.putExtracted(ctx, "{target}.{prop}", {var});')
-                # Consumers reference the bare name as often as the
-                # namespaced one, so publish both rather than guess.
-                lines.append(
-                    f'TestSupport.putExtracted(ctx, "{prop}", {var});')
-                lines.append(
-                    f'LOG.info(" .. [date] {target}.{prop} = {{}}", {var});')
-            patterns_matched.append("java_time_properties")
-            consumed = True
 
     # ---- cleanUp_difference: null out partitionId / endOffset
     elif (re.search(r"setPropertyValue\(\s*['\"]partitionId['\"]\s*,\s*null",
@@ -3101,8 +3057,26 @@ def translate(script: str, response_var_by_step: dict[str, str],
         r'def\s+(?P<name>[A-Za-z_][A-Za-z_0-9]*)\s*=\s*'
         r'(?:java\.time\.format\.)?DateTimeFormatter\.ofPattern\('
         r'\s*["\'](?P<fmt>[^"\']+)["\']\s*\)')
+    # Join leading-dot continuation lines before matching.
+    #
+    # SoapUI authors routinely break a java.time chain across lines:
+    #
+    #     def yesterday = LocalDate.now()
+    #             .minusDays(1)
+    #             .format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
+    #
+    # Both regexes below are single-line, so such a declaration matched
+    # NOTHING and the step emitted no Java at all -- while still reporting
+    # FULL coverage. In accountdashboardregression that silently left
+    # currentTimestamp / yesterdayDate / priorMonth / futureMonth unset for
+    # 115 consuming steps.
+    #
+    # Joining here (not globally) keeps the fix local to the date scan: every
+    # other recognizer still sees the original text.
+    _date_src = re.sub(r"\n\s*\.", ".", script)
+
     formatter_by_name: dict[str, str] = {}
-    for m in _FORMATTER_DECL_RX.finditer(script):
+    for m in _FORMATTER_DECL_RX.finditer(_date_src):
         formatter_by_name[m.group("name")] = m.group("fmt")
 
     # LocalDate expression accepts BOTH inline ofPattern(...) AND a bare
@@ -3119,8 +3093,25 @@ def translate(script: str, response_var_by_step: dict[str, str],
         r'  (?P<fmt_ref>[A-Za-z_][A-Za-z_0-9]*)'
         r')'
         r'\s*\)', re.VERBOSE)
+    # `def X = <Formatter>.format(Instant.now())` or `Instant.now().toString()`.
+    # Accepts a named DateTimeFormatter constant (ISO_INSTANT, ISO_DATE_TIME,
+    # ...), an inline ofPattern(...), or no formatter at all.
+    _INSTANT_NOW_RX = re.compile(
+        r'def\s+(?P<var>[A-Za-z_][A-Za-z_0-9]*)\s*=\s*'
+        r'(?:'
+        r'  (?:java\.time\.format\.)?DateTimeFormatter\.'
+        r'  (?:'
+        r'    (?P<fmt_const>ISO_[A-Z_]+)'
+        r'    |'
+        r'    ofPattern\(\s*["\'](?P<inline_fmt>[^"\']+)["\']\s*\)'
+        r'  )'
+        r'  \.format\(\s*(?:java\.time\.)?Instant\.now\(\)\s*\)'
+        r'  |'
+        r'  (?:java\.time\.)?Instant\.now\(\)\s*\.toString\(\s*\)'
+        r')', re.VERBOSE)
+
     date_arith_vars: list[str] = []
-    for m in _DATE_ARITH_RX.finditer(script):
+    for m in _DATE_ARITH_RX.finditer(_date_src):
         var = m.group("var")
         chain = m.group("chain")
         inline_fmt = m.group("inline_fmt")
@@ -3142,6 +3133,42 @@ def translate(script: str, response_var_by_step: dict[str, str],
             f'.format(java.time.format.DateTimeFormatter.ofPattern("{fmt_esc}"));')
         lines.append(
             f'    LOG.info(" .. [groovy date] {var}={{}} (fmt=\\"{fmt_esc}\\")", {var});')
+    # Instant-based timestamps. `_DATE_ARITH_RX` above matches only
+    # `LocalDate.now()`, so a script computing an ISO instant --
+    #
+    #     def timestamp = DateTimeFormatter.ISO_INSTANT.format(Instant.now())
+    #
+    # produced nothing. In accountdashboardregression that is
+    # `currentTimestamp`, referenced by 37 steps. The formatter comes FIRST
+    # here, which is why the LocalDate pattern cannot be widened to cover it.
+    for m in _INSTANT_NOW_RX.finditer(_date_src):
+        var = m.group("var")
+        if var in date_arith_vars:
+            continue
+        fmt_const = m.group("fmt_const")
+        inline_fmt = m.group("inline_fmt")
+        if fmt_const:
+            expr = (f'java.time.format.DateTimeFormatter.{fmt_const}'
+                    f'.format(java.time.Instant.now())')
+            shown = fmt_const
+        elif inline_fmt:
+            fmt_esc = inline_fmt.replace('"', '\\"')
+            # ofPattern needs a zone to format an Instant; UTC keeps the
+            # value stable regardless of where the suite runs.
+            expr = (f'java.time.format.DateTimeFormatter.ofPattern("{fmt_esc}")'
+                    f'.withZone(java.time.ZoneOffset.UTC)'
+                    f'.format(java.time.Instant.now())')
+            shown = inline_fmt
+        else:
+            expr = 'java.time.Instant.now().toString()'
+            shown = 'ISO_INSTANT (toString)'
+        if not date_arith_vars:
+            lines.append('{ // [groovy] LocalDate arithmetic -> java.time')
+        date_arith_vars.append(var)
+        lines.append(f'    String {var} = {expr};')
+        lines.append(
+            f'    LOG.info(" .. [groovy date] {var}={{}} (fmt=\\"{shown}\\")", {var});')
+
     if date_arith_vars:
         # Look ahead for setPropertyValue("<prop>", <var>) that publishes
         # the computed date into a Properties step -- mirror the pattern

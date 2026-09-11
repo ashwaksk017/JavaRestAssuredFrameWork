@@ -1,0 +1,17 @@
+---
+description: How to change the ReadyAPI converter without breaking emit contracts.
+globs: tools/ra_converter/**
+alwaysApply: false
+---
+
+# ra_converter
+
+- Prefer a **pattern in the emitter** over a one-off Java patch. Add a unit test in `test_converter_fixes.py` or `test_cross_case_contracts.py` before reconverting.
+- **Replicate ReadyAPI.** Groovy/property writes use last nonempty `setPropertyValue` per field (`_should_emit_setproperty`). DataGenInput space-concat `name`/`name2` must keep shared generator vars (B2B-6604 TA match). Do not reorder JSON vs location-header vs JDBC so a “better” id wins.
+- Coverage: `FULL` / `PARTIAL` / `STUB` / `TODO`. Unknown Groovy/assertions → TODO + ledger row, not a guessed REST call.
+- Coverage: `FULL` / `PARTIAL` / `STUB` / `TODO`. Unknown Groovy/assertions → TODO + ledger row, not a guessed REST call.
+- Existence Match: `content=false` emits `jsonAbsent`; `content=true` (default) emits `jsonExists`. Polarity is **per assertion**.
+- HTTP method: last path segment `remove` is POST (body), inferred **before** the “remove”→DELETE keyword. Token / `${#Project#...}` steps must not call `.regenIdentity()`.
+- Groovy `def hiltonmemberid = context.expand(...)` → `putExtracted` (overwrite), not `putIfAbsent`.
+- Directory `--input` ignores `--service-name`; each XML gets its own client from the catalog or basename.
+- After `--clean` reconvert: restore narrowed `Suites/*_Smoke.xml` if the emitter rewrote a full class list. Run `python tools/ra_converter/test_converter_fixes.py` and `test_cross_case_contracts.py`.
