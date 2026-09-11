@@ -1,0 +1,9 @@
+# SoapUI project XMLs are inputs, not converter code. Keep local.
+input/
+
+# Python bytecode cache
+__pycache__/
+*.pyc
+
+# Live Cursor API key -- copy from cursor_agent.json.example
+cursor_agent.json

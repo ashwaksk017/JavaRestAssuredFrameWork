@@ -1,0 +1,2 @@
+# Keep the GitLab helper executable as POSIX text on Windows checkouts.
+tools/allure_history.sh text eol=lf

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">
+<!--
+  Safety-guard contract tests. Pure unit tests - no HTTP, no database, no
+  credentials. Safe to run anywhere, including CI without Hilton access.
+
+    mvn test "-DsuiteXmlFile=src/test/resources/testng-guards.xml"
+-->
+<suite name="Guards">
+    <test name="Guards">
+        <classes>
+            <class name="com.ak.api.tests.security.DbSqlGuardTest"/>
+            <class name="com.ak.api.tests.security.SecretsRedactionTest"/>
+            <class name="com.ak.api.tests.framework.ScenarioContextTest"/>
+            <class name="com.ak.api.tests.framework.AsyncBudgetTest"/>
+        </classes>
+    </test>
+</suite>

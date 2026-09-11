@@ -4,8 +4,12 @@ target/
 
 # Reports + logs (generated on every run)
 logs/
+*.log
+full-run.log
 allure-results/
 allure-report/
+allure-history/
+.allure/
 extent-reports/
 test-output/
 
@@ -30,6 +34,15 @@ application-secret.properties
 application-local.properties
 src/main/resources/application-local.properties
 src/test/resources/application-local.properties
+# Cursor agent key for ra_converter assist (copy from *.example)
+cursor_agent.json
+**/cursor_agent.json
+tools/ra_converter/cursor_agent.json
+**/cursor_agent.local.json
+# Client-id / secret stubs (values like __SET_c_id__)
+**/*SET_c_id_*
+src/main/resources/config/qa.json
+src/main/resources/config/prod.json
 # Any credentials override file, in case one lands anywhere in the tree:
 **/credentials.properties
 **/*-credentials.properties
@@ -66,27 +79,3 @@ src/main/resources/templates/http_request_*.json
 src/main/resources/templates/post_activate.json
 src/main/resources/templates/tokenrequest.json
 src/main/resources/test_data.example.properties
-
-# --- b2b-api-ai (nested Hilton framework) -------------------------------
-# Raw ReadyAPI project exports: Hilton endpoint paths, test-case IDs and
-# hardcoded test emails. The converter reads them locally; they are not
-# needed to build or read the framework.
-src/main/b2b-api-ai/tools/ra_converter/input/
-# Working snapshots taken during the refactor session.
-src/main/b2b-api-ai/_rearch_snapshot/
-# Env config -- ships stubbed with __SET_ME__, but never track it.
-src/main/b2b-api-ai/src/main/resources/program_configuration.json
-# Large run artifacts (also excluded by the nested .gitignore; belt and braces).
-src/main/b2b-api-ai/logs/
-src/main/b2b-api-ai/extent-reports/
-src/main/b2b-api-ai/.allure/
-src/main/b2b-api-ai/*.log
-# More ReadyAPI exports under a second input dir.
-src/main/b2b-api-ai/tools/ra_converter/single_input/
-# Snapshots of generated suite XMLs -- they embed Hilton test-class FQNs.
-src/main/b2b-api-ai/tools/ra_converter/_smoke_snapshot/
-src/main/b2b-api-ai/tools/ra_converter/_suite_xml_snapshot/
-# Converter vote store: derived from the ReadyAPI exports and embeds the same
-# endpoint paths and test-case IDs. The converter rebuilds it from scratch,
-# and it now self-invalidates on a vocabulary change, so omitting it is safe.
-src/main/b2b-api-ai/tools/ra_converter/fluent_catalog.json

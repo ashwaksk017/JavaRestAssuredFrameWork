@@ -1,0 +1,116 @@
+# GitLab CI/CD -- Rest Assured + TestNG
+# JUnit XML feeds the merge-request Test summary and pipeline Tests tab.
+# Optional API sync (MR notes + GitLab issue / test-case notes):
+#   CI/CD variables: GITLAB_ENABLED=true, GITLAB_TOKEN=<project PAT with api scope>
+#   (gitlab.token / GITLAB_TOKEN; project from CI_PROJECT_ID)
+# Job token (CI_JOB_TOKEN) is used only when GITLAB_TOKEN is unset; MR notes
+# often need a PAT.
+#
+# Allure trends: the pages job restores allure-history/ from cache into
+# target/allure-results/history before allure:report, then saves the new
+# report/history back. First default-branch pipeline seeds the trend.
+
+image: maven:3.9-eclipse-temurin-17
+
+variables:
+  MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
+  MAVEN_CLI_OPTS: "-B -e --no-transfer-progress"
+  TEST_ENV: qa
+
+cache:
+  key: "${CI_COMMIT_REF_SLUG}"
+  paths:
+    - .m2/repository
+
+stages:
+  - test
+  - report
+
+.default_test_artifacts: &default_test_artifacts
+  when: always
+  expire_in: 14 days
+  paths:
+    - target/surefire-reports/
+    - target/allure-results/
+    - target/gitlab-summary.md
+    - target/gitlab.env
+    - extent-reports/
+    - logs/
+  reports:
+    junit:
+      - target/surefire-reports/TEST-*.xml
+      - target/surefire-reports/junitreports/TEST-*.xml
+    dotenv: target/gitlab.env
+
+unit-tests:
+  stage: test
+  script:
+    - mkdir -p target && printf 'GITLAB_TESTS_TOTAL=0\n' > target/gitlab.env
+    - mvn $MAVEN_CLI_OPTS test "-Dtest=H2QueryTest,JooqQueryTest,DbPollTest,TokenRefreshTest,MultiSourceDataProviderTest,GitLabClientTest" -DfailIfNoTests=false
+  artifacts: *default_test_artifacts
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "web"
+
+framework-tests:
+  stage: test
+  script:
+    - mkdir -p target && printf 'GITLAB_TESTS_TOTAL=0\n' > target/gitlab.env
+    - mvn $MAVEN_CLI_OPTS test
+  artifacts: *default_test_artifacts
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "web"
+
+imported-smoke:
+  stage: test
+  script:
+    - |
+      set -e
+      if [ -f Suites/Smbtohwsconsumerregressione2e_Smoke.xml ]; then
+        mvn $MAVEN_CLI_OPTS test "-DsuiteXmlFile=Suites/Smbtohwsconsumerregressione2e_Smoke.xml"
+      elif [ -f Suites/Programaccountregression_Smoke.xml ]; then
+        mvn $MAVEN_CLI_OPTS test "-DsuiteXmlFile=Suites/Programaccountregression_Smoke.xml"
+      else
+        echo "No Suites/*_Smoke.xml in this checkout (converter output is local)."
+        echo "Commit a smoke suite or run the converter in this job to enable imported smoke."
+      fi
+  artifacts: *default_test_artifacts
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "web"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+
+pages:
+  stage: report
+  needs:
+    - job: framework-tests
+      artifacts: true
+      optional: true
+  cache:
+    - key: "${CI_COMMIT_REF_SLUG}"
+      paths:
+        - .m2/repository
+      policy: pull
+    - key: "allure-history-${CI_COMMIT_REF_SLUG}"
+      fallback_keys:
+        - "allure-history-${CI_DEFAULT_BRANCH}"
+      paths:
+        - allure-history/
+      policy: pull-push
+      when: always
+  script:
+    - bash tools/allure_history.sh restore
+    - mvn $MAVEN_CLI_OPTS allure:report
+    - bash tools/allure_history.sh save
+    - rm -rf public && mkdir -p public && cp -r target/allure-report/. public/
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - public
+      - allure-history/
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

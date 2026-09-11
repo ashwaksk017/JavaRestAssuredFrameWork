@@ -1,0 +1,303 @@
+package com.ak.api.support;
+
+import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.Set;
+
+import com.ak.api.config.Config;
+import com.ak.api.data.FakeData;
+
+/**
+ * Dual-case ctx writes and name-shape identity generation for imported
+ * ReadyAPI tests.
+ *
+ * <p>Replaces the 80-line {@code DataGenInput} Groovy translation that
+ * currently sits at the top of every generated {@code @Test} method.
+ * Shape rules match {@code groovy_translator.py} (~1157–1174):</p>
+ * <ul>
+ *   <li>phone / hhonorsNumber → 9-digit numeric</li>
+ *   <li>names containing {@code guestid}, {@code memberid}, or
+ *       {@code accountid} → 9-digit numeric ({@code customerId} /
+ *       {@code buyerId} are <em>not</em> in that set -- they stay
+ *       usernames, same as the converter)</li>
+ *   <li>domain / websiteDomain / weburl → {@code word.com}</li>
+ *   <li>{@code *email*} → {@code word@ALLOWED_DOMAIN}</li>
+ *   <li>everything else → username (6 lowercase letters)</li>
+ * </ul>
+ *
+ * <p>Each field is written under both <em>first-letter</em> casings
+ * ({@code Properties.Email} and {@code Properties.email}) so
+ * {@code #Properties_Username#} and {@code #Properties_username#}
+ * resolve to the same value. Trailing {@code Id}/{@code ID} is a
+ * different key ({@code guestId} vs {@code guestID}); the converter
+ * generates both, and enroll uses {@code #Properties_guestID#}.</p>
+ *
+ * <p><b>Before</b> (B2B-9098 enroll setup, ~80 lines of {@code FakeData}
+ * + dual {@code ctx.put}):</p>
+ * <pre>
+ * String genV_Email = FakeData.username() + "@" + Config.get("ALLOWED_DOMAIN", "example.com");
+ * ctx.put("Properties.Email", genV_Email);
+ * ctx.put("Properties.email", genV_Email);
+ * // ... 30 more fields ...
+ * TestSupport.putIfNonEmpty(ctx, "Properties.Domain", TestSupport.testData(row, "Properties.Domain"));
+ * TestSupport.putIfNonEmpty(ctx, "Properties.Domain", "qegwtbxd.com");
+ * </pre>
+ *
+ * <p><b>After:</b></p>
+ * <pre>
+ * CtxFields.generateStandard(ctx, "Properties", CtxFields.B2B9098_EXTRA_FIELDS);
+ * CtxFields.seedFromRow(ctx, row, "Properties.");
+ * </pre>
+ *
+ * <p>{@link #generateStandard(Map, String)} alone is the converter ALWAYS
+ * list -- not enough for B2B-9098 (missing {@code name}, {@code Firstname},
+ * {@code Hardcodeddomain} is a seed key, not a generated one, etc.).</p>
+ *
+ * <p>Does <em>not</em> replace {@link ImportedScenario#regenRandomProperties}:
+ * that still runs immediately before each REST step that submits fresh
+ * identity data, and it deliberately leaves extracted IDs alone.</p>
+ */
+public final class CtxFields {
+
+    /**
+     * Converter ALWAYS list from groovy_translator.py -- fields populated
+     * even when the SoapUI DataGenInput script did not set them, so
+     * templates that reference a variant never see a stale CSV value.
+     */
+    public static final String[] STANDARD_FIELDS = {
+            "Username", "usernamemember", "usernameM",
+            "Email", "EmailMember", "guestMemberEmail",
+            "Phone", "phoneNumber", "hhonorsNumber",
+            "Domain", "websiteDomain",
+            "generatedemailAddress", "generatedEmail",
+            "guestId", "guestID", "memberGuestID",
+            "accountId", "accountID",
+            "memberId", "memberID",
+            "partnerAccountId", "partnerAccountID"
+    };
+
+    /**
+     * B2B-9098 DataGenInput {@code setPropertyValue} targets that are
+     * <em>not</em> in {@link #STANDARD_FIELDS}. Pass these as extras to
+     * {@link #generateStandard(Map, String, String...)} so {@code name},
+     * {@code websitedomain} (distinct from {@code websiteDomain}),
+     * {@code Firstname}/{@code Lastname}, {@code customerId}/{@code buyerId},
+     * and {@code uuid3}/{@code uuid4} exist. {@code Hardcodeddomain} is
+     * seeded, not generated -- {@link #seedFromRow} picks it up from
+     * {@link ImportedScenario#testData}.
+     */
+    public static final String[] B2B9098_EXTRA_FIELDS = {
+            "name", "websitedomain",
+            "Firstname", "Lastname",
+            "customerId", "buyerId",
+            "uuid3", "uuid4"
+    };
+
+    private CtxFields() {}
+
+    /**
+     * Write {@code namespace.field} and the first-letter-flipped sibling
+     * ({@code Properties.Email} + {@code Properties.email}) to the same
+     * value. Overwrites existing keys (DataGenInput semantics).
+     */
+    public static void putBothCases(Map<String, String> ctx, String namespace,
+                                    String field, String value) {
+        if (ctx == null || field == null || field.isEmpty()) return;
+        String ns = (namespace == null || namespace.isEmpty()) ? "" : namespace + ".";
+        ctx.put(ns + field, value);
+        String flipped = flipFirst(field);
+        if (!flipped.equals(field)) {
+            ctx.put(ns + flipped, value);
+        }
+    }
+
+    /**
+     * Write a dotted key ({@code Properties.Email}) plus its first-letter
+     * field-casing sibling. If {@code namespacedField} has no dot, the
+     * whole string is treated as the field under no namespace.
+     */
+    public static void putBothCases(Map<String, String> ctx, String namespacedField,
+                                    String value) {
+        if (ctx == null || namespacedField == null || namespacedField.isEmpty()) return;
+        int dot = namespacedField.lastIndexOf('.');
+        if (dot < 0) {
+            putBothCases(ctx, "", namespacedField, value);
+            return;
+        }
+        putBothCases(ctx, namespacedField.substring(0, dot),
+                namespacedField.substring(dot + 1), value);
+    }
+
+    /**
+     * Generate a unique name-shape-appropriate value for each field and
+     * write both casings into {@code ctx} under {@code namespace}.
+     * Duplicate field names that differ only by <em>first-letter</em>
+     * case ({@code Email}/{@code email}) are collapsed so the last
+     * casing does not clobber the first with a second random value.
+     * Trailing {@code Id}/{@code ID} is not a first-letter pair
+     * ({@code guestId} vs {@code guestID}) and both are generated --
+     * enroll query params use {@code #Properties_guestID#}.
+     */
+    public static void generate(Map<String, String> ctx, String namespace,
+                                String... fields) {
+        if (ctx == null || fields == null || fields.length == 0) return;
+        // One website/email domain for the whole pack so owner enroll,
+        // member enroll, and create-account websiteDomain stay coherent.
+        // Standalone valueFor("Email") still uses ALLOWED_DOMAIN.
+        String sharedDomain = null;
+        boolean needsDomain = false;
+        for (String field : fields) {
+            if (field == null || field.isEmpty()) continue;
+            String p = field.toLowerCase();
+            if (isDomainField(field) || p.contains("email")) {
+                needsDomain = true;
+                break;
+            }
+        }
+        if (needsDomain) {
+            sharedDomain = FakeData.username() + ".com";
+        }
+        Set<String> seenFirstLetterPair = new LinkedHashSet<>();
+        for (String field : fields) {
+            if (field == null || field.isEmpty()) continue;
+            if (!seenFirstLetterPair.add(field)) continue;
+            String flipped = flipFirst(field);
+            if (!flipped.equals(field)) seenFirstLetterPair.add(flipped);
+            String p = field.toLowerCase();
+            String value;
+            if (sharedDomain != null && isDomainField(field)) {
+                value = sharedDomain;
+            } else if (sharedDomain != null && p.contains("email")) {
+                value = FakeData.username() + "@" + sharedDomain;
+            } else {
+                value = valueFor(field);
+            }
+            putBothCases(ctx, namespace, field, value);
+        }
+    }
+
+    /**
+     * Populate the converter ALWAYS set under {@code namespace}
+     * (typically {@code "Properties"} or {@code "Properties_2"}).
+     * Does <em>not</em> include script-only fields such as {@code name}
+     * or {@code Firstname} -- pass those as {@code extraFields} or use
+     * {@link #B2B9098_EXTRA_FIELDS}.
+     */
+    public static void generateStandard(Map<String, String> ctx, String namespace) {
+        generate(ctx, namespace, STANDARD_FIELDS);
+    }
+
+    /**
+     * Script extras first (SoapUI {@code setPropertyValue} targets), then
+     * the ALWAYS list -- same order as groovy_translator. First-letter
+     * pairs that appear in both lists get one value; {@code guestId} and
+     * {@code guestID} both get values.
+     */
+    public static void generateStandard(Map<String, String> ctx, String namespace,
+                                        String... extraFields) {
+        if (extraFields == null || extraFields.length == 0) {
+            generateStandard(ctx, namespace);
+            return;
+        }
+        String[] all = new String[extraFields.length + STANDARD_FIELDS.length];
+        System.arraycopy(extraFields, 0, all, 0, extraFields.length);
+        System.arraycopy(STANDARD_FIELDS, 0, all, extraFields.length, STANDARD_FIELDS.length);
+        generate(ctx, namespace, all);
+    }
+
+    /**
+     * Copy Properties-step values into ctx via
+     * {@link ImportedScenario#putIfNonEmpty} + {@link ImportedScenario#testData}
+     * (putIfAbsent: generated values win; CSV / {@code test_data.*} /
+     * bundled JSON defaults fill keys DataGen did not write).
+     *
+     * <p>SoapUI XML literals are <em>not</em> passed from the test
+     * method -- they already live in the suite
+     * {@code test_data_defaults/*.json} as
+     * {@link ImportedScenario#testData}'s last fallback. Emitting
+     * {@code putIfNonEmpty(ctx, key, xmlLiteral)} after this call was
+     * a no-op whenever the JSON had the key.</p>
+     *
+     * <p>When {@code fields} is non-empty, only those names are seeded
+     * ({@code keyPrefix + field}, or the name as-is when it already
+     * starts with the prefix). When {@code fields} is omitted, walks
+     * CSV keys and bundled JSON defaults with {@code keyPrefix} --
+     * this is what generated tests emit so SoapUI literals populate
+     * ctx without appearing in the test class.</p>
+     */
+    public static void seedFromRow(Map<String, String> ctx, Map<String, String> row,
+                                   String keyPrefix, String... fields) {
+        if (ctx == null || keyPrefix == null) return;
+        if (fields != null && fields.length > 0) {
+            for (String f : fields) {
+                if (f == null || f.isEmpty()) continue;
+                String key = f.startsWith(keyPrefix) ? f : keyPrefix + f;
+                if (isCapturedSalesforceSessionKey(key)) continue;
+                ImportedScenario.putIfNonEmpty(ctx, key, ImportedScenario.testData(row, key));
+            }
+            return;
+        }
+        Set<String> keys = new LinkedHashSet<>();
+        if (row != null) {
+            for (String key : row.keySet()) {
+                if (key != null && key.startsWith(keyPrefix)) keys.add(key);
+            }
+        }
+        for (String key : ImportedScenario.testDataDefaultKeys()) {
+            if (key != null && key.startsWith(keyPrefix)) keys.add(key);
+        }
+        for (String key : keys) {
+            if (isCapturedSalesforceSessionKey(key)) continue;
+            ImportedScenario.putIfNonEmpty(ctx, key, ImportedScenario.testData(row, key));
+        }
+    }
+
+    /**
+     * ReadyAPI {@code sftokenId.GeneratedTokenID} XML captures a session
+     * from the last local run. Groovy {@code sf-Token} overwrites it after
+     * {@code sf-token-Request}. Seeding that captured Bearer would mask a
+     * failed token extract with {@code INVALID_SESSION_ID}.
+     */
+    public static boolean isCapturedSalesforceSessionKey(String key) {
+        if (key == null || key.isEmpty()) {
+            return false;
+        }
+        String n = key.toLowerCase().replace("_", "").replace("-", "");
+        return n.contains("sftokenid") && n.endsWith("generatedtokenid");
+    }
+
+    /** Name-shape generator matching groovy_translator._generator_expr. */
+    public static String valueFor(String field) {
+        if (field == null || field.isEmpty()) return FakeData.username();
+        String p = field.toLowerCase();
+        if (p.contains("phone") || p.equals("hhonorsnumber")) {
+            return FakeData.faker().numerify("#########");
+        }
+        if (p.contains("guestid") || p.contains("memberid") || p.contains("accountid")) {
+            return FakeData.numericId();
+        }
+        if (p.equals("domain") || p.equals("websitedomain") || p.equals("weburl")) {
+            return FakeData.username() + ".com";
+        }
+        if (p.contains("email")) {
+            return FakeData.username() + "@" + Config.get("ALLOWED_DOMAIN", "example.com");
+        }
+        return FakeData.username();
+    }
+
+    static boolean isDomainField(String field) {
+        if (field == null) return false;
+        String p = field.toLowerCase();
+        return p.equals("domain") || p.equals("websitedomain") || p.equals("weburl");
+    }
+
+    /** Flip the first character's case; rest of the string unchanged. */
+    static String flipFirst(String field) {
+        if (field == null || field.isEmpty()) return field;
+        char c = field.charAt(0);
+        char alt = Character.isUpperCase(c)
+                ? Character.toLowerCase(c)
+                : Character.toUpperCase(c);
+        return alt + field.substring(1);
+    }
+}

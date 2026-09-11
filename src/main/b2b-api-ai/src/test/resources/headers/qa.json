@@ -1,0 +1,6 @@
+{
+    "X-Env":         "qa",
+    "X-Api-Key":     "qa-api-key-abc123",
+    "X-Tenant-Id":   "acme-qa",
+    "X-Client-Name": "api-automation-restassured"
+}

@@ -1,0 +1,3 @@
+accountId,startingSettlementWindowId,endingSettlementWindowId,jira_xray_id,expected
+acct-42,sw-100,sw-200,,statusCode:200;echoedAccountId:acct-42
+acct-99,sw-500,sw-600,,statusCode:200;echoedAccountId:acct-99

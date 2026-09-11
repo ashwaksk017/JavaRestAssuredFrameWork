@@ -1,0 +1,6 @@
+# HTTP-style header file: one "Name: value" per line.
+# Consumed by Headers.fromText("headers/qa.txt").
+X-Env: qa
+X-Api-Key: qa-api-key-abc123
+X-Tenant-Id: acme-qa
+X-Client-Name: api-automation-restassured

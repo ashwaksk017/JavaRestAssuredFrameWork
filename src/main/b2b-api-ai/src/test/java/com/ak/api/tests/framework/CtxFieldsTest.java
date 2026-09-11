@@ -1,0 +1,303 @@
+package com.ak.api.tests.framework;
+
+
+import com.ak.api.tests.ImportedTest;
+import java.util.HashMap;
+import java.util.Map;
+
+import org.testng.Assert;
+import org.testng.annotations.Test;
+
+import com.ak.api.config.Config;
+import com.ak.api.support.CtxFields;
+import com.ak.api.support.ImportedScenario;
+
+import io.qameta.allure.Description;
+import io.qameta.allure.Epic;
+import io.qameta.allure.Feature;
+import io.qameta.allure.Story;
+
+@Epic("API Automation")
+@Feature("Readable-test utilities")
+public class CtxFieldsTest {
+
+    @Test(groups = {"unit"})
+    @Story("Dual-case ctx writes")
+    @Description("putBothCases writes Properties.Email and Properties.email to the same value.")
+    public void putBothCases_writesFlippedFirstLetter() {
+        Map<String, String> ctx = new HashMap<>();
+        CtxFields.putBothCases(ctx, "Properties", "Email", "a@example.com");
+        Assert.assertEquals(ctx.get("Properties.Email"), "a@example.com");
+        Assert.assertEquals(ctx.get("Properties.email"), "a@example.com");
+
+        CtxFields.putBothCases(ctx, "Properties.guestID", "190012345");
+        Assert.assertEquals(ctx.get("Properties.guestID"), "190012345");
+        Assert.assertEquals(ctx.get("Properties.GuestID"), "190012345");
+    }
+
+    @Test(groups = {"unit"})
+    @Story("Name-shape generators")
+    @Description("valueFor matches groovy_translator shapes: phone/id digits, domain .com, email @ALLOWED_DOMAIN.")
+    public void valueFor_matchesConverterShapes() {
+        String phone = CtxFields.valueFor("Phone");
+        Assert.assertEquals(phone.length(), 9, "phone is 9 digits");
+        Assert.assertTrue(phone.chars().allMatch(Character::isDigit), phone);
+
+        String hhonors = CtxFields.valueFor("hhonorsNumber");
+        Assert.assertEquals(hhonors.length(), 9);
+        Assert.assertTrue(hhonors.chars().allMatch(Character::isDigit), hhonors);
+
+        String guestId = CtxFields.valueFor("guestID");
+        Assert.assertEquals(guestId.length(), 9);
+        Assert.assertTrue(guestId.chars().allMatch(Character::isDigit), guestId);
+        Assert.assertFalse(guestId.startsWith("0"), "id must be a valid JSON number: " + guestId);
+
+        String accountId = CtxFields.valueFor("accountId");
+        Assert.assertEquals(accountId.length(), 9);
+        Assert.assertTrue(accountId.chars().allMatch(Character::isDigit), accountId);
+
+        String domain = CtxFields.valueFor("Domain");
+        Assert.assertTrue(domain.endsWith(".com"), domain);
+        Assert.assertEquals(domain.length(), 10, "6-char username + .com");
+
+        String email = CtxFields.valueFor("Email");
+        String domainPart = Config.get("ALLOWED_DOMAIN", "example.com");
+        Assert.assertTrue(email.contains("@"), email);
+        Assert.assertTrue(email.endsWith("@" + domainPart), email);
+
+        String customerId = CtxFields.valueFor("customerId");
+        Assert.assertTrue(customerId.matches("[a-z]{6}"),
+                "customerId is a username, not 9 digits: " + customerId);
+
+        String username = CtxFields.valueFor("Username");
+        Assert.assertTrue(username.matches("[a-z]{6}"), username);
+    }
+
+    @Test(groups = {"unit"})
+    @Story("generate writes both casings, unique per field")
+    @Description("generate collapses Email/email so both casings share one value; Phone is a different value.")
+    public void generate_uniquePerField_dualCase() {
+        Map<String, String> ctx = new HashMap<>();
+        CtxFields.generate(ctx, "Properties", "Email", "email", "Phone");
+        Assert.assertEquals(ctx.get("Properties.Email"), ctx.get("Properties.email"));
+        Assert.assertNotNull(ctx.get("Properties.Email"));
+        Assert.assertNotEquals(ctx.get("Properties.Email"), ctx.get("Properties.Phone"));
+        Assert.assertEquals(ctx.get("Properties.Phone"), ctx.get("Properties.phone"));
+    }
+
+    @Test(groups = {"unit"})
+    @Story("generate shares one domain across emails and website")
+    @Description("Owner/member emails use the same domain as websiteDomain so create-member matches the account allowlist.")
+    public void generate_emailsShareWebsiteDomain() {
+        Map<String, String> ctx = new HashMap<>();
+        CtxFields.generateStandard(ctx, "Properties", "generatedemailAddress1");
+        String domain = ctx.get("Properties.websiteDomain");
+        Assert.assertNotNull(domain);
+        Assert.assertTrue(domain.endsWith(".com"), domain);
+        Assert.assertEquals(ctx.get("Properties.Domain"), domain);
+        Assert.assertTrue(ctx.get("Properties.Email").endsWith("@" + domain),
+                ctx.get("Properties.Email"));
+        Assert.assertTrue(ctx.get("Properties.EmailMember").endsWith("@" + domain),
+                ctx.get("Properties.EmailMember"));
+        Assert.assertTrue(ctx.get("Properties.generatedemailAddress").endsWith("@" + domain),
+                ctx.get("Properties.generatedemailAddress"));
+        Assert.assertTrue(ctx.get("Properties.generatedemailAddress1").endsWith("@" + domain),
+                ctx.get("Properties.generatedemailAddress1"));
+        Assert.assertNotEquals(ctx.get("Properties.Email"), ctx.get("Properties.EmailMember"));
+        Assert.assertFalse(ctx.get("Properties.guestID").startsWith("0"));
+    }
+
+    @Test(groups = {"unit"})
+    @Story("regen pack keeps owner and member distinct")
+    @Description("regenRandomProperties writes distinct usernames/emails on one domain; a second call is skipped by RestStep via _identityPackReady.")
+    public void regenRandomProperties_distinctOwnerAndMember() {
+        Map<String, String> ctx = new HashMap<>();
+        ImportedScenario.regenRandomProperties(ctx);
+        String domain = ctx.get("Properties.websiteDomain");
+        Assert.assertNotNull(domain);
+        Assert.assertNotEquals(ctx.get("Properties.Username"), ctx.get("Properties.usernamemember"));
+        Assert.assertNotEquals(ctx.get("Properties.Email"), ctx.get("Properties.EmailMember"));
+        Assert.assertEquals(ctx.get("Properties.generatedemailAddress"), ctx.get("Properties.Email"));
+        Assert.assertEquals(ctx.get("Properties.generatedemailAddress1"), ctx.get("Properties.EmailMember"));
+        Assert.assertTrue(ctx.get("Properties.Email").endsWith("@" + domain));
+        Assert.assertTrue(ctx.get("Properties.generatedemailAddress1").endsWith("@" + domain));
+    }
+
+    @Test(groups = {"unit"})
+    @Story("CSV freemail Domain survives identity regen")
+    @Description("B2B-6238 Properties.Domain=yahoo.com after DataGen must not become Hardcodeddomain laafd.com.")
+    public void regenRandomProperties_keepsCsvFreemailDomain() {
+        Map<String, String> ctx = new HashMap<>();
+        ctx.put("Properties.Hardcodeddomain", "laafd.com");
+        Map<String, String> row = new HashMap<>();
+        row.put("Properties.Domain", "yahoo.com");
+        ImportedScenario.regenRandomProperties(ctx, row);
+        Assert.assertEquals(ctx.get("Properties.Domain"), "yahoo.com");
+        Assert.assertEquals(ctx.get("Properties.websiteDomain"), "yahoo.com");
+        Assert.assertTrue(ctx.get("Properties.Email").endsWith("@yahoo.com"),
+                ctx.get("Properties.Email"));
+        Assert.assertTrue(ctx.get("Properties.generatedemailAddress1").endsWith("@yahoo.com"),
+                ctx.get("Properties.generatedemailAddress1"));
+        Assert.assertFalse(ctx.get("Properties.Email").contains("laafd.com"));
+    }
+
+    @Test(groups = {"unit"})
+    @Story("CSV competitor Domain survives identity regen on create-400")
+    @Description("B2B-6324 Properties.Domain=wyn.com must not become Hardcodeddomain when create expects 400.")
+    public void regenRandomProperties_keepsCsvDomainWhenCreateExpects400() {
+        Map<String, String> ctx = new HashMap<>();
+        ctx.put("Properties.Hardcodeddomain", "laafd.com");
+        Map<String, String> row = new HashMap<>();
+        row.put("Properties.Domain", "wyn.com");
+        row.put("expected_http_request_400_status_code", "400");
+        row.put("Properties.RandomDomain2", "omnihotels.com");
+        ImportedScenario.regenRandomProperties(ctx, row);
+        Assert.assertEquals(ctx.get("Properties.Domain"), "wyn.com");
+        Assert.assertTrue(ctx.get("Properties.Email").endsWith("@wyn.com"),
+                ctx.get("Properties.Email"));
+        Assert.assertEquals(ctx.get("Properties.RandomDomain2"), "omnihotels.com");
+        Assert.assertFalse(ctx.get("Properties.Email").contains("laafd.com"));
+    }
+
+    @Test(groups = {"unit"})
+    @Story("Happy-path CSV Domain still uses frozen allowlist")
+    public void regenRandomProperties_frozenDomainWhenCreateExpects200() {
+        Map<String, String> ctx = new HashMap<>();
+        ctx.put("Properties.Hardcodeddomain", "laafd.com");
+        Map<String, String> row = new HashMap<>();
+        row.put("Properties.Domain", "explorer.de");
+        row.put("expected_http_request_200_createAccount_status_code", "200");
+        ImportedScenario.regenRandomProperties(ctx, row);
+        Assert.assertEquals(ctx.get("Properties.Domain"), "laafd.com");
+    }
+
+    @Test(groups = {"unit"})
+    @Story("member enroll overlays Email to member slot")
+    @Description("B2B-7816 MemberHHonorsEnroll uses ${Properties#Email}; overlay must not mutate session ctx.")
+    public void ctxForStep_memberEnrollOverlaysEmail_ownerEnrollDoesNot() {
+        Map<String, String> ctx = new HashMap<>();
+        ImportedScenario.regenRandomProperties(ctx);
+        String owner = ctx.get("Properties.Email");
+        String member = ctx.get("Properties.generatedemailAddress1");
+        Assert.assertNotEquals(owner, member);
+
+        Map<String, String> memberCtx = ImportedScenario.ctxForStep(
+                ctx, "MemberHHonorsEnroll");
+        Assert.assertEquals(memberCtx.get("Properties.Email"), member);
+        Assert.assertEquals(memberCtx.get("Properties.email"), member);
+        Assert.assertEquals(ctx.get("Properties.Email"), owner,
+                "session ctx must keep owner email for create-account");
+
+        Map<String, String> ownerCtx = ImportedScenario.ctxForStep(
+                ctx, "HHonorsEnroll");
+        Assert.assertSame(ownerCtx, ctx);
+        Assert.assertEquals(ownerCtx.get("Properties.Email"), owner);
+        Assert.assertTrue(ImportedScenario.isMemberEnrollStep("MemberHHonorsEnroll"));
+        Assert.assertFalse(ImportedScenario.isMemberEnrollStep("HHonorsEnroll"));
+    }
+
+    @Test(groups = {"unit"})
+    @Story("guestId and guestID are distinct keys")
+    @Description("generateStandard writes both Properties.guestId and Properties.guestID; enroll uses #Properties_guestID#.")
+    public void generateStandard_writesIdAndIDSeparately() {
+        Map<String, String> ctx = new HashMap<>();
+        CtxFields.generateStandard(ctx, "Properties");
+        Assert.assertNotNull(ctx.get("Properties.guestId"), "guestId");
+        Assert.assertNotNull(ctx.get("Properties.guestID"), "guestID");
+        Assert.assertEquals(ctx.get("Properties.guestId").length(), 9);
+        Assert.assertEquals(ctx.get("Properties.guestID").length(), 9);
+        Assert.assertTrue(ctx.get("Properties.guestId").chars().allMatch(Character::isDigit));
+        Assert.assertTrue(ctx.get("Properties.guestID").chars().allMatch(Character::isDigit));
+        Assert.assertEquals(ctx.get("Properties.GuestId"), ctx.get("Properties.guestId"));
+        Assert.assertEquals(ctx.get("Properties.GuestID"), ctx.get("Properties.guestID"));
+        Assert.assertNotNull(ctx.get("Properties.accountId"));
+        Assert.assertNotNull(ctx.get("Properties.accountID"));
+        Assert.assertNotNull(ctx.get("Properties.memberId"));
+        Assert.assertNotNull(ctx.get("Properties.memberID"));
+        Assert.assertNotNull(ctx.get("Properties.partnerAccountId"));
+        Assert.assertNotNull(ctx.get("Properties.partnerAccountID"));
+        Assert.assertEquals(ctx.get("Properties.Email"), ctx.get("Properties.email"));
+        Assert.assertFalse(ctx.containsKey("Properties.name"),
+                "generateStandard alone does not write script-only name");
+    }
+
+    @Test(groups = {"unit"})
+    @Story("B2B-9098 extras plus ALWAYS")
+    @Description("generateStandard extras write name/Firstname; ALWAYS still writes guestID.")
+    public void generateStandard_withB2b9098Extras() {
+        Map<String, String> ctx = new HashMap<>();
+        CtxFields.generateStandard(ctx, "Properties", CtxFields.B2B9098_EXTRA_FIELDS);
+        Assert.assertNotNull(ctx.get("Properties.name"));
+        Assert.assertNotNull(ctx.get("Properties.Firstname"));
+        Assert.assertNotNull(ctx.get("Properties.customerId"));
+        Assert.assertTrue(ctx.get("Properties.customerId").matches("[a-z]{6}"));
+        Assert.assertNotNull(ctx.get("Properties.guestID"));
+        Assert.assertNotNull(ctx.get("Properties.websitedomain"));
+        Assert.assertNotNull(ctx.get("Properties.websiteDomain"));
+    }
+
+    @Test(groups = {"unit"})
+    @Story("seedFromRow putIfAbsent")
+    @Description("CSV seed does not overwrite a value already generated into ctx.")
+    public void seedFromRow_doesNotOverwriteGenerated() {
+        Map<String, String> ctx = new HashMap<>();
+        CtxFields.generate(ctx, "Properties", "Email", "Domain");
+        String generatedEmail = ctx.get("Properties.Email");
+        String generatedDomain = ctx.get("Properties.Domain");
+
+        Map<String, String> row = new HashMap<>();
+        row.put("Properties.Email", "csv-override@example.com");
+        row.put("Properties.Domain", "csv-domain.com");
+        row.put("Properties.Phone", "555123456");
+        row.put("other.column", "ignored");
+        CtxFields.seedFromRow(ctx, row, "Properties.");
+
+        Assert.assertEquals(ctx.get("Properties.Email"), generatedEmail);
+        Assert.assertEquals(ctx.get("Properties.Domain"), generatedDomain);
+        Assert.assertEquals(ctx.get("Properties.Phone"), "555123456");
+        Assert.assertFalse(ctx.containsKey("other.column"));
+    }
+
+    @Test(groups = {"unit"})
+    @Story("seedFromRow uses testData defaults")
+    @Description("Ungenerated Hardcodeddomain is seeded from test_data_defaults JSON when the CSV omits the column.")
+    public void seedFromRow_appliesJsonDefaultForHardcodeddomain() {
+        Map<String, String> ctx = new HashMap<>();
+        Map<String, String> row = new HashMap<>();
+        CtxFields.seedFromRow(ctx, row, "Properties.");
+        String expected = ImportedScenario.testData(row, "Properties.Hardcodeddomain");
+        Assert.assertFalse(expected.isEmpty(), "suite default for Hardcodeddomain");
+        Assert.assertEquals(ctx.get("Properties.Hardcodeddomain"), expected);
+    }
+
+    @Test(groups = {"unit"})
+    @Story("ImportedTest.begin preamble")
+    @Description("begin clears ctx but keeps accessToken, then returns the resolved row.")
+    public void begin_keepsAccessTokenAndClearsOtherKeys() {
+        Map<String, String> ctx = new HashMap<>();
+        ctx.put("accessToken", "tok-1");
+        ctx.put("Properties.Email", "stale@example.com");
+        Map<String, String> row = new HashMap<>();
+        row.put("testCaseId", "B2B-9098");
+        Map<String, String> resolved = ImportedTest.begin(ctx, row, "B2B-9098");
+        Assert.assertEquals(ctx.get("accessToken"), "tok-1");
+        Assert.assertFalse(ctx.containsKey("Properties.Email"));
+        Assert.assertEquals(resolved.get("testCaseId"), "B2B-9098");
+    }
+
+    @Test(groups = {"unit"})
+    @Story("Member TOTP JDBC id overwrites owner id")
+    @Description("putIfNonEmpty is putIfAbsent (owner TOTP pins hiltonmemberid). putExtracted overwrites so member JDBC uses the pending member id.")
+    public void putExtracted_overwritesHiltonmemberid() {
+        Map<String, String> ctx = new HashMap<>();
+        ImportedScenario.putIfNonEmpty(ctx, "hiltonmemberid", "341850");
+        ImportedScenario.putIfNonEmpty(ctx, "hiltonmemberid", "341851");
+        Assert.assertEquals(ctx.get("hiltonmemberid"), "341850",
+                "putIfNonEmpty must not clobber the first JDBC id");
+        ImportedScenario.putExtracted(ctx, "hiltonmemberid", "341851");
+        Assert.assertEquals(ctx.get("hiltonmemberid"), "341851");
+        ImportedScenario.putExtracted(ctx, "hiltonmemberid", "");
+        Assert.assertEquals(ctx.get("hiltonmemberid"), "341851",
+                "empty extract must not plant blank and break alias-walk");
+    }
+}

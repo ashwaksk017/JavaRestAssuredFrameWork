@@ -1,0 +1,3 @@
+{
+  "_comment": "Optional path remaps. Keys are the exact templates emitted by clients / RestStep; values replace them at suite startup. Leave empty unless an endpoint moved."
+}
