@@ -55,6 +55,9 @@
         <!-- OpenAPI models from src/main/resources/openapi/*.yaml. Off only if
              you need a compile without the generator plugin. -->
         <openapi.codegen.skip>true</openapi.codegen.skip>
+        <!-- -Dconverter.precondition.skip=true bypasses the
+             converted-output check (see maven-enforcer-plugin). -->
+        <converter.precondition.skip>false</converter.precondition.skip>
         <openapi-generator.version>7.10.0</openapi-generator.version>
     </properties>
 
@@ -233,6 +236,61 @@
     <build>
         <finalName>${project.artifactId}</finalName>
         <plugins>
+            <!-- Fail fast, and legibly, when the converter has not run.
+
+                 `com.ak.api.support` is converter OUTPUT: the framework
+                 files are copied from tools/ra_converter/framework and
+                 ImportedRestClient is generated from the converted suites.
+                 It is gitignored on purpose, so a fresh clone does not have
+                 it, and `mvn compile` then failed with 26 misleading
+                 "package com.ak.api.support does not exist" errors that say
+                 nothing about the cause. One clear message instead. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>3.5.0</version>
+                <executions>
+                    <execution>
+                        <id>require-converted-output</id>
+                        <phase>validate</phase>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <skip>${converter.precondition.skip}</skip>
+                            <rules>
+                                <requireFilesExist>
+                                    <files>
+                                        <file>${project.basedir}/src/main/java/com/ak/api/support/ImportedScenario.java</file>
+                                        <file>${project.basedir}/src/main/java/com/ak/api/support/ImportedRestClient.java</file>
+                                    </files>
+                                    <message>
+No converted output found -- this tree has not been through the converter yet.
+
+  com.ak.api.support is GENERATED and gitignored, but the committed code
+  (domain/, dsl/, rest/utilities/) imports it, so compilation cannot work
+  until you convert at least once.
+
+  1. Put your ReadyAPI / SoapUI project XML(s) in:
+         tools/ra_converter/input/
+     (see the README in that folder)
+
+  2. Convert every XML in ONE run:
+         python tools/ra_converter/ra_converter.py --input tools/ra_converter/input --output . --package-root com.ak.api --clean --max-name-len 40 --no-cursor-assist
+
+  3. Then build as normal.
+
+  To build without converting (framework-only checks), pass
+  -Dconverter.precondition.skip=true -- compilation will still fail on the
+  missing package, this only silences the precondition itself.
+                                    </message>
+                                </requireFilesExist>
+                            </rules>
+                            <fail>true</fail>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
