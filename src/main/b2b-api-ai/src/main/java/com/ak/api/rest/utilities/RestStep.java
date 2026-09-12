@@ -559,8 +559,15 @@ public final class RestStep {
         if (row == null || stepName == null) {
             return;
         }
-        String col = "expected_" + stepName + "_msgcontent_salesforceId";
-        if (!row.containsKey(col)) {
+        // The converter numbers msgcontent columns by element ordinal
+        // (expected_<step>_msgcontent_<N>_salesforceId). Building the name
+        // without the ordinal matched none of the 22 such columns in the
+        // reference suite, so this poller NEVER armed -- the Salesforce id
+        // was read the instant the account was created, came back empty, and
+        // the step died on "TRAILING empty path segment" before the 30s
+        // budget could help.
+        String col = ResponseAsserts.msgContentColumn(row, stepName, "salesforceId");
+        if (col == null) {
             return;
         }
         this.pollUntilJsonPath = "alternateAccounts.salesforceId";

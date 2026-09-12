@@ -60,8 +60,26 @@ public final class AsyncBudget {
     private AsyncBudget() {}
 
     /** Master switch. Default ON -- a delay becomes budget, not a sleep. */
+    /**
+     * Deferral is OPT-IN. ReadyAPI sleeps at a delay step, and the whole
+     * point of those steps is that a downstream system (Salesforce sync,
+     * attestation) needs the wall-clock time before the next read.
+     *
+     * <p>Defaulting this ON meant none of the 142 delay-bearing phases in
+     * the reference suite ever slept, and the three mechanisms meant to
+     * compensate all missed: the budget is spent only on a STATUS mismatch
+     * and only AFTER the request (so a broken path throws first), the
+     * Salesforce-id poller never armed (its column name lacked the element
+     * ordinal), and {@code rest.pollExpectedJsonMs} defaults to 0. Net
+     * effect: a 20-second sync wait silently became zero, and 26% of the
+     * suite ran against data that was not ready yet.</p>
+     *
+     * <p>Turn it back on with {@code -Drest.deferDelays=true} when trading
+     * fidelity for wall-clock (the reference suite spends ~7.6 minutes in
+     * delay steps).</p>
+     */
     public static boolean enabled() {
-        return !"false".equalsIgnoreCase(Config.get("rest.deferDelays", "true"));
+        return "true".equalsIgnoreCase(Config.get("rest.deferDelays", "false"));
     }
 
     /** Register a deferred wait. Budgets accumulate if several delays stack up. */

@@ -129,10 +129,109 @@ public final class ResponseAsserts {
         if (softAssert == null || res == null) return;
         String suffix = columnSuffix(jsonPath);
         String colJson = "expected_" + step + "_jsonpath_" + suffix;
-        String last = lastSegment(jsonPath);
-        String colMsg = "expected_" + step + "_msgcontent_" + last;
+        String colMsg = msgContentColumn(row, step, lastSegment(jsonPath));
+        if (rowSaysSkip(row, colJson, colMsg)) {
+            return;
+        }
         String expected = resolvedCsvOrDefault(ctx, row, defaultExpected, colJson, colMsg);
         valueInResponse(softAssert, res, expected, jsonPath, "JsonPath Match: " + jsonPath);
+    }
+
+    /**
+     * Resolve the CSV column holding a MessageContentAssertion expectation.
+     *
+     * <p>The converter numbers these columns by their element ordinal --
+     * {@code expected_<step>_msgcontent_<N>_<field>} -- because one assertion
+     * can carry several elements, and two of them may share a field name.
+     * This lookup used to build {@code expected_<step>_msgcontent_<field>}
+     * with no ordinal, so it matched NOTHING: across the reference suite all
+     * 1,668 msgcontent columns were unreachable and every such assertion
+     * silently fell back to the ReadyAPI literal baked in at emit time --
+     * which, for a clustered @Test, is some OTHER case's expected value.</p>
+     *
+     * <p>Matching on the field alone is unambiguous for 1,406 of the 1,527
+     * (step, field) pairs in that suite. For the other 121 the ordinal is
+     * genuinely needed; the lowest is used and a WARN names the collision, so
+     * the guess is visible rather than silent. Emitters that know the ordinal
+     * should pass the exact column instead.</p>
+     *
+     * @return the matching column name, or {@code null} when the row has none
+     */
+    static String msgContentColumn(Map<String, String> row, String step, String field) {
+        if (row == null || step == null || field == null || field.isEmpty()) {
+            return null;
+        }
+        String bare = "expected_" + step + "_msgcontent_" + field;
+        if (row.containsKey(bare)) {
+            return bare;
+        }
+        String prefix = "expected_" + step + "_msgcontent_";
+        String suffix = "_" + field;
+        String best = null;
+        int bestIdx = Integer.MAX_VALUE;
+        int hits = 0;
+        for (String k : row.keySet()) {
+            if (k == null || !k.startsWith(prefix) || !k.endsWith(suffix)) {
+                continue;
+            }
+            String mid = k.substring(prefix.length(), k.length() - suffix.length());
+            if (mid.isEmpty() || !isAllDigits(mid)) {
+                continue;
+            }
+            hits++;
+            int idx = Integer.parseInt(mid);
+            if (idx < bestIdx) {
+                bestIdx = idx;
+                best = k;
+            }
+        }
+        if (hits > 1) {
+            org.slf4j.LoggerFactory.getLogger(ResponseAsserts.class).warn(
+                    " .. [msgcontent] step={} field={} matches {} indexed columns;"
+                    + " using {}. Pass the element ordinal to disambiguate.",
+                    step, field, hits, best);
+        }
+        return best;
+    }
+
+    private static boolean isAllDigits(String s) {
+        for (int i = 0; i < s.length(); i++) {
+            if (!Character.isDigit(s.charAt(i))) return false;
+        }
+        return true;
+    }
+
+    /**
+     * True when the row carries one of these columns but leaves it EMPTY.
+     *
+     * <p>A blank cell means "this ReadyAPI case does not assert this" -- the
+     * column exists only because a SIBLING case in the same cluster asserts
+     * it. Verified against the source: case
+     * {@code B2B-317_get_attestProgramAccount_200} runs step
+     * {@code http_request_200_2} and declares no failureReason assertion at
+     * all, yet the converted test asserted {@code attestationVendorFailure},
+     * inherited from a sibling row.</p>
+     *
+     * <p>Skipping is deliberately fail-open: it can lose a check, but it can
+     * never invent a failure. An ABSENT column still falls back to the
+     * ReadyAPI literal, which is what the converter intends for a case that
+     * simply has no CSV override.</p>
+     */
+    static boolean rowSaysSkip(Map<String, String> row, String... cols) {
+        if (row == null) {
+            return false;
+        }
+        boolean sawEmpty = false;
+        for (String c : cols) {
+            if (c == null) continue;
+            if (!row.containsKey(c)) continue;
+            String v = row.get(c);
+            if (v != null && !v.isEmpty()) {
+                return false;   // a real expectation wins
+            }
+            sawEmpty = true;
+        }
+        return sawEmpty;
     }
 
     /**
@@ -297,6 +396,9 @@ public final class ResponseAsserts {
         if (softAssert == null || res == null) return;
         String suffix = columnSuffix(jsonPath);
         String colJson = "expected_" + step + "_jsonpath_" + suffix;
+        if (rowSaysSkip(row, colJson)) {
+            return;
+        }
         String expected = resolvedCsvOrDefault(ctx, row, defaultExpected, colJson);
         JsonNode expectedNode = RestUtilities.parseJsonTree(expected);
         JsonNode actualNode = RestUtilities.toJsonTree(
