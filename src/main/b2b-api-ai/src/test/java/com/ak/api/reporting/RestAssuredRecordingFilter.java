@@ -94,20 +94,28 @@ public class RestAssuredRecordingFilter implements Filter {
                 && requestSpec.getHeaders().hasHeaderWithName("Authorization")) {
             sent = requestSpec.getHeaders().getValue("Authorization");
         }
+        // `bucket` is the stable key the digest counts; `verdict` is the
+        // human line. Kept as two values rather than regexing the length back
+        // out of one -- that needed an escape sequence Java rejects.
+        String bucket;
         String verdict;
         if (sent == null || sent.trim().isEmpty()) {
-            verdict = "NO-TOKEN-SENT (no Authorization header -- upstream extract "
-                    + "was empty; fix the producer, not auth)";
+            bucket = "NO-TOKEN-SENT (upstream extract empty -- dataflow bug)";
+            verdict = bucket;
         } else if (sent.trim().equalsIgnoreCase("Bearer")
                 || sent.trim().equalsIgnoreCase("Bearer null")) {
-            verdict = "BEARER-PREFIX-ONLY (token value missing after 'Bearer')";
+            bucket = "BEARER-PREFIX-ONLY (token value missing after 'Bearer')";
+            verdict = bucket;
         } else {
-            verdict = "TOKEN-SENT-BUT-REJECTED len=" + sent.trim().length()
-                    + " (expired / wrong audience / throttled -- fix auth, "
-                    + "not the extract)";
+            bucket = "TOKEN-SENT-BUT-REJECTED (expired / audience / throttled)";
+            verdict = bucket + " len=" + sent.trim().length();
         }
         System.out.println(" .. [auth-diag] HTTP " + code + " " + requestSpec.getMethod()
                 + " " + Secrets.redact(requestSpec.getURI()) + " -- " + verdict);
+        // Also fold into the digest, so the answer arrives in the same small
+        // file and needs no shell pipeline to extract. The verdict is bucketed
+        // without the length so counts group.
+        FailureDigestListener.recordAuthVerdict(bucket);
     }
 
     private static String safeStringBody(FilterableRequestSpecification spec) {

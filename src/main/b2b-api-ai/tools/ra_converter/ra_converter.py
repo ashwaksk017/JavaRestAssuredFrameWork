@@ -13825,6 +13825,23 @@ public class FailureDigestListener implements ITestListener {{
 
     private static final Map<String, String[]> FAILURES = new LinkedHashMap<>();
 
+    private static final Map<String, Integer> AUTH_VERDICTS =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Recorded by RestAssuredRecordingFilter on every 401/403.
+     *
+     * <p>Folded into the digest so the auth question is answered by the same
+     * small file, with no shell pipeline to run -- the previous advice was a
+     * bash one-liner, which is useless on Windows.</p>
+     */
+    public static void recordAuthVerdict(String verdict) {{
+        if (verdict == null || verdict.isEmpty()) {{
+            return;
+        }}
+        AUTH_VERDICTS.merge(verdict, 1, Integer::sum);
+    }}
+
     private static final Pattern[] MASKS = {{
         Pattern.compile("[0-9a-fA-F]{{8}}-[0-9a-fA-F]{{4}}-[0-9a-fA-F]{{4}}-"
                 + "[0-9a-fA-F]{{4}}-[0-9a-fA-F]{{12}}"),
@@ -13907,6 +13924,17 @@ public class FailureDigestListener implements ITestListener {{
                     FAILURES.size(), groups.size());
             w.println("(retries collapsed; ids/emails/domains/dates masked as <*>)");
             w.println();
+            if (!AUTH_VERDICTS.isEmpty()) {{
+                w.println("== auth rejections (401/403), by cause ==");
+                w.println("   NO-TOKEN-SENT      -> upstream extract was empty "
+                        + "(dataflow/converter bug)");
+                w.println("   TOKEN-SENT-BUT-REJECTED -> token was real and refused "
+                        + "(expired / audience / throttled)");
+                AUTH_VERDICTS.entrySet().stream()
+                        .sorted((a, b) -> b.getValue() - a.getValue())
+                        .forEach(e -> w.printf("  %6d  %s%n", e.getValue(), e.getKey()));
+                w.println();
+            }}
             w.println("== signatures, most frequent first ==");
             int n = 0;
             for (Map.Entry<String, List<String[]>> g : groups) {{
@@ -13936,6 +13964,13 @@ public class FailureDigestListener implements ITestListener {{
                 + " unique failures across " + groups.size()
                 + " signature(s) -> " + out.toAbsolutePath());
         System.out.println("[failure-digest] share THIS file, not the full log.");
+        if (!AUTH_VERDICTS.isEmpty()) {{
+            System.out.println("[failure-digest] auth rejections by cause:");
+            AUTH_VERDICTS.entrySet().stream()
+                    .sorted((a, b) -> b.getValue() - a.getValue())
+                    .forEach(e -> System.out.printf("   %6d  %s%n",
+                            e.getValue(), e.getKey()));
+        }}
         for (int i = 0; i < Math.min(5, groups.size()); i++) {{
             System.out.printf("   %4d x  %s%n",
                     groups.get(i).getValue().size(), groups.get(i).getKey());
