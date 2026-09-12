@@ -13923,9 +13923,14 @@ public class FailureDigestListener implements ITestListener {{
             w.printf("unique failing (test, row) pairs: %d   distinct signatures: %d%n",
                     FAILURES.size(), groups.size());
             w.println("(retries collapsed; ids/emails/domains/dates masked as <*>)");
+            w.println("digest v2 -- reports auth cause; a run missing the section"
+                    + " below was built before this listener");
             w.println();
-            if (!AUTH_VERDICTS.isEmpty()) {{
-                w.println("== auth rejections (401/403), by cause ==");
+            w.println("== auth rejections (401/403), by cause ==");
+            if (AUTH_VERDICTS.isEmpty()) {{
+                w.println("  none observed in this run");
+                w.println();
+            }} else {{
                 w.println("   NO-TOKEN-SENT      -> upstream extract was empty "
                         + "(dataflow/converter bug)");
                 w.println("   TOKEN-SENT-BUT-REJECTED -> token was real and refused "
