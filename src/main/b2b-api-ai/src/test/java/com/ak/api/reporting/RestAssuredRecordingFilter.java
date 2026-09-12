@@ -115,7 +115,7 @@ public class RestAssuredRecordingFilter implements Filter {
         // Also fold into the digest, so the answer arrives in the same small
         // file and needs no shell pipeline to extract. The verdict is bucketed
         // without the length so counts group.
-        FailureDigestListener.recordAuthVerdict(bucket);
+        com.ak.api.rest.utilities.AuthDiagnostics.record("header: " + bucket);
     }
 
     private static String safeStringBody(FilterableRequestSpecification spec) {

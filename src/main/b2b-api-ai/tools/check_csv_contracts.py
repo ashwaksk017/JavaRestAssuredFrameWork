@@ -90,6 +90,12 @@ JAVA_GUARDS = (
      "'use the sibling case's literal'"),
     ("RestStep.java", "ResponseAsserts.msgContentColumn(row, stepName, \"salesforceId\")",
      "the salesforce-id poller must resolve the indexed column, or it never arms"),
+    # RestStep is on EVERY request path; the reporting filter demonstrably is
+    # not (it recorded zero verdicts on a real run). Keep the guaranteed
+    # producer, or the digest silently reports no auth failures again.
+    ("RestStep.java", "AuthDiagnostics.record(verdict)",
+     "RestStep must record the auth verdict -- the reporting filter alone "
+     "recorded nothing on a real run"),
 )
 
 

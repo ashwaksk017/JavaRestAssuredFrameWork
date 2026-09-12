@@ -364,6 +364,16 @@ public final class RestStep {
             Response res = RestUtilities.callWithTransientRetry(
                     stepName, DEFAULT_RETRY_DEADLINE_MS, expectedStatus, exchange);
             res = spendAsyncBudgetIfNeeded(res, exchange);
+            if (res != null && (res.getStatusCode() == 401
+                    || res.getStatusCode() == 403)) {
+                // Guaranteed producer for the auth counter: every request goes
+                // through here, unlike the reporting filter which recorded
+                // nothing on a real run. See AuthDiagnostics.
+                String verdict = AuthDiagnostics.verdictFromCtx(ctx);
+                AuthDiagnostics.record(verdict);
+                LOG.warn(" .. [auth-diag] step={} HTTP {} -- {}",
+                        stepName, res.getStatusCode(), verdict);
+            }
             if (com.ak.api.rest.ApiRoutes.isTokenPath(resolvedUrl)
                     || (stepName != null
                     && stepName.toLowerCase().contains("tokenrequest"))) {

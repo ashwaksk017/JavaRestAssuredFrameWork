@@ -39,8 +39,9 @@ public class FailureDigestListener implements ITestListener {
 
     private static final Map<String, String[]> FAILURES = new LinkedHashMap<>();
 
-    private static final Map<String, Integer> AUTH_VERDICTS =
-            new java.util.concurrent.ConcurrentHashMap<>();
+    private static Map<String, Integer> authVerdicts() {
+        return com.ak.api.rest.utilities.AuthDiagnostics.snapshot();
+    }
 
     /**
      * Recorded by RestAssuredRecordingFilter on every 401/403.
@@ -50,10 +51,7 @@ public class FailureDigestListener implements ITestListener {
      * bash one-liner, which is useless on Windows.</p>
      */
     public static void recordAuthVerdict(String verdict) {
-        if (verdict == null || verdict.isEmpty()) {
-            return;
-        }
-        AUTH_VERDICTS.merge(verdict, 1, Integer::sum);
+        com.ak.api.rest.utilities.AuthDiagnostics.record(verdict);
     }
 
     private static final Pattern[] MASKS = {
@@ -141,7 +139,7 @@ public class FailureDigestListener implements ITestListener {
                     + " below was built before this listener");
             w.println();
             w.println("== auth rejections (401/403), by cause ==");
-            if (AUTH_VERDICTS.isEmpty()) {
+            if (authVerdicts().isEmpty()) {
                 w.println("  none observed in this run");
                 w.println();
             } else {
@@ -149,8 +147,7 @@ public class FailureDigestListener implements ITestListener {
                         + "(dataflow/converter bug)");
                 w.println("   TOKEN-SENT-BUT-REJECTED -> token was real and refused "
                         + "(expired / audience / throttled)");
-                AUTH_VERDICTS.entrySet().stream()
-                        .sorted((a, b) -> b.getValue() - a.getValue())
+                authVerdicts().entrySet().stream()
                         .forEach(e -> w.printf("  %6d  %s%n", e.getValue(), e.getKey()));
                 w.println();
             }
@@ -183,10 +180,9 @@ public class FailureDigestListener implements ITestListener {
                 + " unique failures across " + groups.size()
                 + " signature(s) -> " + out.toAbsolutePath());
         System.out.println("[failure-digest] share THIS file, not the full log.");
-        if (!AUTH_VERDICTS.isEmpty()) {
+        if (!authVerdicts().isEmpty()) {
             System.out.println("[failure-digest] auth rejections by cause:");
-            AUTH_VERDICTS.entrySet().stream()
-                    .sorted((a, b) -> b.getValue() - a.getValue())
+            authVerdicts().entrySet().stream()
                     .forEach(e -> System.out.printf("   %6d  %s%n",
                             e.getValue(), e.getKey()));
         }
