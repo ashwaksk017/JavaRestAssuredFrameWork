@@ -28,6 +28,8 @@ public class RestAssuredRecordingFilter implements Filter {
 
         Response response = ctx.next(requestSpec, responseSpec);
 
+        logAuthDiagnostic(requestSpec, response);
+
         // Redact HERE, at buffer-entry, rather than in each listener:
         // ExtentReportListener and TestCaseLogListener both read this
         // buffer, so one call covers the Extent HTML and every
@@ -65,6 +67,49 @@ public class RestAssuredRecordingFilter implements Filter {
      * InputStream, or a serializable object. Try safe accessors; fall back to
      * a placeholder when we can't materialize the payload without side-effects.
      */
+    /**
+     * One compact line when the server rejects us, naming WHICH cause it was.
+     *
+     * <p>A 401 wave looks identical in a log whether the token was never
+     * populated -- an upstream extract produced nothing, so an empty
+     * Authorization header went out -- or the token was real and the server
+     * refused it (expired, wrong audience, throttled). Those need opposite
+     * fixes: the first is a converter/dataflow bug, the second is auth
+     * config. Nothing in the raw log separates them without dumping headers,
+     * which is both enormous and unsafe.</p>
+     *
+     * <p>This prints only the decisive bit: whether a bearer value was
+     * present and how long it was. Never the value itself.</p>
+     *
+     * <p>Grep a run with {@code auth-diag} to get just these lines.</p>
+     */
+    private static void logAuthDiagnostic(FilterableRequestSpecification requestSpec,
+                                          Response response) {
+        int code = response.statusCode();
+        if (code != 401 && code != 403) {
+            return;
+        }
+        String sent = null;
+        if (requestSpec.getHeaders() != null
+                && requestSpec.getHeaders().hasHeaderWithName("Authorization")) {
+            sent = requestSpec.getHeaders().getValue("Authorization");
+        }
+        String verdict;
+        if (sent == null || sent.trim().isEmpty()) {
+            verdict = "NO-TOKEN-SENT (no Authorization header -- upstream extract "
+                    + "was empty; fix the producer, not auth)";
+        } else if (sent.trim().equalsIgnoreCase("Bearer")
+                || sent.trim().equalsIgnoreCase("Bearer null")) {
+            verdict = "BEARER-PREFIX-ONLY (token value missing after 'Bearer')";
+        } else {
+            verdict = "TOKEN-SENT-BUT-REJECTED len=" + sent.trim().length()
+                    + " (expired / wrong audience / throttled -- fix auth, "
+                    + "not the extract)";
+        }
+        System.out.println(" .. [auth-diag] HTTP " + code + " " + requestSpec.getMethod()
+                + " " + Secrets.redact(requestSpec.getURI()) + " -- " + verdict);
+    }
+
     private static String safeStringBody(FilterableRequestSpecification spec) {
         try {
             Object body = spec.getBody();
