@@ -40,15 +40,26 @@
         </Rewrite>
     </Appenders>
     <Loggers>
-        <!-- Framework code: shows retry-on-transient attempts,
-             placeholder resolution, delay-step timing, all diagnostics. -->
-        <Logger name="com.ak.api" level="debug"/>
+        <!-- Framework code. INFO by default: at DEBUG, ImportedScenario
+             dumps the whole ctx map BEFORE and AFTER identity regen on every
+             REST step, and ctx carries 450+ keys by mid-suite -- roughly 950
+             lines per step, which is what makes a full-suite log tens of MB
+             and too large to share. The dump is already gated behind
+             isDebugEnabled(), but that gate never closed while this said
+             debug.
+
+             Everything needed for triage stays at INFO: request/response
+             bodies, status, delay timing, [auth-diag] verdicts.
+
+             Turn the firehose back on for one run with
+             -Dlog.level=debug. -->
+        <Logger name="com.ak.api" level="${sys:log.level:-info}"/>
         <!-- Emitted test classes under imported.*: shows every step's
              request/response body dump. Already emits at INFO by default;
              DEBUG surfaces any extra diagnostic the translator marked
              at that level (e.g. downgraded "Failed to delete..." lines
              from the b'.PROPER narrow fix). -->
-        <Logger name="com.ak.api.tests" level="debug"/>
+        <Logger name="com.ak.api.tests" level="${sys:log.level:-info}"/>
         <!-- Keep HTTP-client noise quiet. Bump these to info/debug ONLY
              if you need to inspect the raw wire (connection reuse,
              DNS, TLS handshakes). -->
