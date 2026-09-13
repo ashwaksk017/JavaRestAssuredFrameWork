@@ -163,6 +163,25 @@ public final class RestStep {
     }
 
     /** Poll the exchange until JsonPath equals {@code expected}. */
+    /**
+     * Re-issue this request until {@code jsonPath} comes back non-empty.
+     *
+     * <p>For a value a LATER step needs as a required path segment. The
+     * existing salesforce-id poller armed only when the ReadyAPI case
+     * happened to carry a MessageContentAssertion on the field -- an
+     * assertion, not a dependency -- so a case that consumes the id without
+     * asserting it (B2B-4913, B2B-5942) read it the instant the account was
+     * created, got "", and died on "TRAILING empty path segment". The
+     * converter knows the real relationship at emit time and now says so
+     * here.</p>
+     */
+    public RestStep pollUntilJsonPresent(String jsonPath, long timeoutMs) {
+        this.pollUntilJsonPath = jsonPath;
+        this.pollUntilJsonPresent = true;
+        this.pollTimeoutMs = timeoutMs;
+        return this;
+    }
+
     public RestStep pollUntilJson(String jsonPath, String expected, long timeoutMs) {
         this.pollUntilJsonPath = jsonPath;
         this.pollUntilJsonExpected = expected;

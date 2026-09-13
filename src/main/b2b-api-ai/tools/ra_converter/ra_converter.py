@@ -7418,6 +7418,25 @@ public interface ImportedRestClient {{
         for hk, hv in header_entries:
             lines.append(f'        .header("{_jlit(hk)}", "{_jlit(hv)}")')
         lines.append(f'        .expectedStatus({expected_status})')
+        # If a LATER step consumes this response for a required path
+        # segment, wait for the value instead of reading it the instant
+        # the resource is created. Salesforce populates
+        # alternateAccounts.salesforceId asynchronously, so a case that
+        # consumes the id without also asserting it got "" and died on
+        # "TRAILING empty path segment" -- the poller it needed armed off
+        # a MessageContentAssertion, which is an assertion, not a
+        # dependency. Scoped to that one field on purpose; the general
+        # "poll every producer of a path param" rule is a much larger
+        # change and is not justified until the auth cascade is fixed and
+        # we can see how many broken paths actually survive it.
+        _case_obj = getattr(self, "_current_case_obj", None)
+        if _case_obj is not None:
+            _later = _needed_response_extracts(step.step_name, _case_obj)
+            if any((f or "").endswith("alternateAccounts.salesforceId")
+                   for f in _later.values()):
+                lines.append(
+                    '        .pollUntilJsonPresent("alternateAccounts.salesforceId",'
+                    ' com.ak.api.config.Config.getInt("rest.pollSalesforceIdMs", 30000))')
         lines.append(
             f'        .{rest_method}({resolved_path_expr},')
         _here = os.path.dirname(os.path.abspath(__file__))
