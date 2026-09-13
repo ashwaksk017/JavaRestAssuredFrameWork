@@ -51,6 +51,41 @@ public final class AuthDiagnostics {
         return VERDICTS.isEmpty();
     }
 
+    private static final java.util.concurrent.atomic.AtomicLong LAST_CLEAR =
+            new java.util.concurrent.atomic.AtomicLong(0L);
+
+    /**
+     * Drop every cached token after a rejection, so the next auth-requiring
+     * step fetches a fresh one.
+     *
+     * <p>Two bugs made this never happen. The hook lived in
+     * RestAssuredRecordingFilter behind
+     * {@code "oauth2".equals(Config.authType())}, but {@code auth.type} is
+     * unset and defaults to {@code "none"} -- so it never fired. And it
+     * cleared {@code AuthUtilities}' cache, while this suite's token lives in
+     * {@code TokenCache.HELD}. A single revoked or rotated token therefore
+     * stuck for its full declared TTL and every later test 401'd: 7,554
+     * rejections in one run, all of them a real token the server refused.</p>
+     *
+     * <p>Debounced: with thousands of in-flight rejections an undebounced
+     * clear would stampede the token endpoint, which is itself a way to get
+     * throttled. One clear per window is enough -- the point is to drop a
+     * dead token once, not once per victim.</p>
+     *
+     * @return true when this call actually cleared
+     */
+    public static boolean invalidateCachedTokens(long debounceMs) {
+        long now = System.currentTimeMillis();
+        long prev = LAST_CLEAR.get();
+        if (now - prev < debounceMs || !LAST_CLEAR.compareAndSet(prev, now)) {
+            return false;
+        }
+        com.ak.api.auth.TokenCache.clear();
+        com.ak.api.auth.AuthUtilities.invalidateOauth2Cache();
+        record("TOKEN-CACHE-CLEARED after rejection (next step re-fetches)");
+        return true;
+    }
+
     /**
      * Verdict derived from the ctx token inventory at the moment of a
      * rejection. `RestStep` cannot see the outgoing Authorization header --

@@ -373,6 +373,14 @@ public final class RestStep {
                 AuthDiagnostics.record(verdict);
                 LOG.warn(" .. [auth-diag] step={} HTTP {} -- {}",
                         stepName, res.getStatusCode(), verdict);
+                // Not for a step that ASKED for 401/403 -- that is the
+                // assertion passing, not a dead token.
+                if (expectedStatus != 401 && expectedStatus != 403
+                        && AuthDiagnostics.invalidateCachedTokens(
+                                Config.getInt("auth.invalidateDebounceMs", 5_000))) {
+                    LOG.warn(" .. [auth-diag] cleared cached tokens -- next"
+                            + " auth-requiring step will fetch a fresh one");
+                }
             }
             if (com.ak.api.rest.ApiRoutes.isTokenPath(resolvedUrl)
                     || (stepName != null

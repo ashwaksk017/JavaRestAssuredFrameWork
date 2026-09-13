@@ -96,6 +96,13 @@ JAVA_GUARDS = (
     ("RestStep.java", "AuthDiagnostics.record(verdict)",
      "RestStep must record the auth verdict -- the reporting filter alone "
      "recorded nothing on a real run"),
+    # A rejected token must be dropped, or one revocation 401s the whole
+    # suite for the cache TTL (observed: 7,554 rejections in one run).
+    ("RestStep.java", "AuthDiagnostics.invalidateCachedTokens(",
+     "a rejected token must be cleared, or one revocation cascades"),
+    ("AuthDiagnostics.java", "com.ak.api.auth.TokenCache.clear()",
+     "must clear TokenCache.HELD -- clearing only AuthUtilities' cache "
+     "misses where this suite's token actually lives"),
 )
 
 
