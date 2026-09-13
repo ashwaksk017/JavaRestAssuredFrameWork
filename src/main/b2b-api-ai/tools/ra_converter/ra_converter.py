@@ -13898,8 +13898,18 @@ public class FailureDigestListener implements ITestListener {{
         }});
     }}
 
+    private static final java.util.concurrent.atomic.AtomicBoolean WRITTEN =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
     @Override
     public void onFinish(ITestContext context) {{
+        // Registered BOTH in the generated suite XML and via
+        // META-INF/services, because a `-Dtest=` run bypasses the suite XML
+        // entirely -- which is why a targeted run produced no digest at all.
+        // Belt and braces means onFinish can fire twice; write once.
+        if (!WRITTEN.compareAndSet(false, true)) {{
+            return;
+        }}
         Map<String, List<String[]>> bySig = new LinkedHashMap<>();
         for (String[] f : FAILURES.values()) {{
             bySig.computeIfAbsent(f[0], k -> new ArrayList<>()).add(f);
@@ -13980,6 +13990,12 @@ public class FailureDigestListener implements ITestListener {{
 }}
 """
         self._write(rel, content)
+        # TestNG discovers listeners named here however the run is launched
+        # -- suite XML, -Dtest=, or an IDE. Without it a `-Dtest=` run
+        # silently produces no digest, which is exactly what happened.
+        self._write(
+            "src/test/resources/META-INF/services/org.testng.ITestNGListener",
+            f"{self.package_root}.reporting.FailureDigestListener" + chr(10))
         return rel
 
     def emit_progress_listener(self) -> str:

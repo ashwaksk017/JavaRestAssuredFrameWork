@@ -112,8 +112,18 @@ public class FailureDigestListener implements ITestListener {
         });
     }
 
+    private static final java.util.concurrent.atomic.AtomicBoolean WRITTEN =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
     @Override
     public void onFinish(ITestContext context) {
+        // Registered BOTH in the generated suite XML and via
+        // META-INF/services, because a `-Dtest=` run bypasses the suite XML
+        // entirely -- which is why a targeted run produced no digest at all.
+        // Belt and braces means onFinish can fire twice; write once.
+        if (!WRITTEN.compareAndSet(false, true)) {
+            return;
+        }
         Map<String, List<String[]>> bySig = new LinkedHashMap<>();
         for (String[] f : FAILURES.values()) {
             bySig.computeIfAbsent(f[0], k -> new ArrayList<>()).add(f);
