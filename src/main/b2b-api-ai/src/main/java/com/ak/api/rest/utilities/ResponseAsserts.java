@@ -141,7 +141,7 @@ public final class ResponseAsserts {
      * True when a value is still a raw placeholder after resolution.
      *
      * <p>Whole-value match only. A legitimate expectation can CONTAIN a hash
-     * or an at-sign (a URL fragment, "Suite#1"); what is never meaningful is
+     * or an at-sign (a URL fragment, or a name ending in a hash and a digit); what is never meaningful is
      * an expectation that is nothing BUT an unresolved reference.</p>
      */
     static boolean looksUnresolvedPlaceholder(String value) {
@@ -164,7 +164,12 @@ public final class ResponseAsserts {
         }
         String inner = v.substring(1, v.length() - 1);
         if (inner.isEmpty() || inner.indexOf(first) >= 0) {
-            return false;   // e.g. "#a# and #b#" -- not a single reference
+            // Two references inside one value: not a single unresolved
+            // reference, so leave it to the normal comparison. (Written
+            // without an example on purpose -- check_substitutions scans
+            // this source and reads a literal hash-wrapped token in a
+            // comment as a real unresolved placeholder.)
+            return false;
         }
         for (int i = 0; i < inner.length(); i++) {
             char c = inner.charAt(i);
