@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 2
+// ra_converter-framework-rev: 3
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -850,6 +850,13 @@ public final class ImportedScenario {
         String ownerUname = FakeData.username();
         String memberUname = distinctUsername(ownerUname);
         String extraUname = distinctUsername(ownerUname, memberUname);
+        // A SECOND enrolled person, not another name for the member. It used
+        // to be assigned memberUname, so a test that enrolled a member and
+        // then enrolled "guest 2" submitted a username the tenant already
+        // had -- a deterministic 409 every run, which no amount of extra
+        // entropy would have fixed. Mirrors the email block, where
+        // generatedemailAddress2 has always been distinct.
+        String uname2 = distinctUsername(ownerUname, memberUname, extraUname);
         String ownerEmail = FakeData.username() + "@" + domain;
         String memberEmail = distinctEmail(domain, ownerEmail);
         String email2 = distinctEmail(domain, ownerEmail, memberEmail);
@@ -859,8 +866,9 @@ public final class ImportedScenario {
 
         CtxFields.putBothCases(ctx, "Properties", "Username", ownerUname);
         CtxFields.putBothCases(ctx, "Properties", "usernamemember", memberUname);
+        // usernameM IS the member under another name -- alias on purpose.
         CtxFields.putBothCases(ctx, "Properties", "usernameM", memberUname);
-        CtxFields.putBothCases(ctx, "Properties", "Username2", memberUname);
+        CtxFields.putBothCases(ctx, "Properties", "Username2", uname2);
         CtxFields.putBothCases(ctx, "Properties", "username1", extraUname);
 
         CtxFields.putBothCases(ctx, "Properties", "Email", ownerEmail);
