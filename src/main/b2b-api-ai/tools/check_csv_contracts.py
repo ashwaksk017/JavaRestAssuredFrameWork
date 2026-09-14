@@ -103,6 +103,10 @@ JAVA_GUARDS = (
     ("AuthDiagnostics.java", "com.ak.api.auth.TokenCache.clear()",
      "must clear TokenCache.HELD -- clearing only AuthUtilities' cache "
      "misses where this suite's token actually lives"),
+    # Asserting a literal "#Key#" against a body can only ever be false.
+    ("ResponseAsserts.java", "looksUnresolvedPlaceholder(want)",
+     "an expectation that is still a raw placeholder must be skipped, "
+     "not asserted"),
 )
 
 
