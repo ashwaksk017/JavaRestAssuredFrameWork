@@ -2206,6 +2206,62 @@ def _texts_for_response_ref_scan(st) -> list[str]:
     return texts
 
 
+def _response_fields_for_later_paths(current_step_name: str, case) -> list:
+    """Dotted JsonPaths of THIS step's response that a LATER step needs as a
+    required URL path segment.
+
+    Narrower than `_needed_response_extracts` on purpose: that returns every
+    cross-step reference, including ones used only in an assertion. Waiting on
+    an assertion-only field would stall negative tests whose whole point is
+    that the field is absent. A PATH segment is different -- if it resolves
+    empty the URL is malformed and the step cannot run at all, which is the
+    "EMPTY path segment" family: ~117 of 368 failures once the auth cascade
+    was fixed, concentrated in a handful of producers
+    (getTravelAdvisorDetails 40, http_get_account_details_200 28,
+    getDetails 18, ActivateMember 10, getEmployeeDetails 9).
+
+    Scans only the path-bearing texts of later REST steps: resource_path,
+    original_uri and the path_params bag.
+    """
+    out: list = []
+    if case is None:
+        return out
+    current = re.sub(r"[^A-Za-z0-9_]", "_", (current_step_name or "").strip())
+    for st in case.steps or []:
+        if not isinstance(st, RestStep):
+            continue
+        texts = [st.resource_path or "", st.original_uri or ""]
+        if st.path_params:
+            texts.extend(v or "" for v in st.path_params.values())
+        blob = chr(10).join(texts)
+        if not blob:
+            continue
+        for m in _STEP_RESPONSE_RX.finditer(blob):
+            if re.sub(r"[^A-Za-z0-9_]", "_", m.group(1).strip()) != current:
+                continue
+            if (m.group(2) or "") in ("AsXml", "AsHtml", "Headers"):
+                continue
+            raw = m.group(3).strip()
+            # Plain string ops, not regex: the bracket-stripping patterns
+            # needed escapes that this file has had mangled into literal
+            # control characters more than once.
+            # Strip only QUOTED accessors. Numeric indices stay as [0],
+            # which is the form the emitted safeJsonExtract calls already
+            # use ("[1].memberId"); turning them into "1.memberId" yields a
+            # path that never resolves, so the poll would burn its whole
+            # timeout and still fail.
+            for a, b in (("']['", "."), ('"]["', "."),
+                         ("['", "."), ('["', "."),
+                         ("']", ""), ('"]', "")):
+                raw = raw.replace(a, b)
+            field = raw.lstrip("$").strip(".")
+            while ".." in field:
+                field = field.replace("..", ".")
+            if field and field not in out:
+                out.append(field)
+    return out
+
+
 def _needed_response_extracts(current_step_name: str, case: "TestCase") -> dict[str, str]:
     """placeholder_key -> dotted JsonPath for `${thisStep#Response#...}` refs."""
     needed: dict[str, str] = {}
@@ -7430,13 +7486,24 @@ public interface ImportedRestClient {{
         # change and is not justified until the auth cascade is fixed and
         # we can see how many broken paths actually survive it.
         _case_obj = getattr(self, "_current_case_obj", None)
-        if _case_obj is not None:
-            _later = _needed_response_extracts(step.step_name, _case_obj)
-            if any((f or "").endswith("alternateAccounts.salesforceId")
-                   for f in _later.values()):
+        if _case_obj is not None and 200 <= expected_status < 300:
+            # Only for a step expected to SUCCEED. A negative test expects
+            # 4xx and its response legitimately carries no id -- polling
+            # there would just burn the timeout.
+            _path_fields = _response_fields_for_later_paths(
+                step.step_name, _case_obj)
+            if _path_fields:
+                # RestStep holds one poll path, so take the first
+                # deterministically; in practice the ids a single response
+                # feeds downstream land together.
+                _pf = _path_fields[0]
+                if _pf.endswith("alternateAccounts.salesforceId"):
+                    _key, _dflt = "rest.pollSalesforceIdMs", 30000
+                else:
+                    _key, _dflt = "rest.pollPathParamMs", 15000
                 lines.append(
-                    '        .pollUntilJsonPresent("alternateAccounts.salesforceId",'
-                    ' com.ak.api.config.Config.getInt("rest.pollSalesforceIdMs", 30000))')
+                    f'        .pollUntilJsonPresent("{_pf}", '
+                    f'com.ak.api.config.Config.getInt("{_key}", {_dflt}))')
         lines.append(
             f'        .{rest_method}({resolved_path_expr},')
         _here = os.path.dirname(os.path.abspath(__file__))
