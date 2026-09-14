@@ -7500,7 +7500,10 @@ public interface ImportedRestClient {{
                 if _pf.endswith("alternateAccounts.salesforceId"):
                     _key, _dflt = "rest.pollSalesforceIdMs", 30000
                 else:
-                    _key, _dflt = "rest.pollPathParamMs", 15000
+                    _key, _dflt = "rest.pollPathParamMs", 2000   # was 15000: the
+                    # ids in the failing population are never minted
+                    # (producer returns 4xx), so a long wait buys
+                    # nothing and ~115 of them cost ~30 min a run
                 lines.append(
                     f'        .pollUntilJsonPresent("{_pf}", '
                     f'com.ak.api.config.Config.getInt("{_key}", {_dflt}))')
@@ -13969,6 +13972,11 @@ public class FailureDigestListener implements ITestListener {{
     }}
 
     @Override
+    public void onTestStart(ITestResult result) {{
+        com.ak.api.rest.utilities.StepOutcomes.reset();
+    }}
+
+    @Override
     public void onTestFailure(ITestResult result) {{
         String cls = result.getTestClass().getRealClass().getSimpleName();
         String key = cls + "#" + result.getName() + "#" + caseIdOf(result);
@@ -13978,9 +13986,11 @@ public class FailureDigestListener implements ITestListener {{
             Matcher m = Pattern.compile("(?m)^\\\\s+[A-Za-z]").matcher(t.getMessage());
             while (m.find()) asserts++;
         }}
+        String upstream = com.ak.api.rest.utilities.StepOutcomes.lastFailure();
         FAILURES.put(key, new String[] {{
             signature(t), cls, result.getName(), caseIdOf(result),
             String.valueOf(Math.max(asserts, 1)),
+            upstream == null ? "" : upstream,
         }});
     }}
 
@@ -14044,9 +14054,30 @@ public class FailureDigestListener implements ITestListener {{
                         w.printf("      ... and %d more%n", g.getValue().size() - 6);
                         break;
                     }}
-                    w.printf("      %s.%s  [%s]  (%s assert(s))%n",
-                            f[1], f[2], f[3], f[4]);
+                    w.printf("      %s.%s  [%s]  (%s assert(s))%s%n",
+                            f[1], f[2], f[3], f[4],
+                            f.length > 5 && !f[5].isEmpty()
+                                    ? "   first bad call: " + f[5] : "");
                 }}
+            }}
+            w.println();
+            w.println("== first failing call behind each failure ==");
+            w.println("   (a broken path or a missing id is usually a SYMPTOM;");
+            w.println("    this is the earliest non-2xx seen in that test)");
+            Map<String, Integer> upstream = new LinkedHashMap<>();
+            int clean = 0;
+            for (String[] f : FAILURES.values()) {{
+                if (f.length > 5 && !f[5].isEmpty()) {{
+                    upstream.merge(f[5], 1, Integer::sum);
+                }} else {{
+                    clean++;
+                }}
+            }}
+            upstream.entrySet().stream()
+                    .sorted((a, b) -> b.getValue() - a.getValue())
+                    .forEach(e -> w.printf("  %6d  %s%n", e.getValue(), e.getKey()));
+            if (clean > 0) {{
+                w.printf("  %6d  (no failed call -- assertion-only failure)%n", clean);
             }}
             w.println();
             w.println("== every failing (test, row), one line each ==");

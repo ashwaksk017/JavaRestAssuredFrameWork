@@ -383,6 +383,12 @@ public final class RestStep {
             Response res = RestUtilities.callWithTransientRetry(
                     stepName, DEFAULT_RETRY_DEADLINE_MS, expectedStatus, exchange);
             res = spendAsyncBudgetIfNeeded(res, exchange);
+            if (res != null) {
+                // So a later "EMPTY path segment" failure can name the call
+                // that actually failed first, instead of only reporting the
+                // symptom.
+                StepOutcomes.record(stepName, res.getStatusCode());
+            }
             if (res != null && (res.getStatusCode() == 401
                     || res.getStatusCode() == 403)) {
                 // Guaranteed producer for the auth counter: every request goes
