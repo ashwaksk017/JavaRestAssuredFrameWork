@@ -13912,7 +13912,15 @@ import org.testng.ITestResult;
  */
 public class FailureDigestListener implements ITestListener {{
 
-    private static final Map<String, String[]> FAILURES = new LinkedHashMap<>();
+    /**
+     * Written from EVERY test thread -- the suite runs parallel="classes".
+     * A plain LinkedHashMap here is a genuine race: entries get lost, and a
+     * HashMap resized concurrently can spin. Synchronised rather than a
+     * ConcurrentHashMap so insertion order survives for the per-failure
+     * listing; onFinish snapshots under the same lock before iterating.
+     */
+    private static final Map<String, String[]> FAILURES =
+            java.util.Collections.synchronizedMap(new LinkedHashMap<>());
 
     private static Map<String, Integer> authVerdicts() {{
         return com.ak.api.rest.utilities.AuthDiagnostics.snapshot();
@@ -14006,8 +14014,12 @@ public class FailureDigestListener implements ITestListener {{
         if (!WRITTEN.compareAndSet(false, true)) {{
             return;
         }}
+        List<String[]> all;
+        synchronized (FAILURES) {{
+            all = new ArrayList<>(FAILURES.values());
+        }}
         Map<String, List<String[]>> bySig = new LinkedHashMap<>();
-        for (String[] f : FAILURES.values()) {{
+        for (String[] f : all) {{
             bySig.computeIfAbsent(f[0], k -> new ArrayList<>()).add(f);
         }}
         List<Map.Entry<String, List<String[]>>> groups =
@@ -14025,7 +14037,7 @@ public class FailureDigestListener implements ITestListener {{
                 out, StandardCharsets.UTF_8))) {{
             w.printf("FAILURE DIGEST -- %s%n", context.getName());
             w.printf("unique failing (test, row) pairs: %d   distinct signatures: %d%n",
-                    FAILURES.size(), groups.size());
+                    all.size(), groups.size());
             w.println("(retries collapsed; ids/emails/domains/dates masked as <*>)");
             w.println("digest v2 -- reports auth cause; a run missing the section"
                     + " below was built before this listener");
@@ -14066,7 +14078,7 @@ public class FailureDigestListener implements ITestListener {{
             w.println("    this is the earliest non-2xx seen in that test)");
             Map<String, Integer> upstream = new LinkedHashMap<>();
             int clean = 0;
-            for (String[] f : FAILURES.values()) {{
+            for (String[] f : all) {{
                 if (f.length > 5 && !f[5].isEmpty()) {{
                     upstream.merge(f[5], 1, Integer::sum);
                 }} else {{
@@ -14081,7 +14093,7 @@ public class FailureDigestListener implements ITestListener {{
             }}
             w.println();
             w.println("== every failing (test, row), one line each ==");
-            for (String[] f : FAILURES.values()) {{
+            for (String[] f : all) {{
                 w.printf("%s.%s\\t%s\\t%s%n", f[1], f[2], f[3], f[0]);
             }}
         }} catch (IOException e) {{
@@ -14089,7 +14101,7 @@ public class FailureDigestListener implements ITestListener {{
             return;
         }}
         System.out.println();
-        System.out.println("[failure-digest] " + FAILURES.size()
+        System.out.println("[failure-digest] " + all.size()
                 + " unique failures across " + groups.size()
                 + " signature(s) -> " + out.toAbsolutePath());
         System.out.println("[failure-digest] share THIS file, not the full log.");
