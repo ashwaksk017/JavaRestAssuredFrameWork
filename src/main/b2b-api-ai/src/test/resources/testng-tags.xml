@@ -68,6 +68,7 @@
             <class name="com.ak.api.tests.framework.CtxFieldsTest"/>
             <class name="com.ak.api.tests.framework.ResponseAssertsTest"/>
             <class name="com.ak.api.tests.framework.RestStepTest"/>
+            <class name="com.ak.api.tests.framework.AuthDigestAccuracyTest"/>
             <class name="com.ak.api.tests.db.DbPollTest"/>
         </classes>
     </test>

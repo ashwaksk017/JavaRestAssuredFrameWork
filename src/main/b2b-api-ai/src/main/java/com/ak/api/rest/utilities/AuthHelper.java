@@ -51,6 +51,8 @@ public final class AuthHelper {
         if (ctx.containsKey("accessToken")
                 && ctx.get("accessToken") != null
                 && !ctx.get("accessToken").isEmpty()) {
+            // putAccessToken refuses a token the server already rejected, so
+            // this cannot undo AuthDiagnostics clearing the cache.
             TokenCache.putAccessToken(ctx.get("accessToken"));
             LOG.debug("AuthHelper: ctx already has accessToken -- skipping bootstrap");
             return;

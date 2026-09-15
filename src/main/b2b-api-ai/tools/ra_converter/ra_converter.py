@@ -9219,7 +9219,10 @@ public final class TestSupport {{
                         ctx.getOrDefault("Properties.hardcodeddomain",
                         ctx.getOrDefault("Properties.websitedomain", "")));
         boolean usingFrozenDomain = (frozen != null && !frozen.isEmpty());
-        String domain = usingFrozenDomain ? frozen : FakeData.username() + ".com";
+        // No frozen domain: draw from ALLOWED_DOMAINS like ReadyAPI's
+        // DataGenInput; random word.com only when that is unset.
+        String domain = usingFrozenDomain ? frozen
+                : com.ak.api.support.CtxFields.allowedDomainOrRandom();
         String uname = FakeData.username();
         String email = FakeData.username() + "@" + domain;
         String phone = FakeData.faker().numerify("#########");

@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 3
+// ra_converter-framework-rev: 4
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -845,7 +845,9 @@ public final class ImportedScenario {
         } else if (usingFrozenDomain) {
             domain = frozen;
         } else {
-            domain = FakeData.username() + ".com";
+            // ReadyAPI's DataGenInput draws from ALLOWED_DOMAINS; a random
+            // word.com is only the fallback when that is not configured.
+            domain = CtxFields.allowedDomainOrRandom();
         }
         String ownerUname = FakeData.username();
         String memberUname = distinctUsername(ownerUname);

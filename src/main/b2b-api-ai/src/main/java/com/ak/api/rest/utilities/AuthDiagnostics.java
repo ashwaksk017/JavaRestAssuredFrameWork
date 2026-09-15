@@ -51,6 +51,57 @@ public final class AuthDiagnostics {
         return VERDICTS.isEmpty();
     }
 
+    /**
+     * Status the in-flight {@code RestStep} asserts, for the recording
+     * filter, which sees the exchange but not the step. Without it a
+     * negative auth test that asked for 403 and got it was counted as a
+     * rejected token.
+     */
+    private static final ThreadLocal<Integer> EXPECTED_STATUS = new ThreadLocal<>();
+
+    public static void expectStatus(int status) {
+        if (status > 0) {
+            EXPECTED_STATUS.set(status);
+        } else {
+            EXPECTED_STATUS.remove();
+        }
+    }
+
+    public static void clearExpectedStatus() {
+        EXPECTED_STATUS.remove();
+    }
+
+    public static boolean isExpectedStatus(int status) {
+        Integer expected = EXPECTED_STATUS.get();
+        return expected != null && expected == status;
+    }
+
+    /**
+     * Whether this response means the token itself is dead, so the cache
+     * should be dropped.
+     *
+     * <p>A 401 does. A 403 usually does NOT -- it is "authenticated, not
+     * allowed" (a suspended owner, a travel advisor on an admin call), and
+     * the token is fine. Clearing on every 403 re-fetched tokens for
+     * permission denials. A 403 counts only when its body or
+     * WWW-Authenticate names a token problem. A step that asked for 401/403
+     * is a negative test passing, never a dead token.</p>
+     */
+    public static boolean isDeadTokenSignal(io.restassured.response.Response res,
+                                            int expectedStatus) {
+        if (res == null) {
+            return false;
+        }
+        int code = res.getStatusCode();
+        if (code == expectedStatus || expectedStatus == 401 || expectedStatus == 403) {
+            return false;
+        }
+        if (code == 401) {
+            return true;
+        }
+        return code == 403 && TokenRefresh.isAuthTokenFailure(res);
+    }
+
     private static final java.util.concurrent.atomic.AtomicLong LAST_CLEAR =
             new java.util.concurrent.atomic.AtomicLong(0L);
 

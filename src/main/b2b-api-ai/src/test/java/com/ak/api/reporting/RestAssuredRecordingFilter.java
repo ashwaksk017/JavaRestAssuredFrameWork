@@ -89,6 +89,11 @@ public class RestAssuredRecordingFilter implements Filter {
         if (code != 401 && code != 403) {
             return;
         }
+        if (com.ak.api.rest.utilities.AuthDiagnostics.isExpectedStatus(code)) {
+            // The step asked for this status -- a negative auth test passing,
+            // not a rejected token. Counting it inflated the digest's totals.
+            return;
+        }
         String sent = null;
         if (requestSpec.getHeaders() != null
                 && requestSpec.getHeaders().hasHeaderWithName("Authorization")) {

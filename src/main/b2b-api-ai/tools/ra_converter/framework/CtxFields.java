@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 2
+// ra_converter-framework-rev: 3
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -27,8 +27,9 @@ import com.ak.api.data.FakeData;
  *       {@code accountid} → 9-digit numeric ({@code customerId} /
  *       {@code buyerId} are <em>not</em> in that set -- they stay
  *       usernames, same as the converter)</li>
- *   <li>domain / websiteDomain / weburl → {@code word.com}</li>
- *   <li>{@code *email*} → {@code word@ALLOWED_DOMAIN}</li>
+ *   <li>domain / websiteDomain / weburl → a domain from {@code ALLOWED_DOMAINS}
+ *       (see {@link #allowedDomainOrNull()}), else {@code word.com}</li>
+ *   <li>{@code *email*} → {@code word@<that domain>}</li>
  *   <li>everything else → username (6 lowercase letters)</li>
  * </ul>
  *
@@ -162,7 +163,7 @@ public final class CtxFields {
             }
         }
         if (needsDomain) {
-            sharedDomain = FakeData.username() + ".com";
+            sharedDomain = allowedDomainOrRandom();
         }
         Set<String> seenFirstLetterPair = new LinkedHashSet<>();
         for (String field : fields) {
@@ -309,12 +310,66 @@ public final class CtxFields {
             return FakeData.numericId();
         }
         if (p.equals("domain") || p.equals("websitedomain") || p.equals("weburl")) {
-            return FakeData.username() + ".com";
+            return allowedDomainOrRandom();
         }
         if (p.contains("email")) {
-            return FakeData.username() + "@" + Config.get("ALLOWED_DOMAIN", "example.com");
+            String allowed = allowedDomainOrNull();
+            return FakeData.username() + "@"
+                    + (allowed != null ? allowed : Config.get("ALLOWED_DOMAIN", "example.com"));
         }
         return FakeData.username();
+    }
+
+    private static final java.util.concurrent.atomic.AtomicBoolean WARNED_NO_ALLOWED_DOMAINS =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
+    /**
+     * A domain from the ReadyAPI project property {@code ALLOWED_DOMAINS},
+     * or null when it is not configured.
+     *
+     * <p>ReadyAPI's DataGenInput builds the account's emailDomains, the
+     * websiteDomain and every owner/member email on this one domain. The
+     * translated DataGenInput read the property into ctx and never used it,
+     * so identity fell back to a random {@code word.com} the target's domain
+     * allowlist does not know -- CreatePendingAccountmember then 400s.</p>
+     */
+    public static String allowedDomainOrNull() {
+        String picked = pickAllowedDomain(Config.get("ALLOWED_DOMAINS", ""),
+                java.util.concurrent.ThreadLocalRandom.current());
+        if (picked == null && WARNED_NO_ALLOWED_DOMAINS.compareAndSet(false, true)) {
+            org.slf4j.LoggerFactory.getLogger(CtxFields.class).warn(
+                    "ALLOWED_DOMAINS is not configured -- generated identity falls back to"
+                    + " random word.com domains, which the target's domain allowlist"
+                    + " rejects. Copy the ReadyAPI project property ALLOWED_DOMAINS into"
+                    + " program_configuration.json, or pass -DALLOWED_DOMAINS=a.com,b.com.");
+        }
+        return picked;
+    }
+
+    /** {@link #allowedDomainOrNull()}, else a random {@code word.com}. */
+    public static String allowedDomainOrRandom() {
+        String allowed = allowedDomainOrNull();
+        return allowed != null ? allowed : FakeData.username() + ".com";
+    }
+
+    /**
+     * Pick from a comma-separated domain list the way the ReadyAPI Groovy
+     * does: {@code allowedDomains[new Random().nextInt(allowedDomains.length-1)]}.
+     * With more than one entry the LAST is never chosen -- kept for parity,
+     * since the suite was only ever proven against the domains ReadyAPI picks.
+     * A single entry is returned as-is (the Groovy would throw there).
+     */
+    public static String pickAllowedDomain(String csv, java.util.Random rnd) {
+        if (csv == null || csv.trim().isEmpty()) return null;
+        java.util.List<String> domains = new java.util.ArrayList<>();
+        for (String raw : csv.split(",")) {
+            String d = raw.trim().toLowerCase(java.util.Locale.ROOT);
+            if (d.startsWith("www.")) d = d.substring(4);
+            if (!d.isEmpty()) domains.add(d);
+        }
+        if (domains.isEmpty()) return null;
+        if (domains.size() == 1) return domains.get(0);
+        return domains.get(rnd.nextInt(domains.size() - 1));
     }
 
     static boolean isDomainField(String field) {

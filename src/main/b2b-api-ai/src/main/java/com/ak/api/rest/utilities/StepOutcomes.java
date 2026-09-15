@@ -25,7 +25,21 @@ public final class StepOutcomes {
     }
 
     public static void record(String stepName, int statusCode) {
+        record(stepName, statusCode, -1);
+    }
+
+    /**
+     * @param expectedStatus the status the step asserts ({@code <= 0}: none).
+     *        A response matching it is the step PASSING -- a negative test
+     *        that asked for 400 and got 400 -- not an upstream failure.
+     *        Counting those blamed tests on calls that worked and inflated
+     *        the digest's "first failing call" totals.
+     */
+    public static void record(String stepName, int statusCode, int expectedStatus) {
         if (statusCode >= 200 && statusCode < 300) {
+            return;
+        }
+        if (expectedStatus > 0 && statusCode == expectedStatus) {
             return;
         }
         LAST_BAD.set((stepName == null ? "?" : stepName) + " -> HTTP " + statusCode);

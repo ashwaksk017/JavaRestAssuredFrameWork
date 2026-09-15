@@ -107,6 +107,11 @@ public final class TokenCache {
         if (!enabled() || accessToken == null || accessToken.isEmpty()) {
             return;
         }
+        if (isRejected(accessToken)) {
+            LOG.info("TokenCache: not caching a token the server already rejected (len={})",
+                    accessToken.length());
+            return;
+        }
         String raw = accessToken.startsWith("Bearer ")
                 ? accessToken.substring("Bearer ".length())
                 : accessToken;
@@ -132,17 +137,57 @@ public final class TokenCache {
         String raw = access.startsWith("Bearer ")
                 ? access.substring("Bearer ".length())
                 : access;
-        if (ctx.get("accessToken") == null || ctx.get("accessToken").isEmpty()) {
+        // Fill an empty key, or replace a token the server already rejected.
+        // Filling only empty keys left a dead token in ctx after the cache
+        // was refreshed, so every later step in the test sent it again.
+        String current = ctx.get("accessToken");
+        if (current == null || current.isEmpty() || isRejected(current)) {
             ctx.put("accessToken", raw);
         }
         String existing = ctx.get("tokenId.GeneratedTokenID");
-        if (existing == null || existing.isEmpty()) {
+        if (existing == null || existing.isEmpty() || isRejected(existing)) {
+            if (existing != null && !existing.isEmpty()) {
+                LOG.info("TokenCache: replacing rejected ctx token (len={}) with cached token (len={})",
+                        existing.length(), raw.length());
+            }
             ctx.put("tokenId.GeneratedTokenID", "Bearer " + raw);
         }
     }
 
     public static void clear() {
         HELD.set(null);
+    }
+
+    /**
+     * Fingerprints of tokens the server rejected this run -- a hash, never
+     * the value. Without this, clearing the cache did not stick: AuthHelper
+     * put the ctx copy of the dead token straight back into the cache.
+     */
+    private static final java.util.Set<Integer> REJECTED =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    private static int fingerprint(String token) {
+        String t = token.trim();
+        if (t.startsWith("Bearer ")) {
+            t = t.substring("Bearer ".length()).trim();
+        }
+        return t.hashCode();
+    }
+
+    public static void markRejected(String token) {
+        if (token != null && !token.trim().isEmpty() && !"Bearer".equals(token.trim())) {
+            REJECTED.add(fingerprint(token));
+        }
+    }
+
+    public static boolean isRejected(String token) {
+        return token != null && !token.trim().isEmpty() && REJECTED.contains(fingerprint(token));
+    }
+
+    /** Unit tests only: forget the held token and the rejection history. */
+    public static void resetForTest() {
+        HELD.set(null);
+        REJECTED.clear();
     }
 
     private static String jsonEscape(String s) {

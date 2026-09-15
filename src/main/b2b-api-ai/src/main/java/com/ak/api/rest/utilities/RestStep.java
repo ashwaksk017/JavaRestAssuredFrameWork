@@ -155,6 +155,17 @@ public final class RestStep {
         return this;
     }
 
+    /**
+     * Expected status as {@code ResponseAsserts.statusFromStepColumn}
+     * resolves it: the {@code expected_<step>_status_code} CSV column wins
+     * over the builder value. Negative = no expectation.
+     */
+    private int effectiveExpectedStatus() {
+        String col = "expected_" + stepName + "_status_code";
+        String raw = row == null ? null : row.get(col);
+        return RestUtilities.parseIntOrDefault(raw, expectedStatus, col);
+    }
+
     /** Poll the exchange until HTTP {@code status} or {@code timeoutMs}. */
     public RestStep pollUntilStatus(int status, long timeoutMs) {
         this.pollUntilStatus = status;
@@ -380,48 +391,64 @@ public final class RestStep {
             } else if (pollUntilJsonPath != null && !pollUntilJsonPath.isEmpty()) {
                 exchange = wrapPollJson(exchange);
             }
-            Response res = RestUtilities.callWithTransientRetry(
-                    stepName, DEFAULT_RETRY_DEADLINE_MS, expectedStatus, exchange);
-            res = spendAsyncBudgetIfNeeded(res, exchange);
+            // The status this step really asserts -- a CSV column overrides
+            // the builder value, exactly as ResponseAsserts resolves it. The
+            // diagnostics below must not count a step getting what it asked for.
+            final int assertedStatus = effectiveExpectedStatus();
+            AuthDiagnostics.expectStatus(assertedStatus);
+            Response res;
+            try {
+                res = RestUtilities.callWithTransientRetry(
+                        stepName, DEFAULT_RETRY_DEADLINE_MS, expectedStatus, exchange);
+                res = spendAsyncBudgetIfNeeded(res, exchange);
+                if (res != null && (res.getStatusCode() == 401
+                        || res.getStatusCode() == 403)
+                        && res.getStatusCode() != assertedStatus) {
+                    // Guaranteed producer for the auth counter: every request goes
+                    // through here, unlike the reporting filter which recorded
+                    // nothing on a real run. See AuthDiagnostics.
+                    String verdict = AuthDiagnostics.verdictFromCtx(ctx);
+                    AuthDiagnostics.record(verdict);
+                    LOG.warn(" .. [auth-diag] step={} HTTP {} -- {}",
+                            stepName, res.getStatusCode(), verdict);
+                    // Only a dead token clears the cache: a 401, or a 403 whose
+                    // body names the token. A plain 403 is a permission denial.
+                    if (AuthDiagnostics.isDeadTokenSignal(res, assertedStatus)) {
+                        // The generated client sends ctx's GeneratedTokenID.
+                        // Remember it (by fingerprint) so nothing re-caches it.
+                        TokenCache.markRejected(ctx.get(TokenRefresh.CTX_TOKEN));
+                        if (AuthDiagnostics.invalidateCachedTokens(
+                                Config.getInt("auth.invalidateDebounceMs", 5_000))) {
+                            LOG.warn(" .. [auth-diag] cleared cached tokens -- next"
+                                    + " auth-requiring step will fetch a fresh one");
+                        }
+                    }
+                }
+                if (com.ak.api.rest.ApiRoutes.isTokenPath(resolvedUrl)
+                        || (stepName != null
+                        && stepName.toLowerCase().contains("tokenrequest"))) {
+                    TokenCache.storeFrom(res);
+                }
+                if (TokenRefresh.shouldAttempt(stepName, expectedStatus, res)) {
+                    LOG.info(" .. [token-refresh] step={} HTTP {} -- regenerating {} then retrying once",
+                            stepName, res.getStatusCode(), TokenRefresh.CTX_TOKEN);
+                    if (TokenRefresh.refreshHiltonToken(ctx)) {
+                        res = RestUtilities.callWithTransientRetry(
+                                stepName, DEFAULT_RETRY_DEADLINE_MS, expectedStatus, exchange);
+                    } else {
+                        LOG.warn(" .. [token-refresh] step={} refresh failed -- keeping original HTTP {}",
+                                stepName, res.getStatusCode());
+                    }
+                }
+            } finally {
+                AuthDiagnostics.clearExpectedStatus();
+            }
             if (res != null) {
                 // So a later "EMPTY path segment" failure can name the call
                 // that actually failed first, instead of only reporting the
-                // symptom.
-                StepOutcomes.record(stepName, res.getStatusCode());
-            }
-            if (res != null && (res.getStatusCode() == 401
-                    || res.getStatusCode() == 403)) {
-                // Guaranteed producer for the auth counter: every request goes
-                // through here, unlike the reporting filter which recorded
-                // nothing on a real run. See AuthDiagnostics.
-                String verdict = AuthDiagnostics.verdictFromCtx(ctx);
-                AuthDiagnostics.record(verdict);
-                LOG.warn(" .. [auth-diag] step={} HTTP {} -- {}",
-                        stepName, res.getStatusCode(), verdict);
-                // Not for a step that ASKED for 401/403 -- that is the
-                // assertion passing, not a dead token.
-                if (expectedStatus != 401 && expectedStatus != 403
-                        && AuthDiagnostics.invalidateCachedTokens(
-                                Config.getInt("auth.invalidateDebounceMs", 5_000))) {
-                    LOG.warn(" .. [auth-diag] cleared cached tokens -- next"
-                            + " auth-requiring step will fetch a fresh one");
-                }
-            }
-            if (com.ak.api.rest.ApiRoutes.isTokenPath(resolvedUrl)
-                    || (stepName != null
-                    && stepName.toLowerCase().contains("tokenrequest"))) {
-                TokenCache.storeFrom(res);
-            }
-            if (TokenRefresh.shouldAttempt(stepName, expectedStatus, res)) {
-                LOG.info(" .. [token-refresh] step={} HTTP {} -- regenerating {} then retrying once",
-                        stepName, res.getStatusCode(), TokenRefresh.CTX_TOKEN);
-                if (TokenRefresh.refreshHiltonToken(ctx)) {
-                    res = RestUtilities.callWithTransientRetry(
-                            stepName, DEFAULT_RETRY_DEADLINE_MS, expectedStatus, exchange);
-                } else {
-                    LOG.warn(" .. [token-refresh] step={} refresh failed -- keeping original HTTP {}",
-                            stepName, res.getStatusCode());
-                }
+                // symptom. Recorded on the FINAL response (after any token
+                // refresh) and never for a status the step asserted.
+                StepOutcomes.record(stepName, res.getStatusCode(), assertedStatus);
             }
             LOG.info(" <- HTTP {} in {}ms  (step={})",
                     res.getStatusCode(), System.currentTimeMillis() - t0, stepName);
