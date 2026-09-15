@@ -169,6 +169,21 @@ public final class FakeData {
      * zero). {@code numerify("#########")} can yield {@code 042917466}
      * which ReadyAPI sends unquoted and Jackson then rejects.
      */
+    /**
+     * One of {@code choices}, uniformly. Used for a ReadyAPI Groovy pick out
+     * of a literal list -- {@code randomstayPermissionList[randomizer.nextInt(
+     * randomstayPermissionList.size())]} -- where the value must be one of a
+     * fixed set the API validates (stayPermission: viewEdit / view / private).
+     * Inventing a word there is a 400.
+     */
+    public static String oneOf(String... choices) {
+        if (choices == null || choices.length == 0) {
+            return "";
+        }
+        return choices[java.util.concurrent.ThreadLocalRandom.current()
+                .nextInt(choices.length)];
+    }
+
     public static String numericId() {
         return String.valueOf(intBetween(100000000, 999999999));
     }

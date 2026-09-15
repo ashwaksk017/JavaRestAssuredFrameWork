@@ -648,6 +648,63 @@ def _brace_blocks(script: str) -> list[tuple]:
     return blocks
 
 
+_LIST_DEF_RX_TMPL = r"def\s+{var}\s*=\s*\[([^\]]*)\]"
+# The receiver of .nextInt varies by author: `randomizer`, `rand`, or an
+# inline `new Random()`. The inline form is the COMMONEST (471 of 652
+# picks across the 18 XMLs), so matching only randomizer-ish names missed
+# most of them.
+_LIST_PICK_RX = re.compile(
+    r"def\s+(\w+)\s*=\s*(\w+)\s*(?:\[|\.get\(\s*)\s*"
+    r"(?:new\s+Random\s*\(\s*\)|[A-Za-z_]\w*)\s*\.nextInt")
+_VAR_LITERAL_RX = re.compile(
+    r"""def\s+(\w+)\s*=\s*(['"])((?:[^'"\\]|\\.)*)\2\s*$""", re.M)
+
+
+def _var_backed_publications(script: str) -> dict:
+    """Fields whose value the author put in a VARIABLE, not inline.
+
+    `_env_literal_publications` only matches
+    ``setPropertyValue("k", "literal")``. When the author writes
+    ``def country = "US"`` or
+    ``def p = permList[randomizer.nextInt(permList.size())]`` and then
+    ``setPropertyValue("country", country)``, the field fell through to
+    CtxFields.generateStandard, which invents a word by name shape. For
+    ``stayPermission`` (one of viewEdit/view/private) that is a 400, and
+    seedFromRow cannot repair it: it uses putIfAbsent, so the invented
+    value wins over the CSV / test-data default.
+
+    Returns ``{(step, field): java_expression}``. Only the LAST nonempty
+    write of a field is published, matching ReadyAPI.
+    """
+    out: dict = {}
+    picks = {}
+    for m in _LIST_PICK_RX.finditer(script):
+        var, list_var = m.group(1), m.group(2)
+        lm = re.search(_LIST_DEF_RX_TMPL.format(var=re.escape(list_var)), script)
+        if not lm:
+            continue
+        items = re.findall(r"""(['"])((?:[^'"\\]|\\.)*)\1""", lm.group(1))
+        values = [v for _q, v in items if v]
+        if values:
+            picks[var] = ("com.ak.api.data.FakeData.oneOf("
+                          + ", ".join('"%s"' % _java_escape(v) for v in values) + ")")
+    literals = {m.group(1): m.group(3) for m in _VAR_LITERAL_RX.finditer(script)
+                if m.group(3)}
+    last = _last_nonempty_setproperty(script)
+    for step, field, expr in _find_setproperty_targets(script):
+        var = _bare_setproperty_expr(expr)
+        if not var:
+            continue
+        if last.get((step, field)) is not None and \
+                _bare_setproperty_expr(last[(step, field)]) != var:
+            continue        # a later write owns this field
+        if var in picks:
+            out[(step, field)] = picks[var]
+        elif var in literals:
+            out[(step, field)] = '"%s"' % _java_escape(literals[var])
+    return out
+
+
 def _env_literal_publications(script: str) -> tuple:
     """Split literal ``setPropertyValue("k", "literal")`` calls into the
     ones that always run and the ones gated on the ReadyAPI environment.
@@ -1964,6 +2021,10 @@ def translate(script: str, response_var_by_step: dict[str, str],
         lit_uncond, lit_envcond = _env_literal_publications(script)
         literal_fields = {f for (_s, f) in lit_uncond}
         literal_fields |= {f for (_s, f) in lit_envcond}
+        # Same reasoning for a value the author held in a variable.
+        var_pubs = {k: v for k, v in _var_backed_publications(script).items()
+                    if k[1] not in literal_fields}
+        literal_fields |= {f for (_s, f) in var_pubs}
         extras = []
         extra_seen = set()
         for t in set_targets:
@@ -1987,6 +2048,13 @@ def translate(script: str, response_var_by_step: dict[str, str],
             lines.append('    // [translated] setPropertyValue(<key>, "<literal>")')
             lines.extend(lit_lines)
             _mark("literal_setproperty")
+        if var_pubs:
+            lines.append('    // [translated] setPropertyValue(<key>, <var>) '
+                         '-- literal or list pick, not random data')
+            for (step, field), expr in sorted(var_pubs.items()):
+                lines.append(
+                    f'    TestSupport.putExtracted(ctx, "{step}.{field}", {expr});')
+            _mark("var_backed_setproperty")
         overlay = _space_concat_overlay_lines(script, last_setproperty)
         if overlay:
             lines.extend(overlay)

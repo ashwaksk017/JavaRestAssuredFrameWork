@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 3
+// ra_converter-framework-rev: 5
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -299,6 +299,15 @@ public final class CtxFields {
         return n.contains("sftokenid") && n.endsWith("generatedtokenid");
     }
 
+    /** US state codes, for the {@code state} name shape. */
+    private static final String[] US_STATES = {
+        "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
+        "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
+        "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
+        "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
+        "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+    };
+
     /** Name-shape generator matching groovy_translator._generator_expr. */
     public static String valueFor(String field) {
         if (field == null || field.isEmpty()) return FakeData.username();
@@ -316,6 +325,34 @@ public final class CtxFields {
             String allowed = allowedDomainOrNull();
             return FakeData.username() + "@"
                     + (allowed != null ? allowed : Config.get("ALLOWED_DOMAIN", "example.com"));
+        }
+        // Address fields the API validates by shape. ReadyAPI's DataGenInput
+        // builds them with its own generators -- getRandomPostalCode() is
+        // (10000 + nextInt(89999)), city is "City_" + nextInt(100),
+        // addressLine1 is "Address_" + nextInt(1000) + "Blvd", country is the
+        // literal "US" -- and their values reach contactInfo.address in 9
+        // templates. A word-shaped fallback sent postalCode "hkdmsz".
+        // seedFromRow cannot repair it: putIfAbsent means the generated value
+        // wins over the CSV value and the bundled default.
+        // The suite names numbered variants of every address field --
+        // postalCode2, state2, city2, country2, addressLine1_2 -- so the
+        // shape test has to ignore a trailing ordinal. Matching only the
+        // bare name sent postalCode2 a word.
+        String bare = p.replaceAll("[_0-9]+$", "");
+        if (bare.equals("postalcode") || bare.endsWith("postalcode")) {
+            return String.valueOf(FakeData.intBetween(10000, 99999));
+        }
+        if (bare.equals("state") || bare.endsWith("state")) {
+            return FakeData.oneOf(US_STATES);
+        }
+        if (bare.equals("city") || bare.endsWith("city")) {
+            return "City_" + FakeData.intBetween(0, 99);
+        }
+        if (p.contains("addressline")) {
+            return "Address_" + FakeData.intBetween(0, 999) + "Blvd";
+        }
+        if (bare.equals("country") || bare.endsWith("country")) {
+            return "US";
         }
         return FakeData.username();
     }

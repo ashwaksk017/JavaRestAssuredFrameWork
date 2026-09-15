@@ -381,4 +381,38 @@ public class CtxFieldsTest {
         Assert.assertTrue(ctx.get("Properties.Email").endsWith("@explorer.de"),
                 ctx.get("Properties.Email"));
     }
+
+    @Test(groups = {"unit"})
+    @Story("address fields generate API-valid shapes")
+    @Description("postalCode/state/city/addressLine1/country reach contactInfo.address; a word-shaped value is a 400.")
+    public void valueFor_addressFieldsMatchReadyApiShapes() {
+        Assert.assertTrue(CtxFields.valueFor("postalCode").matches("\\d{5}"),
+                CtxFields.valueFor("postalCode"));
+        Assert.assertTrue(CtxFields.valueFor("postalCode2").matches("\\d{5}"),
+                CtxFields.valueFor("postalCode2"));
+        Assert.assertTrue(CtxFields.valueFor("state").matches("[A-Z]{2}"),
+                CtxFields.valueFor("state"));
+        Assert.assertTrue(CtxFields.valueFor("city").startsWith("City_"),
+                CtxFields.valueFor("city"));
+        Assert.assertTrue(CtxFields.valueFor("addressLine1").startsWith("Address_"),
+                CtxFields.valueFor("addressLine1"));
+        Assert.assertTrue(CtxFields.valueFor("addressLine1").endsWith("Blvd"),
+                CtxFields.valueFor("addressLine1"));
+        Assert.assertEquals(CtxFields.valueFor("country"), "US");
+        // numbered variants the suite actually uses
+        Assert.assertEquals(CtxFields.valueFor("country2"), "US");
+        Assert.assertTrue(CtxFields.valueFor("state2").matches("[A-Z]{2}"),
+                CtxFields.valueFor("state2"));
+        Assert.assertTrue(CtxFields.valueFor("city2").startsWith("City_"),
+                CtxFields.valueFor("city2"));
+        Assert.assertTrue(CtxFields.valueFor("addressLine1_2").startsWith("Address_"),
+                CtxFields.valueFor("addressLine1_2"));
+        // unchanged shapes
+        Assert.assertTrue(CtxFields.valueFor("Phone").matches("\\d{9}"),
+                CtxFields.valueFor("Phone"));
+        Assert.assertTrue(CtxFields.valueFor("guestId").matches("\\d{9}"),
+                CtxFields.valueFor("guestId"));
+        Assert.assertTrue(CtxFields.valueFor("Email").contains("@"),
+                CtxFields.valueFor("Email"));
+    }
 }

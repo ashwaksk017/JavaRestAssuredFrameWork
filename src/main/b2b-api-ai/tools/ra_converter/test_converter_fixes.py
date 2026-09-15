@@ -1618,3 +1618,64 @@ def test_hardcoded_path_id_sibling_skips_unknown_response_and_foreign_step():
     assert ra_converter._sibling_path_param_expr(case, prefs, "travelAgentId", {}) is None
     stranger = SimpleNamespace(step_name="x", path_params={})
     assert ra_converter._sibling_path_param_expr(case, stranger, "guestId", {}) is None
+
+
+_STAY_PERMISSION_SCRIPT = r'''
+def generator = { String alphabet, int n -> "x" * n }
+def generatedUser = generator( ('a'..'z').join(), 5 )
+def generatedEmail = generatedUser + "@example.com"
+def randomizer = new Random();
+def randomstayPermissionList = ["viewEdit","view","private"]
+def randomstayPermission = randomstayPermissionList[randomizer.nextInt(randomstayPermissionList.size())];
+def country = "US"
+def PropertiesPropertyVal = testRunner.testCase.getTestStepByName("Properties")
+PropertiesPropertyVal.setPropertyValue("randomstayPermission", randomstayPermission)
+PropertiesPropertyVal.setPropertyValue("country", country)
+PropertiesPropertyVal.setPropertyValue("Firstname", firstname)
+'''
+
+
+def test_groovy_list_pick_publishes_one_of_the_list_not_a_random_word():
+    """B2B-6832: stayPermission must be viewEdit/view/private, not an invented word."""
+    lines, _meta = groovy_translator.translate(
+        _STAY_PERMISSION_SCRIPT, {}, step_name_hint="DataGenInput")
+    java = "\n".join(lines)
+    assert ('putExtracted(ctx, "Properties.randomstayPermission", '
+            'com.ak.api.data.FakeData.oneOf("viewEdit", "view", "private"))') in java, java
+    gen = [l for l in lines if "generateStandard" in l]
+    assert gen and '"randomstayPermission"' not in gen[0], gen
+    assert java.index("generateStandard") < java.index("randomstayPermission"), java
+
+
+def test_groovy_variable_held_literal_is_published_not_generated():
+    lines, _meta = groovy_translator.translate(
+        _STAY_PERMISSION_SCRIPT, {}, step_name_hint="DataGenInput")
+    java = "\n".join(lines)
+    assert 'putExtracted(ctx, "Properties.country", "US")' in java, java
+    gen = [l for l in lines if "generateStandard" in l]
+    assert gen and '"country"' not in gen[0], gen
+    # a field with no literal/pick binding still gets generated
+    assert '"Firstname"' in gen[0], gen[0]
+
+def test_groovy_var_publication_respects_last_write_wins():
+    """A later setPropertyValue owns the field -- do not publish the earlier pick."""
+    script = chr(10).join([
+        'def generator = { String alphabet, int n -> alphabet }',
+        'def generatedEmail = "a@example.com"',
+        'def p = ["a","b"]',
+        'def pick = p[new Random().nextInt(p.size())]',
+        'def keep = ["y","z"]',
+        'def kept = keep[new Random().nextInt(keep.size())]',
+        'def P = testRunner.testCase.getTestStepByName("Properties")',
+        'P.setPropertyValue("role", pick)',
+        'P.setPropertyValue("role", someOtherVar)',
+        'P.setPropertyValue("mode", kept)',
+    ])
+    lines, _meta = groovy_translator.translate(
+        script, {}, step_name_hint="DataGenInput")
+    java = chr(10).join(lines)
+    # the field whose LAST write is the pick IS published
+    assert ('putExtracted(ctx, "Properties.mode", '
+            'com.ak.api.data.FakeData.oneOf("y", "z"))') in java, java
+    # the field a later write owns is NOT published from the earlier pick
+    assert 'putExtracted(ctx, "Properties.role"' not in java, java
