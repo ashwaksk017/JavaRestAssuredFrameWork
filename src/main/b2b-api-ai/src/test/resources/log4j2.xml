@@ -42,7 +42,7 @@
     <Loggers>
         <!-- Framework code. INFO by default: at DEBUG, ImportedScenario
              dumps the whole ctx map BEFORE and AFTER identity regen on every
-             REST step, and ctx carries 450+ keys by mid-suite -- roughly 950
+             REST step, and ctx carries 450+ keys by mid-suite - roughly 950
              lines per step, which is what makes a full-suite log tens of MB
              and too large to share. The dump is already gated behind
              isDebugEnabled(), but that gate never closed while this said

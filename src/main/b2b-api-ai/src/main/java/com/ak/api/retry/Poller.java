@@ -128,6 +128,19 @@ public final class Poller {
 
     public static <T> T until(Supplier<T> call, java.util.function.Predicate<T> ok,
                               long timeoutMs, long intervalMs, String label) {
+        return until(call, ok, null, timeoutMs, intervalMs, label);
+    }
+
+    /**
+     * {@link #until} that also gives up early when {@code settled} says the
+     * last result cannot change by asking again -- e.g. a POST rejected with
+     * a validation 400. Re-sending those only repeats the same failure until
+     * the timeout, and delays whatever handles it (a token refresh after a
+     * 401 happens only once polling returns).
+     */
+    public static <T> T until(Supplier<T> call, java.util.function.Predicate<T> ok,
+                              java.util.function.Predicate<T> settled,
+                              long timeoutMs, long intervalMs, String label) {
         Objects.requireNonNull(call, "call");
         Objects.requireNonNull(ok, "ok");
         long timeout = timeoutMs > 0 ? timeoutMs : Config.getInt(
@@ -138,6 +151,11 @@ public final class Poller {
         T last = call.get();
         int attempts = 1;
         while (!ok.test(last) && System.currentTimeMillis() < deadline) {
+            if (settled != null && settled.test(last)) {
+                LOG.info(" .. [poller] {} attempt={} stopped -- result will not change by re-sending",
+                        label, attempts);
+                break;
+            }
             LOG.info(" .. [poller] {} attempt={} not yet matched -- wait {}ms",
                     label, attempts, interval);
             sleepQuietly(interval);

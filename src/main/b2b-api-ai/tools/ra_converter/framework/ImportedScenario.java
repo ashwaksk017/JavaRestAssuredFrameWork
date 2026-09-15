@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 4
+// ra_converter-framework-rev: 5
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -873,10 +873,22 @@ public final class ImportedScenario {
         CtxFields.putBothCases(ctx, "Properties", "Username2", uname2);
         CtxFields.putBothCases(ctx, "Properties", "username1", extraUname);
 
+        // generatedemailAddress is a DIFFERENT person from Email in most
+        // ReadyAPI cases: DataGenInput builds them from two random users, and
+        // e.g. B2B-6860 creates the account with ownerEmailAddress=Email but
+        // adds the pending member with emailAddress=generatedemailAddress.
+        // Writing the owner's email into both made that member call send an
+        // address the account already has -- 400 code 509 "The email address
+        // is already in use by a member". The row carries ReadyAPI's saved
+        // values, which differ exactly when the script used two users (871 of
+        // 871 cases) and match when it used one (81 of 81), so follow them.
+        String generatedEmailAddress = rowHasDistinctGeneratedEmail(row)
+                ? distinctEmail(domain, ownerEmail, memberEmail, email2, email3)
+                : ownerEmail;
         CtxFields.putBothCases(ctx, "Properties", "Email", ownerEmail);
         CtxFields.putBothCases(ctx, "Properties", "EmailAddress", ownerEmail);
         CtxFields.putBothCases(ctx, "Properties", "GeneratedEmail", ownerEmail);
-        CtxFields.putBothCases(ctx, "Properties", "generatedemailAddress", ownerEmail);
+        CtxFields.putBothCases(ctx, "Properties", "generatedemailAddress", generatedEmailAddress);
 
         CtxFields.putBothCases(ctx, "Properties", "EmailMember", memberEmail);
         CtxFields.putBothCases(ctx, "Properties", "guestMemberEmail", memberEmail);
@@ -920,6 +932,23 @@ public final class ImportedScenario {
         if (d2 != null && !d2.isEmpty()) {
             CtxFields.putBothCases(ctx, "Properties", "RandomDomain2", d2);
         }
+    }
+
+    /**
+     * True when this case's saved ReadyAPI values give {@code Email} and
+     * {@code generatedemailAddress} different addresses -- i.e. its
+     * DataGenInput built them from two random users. No row, or either value
+     * missing, keeps the previous behaviour (one owner email for both).
+     */
+    static boolean rowHasDistinctGeneratedEmail(Map<String, String> row) {
+        String email = firstNonBlank(row, "Properties.Email", "Properties.email");
+        String generated = firstNonBlank(row,
+                "Properties.generatedemailAddress", "Properties.GeneratedemailAddress");
+        if (email == null || generated == null
+                || !email.contains("@") || !generated.contains("@")) {
+            return false;
+        }
+        return !email.trim().equalsIgnoreCase(generated.trim());
     }
 
     /** True when the CSV create step is an expected-400 emailDomain case. */

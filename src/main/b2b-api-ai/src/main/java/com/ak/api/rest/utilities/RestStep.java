@@ -302,10 +302,11 @@ public final class RestStep {
             } else {
                 ImportedScenario.regenRandomProperties(ctx, row);
                 ImportedScenario.markIdentityPackReady(ctx);
-                LOG.info(" .. [regen] step={} Properties.Username={} Properties.Email={} Properties.usernamemember={} Properties.generatedemailAddress1={}",
+                LOG.info(" .. [regen] step={} Properties.Username={} Properties.Email={} Properties.generatedemailAddress={} Properties.usernamemember={} Properties.generatedemailAddress1={}",
                         stepName,
                         ctx == null ? null : ctx.get("Properties.Username"),
                         ctx == null ? null : ctx.get("Properties.Email"),
+                        ctx == null ? null : ctx.get("Properties.generatedemailAddress"),
                         ctx == null ? null : ctx.get("Properties.usernamemember"),
                         ctx == null ? null : ctx.get("Properties.generatedemailAddress1"));
             }
@@ -387,9 +388,9 @@ public final class RestStep {
             // for why converting Delay steps themselves was reverted.
             maybePollUntilExpectedJson();
             if (pollUntilStatus > 0) {
-                exchange = wrapPollStatus(exchange);
+                exchange = wrapPollStatus(exchange, verb);
             } else if (pollUntilJsonPath != null && !pollUntilJsonPath.isEmpty()) {
-                exchange = wrapPollJson(exchange);
+                exchange = wrapPollJson(exchange, verb);
             }
             // The status this step really asserts -- a CSV column overrides
             // the builder value, exactly as ResponseAsserts resolves it. The
@@ -470,25 +471,60 @@ public final class RestStep {
     }
 
     private java.util.function.Supplier<Response> wrapPollStatus(
-            java.util.function.Supplier<Response> exchange) {
+            java.util.function.Supplier<Response> exchange, String verb) {
         final java.util.function.Supplier<Response> inner = exchange;
         int status = pollUntilStatus;
         long timeout = pollTimeoutMs > 0 ? pollTimeoutMs : DEFAULT_RETRY_DEADLINE_MS;
         long interval = pollIntervalMs > 0 ? pollIntervalMs : Poller.DEFAULT_INTERVAL_MS;
-        return () -> Poller.untilStatus(inner, status, timeout, interval);
+        return () -> Poller.until(inner,
+                res -> res != null && res.getStatusCode() == status,
+                res -> isSettledFailure(verb, res),
+                timeout, interval, "HTTP " + status);
     }
 
     private java.util.function.Supplier<Response> wrapPollJson(
-            java.util.function.Supplier<Response> exchange) {
+            java.util.function.Supplier<Response> exchange, String verb) {
         final java.util.function.Supplier<Response> inner = exchange;
         String path = pollUntilJsonPath;
         String expected = pollUntilJsonExpected;
         long timeout = pollTimeoutMs > 0 ? pollTimeoutMs : DEFAULT_RETRY_DEADLINE_MS;
         if (pollUntilJsonPresent) {
             long interval = Config.getInt("rest.pollSalesforceIdIntervalMs", 2_000);
-            return () -> Poller.untilJsonNonEmpty(inner, path, timeout, interval);
+            return () -> Poller.until(inner, res -> {
+                String actual = res == null ? null : RestUtilities.safeJsonExtract(res, path);
+                return actual != null && !actual.isEmpty();
+            }, res -> isSettledFailure(verb, res), timeout, interval, path + " non-empty");
         }
-        return () -> Poller.untilJsonEquals(inner, path, expected, timeout);
+        String want = expected == null ? "" : expected;
+        return () -> Poller.until(inner, res -> {
+            if (res == null) {
+                return false;
+            }
+            String actual = RestUtilities.safeJsonExtract(res, path);
+            return want.equals(actual == null ? "" : actual);
+        }, res -> isSettledFailure(verb, res), timeout, Poller.DEFAULT_INTERVAL_MS, path + "=" + want);
+    }
+
+    /**
+     * A POST response that re-sending cannot change, so polling should stop.
+     *
+     * <p>B2B-6860 re-sent CreatePendingAccountmember four times after a 400
+     * "email already in use" while waiting for a memberId that could never
+     * come. Only POST: a GET polling through 404 until a record appears is a
+     * genuine wait. Transient rejections keep polling -- 408, 429 and
+     * whatever {@link RestUtilities#isTransientResponse} already treats as
+     * temporary. A 401/403 stops too, which hands it to the token refresh
+     * that runs after polling instead of re-sending the dead token.</p>
+     */
+    public static boolean isSettledFailure(String verb, Response res) {
+        if (res == null || !"POST".equalsIgnoreCase(verb)) {
+            return false;
+        }
+        int code = res.getStatusCode();
+        if (code < 400 || code >= 500 || code == 408 || code == 429) {
+            return false;
+        }
+        return !RestUtilities.isTransientResponse(res);
     }
 
     /**
