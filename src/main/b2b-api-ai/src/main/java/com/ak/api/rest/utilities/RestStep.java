@@ -702,7 +702,10 @@ public final class RestStep {
         if (token == null || token.isEmpty()) {
             return;
         }
-        String accountId = firstAccountIdFromCtx();
+        String accountId = accountIdFromActivateUrl(resolvedUrl);
+        if (accountId.isEmpty()) {
+            accountId = firstAccountIdFromCtx();
+        }
         if (accountId.isEmpty()) {
             return;
         }
@@ -873,7 +876,10 @@ public final class RestStep {
         if (token == null || token.isEmpty()) {
             return;
         }
-        String accountId = firstAccountIdFromCtx();
+        String accountId = accountIdFromActivateUrl(path);
+        if (accountId.isEmpty()) {
+            accountId = firstAccountIdFromCtx();
+        }
         if (accountId.isEmpty()) {
             return;
         }
@@ -895,6 +901,30 @@ public final class RestStep {
                 "alternateAccounts.salesforceId", timeout, interval);
         storeSalesforceId(RestUtilities.safeJsonExtract(
                 got, "alternateAccounts.salesforceId"));
+    }
+
+    /**
+     * The account id in {@code .../businesses/{accountId}/activate}, or "".
+     *
+     * <p>Both activate helpers used to pick the account from a fixed list of
+     * ctx keys, ending with DataGenInput's random {@code Properties.accountID}.
+     * A case with two accounts (B2B-5530 activates account 2) would then wait
+     * on account 1, or on an id that does not exist. The URL being activated
+     * names the right account, so it wins; ctx is only the fallback.</p>
+     */
+    public static String accountIdFromActivateUrl(String url) {
+        if (url == null) {
+            return "";
+        }
+        int q = url.indexOf('?');
+        String p = q >= 0 ? url.substring(0, q) : url;
+        String marker = "/businesses/";
+        int at = p.lastIndexOf(marker);
+        if (at < 0 || !p.endsWith("/activate")) {
+            return "";
+        }
+        String id = p.substring(at + marker.length(), p.length() - "/activate".length());
+        return id.isEmpty() || id.indexOf('/') >= 0 ? "" : id;
     }
 
     private String firstAccountIdFromCtx() {

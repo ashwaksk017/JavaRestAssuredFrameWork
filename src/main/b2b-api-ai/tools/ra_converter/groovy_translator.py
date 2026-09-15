@@ -957,6 +957,38 @@ def _emit_incomplete_guestid_extract(
     ]
 
 
+def _source_step_for_expr(expr: str, script: str) -> Optional[str]:
+    """The step whose response `expr` was parsed from, or None.
+
+    Follows ``resp_obj2.guestId`` -> ``def resp_obj2 = jsonSlurper.parseText(resp2)``
+    -> ``def resp2 = testRunner.testCase.getTestStepByName("enroll_guest2")
+    .getPropertyValue('response')``. Taking the script's FIRST response for
+    every publication sent guestId2/guestId3 from guest 1's response
+    (B2B-5530: 88 Groovy steps across 10 suites read more than one).
+    """
+    m = re.match(r"^\s*(\w+)\.", expr or "")
+    if not m:
+        return None
+    parse = re.search(
+        rf"def\s+{re.escape(m.group(1))}\s*=\s*(?:new\s+)?\w*[Ss]lurper\w*"
+        r"\s*(?:\(\))?\s*\.parseText\(\s*(\w+)\s*\)",
+        script)
+    if not parse:
+        return None
+    src = re.search(
+        rf"def\s+{re.escape(parse.group(1))}\s*=\s*(?:testRunner|context)\.testCase"
+        r"\.getTestStepByName\(['\"]([^'\"]+)['\"]\)"
+        r"\.getPropertyValue\(['\"]response['\"]\)",
+        script)
+    if src:
+        return src.group(1)
+    # Two-line form: def s = ...getTestStepByName("X"); def r = s.getPropertyValue("response")
+    info = _trace_groovy_defs(script).get(parse.group(1))
+    if info and info.get("kind") == "response_str":
+        return info.get("source_step")
+    return None
+
+
 def _extract_jsonpath_from_expr(expr: str, script: str) -> Optional[str]:
     """Given `resp_obj.guestId.toString().trim()` or similar, return the
     JSON path (`guestId`) if the object came from a JsonSlurper.parseText
@@ -1540,10 +1572,14 @@ def translate(script: str, response_var_by_step: dict[str, str],
     source_step_matches = _JSON_EXTRACT_RX.findall(script)
     if source_step_matches:
         source_step = source_step_matches[0]  # ('source_step',)
-        resp_var = _resp_var_for(source_step, ctx)
         # Every setPropertyValue after that is a candidate
         targets = _find_setproperty_targets(script)
         for target_step, field, expr in targets:
+            # A script can read several responses (resp, resp2, resp3) and
+            # publish from each. Resolve the response THIS expression was
+            # parsed from; the first response is only the fallback.
+            resp_var = _resp_var_for(
+                _source_step_for_expr(expr, script) or source_step, ctx)
             # Skip the initial-blank pattern: setPropertyValue("X", "")
             if expr in ('""', "''"):
                 continue

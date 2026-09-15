@@ -119,4 +119,19 @@ public class MemberEmailAndPollStopTest {
         }, r -> false, r -> RestStep.isSettledFailure("POST", r), 300, 50, "memberId non-empty");
         Assert.assertTrue(throttled.get() > 1, "a throttled POST should still be polled");
     }
+
+    @Test(groups = {"unit"})
+    @Story("activate polls follow the URL")
+    @Description("B2B-5530: the activate wait read account 1 / a random id from ctx instead of the account in the URL.")
+    public void activatePollAccountComesFromTheActivateUrl() {
+        Assert.assertEquals(RestStep.accountIdFromActivateUrl(
+                "https://host/v2/businesses/2000482207/activate"), "2000482207");
+        Assert.assertEquals(RestStep.accountIdFromActivateUrl(
+                "/businesses/2000482207/activate?dryRun=false"), "2000482207");
+        Assert.assertEquals(RestStep.accountIdFromActivateUrl("/businesses//activate"), "");
+        Assert.assertEquals(RestStep.accountIdFromActivateUrl("/businesses/2000482207"), "");
+        Assert.assertEquals(RestStep.accountIdFromActivateUrl(
+                "/guests/1/businesses/2/members/3/activate"), "");
+        Assert.assertEquals(RestStep.accountIdFromActivateUrl(null), "");
+    }
 }

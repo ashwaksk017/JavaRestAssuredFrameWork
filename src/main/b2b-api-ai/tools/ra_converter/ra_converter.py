@@ -8729,6 +8729,15 @@ public final class TestSupport {{
             String direct = ctx.get(primaryKey);
             return direct == null ? "" : direct;
         }}
+        // Declared aliases before the name walk, same order as
+        // ImportedScenario.ctxGetRaw. The walk below returns the FIRST ctx
+        // key with a matching field name, and DataGenInput inserts a random
+        // 9-digit Properties.accountID before any step extracts the real id.
+        // B2B-6860 asked for PropertiesaccountID.accountID, which its chain
+        // never writes, and sent that random id instead of the account it
+        // had stored under PropertiesDetails.accountID -- a 404.
+        String declared = com.ak.api.context.ScenarioContext.resolveDeclared(ctx, primaryKey);
+        if (declared != null && !declared.isEmpty()) return declared;
         // Extract the trailing field name after the last dot.
         int lastDot = primaryKey.lastIndexOf('.');
         String field = (lastDot >= 0) ? primaryKey.substring(lastDot + 1) : primaryKey;

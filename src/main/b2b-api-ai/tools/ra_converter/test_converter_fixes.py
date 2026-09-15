@@ -1491,3 +1491,85 @@ def test_every_bundled_framework_file_carries_a_rev():
             continue
         with open(_os.path.join(fw, name), encoding="utf8") as fh:
             assert ra_converter._FRAMEWORK_REV_RX.search(fh.read()), name
+
+
+_B2B5530_GUESTID_SCRIPT = r'''
+def jsonSlurper = new groovy.json.JsonSlurper();
+def PropertiesPropertyVal = testRunner.testCase.getTestStepByName("PropertiesGuestId")
+PropertiesPropertyVal.setPropertyValue("guestId", "")
+def resp = testRunner.testCase.getTestStepByName("http_request_200_enroll_guest").getPropertyValue('response');
+def resp2 = testRunner.testCase.getTestStepByName("http_request_200_enroll_guest2").getPropertyValue('response');
+def resp3 = testRunner.testCase.getTestStepByName("http_request_200_enroll_guest3").getPropertyValue('response');
+def resp_obj = jsonSlurper.parseText(resp)
+PropertiesPropertyVal.setPropertyValue("guestId", resp_obj.guestId.toString().trim())
+PropertiesPropertyVal.setPropertyValue("hhonorsNumber", resp_obj.hhonorsNumber.toString().trim())
+//for guest 2
+def resp_obj2 = jsonSlurper.parseText(resp2)
+PropertiesPropertyVal.setPropertyValue("guestId2", resp_obj2.guestId.toString().trim())
+PropertiesPropertyVal.setPropertyValue("hhonorsNumber2", resp_obj2.hhonorsNumber.toString().trim())
+def resp_obj3 = jsonSlurper.parseText(resp3)
+PropertiesPropertyVal.setPropertyValue("guestId3", resp_obj3.guestId.toString().trim())
+'''
+
+
+def _translate_guestid_groovy(script: str) -> str:
+    lines, _meta = groovy_translator.translate(
+        script,
+        {"http_request_200_enroll_guest": "http_request_200_enroll_guestRes",
+         "http_request_200_enroll_guest2": "http_request_200_enroll_guest2Res",
+         "http_request_200_enroll_guest3": "http_request_200_enroll_guest3Res"},
+        step_name_hint="Groovy Script for guestId",
+    )
+    return "\n".join(lines)
+
+
+def test_groovy_multi_response_script_publishes_each_id_from_its_own_response():
+    """B2B-5530: guestId2/guestId3 were extracted from guest 1's response."""
+    joined = _translate_guestid_groovy(_B2B5530_GUESTID_SCRIPT)
+    assert ('"PropertiesGuestId.guestId", com.ak.api.rest.utilities.RestUtilities'
+            '.safeJsonExtract(http_request_200_enroll_guestRes, "guestId")') in joined, joined
+    assert ('"PropertiesGuestId.guestId2", com.ak.api.rest.utilities.RestUtilities'
+            '.safeJsonExtract(http_request_200_enroll_guest2Res, "guestId")') in joined, joined
+    assert ('"PropertiesGuestId.hhonorsNumber2", com.ak.api.rest.utilities.RestUtilities'
+            '.safeJsonExtract(http_request_200_enroll_guest2Res, "hhonorsNumber")') in joined, joined
+    assert ('"PropertiesGuestId.guestId3", com.ak.api.rest.utilities.RestUtilities'
+            '.safeJsonExtract(http_request_200_enroll_guest3Res, "guestId")') in joined, joined
+
+
+def test_groovy_multi_response_two_line_step_ref_form_is_resolved():
+    script = r'''
+def jsonSlurper = new groovy.json.JsonSlurper();
+def P = testRunner.testCase.getTestStepByName("PropertiesaccountID")
+def s1 = testRunner.testCase.getTestStepByName("http_request_200_createAccount")
+def s2 = testRunner.testCase.getTestStepByName("http_request_200_createAccount2")
+def r1 = testRunner.testCase.getTestStepByName("http_request_200_createAccount").getPropertyValue('response');
+def r2 = s2.getPropertyValue("response")
+def o1 = jsonSlurper.parseText(r1)
+def o2 = jsonSlurper.parseText(r2)
+P.setPropertyValue("accountID", o1.accountId.toString().trim())
+P.setPropertyValue("accountID2", o2.accountId.toString().trim())
+'''
+    lines, _meta = groovy_translator.translate(
+        script,
+        {"http_request_200_createAccount": "http_request_200_createAccountRes",
+         "http_request_200_createAccount2": "http_request_200_createAccount2Res"},
+        step_name_hint="Groovy Script for accountID",
+    )
+    joined = "\n".join(lines)
+    assert 'safeJsonExtract(http_request_200_createAccount2Res, "accountId")' in joined, joined
+    assert ('"PropertiesaccountID.accountID", com.ak.api.rest.utilities.RestUtilities'
+            '.safeJsonExtract(http_request_200_createAccountRes, "accountId")') in joined, joined
+
+
+def test_testsupport_ctxget_consults_declared_aliases_before_name_walk():
+    """B2B-6860: the first-match walk returned DataGenInput's random
+    Properties.accountID ahead of the real PropertiesDetails.accountID."""
+    src = open(os.path.join(os.path.dirname(__file__), "ra_converter.py"),
+               encoding="utf8").read()
+    start = src.index("static String ctxGetRaw(Map<String, String> ctx, String primaryKey) {{\n"
+                      "        if (ctx == null || primaryKey == null) return \"\";")
+    body = src[start:src.index("private static String expandPlaceholders", start)]
+    known_empty = body.index("if (ctx.containsKey(primaryKey))")
+    declared = body.index("ScenarioContext.resolveDeclared(ctx, primaryKey)")
+    walk = body.index("for (Map.Entry<String, String> e : ctx.entrySet())")
+    assert known_empty < declared < walk
