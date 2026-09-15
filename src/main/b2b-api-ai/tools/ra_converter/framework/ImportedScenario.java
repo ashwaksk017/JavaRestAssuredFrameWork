@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 5
+// ra_converter-framework-rev: 6
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -259,6 +259,15 @@ public final class ImportedScenario {
             }
             return direct == null ? "" : direct;
         }
+        // ReadyAPI resolves ${Step#prop} case-insensitively: 16 cases read
+        // ${PropertiesGuestId#guestID} from a step that only ever holds
+        // guestId, and its recorded request still carries the real guest id.
+        // Without this, the lookup below fell to DataGenInput's random
+        // Properties.guestID. Only an unambiguous match is used.
+        String sameKeyOtherCase = caseInsensitiveExact(ctx, primaryKey);
+        if (sameKeyOtherCase != null) {
+            return sameKeyOtherCase;
+        }
         // Declared aliases before the heuristic.
         //
         // The exact key is absent, so SOME cross-key resolution is going to
@@ -291,6 +300,31 @@ public final class ImportedScenario {
             return hiltonTokenFallback(primaryKey, ctx);
         }
         return "";
+    }
+
+    /**
+     * The value under a key that equals {@code primaryKey} ignoring case, or
+     * null when there is none -- or more than one with different values, in
+     * which case the caller's existing resolution is kept.
+     */
+    static String caseInsensitiveExact(Map<String, String> ctx, String primaryKey) {
+        String found = null;
+        for (Map.Entry<String, String> e : ctx.entrySet()) {
+            String k = e.getKey();
+            String v = e.getValue();
+            if (k == null || v == null || v.isEmpty() || k.equals(primaryKey)
+                    || !k.equalsIgnoreCase(primaryKey)) {
+                continue;
+            }
+            if (found == null) {
+                found = v;
+            } else if (!found.equals(v)) {
+                LOG.warn(" .. [ctxGet] {} matches several keys that differ only in case,"
+                        + " with different values -- not guessing", primaryKey);
+                return null;
+            }
+        }
+        return found;
     }
 
     /**
@@ -837,13 +871,24 @@ public final class ImportedScenario {
                 "Properties.Domain", "Properties.domain", "Domain");
         boolean keepCsvDomain = csvDomain != null && !csvDomain.isEmpty()
                 && (isFreemailDomain(csvDomain) || expectedCreate400(row));
-        boolean usingFrozenDomain = !keepCsvDomain
+        boolean hasFrozenDomain = !keepCsvDomain
                 && frozen != null && !frozen.isEmpty();
+        // Hardcodeddomain is a Properties value the row always carries; its
+        // presence does not mean the case built identity on it. In 211 of the
+        // 218 laafd.com rows ReadyAPI's DataGenInput generated a random domain
+        // per run, and the saved values show it. Freezing those sent a domain
+        // every test shares: B2B-3233 posts ${Properties#Domain} as a NEW
+        // email domain expecting 201 and got 409, and verify-by-domain calls
+        // matched other tests' accounts. Follow the row, as the email split
+        // does; with no saved identity values the freeze stays.
+        boolean usingFrozenDomain = hasFrozenDomain && !rowUsedOwnDomain(row, frozen);
         String domain;
         if (keepCsvDomain) {
             domain = normalizeDomain(csvDomain);
         } else if (usingFrozenDomain) {
             domain = frozen;
+        } else if (hasFrozenDomain) {
+            domain = freshDomainLike(normalizeDomain(csvDomain));
         } else {
             // ReadyAPI's DataGenInput draws from ALLOWED_DOMAINS; a random
             // word.com is only the fallback when that is not configured.
@@ -901,11 +946,12 @@ public final class ImportedScenario {
         CtxFields.putBothCases(ctx, "Properties", "Domain", domain);
         CtxFields.putBothCases(ctx, "Properties", "websiteDomain", domain);
         CtxFields.putBothCases(ctx, "Properties", "weburl", domain);
-        if (usingFrozenDomain) {
-            String hcEmail = extraUname + "@" + domain;
+        if (hasFrozenDomain) {
+            // Unchanged: these slots are built on Hardcodeddomain itself.
+            String hcEmail = extraUname + "@" + frozen;
             CtxFields.putBothCases(ctx, "Properties", "hardcodedemail", hcEmail);
-            CtxFields.putBothCases(ctx, "Properties", "Hardcodeddomain", domain);
-            String updatedEmail = "bh" + extraUname + "jff@" + domain;
+            CtxFields.putBothCases(ctx, "Properties", "Hardcodeddomain", frozen);
+            String updatedEmail = "bh" + extraUname + "jff@" + frozen;
             CtxFields.putBothCases(ctx, "Properties", "updatedemail", updatedEmail);
             CtxFields.putBothCases(ctx, "Properties", "updatedmailAddress", updatedEmail);
         }
@@ -949,6 +995,48 @@ public final class ImportedScenario {
             return false;
         }
         return !email.trim().equalsIgnoreCase(generated.trim());
+    }
+
+    /**
+     * True when the row's saved ReadyAPI values put an email on the saved
+     * {@code Properties.Domain} and that domain is not {@code frozen} -- i.e.
+     * DataGenInput generated its own domain for this case.
+     */
+    static boolean rowUsedOwnDomain(Map<String, String> row, String frozen) {
+        String saved = firstNonBlank(row, "Properties.Domain", "Properties.domain");
+        if (saved == null || frozen == null) {
+            return false;
+        }
+        String domain = normalizeDomain(saved);
+        if (domain.isEmpty() || domain.equalsIgnoreCase(normalizeDomain(frozen))) {
+            return false;
+        }
+        for (String k : new String[] {"Properties.Email", "Properties.generatedemailAddress",
+                "Properties.EmailAddress", "Properties.GeneratedEmail"}) {
+            String v = row.get(k);
+            int at = v == null ? -1 : v.lastIndexOf('@');
+            if (at > 0 && v.substring(at + 1).trim().equalsIgnoreCase(domain)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * A new domain of the same kind as ReadyAPI's saved one: from
+     * ALLOWED_DOMAINS when the saved domain is on that list, otherwise a
+     * random name with the saved TLD, as DataGenInput builds it.
+     */
+    static String freshDomainLike(String savedDomain) {
+        String saved = savedDomain == null ? "" : savedDomain.toLowerCase(Locale.ROOT);
+        for (String d : Config.get("ALLOWED_DOMAINS", "").split(",")) {
+            if (!saved.isEmpty() && saved.equals(d.trim().toLowerCase(Locale.ROOT))) {
+                return CtxFields.allowedDomainOrRandom();
+            }
+        }
+        int dot = saved.lastIndexOf('.');
+        String tld = dot > 0 && dot < saved.length() - 1 ? saved.substring(dot) : ".com";
+        return FakeData.username() + tld;
     }
 
     /** True when the CSV create step is an expected-400 emailDomain case. */

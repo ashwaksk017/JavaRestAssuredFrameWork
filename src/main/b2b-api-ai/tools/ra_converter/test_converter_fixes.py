@@ -1571,5 +1571,50 @@ def test_testsupport_ctxget_consults_declared_aliases_before_name_walk():
     body = src[start:src.index("private static String expandPlaceholders", start)]
     known_empty = body.index("if (ctx.containsKey(primaryKey))")
     declared = body.index("ScenarioContext.resolveDeclared(ctx, primaryKey)")
-    walk = body.index("for (Map.Entry<String, String> e : ctx.entrySet())")
+    walk = body.index("// Walk every ctx key -- match by suffix on the field name.")
     assert known_empty < declared < walk
+
+
+def test_testsupport_ctxget_tries_same_key_other_case_before_aliases():
+    """B2B-3216: ReadyAPI resolves ${PropertiesGuestId#guestID} to guestId."""
+    src = open(os.path.join(os.path.dirname(__file__), "ra_converter.py"),
+               encoding="utf8").read()
+    start = src.index("static String ctxGetRaw(Map<String, String> ctx, String primaryKey) {{\n"
+                      "        if (ctx == null || primaryKey == null) return \"\";")
+    body = src[start:src.index("private static String expandPlaceholders", start)]
+    known_empty = body.index("if (ctx.containsKey(primaryKey))")
+    same_key = body.index("!k.equalsIgnoreCase(primaryKey)")
+    declared = body.index("ScenarioContext.resolveDeclared(ctx, primaryKey)")
+    assert known_empty < same_key < declared
+
+
+def _b2b6830_case():
+    pre = SimpleNamespace(step_name="put_rolePremission_200", path_params={
+        "accountId": "${PropertiesaccountID#accountID}",
+        "guestId": "${PropertiesGuestId#guestId1}",
+        "memberId": "${get_request_200_member_details#Response#$[0]['memberId']}"})
+    older = SimpleNamespace(step_name="post_confirm_validation_limited", path_params={
+        "guestId": "${PropertiesGuestId#guestId}"})
+    prefs = SimpleNamespace(step_name="get_preferences", path_params={
+        "accountId": "2000222783", "guestId": "1900718863", "memberId": "219827"})
+    return SimpleNamespace(steps=[older, pre, prefs]), prefs
+
+
+def test_hardcoded_path_id_takes_nearest_earlier_sibling_placeholder():
+    """B2B-6830: get_preferences must reuse the case's own ids, not random Properties.*."""
+    case, prefs = _b2b6830_case()
+    known = {"get_request_200_member_details": "get_request_200_member_detailsRes"}
+    assert ra_converter._sibling_path_param_expr(case, prefs, "guestId", known) == \
+        "${PropertiesGuestId#guestId1}"
+    assert ra_converter._sibling_path_param_expr(case, prefs, "accountId", known) == \
+        "${PropertiesaccountID#accountID}"
+    assert "get_request_200_member_details#Response" in \
+        ra_converter._sibling_path_param_expr(case, prefs, "memberId", known)
+
+
+def test_hardcoded_path_id_sibling_skips_unknown_response_and_foreign_step():
+    case, prefs = _b2b6830_case()
+    assert ra_converter._sibling_path_param_expr(case, prefs, "memberId", {}) is None
+    assert ra_converter._sibling_path_param_expr(case, prefs, "travelAgentId", {}) is None
+    stranger = SimpleNamespace(step_name="x", path_params={})
+    assert ra_converter._sibling_path_param_expr(case, stranger, "guestId", {}) is None

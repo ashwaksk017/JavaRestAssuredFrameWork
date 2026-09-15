@@ -300,4 +300,56 @@ public class CtxFieldsTest {
         Assert.assertEquals(ctx.get("hiltonmemberid"), "341851",
                 "empty extract must not plant blank and break alias-walk");
     }
+
+    @Test(groups = {"unit"})
+    @Story("ctxGet matches ReadyAPI's case-insensitive property names")
+    @Description("B2B-3216 reads PropertiesGuestId#guestID; the step holds guestId. Must not fall to random Properties.guestID.")
+    public void ctxGet_sameKeyDifferentCaseBeatsRandomAlias() {
+        Map<String, String> ctx = new java.util.LinkedHashMap<>();
+        ctx.put("Properties.guestID", "111111119");
+        ctx.put("PropertiesGuestId.guestId", "1901026572");
+        Assert.assertEquals(ImportedScenario.ctxGet(ctx, "PropertiesGuestId.guestID"), "1901026572");
+        ctx.put("PropertiesGuestId.GUESTID", "999");
+        Assert.assertNotEquals(ImportedScenario.ctxGet(ctx, "PropertiesGuestId.guestID"), "999",
+                "two case variants with different values must not be guessed");
+    }
+
+    @Test(groups = {"unit"})
+    @Story("frozen domain follows the row")
+    @Description("B2B-5530/3233: saved identity on its own domain -> fresh domain, not the shared Hardcodeddomain.")
+    public void regenRandomProperties_unfreezesWhenRowUsedItsOwnDomain() {
+        Map<String, String> ctx = new HashMap<>();
+        ctx.put("Properties.Hardcodeddomain", "laafd.com");
+        Map<String, String> row = new HashMap<>();
+        row.put("Properties.Domain", "xnfjqmub.net");
+        row.put("Properties.generatedemailAddress", "soxbid@xnfjqmub.net");
+        row.put("Properties.Email", "p8lsd@tnfgwpxv.com");
+        ImportedScenario.regenRandomProperties(ctx, row);
+        String domain = ctx.get("Properties.Domain");
+        Assert.assertNotEquals(domain, "laafd.com");
+        Assert.assertNotEquals(domain, "xnfjqmub.net", "must be fresh, not the stale saved domain");
+        Assert.assertTrue(domain.endsWith(".net"), domain);
+        Assert.assertTrue(ctx.get("Properties.Email").endsWith("@" + domain), ctx.get("Properties.Email"));
+        Assert.assertEquals(ctx.get("Properties.Hardcodeddomain"), "laafd.com");
+        Assert.assertTrue(ctx.get("Properties.hardcodedemail").endsWith("@laafd.com"),
+                ctx.get("Properties.hardcodedemail"));
+    }
+
+    @Test(groups = {"unit"})
+    @Story("frozen domain follows the row")
+    @Description("Saved emails on Hardcodeddomain, or no saved emails -> the freeze stays.")
+    public void regenRandomProperties_keepsFreezeWhenRowUsedHardcodeddomain() {
+        Map<String, String> ctx = new HashMap<>();
+        ctx.put("Properties.Hardcodeddomain", "laafd.com");
+        Map<String, String> row = new HashMap<>();
+        row.put("Properties.Domain", "abcxyz.net");
+        row.put("Properties.generatedemailAddress", "nzbiay@laafd.com");
+        ImportedScenario.regenRandomProperties(ctx, row);
+        Assert.assertEquals(ctx.get("Properties.Domain"), "laafd.com");
+
+        Map<String, String> ctx2 = new HashMap<>();
+        ctx2.put("Properties.Hardcodeddomain", "laafd.com");
+        ImportedScenario.regenRandomProperties(ctx2, null);
+        Assert.assertEquals(ctx2.get("Properties.Domain"), "laafd.com");
+    }
 }

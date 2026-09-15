@@ -546,6 +546,37 @@ def _is_repeating_digit_fake(value: str) -> bool:
     return s.isdigit() and len(s) >= 6 and len(set(s)) == 1
 
 
+def _sibling_path_param_expr(case, step, param, known_response_steps=None):
+    """The ${...} an EARLIER step of the same case uses for path param
+    `param`, nearest first; None when there is none.
+
+    A response reference (``${stepX#Response#...}``) is only used when
+    `stepX` has an emitted response variable -- otherwise the generated
+    lookup would be null and send an empty segment. A step that is not in
+    `case` gets no guess.
+    """
+    steps = list(getattr(case, "steps", None) or [])
+    if not any(s is step for s in steps):
+        return None
+    prior = []
+    for s in steps:
+        if s is step:
+            break
+        prior.append(s)
+    known = known_response_steps or {}
+    for s in reversed(prior):
+        params = getattr(s, "path_params", None) or {}
+        value = params.get(param)
+        if not value or "${" not in value:
+            continue
+        if "#Response#" in value:
+            ref = value.split("${", 1)[1].split("#", 1)[0]
+            if ref not in known:
+                continue
+        return value
+    return None
+
+
 def _should_rewrite_hardcoded_path_id(param: str, expr: str, step) -> bool:
     """True when a baked numeric path id should become Properties.<param>.
 
@@ -7290,17 +7321,24 @@ public interface ImportedRestClient {{
             # HTTP 4xx (B2B-2264 `guestId=123456789` expect 403; rewrite
             # to Properties.guestId made GuestRead return 200).
             if _should_rewrite_hardcoded_path_id(p, expr, step):
-                # Rewrite to a Properties ref -- soapui_expr_to_java will
-                # then emit `TestSupport.ctxGet(ctx, "Properties.<name>")`
-                # which reads from the merged runtime bag (Groovy extracts
-                # win over random_email_generator fallback ids).
-                expr = "${#TestCase#Properties." + p + "}"
+                # Prefer the id THIS case already uses for the same path
+                # param in an earlier step. B2B-6830's get_preferences baked
+                # the author's ids (2000222783/1900718863/219827) while the
+                # step right before it, same path shape, reads
+                # PropertiesaccountID#accountID, PropertiesGuestId#guestId1 and
+                # member_details' memberId. Properties.<name> is only the
+                # fallback -- DataGenInput fills it with a RANDOM id, so the
+                # rewrite sent a made-up account and got 404.
+                expr = (_sibling_path_param_expr(
+                            self._current_case_obj, step, p,
+                            self.response_var_by_step)
+                        or "${#TestCase#Properties." + p + "}")
                 self.ledger.add_preflight_finding(
                     "INFO", "hardcoded-path-id-rewritten",
                     self._current_case,
                     f"REST step `{step.step_name}` URL had hardcoded id "
                     f"`{p}={expr_stripped}` in the path template. "
-                    f"Rewritten to Properties.{p} so runtime uses live id.")
+                    f"Rewritten to {expr} so runtime uses live id.")
             elif _is_repeating_digit_fake(expr_stripped) or (
                     _step_expects_client_error(step)
                     and expr_stripped.isdigit()
@@ -8728,6 +8766,22 @@ public final class TestSupport {{
         if (ctx.containsKey(primaryKey)) {{
             String direct = ctx.get(primaryKey);
             return direct == null ? "" : direct;
+        }}
+        // Same key under another case first: ReadyAPI resolves ${{Step#prop}}
+        // case-insensitively (B2B-3216 reads PropertiesGuestId#guestID, the
+        // step holds guestId). An ambiguous match falls through.
+        {{
+            String ci = null;
+            boolean ambiguous = false;
+            for (Map.Entry<String, String> e : ctx.entrySet()) {{
+                String k = e.getKey();
+                String v = e.getValue();
+                if (k == null || v == null || v.isEmpty() || k.equals(primaryKey)
+                        || !k.equalsIgnoreCase(primaryKey)) continue;
+                if (ci == null) ci = v;
+                else if (!ci.equals(v)) ambiguous = true;
+            }}
+            if (ci != null && !ambiguous) return ci;
         }}
         // Declared aliases before the name walk, same order as
         // ImportedScenario.ctxGetRaw. The walk below returns the FIRST ctx
