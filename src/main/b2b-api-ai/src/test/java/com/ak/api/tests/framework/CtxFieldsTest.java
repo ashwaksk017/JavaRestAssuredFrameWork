@@ -330,9 +330,14 @@ public class CtxFieldsTest {
         Assert.assertNotEquals(domain, "xnfjqmub.net", "must be fresh, not the stale saved domain");
         Assert.assertTrue(domain.endsWith(".net"), domain);
         Assert.assertTrue(ctx.get("Properties.Email").endsWith("@" + domain), ctx.get("Properties.Email"));
-        Assert.assertEquals(ctx.get("Properties.Hardcodeddomain"), "laafd.com");
-        Assert.assertTrue(ctx.get("Properties.hardcodedemail").endsWith("@laafd.com"),
+        // Hardcodeddomain follows the identity: 11 templates put it in
+        // emailDomains next to an owner email built from Email /
+        // generatedemailAddress, and the server rejects the mismatch (997/503).
+        Assert.assertEquals(ctx.get("Properties.Hardcodeddomain"), domain);
+        Assert.assertTrue(ctx.get("Properties.hardcodedemail").endsWith("@" + domain),
                 ctx.get("Properties.hardcodedemail"));
+        Assert.assertTrue(ctx.get("Properties.updatedemail").endsWith("@" + domain),
+                ctx.get("Properties.updatedemail"));
     }
 
     @Test(groups = {"unit"})
@@ -346,10 +351,34 @@ public class CtxFieldsTest {
         row.put("Properties.generatedemailAddress", "nzbiay@laafd.com");
         ImportedScenario.regenRandomProperties(ctx, row);
         Assert.assertEquals(ctx.get("Properties.Domain"), "laafd.com");
+        // A frozen row is unchanged: the identity domain IS Hardcodeddomain.
+        Assert.assertEquals(ctx.get("Properties.Hardcodeddomain"), "laafd.com");
+        Assert.assertTrue(ctx.get("Properties.hardcodedemail").endsWith("@laafd.com"),
+                ctx.get("Properties.hardcodedemail"));
 
         Map<String, String> ctx2 = new HashMap<>();
         ctx2.put("Properties.Hardcodeddomain", "laafd.com");
         ImportedScenario.regenRandomProperties(ctx2, null);
         Assert.assertEquals(ctx2.get("Properties.Domain"), "laafd.com");
+    }
+
+    @Test(groups = {"unit"})
+    @Story("frozen domain follows the row")
+    @Description("B2B-4913: a saved hardcodedemail on Hardcodeddomain means the case needs that managed domain -- keep the freeze.")
+    public void regenRandomProperties_keepsFreezeWhenRowIsBuiltOnHardcodedemail() {
+        Map<String, String> ctx = new HashMap<>();
+        ctx.put("Properties.Hardcodeddomain", "explorer.de");
+        Map<String, String> row = new HashMap<>();
+        row.put("Properties.Domain", "6r0zxv4mrb3.net");
+        row.put("Properties.Email", "l4w50@6r0zxv4mrb3.net");
+        row.put("Properties.generatedemailAddress", "edetx@6r0zxv4mrb3.net");
+        row.put("Properties.hardcodedemail", "btmjkfm4@explorer.de");
+        ImportedScenario.regenRandomProperties(ctx, row);
+        Assert.assertEquals(ctx.get("Properties.Domain"), "explorer.de");
+        Assert.assertEquals(ctx.get("Properties.Hardcodeddomain"), "explorer.de");
+        Assert.assertTrue(ctx.get("Properties.hardcodedemail").endsWith("@explorer.de"),
+                ctx.get("Properties.hardcodedemail"));
+        Assert.assertTrue(ctx.get("Properties.Email").endsWith("@explorer.de"),
+                ctx.get("Properties.Email"));
     }
 }

@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 6
+// ra_converter-framework-rev: 7
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -947,11 +947,20 @@ public final class ImportedScenario {
         CtxFields.putBothCases(ctx, "Properties", "websiteDomain", domain);
         CtxFields.putBothCases(ctx, "Properties", "weburl", domain);
         if (hasFrozenDomain) {
-            // Unchanged: these slots are built on Hardcodeddomain itself.
-            String hcEmail = extraUname + "@" + frozen;
+            // These move WITH the identity domain. 11 templates build
+            // emailDomains from Hardcodeddomain while the owner email comes
+            // from Email/generatedemailAddress (B2B-3216:
+            // emailDomains ["${Properties#Hardcodeddomain}"], owner
+            // generatedemailAddress). Pinning them to the frozen value while
+            // the identity moved to a fresh domain made the account's own
+            // emailDomains disagree with its owner -- 400 code 997/503
+            // "Email address domain must match an allowed domain within
+            // program account". A row that keeps the freeze is unaffected:
+            // there, domain IS frozen.
+            String hcEmail = extraUname + "@" + domain;
             CtxFields.putBothCases(ctx, "Properties", "hardcodedemail", hcEmail);
-            CtxFields.putBothCases(ctx, "Properties", "Hardcodeddomain", frozen);
-            String updatedEmail = "bh" + extraUname + "jff@" + frozen;
+            CtxFields.putBothCases(ctx, "Properties", "Hardcodeddomain", domain);
+            String updatedEmail = "bh" + extraUname + "jff@" + domain;
             CtxFields.putBothCases(ctx, "Properties", "updatedemail", updatedEmail);
             CtxFields.putBothCases(ctx, "Properties", "updatedmailAddress", updatedEmail);
         }
@@ -1009,6 +1018,21 @@ public final class ImportedScenario {
         }
         String domain = normalizeDomain(saved);
         if (domain.isEmpty() || domain.equalsIgnoreCase(normalizeDomain(frozen))) {
+            return false;
+        }
+        // A saved hardcodedemail ON the frozen domain means the case is built
+        // around that domain itself: B2B-4913 sends
+        // ownerEmailAddress=${Properties#hardcodedemail} with
+        // emailDomains=[${Properties#Hardcodeddomain}] and expects 400
+        // "duplicate managed account" -- which only happens because
+        // explorer.de is a managed domain on the target. Generating a fresh
+        // domain there would turn that 400 into a 200. Only 11 of the 245
+        // rows carrying Hardcodeddomain have this column.
+        String hcEmailSaved = firstNonBlank(row,
+                "Properties.hardcodedemail", "Properties.Hardcodedemail");
+        int hcAt = hcEmailSaved == null ? -1 : hcEmailSaved.lastIndexOf('@');
+        if (hcAt > 0 && hcEmailSaved.substring(hcAt + 1).trim()
+                .equalsIgnoreCase(normalizeDomain(frozen))) {
             return false;
         }
         for (String k : new String[] {"Properties.Email", "Properties.generatedemailAddress",
