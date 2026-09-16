@@ -589,9 +589,20 @@ So one hand-written chain covers many rows, and a row can adjust or (for
 ### Soft assertions
 
 All of these are soft: the chain runs to the end and every failure is
-reported together. `complete()` calls `softAssert.assertAll()`, so a
-chain that never reaches `complete()` reports nothing -- always finish
-the chain.
+reported together. TWO things flush them, and you get the failure either
+way:
+
+- `complete()` calls `softAssert.assertAll()` at the end of a chain.
+- `BaseApiTest.assertAll(ITestResult)` is an `@AfterMethod(alwaysRun =
+  true)`. It flushes the thread's SoftAssert and stamps the result
+  FAILURE. It deliberately does not rethrow: TestNG would report that as
+  an `@AfterMethod` configuration failure and Allure would list
+  `assertAll` as a fake test of its own.
+
+So a chain that throws before reaching `complete()` still reports its
+soft failures -- they are not silently swallowed. Finish the chain
+anyway, because `complete()` is how a chain says it ended deliberately
+rather than by accident.
 
 ### Polling, not asserting
 
@@ -599,3 +610,89 @@ the chain.
 `expected_<phase>_jsonpath_*` as a WAIT condition before the assertion,
 for endpoints that settle asynchronously. It is a poll, not a check: with
 the property unset those columns cause no assertion on their own.
+
+---
+
+## 15. Capturing values into ctx
+
+ctx is the memory that carries ids between phases. Outside a fluent
+chain -- a raw `MasterClass` call, or a Path B class -- capture the way
+generated code does:
+
+```java
+ImportedScenario.putExtracted(ctx, "Properties.guestID",
+        RestUtilities.safeJsonExtract(res, "guestId"));
+```
+
+Inside a chain, phases return the builder rather than the `Response`, so
+use the capture verbs:
+
+```java
+MasterClass.onboarding(row)
+    .capture("guestId", ScenarioContext.GUEST_ID)
+    .enrollOwner()
+    .capture("accountId", ScenarioContext.ACCOUNT_ID)
+    .expectJson("accountStatus", "active")
+    .createH4LAccount()
+    .complete();
+```
+
+Like the expectations, a capture applies to the **next phase only** and
+is drained afterwards even if that phase throws.
+
+### Order within a phase
+
+Captures run **before** expectations. An expectation's expected value is
+resolved against ctx, so it may legitimately reference something the same
+response just published.
+
+### Raw key or declared field
+
+| Form | Writes through | Use when |
+|---|---|---|
+| `capture(path, "Some.key")` | `ImportedScenario.putExtracted` | any value; see the alias note below |
+| `capture(path, ScenarioContext.ACCOUNT_ID)` | `ScenarioContext.put(Field, …)` | the framework already declares the id |
+
+Prefer the declared field for `accountId`, `guestId`, `memberId`,
+`travelAgentId` and friends: the value is written through the canonical
+alias and mirrored onto any other declared alias already in ctx, so a
+later phase reading an older spelling still finds it.
+
+**The raw-key alias is narrow.** `putExtracted` publishes exactly one
+extra spelling, and only when the key ends in `d` or `D`: it flips that
+last character and writes the result too, so `Properties.guestID` also
+lands as `Properties.guestId`. A key ending in anything else
+(`Properties.Email`, `Properties.status`) gets **no** alias, and a phase
+reading a different spelling will not find it. That is the real argument
+for the declared field -- its aliases are a declared list, not a
+single-character flip.
+
+### Overwrite, not putIfAbsent
+
+Capture uses `putExtracted`, which **overwrites**. That is deliberate:
+`putIfNonEmpty` is `putIfAbsent`, so a stale generated default would beat
+the value the server just returned. Use `putIfNonEmpty` only for seeding
+defaults, never for an extracted id.
+
+An absent JsonPath extracts empty, and an empty value is skipped and
+logged, so a failed extract leaves whatever ctx already held rather than
+blanking it mid-chain.
+
+### Reading it back
+
+```java
+String id = chain.captured("Properties.guestID");   // alias-aware read
+Map<String, String> raw = chain.ctx();              // escape hatch
+```
+
+`captured(key)` resolves declared aliases and the case-insensitive
+fallbacks that `ImportedScenario.ctxGet` applies. `ctx()` hands back the
+live map for anything the verbs do not cover -- prefer `capture` for
+writes, since a bare `put` skips the alias publishing that lets later
+phases and generated templates find the value.
+
+### What ctx is not
+
+`ImportedScenario.begin` clears ctx at the start of every row except
+`accessToken`, and `bind` isolates it per test method. So ctx is memory
+for ONE row of ONE test, not a place to pass state between tests.

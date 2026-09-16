@@ -16,6 +16,7 @@
             <class name="com.ak.api.dsl.TemplateRegistryTest"/>
             <class name="com.ak.api.dsl.TemplateChoiceTest"/>
             <class name="com.ak.api.dsl.PhaseExpectationTest"/>
+            <class name="com.ak.api.dsl.PhaseCaptureTest"/>
         </classes>
     </test>
 </suite>

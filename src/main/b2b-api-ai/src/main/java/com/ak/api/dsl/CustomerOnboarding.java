@@ -116,6 +116,8 @@ public final class CustomerOnboarding {
     private Template pendingTemplate;
     /** Set by expect*(); consumed by the very next exec(). */
     private final List<Expectation> pendingExpectations = new ArrayList<>();
+    /** Set by capture*(); consumed by the very next exec(). */
+    private final List<Capture> pendingCaptures = new ArrayList<>();
 
     private CustomerOnboarding(Map<String, String> ctx, Map<String, String> row,
                        SoftAssert softAssert, RestLoggerUtilityDataHolder holder,
@@ -387,6 +389,10 @@ public final class CustomerOnboarding {
                 step = step.template(template);
             }
             Response res = step.post("/" + phase, call);
+            // Captures first: an expectation's value resolves against
+            // ctx, so it may legitimately reference something this very
+            // response just published.
+            applyCaptures(res, ctx, pendingCaptures);
             applyExpectations(softAssert, res, ctx, row, phase,
                     pendingExpectations);
             return res;
@@ -397,6 +403,128 @@ public final class CustomerOnboarding {
             // leak into the next phase, where it would assert against an
             // unrelated response.
             pendingExpectations.clear();
+            pendingCaptures.clear();
+        }
+    }
+
+    /**
+     * Capture {@code jsonPath} from the NEXT phase's response into ctx
+     * under {@code ctxKey}, for a later phase to consume.
+     *
+     * <pre>
+     * MasterClass.onboarding(row)
+     *     .capture("guestId", "Properties.guestID")
+     *     .enrollOwner()
+     *     .createH4LAccount()
+     * </pre>
+     *
+     * <p>Writes through {@code ImportedScenario.putExtracted}, which
+     * OVERWRITES. That is the right call for an extracted id:
+     * {@code putIfNonEmpty} is {@code putIfAbsent}, so a stale generated
+     * default would win over the value the server just returned.</p>
+     *
+     * <p>It also publishes ONE extra spelling, and only when the key ends
+     * in {@code d} or {@code D}: that last character is flipped and
+     * written too, so {@code Properties.guestID} also lands as
+     * {@code Properties.guestId}. A key ending in anything else gets no
+     * alias at all -- use {@link #capture(String, ScenarioContext.Field)}
+     * when the framework declares the id, since a declared field carries
+     * a real alias list rather than a single-character flip.</p>
+     *
+     * <p>An absent path extracts empty, and an empty value is skipped
+     * (logged), so ctx keeps whatever it already held rather than being
+     * blanked mid-chain.</p>
+     */
+    public CustomerOnboarding capture(String jsonPath, String ctxKey) {
+        pendingCaptures.add(Capture.toKey(jsonPath, ctxKey));
+        return this;
+    }
+
+    /**
+     * Capture into a DECLARED field rather than a raw key.
+     *
+     * <pre>
+     * .capture("accountId", ScenarioContext.ACCOUNT_ID)
+     * </pre>
+     *
+     * <p>Preferred for the ids the framework knows about: the value is
+     * written through the field's canonical alias and mirrored onto any
+     * other declared alias already in ctx, so a later phase reading an
+     * older spelling still sees it. A raw key does not get that.</p>
+     */
+    public CustomerOnboarding capture(String jsonPath, ScenarioContext.Field field) {
+        pendingCaptures.add(Capture.toField(jsonPath, field));
+        return this;
+    }
+
+    /**
+     * Read a value back out of ctx, resolving declared aliases and the
+     * case-insensitive fallbacks {@code ImportedScenario.ctxGet} applies.
+     */
+    public String captured(String key) {
+        return ImportedScenario.ctxGet(ctx, key);
+    }
+
+    /**
+     * The live ctx map for this chain.
+     *
+     * <p>Escape hatch for a test that must read or seed something the
+     * verbs do not cover. Prefer {@link #capture} for writes: a bare
+     * {@code put} skips the alias publishing that lets later phases and
+     * generated templates find the value.</p>
+     */
+    public Map<String, String> ctx() {
+        return ctx;
+    }
+
+    /**
+     * Apply the queued captures to one response.
+     *
+     * <p>Package-private and static so the rule is testable against a
+     * fabricated Response, with no live exchange.</p>
+     */
+    static void applyCaptures(Response res, Map<String, String> ctx,
+                              List<Capture> captures) {
+        if (res == null || ctx == null || captures == null) {
+            return;
+        }
+        for (Capture c : captures) {
+            c.apply(res, ctx);
+        }
+    }
+
+    /** One queued value capture. */
+    static final class Capture {
+        private final String jsonPath;
+        private final String ctxKey;
+        private final ScenarioContext.Field field;
+
+        private Capture(String jsonPath, String ctxKey,
+                        ScenarioContext.Field field) {
+            this.jsonPath = jsonPath;
+            this.ctxKey = ctxKey;
+            this.field = field;
+        }
+
+        static Capture toKey(String jsonPath, String ctxKey) {
+            return new Capture(jsonPath, ctxKey, null);
+        }
+
+        static Capture toField(String jsonPath, ScenarioContext.Field field) {
+            return new Capture(jsonPath, null, field);
+        }
+
+        void apply(Response res, Map<String, String> ctx) {
+            String value = com.ak.api.rest.utilities.RestUtilities
+                    .safeJsonExtract(res, jsonPath);
+            if (field != null) {
+                // put(Field, ...) ignores empty itself.
+                ScenarioContext.of(ctx).put(field, value);
+                return;
+            }
+            // putExtracted skips empty and logs why, so a failed extract
+            // cannot blank a value an earlier phase published.
+            ImportedScenario.putExtracted(ctx, ctxKey, value);
         }
     }
 
