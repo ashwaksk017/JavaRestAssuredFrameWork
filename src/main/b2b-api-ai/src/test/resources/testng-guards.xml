@@ -13,6 +13,7 @@
             <class name="com.ak.api.tests.security.SecretsRedactionTest"/>
             <class name="com.ak.api.tests.framework.ScenarioContextTest"/>
             <class name="com.ak.api.tests.framework.AsyncBudgetTest"/>
+            <class name="com.ak.api.tests.framework.TokenRefreshTest"/>
             <class name="com.ak.api.dsl.TemplateRegistryTest"/>
             <class name="com.ak.api.dsl.TemplateChoiceTest"/>
             <class name="com.ak.api.dsl.PhaseExpectationTest"/>

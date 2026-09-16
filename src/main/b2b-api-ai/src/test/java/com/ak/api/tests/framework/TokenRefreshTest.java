@@ -163,4 +163,43 @@ public class TokenRefreshTest {
         Assert.assertEquals(out.getStatusCode(), 401);
         Assert.assertEquals(calls.get(), 1);
     }
+
+    @Test(groups = {"unit"})
+    @Story("A plain 401 refreshes and retries")
+    @Description("""
+            The gap this closes. The cache-clear path treated ANY unexpected
+            401 as a dead token, but shouldAttempt demanded the body name the
+            token. A gateway answering 401 with a generic Fault cleared the
+            cache and never re-issued the call, so the test still failed.
+            """)
+    public void shouldAttempt_onAPlain401WithNoTokenPhrase() {
+        Assert.assertTrue(TokenRefresh.shouldAttempt("HHonorsEnroll", 200,
+                json(401, "{\"Fault\":{\"code\":401,\"message\":\"Unauthorized\"}}")),
+                "an unexpected 401 must refresh and retry even with a generic body");
+        Assert.assertTrue(TokenRefresh.shouldAttempt("HHonorsEnroll", 200,
+                json(401, "")),
+                "an unexpected 401 with an empty body must still refresh");
+    }
+
+    @Test(groups = {"unit"})
+    @Story("A plain 403 stays a permission denial")
+    @Description("Refreshing a token cannot fix a scope/permission problem, so it must not retry.")
+    public void shouldAttempt_leavesAPlain403Alone() {
+        Assert.assertFalse(TokenRefresh.shouldAttempt("HHonorsEnroll", 200,
+                json(403, "{\"Fault\":{\"code\":403,\"message\":\"Forbidden\"}}")),
+                "a plain 403 is a permission denial, not a dead token");
+        // control: a 403 that DOES name the token is still a refresh
+        Assert.assertTrue(TokenRefresh.shouldAttempt("HHonorsEnroll", 200,
+                json(403, "{\"error\":\"token expired\"}")),
+                "a 403 naming the token must still refresh");
+    }
+
+    @Test(groups = {"unit"})
+    @Story("Negative auth tests are never retried")
+    @Description("A case that EXPECTS 401/403 must not have its token refreshed underneath it.")
+    public void shouldAttempt_skipsTestsThatExpectAnAuthFailure() {
+        Response plain401 = json(401, "{\"message\":\"Unauthorized\"}");
+        Assert.assertFalse(TokenRefresh.shouldAttempt("SomeStep", 401, plain401));
+        Assert.assertFalse(TokenRefresh.shouldAttempt("SomeStep", 403, plain401));
+    }
 }

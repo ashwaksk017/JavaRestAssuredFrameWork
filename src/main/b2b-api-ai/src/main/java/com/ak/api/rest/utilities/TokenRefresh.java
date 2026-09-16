@@ -107,7 +107,21 @@ public final class TokenRefresh {
         if (isTokenFetchOrSalesforceStep(stepName)) {
             return false;
         }
-        return isAuthTokenFailure(res);
+        // ONE definition of "dead token", shared with the cache-clear
+        // path in RestStep. The two halves of the same remedy used to
+        // disagree: the clear fired on ANY unexpected 401, while this
+        // gate demanded the body literally name the token ("token
+        // expired", "invalid_token", ...). A gateway that answers 401
+        // with a generic Fault therefore cleared the cache but never
+        // refreshed-and-retried, so the failing call was never re-issued.
+        // In one reference run, 141 unexpected 401s produced ZERO
+        // [token-refresh] log lines while the cache cleared 9 times.
+        //
+        // isDeadTokenSignal keeps the distinctions that matter: a plain
+        // 403 stays a permission denial (refreshing cannot fix it), a 403
+        // is only a token problem when the body says so, and a negative
+        // test that EXPECTS 401/403 is excluded outright.
+        return AuthDiagnostics.isDeadTokenSignal(res, expectedStatus);
     }
 
     /**
