@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 9
+// ra_converter-framework-rev: 10
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -947,24 +947,24 @@ public final class ImportedScenario {
         CtxFields.putBothCases(ctx, "Properties", "websiteDomain", domain);
         CtxFields.putBothCases(ctx, "Properties", "weburl", domain);
         if (hasFrozenDomain) {
-            // These move WITH the identity domain. 11 templates build
-            // emailDomains from Hardcodeddomain while the owner email comes
-            // from Email/generatedemailAddress (B2B-3216:
-            // emailDomains ["${Properties#Hardcodeddomain}"], owner
-            // generatedemailAddress). Pinning them to the frozen value while
-            // the identity moved to a fresh domain made the account's own
-            // emailDomains disagree with its owner -- 400 code 997/503
-            // "Email address domain must match an allowed domain within
-            // program account". A row that keeps the freeze is unaffected:
-            // there, domain IS frozen.
-            String hcEmail = extraUname + "@" + domain;
+            // These stay ON Hardcodeddomain. An earlier fix dragged them onto
+            // the identity domain instead, to make B2B-3216's create coherent
+            // (owner generatedemailAddress vs emailDomains
+            // ["${Properties#Hardcodeddomain}"]). That collapsed
+            // Hardcodeddomain into Domain, and B2B-3233 posts
+            // ${Properties#Domain} as a NEW email domain expecting 201 -- the
+            // account already owned it, so it got 409. Coherence is restored
+            // the other way round instead: bindEmailsToSavedDomains moves the
+            // EMAIL onto whichever domain the row shows it on.
+            String hcEmail = extraUname + "@" + frozen;
             CtxFields.putBothCases(ctx, "Properties", "hardcodedemail", hcEmail);
-            CtxFields.putBothCases(ctx, "Properties", "Hardcodeddomain", domain);
-            String updatedEmail = "bh" + extraUname + "jff@" + domain;
+            CtxFields.putBothCases(ctx, "Properties", "Hardcodeddomain", frozen);
+            String updatedEmail = "bh" + extraUname + "jff@" + frozen;
             CtxFields.putBothCases(ctx, "Properties", "updatedemail", updatedEmail);
             CtxFields.putBothCases(ctx, "Properties", "updatedmailAddress", updatedEmail);
         }
         regenNumberedDomains(ctx, row);
+        bindEmailsToSavedDomains(ctx, row);
         CtxFields.putBothCases(ctx, "Properties", "hhonorsNumber", hhon);
         applyCsvRandomDomains(ctx, row);
     }
@@ -1046,6 +1046,75 @@ public final class ImportedScenario {
                 if (site != null && site.equalsIgnoreCase("www." + seeded)) {
                     CtxFields.putBothCases(ctx, "Properties", siteKey, "www." + fresh);
                 }
+            }
+        }
+    }
+
+    /** Identity email slots, and the domain slots a row can bind them to. */
+    private static final String[] BINDABLE_EMAILS = {
+        "Email", "EmailAddress", "GeneratedEmail", "generatedemailAddress",
+        "generatedemailAddress1", "generatedemailAddress2", "generatedemailAddress3",
+        "EmailMember", "guestMemberEmail",
+    };
+
+    private static final String[] BINDABLE_DOMAINS = {
+        "Hardcodeddomain", "Domain2", "Domain1", "Domain3", "Domain4",
+        "Domain5", "Domain6", "Domain7", "Domain8", "Domain9",
+    };
+
+    /**
+     * Put each generated email on the domain ITS OWN saved value sat on.
+     *
+     * <p>regen builds every address on the single identity domain, but
+     * ReadyAPI does not: across the 691 rows, 1,248 saved emails sit on
+     * {@code Domain} while 62 sit on {@code Domain2} and 35 on
+     * {@code Hardcodeddomain}. The account create pairs a specific email with
+     * a specific domain list -- B2B-5530 sends ownerEmailAddress=Email with
+     * emailDomains=[Domain2]; B2B-3216 sends generatedemailAddress with
+     * emailDomains=[Hardcodeddomain] -- so an email on the wrong domain is
+     * rejected with 400 code 997/503 "Email address domain must match an
+     * allowed domain within program account".</p>
+     *
+     * <p>The row decides, per email: only a saved value whose domain matches a
+     * saved domain slot OTHER than {@code Domain} is moved, onto whatever that
+     * slot now holds (already regenerated). No saved value, or one already on
+     * {@code Domain}, is left exactly as regen built it.</p>
+     */
+    static void bindEmailsToSavedDomains(Map<String, String> ctx, Map<String, String> row) {
+        if (ctx == null || row == null || row.isEmpty()) {
+            return;
+        }
+        String savedIdentity = normalizeDomain(
+                firstNonBlank(row, "Properties.Domain", "Properties.domain"));
+        for (String emailField : BINDABLE_EMAILS) {
+            String savedEmail = firstNonBlank(row, "Properties." + emailField);
+            int at = savedEmail == null ? -1 : savedEmail.lastIndexOf('@');
+            if (at <= 0) {
+                continue;
+            }
+            String savedEmailDomain = normalizeDomain(savedEmail.substring(at + 1));
+            if (savedEmailDomain.isEmpty()
+                    || savedEmailDomain.equalsIgnoreCase(savedIdentity)) {
+                continue;   // regen's identity domain is already right
+            }
+            for (String domainField : BINDABLE_DOMAINS) {
+                String savedDomain = normalizeDomain(
+                        firstNonBlank(row, "Properties." + domainField));
+                if (savedDomain.isEmpty()
+                        || !savedDomain.equalsIgnoreCase(savedEmailDomain)) {
+                    continue;
+                }
+                String current = normalizeDomain(
+                        firstNonBlank(ctx, "Properties." + domainField));
+                if (current.isEmpty()) {
+                    break;
+                }
+                String existing = firstNonBlank(ctx, "Properties." + emailField);
+                int existingAt = existing == null ? -1 : existing.lastIndexOf('@');
+                String local = existingAt > 0
+                        ? existing.substring(0, existingAt) : FakeData.username();
+                CtxFields.putBothCases(ctx, "Properties", emailField, local + "@" + current);
+                break;
             }
         }
     }
@@ -1179,6 +1248,9 @@ public final class ImportedScenario {
     }
 
     private static String normalizeDomain(String raw) {
+        if (raw == null) {
+            return "";
+        }
         if (raw == null) {
             return null;
         }

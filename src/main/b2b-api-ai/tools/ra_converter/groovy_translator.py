@@ -705,6 +705,38 @@ def _var_backed_publications(script: str) -> dict:
     return out
 
 
+_IDENTITY_HINTS = ("username", "email", "name", "phone", "domain", "website",
+                   "firstname", "lastname", "address", "city", "state", "postal")
+
+
+def _second_namespace_extras(script: str, covered: set, skip_fields: set) -> dict:
+    """Identity fields the script writes to a properties step OTHER than
+    `Properties`, as ``{step: [field, ...]}``.
+
+    The generator block emits one ``generateStandard(ctx, "Properties", ...)``
+    line built from a field-only regex, so a case with a SECOND properties step
+    had that step's pack generated into the wrong namespace. B2B-5269/6274
+    enroll guest 2 from ``#Properties_2_Username2#`` /
+    ``#Properties_2_generatedemailAddress2#``, which then resolved to the CSV's
+    saved identity -- the same person every run, so the realm 409'd.
+
+    Only namespaces holding identity-shaped fields get a call: steps such as
+    `employeeProp` or `PropertiesaccountID_2` hold ids an extract publishes,
+    and generating a fake id there would mask an upstream failure.
+    """
+    per_ns: dict = {}
+    seen: set = set()
+    for step, field, _expr in _find_setproperty_targets(script):
+        if step == "Properties" or field in covered or field in skip_fields:
+            continue
+        if (step, field) in seen:
+            continue
+        seen.add((step, field))
+        per_ns.setdefault(step, []).append(field)
+    return {ns: fields for ns, fields in per_ns.items()
+            if any(h in f.lower() for f in fields for h in _IDENTITY_HINTS)}
+
+
 def _env_literal_publications(script: str) -> tuple:
     """Split literal ``setPropertyValue("k", "literal")`` calls into the
     ones that always run and the ones gated on the ReadyAPI environment.
@@ -2055,6 +2087,16 @@ def translate(script: str, response_var_by_step: dict[str, str],
                 lines.append(
                     f'    TestSupport.putExtracted(ctx, "{step}.{field}", {expr});')
             _mark("var_backed_setproperty")
+        # A second properties step gets its OWN pack, in ITS namespace. The
+        # Properties line above is left exactly as it was: 15 of these fields
+        # are also read as #Properties_<field># by templates, so they must be
+        # written in BOTH namespaces, not moved.
+        ns_extras = _second_namespace_extras(script, covered, literal_fields)
+        for ns, ns_fields in sorted(ns_extras.items()):
+            ns_lits = ", ".join(f'"{f}"' for f in ns_fields)
+            lines.append(
+                f'    CtxFields.generateStandard(ctx, "{ns}", {ns_lits});')
+            _mark("second_namespace_generator")
         overlay = _space_concat_overlay_lines(script, last_setproperty)
         if overlay:
             lines.extend(overlay)

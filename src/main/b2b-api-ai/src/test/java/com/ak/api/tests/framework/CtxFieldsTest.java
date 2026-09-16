@@ -330,14 +330,12 @@ public class CtxFieldsTest {
         Assert.assertNotEquals(domain, "xnfjqmub.net", "must be fresh, not the stale saved domain");
         Assert.assertTrue(domain.endsWith(".net"), domain);
         Assert.assertTrue(ctx.get("Properties.Email").endsWith("@" + domain), ctx.get("Properties.Email"));
-        // Hardcodeddomain follows the identity: 11 templates put it in
-        // emailDomains next to an owner email built from Email /
-        // generatedemailAddress, and the server rejects the mismatch (997/503).
-        Assert.assertEquals(ctx.get("Properties.Hardcodeddomain"), domain);
-        Assert.assertTrue(ctx.get("Properties.hardcodedemail").endsWith("@" + domain),
+        // Hardcodeddomain stays frozen: B2B-3233 posts Properties.Domain as a
+        // NEW email domain, so the two must not collapse into one value.
+        Assert.assertEquals(ctx.get("Properties.Hardcodeddomain"), "laafd.com");
+        Assert.assertTrue(ctx.get("Properties.hardcodedemail").endsWith("@laafd.com"),
                 ctx.get("Properties.hardcodedemail"));
-        Assert.assertTrue(ctx.get("Properties.updatedemail").endsWith("@" + domain),
-                ctx.get("Properties.updatedemail"));
+        Assert.assertNotEquals(ctx.get("Properties.Hardcodeddomain"), domain);
     }
 
     @Test(groups = {"unit"})
@@ -468,5 +466,44 @@ public class CtxFieldsTest {
         row.put("expected_http_request_400_status_code", "400");
         ImportedScenario.regenRandomProperties(ctx2, row);
         Assert.assertEquals(ctx2.get("Properties.Domain2"), "dpxhlczh.com");
+    }
+
+    @Test(groups = {"unit"})
+    @Story("each email sits on the domain its saved value used")
+    @Description("B2B-3216 owner is generatedemailAddress on Hardcodeddomain; B2B-5530 owner is Email on Domain2.")
+    public void regenRandomProperties_bindsEachEmailToItsOwnSavedDomain() {
+        // B2B-3216 shape: generatedemailAddress belongs on the frozen domain
+        Map<String, String> ctx = new HashMap<>();
+        ctx.put("Properties.Hardcodeddomain", "rteet.com");
+        Map<String, String> row = new HashMap<>();
+        row.put("Properties.Domain", "moubfwrs.com");
+        row.put("Properties.Hardcodeddomain", "rteet.com");
+        row.put("Properties.Email", "io98l@moubfwrs.com");
+        row.put("Properties.generatedemailAddress", "qcpalw@rteet.com");
+        ImportedScenario.regenRandomProperties(ctx, row);
+        Assert.assertTrue(ctx.get("Properties.generatedemailAddress").endsWith("@rteet.com"),
+                ctx.get("Properties.generatedemailAddress"));
+        Assert.assertTrue(ctx.get("Properties.Email").endsWith("@" + ctx.get("Properties.Domain")),
+                ctx.get("Properties.Email") + " vs " + ctx.get("Properties.Domain"));
+        Assert.assertNotEquals(ctx.get("Properties.Domain"), "rteet.com",
+                "the posted Domain must stay distinct from Hardcodeddomain");
+
+        // B2B-5530 shape: Email belongs on Domain2, which is regenerated
+        Map<String, String> ctx2 = new HashMap<>();
+        ctx2.put("Properties.Hardcodeddomain", "laafd.com");
+        ctx2.put("Properties.Domain2", "tnfgwpxv.com");
+        Map<String, String> row2 = new HashMap<>();
+        row2.put("Properties.Domain", "xnfjqmub.net");
+        row2.put("Properties.Domain2", "tnfgwpxv.com");
+        row2.put("Properties.Email", "p8lsd@tnfgwpxv.com");
+        row2.put("Properties.generatedemailAddress", "soxbid@xnfjqmub.net");
+        ImportedScenario.regenRandomProperties(ctx2, row2);
+        String fresh2 = ctx2.get("Properties.Domain2");
+        Assert.assertNotEquals(fresh2, "tnfgwpxv.com", "Domain2 is regenerated per run");
+        Assert.assertTrue(ctx2.get("Properties.Email").endsWith("@" + fresh2),
+                ctx2.get("Properties.Email") + " vs " + fresh2);
+        Assert.assertTrue(
+                ctx2.get("Properties.generatedemailAddress").endsWith("@" + ctx2.get("Properties.Domain")),
+                ctx2.get("Properties.generatedemailAddress"));
     }
 }

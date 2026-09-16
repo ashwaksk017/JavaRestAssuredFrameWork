@@ -1679,3 +1679,53 @@ def test_groovy_var_publication_respects_last_write_wins():
             'com.ak.api.data.FakeData.oneOf("y", "z"))') in java, java
     # the field a later write owns is NOT published from the earlier pick
     assert 'putExtracted(ctx, "Properties.role"' not in java, java
+
+
+_TWO_NAMESPACE_SCRIPT = chr(10).join([
+    'def generator = { String alphabet, int n -> alphabet }',
+    'def generatedUser = generator( 5 )',
+    'def generatedEmail = generatedUser + "@example.com"',
+    'def P = testRunner.testCase.getTestStepByName("Properties")',
+    'def P2 = testRunner.testCase.getTestStepByName("Properties_2")',
+    'def E = testRunner.testCase.getTestStepByName("employeeProp")',
+    'P.setPropertyValue("name", generatedName)',
+    'P2.setPropertyValue("username2", generatedUsername2)',
+    'P2.setPropertyValue("generatedemailAddress2", generatedEmail2)',
+    'E.setPropertyValue("hilton-member-id", extractedMemberId)',
+])
+
+
+def test_second_properties_step_gets_its_own_generated_pack():
+    """B2B-5269/6274: guest 2 enrolls from Properties_2, which was never generated."""
+    lines, _meta = groovy_translator.translate(
+        _TWO_NAMESPACE_SCRIPT, {}, step_name_hint="DataGenInput")
+    java = chr(10).join(lines)
+    gen = [l for l in lines if "generateStandard" in l]
+    assert any('generateStandard(ctx, "Properties_2"' in l for l in gen), gen
+    assert any('"username2"' in l and 'Properties_2' in l for l in gen), gen
+    assert any('"generatedemailAddress2"' in l and 'Properties_2' in l for l in gen), gen
+
+
+def test_properties_namespace_line_is_unchanged_by_second_namespace():
+    lines, _meta = groovy_translator.translate(
+        _TWO_NAMESPACE_SCRIPT, {}, step_name_hint="DataGenInput")
+    props = [l for l in lines if 'generateStandard(ctx, "Properties"' in l]
+    assert len(props) == 1, props
+    # positive control: the second pack must exist, or this test passes by
+    # doing nothing (it did, against HEAD, until this line was added)
+    gen = [l for l in lines if "generateStandard" in l]
+    assert any('generateStandard(ctx, "Properties_2"' in l for l in gen), gen
+    # the first pack still carries the field the script set on Properties
+    assert '"name"' in props[0], props[0]
+    # and the second pack's fields are NOT removed from it by relocation
+    assert 'Properties_2' not in props[0], props[0]
+
+
+def test_id_only_second_namespace_gets_no_generated_pack():
+    """employeeProp holds ids an extract publishes -- a fake id would mask a failure."""
+    lines, _meta = groovy_translator.translate(
+        _TWO_NAMESPACE_SCRIPT, {}, step_name_hint="DataGenInput")
+    gen = [l for l in lines if "generateStandard" in l]
+    assert not any('"employeeProp"' in l for l in gen), gen
+    # positive control: the identity namespace in the same script IS generated
+    assert any('generateStandard(ctx, "Properties_2"' in l for l in gen), gen
