@@ -554,14 +554,64 @@ public class RestUtilities {
         return com.ak.api.data.PlaceholderResolver.resolveAll(phase1, ctx);
     }
 
+    /**
+     * Lower-cased view of {@code dataMap}, used only when an exact
+     * placeholder lookup misses. A key whose fold collides with another
+     * holding a DIFFERENT value is dropped: resolving it either way would be
+     * a guess, and the unresolved path already reports it.
+     */
+    private static Map<String, String> caseFoldedIndex(Map<String, String> dataMap) {
+        Map<String, String> folded = new java.util.HashMap<>();
+        java.util.Set<String> ambiguous = new java.util.HashSet<>();
+        for (Map.Entry<String, String> e : dataMap.entrySet()) {
+            String k = e.getKey();
+            String v = e.getValue();
+            if (k == null || v == null || v.isEmpty()) {
+                continue;
+            }
+            String lower = k.toLowerCase(java.util.Locale.ROOT);
+            if (ambiguous.contains(lower)) {
+                continue;
+            }
+            String prev = folded.putIfAbsent(lower, v);
+            if (prev != null && !prev.equals(v)) {
+                folded.remove(lower);
+                ambiguous.add(lower);
+            }
+        }
+        return folded;
+    }
+
     private static String substitute(String schema, Pattern pattern, Map<String, String> dataMap,
                                      String fallback, List<String> unresolvedSink,
                                      boolean jsonEscape) {
         Matcher m = pattern.matcher(schema);
         StringBuilder out = new StringBuilder();
+        Map<String, String> ciIndex = null;
         while (m.find()) {
             String key = m.group(1);
             String value = dataMap.get(key);
+            // ReadyAPI resolves ${Step#prop} case-insensitively, and its
+            // templates rely on it: #Properties_firstName# is read while the
+            // Groovy writes Firstname, and #Properties_2_websiteDomain2#
+            // while the generated pack writes websitedomain2. The alias
+            // writers only flip the FIRST letter (putBothCases) or the LAST
+            // (flipTrailingCase), so a mid-name difference matched nothing
+            // and the body went out with the literal "null".
+            //
+            // Exact match always wins; this only runs when the key is absent
+            // or empty, and an ambiguous fold (two keys differing only by
+            // case, with different values) resolves to nothing rather than
+            // guessing.
+            if (value == null || value.isEmpty()) {
+                if (ciIndex == null) {
+                    ciIndex = caseFoldedIndex(dataMap);
+                }
+                String folded = ciIndex.get(key.toLowerCase(java.util.Locale.ROOT));
+                if (folded != null && !folded.isEmpty()) {
+                    value = folded;
+                }
+            }
             // Treat empty-string values as UNRESOLVED. `TestSupport.testData`
             // returns "" when no source has a value for a key; propagating
             // that empty string into the JSON body produces silent "field

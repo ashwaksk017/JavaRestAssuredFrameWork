@@ -506,4 +506,47 @@ public class CtxFieldsTest {
                 ctx2.get("Properties.generatedemailAddress").endsWith("@" + ctx2.get("Properties.Domain")),
                 ctx2.get("Properties.generatedemailAddress"));
     }
+
+    @Test(groups = {"unit"})
+    @Story("placeholders resolve the way ReadyAPI resolves them")
+    @Description("#Properties_firstName# vs ctx Firstname, #Properties_2_websiteDomain2# vs websitedomain2 -- mid-name case.")
+    public void mapJsonValues_fallsBackToACaseInsensitiveKey() throws Exception {
+        Map<String, String> data = new HashMap<>();
+        data.put("Properties_Firstname", "Ada");
+        data.put("Properties_2_websitedomain2", "www.fresh.com");
+        String body = com.ak.api.rest.utilities.RestUtilities.mapJsonValues(
+                "{\"firstName\":\"#Properties_firstName#\","
+                + "\"websiteDomain\":\"#Properties_2_websiteDomain2#\"}", data);
+        Assert.assertTrue(body.contains("\"firstName\":\"Ada\""), body);
+        Assert.assertTrue(body.contains("\"websiteDomain\":\"www.fresh.com\""), body);
+        Assert.assertFalse(body.contains("null"), body);
+    }
+
+    @Test(groups = {"unit"})
+    @Story("placeholders resolve the way ReadyAPI resolves them")
+    @Description("An exact key still wins, and an ambiguous fold is left unresolved rather than guessed.")
+    public void mapJsonValues_exactKeyWinsAndAmbiguityIsNotGuessed() throws Exception {
+        Map<String, String> exact = new HashMap<>();
+        exact.put("Properties_Domain", "exact.com");
+        exact.put("Properties_domain", "other.com");
+        String body = com.ak.api.rest.utilities.RestUtilities.mapJsonValues(
+                "{\"d\":\"#Properties_Domain#\"}", exact);
+        Assert.assertTrue(body.contains("exact.com"), body);
+        // positive control: a differently-cased key DOES resolve, so this
+        // test cannot pass merely because no fallback exists
+        Map<String, String> folded = new HashMap<>();
+        folded.put("Properties_Firstname", "Ada");
+        String bodyCi = com.ak.api.rest.utilities.RestUtilities.mapJsonValues(
+                "{\"f\":\"#Properties_firstName#\"}", folded);
+        Assert.assertTrue(bodyCi.contains("Ada"), bodyCi);
+
+        // only differently-cased keys, disagreeing -> no guess
+        Map<String, String> ambiguous = new HashMap<>();
+        ambiguous.put("Properties_Thing", "one");
+        ambiguous.put("Properties_THING", "two");
+        String body2 = com.ak.api.rest.utilities.RestUtilities.mapJsonValues(
+                "{\"t\":\"#Properties_thing#\"}", ambiguous);
+        Assert.assertFalse(body2.contains("one"), body2);
+        Assert.assertFalse(body2.contains("two"), body2);
+    }
 }
