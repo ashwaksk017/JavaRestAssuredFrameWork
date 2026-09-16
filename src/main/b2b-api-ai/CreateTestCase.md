@@ -526,3 +526,76 @@ body at runtime.
 Test data stays local by design: `csv/` is gitignored because those files
 carry endpoint paths, schemas, test-case IDs and hardcoded emails, and
 this repo is public. Create your row file locally; do not commit it.
+
+---
+
+## 14. Validating responses
+
+`RestStep` asserts the **status only**, from
+`expected_<phase>_status_code`. It does not apply JsonPath, exists, count
+or header expectations: generated tests get those from explicit
+`ResponseAsserts` calls the converter emits per step, and a hand-written
+phase has no emitter behind it. So a manual phase that only sets an
+expected status will pass a 200 carrying entirely wrong content.
+
+State body expectations explicitly:
+
+```java
+MasterClass.onboarding(row)
+    .expectJson("accountStatus", "active")
+    .expectExists("accountId")
+    .createH4LAccount()
+    .complete();
+```
+
+Verbs: `expectJson(path, value)`, `expectExists(path)`,
+`expectAbsent(path)`, `expectCount(path, n)`, `expectHeader(name)`.
+
+Each applies to the **next phase only** and is drained afterwards, even
+when that phase throws, so an expectation can never assert against an
+unrelated response.
+
+### The value in code is a default, not a hard-code
+
+Expectations route through the same `ResponseAsserts` entry points the
+converter uses, against the same columns. The three families behave
+differently, so they are worth stating exactly rather than as one rule:
+
+| Stated | Column | Absent cell | Empty cell | Value in the cell |
+|---|---|---|---|---|
+| `expectJson(p, v)` | `expected_<phase>_jsonpath_<field>` | uses `v` | **skips the check** | that value is expected |
+| `expectExists(p)` | `expected_<phase>_exists_<field>` | asserts present | asserts present | `false` asserts ABSENT |
+| `expectCount(p, n)` | `expected_<phase>_count_<field>` | uses `n` | uses `n` | that count is expected |
+| `expectHeader(h)` | `expected_<phase>_header_<name>` | asserts present | asserts present | `false` asserts ABSENT |
+
+Only `expectJson` treats a present-but-empty cell as "skip this check".
+That is deliberate fail-open behaviour in `rowSaysSkip`: it can lose a
+check, but it can never invent a failure. The other three read an empty
+cell as "nothing configured" and fall back to the value in code, so the
+check still runs.
+
+`expectExists` and `expectHeader` are FLAGS, not value overrides -- only
+the literal `false` is special, and it inverts the assertion into an
+absence check. For `expectHeader` the column name replaces every run of
+non-alphanumeric characters in the header name with `_`, so
+`Content-Type` reads `expected_<phase>_header_Content_Type`.
+
+A malformed count cell falls back to the code value and logs a WARN
+naming the column, rather than failing the row.
+
+So one hand-written chain covers many rows, and a row can adjust or (for
+`expectJson`) disable a single check without a code change.
+
+### Soft assertions
+
+All of these are soft: the chain runs to the end and every failure is
+reported together. `complete()` calls `softAssert.assertAll()`, so a
+chain that never reaches `complete()` reports nothing -- always finish
+the chain.
+
+### Polling, not asserting
+
+`rest.pollExpectedJsonMs` (default `0`) makes `RestStep` treat
+`expected_<phase>_jsonpath_*` as a WAIT condition before the assertion,
+for endpoints that settle asynchronously. It is a poll, not a check: with
+the property unset those columns cause no assertion on their own.

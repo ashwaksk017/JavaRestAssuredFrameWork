@@ -1,6 +1,8 @@
 package com.ak.api.dsl;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import org.slf4j.Logger;
@@ -10,6 +12,7 @@ import org.testng.asserts.SoftAssert;
 import com.ak.api.context.ScenarioContext;
 import com.ak.api.domain.DomainApis;
 import com.ak.api.rest.utilities.RestLoggerUtilityDataHolder;
+import com.ak.api.rest.utilities.ResponseAsserts;
 import com.ak.api.rest.utilities.RestStep;
 import com.ak.api.support.ImportedRestClient;
 import com.ak.api.support.ImportedScenario;
@@ -111,6 +114,8 @@ public final class CustomerOnboarding {
     private final String testCaseId;
     /** Set by using(); consumed by the very next exec(). */
     private Template pendingTemplate;
+    /** Set by expect*(); consumed by the very next exec(). */
+    private final List<Expectation> pendingExpectations = new ArrayList<>();
 
     private CustomerOnboarding(Map<String, String> ctx, Map<String, String> row,
                        SoftAssert softAssert, RestLoggerUtilityDataHolder holder,
@@ -350,10 +355,21 @@ public final class CustomerOnboarding {
     }
 
     /**
-     * One HTTP exchange with the standard CSV contract. The body comes from
-     * {@code body_<phase>} on the row when present; status and JsonPath
-     * expectations come from the usual {@code expected_<phase>_*} columns,
-     * which RestStep already resolves.
+     * One HTTP exchange with the standard CSV contract.
+     *
+     * <p>The body comes from the template chosen for this phase -- the
+     * converter default, the {@code template_<phase>} column, or
+     * {@link #using(Template)}. (An earlier version of this javadoc claimed
+     * a {@code body_<phase>} row column; nothing reads such a column.)</p>
+     *
+     * <p>RestStep asserts the STATUS only, from
+     * {@code expected_<phase>_status_code}. It does NOT apply JsonPath,
+     * exists, count or header expectations -- generated code gets those from
+     * explicit {@code ResponseAsserts} calls the converter emits per step,
+     * and a hand-written phase has no such emitter behind it. State them
+     * with {@link #expectJson} and friends, which route through the SAME
+     * {@code ResponseAsserts} entry points and the same
+     * {@code expected_<phase>_*} columns.</p>
      */
     private Response exec(String phase, int expectedStatus, RestStep.Exchange call) {
         try {
@@ -370,9 +386,136 @@ public final class CustomerOnboarding {
             if (template != null && !template.isEmpty()) {
                 step = step.template(template);
             }
-            return step.post("/" + phase, call);
+            Response res = step.post("/" + phase, call);
+            applyExpectations(softAssert, res, ctx, row, phase,
+                    pendingExpectations);
+            return res;
         } catch (Exception e) {
             throw new IllegalStateException("CustomerOnboarding phase '" + phase + "' failed", e);
+        } finally {
+            // Drained even on failure: a queued expectation must never
+            // leak into the next phase, where it would assert against an
+            // unrelated response.
+            pendingExpectations.clear();
+        }
+    }
+
+    /**
+     * Expect {@code jsonPath} to equal {@code expected} in the NEXT
+     * phase's response.
+     *
+     * <p>{@code expected} is a DEFAULT, not a hard-code: the row column
+     * {@code expected_<phase>_jsonpath_<field>} overrides it, and a column
+     * present-but-empty skips the check. That is exactly how the
+     * converter's own assertions behave, so a hand-written test and an
+     * imported one answer to the same CSV.</p>
+     */
+    public CustomerOnboarding expectJson(String jsonPath, String expected) {
+        pendingExpectations.add(Expectation.json(jsonPath, expected));
+        return this;
+    }
+
+    /** Expect {@code jsonPath} to be present in the next response. */
+    public CustomerOnboarding expectExists(String jsonPath) {
+        pendingExpectations.add(Expectation.exists(jsonPath));
+        return this;
+    }
+
+    /** Expect {@code jsonPath} to be absent from the next response. */
+    public CustomerOnboarding expectAbsent(String jsonPath) {
+        pendingExpectations.add(Expectation.absent(jsonPath));
+        return this;
+    }
+
+    /** Expect {@code jsonPath} to hold {@code count} elements. */
+    public CustomerOnboarding expectCount(String jsonPath, int count) {
+        pendingExpectations.add(Expectation.count(jsonPath, count));
+        return this;
+    }
+
+    /** Expect the response to carry {@code headerName}. */
+    public CustomerOnboarding expectHeader(String headerName) {
+        pendingExpectations.add(Expectation.header(headerName));
+        return this;
+    }
+
+    /**
+     * Apply the queued expectations to one response.
+     *
+     * <p>Package-private and static so the rule can be tested against a
+     * fabricated Response, with no live exchange.</p>
+     */
+    static void applyExpectations(SoftAssert softAssert, Response res,
+                                  Map<String, String> ctx,
+                                  Map<String, String> row,
+                                  String phase, List<Expectation> expectations) {
+        if (softAssert == null || res == null || expectations == null) {
+            return;
+        }
+        for (Expectation e : expectations) {
+            e.apply(softAssert, res, ctx, row, phase);
+        }
+    }
+
+    /** One queued response expectation. */
+    static final class Expectation {
+        private enum Kind { JSON, EXISTS, ABSENT, COUNT, HEADER }
+
+        private final Kind kind;
+        private final String path;
+        private final String value;
+        private final int count;
+
+        private Expectation(Kind kind, String path, String value, int count) {
+            this.kind = kind;
+            this.path = path;
+            this.value = value;
+            this.count = count;
+        }
+
+        static Expectation json(String path, String value) {
+            return new Expectation(Kind.JSON, path, value, 0);
+        }
+
+        static Expectation exists(String path) {
+            return new Expectation(Kind.EXISTS, path, null, 0);
+        }
+
+        static Expectation absent(String path) {
+            return new Expectation(Kind.ABSENT, path, null, 0);
+        }
+
+        static Expectation count(String path, int count) {
+            return new Expectation(Kind.COUNT, path, null, count);
+        }
+
+        static Expectation header(String name) {
+            return new Expectation(Kind.HEADER, name, null, 0);
+        }
+
+        void apply(SoftAssert softAssert, Response res, Map<String, String> ctx,
+                   Map<String, String> row, String phase) {
+            switch (kind) {
+                case JSON:
+                    ResponseAsserts.jsonEquals(softAssert, res, ctx, row, phase,
+                            path, value);
+                    break;
+                case EXISTS:
+                    ResponseAsserts.jsonExists(softAssert, res, row, phase, path);
+                    break;
+                case ABSENT:
+                    ResponseAsserts.jsonAbsent(softAssert, res, path);
+                    break;
+                case COUNT:
+                    ResponseAsserts.jsonCount(softAssert, res, row, phase, path,
+                            count);
+                    break;
+                case HEADER:
+                    ResponseAsserts.headerExists(softAssert, res, row, phase, path);
+                    break;
+                default:
+                    break;
+            }
         }
     }
 
