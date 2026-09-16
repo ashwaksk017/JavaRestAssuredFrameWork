@@ -261,7 +261,20 @@ Call Insights **after** `complete()`, and only if that verify body matches what 
 
 When a call is not already a `ScenarioSteps` method:
 
-1. Add `src/main/java/com/ak/api/support/manual/scenario/<Name>Support.java`.
+1. Add `src/main/java/com/ak/api/dsl/<Name>Flow.java`.
+
+   > **Do not use `src/main/java/com/ak/api/support/manual/`.** `--clean`
+   > spares it (it only wipes `support/<suite_name>`), but the WHOLE
+   > `support/` tree is gitignored -- `git check-ignore` confirms it. Code
+   > written there is never committed and disappears on a fresh clone.
+   > `dsl/` is committed and the converter never writes to it.
+   >
+   > Extending the generated `ScenarioSteps` from there is still fine:
+   > that class is suite-AGNOSTIC and re-emitted on every convert, so
+   > committed code may name it. What committed code must never name is
+   > a PER-SUITE type -- `<Suite>Client`, `support/<suite>/*`, or
+   > `templates/<suite>/Templates`. `tools/check_generic.py` enforces
+   > exactly that line.
 2. Nested builder `extends ScenarioSteps<YourType>`.
 3. Copy `start(row)` from `com.ak.api.support.scenario.CustomerOnboarding` (bind session, `ImportedScenario.begin`, `bootstrap()`).
 4. Inherit shared methods (`enrollGuest()`, …). Override `bootstrap()` only if setup must differ.
@@ -448,3 +461,68 @@ src/main/java/com/ak/api/support/ImportedScenario.java
 src/main/java/com/ak/api/data/PerMethodCsvDataProvider.java
 Suites/Manual.xml
 ```
+
+---
+
+## 13. Naming a template by business meaning
+
+`Templates.<CONSTANT>` is fine for generated call sites but is **not** a
+stable handle to choose a body by hand. The ordinal is assigned while
+walking template paths in ascending content-hash order, so editing one
+template renumbers its siblings. For this suite, 392 of 472 constants
+(83%) sit in such groups -- `CreateAccount_200` alone has 22 rows behind
+**14 different bodies** named `BUSINESSES_CREATEACCOUNT_200`, `_3`, `_9`,
+`_10`, `_14`, ...
+
+The ReadyAPI case name and step name are written by a human in the XML,
+so they survive a reconvert. Every convert now exports that mapping:
+
+| File | Purpose |
+|---|---|
+| `src/main/resources/templates/<suite>/_index.csv` | on the classpath; what the registry reads |
+| `_audit/<suite>/templates.csv` | identical copy, for reading by eye |
+
+Columns: `case,step,template,constant`.
+
+### Using it
+
+```java
+MasterClass.onboarding(row)
+    .using(Template.singleMemberOnboarding)
+    .createH4LAccount()
+    .complete();
+```
+
+Precedence for a phase body: explicit `.using(...)` > the
+`template_<phase>` CSV column > the converter default. `using(...)`
+applies to the **next phase only**, so a template cannot silently leak
+into the rest of the chain.
+
+### Adding a name
+
+Look the pair up in `_index.csv`, then add a constant to
+`com.ak.api.dsl.Template`:
+
+```java
+public static final Template myScenario = of(
+        "what this body means",
+        "<ReadyAPI case name>",
+        "<ReadyAPI step name>");
+```
+
+`TemplateRegistryTest` resolves every curated name on each run, so a
+ReadyAPI rename fails in the guards suite rather than by sending a wrong
+body at runtime.
+
+### Where the pieces live
+
+| Path | Committed | Touched by convert |
+|---|---|---|
+| `com/ak/api/dsl/` (`MasterClass`, `Template`, `CustomerOnboarding`) | yes | never |
+| `com/ak/api/domain/` (facades over all 75 client methods) | yes | never |
+| `src/test/java/com/ak/api/tests/manual/` | yes | never |
+| `src/test/resources/csv/<TestClass>/` | **no** (gitignored on purpose) | only `csv/<suite>` |
+
+Test data stays local by design: `csv/` is gitignored because those files
+carry endpoint paths, schemas, test-case IDs and hardcoded emails, and
+this repo is public. Create your row file locally; do not commit it.

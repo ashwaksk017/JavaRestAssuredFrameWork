@@ -1729,3 +1729,52 @@ def test_id_only_second_namespace_gets_no_generated_pack():
     assert not any('"employeeProp"' in l for l in gen), gen
     # positive control: the identity namespace in the same script IS generated
     assert any('generateStandard(ctx, "Properties_2"' in l for l in gen), gen
+
+
+def test_template_index_maps_readyapi_names_to_paths(tmp_path):
+    """(case, step) is the handle that survives a reconvert.
+
+    Templates.<NAME> does not: the ordinal follows content-hash order.
+    """
+    import csv as _csv
+    import io as _io
+    em = ra_converter.Emitter(output_dir=str(tmp_path),
+                              package_root="com.ak.api", suite_name="demo")
+    em._template_path_by_step = {
+        ("Reject_Limited_account_200", "Reject_Account"):
+            "templates/demo/businesses/reject_aaaa.json",
+        ("B2B-2065_create, activate", "createAccount"):
+            "templates/demo/businesses/createaccount_bbbb.json",
+    }
+    em._template_const_by_path = {
+        "templates/demo/businesses/reject_aaaa.json": "BUSINESSES_REJECT",
+    }
+    rel = em.emit_template_index()
+    assert rel == "src/main/resources/templates/demo/_index.csv", rel
+
+    text = (tmp_path / rel).read_text(encoding="utf-8")
+    rows = list(_csv.reader(_io.StringIO(text)))
+    assert rows[0] == ["case", "step", "template", "constant"], rows[0]
+    body = {(r[0], r[1]): (r[2], r[3]) for r in rows[1:]}
+    assert body[("Reject_Limited_account_200", "Reject_Account")] == (
+        "templates/demo/businesses/reject_aaaa.json", "BUSINESSES_REJECT")
+    # A comma inside a ReadyAPI case name must not split the row.
+    assert body[("B2B-2065_create, activate", "createAccount")][0].endswith(
+        "createaccount_bbbb.json")
+    # A path with no constant still gets a row -- the whole point is that
+    # the constant is the unstable half.
+    assert body[("B2B-2065_create, activate", "createAccount")][1] == ""
+
+    audit = tmp_path / "_audit" / "demo" / "templates.csv"
+    assert audit.is_file(), "audit copy missing"
+    assert audit.read_text(encoding="utf-8") == text
+
+
+def test_template_index_skipped_when_suite_has_no_templates(tmp_path):
+    """An empty suite must not leave a stray header-only index behind."""
+    em = ra_converter.Emitter(output_dir=str(tmp_path),
+                              package_root="com.ak.api", suite_name="empty")
+    em._template_path_by_step = {}
+    assert em.emit_template_index() is None
+    assert not (tmp_path / "src").exists()
+    assert not (tmp_path / "_audit").exists()

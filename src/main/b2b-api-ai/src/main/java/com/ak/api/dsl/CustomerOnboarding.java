@@ -109,6 +109,8 @@ public final class CustomerOnboarding {
     private final RestLoggerUtilityDataHolder holder;
     private final DomainApis apis;
     private final String testCaseId;
+    /** Set by using(); consumed by the very next exec(). */
+    private Template pendingTemplate;
 
     private CustomerOnboarding(Map<String, String> ctx, Map<String, String> row,
                        SoftAssert softAssert, RestLoggerUtilityDataHolder holder,
@@ -330,6 +332,24 @@ public final class CustomerOnboarding {
     // =====================================================================
 
     /**
+     * Choose the body for the NEXT phase by business meaning.
+     *
+     * <pre>
+     * MasterClass.onboarding(row)
+     *     .using(Template.singleMemberOnboarding)
+     *     .createH4LAccount()
+     * </pre>
+     *
+     * <p>Scoped to one phase on purpose. A sticky template would
+     * silently apply to every later call in the chain, which is the
+     * kind of quiet wrong-body bug this layer exists to avoid.</p>
+     */
+    public CustomerOnboarding using(Template template) {
+        this.pendingTemplate = template;
+        return this;
+    }
+
+    /**
      * One HTTP exchange with the standard CSV contract. The body comes from
      * {@code body_<phase>} on the row when present; status and JsonPath
      * expectations come from the usual {@code expected_<phase>_*} columns,
@@ -340,7 +360,13 @@ public final class CustomerOnboarding {
             RestStep step = RestStep.exec(ctx, row, softAssert, holder, testCaseId)
                     .name(phase)
                     .expectedStatus(expectedStatus);
-            String template = row == null ? null : row.get("template_" + phase);
+            // Precedence: an explicit Template.<name> beats the
+            // template_<phase> CSV column, which beats the converter
+            // default already baked into the step. Consumed (nulled)
+            // here so using() applies to exactly one phase.
+            Template chosen = pendingTemplate;
+            pendingTemplate = null;
+            String template = chooseTemplate(chosen, row, phase);
             if (template != null && !template.isEmpty()) {
                 step = step.template(template);
             }
@@ -348,6 +374,30 @@ public final class CustomerOnboarding {
         } catch (Exception e) {
             throw new IllegalStateException("CustomerOnboarding phase '" + phase + "' failed", e);
         }
+    }
+
+    /**
+     * Which body a phase sends.
+     *
+     * <p>Precedence: an explicit {@code using(Template)} beats the
+     * {@code template_<phase>} CSV column, which beats the converter
+     * default already baked into the step (represented here by
+     * {@code null} -- RestStep keeps whatever it had).</p>
+     *
+     * <p>Package-private so the rule is unit-testable without a live
+     * exchange. The one-phase-only part is the null-out at the call
+     * site in {@link #exec}.</p>
+     */
+    static String chooseTemplate(Template explicit, Map<String, String> row,
+                                 String phase) {
+        if (explicit != null) {
+            return explicit.resolve();
+        }
+        if (row == null) {
+            return null;
+        }
+        String fromRow = row.get("template_" + phase);
+        return (fromRow == null || fromRow.isEmpty()) ? null : fromRow;
     }
 
     /**

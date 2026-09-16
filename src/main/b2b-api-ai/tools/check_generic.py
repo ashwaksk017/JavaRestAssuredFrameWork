@@ -58,6 +58,9 @@ SUITE_SUPPORT_REF = re.compile(r"com\.ak\.api\.support\.([a-z][\w]*)\.(\w+)")
 LINE_COMMENT = re.compile(r"^\s*(//|\*|/\*)")
 
 
+TEMPLATES_REF = re.compile(r"com\.ak\.api\.templates\.([a-z][\w]*)\.(\w+)")
+
+
 def _is_generated(path: str) -> bool:
     norm = os.path.normpath(path)
     return any(norm.startswith(g) for g in GENERATED_DIRS)
@@ -92,6 +95,20 @@ def scan(root: str = "src"):
                         continue
                     findings.append((path, i,
                                      f"per-suite support type '{pkg}.{cls}'",
+                                     line.strip()[:90]))
+                # `com.ak.api.templates.<suite>.Templates` is per-suite too.
+                # It was invisible here: the two regexes above cover clients
+                # and support only, so a committed file importing a suite
+                # Templates class passed this gate and then failed `mvn
+                # compile` for anyone converting a different XML -- exactly
+                # the breakage this check exists to prevent. Hand-written
+                # code must go through ImportedTemplates.get(...) instead.
+                for m in TEMPLATES_REF.finditer(line):
+                    pkg, cls = m.group(1), m.group(2)
+                    if cls in SUITE_AGNOSTIC:
+                        continue
+                    findings.append((path, i,
+                                     f"per-suite templates type '{pkg}.{cls}'",
                                      line.strip()[:90]))
     return findings
 

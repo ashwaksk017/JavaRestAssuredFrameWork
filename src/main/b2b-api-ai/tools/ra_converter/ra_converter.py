@@ -13776,6 +13776,56 @@ public final class Templates {{
 }}
 """
         self._write(rel, content)
+        self.emit_template_index()
+        return rel
+
+    def emit_template_index(self) -> Optional[str]:
+        """Export `(ReadyAPI case, ReadyAPI step) -> template path`.
+
+        `Templates.<NAME>` is not a stable handle for picking a body by
+        hand. The trailing ordinal is assigned while walking paths in
+        ascending CONTENT-HASH order, so editing one template moves its
+        hash, moves its sort position, and renumbers its siblings --
+        and 83% of the constants sit in such multi-variant groups
+        (`BUSINESSES_CREATEACCOUNT_200_13` and 391 others).
+
+        The ReadyAPI case and step names, by contrast, are written by a
+        human in the XML and survive a reconvert. Hand-authored tests
+        bind to those instead; see `com.ak.api.dsl.Template`.
+
+        Two copies, both inside trees `--clean` already owns, so this
+        adds no new lifecycle:
+          - `src/main/resources/templates/<suite>/_index.csv` -- on the
+            classpath, which `_audit/` is not, so the runtime registry
+            can read it.
+          - `_audit/<suite>/templates.csv` -- beside the other ledgers
+            for humans. No audit CSV carried the template path before.
+
+        Returns the classpath-relative index path, or None for a suite
+        with no templates.
+        """
+        if not self._template_path_by_step:
+            return None
+        import csv as _csv
+        import io as _io
+        buf = _io.StringIO()
+        w = _csv.writer(buf, lineterminator=chr(10))
+        w.writerow(["case", "step", "template", "constant"])
+        for (case, step), path in sorted(self._template_path_by_step.items()):
+            w.writerow([case, step, path,
+                        self._template_const_by_path.get(path, "")])
+        text = buf.getvalue()
+
+        rel = f"src/main/resources/templates/{self.suite_name}/_index.csv"
+        targets = [
+            os.path.join(self.output_dir, rel),
+            os.path.join(self.output_dir, "_audit", self.suite_name,
+                         "templates.csv"),
+        ]
+        for target in targets:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "w", encoding="utf-8", newline="") as f:
+                f.write(text)
         return rel
 
     def emit_suite_readme(self, soapui_suite_name: str,
