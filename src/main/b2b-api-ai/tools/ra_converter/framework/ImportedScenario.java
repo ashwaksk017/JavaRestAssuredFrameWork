@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 7
+// ra_converter-framework-rev: 9
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -964,6 +964,7 @@ public final class ImportedScenario {
             CtxFields.putBothCases(ctx, "Properties", "updatedemail", updatedEmail);
             CtxFields.putBothCases(ctx, "Properties", "updatedmailAddress", updatedEmail);
         }
+        regenNumberedDomains(ctx, row);
         CtxFields.putBothCases(ctx, "Properties", "hhonorsNumber", hhon);
         applyCsvRandomDomains(ctx, row);
     }
@@ -1004,6 +1005,49 @@ public final class ImportedScenario {
             return false;
         }
         return !email.trim().equalsIgnoreCase(generated.trim());
+    }
+
+    /**
+     * Fresh values for Domain1..Domain9 and the Website slot built on them.
+     *
+     * <p>ReadyAPI's DataGenInput generates every numbered domain per run --
+     * {@code Domain2 = generatedWebsite + ".com"} in 13 of the 18 cases that
+     * send one, and B2B-3553 builds four distinct shapes
+     * ({@code "8-"+rand+".com"}, {@code "a1."+rand+".org"},
+     * {@code "88"+rand+".in"}, {@code rand+".co.uk"}). We generated none of
+     * them, so the request carried the value saved in the CSV / bundled
+     * defaults -- a domain the author's own run already registered, which is
+     * what an account create rejects.</p>
+     *
+     * <p>The seeded value is the shape template: its prefix and TLD are kept
+     * and only the random middle is replaced, so {@code a1.y7cycf.org} stays
+     * an {@code a1.*.org}. {@code Website} is regenerated ONLY when it was
+     * {@code "www." + <that domain>}, because every case that sends it does
+     * exactly {@code Website = "www." + Domain2} -- the pair has to stay
+     * consistent or the account's websiteDomain stops matching its
+     * emailDomains. A freemail value, or a row whose create expects 400, is
+     * left alone: there the domain IS the point of the test.</p>
+     */
+    static void regenNumberedDomains(Map<String, String> ctx, Map<String, String> row) {
+        if (ctx == null || expectedCreate400(row)) {
+            return;
+        }
+        for (int n = 1; n <= 9; n++) {
+            String key = "Properties.Domain" + n;
+            String seeded = firstNonBlank(ctx, key, "Properties.domain" + n);
+            if (seeded == null || seeded.isEmpty() || isFreemailDomain(seeded)) {
+                continue;
+            }
+            String fresh = freshDomainLike(normalizeDomain(seeded));
+            CtxFields.putBothCases(ctx, "Properties", "Domain" + n, fresh);
+            for (String siteKey : new String[] {"Website", "Website" + n,
+                    "websitedomain" + n, "websiteDomain" + n}) {
+                String site = firstNonBlank(ctx, "Properties." + siteKey);
+                if (site != null && site.equalsIgnoreCase("www." + seeded)) {
+                    CtxFields.putBothCases(ctx, "Properties", siteKey, "www." + fresh);
+                }
+            }
+        }
     }
 
     /**
@@ -1058,9 +1102,49 @@ public final class ImportedScenario {
                 return CtxFields.allowedDomainOrRandom();
             }
         }
-        int dot = saved.lastIndexOf('.');
-        String tld = dot > 0 && dot < saved.length() - 1 ? saved.substring(dot) : ".com";
-        return FakeData.username() + tld;
+        // Keep BOTH ends of ReadyAPI's shape: B2B-3553 builds "8-<rand>.com",
+        // "a1.<rand>.org", "88<rand>.in" and "<rand>.co.uk", and the account
+        // create treats those as different domains. The TLD is the trailing
+        // run of letters-only labels (".org", ".co.uk"). In what precedes the
+        // random middle, the prefix runs to the last "." or "-" of the head,
+        // else to its leading digits ("88lhtzqo" -> "88"). A regex tried this
+        // first and dropped the "a1." prefix, because that prefix starts with
+        // a letter: a1.y7cycf.org regenerated as tdupwa.org.
+        String tld = "";
+        for (int i = 0; i < saved.length(); i++) {
+            if (saved.charAt(i) != '.') {
+                continue;
+            }
+            String candidate = saved.substring(i);
+            boolean lettersOnly = true;
+            for (int j = 1; j < candidate.length(); j++) {
+                char c = candidate.charAt(j);
+                if (c != '.' && (c < 'a' || c > 'z')) {
+                    lettersOnly = false;
+                    break;
+                }
+            }
+            if (lettersOnly) {
+                tld = candidate;
+                break;
+            }
+        }
+        if (tld.isEmpty()) {
+            tld = ".com";
+        }
+        String head = saved.substring(0, saved.length() - tld.length());
+        int sep = Math.max(head.lastIndexOf('.'), head.lastIndexOf('-'));
+        String prefix;
+        if (sep >= 0) {
+            prefix = head.substring(0, sep + 1);
+        } else {
+            int d = 0;
+            while (d < head.length() && head.charAt(d) >= '0' && head.charAt(d) <= '9') {
+                d++;
+            }
+            prefix = head.substring(0, d);
+        }
+        return prefix + FakeData.username() + tld;
     }
 
     /** True when the CSV create step is an expected-400 emailDomain case. */

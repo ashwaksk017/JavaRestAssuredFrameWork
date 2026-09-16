@@ -415,4 +415,58 @@ public class CtxFieldsTest {
         Assert.assertTrue(CtxFields.valueFor("Email").contains("@"),
                 CtxFields.valueFor("Email"));
     }
+
+    @Test(groups = {"unit"})
+    @Story("numbered domains are generated per run")
+    @Description("B2B-5530/3553: DomainN came from the CSV, a domain the author's run already registered.")
+    public void regenRandomProperties_regeneratesNumberedDomainsKeepingTheirShape() {
+        Map<String, String> ctx = new HashMap<>();
+        ctx.put("Properties.Domain1", "8-8h6f6t.com");
+        ctx.put("Properties.Domain2", "a1.y7cycf.org");
+        ctx.put("Properties.Domain3", "88lhtzqo.in");
+        ctx.put("Properties.Domain4", "sugywt.co.uk");
+        ctx.put("Properties.Website", "www.a1.y7cycf.org");
+        ImportedScenario.regenRandomProperties(ctx, new HashMap<>());
+
+        Assert.assertNotEquals(ctx.get("Properties.Domain1"), "8-8h6f6t.com");
+        Assert.assertTrue(ctx.get("Properties.Domain1").startsWith("8-"),
+                ctx.get("Properties.Domain1"));
+        Assert.assertTrue(ctx.get("Properties.Domain1").endsWith(".com"),
+                ctx.get("Properties.Domain1"));
+        Assert.assertTrue(ctx.get("Properties.Domain2").startsWith("a1."),
+                ctx.get("Properties.Domain2"));
+        Assert.assertTrue(ctx.get("Properties.Domain2").endsWith(".org"),
+                ctx.get("Properties.Domain2"));
+        Assert.assertTrue(ctx.get("Properties.Domain3").endsWith(".in"),
+                ctx.get("Properties.Domain3"));
+        Assert.assertTrue(ctx.get("Properties.Domain4").endsWith(".co.uk"),
+                ctx.get("Properties.Domain4"));
+        // Website tracks Domain2 -- the account's websiteDomain must match
+        Assert.assertEquals(ctx.get("Properties.Website"),
+                "www." + ctx.get("Properties.Domain2"));
+    }
+
+    @Test(groups = {"unit"})
+    @Story("numbered domains are generated per run")
+    @Description("A freemail DomainN, or a create-400 row, keeps the authored value.")
+    public void regenRandomProperties_leavesNegativeNumberedDomainsAlone() {
+        Map<String, String> ctx = new HashMap<>();
+        ctx.put("Properties.Domain2", "yahoo.com");
+        // positive control in the same call: a normal DomainN MUST be
+        // regenerated, so this test fails if regeneration stops happening
+        // rather than passing by doing nothing.
+        ctx.put("Properties.Domain3", "88lhtzqo.in");
+        ImportedScenario.regenRandomProperties(ctx, new HashMap<>());
+        Assert.assertEquals(ctx.get("Properties.Domain2"), "yahoo.com");
+        Assert.assertNotEquals(ctx.get("Properties.Domain3"), "88lhtzqo.in");
+        Assert.assertTrue(ctx.get("Properties.Domain3").endsWith(".in"),
+                ctx.get("Properties.Domain3"));
+
+        Map<String, String> ctx2 = new HashMap<>();
+        ctx2.put("Properties.Domain2", "dpxhlczh.com");
+        Map<String, String> row = new HashMap<>();
+        row.put("expected_http_request_400_status_code", "400");
+        ImportedScenario.regenRandomProperties(ctx2, row);
+        Assert.assertEquals(ctx2.get("Properties.Domain2"), "dpxhlczh.com");
+    }
 }
