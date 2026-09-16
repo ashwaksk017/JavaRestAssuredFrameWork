@@ -1778,3 +1778,39 @@ def test_template_index_skipped_when_suite_has_no_templates(tmp_path):
     assert em.emit_template_index() is None
     assert not (tmp_path / "src").exists()
     assert not (tmp_path / "_audit").exists()
+
+
+def test_gpath_drops_the_jsonpath_wildcard():
+    """`[*]` resolves to null under GPath, so it must never be emitted.
+
+    Measured on RestAssured with a two-element root array:
+      [*]                      -> null
+      [*].centralBillAuthAmount -> null
+      $                        -> the root list
+      centralBillAuthAmount    -> [10, 20]   (GPath spreads implicitly)
+    """
+    # root wildcard -> the root node
+    assert ra_converter._jsonpath_to_gpath("$[*]") == "$"
+    # wildcard + field -> the bare field, which GPath spreads
+    assert ra_converter._jsonpath_to_gpath(
+        "$[*]['centralBillAuthAmount']") == "centralBillAuthAmount"
+    # mid-path wildcard
+    assert ra_converter._jsonpath_to_gpath("$.items[*].a") == "items.a"
+    # idempotent: an already-translated wildcard path still normalises
+    assert ra_converter._jsonpath_to_gpath("[*]") == "$"
+
+
+def test_gpath_translation_leaves_ordinary_paths_alone():
+    """Positive control -- the wildcard fix must not disturb normal paths."""
+    assert ra_converter._jsonpath_to_gpath(
+        "$.notifications[0].message") == "notifications[0].message"
+    assert ra_converter._jsonpath_to_gpath("$['a']['b'].c") == "a.b.c"
+    assert ra_converter._jsonpath_to_gpath(
+        "notifications[0].fields[0]") == "notifications[0].fields[0]"
+
+
+def test_gpath_still_bails_on_unsupported_syntax():
+    """Recursive descent and filters stay untouched, as before the fix."""
+    assert ra_converter._jsonpath_to_gpath("$..field") == "$..field"
+    assert ra_converter._jsonpath_to_gpath(
+        "$[?(@.x==1)]") == "$[?(@.x==1)]"

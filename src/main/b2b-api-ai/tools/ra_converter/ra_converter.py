@@ -4646,9 +4646,31 @@ def _jsonpath_to_gpath(path: str) -> str:
     # ['key'] and ["key"] -> .key (dot access equivalent in GPath)
     p = re.sub(r"\['([^']+)'\]", r".\1", p)
     p = re.sub(r'\["([^"]+)"\]', r".\1", p)
+    # `[*]` is JsonPath's wildcard and GPath has no equivalent.
+    # Measured against RestAssured's JsonPath on a two-element root
+    # array: `[*]` -> null, `[*].field` -> null, `items[*]` -> null.
+    # GPath spreads implicitly instead -- `$` yields the root list,
+    # `field` yields every value of that field, `items.a` likewise --
+    # so DROP the wildcard segment rather than emit a path that can
+    # never resolve.
+    #
+    # This was not cosmetic: every `$[*]` JsonPath Count assertion
+    # counted 0 regardless of the payload, so the ones expecting >=1
+    # always failed and the ones expecting 0 always passed vacuously.
+    #
+    # Column names are preserved: ResponseAsserts.columnSuffix strips a
+    # leading `$`, so `[*]` and `$` both flatten to `root`, and
+    # `[*].amount` and `amount` both flatten to `amount`. Existing
+    # expected_<step>_count_<suffix> overrides keep matching.
+    p = p.replace("[*].", ".")
+    p = re.sub(r"\[\*\]", "", p)
     # Leading dot -> drop
     if p.startswith("."):
         p = p[1:]
+    # A path that was nothing but the wildcard means the ROOT node.
+    # GPath spells that `$`.
+    if not p:
+        return "$"
     return p
 
 
