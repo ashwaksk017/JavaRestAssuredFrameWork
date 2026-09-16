@@ -69,6 +69,12 @@ src/main/java/com/ak/api/rest/clients/
 src/main/java/com/ak/api/support/
 src/main/java/com/ak/api/templates/
 src/main/resources/templates/
+# The OpenAPI spec the pom feeds to openapi-generator at
+# generate-sources. It is a vendor API contract (endpoint paths,
+# schemas, examples) and this repo is public, so it stays local:
+# drop it in to enable model generation / schema assertions, and it
+# will not be committed.
+src/main/resources/openapi/
 src/main/resources/test_data_defaults/
 src/main/resources/config/
 src/test/java/com/ak/api/tests/imported/

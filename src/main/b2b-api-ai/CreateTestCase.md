@@ -127,6 +127,23 @@ Useful columns:
 | `Properties.Email`, `Properties.Username`, … | Seeded in bootstrap; override generated identity |
 | `tpl_*` | Values substituted into JSON templates (`#tpl_...#`) |
 | `_stop_after` | Optional; stop the chain after N REST steps (imported prefix-merge). Leave blank for a full run. |
+| `expected_<phase>_status_code` | status for ONE phase of a hand-written chain |
+| `expected_<phase>_jsonpath_<field>` | overrides `expectJson` for that phase; empty cell skips the check (see 14) |
+| `expected_<phase>_exists_<field>` | flag for `expectExists`; `false` asserts ABSENT |
+| `expected_<phase>_count_<field>` | overrides `expectCount` |
+| `expected_<phase>_header_<name>` | flag for `expectHeader`; `false` asserts ABSENT |
+| `template_<phase>` | request body for that phase; `using(Template)` overrides it (see 13) |
+
+`<phase>` is the phase name in the chain, not the ReadyAPI step name --
+`createProgramAccount`, `enrollGuest`, `confirmMemberTotp` and so on.
+
+### One caveat for manual tests
+
+Outside `tests.imported`, the provider resolves by **simple class name**
+(`getSimpleName()`), not by package. So two hand-written test classes with
+the same simple name in different packages resolve to the SAME
+`csv/<SimpleClassName>/` folder and would silently share row files. Keep
+manual test class names unique across packages.
 
 Blank cells become `""`.
 
@@ -548,8 +565,56 @@ MasterClass.onboarding(row)
     .complete();
 ```
 
-Verbs: `expectJson(path, value)`, `expectExists(path)`,
-`expectAbsent(path)`, `expectCount(path, n)`, `expectHeader(name)`.
+Verbs:
+
+| Verb | Checks |
+|---|---|
+| `expectJson(path, value)` | value at that path |
+| `expectExists(path)` / `expectAbsent(path)` | presence |
+| `expectCount(path, n)` | list size at that path |
+| `expectHeader(name)` | response header present |
+| `expectBodyContains(value)` | value as an exact JSON scalar ANYWHERE in the body |
+| `expectBodyContains(path, value)` | at that path, falling back to anywhere |
+| `expectSubstring(path, value)` | the path's value CONTAINS value |
+| `expectJsonTree(path, json)` | the subtree at that path equals a JSON document |
+| `expectCaptured(key, value)` | a value in ctx -- memory, not the response |
+
+`expectBodyContains` matches exact scalars only, so `verified` is not
+satisfied by `unverified`. Prefer `expectJson` when you know the path: a
+path-specific check cannot pass by coincidence.
+
+`expectJsonTree` ignores key order, and is lenient in one way worth
+knowing: when the trees are not equal it does not fail outright, but
+instead checks that every scalar leaf of the expected document appears
+somewhere in the body. So it is stricter than `expectBodyContains` and
+looser than true equality. An expected document that is not parseable
+JSON fails.
+
+`expectCaptured` is the only expectation that reads MEMORY rather than
+the response, so it pairs with `capture` (section 15): capture on one
+phase, assert on a later one. It reads through `ImportedScenario.ctxGet`,
+so aliases resolve. It is deliberately NOT CSV-overridable -- the natural
+column shape (`expected_<phase>_ctx_<key>`) is not one
+`check_csv_contracts` recognises, so inventing it would make any row
+using it fail that gate.
+
+### Not wired: OpenAPI schema assertions
+
+`ResponseAsserts.matchesOpenApi(res, definitionName)` exists and would be
+the strongest check available -- validate a whole response against the
+API contract. It is deliberately NOT exposed as a verb, because it cannot
+work in this repo as it stands:
+
+- it resolves `openapi/ProgramAccounts-1.0.71.yaml` off the classpath,
+  and that spec is not in the tree;
+- `OpenApiModels.modelClass` needs generated models, which the pom
+  produces at `generate-sources` FROM that same spec.
+
+The spec is a vendor API contract and this repo is public, so it is not
+committed -- and `src/main/resources/openapi/` is now gitignored so that
+dropping it in locally cannot leak it. With the spec present, `mvn
+generate-sources` produces the models and `matchesOpenApi` starts working;
+wiring a verb for it is then a small change.
 
 Each applies to the **next phase only** and is drained afterwards, even
 when that phase throws, so an expectation can never assert against an

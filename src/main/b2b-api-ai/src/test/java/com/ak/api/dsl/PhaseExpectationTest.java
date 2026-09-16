@@ -157,4 +157,95 @@ public class PhaseExpectationTest {
                 new ArrayList<>());
         Assert.assertEquals(failures(sa), 0, "an empty queue must not fail");
     }
+
+    @Test(groups = {"unit"})
+    @Story("bodyContains matches an exact scalar anywhere in the body")
+    @Description("""
+            Exact scalars only: 'verified' must not be satisfied by
+            'unverified'. That is the whole point of the helper.
+            """)
+    public void bodyContainsMatchesAnExactScalar() {
+        SoftAssert hit = new SoftAssert();
+        CustomerOnboarding.applyExpectations(
+                hit, json("{\"nested\":{\"status\":\"active\"}}"),
+                new LinkedHashMap<>(), new HashMap<>(), PHASE,
+                queue(Expectation.bodyContains(null, "active")));
+        Assert.assertEquals(failures(hit), 0, "an exact scalar must match");
+
+        SoftAssert miss = new SoftAssert();
+        CustomerOnboarding.applyExpectations(
+                miss, json("{\"nested\":{\"status\":\"active\"}}"),
+                new LinkedHashMap<>(), new HashMap<>(), PHASE,
+                queue(Expectation.bodyContains(null, "limited")));
+        Assert.assertEquals(failures(miss), 1, "a value not present must fail");
+    }
+
+    @Test(groups = {"unit"})
+    @Story("substring is a contains check, not equality")
+    public void substringChecksContainment() {
+        SoftAssert hit = new SoftAssert();
+        CustomerOnboarding.applyExpectations(
+                hit, json("{\"msg\":\"hello world\"}"),
+                new LinkedHashMap<>(), new HashMap<>(), PHASE,
+                queue(Expectation.substring("msg", "world")));
+        Assert.assertEquals(failures(hit), 0, "a substring must match");
+
+        SoftAssert miss = new SoftAssert();
+        CustomerOnboarding.applyExpectations(
+                miss, json("{\"msg\":\"hello world\"}"),
+                new LinkedHashMap<>(), new HashMap<>(), PHASE,
+                queue(Expectation.substring("msg", "mars")));
+        Assert.assertEquals(failures(miss), 1, "an absent substring must fail");
+    }
+
+    @Test(groups = {"unit"})
+    @Story("a subtree compares key-order insensitively")
+    public void jsonTreeIgnoresKeyOrder() {
+        SoftAssert sa = new SoftAssert();
+        CustomerOnboarding.applyExpectations(
+                sa, json("{\"address\":{\"city\":\"Houston\",\"state\":\"TX\"}}"),
+                new LinkedHashMap<>(), new HashMap<>(), PHASE,
+                queue(Expectation.jsonTree("address",
+                        "{\"state\":\"TX\",\"city\":\"Houston\"}")));
+        Assert.assertEquals(failures(sa), 0, "key order must not matter");
+    }
+
+    @Test(groups = {"unit"})
+    @Story("a subtree whose leaves are absent fails")
+    @Description("""
+            jsonTreeEquals is lenient when the trees differ: it then asks
+            whether every expected scalar leaf appears somewhere in the body.
+            A leaf that appears nowhere must still fail.
+            """)
+    public void jsonTreeFailsWhenALeafIsAbsent() {
+        SoftAssert sa = new SoftAssert();
+        CustomerOnboarding.applyExpectations(
+                sa, json("{\"address\":{\"city\":\"Houston\",\"state\":\"TX\"}}"),
+                new LinkedHashMap<>(), new HashMap<>(), PHASE,
+                queue(Expectation.jsonTree("address", "{\"city\":\"Dallas\"}")));
+        Assert.assertEquals(failures(sa), 1, "an absent leaf must fail");
+    }
+
+    @Test(groups = {"unit"})
+    @Story("expectCaptured asserts on memory, not the response")
+    @Description("""
+            Pairs with capture(): capture on one phase, assert on a later one.
+            The response here does not contain the value at all.
+            """)
+    public void capturedComparesTheCtxValue() {
+        Map<String, String> ctx = new LinkedHashMap<>();
+        ctx.put("Properties.guestID", "12345");
+
+        SoftAssert hit = new SoftAssert();
+        CustomerOnboarding.applyExpectations(
+                hit, json("{\"unrelated\":\"body\"}"), ctx, new HashMap<>(), PHASE,
+                queue(Expectation.captured("Properties.guestID", "12345")));
+        Assert.assertEquals(failures(hit), 0, "a matching ctx value must pass");
+
+        SoftAssert miss = new SoftAssert();
+        CustomerOnboarding.applyExpectations(
+                miss, json("{\"unrelated\":\"body\"}"), ctx, new HashMap<>(), PHASE,
+                queue(Expectation.captured("Properties.guestID", "999")));
+        Assert.assertEquals(failures(miss), 1, "a differing ctx value must fail");
+    }
 }

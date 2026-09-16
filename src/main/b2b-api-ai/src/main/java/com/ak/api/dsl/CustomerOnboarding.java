@@ -568,6 +568,84 @@ public final class CustomerOnboarding {
     }
 
     /**
+     * Expect {@code expected} to appear as an exact JSON scalar anywhere
+     * in the next response.
+     *
+     * <p>Exact scalars only -- {@code verified} does not match
+     * {@code unverified}. Use this when the value matters but its
+     * location does not; prefer {@link #expectJson} when you know the
+     * path, since a path-specific check cannot pass by coincidence.</p>
+     */
+    public CustomerOnboarding expectBodyContains(String expected) {
+        pendingExpectations.add(Expectation.bodyContains(null, expected));
+        return this;
+    }
+
+    /**
+     * Expect {@code expected} at {@code jsonPath}, falling back to an
+     * exact scalar match anywhere in the body when that path is empty or
+     * missing.
+     */
+    public CustomerOnboarding expectBodyContains(String jsonPath, String expected) {
+        pendingExpectations.add(Expectation.bodyContains(jsonPath, expected));
+        return this;
+    }
+
+    /**
+     * Expect the value at {@code jsonPath} to CONTAIN {@code expected}
+     * (ReadyAPI's contains operator), rather than equal it.
+     *
+     * <p>If that path extracts nothing, it falls back to looking for the
+     * value as a scalar in the body; if the path extracts something else
+     * entirely, that is a failure rather than a fallback.</p>
+     */
+    public CustomerOnboarding expectSubstring(String jsonPath, String expected) {
+        pendingExpectations.add(Expectation.substring(jsonPath, expected));
+        return this;
+    }
+
+    /**
+     * Expect the subtree at {@code jsonPath} to equal {@code expectedJson},
+     * which must itself be a JSON document.
+     *
+     * <pre>
+     * .expectJsonTree("address", "{ 'city': 'Houston', 'state': 'TX' }")
+     * </pre>
+     *
+     * <p>Key order does not matter. Note the fallback: when the trees are
+     * NOT equal, it does not fail outright -- it checks instead that every
+     * scalar leaf of the expected document appears somewhere in the body.
+     * So this is stricter than {@link #expectBodyContains} but looser than
+     * true equality, and an unparseable expected document fails.</p>
+     *
+     * <p>Honours {@code expected_<phase>_jsonpath_<field>} like
+     * {@link #expectJson}, including the empty-cell skip.</p>
+     */
+    public CustomerOnboarding expectJsonTree(String jsonPath, String expectedJson) {
+        pendingExpectations.add(Expectation.jsonTree(jsonPath, expectedJson));
+        return this;
+    }
+
+    /**
+     * Expect a value already in ctx to equal {@code expected}, checked
+     * after the next phase runs.
+     *
+     * <p>This is the one expectation that looks at MEMORY rather than the
+     * response, so it pairs with {@link #capture}: capture on one phase,
+     * assert on a later one. Reads through {@code ImportedScenario.ctxGet},
+     * so declared aliases and case-insensitive spellings resolve.</p>
+     *
+     * <p>Deliberately NOT CSV-overridable. The natural column shape
+     * ({@code expected_<phase>_ctx_<key>}) is not one
+     * {@code check_csv_contracts} recognises, so inventing it would make
+     * any row using it fail that gate.</p>
+     */
+    public CustomerOnboarding expectCaptured(String ctxKey, String expected) {
+        pendingExpectations.add(Expectation.captured(ctxKey, expected));
+        return this;
+    }
+
+    /**
      * Apply the queued expectations to one response.
      *
      * <p>Package-private and static so the rule can be tested against a
@@ -587,7 +665,10 @@ public final class CustomerOnboarding {
 
     /** One queued response expectation. */
     static final class Expectation {
-        private enum Kind { JSON, EXISTS, ABSENT, COUNT, HEADER }
+        private enum Kind {
+            JSON, EXISTS, ABSENT, COUNT, HEADER,
+            BODY_CONTAINS, SUBSTRING, JSON_TREE, CAPTURED
+        }
 
         private final Kind kind;
         private final String path;
@@ -621,6 +702,22 @@ public final class CustomerOnboarding {
             return new Expectation(Kind.HEADER, name, null, 0);
         }
 
+        static Expectation bodyContains(String jsonPath, String value) {
+            return new Expectation(Kind.BODY_CONTAINS, jsonPath, value, 0);
+        }
+
+        static Expectation substring(String jsonPath, String value) {
+            return new Expectation(Kind.SUBSTRING, jsonPath, value, 0);
+        }
+
+        static Expectation jsonTree(String jsonPath, String expectedJson) {
+            return new Expectation(Kind.JSON_TREE, jsonPath, expectedJson, 0);
+        }
+
+        static Expectation captured(String ctxKey, String value) {
+            return new Expectation(Kind.CAPTURED, ctxKey, value, 0);
+        }
+
         void apply(SoftAssert softAssert, Response res, Map<String, String> ctx,
                    Map<String, String> row, String phase) {
             switch (kind) {
@@ -640,6 +737,23 @@ public final class CustomerOnboarding {
                     break;
                 case HEADER:
                     ResponseAsserts.headerExists(softAssert, res, row, phase, path);
+                    break;
+                case BODY_CONTAINS:
+                    ResponseAsserts.bodyContains(softAssert, res, value, path,
+                            phase + " body contains");
+                    break;
+                case SUBSTRING:
+                    ResponseAsserts.substringInResponse(softAssert, res, value,
+                            path, phase + " substring at " + path);
+                    break;
+                case JSON_TREE:
+                    ResponseAsserts.jsonTreeEquals(softAssert, res, ctx, row,
+                            phase, path, value);
+                    break;
+                case CAPTURED:
+                    softAssert.assertEquals(
+                            ImportedScenario.ctxGet(ctx, path), value,
+                            "captured '" + path + "' after " + phase);
                     break;
                 default:
                     break;
