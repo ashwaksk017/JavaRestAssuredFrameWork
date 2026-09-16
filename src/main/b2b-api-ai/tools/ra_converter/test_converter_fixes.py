@@ -1814,3 +1814,68 @@ def test_gpath_still_bails_on_unsupported_syntax():
     assert ra_converter._jsonpath_to_gpath("$..field") == "$..field"
     assert ra_converter._jsonpath_to_gpath(
         "$[?(@.x==1)]") == "$[?(@.x==1)]"
+
+
+def test_soapui_e_wrapper_becomes_an_index():
+    """SoapUI shows a JSON array as repeated <e> elements.
+
+    `e` is the array wrapper, not a field. Emitting it as a name gave
+    `Fault.notifications.e.code`, which GPath cannot resolve; the correct
+    shape is the one the JsonPath-style translator already produces.
+    """
+    x = ra_converter._soapui_xpath_to_jsonpath
+    assert x("//ns1:Response[1]/ns1:Fault[1]/ns1:notifications[1]"
+             "/ns1:e[1]/ns1:code[1]") == "Fault.notifications[0].code"
+    assert x("//ns1:Response[1]/ns1:Fault[1]/ns1:notifications[1]"
+             "/ns1:e[1]/ns1:fields[1]/ns1:e[1]") == "Fault.notifications[0].fields[0]"
+    # SoapUI is 1-indexed: e[2] is the SECOND element
+    assert x("//ns1:Response[1]/ns1:programAccountTypes[1]"
+             "/ns1:e[2]") == "programAccountTypes[1]"
+    # a leading wrapper means the ROOT array
+    assert x("//ns1:Response[1]/ns1:e[1]/ns1:accountId[1]") == "[0].accountId"
+
+
+def test_soapui_xpath_leaves_ordinary_steps_alone():
+    """Positive control -- the <e> change must not disturb normal paths."""
+    x = ra_converter._soapui_xpath_to_jsonpath
+    assert x("//ns1:Response[1]/ns1:accountId[1]") == "accountId"
+    assert x("declare namespace ns1='urn:x'; "
+             "//ns1:Response[1]/ns1:members[3]/ns1:role[1]") == "members[2].role"
+    assert x("") == ""
+
+
+def test_emitted_test_support_has_the_hilton_token_fallback(tmp_path):
+    """The ctxGet copy that generated code actually calls must recover a
+    cached token.
+
+    ImportedScenario.ctxGetRaw has this fallback; the per-suite TestSupport
+    did not -- and generated call sites use TestSupport 5152 times against
+    ImportedScenario's 2573, so the weaker resolver served two thirds of
+    every ctx lookup, including every token lookup.
+
+    Asserted on the EMITTED JAVA rather than on the template source, so the
+    test still fails if the template stops being reached.
+    """
+    em = ra_converter.Emitter(output_dir=str(tmp_path),
+                              package_root="com.ak.api", suite_name="probe")
+    rel = em.emit_test_support()
+    java = (tmp_path / rel).read_text(encoding="utf-8")
+
+    assert "static boolean isHiltonTokenKey(" in java
+    assert "static String hiltonTokenFallback(" in java
+    assert "com.ak.api.auth.TokenCache.getAccessToken()" in java
+    # BOTH call sites: present-but-empty key, and after the trailing-field walk
+    assert java.count("hiltonTokenFallback(primaryKey, ctx)") == 2, java.count(
+        "hiltonTokenFallback(primaryKey, ctx)")
+    # the Bearer prefix is normalised per key, not blindly prepended
+    assert 'contains("generatedtoken")' in java
+
+
+def test_emitted_test_support_still_returns_empty_for_a_nontoken_key(tmp_path):
+    """Positive control -- the fallback must be scoped to token keys only."""
+    em = ra_converter.Emitter(output_dir=str(tmp_path),
+                              package_root="com.ak.api", suite_name="probe")
+    java = (tmp_path / em.emit_test_support()).read_text(encoding="utf-8")
+    # the guard is a predicate, not an unconditional recovery
+    assert "if (isHiltonTokenKey(primaryKey))" in java
+    assert java.count("if (isHiltonTokenKey(primaryKey))") == 2

@@ -4599,6 +4599,21 @@ def _soapui_xpath_to_jsonpath(xpath: str) -> str:
         # SoapUI XPath is 1-indexed; JsonPath / GPath is 0-indexed. Only
         # emit [N] when the index is > 1 (positional filter, not the
         # trivial "first element" that SoapUI emits by default).
+        # SoapUI renders a JSON array as repeated <e> elements, so a step
+        # named exactly `e` is the ARRAY WRAPPER, not a field. Emitting it
+        # as a name produced `Fault.notifications.e.code`, which GPath
+        # cannot resolve -- 197 such assertions existed, and they only
+        # appeared to pass because jsonEquals falls back to searching the
+        # whole body for the expected scalar. Attach an index to the
+        # PREVIOUS segment instead, which is the shape the JsonPath-style
+        # translator already emits (`notifications[0].code`).
+        if name == "e":
+            pos = (int(idx) - 1) if (idx and int(idx) > 1) else 0
+            if out_parts:
+                out_parts[-1] = f"{out_parts[-1]}[{pos}]"
+            else:
+                out_parts.append(f"[{pos}]")
+            continue
         if idx and int(idx) > 1:
             out_parts.append(f"{name}[{int(idx) - 1}]")
         else:
@@ -8787,6 +8802,16 @@ public final class TestSupport {{
         // random resources. Empty-known beats any inferred alias.
         if (ctx.containsKey(primaryKey)) {{
             String direct = ctx.get(primaryKey);
+            if (direct != null && !direct.isEmpty()) return direct;
+            // Present-but-EMPTY token key: the framework copy
+            // (ImportedScenario.ctxGetRaw) recovers from TokenCache here.
+            // This copy did not, and generated code calls THIS one -- 5152
+            // call sites against 2573 -- so an empty token key produced an
+            // empty Authorization header instead of the cached token.
+            if (isHiltonTokenKey(primaryKey)) {{
+                String cached = hiltonTokenFallback(primaryKey, ctx);
+                if (!cached.isEmpty()) return cached;
+            }}
             return direct == null ? "" : direct;
         }}
         // Same key under another case first: ReadyAPI resolves ${{Step#prop}}
@@ -8838,7 +8863,46 @@ public final class TestSupport {{
         // Last resort: bare-field lookup
         String bare = ctx.get(field);
         if (bare != null && !bare.isEmpty()) return bare;
+        // Token keys get one more chance from the cache, matching
+        // ImportedScenario.ctxGetRaw. Without it, a chain whose token
+        // step never ran resolved the token to "" and every request
+        // went out unauthenticated.
+        if (isHiltonTokenKey(primaryKey)) {{
+            String cached = hiltonTokenFallback(primaryKey, ctx);
+            if (!cached.isEmpty()) return cached;
+        }}
         return "";
+    }}
+
+    /** Keys that name a Hilton bearer token. Mirrors ImportedScenario. */
+    static boolean isHiltonTokenKey(String primaryKey) {{
+        if (primaryKey == null || primaryKey.isEmpty()) return false;
+        String n = primaryKey.toLowerCase(java.util.Locale.ROOT);
+        return n.endsWith("generatedtokenid")
+                || n.equals("accesstoken")
+                || n.endsWith(".accesstoken");
+    }}
+
+    /**
+     * Recover a token from ctx or the cache, normalising the Bearer
+     * prefix for the key being asked for: GeneratedTokenID keys carry
+     * the prefix, accessToken keys do not. Mirrors ImportedScenario
+     * .hiltonTokenFallback so both resolvers answer identically.
+     */
+    static String hiltonTokenFallback(String primaryKey, Map<String, String> ctx) {{
+        String access = (ctx == null) ? null : ctx.get("accessToken");
+        if (access == null || access.isEmpty()) {{
+            access = com.ak.api.auth.TokenCache.getAccessToken();
+        }}
+        if (access == null || access.isEmpty()) return "";
+        boolean wantBearer = primaryKey != null
+                && primaryKey.toLowerCase(java.util.Locale.ROOT)
+                        .contains("generatedtoken");
+        boolean hasBearer = access.regionMatches(true, 0, "Bearer ", 0, 7);
+        if (wantBearer) {{
+            return hasBearer ? access : "Bearer " + access;
+        }}
+        return hasBearer ? access.substring("Bearer ".length()) : access;
     }}
 
     /**
