@@ -94,6 +94,52 @@ public abstract class BaseApiTest {
      *  Allure -- reads exactly like the run is "looping". */
     private static final AtomicBoolean BOOTSTRAPPED = new AtomicBoolean(false);
 
+
+    /**
+     * Source {@code ALLOWED_DOMAINS} from the backend rather than a static
+     * config string, so the list stays current as the backend's managed-domain
+     * set grows:
+     * {@code SELECT value FROM account_rules WHERE reason = 'managed_domain'}.
+     *
+     * <p>Runs once per suite (this method is called from the @BeforeSuite
+     * bootstrap, behind its own idempotency guard), so the query costs one
+     * round trip per run rather than one per test.</p>
+     *
+     * <p>An explicit {@code -DALLOWED_DOMAINS} WINS. {@code Config.get} reads
+     * system properties first, so priming unconditionally would silently
+     * discard an operator's override -- the opposite of helpful when someone
+     * is deliberately pinning the list for a run.</p>
+     *
+     * <p>FAIL-SOFT: when the DB is off, the credentials are placeholders, or
+     * the query returns nothing, the configured value is left exactly as it
+     * was. An empty result must never be treated as authoritative -- emptying
+     * the allowlist would push every generated identity onto random
+     * {@code word.com} domains the target rejects, breaking the suite far
+     * worse than a stale list would.</p>
+     */
+    private static void primeManagedDomainsFromDb() {
+        if (!Config.getBool("domains.fromDb.enabled", true)) {
+            return;
+        }
+        String explicit = System.getProperty("ALLOWED_DOMAINS");
+        if (explicit != null && !explicit.isBlank()) {
+            System.out.println("[domains] -DALLOWED_DOMAINS supplied -- keeping it, "
+                    + "skipping the account_rules lookup");
+            return;
+        }
+        String reason = Config.get("domains.fromDb.reason", "managed_domain");
+        java.util.List<String> domains =
+                com.ak.api.db.repo.AccountRulesRepository.domainsByReason(reason);
+        if (domains.isEmpty()) {
+            System.out.println("[domains] account_rules returned no rows for reason="
+                    + reason + " -- keeping the configured ALLOWED_DOMAINS");
+            return;
+        }
+        System.setProperty("ALLOWED_DOMAINS", String.join(",", domains));
+        System.out.println("[domains] ALLOWED_DOMAINS primed from account_rules: "
+                + domains.size() + " domain(s), reason=" + reason);
+    }
+
     @BeforeSuite(alwaysRun = true)
     public void bootstrapRestAssured() {
         if (!BOOTSTRAPPED.compareAndSet(false, true)) {
@@ -122,6 +168,7 @@ public abstract class BaseApiTest {
             System.err.println("################################################################");
             System.err.println();
         }
+        primeManagedDomainsFromDb();
         RestAssured.baseURI = Config.baseUrl();
         RestAssured.useRelaxedHTTPSValidation();
 
