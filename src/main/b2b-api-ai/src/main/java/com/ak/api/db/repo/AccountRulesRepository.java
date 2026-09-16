@@ -31,13 +31,15 @@ public final class AccountRulesRepository {
 
     /**
      * Domains the backend currently treats as managed:
-     * {@code SELECT value FROM account_rules WHERE reason = ?}.
+     * {@code SELECT value FROM account_rules WHERE CAST(reason AS VARCHAR) = ?}.
      *
      * <p>Replaces the static {@code ALLOWED_DOMAINS} config string, which had
      * to be edited by hand whenever the backend list grew. The suite already
-     * runs this exact query from translated Groovy
-     * ({@code OnboardingFlowAGuestidmember9}), so the table and column are
-     * proven against the same credentials.</p>
+     * runs the same SELECT from translated Groovy
+     * ({@code OnboardingFlowAGuestidmember9}) -- but as a string LITERAL, which
+     * Postgres coerces into the enum column type. A JDBC bind parameter is sent
+     * as varchar instead, and Postgres has no {@code enum = varchar} operator
+     * (SQLSTATE 42883) -- hence the explicit CAST.</p>
      *
      * <p>FAIL-SOFT BY DESIGN. Returns an empty list rather than throwing when
      * the DB is off, the credentials are placeholders, the query is refused by
@@ -58,7 +60,7 @@ public final class AccountRulesRepository {
             return List.of();
         }
         String table = Config.get("domains.fromDb.table", "account_rules");
-        String sql = "SELECT " + VALUE_COLUMN + " FROM " + table + " WHERE reason = ?";
+        String sql = "SELECT " + VALUE_COLUMN + " FROM " + table + " WHERE CAST(reason AS VARCHAR) = ?";
         // Same guard the emitted JDBC steps apply before Db.queryAll.
         String refused = Db.unsafeSqlReasonForQuery(sql);
         if (refused != null) {
