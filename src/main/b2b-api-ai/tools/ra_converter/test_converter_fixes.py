@@ -1212,19 +1212,6 @@ def test_class_names_differing_only_by_case_are_disambiguated():
         first, second, third)
 
 
-if __name__ == "__main__":
-    tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
-    failed = 0
-    for fn in tests:
-        try:
-            fn()
-            print(f"ok  {fn.__name__}")
-        except Exception as ex:
-            failed += 1
-            print(f"FAIL {fn.__name__}: {ex}")
-    if failed:
-        sys.exit(1)
-    print(f"{len(tests)} passed")
 
 
 # ---------------------------------------------------------------------------
@@ -1961,3 +1948,47 @@ def test_emitted_digest_listener_is_v3():
         jsrc = io.open(java, encoding="utf-8").read()
         assert "digest v3" in jsrc and "server said:" in jsrc, \
             "committed FailureDigestListener.java is behind the converter template"
+
+
+def test_script_runner_is_the_last_thing_in_this_file():
+    """verify_all runs this file as a SCRIPT, not under pytest.
+
+    The runner collects `globals()` when it executes, so a test appended
+    after the `if __name__ == "__main__"` block is defined too late and
+    never runs -- 47 tests sat below it, all reported as passing by
+    `[PASS] contracts`, some for months. pytest found them; the gate did
+    not. Keep the block last, and keep appending ABOVE this test.
+    """
+    import io as _io
+    import os as _os
+    src = _io.open(_os.path.abspath(__file__), encoding="utf-8").read()
+    main_at = src.index('if __name__ == "__main__":')
+    after = src[main_at:]
+    stray = [ln for ln in after.splitlines() if ln.startswith("def test_")]
+    assert not stray, "tests defined AFTER the script runner never execute: " + ", ".join(stray)
+
+
+if __name__ == "__main__":
+    import inspect as _inspect
+    import pathlib as _pathlib
+    import tempfile as _tempfile
+    tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
+    failed = 0
+    for fn in tests:
+        try:
+            # Minimal fixture support: pytest's tmp_path is the only fixture
+            # these tests use. A test that needs one used to crash the
+            # script runner with a TypeError -- when it was reached at all.
+            params = _inspect.signature(fn).parameters
+            if "tmp_path" in params:
+                with _tempfile.TemporaryDirectory() as _d:
+                    fn(_pathlib.Path(_d))
+            else:
+                fn()
+            print(f"ok  {fn.__name__}")
+        except Exception as ex:
+            failed += 1
+            print(f"FAIL {fn.__name__}: {ex}")
+    if failed:
+        sys.exit(1)
+    print(f"{len(tests)} passed")

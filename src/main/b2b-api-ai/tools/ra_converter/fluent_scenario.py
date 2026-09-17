@@ -728,7 +728,8 @@ def emitter_version() -> str:
 
 def _empty_catalog() -> dict:
     return {"phases": {}, "verifies": {}, "bootstrap": None, "suites": {},
-            "clientMethods": [], "vocabularyVersion": phase_vocabulary.version(),
+            "clientMethods": [], "shapes": {},
+            "vocabularyVersion": phase_vocabulary.version(),
             "emitterVersion": emitter_version()}
 
 
@@ -758,9 +759,11 @@ def load_fluent_catalog() -> dict:
     current_emitter = emitter_version()
     if data.get("emitterVersion") != current_emitter:
         kept = data.get("clientMethods", [])
+        kept_shapes = data.get("shapes", {}) or {}
         stale = len(data.get("phases", {}) or {})
         data = _empty_catalog()
         data["clientMethods"] = kept
+        data["shapes"] = kept_shapes
         print(f"[fluent_catalog] converter changed -- discarded {stale} cached "
               f"phase bodies so the new emit takes effect")
         return data
@@ -772,10 +775,12 @@ def load_fluent_catalog() -> dict:
     # difference -- so treat it exactly like a vocabulary bump and rebuild.
     if data.get("incomplete"):
         kept = data.get("clientMethods", [])
+        kept_shapes = data.get("shapes", {}) or {}
         stale = len(data.get("phases", {}) or {})
         reason = data.get("incompleteReason") or []
         data = _empty_catalog()
         data["clientMethods"] = kept
+        data["shapes"] = kept_shapes
         print(f"[fluent_catalog] previous run did not complete "
               f"({', '.join(str(r) for r in reason[:3])}) -- discarded {stale} "
               f"phase entries computed from partial data; rebuilding")
@@ -794,6 +799,7 @@ def load_fluent_catalog() -> dict:
     data.setdefault("bootstrap", None)
     data.setdefault("suites", {})
     data.setdefault("clientMethods", [])
+    data.setdefault("shapes", {})
     data["vocabularyVersion"] = current
     return data
 
@@ -801,6 +807,26 @@ def load_fluent_catalog() -> dict:
 def save_fluent_catalog(data: dict) -> str:
     path = catalog_path()
     tmp = path + ".tmp"
+    # The catalog is saved from several places in one run, each from its
+    # own in-memory copy. Merging the call-shape registry HERE means every
+    # save carries it; merging in one caller let a later save that had
+    # loaded the file earlier write the key back empty (which is exactly
+    # what happened the first time).
+    try:
+        from phase_model import RUN_SPECS, ShapeRegistry
+        if RUN_SPECS:
+            reg = ShapeRegistry(data.get("shapes"))
+            for suite, specs in RUN_SPECS.items():
+                reg.merge(specs.values(), suite)
+            data["shapes"] = reg.to_dict()
+            n_specs = sum(len(v) for v in RUN_SPECS.values())
+            n_setup = sum(1 for v in RUN_SPECS.values() for s in v.values() if s.setup)
+            print(f"[fluent_catalog] call shapes: {len(data['shapes'])} "
+                  f"(from {n_specs} captured REST step(s), {n_setup} in SetupHelper)")
+        else:
+            print("[fluent_catalog] call shapes: no REST step captured in this process")
+    except Exception as exc:  # the catalog must still be written
+        print(f"[fluent_catalog] shape registry not merged: {exc}")
     payload = json.dumps(data, indent=2) + "\n"
     last_err = None
     for attempt in range(5):

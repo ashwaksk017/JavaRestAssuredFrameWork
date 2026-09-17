@@ -5553,6 +5553,9 @@ class Emitter:
         # invariant as client_takes_query: every call site passes a
         # map (possibly empty) once the op is flagged.
         self.client_takes_extra_headers: dict[tuple[str, str], bool] = {}
+        # Stage 1a: PhaseSpec per rendered REST step, keyed
+        # (setup?, case, sid, suffix). See phase_model.
+        self._phase_specs: dict = {}
         # Populated by main() before emit_test_class runs. Maps case name to
         # the flow dict (or missing = no shared flow covers this case).
         self._flow_by_case: dict[str, dict] = {}
@@ -7560,6 +7563,7 @@ public interface ImportedRestClient {{
         # "poll every producer of a path param" rule is a much larger
         # change and is not justified until the auth cascade is fixed and
         # we can see how many broken paths actually survive it.
+        poll_spec = None
         _case_obj = getattr(self, "_current_case_obj", None)
         if _case_obj is not None and 200 <= expected_status < 300:
             # Only for a step expected to SUCCEED. A negative test expects
@@ -7579,6 +7583,7 @@ public interface ImportedRestClient {{
                     # ids in the failing population are never minted
                     # (producer returns 4xx), so a long wait buys
                     # nothing and ~115 of them cost ~30 min a run
+                poll_spec = (_pf, _key, _dflt)
                 lines.append(
                     f'        .pollUntilJsonPresent("{_pf}", '
                     f'com.ak.api.config.Config.getInt("{_key}", {_dflt}))')
@@ -7642,6 +7647,8 @@ public interface ImportedRestClient {{
         # Response_guestId#, etc.). Extract handles the plain Response
         # form; ResponseAsXml / ResponseAsJson / Headers variants share
         # the same placeholder-name pattern so they benefit too.
+        _needed_fields: dict = {}
+        _needed_rawreq: dict = {}
         _step_obj = self._current_case_obj
         if _step_obj is not None:
             # Scan later bodies AND JsonPath Match assertion content.
@@ -7688,6 +7695,47 @@ public interface ImportedRestClient {{
                             f'com.ak.api.rest.utilities.RestUtilities'
                             f'.safeJsonExtractFromString('
                             f'{_payload_src}, "{_jlit(_gpath)}"));')
+
+        # Record what this body was built from (phase_model.PhaseSpec).
+        # A RECORD of the emission above, not a second renderer -- so it
+        # cannot disagree with the Java. Stage 1b turns these into engine
+        # methods + thin phases; today they feed the shape registry only.
+        try:
+            from phase_model import PhaseSpec, record as _record_spec
+            _ex = []
+            for _k, _f in (_needed_fields or {}).items():
+                if _k.endswith("_Response"):
+                    _ex.append((_k, "whole", ""))
+                else:
+                    _ex.append((_k, "json", _f))
+            for _k, _g in (_needed_rawreq or {}).items():
+                if _k.endswith("_RawRequest") or not _g:
+                    _ex.append((_k, "rawreq", ""))
+                else:
+                    _ex.append((_k, "rawreqPath", _g))
+            _spec = PhaseSpec(
+                suite=self.suite_name or "",
+                case=getattr(self, "_current_case", "") or "",
+                step_name=step.step_name, sid=sid,
+                verb=verb_u, path=step.resource_path,
+                client_method=method_name_java, receiver=_recv,
+                template_expr=template_expr, regen=bool(needs_regen),
+                expected_status=int(expected_status),
+                query=tuple(query_entries), headers=tuple(header_entries),
+                path_args=tuple(path_args), token_expr=token_expr,
+                poll=poll_spec, extracts=tuple(_ex),
+                assertion_types=tuple(a.type for a in assertions_to_emit),
+                setup=bool(getattr(self, "_rendering_setup_helper", False)))
+            # Keyed on the REST-step POSITION in the method, not the local
+            # suffix: `_step_suffix` deliberately hands the same suffix to a
+            # repeated step name (locals stay grouped), which would fold two
+            # calls into one spec.
+            _spec_key = (_spec.setup, _spec.case, sid, self._current_rest_step_pos)
+            _record_spec(_spec, _spec_key)
+            self._phase_specs[_spec_key] = _spec
+        except Exception as _spec_err:  # bookkeeping must never break emission
+            print(f"[ra_converter] phase-spec capture failed for step "
+                  f"{step.step_name!r}: {_spec_err}")
 
         # Advance the cluster REST-step position so the next call reads
         # assertions from position+1.
@@ -9688,6 +9736,10 @@ public final class SuiteCleanup {{
             # to the flat legacy template path -- broken in v2.)
             self._current_case = flow["template_case"].name
             self._current_prefix = "__setup__"
+            # `_current_prefix` is never restored after this loop, so it is
+            # NOT a usable "am I in SetupHelper" signal (every later render
+            # in the run still sees "__setup__"). This flag is.
+            self._rendering_setup_helper = True
             self._reset_per_method_state()
             step_lines: list[str] = [
                 # `exp` is normally provided by BaseApiTest.expected(row) but
@@ -9738,6 +9790,7 @@ public final class SuiteCleanup {{
     }}
 """)
 
+        self._rendering_setup_helper = False
         content = f"""package {pkg};
 
 import java.util.Map;
