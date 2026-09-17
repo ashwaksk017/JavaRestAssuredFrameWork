@@ -5600,6 +5600,17 @@ class Emitter:
         # Stage 1a: PhaseSpec per rendered REST step, keyed
         # (setup?, case, sid, suffix). See phase_model.
         self._phase_specs: dict = {}
+        # Stage 1b (--phase-specs): phases as data.
+        self.phase_specs_enabled: bool = _PHASE_SPECS
+        self._last_phase_spec = None            # set by the capture in _render_rest_step_body
+        self._last_plan: dict | None = None     # last _fluent_render_groups result
+        self._current_cluster: list | None = None
+        self._case_phase_specs: dict[str, list] = {}   # case name -> spec entries
+        self._phases_classes: list[str] = []
+        self._suite_hooks: dict[tuple, str] = {}       # (leftover lines, res var) -> Hooks.<name>
+        self._suite_hook_java: list[str] = []
+        self._spec_vocabs: set[str] = set()
+        self._spec_verify_vocabs: dict[str, set] = {}
         # Populated by main() before emit_test_class runs. Maps case name to
         # the flow dict (or missing = no shared flow covers this case).
         self._flow_by_case: dict[str, dict] = {}
@@ -7757,6 +7768,8 @@ public interface ImportedRestClient {{
                     _ex.append((_k, "rawreq", ""))
                 else:
                     _ex.append((_k, "rawreqPath", _g))
+            from phase_emit import parse_ref as _parse_ref, engine_id as _engine_id
+            _v2s = {v: s for s, v in self.response_var_by_step.items()}
             _spec = PhaseSpec(
                 suite=self.suite_name or "",
                 case=getattr(self, "_current_case", "") or "",
@@ -7769,7 +7782,14 @@ public interface ImportedRestClient {{
                 path_args=tuple(path_args), token_expr=token_expr,
                 poll=poll_spec, extracts=tuple(_ex),
                 assertion_types=tuple(a.type for a in assertions_to_emit),
-                setup=bool(getattr(self, "_rendering_setup_helper", False)))
+                setup=bool(getattr(self, "_rendering_setup_helper", False)),
+                engine_id=_engine_id(method_name_java, len(path_param_names),
+                                     bool(client_takes_query),
+                                     bool(client_takes_extra_headers),
+                                     bool(client_needs_body)),
+                path_refs=tuple(_parse_ref(a, _v2s) for a in path_args),
+                token_ref=_parse_ref(token_expr, _v2s))
+            self._last_phase_spec = _spec
             # Keyed on the REST-step POSITION in the method, not the local
             # suffix: `_step_suffix` deliberately hands the same suffix to a
             # repeated step name (locals stay grouped), which would fold two
@@ -11236,6 +11256,7 @@ public final class PlaceholderResolver {{
             # In merged clusters the FIRST case is always the LONGEST (the
             # base cluster from `_merge_prefix_clusters`), so its steps are
             # the full sequence -- shorter cases stop early via CSV cell.
+            self._current_cluster = cluster
             rendered_methods.append(self._render_test_method_v2(
                 cluster[0], service_class_name, final_name, status_code, variant,
                 cluster_size=len(cluster),
@@ -11275,6 +11296,8 @@ public final class PlaceholderResolver {{
                 f" * are kept as separate methods so failures are addressable per intent.",
             ]
 
+        if self.phase_specs_enabled:
+            self._emit_phases_class(class_name)
         csv_dir = (f"{self.suite_name}/{subpackage_override}/{class_name}"
                    if subpackage_override
                    else f"{self.suite_name}/{class_name}")
@@ -11505,15 +11528,58 @@ public class {class_name} extends BaseApiTest {{
         start_java = render_group(start_steps)
         flow_java: list[tuple[str, list[str]]] = []
         all_java = list(start_java)
+        # --phase-specs: a group that is ONE REST call (first in the group)
+        # plus translated follow-ups becomes a spec entry, not a method.
+        spec_entries: list[dict] = []
+        chain: list[tuple] = []
+        verify_chain: list[tuple] = []
+        use_specs = self.phase_specs_enabled and not emit_stop_checks
         for fname, gsteps in flow_groups:
-            body = render_group(gsteps)
+            entry = None
+            if use_specs:
+                entry, body = self._render_group_as_spec(
+                    fname, gsteps, service_class_name, False, None)
+            else:
+                body = render_group(gsteps)
+            if entry is not None:
+                spec_entries.append(entry)
+                chain.append(("spec", entry))
+                continue
             flow_java.append((fname, body))
+            chain.append(("flow", len(flow_java) - 1))
             all_java.extend(body)
         verify_java: list[tuple[str, str, list[str]]] = []
         for vcls, vmeth, gsteps in verify_groups:
-            body = render_group(gsteps, early_return="return;")
+            entry = None
+            if use_specs:
+                entry, body = self._render_group_as_spec(
+                    vmeth, gsteps, service_class_name, True, vcls)
+            else:
+                body = render_group(gsteps, early_return="return;")
+            if entry is not None:
+                spec_entries.append(entry)
+                verify_chain.append(("spec", entry))
+                continue
             verify_java.append((vcls, vmeth, body))
+            verify_chain.append(("verify", len(verify_java) - 1))
             all_java.extend(body)
+        if spec_entries:
+            # A residual text-path body may read the response of a step that
+            # is now a spec: that response lives in the PhaseContext, not in
+            # a `<step>Res` field any more.
+            _v2s = {e["res_var"]: e["step"] for e in spec_entries if e.get("res_var")}
+            if _v2s:
+                _rx = re.compile(r"\b(" + "|".join(re.escape(v) for v in sorted(_v2s, key=len, reverse=True)) + r")\b")
+                def _fix(lines: list[str]) -> list[str]:
+                    return [_rx.sub(lambda m: 'phaseContext().response("' + _v2s[m.group(1)] + '")', ln)
+                            for ln in lines]
+                flow_java = [(n, _fix(b)) for n, b in flow_java]
+                verify_java = [(c, m, _fix(b)) for c, m, b in verify_java]
+                all_java = list(start_java)
+                for _n, b in flow_java:
+                    all_java.extend(b)
+                for _c, _m, b in verify_java:
+                    all_java.extend(b)
         reuse = self._method_reuse()
         flow_java = reuse.assign_flow(flow_java)
         verify_java = reuse.assign_verifies(verify_java)
@@ -11536,7 +11602,7 @@ public class {class_name} extends BaseApiTest {{
                     "if (!__stopAfter.isEmpty() && __restStepIdx >= "
                     "Integer.parseInt(__stopAfter)) { return this; }")
         bootstrap_lines.extend(start_java)
-        return {
+        plan = {
             "assigned_flow": assigned_flow,
             "skip_count": skip_count,
             "steps_to_render": steps_to_render,
@@ -11546,7 +11612,63 @@ public class {class_name} extends BaseApiTest {{
             "all_java": all_java,
             "bootstrap_lines": bootstrap_lines,
             "resp_fields": collect_response_fields(all_java),
+            "spec_entries": spec_entries,
+            "chain": chain,
+            "verify_chain": verify_chain,
         }
+        self._last_plan = plan
+        return plan
+
+    def _render_group_as_spec(self, fname: str, gsteps: list, service_class_name: str,
+                              verify: bool, vcls: str | None):
+        """(entry, body): entry when the group is spec-able, else None + the
+        body the text path would have produced. Every step is rendered
+        exactly once either way, so side effects (response vars, the REST
+        position counter) match the text path."""
+        _here = os.path.dirname(os.path.abspath(__file__))
+        if _here not in sys.path:
+            sys.path.insert(0, _here)
+        import phase_emit
+        from fluent_scenario import rewrite_response_to_fields
+        rendered: list[list[str]] = []
+        for step in gsteps:
+            rendered.append(self._render_step(step, service_class_name))
+        body: list[str] = []
+        for lines in rendered:
+            body.extend(lines)
+            body.append("")
+        body = rewrite_response_to_fields(body)
+        rest = [s for s in gsteps if isinstance(s, RestStep)]
+        if len(rest) != 1 or not isinstance(gsteps[0], RestStep):
+            return None, body
+        spec = self._last_phase_spec
+        if spec is None or spec.step_name != gsteps[0].step_name:
+            return None, body
+        res_var = self.response_var_by_step.get(gsteps[0].step_name)
+        if not res_var:
+            return None, body
+        rest_lines = rewrite_response_to_fields(list(rendered[0]))
+        post: list[str] = []
+        for lines in rendered[1:]:
+            post.extend(rewrite_response_to_fields(list(lines)))
+        split = phase_emit.split_rest_body(rest_lines, res_var, spec.sid)
+        if not split.chain_seen:
+            return None, body
+        leftover = split.leftover + [ln for ln in post if ln.strip()]
+        if phase_emit.hook_blockers(leftover):
+            return None, body
+        vocab = fname
+        if verify:
+            self._spec_verify_vocabs.setdefault(vcls or "Insights", set()).add(vocab)
+        else:
+            self._spec_vocabs.add(vocab)
+        entry = {
+            "vocab": vocab, "step": spec.sid, "spec": spec, "split": split,
+            "leftover": leftover, "res_var": res_var,
+            "var_to_step": {v: s for s, v in self.response_var_by_step.items()},
+            "verify": verify, "vcls": vcls or "Insights",
+        }
+        return entry, body
 
     def _method_reuse(self):
         """Body-first fluent names; shared across collect + emit for this run."""
@@ -12247,6 +12369,13 @@ public class {class_name} extends BaseApiTest {{
                 f"    public void {runner}() throws Exception {{\n"
                 f"{self._indent_java(info['body'], 8)}\n"
                 f"    }}\n")
+        vocab_methods = ""
+        if self.phase_specs_enabled:
+            import phase_emit as _pe
+            # a spec'd name must not also be a text-path phase name
+            taken = set(self._shared_phases) | set(self._suite_local_phases())
+            self._taken_vocab_names = taken
+            vocab_methods = _pe.vocab_methods_java(sorted(self._spec_vocabs), taken)
         content = f"""package {pkg};
 
 import java.util.Map;
@@ -12300,6 +12429,8 @@ public abstract class ScenarioSteps<S extends ScenarioSteps<S>> {{
     protected String testCaseId;
     protected int __restStepIdx;
     protected String __stopAfter;
+    protected com.ak.api.rest.utilities.phase.CaseRegistry.Case phases;
+    private com.ak.api.rest.utilities.phase.PhaseContext phaseContext;
 {resp_decls}
 
     protected ScenarioSteps(ImportedRestClient client,
@@ -12334,6 +12465,46 @@ public abstract class ScenarioSteps<S extends ScenarioSteps<S>> {{
 {boot_body}
     }}
 
+    // ---- phases as data (--phase-specs) -------------------------------
+    protected com.ak.api.rest.utilities.phase.PhaseContext phaseContext() {{
+        if (phaseContext == null) {{
+            phaseContext = new com.ak.api.rest.utilities.phase.PhaseContext(
+                    client, ctx, row, softAssert, holder, testCaseId);
+        }}
+        return phaseContext;
+    }}
+
+    /** The suite steps class binds this to its generated Calls. */
+    protected io.restassured.response.Response dispatch(
+            com.ak.api.rest.utilities.phase.PhaseContext c,
+            com.ak.api.rest.utilities.phase.PhaseSpec p) throws Exception {{
+        throw new IllegalStateException("no Calls bound for phase `" + p.step + "`");
+    }}
+
+    private com.ak.api.rest.utilities.phase.CaseRegistry.Case requirePhases(String vocab) {{
+        if (phases == null) {{
+            throw new IllegalStateException("no phase table for case `" + testCaseId
+                    + "` (wanted `" + vocab + "`): start(row, caseId) binds it for converted "
+                    + "cases; hand-written flows use CustomerOnboarding");
+        }}
+        return phases;
+    }}
+
+    protected S runPhase(String vocab, String step) throws Exception {{
+        com.ak.api.rest.utilities.phase.CaseRegistry.Case cs = requirePhases(vocab);
+        com.ak.api.rest.utilities.phase.PhaseSpec p =
+                step == null ? cs.only(vocab, false) : cs.named(vocab, step, false);
+        dispatch(phaseContext(), p);
+        return self();
+    }}
+
+    public void runVerify(String vocab, String step) throws Exception {{
+        com.ak.api.rest.utilities.phase.CaseRegistry.Case cs = requirePhases(vocab);
+        com.ak.api.rest.utilities.phase.PhaseSpec p =
+                step == null ? cs.only(vocab, true) : cs.named(vocab, step, true);
+        dispatch(phaseContext(), p);
+    }}
+{vocab_methods}
 {chr(10).join(flow_methods)}
 {chr(10).join(verify_runners)}
 }}
@@ -12360,7 +12531,7 @@ public abstract class ScenarioSteps<S extends ScenarioSteps<S>> {{
             n: self._fluent_fingerprint(b) for n, b in phases.items()}
         self._suite_local_verify_index = {
             k: self._fluent_fingerprint(b) for k, b in verifies.items()}
-        if not phases and not verifies:
+        if not phases and not verifies and not self.phase_specs_enabled:
             return ""
 
         _here = os.path.dirname(os.path.abspath(__file__))
@@ -12387,7 +12558,14 @@ public abstract class ScenarioSteps<S extends ScenarioSteps<S>> {{
                 f"    public void {runner}() throws Exception {{" + NL
                 + self._indent_java(body, 8) + NL
                 + "    }" + NL)
-
+        if self.phase_specs_enabled:
+            methods.append(
+                "    @Override" + NL
+                + "    protected io.restassured.response.Response dispatch(" + NL
+                + "            com.ak.api.rest.utilities.phase.PhaseContext c," + NL
+                + "            com.ak.api.rest.utilities.phase.PhaseSpec p) throws Exception {" + NL
+                + f"        return {self.package_root}.support.{self.suite_name}.Calls.call(c, p);" + NL
+                + "    }" + NL)
         content = f"""package {pkg};
 
 import java.util.Map;
@@ -12443,6 +12621,113 @@ public abstract class {cls}<S extends {cls}<S>> extends ScenarioSteps<S> {{
 
     def _suite_scenario_pkg(self) -> str:
         return f"{self.package_root}.support.{self.suite_name}.scenario"
+
+    def _suite_cases_pkg(self) -> str:
+        return f"{self.package_root}.support.{self.suite_name}.cases"
+
+    _PHASES_IMPORTS = (
+        "java.util.Map",
+        "org.slf4j.Logger", "org.slf4j.LoggerFactory",
+        "io.restassured.response.Response",
+        "com.ak.api.config.Config", "com.ak.api.data.Expected", "com.ak.api.data.FakeData",
+        "com.ak.api.data.PlaceholderResolver", "com.ak.api.db.Db",
+        "com.ak.api.rest.utilities.AuthHelper", "com.ak.api.rest.utilities.Headers",
+        "com.ak.api.rest.utilities.ResponseAsserts", "com.ak.api.rest.utilities.RestStep",
+        "com.ak.api.rest.utilities.RestUtilities", "com.ak.api.retry.Poller",
+        "com.ak.api.rest.utilities.phase.CaseRegistry", "com.ak.api.rest.utilities.phase.PhaseContext",
+        "com.ak.api.rest.utilities.phase.PhaseSpec", "com.ak.api.rest.utilities.phase.Ref",
+        "com.ak.api.support.CtxFields", "com.ak.api.support.ImportedRestClient",
+        "com.ak.api.support.ImportedScenario", "com.ak.api.support.ImportedTemplates",
+    )
+
+    def _emit_phases_class(self, class_name: str) -> str | None:
+        """support/<suite>/cases/<TestClass>Phases.java for the clusters just rendered."""
+        _here = os.path.dirname(os.path.abspath(__file__))
+        if _here not in sys.path:
+            sys.path.insert(0, _here)
+        import phase_emit
+        pkg = self._suite_cases_pkg()
+        cls = f"{class_name}Phases"
+        cases_out: list[dict] = []
+        hooks: list[str] = []          # none per class: hooks live in the suite Hooks class
+        hook_by_body = self._suite_hooks
+        seen_cases: set[str] = set()
+        for cluster in (self._clusters or []):
+            for case in cluster:
+                if case.name in seen_cases:
+                    continue
+                seen_cases.add(case.name)
+                entries = self._case_phase_specs.get(case.name)
+                if not entries:
+                    continue
+                ents = []
+                for e in entries:
+                    hook_ref = None
+                    if e["leftover"]:
+                        key = (tuple(e["leftover"]), e["res_var"])
+                        hname = hook_by_body.get(key)
+                        if hname is None:
+                            hname = f"hook{len(hook_by_body) + 1}_{sanitize_identifier(e['step'])[:40]}"
+                            hook_by_body[key] = hname
+                            self._suite_hook_java.append(phase_emit.hook_java(
+                                hname, e["leftover"], e["res_var"], e["var_to_step"]))
+                        hook_ref = f"Hooks::{hname}"
+                    sj = phase_emit.spec_builder_java(
+                        e["spec"], e["split"], e["spec"].template_expr,
+                        e["var_to_step"], hook_ref)
+                    ents.append({"vocab": e["vocab"], "step": e["step"],
+                                 "verify": e["verify"], "spec_java": sj})
+                cases_out.append({"case": case.name, "entries": ents})
+        if not cases_out:
+            return None
+        imports = list(self._PHASES_IMPORTS) + [
+            f"{self.package_root}.support.{self.suite_name}.SetupHelper",
+            f"{self.package_root}.support.{self.suite_name}.TestSupport",
+            f"{self.package_root}.templates.{self.suite_name}.Templates",
+        ]
+        content = phase_emit.phases_class_java(pkg, cls, imports, cases_out, hooks)
+        rel = f"src/main/java/{pkg.replace('.', '/')}/{cls}.java"
+        self._write(rel, content)
+        if cls not in self._phases_classes:
+            self._phases_classes.append(cls)
+        return rel
+
+    def emit_phase_index_and_calls(self) -> list[str]:
+        """CaseIndex (loads every Phases class) + Calls (the engine switch)."""
+        if not self.phase_specs_enabled:
+            return []
+        _here = os.path.dirname(os.path.abspath(__file__))
+        if _here not in sys.path:
+            sys.path.insert(0, _here)
+        import phase_emit
+        written = []
+        cases_pkg = self._suite_cases_pkg()
+        rel = f"src/main/java/{cases_pkg.replace('.', '/')}/CaseIndex.java"
+        self._write(rel, phase_emit.case_index_java(cases_pkg, self._phases_classes))
+        written.append(rel)
+        imports = list(self._PHASES_IMPORTS) + [
+            f"{self.package_root}.support.{self.suite_name}.SetupHelper",
+            f"{self.package_root}.support.{self.suite_name}.TestSupport",
+            f"{self.package_root}.templates.{self.suite_name}.Templates",
+        ]
+        rel = f"src/main/java/{cases_pkg.replace('.', '/')}/Hooks.java"
+        self._write(rel, phase_emit.hooks_class_java(cases_pkg, imports, self._suite_hook_java))
+        written.append(rel)
+        ops = []
+        for (op, path), java_name in self.client_method_by_op.items():
+            key = (op, path)
+            ops.append((java_name, len(re.findall(r"\{[A-Za-z0-9_]+\}", path or "")),
+                        bool(self.client_takes_query.get(key, False)),
+                        bool(self.client_takes_extra_headers.get(key, False)),
+                        bool(self.client_takes_body.get(key, False))))
+        suite_pkg = f"{self.package_root}.support.{self.suite_name}"
+        rel = f"src/main/java/{suite_pkg.replace('.', '/')}/Calls.java"
+        self._write(rel, phase_emit.calls_java(suite_pkg, ops))
+        written.append(rel)
+        print(f"[ra_converter] --phase-specs: {len(self._phases_classes)} Phases class(es), "
+              f"{len(set(ops))} engine(s) in Calls, {len(self._spec_vocabs)} vocabulary name(s), "
+              f"{len(self._suite_hook_java)} distinct hook(s)")
+        return written
 
     def _suite_steps_class(self, service_class_name: str) -> str:
         base = (service_class_name or "Suite")
@@ -12526,6 +12811,14 @@ public abstract class {cls}<S extends {cls}<S>> extends ScenarioSteps<S> {{
                 + self._indent_java(body, 8) + NL
                 + "        return self();" + NL
                 + "    }" + NL)
+        phase_bind = ""
+        if self.phase_specs_enabled:
+            phase_bind = (
+                f"        flow.phases = com.ak.api.rest.utilities.phase.CaseRegistry.forCase(flow.testCaseId);{NL}"
+                f"        if (flow.phases == null) {{{NL}"
+                f"            {self._suite_cases_pkg()}.CaseIndex.ensureLoaded();{NL}"
+                f"            flow.phases = com.ak.api.rest.utilities.phase.CaseRegistry.forCase(flow.testCaseId);{NL}"
+                f"        }}{NL}")
         # An overridden bootstrap() is arbitrary translated Groovy for THIS
         # suite -- SetupHelper, Config, TestSupport, CtxFields. Same import
         # set as the steps base, or 409 "cannot find symbol" across 63 files.
@@ -12589,7 +12882,7 @@ public final class {cls} extends {base}<{cls}> {{
         flow.__restStepIdx = 0;
         flow.__stopAfter = "";
         flow.__stopAfter = flow.row.getOrDefault("_stop_after", "");
-        return flow.bootstrap();
+{phase_bind}        return flow.bootstrap();
     }}
 {override}
     public record Scenario() {{}}
@@ -12618,10 +12911,28 @@ public final class {cls} extends {base}<{cls}> {{
         for (vcls, vmeth) in list(self._shared_verifies) + list(
                 self._suite_local_verify_index):
             by_cls.setdefault(vcls, set()).add(vmeth)
+        for vcls, vmeths in (self._spec_verify_vocabs or {}).items():
+            by_cls.setdefault(vcls, set()).update(vmeths)
         written = []
         for vcls, meths in sorted(by_cls.items()):
             methods = []
+            _text_meths = ({m for (c, m) in self._shared_verifies if c == vcls}
+                           | {m for (c, m) in (self._suite_local_verify_index or {}) if c == vcls})
             for vmeth in sorted(meths):
+                if vmeth in (self._spec_verify_vocabs or {}).get(vcls, set()):
+                    methods.append(
+                        f"    public static void {vmeth}(Object scenario, "
+                        "com.ak.api.data.Expected expected, String step) throws Exception {" + NL
+                        + f"        com.ak.api.support.scenario.ScenarioSteps.current().runVerify(\"{vmeth}\", step);" + NL
+                        + "    }" + NL)
+                    if vmeth not in _text_meths:
+                        methods.append(
+                            f"    public static void {vmeth}(Object scenario, "
+                            "com.ak.api.data.Expected expected) throws Exception {" + NL
+                            + f"        com.ak.api.support.scenario.ScenarioSteps.current().runVerify(\"{vmeth}\", null);" + NL
+                            + "    }" + NL)
+                        continue
+                    # also a text-path verify: the no-arg form below stays its runner
                 runner = "run" + vmeth[0].upper() + vmeth[1:]
                 methods.append(
                     f"    public static void {vmeth}(Object scenario, "
@@ -13086,10 +13397,64 @@ public final class {support_name} {{
             emit_stop_checks, cluster_size)
 
         from fluent_scenario import story_for_case, description_lines
-        chain = "".join(f"\n                .{fname}()" for fname, _b in flow_java)
+        plan = self._last_plan if self.phase_specs_enabled else None
+        if plan and (plan.get("spec_entries") or plan.get("chain")):
+            _here = os.path.dirname(os.path.abspath(__file__))
+            if _here not in sys.path:
+                sys.path.insert(0, _here)
+            import phase_emit
+            phase_pairs = [(e["vocab"], e["step"]) for k, e in plan["chain"] if k == "spec"]
+            spec_calls = iter(phase_emit.chain_calls(
+                phase_pairs, getattr(self, "_taken_vocab_names", set())))
+            parts = []
+            for kind, ref in plan["chain"]:
+                if kind == "spec":
+                    parts.append(next(spec_calls))
+                else:
+                    parts.append(f".{flow_java[ref][0]}()")
+            chain = "".join(f"\n                {p}" for p in parts)
+            members = list(self._current_cluster or [case])
+            for member in members:
+                self._case_phase_specs[member.name] = list(plan["spec_entries"])
+        else:
+            chain = "".join(f"\n                .{fname}()" for fname, _b in flow_java)
         entry = self._last_fluent_shared_entry or support_name
         verify_calls = []
-        for vcls, vmeth, vbody in verify_java:
+        if plan and plan.get("verify_chain"):
+            _here = os.path.dirname(os.path.abspath(__file__))
+            if _here not in sys.path:
+                sys.path.insert(0, _here)
+            import phase_emit
+            vpairs = [(e["vocab"], e["step"]) for k, e in plan["verify_chain"] if k == "spec"]
+            vcounts: dict[str, int] = {}
+            for v, _s in vpairs:
+                vcounts[v] = vcounts.get(v, 0) + 1
+            for kind, ref in plan["verify_chain"]:
+                if kind == "spec":
+                    e = ref
+                    _taken_v = ({m for (_c, m) in self._shared_verifies}
+                                | {m for (_c, m) in (getattr(self, "_suite_local_verify_index", {}) or {})})
+                    step_arg = ((", " + phase_emit.jstr(e["step"]))
+                                if (vcounts[e["vocab"]] > 1 or e["vocab"] in _taken_v) else "")
+                    verify_calls.append(f"{e['vcls']}.{e['vocab']}(scenario, expected{step_arg});")
+                    pending = getattr(self, "_pending_fluent_imports", None)
+                    fqn = f"{self._suite_scenario_pkg()}.{e['vcls']}"
+                    if pending is not None and fqn not in pending:
+                        pending.append(fqn)
+                else:
+                    vcls, vmeth, vbody = verify_java[ref]
+                    if (self._last_fluent_shared_entry
+                            or self._shared_verify_matches(vcls, vmeth, vbody)):
+                        verify_calls.append(f"{vcls}.{vmeth}(scenario, expected);")
+                        pending = getattr(self, "_pending_fluent_imports", None)
+                        fqn = f"{self._suite_scenario_pkg()}.{vcls}"
+                        if pending is not None and fqn not in pending:
+                            pending.append(fqn)
+                    else:
+                        verify_calls.append(
+                            f"{support_name}.{vcls}.{vmeth}(scenario, expected);")
+        else:
+          for vcls, vmeth, vbody in verify_java:
             if (self._last_fluent_shared_entry
                     or self._shared_verify_matches(vcls, vmeth, vbody)):
                 verify_calls.append(f"{vcls}.{vmeth}(scenario, expected);")
@@ -15118,6 +15483,10 @@ def main():
                         "under Windows' 260-char MAX_PATH so `git add` works "
                         "without core.longpaths. Pass 0 to disable truncation. "
                         "See _audit/<suite>/name_mapping.csv for the reverse map.")
+    p.add_argument("--phase-specs", action="store_true",
+                   help="Stage 1b: emit single-call phases as PhaseSpec data "
+                        "(support/<suite>/cases/*Phases.java + Calls.java) "
+                        "instead of one copied method per phase")
     p.add_argument("--cursor-assist", action="store_true",
                    help="After convert, write a conversion-gap report and, if "
                         "the audit shows confusion (TODO/STUB/PARTIAL or HIGH "
@@ -15185,7 +15554,16 @@ def _main_dispatch(args):
                 print(f"[ra_converter] cursor assist failed: {e}")
 
 
+_PHASE_SPECS = False
+
+
 def _main_dispatch_inner(args):
+    global _PHASE_SPECS
+    _PHASE_SPECS = bool(getattr(args, "phase_specs", False))
+    if _PHASE_SPECS:
+        print("[ra_converter] --phase-specs: single-call phases are emitted as "
+              "PhaseSpec data (one engine per client operation); compound "
+              "phases and entry bootstraps keep the text path for now")
     xmls = _discover_input_xmls(args.input)
     _here = os.path.dirname(os.path.abspath(__file__))
     if _here not in sys.path:
@@ -15756,6 +16134,8 @@ def _emit_imported_tests(prep: _PreparedSuite) -> int:
     # every suite XML. Provides per-@Test STARTED/PASSED/FAILED banners
     # visible in the mvn console -- crucial for `parallel="classes"`
     # runs where multiple threads interleave inline method-body logs.
+    if getattr(emitter, "phase_specs_enabled", False):
+        emitter.emit_phase_index_and_calls()
     listener_rel = emitter.emit_progress_listener()
     emitter.emit_failure_digest_listener()
     print(f"[ra_converter] emitted progress listener: {listener_rel}")

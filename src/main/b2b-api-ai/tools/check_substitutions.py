@@ -71,9 +71,27 @@ def properties_fallback_keys(raw: str) -> set:
             f"Properties.{raw.replace('_', '.')}"}
 
 
+_SPEC_EXTRACT_RX = re.compile(r'\.extract(?:Whole|RawRequest|RawRequestPath)?\(\s*"([^"]+)"')
+
+
+def spec_producers(root: str) -> set:
+    """Keys a --phase-specs tree produces as DATA (support/<suite>/cases/):
+    `.extract("K", ...)` and friends on a PhaseSpec, plus the `<step>_RawRequest`
+    PhaseRunner keeps for every phase. Invisible to the body walk below."""
+    keys: set = set()
+    for path in _walk_java(os.path.join(root, "src/main/java")):
+        norm = path.replace(chr(92), "/")
+        if "/support/" not in norm or "/cases/" not in norm:
+            continue
+        text = _read(path)
+        keys.update(_SPEC_EXTRACT_RX.findall(text))
+        keys.update(s + "_RawRequest" for s in re.findall(r'PhaseSpec\.phase\(\s*"([^"]+)"', text))
+    return keys
+
+
 def collect_producers(root: str) -> tuple:
     """(exact keys, wildcard prefixes) written anywhere in the tree."""
-    exact: set = set()
+    exact: set = set(spec_producers(root))
     wild: set = set()
     for path in _walk_java(os.path.join(root, "src/main/java")):
         text = _read(path)

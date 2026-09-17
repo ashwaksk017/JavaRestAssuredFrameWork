@@ -60,6 +60,8 @@ public final class PhaseSpec {
     }
 
     public final String step;
+    /** The typed client operation this call goes through; the generated Calls class dispatches on it. */
+    public final String engine;
     public final String verb;
     public final String path;
     public final List<Ref> pathArgs;
@@ -78,6 +80,7 @@ public final class PhaseSpec {
 
     private PhaseSpec(Builder b) {
         this.step = b.step;
+        this.engine = b.engine;
         this.verb = b.verb;
         this.path = b.path;
         this.pathArgs = Collections.unmodifiableList(new ArrayList<>(b.pathArgs));
@@ -119,6 +122,7 @@ public final class PhaseSpec {
 
     public static final class Builder {
         private final String step;
+        private String engine = "";
         private String verb = "GET";
         private String path = "/";
         private final List<Ref> pathArgs = new ArrayList<>();
@@ -152,6 +156,12 @@ public final class PhaseSpec {
         public Builder call(String verb, String path) {
             this.verb = verb.toUpperCase();
             this.path = path;
+            return this;
+        }
+
+        /** The typed client operation ({@code readProgramAccount}) the generated Calls class binds. */
+        public Builder engine(String clientMethod) {
+            this.engine = clientMethod == null ? "" : clientMethod;
             return this;
         }
 

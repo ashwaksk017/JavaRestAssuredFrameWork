@@ -131,6 +131,10 @@ class PhaseSpec:
     extracts: tuple = ()         # ((ctxKey, kind, path), ...)
     assertion_types: tuple = ()
     setup: bool = False          # rendered inside SetupHelper
+    # Stage 1b: the call as the engine sees it
+    engine_id: str = ""          # phase_emit.engine_id(...) of the typed client op
+    path_refs: tuple = ()        # phase_emit.parse_ref(...) per path parameter
+    token_ref: tuple = ("ctx", "tokenId.GeneratedTokenID")
 
     def shape(self) -> CallShape:
         return CallShape(

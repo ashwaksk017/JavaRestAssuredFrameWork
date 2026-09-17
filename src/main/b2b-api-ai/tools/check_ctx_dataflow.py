@@ -239,6 +239,33 @@ def _short(path: str) -> str:
     return p[i:].replace("\\", "/") if i >= 0 else p
 
 
+
+# --phase-specs trees declare extracts as DATA in support/<suite>/cases/:
+#   .extract("K", "$.path")  .extractWhole("K")  .extractRawRequest("K")
+#   .extractRawRequestPath("K", "path")
+# and the translated blocks that used to sit inside phase bodies live in
+# Hooks.java. Neither is a `public S name()` body, so the walk above cannot
+# see them; collect them here and treat them as produced.
+_SPEC_EXTRACT_RX = re.compile(r'\.extract(?:Whole|RawRequest|RawRequestPath)?\(\s*"([^"]+)"')
+_SPEC_WRITE_RX = re.compile(r'putExtracted\(\s*ctx\s*,\s*"([^"]+)"')
+
+
+def spec_producers(root: str) -> set:
+    keys: set = set()
+    base = os.path.join(root, "src/main/java")
+    for path in _walk_java(base):
+        norm = path.replace(chr(92), "/")
+        if "/support/" not in norm or "/cases/" not in norm:
+            continue
+        text = _read(path)
+        keys.update(_SPEC_EXTRACT_RX.findall(text))
+        keys.update(_SPEC_WRITE_RX.findall(text))
+        # RestStep keeps the resolved request under <step>_RawRequest for
+        # every phase; PhaseRunner does the same.
+        keys.update(s + "_RawRequest" for s in re.findall(r'PhaseSpec\.phase\(\s*"([^"]+)"', text))
+    return keys
+
+
 def satisfied(alts: tuple, available: set, wildcards: set) -> bool:
     for key in alts:
         if key in available:
@@ -297,6 +324,10 @@ def analyse(root: str) -> tuple:
     # whose methods live on `dsl/CustomerOnboarding` and share names with
     # generated ones; a name-keyed registry conflates the two and invents
     # failures. That test is not a converter guarantee, so it is out of scope.
+    # Keys a --phase-specs tree produces as data. Credited at chain start:
+    # the check cannot see which chained name is a spec, and a spec's
+    # extracts are, by construction, the extracts its old body had.
+    spec_keys = spec_producers(root)
     tests_root = os.path.join(root, "src/test/java/com/ak/api/tests/imported")
     for path in _walk_java(tests_root):
         text = _read(path)
@@ -315,7 +346,7 @@ def analyse(root: str) -> tuple:
             suite = tail.split("/")[0] if "/" in tail else ""
         for tname, entry, steps in chains_in(text):
             stats["chains"] += 1
-            available: set = set()
+            available: set = set(spec_keys)
             wildcards: set = set()
             # The entry class bootstrap runs before the first chained step.
             # An index-0 entry class declares no override and inherits

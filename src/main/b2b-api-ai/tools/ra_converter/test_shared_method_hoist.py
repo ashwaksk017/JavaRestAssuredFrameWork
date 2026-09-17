@@ -196,7 +196,9 @@ def test_shared_entry_start_takes_the_case_id():
     """A shared entry serves many cases, so it cannot hard-code the ReadyAPI
     case id the way a per-case Support class does. Without passing it, every
     shared-entry test would report itself as "imported"."""
-    tmpl = SRC.split("def _emit_suite_customer_onboarding", 1)[1][:4000]
+    # 8000, not 4000: the --phase-specs binding block sits between the def
+    # and the template, and the window is a cap, not a contract
+    tmpl = SRC.split("def _emit_suite_customer_onboarding", 1)[1][:8000]
     assert "String defaultTestCaseId" in tmpl
     assert 'row.getOrDefault("test_case_id", defaultTestCaseId)' in tmpl
     emit = SRC.split("start_extra = (", 1)[1][:200]
