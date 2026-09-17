@@ -15703,6 +15703,16 @@ def _emit_imported_tests(prep: _PreparedSuite) -> int:
               f"names truncated -> {mapping_path}")
     print()
     print(f"[ra_converter] audit ledger: {args.output}/_audit/{suite_name}/summary.md")
+    # Same-call-different-data groups over the emitted tree -- the reuse
+    # picture the user asked to see after every conversion.
+    try:
+        from dedup_report import write_audit as _dedup_audit
+        _dedup_line = _dedup_audit(args.output, args.package_root, suite_name)
+        if _dedup_line:
+            print(f"[ra_converter] reuse: {_dedup_line} "
+                  f"-> _audit/{suite_name}/dedup_report.txt")
+    except Exception as _dedup_err:  # a report must never fail a conversion
+        print(f"[ra_converter] dedup report skipped: {_dedup_err}")
     a_total = len(ledger.assertions)
     g_total = len(ledger.groovy)
     a_full = sum(1 for r in ledger.assertions if r[6] == "FULL")
