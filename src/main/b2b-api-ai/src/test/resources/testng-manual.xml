@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">
+<!--
+  Hand-written tests (com.ak.api.tests.manual).
+
+    mvn test "-DsuiteXmlFile=src/test/resources/testng-manual.xml"
+
+  Committed deliberately. `Suites/` is gitignored wholesale, so a suite file
+  placed there cannot be shared -- every author would have to recreate it,
+  and nothing would ever list these tests. This lives beside
+  testng-guards.xml, which is committed for the same reason.
+
+  UNLIKE the guards suite, these make REAL HTTP calls against the configured
+  environment and create real accounts. They are NOT part of verify_all and
+  must not be wired into it.
+-->
+<suite name="Manual" configfailurepolicy="continue">
+    <test name="Manual">
+        <packages>
+            <package name="com.ak.api.tests.manual"/>
+        </packages>
+    </test>
+</suite>

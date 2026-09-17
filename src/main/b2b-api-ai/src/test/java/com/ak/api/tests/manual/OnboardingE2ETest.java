@@ -11,6 +11,7 @@ import org.testng.annotations.Test;
 import com.ak.api.config.Config;
 import com.ak.api.data.PerMethodCsvDataProvider;
 import com.ak.api.dsl.CustomerOnboarding;
+import com.ak.api.dsl.ManualCleanup;
 import com.ak.api.support.ImportedRestClient;
 import com.ak.api.support.ImportedScenario;
 import com.ak.api.tests.BaseApiTest;
@@ -60,7 +61,7 @@ public class OnboardingE2ETest extends BaseApiTest {
     @BeforeClass(alwaysRun = true)
     public void initClient() {
         String baseUrl = Config.get("base_url", Config.baseUrl());
-        String name = Config.get("manual.client", "ProgramAccountClient");
+        String name = Config.get("manual.client", "ProgramaccountregressionClient");
         String fqn = name.contains(".") ? name : "com.ak.api.rest.clients." + name;
         try {
             Class<?> type = Class.forName(fqn);
@@ -90,6 +91,10 @@ public class OnboardingE2ETest extends BaseApiTest {
 
     @AfterMethod(alwaysRun = true)
     public void unbindScenario() {
+        // Delete rows this test created. Manual tests previously skipped this
+        // entirely -- the generated SuiteCleanup is gitignored and
+        // suite-specific, so nothing committed could reach it.
+        ManualCleanup.afterEachTest(ctx);
         ImportedScenario.unbind();
     }
 

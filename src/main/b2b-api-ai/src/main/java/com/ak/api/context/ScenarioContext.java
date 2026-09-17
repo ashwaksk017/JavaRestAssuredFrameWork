@@ -107,7 +107,16 @@ public final class ScenarioContext {
             "travelAgentID"));
 
     public static final Field API_TOKEN = new Field("apiToken", false, Arrays.asList(
-            "tokenId.GeneratedTokenID"));
+            "tokenId.GeneratedTokenID",
+            // Trailing on purpose: tokenId.GeneratedTokenID still wins.
+            // `accessToken` is the key AuthHelper.primeClientCredentialsToken
+            // writes and the only one ImportedScenario.begin() preserves across
+            // its ctx clear -- without this alias the priming helper and this
+            // reader were wired to DIFFERENT keys, so a hand-written chain read
+            // "" and sent an empty bearer with no error. The generated clients
+            // normalise the prefix (`startsWith("Bearer ") ? token : "Bearer "
+            // + token`), so the unprefixed form stored here is safe to return.
+            "accessToken"));
 
     public static final Field SALESFORCE_TOKEN = new Field("salesforceToken", false,
             Arrays.asList(

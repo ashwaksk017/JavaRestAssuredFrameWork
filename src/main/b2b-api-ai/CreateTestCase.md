@@ -134,8 +134,29 @@ Useful columns:
 | `expected_<phase>_header_<name>` | flag for `expectHeader`; `false` asserts ABSENT |
 | `template_<phase>` | request body for that phase; `using(Template)` overrides it (see 13) |
 
-`<phase>` is the phase name in the chain, not the ReadyAPI step name --
-`createProgramAccount`, `enrollGuest`, `confirmMemberTotp` and so on.
+`<phase>` is the string the chain passes to `exec(...)`, which is **not
+always the Java method name**. Get this wrong and the column is silently
+ignored -- nothing fails, the override just never applies.
+
+| You call | `<phase>` to use in the column |
+|---|---|
+| `createTravelAgency()` | `createTravelAgency` |
+| `enrollGuest(Role)` / `enrollOwner()` / `enrollEmployee()` / `enrollTravelAdvisor()` | `enrollGuest` |
+| `createProgramAccount(Partner)` / `createH4LAccount()` / `createH4BAccount()` / `createLTAAccount()` / `createSmbAccount()` | `createProgramAccount` |
+| `readProgramAccount()` | `readProgramAccount` |
+| `activateProgramAccount()` | `activateProgramAccount` |
+| `confirmMemberTotp(Role)` / `confirmOwner()` / `confirmTravelAdvisor()` | `confirmMemberTotp` |
+| `addMember(Role)` / `addEmployee()` / `addTravelAdvisor()` | **`createAccountMember`** |
+| `readAccountMember()` | `readAccountMember` |
+| `prepareSalesforceAccount()` | three phases: `fetchSalesforceToken`, `createSalesforceAccount`, `createSalesforceDistribution` |
+| `activateThroughHws()` | `readSalesforceLead` |
+| `verifySynchronization()` | `readSalesforceAccount` |
+
+Regenerate this mapping any time with:
+
+```
+grep -n 'exec("' src/main/java/com/ak/api/dsl/CustomerOnboarding.java
+```
 
 ### One caveat for manual tests
 
@@ -172,14 +193,14 @@ import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
 import com.ak.api.config.Config;
-import com.ak.api.data.Expected;
 import com.ak.api.data.PerMethodCsvDataProvider;
-import com.ak.api.rest.clients.ProgramAccountClient;
+import com.ak.api.dsl.CustomerOnboarding;
+import com.ak.api.dsl.CustomerOnboarding.Partner;
+import com.ak.api.dsl.CustomerOnboarding.Role;
+import com.ak.api.dsl.ManualCleanup;
 import com.ak.api.retry.RetryAnalyzer;
+import com.ak.api.support.ImportedRestClient;
 import com.ak.api.support.ImportedScenario;
-import com.ak.api.support.programaccountregression.SuiteCleanup;
-import com.ak.api.support.scenario.CustomerOnboarding;
-import com.ak.api.support.scenario.Insights;
 import com.ak.api.tests.BaseApiTest;
 import com.ak.api.xray.XrayTest;
 
@@ -222,13 +243,11 @@ public class CreateLimitedAccountTest extends BaseApiTest {
     @Story("Create limited account")
     @Description("Hand-authored scenario that reuses shared fluent phases.")
     public void createLimitedAccount(Map<String, String> row) throws Exception {
-        Expected expected = expected(row);
-        var scenario = CustomerOnboarding.start(row)
-                .enrollGuest()
-                .createProgramAccount()
+        CustomerOnboarding.start(row)
+                .enrollGuest(Role.OWNER)
+                .createProgramAccount(Partner.H4L)
                 .readProgramAccount()
                 .complete();
-        Insights.verifyProgramAccount(scenario, expected);
         softAssert.assertAll();
     }
 }
@@ -237,8 +256,15 @@ public class CreateLimitedAccountTest extends BaseApiTest {
 Rules for the `@Test` body:
 
 - Keep it a **story chain**. Do not paste REST, Groovy, or JDBC here.
-- `start(row)` must run before any phase (it binds `s.flow` for Insights).
-- `complete()` returns a scenario handle for verify helpers.
+- `start(row)` must run before any phase. It also primes a client-credentials
+  token when ctx has none -- a hand-written chain runs no `tokenRequest` step,
+  so without that every phase sent an EMPTY bearer.
+- `complete()` returns **void**. It ends the chain; it is not a handle.
+- Assert with the chain's own `expect*` verbs (section 14). The `Insights.*`
+  helpers take an `Object scenario` that `complete()` does not give you.
+- Call `ManualCleanup.afterEachTest(ctx)` in `@AfterMethod`, before
+  `ImportedScenario.unbind()`, or the rows this test creates are never
+  deleted.
 - `softAssert.assertAll()` belongs at the end of the method (and `BaseApiTest` also asserts in `@AfterMethod`).
 - `@Test` signature must be `(Map<String, String> row)`.
 
@@ -248,9 +274,17 @@ Optional: `AuthHelper.primeClientCredentialsToken(ctx)` in `@BeforeClass` only w
 
 ## 5. Which fluent methods exist
 
-Authoritative list: `src/main/java/com/ak/api/support/scenario/ScenarioSteps.java`.
+Authoritative list for HAND-WRITTEN tests:
+`src/main/java/com/ak/api/dsl/CustomerOnboarding.java`. It is committed, and
+the converter never touches it.
 
-A later convert **rewrites** that file from the fluent catalog. Methods with a trailing `2`, `3`, … are the **same kind of call later in the same flow** (ReadyAPI order), not extra helpers. Chain them in HTTP order.
+Do **not** author against
+`src/main/java/com/ak/api/support/scenario/ScenarioSteps.java`. It is
+generated, gitignored and rewritten by every `--clean`, it is ~18,000 lines,
+and its numeric suffixes are cluster-derived and move between runs
+(`enrollGuest2` became `enrollGuest52` within one day of reconverts). A test
+bound to those names breaks silently on the next convert -- which is exactly
+why `MasterClass` exposes only hand-written and stable client methods.
 
 Common story verbs (drop the numeric suffix unless you need a later repeat):
 

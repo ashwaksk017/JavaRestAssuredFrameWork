@@ -19,6 +19,8 @@
             <class name="com.ak.api.tests.framework.AuthDigestAccuracyTest"/>
             <class name="com.ak.api.dsl.TemplateRegistryTest"/>
             <class name="com.ak.api.dsl.TemplateChoiceTest"/>
+            <class name="com.ak.api.dsl.TemplateManualSuiteTest"/>
+            <class name="com.ak.api.dsl.ManualAuthTest"/>
             <class name="com.ak.api.dsl.PhaseExpectationTest"/>
             <class name="com.ak.api.dsl.PhaseCaptureTest"/>
         </classes>

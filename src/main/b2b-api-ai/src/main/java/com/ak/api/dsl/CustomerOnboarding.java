@@ -142,6 +142,7 @@ public final class CustomerOnboarding {
         Map<String, String> bound = ImportedScenario.begin(s.ctx, row, testCaseId);
         s.row = bound;
         s.testCaseId = testCaseId;
+        primeTokenIfAbsent(s.ctx);
         DomainApis apis = DomainApis.bind((ImportedRestClient) s.client);
         LOG.info("=== CustomerOnboarding.start  testCaseId={} ===", testCaseId);
         return new CustomerOnboarding(s.ctx, bound, s.softAssert, s.holder, apis, testCaseId);
@@ -824,6 +825,47 @@ public final class CustomerOnboarding {
 
     private static String slot(Role role, String field) {
         return "Properties." + role.name().toLowerCase(java.util.Locale.ROOT) + "_" + field;
+    }
+
+    /**
+     * Fetch a client-credentials token when this chain has none.
+     *
+     * <p>A hand-written chain runs no {@code tokenRequest} step, so nothing
+     * ever wrote {@code tokenId.GeneratedTokenID}. {@link #token()} then
+     * returned {@code ""} and every phase sent an EMPTY bearer -- silently,
+     * because {@code rawOf} returns empty rather than failing and the
+     * generated clients set the header to whatever they are given.</p>
+     *
+     * <p>No-ops when a token is already present, so an imported flow that
+     * fetches its own token inline is untouched.</p>
+     *
+     * <p>Gated on {@link com.ak.api.config.Config#isUnset} for BOTH
+     * credentials: {@code primeClientCredentialsToken} only checks
+     * {@code isEmpty()}, so placeholder values like {@code __SET_ME__} would
+     * otherwise POST them at the token endpoint. That must not happen from a
+     * default-configured tree.</p>
+     */
+    // Package-private, not private: ManualAuthTest checks the
+    // credential gate offline, the same way TemplateChoiceTest reaches
+    // chooseTemplate.
+    static void primeTokenIfAbsent(Map<String, String> ctx) {
+        if (ctx == null) {
+            return;
+        }
+        String existing = ScenarioContext.of(ctx).apiToken();
+        if (existing != null && !existing.isEmpty()) {
+            return;
+        }
+        String id = com.ak.api.config.Config.get("api_config.client_id", "");
+        String secret = com.ak.api.config.Config.get("api_config.client_secret", "");
+        if (com.ak.api.config.Config.isUnset(id) || com.ak.api.config.Config.isUnset(secret)) {
+            LOG.warn("CustomerOnboarding: no token in ctx and api_config.client_id/"
+                    + "client_secret are unset -- phases will send an EMPTY bearer. "
+                    + "Set real credentials in program_configuration.json.");
+            return;
+        }
+        LOG.info("CustomerOnboarding: no token in ctx -- priming client-credentials token");
+        com.ak.api.rest.utilities.AuthHelper.primeClientCredentialsToken(ctx);
     }
 
     private String token() {
