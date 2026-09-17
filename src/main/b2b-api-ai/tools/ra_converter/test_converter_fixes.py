@@ -1879,3 +1879,32 @@ def test_emitted_test_support_still_returns_empty_for_a_nontoken_key(tmp_path):
     # the guard is a predicate, not an unconditional recovery
     assert "if (isHiltonTokenKey(primaryKey))" in java
     assert java.count("if (isHiltonTokenKey(primaryKey))") == 2
+
+
+def test_bundled_framework_offers_live_domains_for_random_domain_placeholders():
+    """Properties.RandomDomain / RandomDomain2 must consult DomainRules.
+
+    Guards the WIRING, not the behaviour -- DomainRulesTest covers the logic.
+    This exists because the generated copy under support/ is gitignored and
+    the fallback is silent: if the call were dropped from the template, every
+    row would quietly keep using the frozen CSV snapshot again and no test
+    would fail.
+    """
+    import io
+    import os
+    import re as _re
+
+    path = os.path.join(os.path.dirname(ra_converter.__file__),
+                        "framework", "ImportedScenario.java")
+    src = io.open(path, encoding="utf-8").read()
+
+    assert "com.ak.api.db.repo.DomainRules.overrideOrCsv(row, d1, d2)" in src
+    # Both placeholders resolved from the one call, so the pair stays distinct.
+    assert "d1 = resolved[0];" in src
+    assert "d2 = resolved[1];" in src
+
+    m = _re.search(r"ra_converter-framework-rev:\s*(\d+)", src)
+    assert m, "framework-rev header missing"
+    assert int(m.group(1)) >= 11, (
+        "framework-rev must be bumped past 10, else existing trees keep the "
+        "old ImportedScenario and never receive this hook")

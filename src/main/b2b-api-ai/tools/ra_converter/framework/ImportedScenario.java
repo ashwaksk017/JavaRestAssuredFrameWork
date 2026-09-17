@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 10
+// ra_converter-framework-rev: 11
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -979,12 +979,18 @@ public final class ImportedScenario {
         String d1 = firstNonBlank(row,
                 "Properties.RandomDomain", "Properties.randomDomain",
                 "RandomDomain");
-        if (d1 != null && !d1.isEmpty()) {
-            CtxFields.putBothCases(ctx, "Properties", "RandomDomain", d1);
-        }
         String d2 = firstNonBlank(row,
                 "Properties.RandomDomain2", "Properties.randomDomain2",
                 "RandomDomain2");
+        // The CSV values are a FROZEN snapshot of what ReadyAPI's Groovy
+        // picked live from account_rules. Offer the live rows instead when
+        // that is switched on; returns the CSV values untouched otherwise.
+        String[] resolved = com.ak.api.db.repo.DomainRules.overrideOrCsv(row, d1, d2);
+        d1 = resolved[0];
+        d2 = resolved[1];
+        if (d1 != null && !d1.isEmpty()) {
+            CtxFields.putBothCases(ctx, "Properties", "RandomDomain", d1);
+        }
         if (d2 != null && !d2.isEmpty()) {
             CtxFields.putBothCases(ctx, "Properties", "RandomDomain2", d2);
         }

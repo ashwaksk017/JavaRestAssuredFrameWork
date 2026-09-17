@@ -11,6 +11,7 @@
         <classes>
             <class name="com.ak.api.tests.security.DbSqlGuardTest"/>
             <class name="com.ak.api.tests.db.AccountRulesDomainsTest"/>
+            <class name="com.ak.api.tests.db.DomainRulesTest"/>
             <class name="com.ak.api.tests.security.SecretsRedactionTest"/>
             <class name="com.ak.api.tests.framework.ScenarioContextTest"/>
             <class name="com.ak.api.tests.framework.AsyncBudgetTest"/>
