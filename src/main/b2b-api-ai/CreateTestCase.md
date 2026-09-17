@@ -40,6 +40,28 @@ src/test/resources/testng-manual.xml   (committed; do NOT use Suites/, it is git
 
 Do not hand-edit files under `tests/imported/<converted-suite>/`. A later convert will wipe them.
 
+### Naming `<optional-area>`
+
+It is optional -- a class directly under `tests/manual/` is fine. When you do
+use one, it is an ordinary Java package segment, so:
+
+- any valid package name works (`account`, `member`, `booking`, `lta`);
+- lower-case, no hyphens or spaces, not a Java reserved word;
+- the folder MUST match the `package` declaration in the file;
+- nest as deep as you like (`manual/lta/delegators/`).
+
+Two things it does **not** change:
+
+- **The CSV path.** Outside `tests.imported` the provider resolves by SIMPLE
+  CLASS NAME -- `csv/<SimpleClassName>/<methodName>.csv` -- so the area
+  folder never appears in it. Two classes with the same simple name in
+  different areas silently share one row folder. Keep simple names unique.
+- **Whether the suite finds it.** `testng-manual.xml` uses
+  `<package name="com.ak.api.tests.manual.*"/>`. The trailing `.*` is what
+  makes sub-packages run: measured on TestNG 7.10.2, the plain form without
+  it skipped a sub-package class with no error at all. If you copy that
+  suite, keep the `.*`.
+
 ---
 
 ## 2. Pick the suite you bind to

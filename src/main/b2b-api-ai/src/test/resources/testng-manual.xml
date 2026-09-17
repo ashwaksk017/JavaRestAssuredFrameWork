@@ -10,6 +10,13 @@
   and nothing would ever list these tests. This lives beside
   testng-guards.xml, which is committed for the same reason.
 
+  The trailing `.*` is REQUIRED, not cosmetic. A plain
+  <package name="com.ak.api.tests.manual"/> does NOT recurse: measured on
+  TestNG 7.10.2, a class in a sub-package was silently skipped by the plain
+  form and picked up by `.*` (41 vs 42 tests on an identical tree). Since
+  CreateTestCase.md tells authors to use an optional <area>/ sub-folder,
+  the plain form would drop their tests without any error.
+
   UNLIKE the guards suite, these make REAL HTTP calls against the configured
   environment and create real accounts. They are NOT part of verify_all and
   must not be wired into it.
@@ -17,7 +24,7 @@
 <suite name="Manual" configfailurepolicy="continue">
     <test name="Manual">
         <packages>
-            <package name="com.ak.api.tests.manual"/>
+            <package name="com.ak.api.tests.manual.*"/>
         </packages>
     </test>
 </suite>
