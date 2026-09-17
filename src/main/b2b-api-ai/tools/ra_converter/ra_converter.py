@@ -4549,7 +4549,11 @@ def _merge_bodies_with_placeholders(trees: list, texts: list[str]) -> tuple[str,
     per_entry_cells: list[dict[str, str]] = []
     for d in all_leaves_per_tree:
         cells: dict[str, str] = {}
-        for p in varying_paths:
+        # sorted: `varying_paths` is a set, and Python randomises string
+        # hashing per process, so iterating it directly put the tpl_*
+        # columns in a different order on every converter run. Same set,
+        # same values, unreproducible files -- 34 CSVs "changed" per run.
+        for p in sorted(varying_paths):
             col = f"tpl_{_sanitize_path_for_col(p)}"
             v = d.get(p)
             if v is None:

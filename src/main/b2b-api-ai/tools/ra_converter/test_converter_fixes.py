@@ -1950,6 +1950,22 @@ def test_emitted_digest_listener_is_v3():
             "committed FailureDigestListener.java is behind the converter template"
 
 
+def test_merged_template_cells_come_out_in_a_stable_column_order():
+    """34 CSVs differed between two converts of the SAME input: identical
+    column set and values, different tpl_* column ORDER, because the
+    varying-path set was iterated directly (per-process hash seed)."""
+    trees = [
+        {"contactInfo": {"name": "a", "address": {"city": "x", "country": "US", "postalCode": "1"}}, "reason": "r1"},
+        {"contactInfo": {"name": "b", "address": {"city": "y", "country": "GB", "postalCode": "2"}}, "reason": "r2"},
+    ]
+    import json as _json
+    _merged, cells = ra_converter._merge_bodies_with_placeholders(
+        trees, [_json.dumps(t) for t in trees])
+    cols = list(cells[0].keys())
+    assert cols == sorted(cols), cols
+    assert cols == list(cells[1].keys())
+
+
 def test_script_runner_is_the_last_thing_in_this_file():
     """verify_all runs this file as a SCRIPT, not under pytest.
 
