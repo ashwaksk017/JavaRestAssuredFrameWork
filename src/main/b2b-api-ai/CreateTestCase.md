@@ -35,7 +35,7 @@ Imported `Suites/<Suite>_Regression.xml` / `_Smoke.xml` are also rewritten.
 src/test/java/com/ak/api/tests/manual/<optional-area>/YourTest.java
 src/test/resources/csv/YourTest/<methodName>.csv
 src/main/java/com/ak/api/support/manual/scenario/YourSupport.java   (only for path B)
-Suites/Manual.xml
+src/test/resources/testng-manual.xml   (committed; do NOT use Suites/, it is gitignored)
 ```
 
 Do not hand-edit files under `tests/imported/<converted-suite>/`. A later convert will wipe them.
@@ -268,7 +268,11 @@ Rules for the `@Test` body:
 - `softAssert.assertAll()` belongs at the end of the method (and `BaseApiTest` also asserts in `@AfterMethod`).
 - `@Test` signature must be `(Map<String, String> row)`.
 
-Optional: `AuthHelper.primeClientCredentialsToken(ctx)` in `@BeforeClass` only when you are **not** using `flow_A` and need `ctx.accessToken` up front. Imported suites usually skip this because `flow_A` fetches the Hilton token.
+You no longer need `AuthHelper.primeClientCredentialsToken(ctx)` in
+`@BeforeClass`: `start(row)` primes when ctx has no token. It is skipped when
+a token is already present, so an imported flow that fetches its own inline is
+untouched, and it is gated on `Config.isUnset` for both credentials so a tree
+carrying `__SET_ME__` placeholders never POSTs them at the token endpoint.
 
 ---
 
@@ -286,25 +290,45 @@ and its numeric suffixes are cluster-derived and move between runs
 bound to those names breaks silently on the next convert -- which is exactly
 why `MasterClass` exposes only hand-written and stable client methods.
 
-Common story verbs (drop the numeric suffix unless you need a later repeat):
+The complete set, with the `exec()` phase name each one reports under (that
+is the name the per-phase CSV columns in section 3 key off):
 
-- `enrollGuest` (POST `/realms/guests/enroll`; a later enroll in the same flow is `enrollGuest2`)
-- `createProgramAccount` / `createTravelAgency`
-- `confirmMemberTotp`
-- `readProgramAccount` / `readProgramAccountBeforeAttest` / `readOwnerAfterSync`
-- `prepareSalesforceAccount` / `readSalesforceContact` / `readSalesforceProgramMember`
-- `addAndActivateTravelAdvisor`
-- `activateThroughHws` (loud stub until HWS UI exists — do not treat as success)
-- `postBusinessesForcedenroll` / `getBusinesses` / `postBusinessesCompare`
-- reservation / stay / partition / honors GET-PUT variants (`postGuestsGuestidReservations`, …)
+| Verb | Phase name |
+|---|---|
+| `createTravelAgency()` | `createTravelAgency` |
+| `enrollGuest(Role)` / `enrollOwner()` / `enrollEmployee()` / `enrollTravelAdvisor()` | `enrollGuest` |
+| `createProgramAccount(Partner)` / `createH4LAccount()` / `createH4BAccount()` / `createLTAAccount()` / `createSmbAccount()` | `createProgramAccount` |
+| `readProgramAccount()` | `readProgramAccount` |
+| `activateProgramAccount()` | `activateProgramAccount` |
+| `confirmMemberTotp(Role)` / `confirmOwner()` / `confirmTravelAdvisor()` | `confirmMemberTotp` |
+| `addMember(Role)` / `addEmployee()` / `addTravelAdvisor()` | **`createAccountMember`** |
+| `readAccountMember()` | `readAccountMember` |
+| `prepareSalesforceAccount()` | `fetchSalesforceToken`, `createSalesforceAccount`, `createSalesforceDistribution` |
+| `activateThroughHws()` (loud stub until the HWS UI exists -- do not treat as success) | `readSalesforceLead` |
+| `verifySynchronization()` | `readSalesforceAccount` |
 
-**Insights** (`com.ak.api.support.scenario.Insights`) — trailing GET + payload asserts:
+Plus the modifiers, which all bind to the **next** phase: `using(Template)`,
+`capture(...)`, `expect*(...)` (sections 13-15). `complete()` ends the chain.
 
-- `verifyProgramAccount` `verifyAccountMember` `verifyBusinesses`
-- `verifyHhonors` `verifyPartitionId` `verifyVerify`
-- `verifyLeadid` `verifyParticipationid`
+There are no numeric suffixes here. That is the point: the suffixed names in
+`ScenarioSteps` move between reconverts, these do not.
 
-Call Insights **after** `complete()`, and only if that verify body matches what you need. If asserts differ, keep them on a Support method (path B) instead of forcing Insights.
+Regenerate this mapping any time with:
+
+```
+grep -n 'exec("' src/main/java/com/ak/api/dsl/CustomerOnboarding.java
+```
+
+**Do not use `Insights.*` from a hand-written test.** Every one of its
+methods takes an `Object scenario`, and `CustomerOnboarding.complete()`
+returns **void** -- there is no handle to pass. It is also generated and
+gitignored, so a manual test importing it breaks for anyone who converted a
+different XML.
+
+Assert with the chain's own verbs instead -- `expectJson`, `expectExists`,
+`expectAbsent`, `expectCount`, `expectHeader`, `expectBodyContains`,
+`expectSubstring`, `expectJsonTree`, `expectCaptured` (section 14). They are
+per-phase, row-overridable, and committed.
 
 ---
 
@@ -327,7 +351,10 @@ When a call is not already a `ScenarioSteps` method:
    > `templates/<suite>/Templates`. `tools/check_generic.py` enforces
    > exactly that line.
 2. Nested builder `extends ScenarioSteps<YourType>`.
-3. Copy `start(row)` from `com.ak.api.support.scenario.CustomerOnboarding` (bind session, `ImportedScenario.begin`, `bootstrap()`).
+3. Copy the shape of `start(row)` from `com.ak.api.dsl.CustomerOnboarding`
+   (resolve the bound session, then `ImportedScenario.begin`). Note that
+   `bootstrap()` is a `ScenarioSteps` method -- the `dsl` class has none,
+   so inherit it from the builder you extend, not from there.
 4. Inherit shared methods (`enrollGuest()`, …). Override `bootstrap()` only if setup must differ.
 5. Add only the **delta** methods.
 
@@ -406,7 +433,19 @@ If only your Support calls a **typed** `ProgramAccountClient`, you can skip `Imp
 
 ## 8. Register and run
 
-Do **not** add the class to `Suites/Programaccountregression_*.xml` (those files are regenerated). Create `Suites/Manual.xml`:
+Do **not** add the class to `Suites/Programaccountregression_*.xml` (those
+files are regenerated).
+
+Use the committed **`src/test/resources/testng-manual.xml`**. It picks up the
+whole `com.ak.api.tests.manual` package, so a new class needs no registration.
+
+Do NOT put a suite under `Suites/` -- that directory is gitignored wholesale,
+so anything there cannot be shared and every author would have to recreate it.
+`testng-manual.xml` lives beside `testng-guards.xml` for that reason. It is
+deliberately NOT part of `verify_all`: these make real HTTP calls and create
+real accounts.
+
+For reference, its shape:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -422,7 +461,7 @@ Do **not** add the class to `Suites/Programaccountregression_*.xml` (those files
     </listeners>
     <test name="manual">
         <classes>
-            <class name="com.ak.api.tests.manual.CreateLimitedAccountTest"/>
+            <!-- no per-class entry needed; the package is scanned -->
         </classes>
     </test>
 </suite>
@@ -437,6 +476,11 @@ Active env: `-Denv=qa` (or `TEST_ENV`), else `qa`. Values come from `program_con
 - `api_config.api_end_point` / `version` → `base_url`
 - `api_config.client_id` / `client_secret` / `token_end_point` / `token_route`
 - `database.*` if a phase runs JDBC
+- `manual.client` -- **required for hand-written tests.** It names the
+  generated client to bind, AND its derived suite name (`FooClient` -> `foo`)
+  is what resolves `templates/<suite>/_index.csv` for `using(...)` and locates
+  the generated `SuiteCleanup` for `ManualCleanup`. Get it wrong and the test
+  skips, `using(...)` throws, and cleanup silently does nothing.
 - `salesforce_assertion` / `sf_config.*` if you chain `prepareSalesforceAccount`
 
 Do not invent Salesforce credentials or a full HWS Selenium flow.
@@ -448,7 +492,7 @@ mvn -o test-compile
 
 mvn -o test "-Dtest=com.ak.api.tests.manual.CreateLimitedAccountTest"
 
-mvn -o test "-DsuiteXmlFile=Suites/Manual.xml" -Denv=qa
+mvn -o test "-DsuiteXmlFile=src/test/resources/testng-manual.xml" -Dmanual.client=ProgramaccountregressionClient
 ```
 
 `pom.xml` default suite is `src/test/resources/testng.xml`. Passing `-DsuiteXmlFile` selects yours.
@@ -458,8 +502,13 @@ mvn -o test "-DsuiteXmlFile=Suites/Manual.xml" -Denv=qa
 ## 9. Isolation, cleanup, and tokens
 
 - TestNG imported suites use `parallel="classes"`. Keep `ctx` on the instance; bind/unbind per method.
-- Cleanup is **`@AfterMethod` → `SuiteCleanup.afterEachTest(ctx)` only**. Do not wipe the DB in `@BeforeMethod` or in `bootstrap()`.
-- Token fetch belongs in setup (`flow_A` or `AuthHelper`), never as its own `@Test`.
+- Cleanup is `@AfterMethod` only -- never wipe the DB in `@BeforeMethod` or
+  `bootstrap()`. Generated tests call `SuiteCleanup.afterEachTest(ctx)`.
+  Hand-written tests **cannot** (it is generated, gitignored and
+  suite-specific) and must call `ManualCleanup.afterEachTest(ctx)`, which
+  delegates to it reflectively.
+- Token fetch belongs in setup, never as its own `@Test`. Generated flows use
+  `flow_A`; hand-written chains get one from `start(row)` automatically.
 - `ImportedScenario.begin` clears ctx except `accessToken`, then expands the CSV row.
 
 ---
@@ -468,7 +517,7 @@ mvn -o test "-DsuiteXmlFile=Suites/Manual.xml" -Denv=qa
 
 | Artifact | Converter |
 |---|---|
-| `tests/manual/**`, `Suites/Manual.xml`, `csv/YourTest/**` | Untouched |
+| `tests/manual/**`, `testng-manual.xml`, `csv/YourTest/**` | Untouched |
 | `tests/imported/<suite>/**` | Deleted on `--clean`, rewritten |
 | `support/scenario/ScenarioSteps.java` | Rewritten from catalog when any suite converts |
 | `ImportedRestClient.java` | Rewritten as the union of `*Client` methods |
@@ -486,14 +535,14 @@ To have the same story generated for everyone, add it to the ReadyAPI project an
 - [ ] Extends `BaseApiTest`
 - [ ] Client constructed from `Config` base URL
 - [ ] `@BeforeMethod` calls `ImportedScenario.bind(..., "<suite>")`
-- [ ] `@AfterMethod` calls `SuiteCleanup.afterEachTest(ctx)` then `unbind()`
+- [ ] `@AfterMethod` calls `ManualCleanup.afterEachTest(ctx)` then `unbind()`
 - [ ] `@Test` takes `Map<String, String> row` and uses `dataProvider = "rows"`
 - [ ] CSV path matches section 3 (file exists on classpath)
-- [ ] Chain uses existing `ScenarioSteps` methods in HTTP order
+- [ ] Chain uses `CustomerOnboarding` verbs in HTTP order (NOT `ScenarioSteps` -- see section 5)
 - [ ] Unique HTTP lives in Support + `RestStep`, not in the `@Test`
 - [ ] No token `@Test`; no before-test domain wipe
 - [ ] New client methods / templates documented if path C
-- [ ] Class listed in `Suites/Manual.xml` (or run with `-Dtest=`)
+- [ ] Runs via `-DsuiteXmlFile=src/test/resources/testng-manual.xml` with `-Dmanual.client=<TheClient>`
 - [ ] `mvn -o test-compile` succeeds
 - [ ] Ran the method once (`-Dtest=...`) and checked logs for STARTED/FINISHED + REST steps
 
@@ -502,15 +551,24 @@ To have the same story generated for everyone, add it to the ReadyAPI project an
 ## 12. Quick file map
 
 ```
-src/test/java/com/ak/api/tests/manual/CreateLimitedAccountTest.java
-src/test/resources/csv/CreateLimitedAccountTest/createLimitedAccount.csv
-src/main/java/com/ak/api/support/manual/scenario/…Support.java   # path B only
-src/main/java/com/ak/api/support/scenario/CustomerOnboarding.java
-src/main/java/com/ak/api/support/scenario/ScenarioSteps.java
-src/main/java/com/ak/api/support/scenario/Insights.java
-src/main/java/com/ak/api/support/ImportedScenario.java
+# committed -- the converter never touches these
+src/main/java/com/ak/api/dsl/CustomerOnboarding.java     # the fluent verbs
+src/main/java/com/ak/api/dsl/MasterClass.java            # one entry point
+src/main/java/com/ak/api/dsl/Template.java               # bodies by name
+src/main/java/com/ak/api/dsl/ManualCleanup.java          # per-test cleanup
+src/main/java/com/ak/api/context/ScenarioContext.java    # declared ctx fields
 src/main/java/com/ak/api/data/PerMethodCsvDataProvider.java
-Suites/Manual.xml
+src/test/java/com/ak/api/tests/manual/OnboardingE2ETest.java        # bare chain
+src/test/java/com/ak/api/tests/manual/H4bMemberOnboardingTest.java  # + template/capture/assert
+src/test/resources/testng-manual.xml
+
+# generated + gitignored -- read, never edit or import from a manual test
+src/main/java/com/ak/api/support/ImportedScenario.java
+src/main/java/com/ak/api/support/scenario/ScenarioSteps.java
+src/main/java/com/ak/api/support/<suite>/SuiteCleanup.java
+
+# local only, gitignored (endpoints / emails / ids -- public repo)
+src/test/resources/csv/<TestClass>/<methodName>.csv
 ```
 
 ---
