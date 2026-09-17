@@ -122,6 +122,49 @@ def test_report_text_names_the_collapse():
     assert "runVerifyVerify8, runVerifyVerify9" in text
 
 
+ENTRY_A = '''package x;
+public final class OnboardingFlowAGuestidmember2 extends ProgramAccountsSteps<OnboardingFlowAGuestidmember2> {
+    public static OnboardingFlowAGuestidmember2 start(Map<String, String> row) throws Exception { return null; }
+    @Override
+    protected OnboardingFlowAGuestidmember2 bootstrap() throws Exception {
+        ImportedScenario.runSetup("flow_A", client, ctx, row, softAssert, holder, testCaseId);
+        {
+            CtxFields.generateStandard(ctx, "Properties", "guestIDmember", "generatedemailAddress1", "generatedemailAddress2");
+        }
+        CtxFields.seedFromRow(ctx, row, "Properties.");
+        return self();
+    }
+}
+'''
+ENTRY_B = ENTRY_A.replace("OnboardingFlowAGuestidmember2", "OnboardingFlowAGuestidmember3").replace(
+    '"generatedemailAddress2");',
+    '"partnerProgramAccountNumber");\n            ImportedScenario.putExtracted(ctx, "Properties.role", com.ak.api.data.FakeData.oneOf("admin", "employee", "owner"));')
+ENTRY_C = ENTRY_A.replace("OnboardingFlowAGuestidmember2", "OnboardingFlowB").replace('"flow_A"', '"flow_B"')
+
+
+def test_entry_classes_that_differ_only_in_their_property_pack_are_one_group():
+    a, b, c = (dr.parse_entry(src, "e.java") for src in (ENTRY_A, ENTRY_B, ENTRY_C))
+    assert a and b and c
+    assert a["flow"] == "flow_A" and c["flow"] == "flow_B"
+    assert a["packs"] == (("Properties", ("guestIDmember", "generatedemailAddress1", "generatedemailAddress2")),)
+    assert b["picks"] == (("Properties.role", "admin,employee,owner"),)
+    assert a["shape"] == b["shape"] and a["shape"] != c["shape"]
+    groups = dr.group_entries([a, b, c], 2)
+    assert len(groups) == 1 and sorted(m["entry"] for m in groups[0]["members"]) == [
+        "OnboardingFlowAGuestidmember2", "OnboardingFlowAGuestidmember3"]
+    assert "partnerProgramAccountNumber" in groups[0]["varies"]["generated fields"]
+    assert groups[0]["varies"]["picked values"] == ["Properties.role"]
+    assert dr.parse_entry(FIXTURE, "Steps.java") is None       # a Steps class is not an entry
+
+
+def test_report_counts_entry_classes():
+    entries = [dr.parse_entry(s, "e.java") for s in (ENTRY_A, ENTRY_B, ENTRY_C)]
+    recs = dr.parse_methods(FIXTURE, "Steps.java")
+    text = dr.render(recs, dr.group_by_shape(recs, 2), entries=entries)
+    assert "entry classes: 3 -> distinct setup shapes: 2" in text
+    assert "2 classes in 1 groups differ only in generated fields / picked values" in text
+
+
 def test_write_audit_produces_the_file_and_extends_summary(tmp_path=None):
     with tempfile.TemporaryDirectory() as d:
         root = tmp_path or d

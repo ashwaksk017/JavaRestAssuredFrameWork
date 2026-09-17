@@ -45,6 +45,62 @@ _EXTRACT = re.compile(r'putExtracted\(ctx, "([^"]+)"')
 _POLL = re.compile(r"\.pollUntil\w+\(")
 _TRANSLATED = re.compile(r"// \[(groovy|translated|transfer step|properties step|jdbc)\]")
 
+# Entry classes: `Onboarding`, `OnboardingFlowAGuestidmember3`, ... -- one
+# `start(row)` each, differing only in what their bootstrap() sets up.
+_ENTRY_CLASS = re.compile(r"public final class (\w+) extends (\w+)<")
+_ENTRY_START = re.compile(r"public static \w+ start\(Map<String, String> row\)")
+_BOOTSTRAP = re.compile(r"protected \w+ bootstrap\(\) throws Exception \{\n(?P<body>.*?)\n    \}\n", re.S)
+_FLOW = re.compile(r'runSetup\("(\w+)"|SetupHelper\.(\w+)\(')
+_PACK = re.compile(r'generateStandard\(ctx, "(\w+)", ([^)]*)\)')
+_PICK = re.compile(r'putExtracted\(ctx, "([^"]+)", [^;]*?\.oneOf\(([^)]*)\)')
+# the whole statement, so it can leave the shape (a pick is data, like a field)
+_PICK_STMT = re.compile(r'[^\n;]*putExtracted\(ctx, "[^"]+", [^;]*?\.oneOf\([^)]*\)\);')
+
+
+def parse_entry(java: str, file_label: str) -> dict | None:
+    """One dict for a shared entry class, or None for any other file."""
+    m = _ENTRY_CLASS.search(java)
+    if not m or not _ENTRY_START.search(java):
+        return None
+    cls, base = m.group(1), m.group(2)
+    b = _BOOTSTRAP.search(java)
+    body = b.group("body") if b else ""
+    flow = next((a or c for a, c in _FLOW.findall(body)), "")
+    packs = tuple((ns, tuple(x.strip().strip('"') for x in fields.split(",") if x.strip()))
+                  for ns, fields in _PACK.findall(body))
+    picks = tuple((key, vals.replace('"', "").replace(" ", "")) for key, vals in _PICK.findall(body))
+    # the setup SHAPE: the body with the class name, the generated field
+    # lists and the picked literals taken out -- what is left is the flow
+    shape = body.replace(cls, "<SELF>")
+    shape = _PACK.sub(r'generateStandard(ctx, "\1", <PACK>)', shape)
+    # a picked literal is data like a generated field: the whole statement
+    # leaves the shape, so a class WITH a pick and one WITHOUT still group
+    shape = _PICK_STMT.sub("", shape)
+    shape = re.sub(r"\s+", " ", shape).strip()
+    return {"file": file_label, "entry": cls, "base": base, "flow": flow or "-",
+            "packs": packs, "picks": picks, "shape": (flow or "-", shape),
+            "lines": body.count("\n") + 1 if body else 0}
+
+
+def group_entries(entries: list[dict], minimum: int = 2) -> list[dict]:
+    groups: dict[tuple, list[dict]] = defaultdict(list)
+    for e in entries:
+        groups[e["shape"]].append(e)
+    out = []
+    for shape, members in groups.items():
+        if len(members) < minimum:
+            continue
+        varies = {}
+        if len({m["packs"] for m in members}) > 1:
+            fields = sorted({f for m in members for _ns, fs in m["packs"] for f in fs})
+            varies["generated fields"] = fields
+        if len({m["picks"] for m in members}) > 1:
+            varies["picked values"] = sorted({k for m in members for k, _ in m["picks"]})
+        out.append({"shape": shape, "members": members, "varies": varies,
+                    "lines": sum(m["lines"] for m in members)})
+    out.sort(key=lambda g: (-len(g["members"]), g["shape"][0]))
+    return out
+
 
 def parse_methods(java: str, file_label: str) -> list[dict]:
     """One dict per generated method that wraps exactly one REST step."""
@@ -101,8 +157,15 @@ def _normalise_asserts(body: str) -> list[tuple]:
 
 
 def scan_tree(root: str, package_root: str) -> list[dict]:
+    recs, _entries = scan_tree_full(root, package_root)
+    return recs
+
+
+def scan_tree_full(root: str, package_root: str) -> tuple[list[dict], list[dict]]:
+    """(phase/verify/setup methods, entry classes) under support/."""
     base = os.path.join(root, "src", "main", "java", *package_root.split("."), "support")
     recs: list[dict] = []
+    entries: list[dict] = []
     for dp, _dn, fn in os.walk(base):
         for f in fn:
             if not f.endswith(".java"):
@@ -115,7 +178,10 @@ def scan_tree(root: str, package_root: str) -> list[dict]:
                 continue
             label = os.path.relpath(p, base).replace(os.sep, "/")
             recs.extend(parse_methods(java, label))
-    return recs
+            e = parse_entry(java, label)
+            if e:
+                entries.append(e)
+    return recs, entries
 
 
 def group_by_shape(recs: list[dict], minimum: int = 2) -> list[dict]:
@@ -149,7 +215,29 @@ def group_by_shape(recs: list[dict], minimum: int = 2) -> list[dict]:
     return out
 
 
-def render(recs: list[dict], groups: list[dict], limit: int = 40) -> str:
+def render_entries(entries: list[dict], egroups: list[dict], limit: int = 12) -> str:
+    if not entries:
+        return ""
+    flows = len({e["shape"] for e in entries})
+    in_groups = sum(len(g["members"]) for g in egroups)
+    o = ["", "== entry classes (start(row) + bootstrap) ==",
+         f"entry classes: {len(entries)} -> distinct setup shapes: {flows}; "
+         f"{in_groups} classes in {len(egroups)} groups differ only in generated fields / picked values",
+         "   (a setup shape = which SetupHelper flow runs + the same translated steps; the"
+         " field lists are data a property-pack spec carries)"]
+    for g in egroups[:limit]:
+        names = sorted(m["entry"] for m in g["members"])
+        o.append(f"\n[{len(g['members'])} classes, {g['lines']} bootstrap lines]  flow={g['shape'][0]}")
+        for k, v in g["varies"].items():
+            o.append(f"      varies in {k}: " + ", ".join(v[:8]) + (" ..." if len(v) > 8 else ""))
+        o.append("      " + ", ".join(names[:8]) + (f", ... +{len(names) - 8}" if len(names) > 8 else ""))
+    if len(egroups) > limit:
+        o.append(f"\n... and {len(egroups) - limit} more entry groups")
+    return "\n".join(o) + "\n"
+
+
+def render(recs: list[dict], groups: list[dict], limit: int = 40,
+           entries: list[dict] | None = None) -> str:
     single = [r for r in recs if r.get("rest_steps") == 1]
     compound = [r for r in recs if r.get("rest_steps", 0) > 1]
     none = [r for r in recs if r.get("rest_steps", 0) == 0]
@@ -181,7 +269,10 @@ def render(recs: list[dict], groups: list[dict], limit: int = 40) -> str:
     o.append("")
     o.append(f"== compound methods (several REST calls; Stage 1b keeps these as chains) ==")
     o.append(f"  {len(compound)} methods, {sum(r['lines'] for r in compound)} lines")
-    return "\n".join(o) + "\n"
+    text = "\n".join(o) + "\n"
+    if entries:
+        text += render_entries(entries, group_entries(entries, 2))
+    return text
 
 
 def write_audit(root: str, package_root: str, suite_name: str) -> str | None:
@@ -192,11 +283,12 @@ def write_audit(root: str, package_root: str, suite_name: str) -> str | None:
     the audit a conversion already produces, not a separate command to
     remember. Returns the headline line, or None when nothing was parsed.
     """
-    recs = scan_tree(root, package_root)
+    recs, entries = scan_tree_full(root, package_root)
     if not recs:
         return None
     groups = group_by_shape(recs, 2)
-    text = render(recs, groups)
+    egroups = group_entries(entries, 2)
+    text = render(recs, groups, entries=entries)
     audit_dir = os.path.join(root, "_audit", suite_name)
     os.makedirs(audit_dir, exist_ok=True)
     with open(os.path.join(audit_dir, "dedup_report.txt"), "w", encoding="utf-8") as fh:
@@ -206,6 +298,9 @@ def write_audit(root: str, package_root: str, suite_name: str) -> str | None:
     headline = (f"{len(single)} single-call methods -> {len({r['shape'] for r in single})} "
                 f"call shapes; {in_groups} methods in {len(groups)} groups are the same "
                 f"call with different data")
+    if entries:
+        headline += (f"; {len(entries)} entry classes -> "
+                     f"{len({e['shape'] for e in entries})} setup shapes")
     summary = os.path.join(audit_dir, "summary.md")
     section = ["", "## Reuse (same call, different data)", "",
                headline + ".",
@@ -217,6 +312,9 @@ def write_audit(root: str, package_root: str, suite_name: str) -> str | None:
         q = ("?" + ",".join(qk)) if qk else ""
         section.append(f"- {len(g['members'])} methods, {g['lines']} lines: `{verb} {path}{q}`"
                        f"{' +body' if body else ''} -- varies in "
+                       + (", ".join(g["varies"]) if g["varies"] else "nothing detectable"))
+    for g in egroups[:4]:
+        section.append(f"- {len(g['members'])} entry classes on setup flow `{g['shape'][0]}` -- varies in "
                        + (", ".join(g["varies"]) if g["varies"] else "nothing detectable"))
     try:
         with open(summary, "a", encoding="utf-8") as fh:
@@ -234,12 +332,12 @@ def main(argv=None) -> int:
     p.add_argument("--min", type=int, default=2, help="group size to report (default 2)")
     p.add_argument("--limit", type=int, default=40)
     a = p.parse_args(argv)
-    recs = scan_tree(a.root, a.package_root)
+    recs, entries = scan_tree_full(a.root, a.package_root)
     if not recs:
         print(f"[dedup_report] no generated methods under {a.root} -- convert first")
         return 1
     groups = group_by_shape(recs, a.min)
-    text = render(recs, groups, a.limit)
+    text = render(recs, groups, a.limit, entries=entries)
     print(text, end="")
     if a.out:
         os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)

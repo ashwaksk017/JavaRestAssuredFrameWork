@@ -2044,6 +2044,30 @@ def test_fs_path_lifts_the_windows_path_limit_for_clean(tmp_path):
     assert not _os.path.exists(ra_converter._fs_path(top, force=True))
 
 
+def test_clean_sweeps_the_client_under_every_name_the_suite_has_used(tmp_path):
+    """`--service-name ProgramAccounts` once, then a run without it, left
+    ProgramaccountregressionClient.java AND ProgramAccountsClient.java --
+    two identities of the same suite, every method twice."""
+    import fluent_scenario as fs, json as _json, os as _os
+    root = str(tmp_path)
+    clients = _os.path.join(root, "src", "main", "java", "com", "ak", "api", "rest", "clients")
+    _os.makedirs(clients)
+    for n in ("ProgramaccountregressionClient", "ProgramAccountsClient", "OtherSuiteClient"):
+        open(_os.path.join(clients, n + ".java"), "w").write("class X {}")
+    orig = fs.catalog_path
+    cat = _os.path.join(root, "fluent_catalog.json")
+    fs.catalog_path = lambda *a, **k: cat
+    try:
+        c = fs._empty_catalog(); c["suites"] = {"programaccountregression": {"serviceName": "ProgramAccounts"}}
+        _json.dump(c, open(cat, "w"))
+        removed = ra_converter._clean_suite_output(root, "programaccountregression", "com.ak.api")
+    finally:
+        fs.catalog_path = orig
+    left = sorted(_os.listdir(clients))
+    assert left == ["OtherSuiteClient.java"], left            # another suite's client is untouched
+    assert sum(1 for r in removed if r.endswith("Client.java")) == 2
+
+
 def test_script_runner_is_the_last_thing_in_this_file():
     """verify_all runs this file as a SCRIPT, not under pytest.
 

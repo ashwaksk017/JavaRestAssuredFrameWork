@@ -14817,6 +14817,30 @@ def _clean_suite_output(output_dir: str, suite_name: str, package_root: str,
             os.remove(p)
             removed.append(p)
 
+    # The suite's client: `rest/clients/<Service>Client.java` is not under a
+    # suite directory, and the service name can change between runs
+    # (`--service-name ProgramAccounts` once, then a run without it that
+    # reads the catalog, or the other way round). Whatever THIS run emits
+    # is rewritten right after; sweep every name this suite has gone by.
+    _client_dir = os.path.join(
+        output_dir, "src/main/java", package_root.replace(".", "/"), "rest", "clients")
+    _names = {to_camel_case(suite_name, upper_first=True)}
+    try:
+        _here = os.path.dirname(os.path.abspath(__file__))
+        if _here not in sys.path:
+            sys.path.insert(0, _here)
+        from fluent_scenario import load_fluent_catalog as _lfc
+        _saved = ((_lfc().get("suites") or {}).get(suite_name) or {}).get("serviceName")
+        if _saved:
+            _names.add(_saved)
+    except Exception:
+        pass
+    for _n in sorted(_names):
+        _p = os.path.join(_client_dir, f"{_n}Client.java")
+        if os.path.isfile(_p):
+            os.remove(_fs_path(_p))
+            removed.append(_p)
+
     # Master TestNG suite XMLs are `Suites/<PrettySuite>_<Variant>.xml`,
     # keyed on suite_name (not on per-class names). Sweep them so a
     # renamed suite doesn't leave stale XMLs behind.
