@@ -200,9 +200,20 @@ public class DomainRulesTest {
     }
 
     @Test(groups = {"unit"})
-    @Description("FAIL-SOFT: enabled with no database configured keeps the CSV "
-            + "values -- a DB outage must never leave a row with no domain.")
+    @Description("FAIL-SOFT: enabled but the database cannot be reached keeps "
+            + "the CSV values -- a DB outage must never leave a row with no "
+            + "domain.")
     public void unreachableDatabaseKeepsCsvValues() {
+        // Point at a database that CANNOT exist rather than clearing db.*.
+        // Config.get resolves system property -> env ->
+        // program_configuration.json, so an absent property only means "no
+        // database" on a machine whose JSON still holds __SET_ME__
+        // placeholders. On a machine with real credentials this reached the
+        // live Postgres and failed on a real managed domain. Same idiom
+        // AccountRulesDomainsTest already uses.
+        System.setProperty("db.url", "jdbc:h2:mem:does_not_exist_here;IFEXISTS=TRUE");
+        System.setProperty("db.user", H2_USER);
+        System.setProperty("db.password", H2_PASS);
         enable();
         String[] out = DomainRules.overrideOrCsv(
                 row("B2B-6324_Verify_with_managed_domain_400"), "frozen1.com", "frozen2.com");
