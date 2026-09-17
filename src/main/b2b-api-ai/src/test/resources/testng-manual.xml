@@ -6,7 +6,7 @@
     mvn test "-DsuiteXmlFile=src/test/resources/testng-manual.xml"
 
   Committed deliberately. `Suites/` is gitignored wholesale, so a suite file
-  placed there cannot be shared -- every author would have to recreate it,
+  placed there cannot be shared - every author would have to recreate it,
   and nothing would ever list these tests. This lives beside
   testng-guards.xml, which is committed for the same reason.
 

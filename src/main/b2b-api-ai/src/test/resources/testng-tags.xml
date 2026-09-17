@@ -14,21 +14,21 @@
 
     Available tags (as of 2026-07-16):
 
-        smoke          -- fastest happy-path assertions
-        regression     -- wider coverage tests
-        posts          -- exercises /posts endpoints
-        auth           -- httpbin.org auth flows
-        bearer, basic  -- specific auth mechanisms
-        headers        -- header-loader tests (JSON/properties/text)
-        loaders        -- file-loader unit tests
-        parameterized  -- CSV-driven parameterization demo
-        csv, json      -- data-driven format subgroups
-        data-driven    -- any data-driven test
-        demoshop       -- Tricentis DemoWebshop live login
-        login          -- login flows (any provider)
-        faker          -- Faker-generated data
-        jsonpath       -- JsonPath depth-coverage demos
-        unit           -- pure unit / non-network tests
+        smoke          - fastest happy-path assertions
+        regression     - wider coverage tests
+        posts          - exercises /posts endpoints
+        auth           - httpbin.org auth flows
+        bearer, basic  - specific auth mechanisms
+        headers        - header-loader tests (JSON/properties/text)
+        loaders        - file-loader unit tests
+        parameterized  - CSV-driven parameterization demo
+        csv, json      - data-driven format subgroups
+        data-driven    - any data-driven test
+        demoshop       - Tricentis DemoWebshop live login
+        login          - login flows (any provider)
+        faker          - Faker-generated data
+        jsonpath       - JsonPath depth-coverage demos
+        unit           - pure unit / non-network tests
 
     Common combinations:
 
