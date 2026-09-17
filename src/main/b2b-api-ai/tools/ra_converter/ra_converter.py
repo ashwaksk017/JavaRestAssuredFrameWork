@@ -3123,11 +3123,13 @@ def _business_method_name(case_name: str) -> tuple[str, str, str]:
     m = re.match(r"^(.+?)__step\d+$", working)
     if m:
         working = m.group(1)
-    # 1. Strip JIRA-style prefix (`B2B-172_` / `B2B134_`). Keep whatever
-    #    follows as the semantic body.
-    m = re.match(r"^([A-Z]+[-_]?\d+)_(.+)$", working)
-    if m:
-        working = m.group(2)
+    # 1. Strip the JIRA prefix. Shares _split_case_jira: the pattern that
+    #    used to live here, `[A-Z]+[-_]?\d+`, stops at the first `B` of
+    #    `B2B` because of the digit inside the key, so the strip never
+    #    fired and every method came out as `b2B2065CreateAndActivate...`.
+    #    The remainder is used even when no ticket leads the name: it is
+    #    also where `[Bug-B2B-2299]` references have been removed.
+    _jira, working = _split_case_jira(working)
 
     # 2. Peel off trailing `_<digits>` first (variant), then `_<status_code>`.
     variant = ""
@@ -3597,7 +3599,13 @@ def _split_case_jira(name: str) -> tuple[str, str]:
     # key still groups the case instead of falling through to the
     # last-REST-step bucket (which was token/CreateTokenTest).
     working = re.sub(r"^bug[_-]+", "", working, flags=re.I)
-    m = re.match(r"^([A-Z][A-Z0-9]*[-_]?\d+)(?:\[[^\]]+\])?_(.+)$", working)
+    # `[Bug-B2B-2299]` style annotations appear after the ticket AND at the
+    # very end of a name; either way they are a reference, not a name part.
+    working = re.sub(r"\s*\[[^\]]*\]", "", working).strip()
+    # The separator after the ticket is `_` in most names but `-` in
+    # `B2B_3778-activationsource...` and `B2B-3234-Post_...`; both are the
+    # same author habit and both must strip.
+    m = re.match(r"^([A-Z][A-Z0-9]*[-_]?\d+)[-_ ]+(.+)$", working)
     if m:
         return m.group(1), m.group(2)
     return "", working
@@ -3750,18 +3758,50 @@ def _flow_class_assignment(cases: list["TestCase"]) -> dict[int, tuple[str, str]
                 stem = op[:-4] if op.endswith("Test") else op
             else:
                 stem = "Flow"
-        cls = f"{jn}{stem}"
-        if not cls.endswith("Test"):
-            cls += "Test"
+        # The class is named after the BUSINESS stem, not the ticket: the
+        # ticket stays on @XrayTest / @Issue and in test_case_id. Grouping
+        # is still per ticket (the key above), so two tickets that share
+        # a stem collide on the name -- 19 groups in programaccountregression
+        # (`CreateAccountTest` x5, `RejectPendingTest` x3, ...). Resolve by
+        # deepening the stem from the cases' own names; when even the full
+        # names agree (four tickets each named get_readmember_programaccounts)
+        # a plain ordinal separates them. The ticket never enters a name.
+        bodies = [_case_name_body(c.name) for c in group]
+        cls = None
+        for cand in [stem] + _deeper_stems(bodies):
+            name = cand if cand.endswith("Test") else cand + "Test"
+            if (slug, name) not in used:
+                cls = name
+                break
+        if cls is None:
+            n = 2
+            while (slug, f"{stem}{n}Test") in used:
+                n += 1
+            cls = f"{stem}{n}Test"
         bucket = (slug, cls)
-        if bucket in used:
-            digest = _hl.sha1(repr((jn, _ident)).encode("utf-8")).hexdigest()[:6]
-            cls = f"{cls[:-4]}_{digest}Test"
-            bucket = (slug, cls)
         used.add(bucket)
         for c in group:
             assigned[id(c)] = bucket
     return assigned
+
+
+def _deeper_stems(bodies: list[str]) -> list[str]:
+    """Progressively longer PascalCase stems from the group's first case.
+
+    `_common_stem_pascal` caps at four tokens, which is what makes
+    `create_account_format_social_domain` and `create_LTA_account_with_email_domain`
+    both `CreateAccount`. Six, then eight, then every token of the first
+    body usually tells them apart without reaching for the ticket.
+    """
+    if not bodies:
+        return []
+    toks = _flow_stem_tokens(bodies[0])
+    out: list[str] = []
+    for cap in (6, 8, len(toks)):
+        cand = _tokens_to_pascal(toks, cap)
+        if cand and cand not in out:
+            out.append(cand)
+    return out
 
 
 def _business_bucket_of_case(case: "TestCase") -> tuple[str, str]:
@@ -14647,6 +14687,36 @@ def _default_suite_name(xml_path: str) -> str:
     return sanitize_identifier(b).lower()
 
 
+def _fs_path(path: str, force: bool = False) -> str:
+    """Filesystem-safe form of `path` for deletion and writes on Windows.
+
+    Classic Win32 APIs refuse paths over 260 characters; Python then
+    raises FileNotFoundError / PermissionError for a file that is plainly
+    there. `--clean` reported 217 such files as "locked by another
+    process" on a checkout nested a few folders deep, left them in place,
+    and a stale per-case Support class broke the compile once names
+    changed. The extended-length prefix (backslash backslash ? backslash)
+    lifts the limit to 32K characters; other platforms are untouched.
+    Built from chr(92) on purpose: this file is edited through tooling
+    that unescapes backslashes.
+    """
+    if os.name != "nt":
+        return path
+    bs = chr(92)
+    ext = bs + bs + "?" + bs                  # the extended-length prefix
+    ap = os.path.abspath(path)
+    if ap.startswith(ext):
+        return ap
+    if len(ap) < 240 and not force:
+        return path
+    # `force` is for tree walks: shutil.rmtree inherits the ROOT's form for
+    # every child, so a short root must still be prefixed or the deep
+    # children fail exactly as before.
+    if ap.startswith(bs + bs):                # UNC share
+        return ext + "UNC" + bs + ap.lstrip(bs)
+    return ext + ap
+
+
 def _clean_suite_output(output_dir: str, suite_name: str, package_root: str,
                          input_xml: str = "") -> list[str]:
     """Delete files this suite would have written on a previous run.
@@ -14719,12 +14789,15 @@ def _clean_suite_output(output_dir: str, suite_name: str, package_root: str,
 
     for d in dirs_to_clean:
         if os.path.isdir(d):
-            shutil.rmtree(d, onerror=_on_rm_error)
+            # Walk with extended-length paths so a deep checkout does not
+            # leave "locked" orphans behind (see _fs_path).
+            shutil.rmtree(_fs_path(d, force=True), onerror=_on_rm_error)
             removed.append(d)
     if _locked_files:
-        print(f"[ra_converter] --clean: {len(_locked_files)} file(s) locked "
-              f"by another process (Excel? IDE? open editor?) -- skipped. "
-              f"Close them and re-run to fully clean.")
+        print(f"[ra_converter] --clean: {len(_locked_files)} file(s) could not "
+              f"be removed (open in Excel / an IDE?) -- skipped. Close them and "
+              f"re-run to fully clean. Stale files that survive here can "
+              f"break the compile once a name changes.")
         for p in _locked_files[:3]:
             print(f"    LOCKED: {p}")
         if len(_locked_files) > 3:

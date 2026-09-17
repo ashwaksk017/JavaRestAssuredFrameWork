@@ -1966,6 +1966,84 @@ def test_merged_template_cells_come_out_in_a_stable_column_order():
     assert cols == list(cells[1].keys())
 
 
+def test_method_name_drops_the_b2b_ticket():
+    """`[A-Z]+[-_]?\d+` stopped at the first B of B2B, so every method
+    came out `b2B2065Create...`. The ticket lives on @XrayTest, not here."""
+    m, status, variant = ra_converter._business_method_name(
+        "B2B-2065_create_and_activate_International_postalCode_200")
+    assert m == "createAndActivateInternationalPostalCodeTest", m
+    assert status == "200" and variant == ""
+    m, _s, _v = ra_converter._business_method_name("B2B339_post_program_add_packages_200")
+    assert m == "postProgramAddPackagesTest", m
+    m, _s, _v = ra_converter._business_method_name("Cleanup_testdata_creation")
+    assert m == "cleanupTestdataCreationTest", m
+
+
+def test_every_ticket_spelling_is_stripped_from_method_names():
+    """The 15 methods that kept a ticket after the first strip: a `-` after
+    the number, and `[Bug-B2B-2299]` references at the end of the name."""
+    cases = {
+        "B2B_4183-get_programAccount_AccountID_inviteLink_200": "getProgramAccountAccountIDInviteLinkTest",
+        "B2B-3234-Post_programaccount_emailDomain_400": "postProgramaccountEmailDomainTest",
+        "B2B-5867-Passlocaledate_to_HWS_Modify 2": "passlocaledateToHWSModify2Test",
+        "Reject_Pending_account_200[Bug-B2B-2299]": "rejectPendingAccountTest",
+        "B2B-1877_post_activate_account_lowConfidenceCompanyMatch_empty[Bug-B2B-2012]":
+            "postActivateAccountLowConfidenceCompanyMatchEmptyTest",
+        "B2B-2065_create_and_activate_International_postalCode_200": "createAndActivateInternationalPostalCodeTest",
+    }
+    for name, want in cases.items():
+        got, _s, _v = ra_converter._business_method_name(name)
+        assert got == want, (name, got)
+        assert "b2b" not in got.lower(), (name, got)
+
+
+def test_class_name_is_the_business_stem_not_the_ticket():
+    a = _case("B2B-5264_post_create_account_format_social_domain", [_rest_step()])
+    b = _case("B2B-6251_LTA_create_LTA_account_with_email_domain_200", [_rest_step()])
+    assigned = ra_converter._flow_class_assignment([a, b])
+    names = {assigned[id(a)][1], assigned[id(b)][1]}
+    assert len(names) == 2, names
+    assert not any("B2B" in n for n in names), names   # deepened stems, no ticket
+    assert all(n.endswith("Test") for n in names)
+
+
+def test_identical_names_under_different_tickets_get_an_ordinal_never_the_ticket():
+    a = _case("B2B-634_get_readmember_programaccounts_200", [_rest_step()])
+    b = _case("B2B-793_get_readmember_programaccounts_200", [_rest_step()])
+    c = _case("B2B-801_get_readmember_programaccounts_200", [_rest_step()])
+    assigned = ra_converter._flow_class_assignment([a, b, c])
+    names = [assigned[id(x)][1] for x in (a, b, c)]
+    assert len(set(names)) == 3, names
+    assert not any("B2B" in n for n in names), names
+    # the leading verb token is dropped by the stem rules, as everywhere else
+    assert names == ["ReadmemberProgramaccountsTest", "ReadmemberProgramaccounts2Test",
+                     "ReadmemberProgramaccounts3Test"], names
+
+
+def test_fs_path_lifts_the_windows_path_limit_for_clean(tmp_path):
+    """--clean reported 217 deep files as "locked" and left them; one stale
+    Support class then broke the compile once ticket prefixes left names."""
+    import os as _os, shutil as _shutil
+    bs = chr(92); ext = bs + bs + "?" + bs
+    assert ra_converter._fs_path("a/b.txt") == "a/b.txt"          # short: untouched
+    deep = _os.path.join(str(tmp_path), *(["d" * 40] * 7), "leaf.csv")
+    assert len(_os.path.abspath(deep)) > 260
+    if _os.name != "nt":
+        assert ra_converter._fs_path(deep) == deep
+        return
+    assert ra_converter._fs_path(deep).startswith(ext)
+    # create the deep tree through the prefix, then prove rmtree via _fs_path removes it
+    _os.makedirs(ra_converter._fs_path(_os.path.dirname(deep)), exist_ok=True)
+    with open(ra_converter._fs_path(deep), "w", encoding="utf-8") as fh:
+        fh.write("x")
+    top = _os.path.join(str(tmp_path), "d" * 40)
+    # the root is SHORT: without force the walk fails on the deep children
+    assert not ra_converter._fs_path(top).startswith(ext)
+    assert ra_converter._fs_path(top, force=True).startswith(ext)
+    _shutil.rmtree(ra_converter._fs_path(top, force=True))
+    assert not _os.path.exists(ra_converter._fs_path(top, force=True))
+
+
 def test_script_runner_is_the_last_thing_in_this_file():
     """verify_all runs this file as a SCRIPT, not under pytest.
 
