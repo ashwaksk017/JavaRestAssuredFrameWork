@@ -491,6 +491,66 @@ For reference, its shape:
 
 `configfailurepolicy="continue"` keeps later `@Test` methods in the same class running after a soft-assert failure.
 
+### Plain `mvn test` does NOT run your manual tests
+
+This is the single most common way to think a test ran when it did not.
+
+`pom.xml` defaults `<suiteXmlFile>` to `src/test/resources/testng.xml`. That
+suite lists only the sample classes (`com.ak.api.tests.samples`,
+`com.ak.api.tests.data`, ...) behind group filters. It never mentions
+`com.ak.api.tests.manual`. So a bare:
+
+```powershell
+mvn test
+```
+
+gives you a **green build that ran none of your hand-written tests**. No
+error, no "skipped" count, nothing to notice. The only clue is a test total
+that does not include yours.
+
+To actually run them you MUST pass both of these:
+
+```powershell
+mvn test "-DsuiteXmlFile=src/test/resources/testng-manual.xml" -Dmanual.client=ProgramaccountregressionClient
+```
+
+- `-DsuiteXmlFile=...` selects `testng-manual.xml` instead of the default
+  sample suite. Without it, your package is never scanned.
+- `-Dmanual.client=...` names the generated client to bind. Without it the
+  test skips, `using(...)` throws, and `ManualCleanup` silently does nothing
+  (see **Config** below).
+
+Sanity check: the run total should go up by the number of `@Test` methods you
+added. If it did not change, your suite file argument did not take.
+
+### Group filters can silently exclude your test
+
+Every other suite in this repo filters by group:
+
+| Suite | Group filter |
+| ----- | ------------ |
+| `Suites/Programaccountregression_Regression.xml` | `<include name="imported"/>` |
+| `Suites/Programaccountregression_Smoke.xml` | `<include name="imported"/>` |
+| `src/test/resources/testng.xml` | `smoke`, `regression`, `csv`, `auth`, ... (per `<test>` block) |
+| `src/test/resources/testng-smoke.xml` | `smoke` |
+| `src/test/resources/testng-manual.xml` | **none** |
+
+`testng-manual.xml` has no `<groups>` block, which is why
+`groups = {"manual", "onboarding"}` on the manual tests is currently
+**decorative** -- nothing reads it.
+
+It stops being decorative the moment anyone adds a filter. A TestNG `<groups>`
+`<include>` is allow-list semantics: any method without a matching group is
+dropped from the run with **no error and no skipped count**, exactly like the
+default-suite problem above.
+
+So: **if you add a `<groups>` block to `testng-manual.xml`, every manual test
+must carry a matching group or it vanishes silently.** Keep putting
+`groups = {"manual", "onboarding"}` on new `@Test` methods even though nothing
+reads it today -- that annotation is the thing that keeps the filter safe to
+add later.
+
+
 ### Config
 
 Active env: `-Denv=qa` (or `TEST_ENV`), else `qa`. Values come from `program_configuration.json` (then properties files). Typical keys:
@@ -506,6 +566,75 @@ Active env: `-Denv=qa` (or `TEST_ENV`), else `qa`. Values come from `program_con
 - `salesforce_assertion` / `sf_config.*` if you chain `prepareSalesforceAccount`
 
 Do not invent Salesforce credentials or a full HWS Selenium flow.
+
+#### Env var names are not what you would guess
+
+`Config.get` (`src/main/java/com/ak/api/config/Config.java`) resolves an env
+var as:
+
+```java
+String envKey = key.replace('.', '_').toUpperCase();
+```
+
+Dots to underscores, uppercase, and **nothing else**. There is no camelCase
+split. So `domains.fromDb.enabled` reads `DOMAINS_FROMDB_ENABLED`, and the
+natural-looking `DOMAINS_FROM_DB_ENABLED` is silently ignored -- an ignored
+env var looks exactly like an unset one, so the default just quietly wins.
+
+Two escape hatches, in order of preference:
+
+1. Pass `-Dkey=value` on the Maven command line. System properties are checked
+   first and use the key **verbatim**, dots and camelCase included
+   (`-Ddomains.fromDb.enabled=true`). No transform, nothing to get wrong.
+2. Use the REAL env var name from the table below.
+
+Since the fix for this gap, `Config.get` also prints a `[Config] WARNING: ...`
+on stderr (once per key) when it finds the naive spelling set and the real one
+unset. Resolution is unchanged -- it only names both forms so the miss is
+loud instead of silent. If you see that warning, rename your variable.
+
+Every key in the codebase whose env-var name differs from the naive guess:
+
+| Config key                       | REAL env var (this one works)    | Naive guess (silently ignored)       |
+| -------------------------------- | -------------------------------- | ------------------------------------ |
+| `auth.invalidateDebounceMs`      | `AUTH_INVALIDATEDEBOUNCEMS`      | `AUTH_INVALIDATE_DEBOUNCE_MS`        |
+| `auth.tokenCache.enabled`        | `AUTH_TOKENCACHE_ENABLED`        | `AUTH_TOKEN_CACHE_ENABLED`           |
+| `auth.tokenCache.skipRepeatFetch` | `AUTH_TOKENCACHE_SKIPREPEATFETCH` | `AUTH_TOKEN_CACHE_SKIP_REPEAT_FETCH` |
+| `auth.tokenCache.ttlMs`          | `AUTH_TOKENCACHE_TTLMS`          | `AUTH_TOKEN_CACHE_TTL_MS`            |
+| `auth.tokenRefresh.enabled`      | `AUTH_TOKENREFRESH_ENABLED`      | `AUTH_TOKEN_REFRESH_ENABLED`         |
+| `demoshop.baseUrl`               | `DEMOSHOP_BASEURL`               | `DEMOSHOP_BASE_URL`                  |
+| `demoshop.loginPath`             | `DEMOSHOP_LOGINPATH`             | `DEMOSHOP_LOGIN_PATH`                |
+| `domains.fromDb.enabled`         | `DOMAINS_FROMDB_ENABLED`         | `DOMAINS_FROM_DB_ENABLED`            |
+| `domains.fromDb.reason`          | `DOMAINS_FROMDB_REASON`          | `DOMAINS_FROM_DB_REASON`             |
+| `domains.fromDb.table`           | `DOMAINS_FROMDB_TABLE`           | `DOMAINS_FROM_DB_TABLE`              |
+| `gitlab.issueNotes`              | `GITLAB_ISSUENOTES`              | `GITLAB_ISSUE_NOTES`                 |
+| `gitlab.mergeRequestNote`        | `GITLAB_MERGEREQUESTNOTE`        | `GITLAB_MERGE_REQUEST_NOTE`          |
+| `gitlab.summaryDir`              | `GITLAB_SUMMARYDIR`              | `GITLAB_SUMMARY_DIR`                 |
+| `rest.asyncBudgetCapMs`          | `REST_ASYNCBUDGETCAPMS`          | `REST_ASYNC_BUDGET_CAP_MS`           |
+| `rest.asyncBudgetIntervalMs`     | `REST_ASYNCBUDGETINTERVALMS`     | `REST_ASYNC_BUDGET_INTERVAL_MS`      |
+| `rest.deferDelays`               | `REST_DEFERDELAYS`               | `REST_DEFER_DELAYS`                  |
+| `rest.failFastBrokenPath`        | `REST_FAILFASTBROKENPATH`        | `REST_FAIL_FAST_BROKEN_PATH`         |
+| `rest.pollActivateReadyIntervalMs` | `REST_POLLACTIVATEREADYINTERVALMS` | `REST_POLL_ACTIVATE_READY_INTERVAL_MS` |
+| `rest.pollActivateReadyMs`       | `REST_POLLACTIVATEREADYMS`       | `REST_POLL_ACTIVATE_READY_MS`        |
+| `rest.pollExpectedJsonMs`        | `REST_POLLEXPECTEDJSONMS`        | `REST_POLL_EXPECTED_JSON_MS`         |
+| `rest.pollPathParamMs`           | `REST_POLLPATHPARAMMS`           | `REST_POLL_PATH_PARAM_MS`            |
+| `rest.pollSalesforceIdIntervalMs` | `REST_POLLSALESFORCEIDINTERVALMS` | `REST_POLL_SALESFORCE_ID_INTERVAL_MS` |
+| `rest.pollSalesforceIdMs`        | `REST_POLLSALESFORCEIDMS`        | `REST_POLL_SALESFORCE_ID_MS`         |
+| `test.interMethodCoolDownMs`     | `TEST_INTERMETHODCOOLDOWNMS`     | `TEST_INTER_METHOD_COOL_DOWN_MS`     |
+| `test.isolateCtxPerMethod`       | `TEST_ISOLATECTXPERMETHOD`       | `TEST_ISOLATE_CTX_PER_METHOD`        |
+| `xray.baseUrl`                   | `XRAY_BASEURL`                   | `XRAY_BASE_URL`                      |
+| `xray.clientId`                  | `XRAY_CLIENTID`                  | `XRAY_CLIENT_ID`                     |
+| `xray.clientSecret`              | `XRAY_CLIENTSECRET`              | `XRAY_CLIENT_SECRET`                 |
+| `xray.testExecutionKey`          | `XRAY_TESTEXECUTIONKEY`          | `XRAY_TEST_EXECUTION_KEY`            |
+
+Keys with no camelCase hump (`api_config.client_id` -> `API_CONFIG_CLIENT_ID`,
+`database.host` -> `DATABASE_HOST`) are unaffected: naive and real agree.
+
+Separately, `Config` **skips** the env-var step entirely for a short list of
+OS-reserved names (`USERNAME`, `PASSWORD`, `HOME`, `PATH`, ...) so a Windows
+machine's OS-set `USERNAME` cannot masquerade as test data. Use the nested
+form (`API_CONFIG_USERNAME`, `SF_CONFIG_UI_USERNAME`) for those.
+
 
 ### Commands
 

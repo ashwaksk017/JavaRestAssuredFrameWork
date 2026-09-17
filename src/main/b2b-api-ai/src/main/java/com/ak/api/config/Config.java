@@ -91,6 +91,19 @@ public final class Config {
             "SYSTEMDRIVE", "SYSTEMROOT", "WINDIR"
     );
 
+    /**
+     * Keys already warned about, so the naive-env-var WARNING is printed at
+     * most once per key per JVM. Bounded by the number of distinct config
+     * keys the run touches.
+     *
+     * <p>MUST be declared BEFORE the static initializer blocks, for the same
+     * source-order reason documented on {@link #OS_RESERVED_ENV_NAMES} --
+     * those blocks call {@code get()}, which touches this set.</p>
+     */
+    private static final java.util.Set<String> NAIVE_ENV_WARNED =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+
     private static final Properties props = new Properties();
     // Flattened env-scoped view of program_configuration.json. Keys are
     // dot-joined (e.g. `api_config.client_id`). Empty when the file is
@@ -494,10 +507,16 @@ public final class Config {
         // lookup for OS-reserved names. See OS_RESERVED_ENV_NAMES
         // Javadoc for the audit rationale (#3: Windows USERNAME/HOME/
         // etc. would silently masquerade as request-body values).
-        String envKey = key.replace('.', '_').toUpperCase();
+        String envKey = realEnvVarName(key);
         if (!OS_RESERVED_ENV_NAMES.contains(envKey)) {
             String env = System.getenv(envKey);
             if (isNonEmpty(env)) return env;
+            // Miss. Before falling through, check whether the caller set the
+            // *naive* snake_case spelling (DOMAINS_FROM_DB_ENABLED) that this
+            // transform does NOT produce. Resolution is deliberately
+            // unchanged -- this only makes a silent miss loud. Cheap: miss
+            // path only, camelCase keys only, once per key.
+            warnIfNaiveEnvVarSet(key);
         }
 
         // 3. program_configuration.json (env-scoped, flattened)
@@ -533,6 +552,105 @@ public final class Config {
         String v = get(key, null);
         if (v == null) return fallback;
         return Boolean.parseBoolean(v.trim());
+    }
+
+    // ---------------------------------------------------------------------
+    // Env-var naming
+    // ---------------------------------------------------------------------
+    //
+    // get() maps a key to an env var with `dots -> underscores, uppercase`
+    // and NOTHING ELSE. There is no camelCase split. So:
+    //
+    //     domains.fromDb.enabled  ->  DOMAINS_FROMDB_ENABLED     (read)
+    //                             ->  DOMAINS_FROM_DB_ENABLED    (IGNORED)
+    //
+    // The naive spelling is the one everybody types, and an ignored env var
+    // is indistinguishable from an unset one: no error, no skipped-test
+    // count, just the default quietly winning. The helpers below do NOT
+    // change resolution -- they exist so the mismatch produces a WARNING
+    // instead of nothing. The full list of affected keys lives in
+    // CreateTestCase.md section 8, "Env var names are not what you would
+    // guess".
+
+    /**
+     * The environment-variable name {@link #get(String, String)} actually
+     * reads for {@code key}: dots to underscores, uppercased, with no
+     * camelCase splitting.
+     */
+    public static String realEnvVarName(String key) {
+        return key.replace('.', '_').toUpperCase();
+    }
+
+    /**
+     * The environment-variable name a reader would most likely <em>guess</em>
+     * for {@code key}: an underscore is additionally inserted at every
+     * lower-to-upper camelCase boundary before uppercasing.
+     *
+     * @return the naive name, or {@code null} when {@code key} has no
+     *         camelCase hump and the naive name would therefore be identical
+     *         to {@link #realEnvVarName(String)} (nothing to confuse).
+     */
+    public static String naiveEnvVarName(String key) {
+        if (!hasCamelHump(key)) return null;
+        StringBuilder sb = new StringBuilder(key.length() + 8);
+        for (int i = 0; i < key.length(); i++) {
+            char c = key.charAt(i);
+            if (i > 0 && Character.isUpperCase(c) && Character.isLowerCase(key.charAt(i - 1))) {
+                sb.append('_');
+            }
+            sb.append(c);
+        }
+        return sb.toString().replace('.', '_').toUpperCase();
+    }
+
+    /**
+     * Builds the warning text for {@code key} when the naive env-var spelling
+     * is set while the real one is not.
+     *
+     * <p>The environment is passed in as a lookup function rather than read
+     * straight from {@link System#getenv()} so this is unit-testable without
+     * mutating the real process environment.</p>
+     *
+     * @return the warning message, or {@code null} when there is nothing to
+     *         warn about (no camelCase hump, or the naive variant is unset).
+     */
+    public static String naiveEnvVarWarning(String key,
+                                            java.util.function.Function<String, String> envLookup) {
+        String naive = naiveEnvVarName(key);
+        if (naive == null) return null;
+        String real = realEnvVarName(key);
+        if (naive.equals(real)) return null;
+        if (!isNonEmpty(envLookup.apply(naive))) return null;
+        return "[Config] WARNING: environment variable `" + naive + "` is set but is "
+                + "IGNORED. Config key `" + key + "` resolves env vars as "
+                + "dots-to-underscores + UPPERCASE with NO camelCase split, so the "
+                + "name actually read is `" + real + "`. Rename `" + naive + "` to `"
+                + real + "` (or pass -D" + key + "=<value>, which uses the key "
+                + "verbatim) for the value to take effect. Resolution was NOT "
+                + "changed by this warning -- the default is still in use.";
+    }
+
+    /** True when {@code key} contains a lower-to-upper camelCase boundary. */
+    private static boolean hasCamelHump(String key) {
+        for (int i = 1; i < key.length(); i++) {
+            if (Character.isUpperCase(key.charAt(i)) && Character.isLowerCase(key.charAt(i - 1))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Env-var miss path only. Prints {@link #naiveEnvVarWarning} at most once
+     * per key. Ordered cheapest-check-first: no allocation for keys without a
+     * camelCase hump, and no {@code getenv} call for a key already warned
+     * about.
+     */
+    private static void warnIfNaiveEnvVarSet(String key) {
+        if (!hasCamelHump(key)) return;
+        if (!NAIVE_ENV_WARNED.add(key)) return;
+        String msg = naiveEnvVarWarning(key, System::getenv);
+        if (msg != null) System.err.println(msg);
     }
 
     // ---------------------------------------------------------------------
