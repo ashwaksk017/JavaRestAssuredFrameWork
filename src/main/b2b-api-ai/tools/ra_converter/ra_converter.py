@@ -14129,31 +14129,16 @@ public class FailureDigestListener implements ITestListener {{
     }}
 
     /**
-     * Recorded by RestAssuredRecordingFilter on every 401/403.
+     * Delegates to {{@link com.ak.api.rest.utilities.ResponseMasking}}.
      *
-     * <p>Folded into the digest so the auth question is answered by the same
-     * small file, with no shell pipeline to run -- the previous advice was a
-     * bash one-liner, which is useless on Windows.</p>
+     * <p>The masks used to live here and matched {{@code www.host}} only, so a
+     * bare {{@code customer.com}} in an assertion message reached the digest
+     * unmasked. Now that response BODIES are quoted too, the shared masker
+     * (UUID, email, timestamp, JWT, ANY hostname, long digit runs) is the one
+     * place to fix a leak.</p>
      */
-    public static void recordAuthVerdict(String verdict) {{
-        com.ak.api.rest.utilities.AuthDiagnostics.record(verdict);
-    }}
-
-    private static final Pattern[] MASKS = {{
-        Pattern.compile("[0-9a-fA-F]{{8}}-[0-9a-fA-F]{{4}}-[0-9a-fA-F]{{4}}-"
-                + "[0-9a-fA-F]{{4}}-[0-9a-fA-F]{{12}}"),
-        Pattern.compile("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+"),
-        Pattern.compile("\\\\b\\\\d{{4}}-\\\\d{{2}}-\\\\d{{2}}[T ]\\\\d{{2}}:\\\\d{{2}}:\\\\d{{2}}\\\\S*"),
-        Pattern.compile("\\\\b\\\\d{{5,}}\\\\b"),
-        Pattern.compile("\\\\bwww\\\\.[A-Za-z0-9.-]+"),
-    }};
-
     private static String mask(String s) {{
-        String out = s;
-        for (Pattern p : MASKS) {{
-            out = p.matcher(out).replaceAll("<*>");
-        }}
-        return out;
+        return com.ak.api.rest.utilities.ResponseMasking.mask(s);
     }}
 
     /** First meaningful line of the failure, masked. */
@@ -14196,11 +14181,18 @@ public class FailureDigestListener implements ITestListener {{
             Matcher m = Pattern.compile("(?m)^\\\\s+[A-Za-z]").matcher(t.getMessage());
             while (m.find()) asserts++;
         }}
-        String upstream = com.ak.api.rest.utilities.StepOutcomes.lastFailure();
+        // FIRST non-2xx, not last: the earliest failed call is the one that
+        // did not mint the id everything after it needed. Its body is kept
+        // (already capped by RestStep) so the digest can quote the server's
+        // own reason instead of the framework's symptom. Masked again here:
+        // cheap, and it means a body from any producer is safe to print.
+        String upstream = com.ak.api.rest.utilities.StepOutcomes.firstFailure();
+        String body = com.ak.api.rest.utilities.StepOutcomes.firstFailureBody();
         FAILURES.put(key, new String[] {{
             signature(t), cls, result.getName(), caseIdOf(result),
             String.valueOf(Math.max(asserts, 1)),
             upstream == null ? "" : upstream,
+            body == null ? "" : mask(body),
         }});
     }}
 
@@ -14241,15 +14233,25 @@ public class FailureDigestListener implements ITestListener {{
             w.printf("unique failing (test, row) pairs: %d   distinct signatures: %d%n",
                     all.size(), groups.size());
             w.println("(retries collapsed; ids/emails/domains/dates masked as <*>)");
-            w.println("digest v2 -- reports auth cause; a run missing the section"
-                    + " below was built before this listener");
+            w.println("digest v3 -- adds `server said:` (masked body of the FIRST"
+                    + " non-2xx), records the FIRST failed call rather than the"
+                    + " last, and separates auth verdicts OBSERVED on the wire"
+                    + " from those INFERRED from ctx");
             w.println();
             w.println("== auth rejections (401/403), by cause ==");
             if (authVerdicts().isEmpty()) {{
                 w.println("  none observed in this run");
                 w.println();
             }} else {{
-                w.println("   NO-TOKEN-SENT      -> upstream extract was empty "
+                w.println("   Two producers, NOT equivalent:");
+                w.println("   header:*             OBSERVED -- what the Authorization"
+                        + " header actually carried on the wire");
+                w.println("                        (RestAssuredRecordingFilter)");
+                w.println("   TOKEN-*-IN-CTX (len) INFERRED -- what ctx held when the"
+                        + " step was built (RestStep); a token in ctx");
+                w.println("                        can still be absent from the"
+                        + " request if the template never referenced it");
+                w.println("   NO-TOKEN-SENT        -> upstream extract was empty "
                         + "(dataflow/converter bug)");
                 w.println("   TOKEN-SENT-BUT-REJECTED -> token was real and refused "
                         + "(expired / audience / throttled)");
@@ -14272,6 +14274,9 @@ public class FailureDigestListener implements ITestListener {{
                             f[1], f[2], f[3], f[4],
                             f.length > 5 && !f[5].isEmpty()
                                     ? "   first bad call: " + f[5] : "");
+                    if (f.length > 6 && !f[6].isEmpty()) {{
+                        w.printf("         server said: %s%n", f[6]);
+                    }}
                 }}
             }}
             w.println();
@@ -14279,17 +14284,27 @@ public class FailureDigestListener implements ITestListener {{
             w.println("   (a broken path or a missing id is usually a SYMPTOM;");
             w.println("    this is the earliest non-2xx seen in that test)");
             Map<String, Integer> upstream = new LinkedHashMap<>();
+            Map<String, String> firstBody = new LinkedHashMap<>();
             int clean = 0;
             for (String[] f : all) {{
                 if (f.length > 5 && !f[5].isEmpty()) {{
                     upstream.merge(f[5], 1, Integer::sum);
+                    if (f.length > 6 && !f[6].isEmpty()) {{
+                        firstBody.putIfAbsent(f[5], f[6]);
+                    }}
                 }} else {{
                     clean++;
                 }}
             }}
             upstream.entrySet().stream()
                     .sorted((a, b) -> b.getValue() - a.getValue())
-                    .forEach(e -> w.printf("  %6d  %s%n", e.getValue(), e.getKey()));
+                    .forEach(e -> {{
+                        w.printf("  %6d  %s%n", e.getValue(), e.getKey());
+                        String b = firstBody.get(e.getKey());
+                        if (b != null) {{
+                            w.printf("          server said: %s%n", b);
+                        }}
+                    }});
             if (clean > 0) {{
                 w.printf("  %6d  (no failed call -- assertion-only failure)%n", clean);
             }}

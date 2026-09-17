@@ -449,7 +449,16 @@ public final class RestStep {
                 // that actually failed first, instead of only reporting the
                 // symptom. Recorded on the FINAL response (after any token
                 // refresh) and never for a status the step asserted.
-                StepOutcomes.record(stepName, res.getStatusCode(), assertedStatus);
+                // Body passed through so the digest can show WHY the server
+                // refused, not just that it did. Masked here -- the digest is
+                // pasted into issues and this repo is public.
+                String failBody = null;
+                if (res.getStatusCode() >= 400) {
+                    failBody = ResponseMasking.mask(
+                            capForLog(RestUtilities.getResponseAsString(res)));
+                }
+                StepOutcomes.record(stepName, res.getStatusCode(), assertedStatus,
+                        failBody);
             }
             LOG.info(" <- HTTP {} in {}ms  (step={})",
                     res.getStatusCode(), System.currentTimeMillis() - t0, stepName);

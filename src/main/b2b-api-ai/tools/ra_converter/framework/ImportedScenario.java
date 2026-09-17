@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 11
+// ra_converter-framework-rev: 12
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -1253,18 +1253,25 @@ public final class ImportedScenario {
         return d != null && FREEMAIL_DOMAINS.contains(d);
     }
 
+    /**
+     * Lower-cased, trimmed, {@code www.}-stripped -- and NEVER null.
+     *
+     * <p>Every caller compares the result with {@code .isEmpty()} or
+     * {@code .equalsIgnoreCase(...)} directly. The previous version had an
+     * unreachable second {@code null} branch AND a tail that returned null for
+     * a blank input, so a saved email of {@code user@} or a domain of literally
+     * {@code www.} threw NullPointerException inside bindEmailsToSavedDomains
+     * instead of simply not matching. Empty string is the one contract.</p>
+     */
     private static String normalizeDomain(String raw) {
         if (raw == null) {
             return "";
-        }
-        if (raw == null) {
-            return null;
         }
         String d = raw.trim().toLowerCase(Locale.ROOT);
         if (d.startsWith("www.")) {
             d = d.substring(4);
         }
-        return d.isEmpty() ? null : d;
+        return d;
     }
 
     private static String distinctUsername(String... used) {

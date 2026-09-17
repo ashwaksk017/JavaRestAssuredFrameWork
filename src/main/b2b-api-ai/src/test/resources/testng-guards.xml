@@ -18,6 +18,7 @@
             <class name="com.ak.api.tests.framework.TokenRefreshTest"/>
             <class name="com.ak.api.tests.framework.AuthDigestAccuracyTest"/>
             <class name="com.ak.api.tests.framework.ConfigEnvVarNamingTest"/>
+            <class name="com.ak.api.tests.framework.DigestDiagnosticsTest"/>
             <class name="com.ak.api.dsl.TemplateRegistryTest"/>
             <class name="com.ak.api.dsl.TemplateChoiceTest"/>
             <class name="com.ak.api.dsl.TemplateManualSuiteTest"/>

@@ -1908,3 +1908,56 @@ def test_bundled_framework_offers_live_domains_for_random_domain_placeholders():
     assert int(m.group(1)) >= 11, (
         "framework-rev must be bumped past 10, else existing trees keep the "
         "old ImportedScenario and never receive this hook")
+
+
+def test_bundled_normalize_domain_never_returns_null():
+    """normalizeDomain must return "" for null/blank, never null.
+
+    Every caller dereferences the result (.isEmpty / .equalsIgnoreCase).
+    The template once carried an unreachable second null branch and a
+    `isEmpty() ? null : d` tail, which NPE'd on a saved email of `user@`
+    or a domain of `www.`. Guards the single-contract form.
+    """
+    import io
+    import os
+    import re as _re
+    path = os.path.join(os.path.dirname(ra_converter.__file__),
+                        "framework", "ImportedScenario.java")
+    src = io.open(path, encoding="utf-8").read()
+    body = src[src.index("private static String normalizeDomain"):]
+    body = body[:body.index("\n    }\n") + 7]
+    assert body.count("if (raw == null)") == 1, "unreachable duplicate null-check is back"
+    assert "? null : d" not in body, "null-returning tail is back"
+    assert 'return "";' in body
+    m = _re.search(r"ra_converter-framework-rev:\s*(\d+)", src)
+    assert m and int(m.group(1)) >= 12
+
+
+def test_emitted_digest_listener_is_v3():
+    """The listener is a converter OUTPUT, so v3 must live in the template.
+
+    The v3 edits were first made to the emitted .java alone and were wiped
+    by the very next --clean run -- which is how a digest that still said
+    "first bad call" while recording the LAST failure got pasted twice.
+    Guards the template markers, and that the committed .java agrees.
+    """
+    import io
+    import os
+    conv = os.path.join(os.path.dirname(ra_converter.__file__), "ra_converter.py")
+    src = io.open(conv, encoding="utf-8").read()
+    i = src.index("def emit_failure_digest_listener")
+    j = src.index("def emit_progress_listener", i)
+    tpl = src[i:j]
+    for must in ("digest v3", "server said:", "StepOutcomes.firstFailure()",
+                 "StepOutcomes.firstFailureBody()", "ResponseMasking.mask(",
+                 "OBSERVED", "INFERRED"):
+        assert must in tpl, "template lost v3 marker: " + must
+    for gone in ("digest v2", "lastFailure()", "Pattern[] MASKS", "recordAuthVerdict"):
+        assert gone not in tpl, "template regressed to v2 marker: " + gone
+    # the committed output must not drift from what the converter emits
+    java = os.path.join(os.path.dirname(conv), "..", "..", "src", "main", "java",
+                        "com", "ak", "api", "reporting", "FailureDigestListener.java")
+    if os.path.exists(java):
+        jsrc = io.open(java, encoding="utf-8").read()
+        assert "digest v3" in jsrc and "server said:" in jsrc, \
+            "committed FailureDigestListener.java is behind the converter template"
