@@ -125,8 +125,18 @@ layout (`charset="UTF-8"` in `log4j2.xml`) plus the surefire fork
 (`-Dfile.encoding=UTF-8 ...` in the pom `argLine`), and the Maven JVM itself
 via `.mvn/jvm.config` — Surefire re-prints the fork's output and the failure
 summary through Maven's own stdout, so that JVM has to be UTF-8 too. Nothing
-to set on the command line; `mvn test > full-run.log` writes UTF-8. If a
-`?` still shows up in a payload, it was a `?` in the datasheet.
+to set on the Maven command line. One thing is outside Maven's reach: a
+**Windows PowerShell 5.1** `>` redirect re-decodes the JVM's bytes with the
+console code page (cp1252 / cp437 by default), so `mvn test > full-run.log`
+from a plain PowerShell window turns 鴕火 into `é´•ç«`. `cmd.exe` passes
+the bytes through untouched. From PowerShell use the wrapper, which sets the
+console to UTF-8 for that one invocation and forwards every argument:
+
+```powershell
+tools\mvn-utf8.ps1 test "-DsuiteXmlFile=Suites/Programaccountregression_Regression.xml" > full-run.log
+```
+
+If a `?` still shows up in a payload after that, it was a `?` in the datasheet.
 
 ---
 
