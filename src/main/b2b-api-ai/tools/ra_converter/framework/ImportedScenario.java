@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 12
+// ra_converter-framework-rev: 13
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -946,6 +946,21 @@ public final class ImportedScenario {
         CtxFields.putBothCases(ctx, "Properties", "Domain", domain);
         CtxFields.putBothCases(ctx, "Properties", "websiteDomain", domain);
         CtxFields.putBothCases(ctx, "Properties", "weburl", domain);
+        // DataGenInput derives these from the SAME label as Domain/Email:
+        //   def emailDomain = generatedDomain + ".com"
+        //   def websiteDomain = "www." + generatedDomain + ".com"
+        // and createAccount sends emailDomains: ["${Properties#emailDomain}"].
+        // Left alone they kept the pack's random value while the owner email
+        // moved here -> 400/503 "Email address domain must match".
+        if (firstNonBlank(row, "Properties.emailDomain", "Properties.emaildomain") != null
+                || firstNonBlank(ctx, "Properties.emailDomain", "Properties.emaildomain") != null) {
+            CtxFields.putBothCases(ctx, "Properties", "emailDomain", domain);
+        }
+        String savedSite = firstNonBlank(row, "Properties.Website", "Properties.website");
+        if (savedSite != null && !savedSite.isEmpty()
+                && sameDomainOrLabel(normalizeDomain(savedSite), normalizeDomain(csvDomain))) {
+            CtxFields.putBothCases(ctx, "Properties", "Website", "www." + domain);
+        }
         if (hasFrozenDomain) {
             // These stay ON Hardcodeddomain. An earlier fix dragged them onto
             // the identity domain instead, to make B2B-3216's create coherent
@@ -986,8 +1001,30 @@ public final class ImportedScenario {
         // picked live from account_rules. Offer the live rows instead when
         // that is switched on; returns the CSV values untouched otherwise.
         String[] resolved = com.ak.api.db.repo.DomainRules.overrideOrCsv(row, d1, d2);
+        boolean live1 = resolved[0] != null && !resolved[0].equals(d1);
+        boolean live2 = resolved[1] != null && !resolved[1].equals(d2);
         d1 = resolved[0];
         d2 = resolved[1];
+        // ReadyAPI saved RandomDomain = the row's own domain in 11 cases
+        // (createAccount emailDomains: ["${Properties#RandomDomain}"]). The
+        // identity domain is regenerated above, so re-putting the CSV value
+        // paired a fresh owner email with the OLD domain -> 400/503 "Email
+        // address domain must match an allowed domain". A live (DB) override
+        // is deliberate and is kept.
+        if (!live1 && d1 != null && !d1.isEmpty() && savedIdentityDomain(row, d1)) {
+            String current = firstNonBlank(ctx, "Properties.Domain", "Properties.domain");
+            if (current != null && !current.isEmpty()) {
+                d1 = current;
+            }
+        }
+        if (!live2 && d2 != null && !d2.isEmpty()) {
+            String saved2 = normalizeDomain(firstNonBlank(row, "Properties.Domain2", "Properties.domain2"));
+            String current2 = firstNonBlank(ctx, "Properties.Domain2", "Properties.domain2");
+            if (!saved2.isEmpty() && saved2.equalsIgnoreCase(normalizeDomain(d2))
+                    && current2 != null && !current2.isEmpty()) {
+                d2 = current2;
+            }
+        }
         if (d1 != null && !d1.isEmpty()) {
             CtxFields.putBothCases(ctx, "Properties", "RandomDomain", d1);
         }
@@ -1044,12 +1081,20 @@ public final class ImportedScenario {
             if (seeded == null || seeded.isEmpty() || isFreemailDomain(seeded)) {
                 continue;
             }
-            String fresh = freshDomainLike(normalizeDomain(seeded));
+            // The row's saved DomainN is the shape to preserve; the ctx value
+            // may already be a word the translated generator pack put there.
+            String savedN = firstNonBlank(row, key, "Properties.domain" + n);
+            String shape = savedN != null && !savedN.isEmpty() ? savedN : seeded;
+            String fresh = freshDomainLike(normalizeDomain(shape));
             CtxFields.putBothCases(ctx, "Properties", "Domain" + n, fresh);
             for (String siteKey : new String[] {"Website", "Website" + n,
                     "websitedomain" + n, "websiteDomain" + n}) {
                 String site = firstNonBlank(ctx, "Properties." + siteKey);
-                if (site != null && site.equalsIgnoreCase("www." + seeded)) {
+                String savedSiteN = firstNonBlank(row, "Properties." + siteKey);
+                boolean follows = (site != null && site.equalsIgnoreCase("www." + seeded))
+                        || (savedSiteN != null && savedN != null && !savedN.isEmpty()
+                            && normalizeDomain(savedSiteN).equalsIgnoreCase(normalizeDomain(savedN)));
+                if (follows) {
                     CtxFields.putBothCases(ctx, "Properties", siteKey, "www." + fresh);
                 }
             }
@@ -1100,7 +1145,7 @@ public final class ImportedScenario {
             }
             String savedEmailDomain = normalizeDomain(savedEmail.substring(at + 1));
             if (savedEmailDomain.isEmpty()
-                    || savedEmailDomain.equalsIgnoreCase(savedIdentity)) {
+                    || sameDomainOrLabel(savedEmailDomain, savedIdentity)) {
                 continue;   // regen's identity domain is already right
             }
             for (String domainField : BINDABLE_DOMAINS) {
@@ -1130,6 +1175,41 @@ public final class ImportedScenario {
      * {@code Properties.Domain} and that domain is not {@code frozen} -- i.e.
      * DataGenInput generated its own domain for this case.
      */
+    /**
+     * "kkzgg.com" is the same domain as the bare label "kkzgg": DataGenInput
+     * stores Domain as the label and builds Email / emailDomain /
+     * websiteDomain as label + ".com" (22 rows). Exact match otherwise.
+     */
+    static boolean sameDomainOrLabel(String emailDomain, String identity) {
+        if (emailDomain == null || identity == null || identity.isEmpty()) {
+            return false;
+        }
+        String e = emailDomain.trim().toLowerCase(Locale.ROOT);
+        String i = identity.trim().toLowerCase(Locale.ROOT);
+        return e.equals(i) || (i.indexOf('.') < 0 && e.startsWith(i + "."));
+    }
+
+    /** Was {@code d} the row's own identity domain (Domain, or the saved owner email's)? */
+    private static boolean savedIdentityDomain(Map<String, String> row, String d) {
+        if (row == null) {
+            return false;
+        }
+        String nd = normalizeDomain(d);
+        String saved = normalizeDomain(firstNonBlank(row, "Properties.Domain", "Properties.domain"));
+        if (!saved.isEmpty() && sameDomainOrLabel(nd, saved)) {
+            return true;
+        }
+        for (String k : new String[] {"Properties.Email", "Properties.EmailAddress",
+                "Properties.generatedemailAddress", "Properties.GeneratedEmail"}) {
+            String v = row.get(k);
+            int at = v == null ? -1 : v.lastIndexOf('@');
+            if (at > 0 && normalizeDomain(v.substring(at + 1)).equalsIgnoreCase(nd)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     static boolean rowUsedOwnDomain(Map<String, String> row, String frozen) {
         String saved = firstNonBlank(row, "Properties.Domain", "Properties.domain");
         if (saved == null || frozen == null) {
@@ -1158,7 +1238,7 @@ public final class ImportedScenario {
                 "Properties.EmailAddress", "Properties.GeneratedEmail"}) {
             String v = row.get(k);
             int at = v == null ? -1 : v.lastIndexOf('@');
-            if (at > 0 && v.substring(at + 1).trim().equalsIgnoreCase(domain)) {
+            if (at > 0 && sameDomainOrLabel(v.substring(at + 1).trim(), domain)) {
                 return true;
             }
         }
@@ -1207,7 +1287,11 @@ public final class ImportedScenario {
         if (tld.isEmpty()) {
             tld = ".com";
         }
-        String head = saved.substring(0, saved.length() - tld.length());
+        // A bare label ("kkzgg": DataGenInput's Domain, with emailDomain =
+        // label + ".com") has nothing to strip; chopping tld.length() chars
+        // off it left one letter.
+        String head = saved.endsWith(tld)
+                ? saved.substring(0, saved.length() - tld.length()) : saved;
         int sep = Math.max(head.lastIndexOf('.'), head.lastIndexOf('-'));
         String prefix;
         if (sep >= 0) {

@@ -549,4 +549,89 @@ public class CtxFieldsTest {
         Assert.assertFalse(body2.contains("one"), body2);
         Assert.assertFalse(body2.contains("two"), body2);
     }
+    @Test(groups = {"unit"})
+    @Story("emailDomain / Website / Domain2 generate domain shapes, not addresses or words")
+    @Description("Digest 17: emailDomains: [\"user@x.com\"] (999) and websiteDomain: \"pkheba\" (553) came from name-shape generation.")
+    public void emailDomain_isDomainShaped() {
+        String ed = CtxFields.valueFor("emailDomain");
+        Assert.assertFalse(ed.contains("@"), "emailDomain must be a domain: " + ed);
+        Assert.assertTrue(ed.contains("."), ed);
+        String site = CtxFields.valueFor("Website");
+        Assert.assertTrue(site.startsWith("www.") && site.indexOf('.', 4) > 0, site);
+        String d2 = CtxFields.valueFor("Domain2");
+        Assert.assertFalse(d2.contains("@"), d2);
+        Assert.assertTrue(d2.contains("."), "Domain2 must carry a TLD: " + d2);
+        Assert.assertTrue(CtxFields.valueFor("RandomDomain").contains("."));
+
+        Map<String, String> ctx = new HashMap<>();
+        CtxFields.generate(ctx, "Properties", "Email", "emailDomain", "Website", "Domain2");
+        String email = ctx.get("Properties.Email");
+        String emailDomain = email.substring(email.indexOf('@') + 1);
+        Assert.assertEquals(ctx.get("Properties.emailDomain"), emailDomain, "one domain per pack");
+        Assert.assertEquals(ctx.get("Properties.Website"), "www." + emailDomain);
+    }
+
+    @Test(groups = {"unit"})
+    @Story("bare-label Domain (kkzgg + x@kkzgg.com) is the row's own domain")
+    @Description("B2B-2931: everything fell to Hardcodeddomain and emailDomain kept a foreign value.")
+    public void regen_bareLabelDomain_keepsRowOnItsOwnFreshDomain() {
+        Map<String, String> ctx = new HashMap<>();
+        ctx.put("Properties.Hardcodeddomain", "laafd.com");
+        ctx.put("Properties.emailDomain", "someone@elsewhere.com");
+        Map<String, String> row = new HashMap<>();
+        row.put("Properties.Domain", "kkzgg");
+        row.put("Properties.Email", "vmn3c@kkzgg.com");
+        row.put("Properties.emailDomain", "kkzgg.com");
+        row.put("Properties.websiteDomain", "www.kkzgg.com");
+        row.put("expected_http_request_200_1_status_code", "200");
+        ImportedScenario.regenRandomProperties(ctx, row);
+        String domain = ctx.get("Properties.Domain");
+        Assert.assertNotEquals(domain, "laafd.com", "row used its own domain, not the frozen one");
+        Assert.assertTrue(domain.contains(".") && domain.length() > 4, "full domain, not a chopped label: " + domain);
+        Assert.assertTrue(ctx.get("Properties.Email").endsWith("@" + domain), ctx.get("Properties.Email"));
+        Assert.assertEquals(ctx.get("Properties.emailDomain"), domain);
+        Assert.assertEquals(ctx.get("Properties.websiteDomain"), domain);
+    }
+
+    @Test(groups = {"unit"})
+    @Story("RandomDomain that was the identity domain follows the regenerated identity")
+    @Description("B2B-8398: emailDomains: [\"${Properties#RandomDomain}\"] stayed on the CSV domain while the owner email moved -> 400/503.")
+    public void regen_randomDomainEqualToIdentity_followsIt() {
+        Map<String, String> ctx = new HashMap<>();
+        ctx.put("Properties.Hardcodeddomain", "laafd.com");
+        Map<String, String> row = new HashMap<>();
+        row.put("Properties.Domain", "westinghouse.com");
+        row.put("Properties.Email", "j1h0c@westinghouse.com");
+        row.put("Properties.RandomDomain", "westinghouse.com");
+        row.put("Properties.RandomDomain2", "competitor.com");
+        row.put("expected_http_request_200_createAccount_status_code", "200");
+        ImportedScenario.regenRandomProperties(ctx, row);
+        String domain = ctx.get("Properties.Domain");
+        Assert.assertNotEquals(domain, "westinghouse.com");
+        Assert.assertEquals(ctx.get("Properties.RandomDomain"), domain, "RandomDomain was the identity domain");
+        Assert.assertEquals(ctx.get("Properties.RandomDomain2"), "competitor.com", "unrelated CSV domain kept");
+        Assert.assertTrue(ctx.get("Properties.Email").endsWith("@" + domain));
+    }
+
+    @Test(groups = {"unit"})
+    @Story("Website follows Domain2 by the ROW's saved pairing, even if a pack pre-generated it")
+    @Description("B2B-5530: createAccount2 sent websiteDomain \"pkheba\" (a generated word) with emailDomains on the fresh Domain2 -> 553.")
+    public void regen_websiteFollowsSavedDomain2_notPregeneratedWord() {
+        Map<String, String> ctx = new HashMap<>();
+        ctx.put("Properties.Hardcodeddomain", "laafd.com");
+        ctx.put("Properties.Website", "pkheba");     // what the translated pack put there
+        ctx.put("Properties.Domain2", "zzyxq");      // ditto
+        Map<String, String> row = new HashMap<>();
+        row.put("Properties.Domain", "xnfjqmub.net");
+        row.put("Properties.Domain2", "tnfgwpxv.com");
+        row.put("Properties.Website", "www.tnfgwpxv.com");
+        row.put("Properties.Email", "p8lsd@tnfgwpxv.com");
+        row.put("Properties.generatedemailAddress", "soxbid@xnfjqmub.net");
+        row.put("expected_http_request_200_createAccount2_status_code", "200");
+        ImportedScenario.regenRandomProperties(ctx, row);
+        String d2 = ctx.get("Properties.Domain2");
+        Assert.assertTrue(d2.endsWith(".com"), "shape preserved from the row: " + d2);
+        Assert.assertEquals(ctx.get("Properties.Website"), "www." + d2);
+        Assert.assertTrue(ctx.get("Properties.Email").endsWith("@" + d2), ctx.get("Properties.Email"));
+    }
 }

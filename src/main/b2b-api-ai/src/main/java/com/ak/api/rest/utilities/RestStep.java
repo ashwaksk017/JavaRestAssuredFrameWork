@@ -321,8 +321,10 @@ public final class RestStep {
             String mapped = RestUtilities.mapJsonValues(
                     RestUtilities.getRequestTemplate(templateResource),
                     ImportedScenario.mergedRow(row, resolveCtx), false);
-            LOG.info(" .. [after-mapJsonValues] step={} ({} chars): {}",
-                    stepName, mapped.length(), capForLog(mapped));
+            // case= ties a body in a redirected run log back to its CSV row;
+            // without it a 1,300-case log cannot be read per test case.
+            LOG.info(" .. [after-mapJsonValues] step={} case={} ({} chars): {}",
+                    stepName, testCaseId, mapped.length(), capForLog(mapped));
             body = PlaceholderResolver.resolveAll(mapped, resolveCtx);
         }
         LAST_RESOLVED_BODY.set(body);

@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 5
+// ra_converter-framework-rev: 6
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -157,7 +157,7 @@ public final class CtxFields {
         for (String field : fields) {
             if (field == null || field.isEmpty()) continue;
             String p = field.toLowerCase();
-            if (isDomainField(field) || p.contains("email")) {
+            if (isDomainField(field) || isWebsiteField(field) || p.contains("email")) {
                 needsDomain = true;
                 break;
             }
@@ -175,6 +175,8 @@ public final class CtxFields {
             String value;
             if (sharedDomain != null && isDomainField(field)) {
                 value = sharedDomain;
+            } else if (sharedDomain != null && isWebsiteField(field)) {
+                value = "www." + sharedDomain;
             } else if (sharedDomain != null && p.contains("email")) {
                 value = FakeData.username() + "@" + sharedDomain;
             } else {
@@ -318,8 +320,16 @@ public final class CtxFields {
         if (p.contains("guestid") || p.contains("memberid") || p.contains("accountid")) {
             return FakeData.numericId();
         }
-        if (p.equals("domain") || p.equals("websitedomain") || p.equals("weburl")) {
+        // Domain-shaped names first: "emailDomain" contains "email" and was
+        // generated as an ADDRESS, which the API rejected as a constraint
+        // violation on emailDomains (13 rows in one regression digest).
+        // ReadyAPI's DataGenInput builds emailDomain, RandomDomain, Domain2..9
+        // and Website from the same label; "Website" is "www." + that domain.
+        if (isDomainField(field)) {
             return allowedDomainOrRandom();
+        }
+        if (isWebsiteField(field)) {
+            return "www." + allowedDomainOrRandom();
         }
         if (p.contains("email")) {
             String allowed = allowedDomainOrNull();
@@ -411,8 +421,25 @@ public final class CtxFields {
 
     static boolean isDomainField(String field) {
         if (field == null) return false;
-        String p = field.toLowerCase();
-        return p.equals("domain") || p.equals("websitedomain") || p.equals("weburl");
+        String p = stripOrdinal(field.toLowerCase());
+        // Anything named *domain (Domain, Domain2, emailDomain, RandomDomain,
+        // Hardcodeddomain, websiteDomain, newWebsiteDomain) holds a domain.
+        return p.equals("weburl") || p.endsWith("domain");
+    }
+
+    /** {@code Website}, {@code Website2}: ReadyAPI stores "www." + domain. */
+    static boolean isWebsiteField(String field) {
+        if (field == null) return false;
+        return stripOrdinal(field.toLowerCase()).equals("website");
+    }
+
+    /** {@code domain2} -> {@code domain}, {@code website_3} -> {@code website}. */
+    private static String stripOrdinal(String p) {
+        int end = p.length();
+        while (end > 0 && (Character.isDigit(p.charAt(end - 1)) || p.charAt(end - 1) == '_')) {
+            end--;
+        }
+        return p.substring(0, end);
     }
 
     /** Flip the first character's case; rest of the string unchanged. */
