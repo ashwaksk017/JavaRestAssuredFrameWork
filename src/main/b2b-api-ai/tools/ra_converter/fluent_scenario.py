@@ -30,6 +30,10 @@ import phase_vocabulary
 # back for body-fingerprinting). Anything emitted as `TestSupport.<name>(`
 # MUST be listed here or the hoisted copy will not compile -- that is how
 # `putEnvScoped` broke the build when it was first added.
+# Set by ra_converter from --phase-specs; gates naming changes that would
+# otherwise move the default tree.
+PHASE_SPECS = False
+
 _DUAL_HOME_HELPERS = (
     "ctxGet",
     "putExtracted",
@@ -378,13 +382,15 @@ def verify_bucket(step) -> str | None:
         return "Insights", "verifyAccountMember"
     # The vocabulary names the endpoint from its FULL path; the old leaf
     # rule produced `verifyVerify` for GET /guests/{}/businesses/verify.
-    canon = phase_vocabulary.canonical_name("GET", path) or ""
-    m = re.match(r"^[a-z]+(.*)$", canon)
-    noun = m.group(1) if m and m.group(1) else ""
-    if canon.startswith("verify"):
-        return "Insights", canon
-    if noun:
-        return "Insights", "verify" + noun
+    # Under --phase-specs only, so the default tree does not move.
+    if PHASE_SPECS:
+        canon = phase_vocabulary.canonical_name("GET", path) or ""
+        m = re.match(r"^[a-z]+(.*)$", canon)
+        noun = m.group(1) if m and m.group(1) else ""
+        if canon.startswith("verify"):
+            return "Insights", canon
+        if noun:
+            return "Insights", "verify" + noun
     leaf = re.sub(r"[^A-Za-z0-9]+", " ", path.split("/")[-1] or "resource")
     words = [w for w in leaf.split() if w]
     meth = "verify" + "".join(w[:1].upper() + w[1:] for w in words[:4] or ["Response"])

@@ -12486,6 +12486,15 @@ public class {class_name} extends BaseApiTest {{
                 f"{self._indent_java(info['body'], 8)}\n"
                 f"    }}\n")
         vocab_methods = ""
+        phase_fields = ""
+        phase_boot_guard = ""
+        phase_members = ""
+        if self.phase_specs_enabled:
+            phase_fields = (
+                "    protected com.ak.api.rest.utilities.phase.CaseRegistry.Case phases;\n"
+                "    private com.ak.api.rest.utilities.phase.PhaseContext phaseContext;\n")
+            phase_boot_guard = _PHASE_BOOT_GUARD
+            phase_members = _PHASE_MEMBERS
         if self.phase_specs_enabled:
             import phase_emit as _pe
             # a spec'd name must not also be a text-path phase name
@@ -12548,9 +12557,7 @@ public abstract class ScenarioSteps<S extends ScenarioSteps<S>> {{
     protected String testCaseId;
     protected int __restStepIdx;
     protected String __stopAfter;
-    protected com.ak.api.rest.utilities.phase.CaseRegistry.Case phases;
-    private com.ak.api.rest.utilities.phase.PhaseContext phaseContext;
-{resp_decls}
+{phase_fields}{resp_decls}
 
     protected ScenarioSteps(ImportedRestClient client,
                             Map<String, String> ctx,
@@ -12581,83 +12588,9 @@ public abstract class ScenarioSteps<S extends ScenarioSteps<S>> {{
     }}
 
     protected S bootstrap() throws Exception {{
-        if (phases != null && phases.hasBootstrap()) {{
-            __restStepIdx += phases.restOffset();
-            if (__stopAfter != null && !__stopAfter.isEmpty()
-                    && __restStepIdx >= Integer.parseInt(__stopAfter.trim())) {{
-                __stopped = true;
-                return self();
-            }}
-            runParts(phases.bootstrapParts());
-            return self();
-        }}
-{boot_body}
+{phase_boot_guard}{boot_body}
     }}
-
-    // ---- phases as data (--phase-specs) -------------------------------
-    protected com.ak.api.rest.utilities.phase.PhaseContext phaseContext() {{
-        if (phaseContext == null) {{
-            phaseContext = new com.ak.api.rest.utilities.phase.PhaseContext(
-                    client, ctx, row, softAssert, holder, testCaseId);
-        }}
-        return phaseContext;
-    }}
-
-    /** The suite steps class binds this to its generated Calls. */
-    protected io.restassured.response.Response dispatch(
-            com.ak.api.rest.utilities.phase.PhaseContext c,
-            com.ak.api.rest.utilities.phase.PhaseSpec p) throws Exception {{
-        throw new IllegalStateException("no Calls bound for phase `" + p.step + "`");
-    }}
-
-    private com.ak.api.rest.utilities.phase.CaseRegistry.Case requirePhases(String vocab) {{
-        if (phases == null) {{
-            throw new IllegalStateException("no phase table for case `" + testCaseId
-                    + "` (wanted `" + vocab + "`): start(row, caseId) binds it for converted "
-                    + "cases; hand-written flows use CustomerOnboarding");
-        }}
-        return phases;
-    }}
-
-    private boolean __stopped;
-
-    /**
-     * A prefix-merged cluster shares one @Test: the longest case's chain,
-     * with shorter members stopping early. The CSV row says where
-     * ({{@code _stop_after}} = number of REST calls to run); the text path
-     * checked that after every call, and so does this.
-     */
-    private void runParts(java.util.List<com.ak.api.rest.utilities.phase.PhaseSpec> parts)
-            throws Exception {{
-        for (com.ak.api.rest.utilities.phase.PhaseSpec p : parts) {{
-            if (__stopped) {{
-                return;
-            }}
-            if (p.isHookOnly()) {{
-                com.ak.api.rest.utilities.phase.PhaseRunner.run(p, phaseContext(), null);
-                continue;
-            }}
-            dispatch(phaseContext(), p);
-            __restStepIdx++;
-            if (__stopAfter != null && !__stopAfter.isEmpty()
-                    && __restStepIdx >= Integer.parseInt(__stopAfter.trim())) {{
-                __stopped = true;
-                return;
-            }}
-        }}
-    }}
-
-    protected S runPhase(String vocab, String step) throws Exception {{
-        com.ak.api.rest.utilities.phase.CaseRegistry.Case cs = requirePhases(vocab);
-        runParts(step == null ? cs.only(vocab, false) : cs.named(vocab, step, false));
-        return self();
-    }}
-
-    public void runVerify(String vocab, String step) throws Exception {{
-        com.ak.api.rest.utilities.phase.CaseRegistry.Case cs = requirePhases(vocab);
-        runParts(step == null ? cs.only(vocab, true) : cs.named(vocab, step, true));
-    }}
-{vocab_methods}
+{phase_members}{vocab_methods}
 {chr(10).join(flow_methods)}
 {chr(10).join(verify_runners)}
 }}
@@ -14345,6 +14278,10 @@ public final class {support_name} {{
             if not _group_has_placeholder_divergence(group):
                 work.append(group)
                 continue
+            if not self.phase_specs_enabled:
+                # default output stays exactly what it was: exact-body files
+                self._emit_tier1_for(group, hash_to_path)
+                continue
             by_ph: dict[tuple, list[dict]] = {}
             for e in group:
                 by_ph.setdefault(_placeholder_map(e.get("tree")), []).append(e)
@@ -15259,6 +15196,85 @@ def _default_suite_name(xml_path: str) -> str:
     return sanitize_identifier(b).lower()
 
 
+_PHASE_BOOT_GUARD = """        if (phases != null && phases.hasBootstrap()) {
+            __restStepIdx += phases.restOffset();
+            if (__stopAfter != null && !__stopAfter.isEmpty()
+                    && __restStepIdx >= Integer.parseInt(__stopAfter.trim())) {
+                __stopped = true;
+                return self();
+            }
+            runParts(phases.bootstrapParts());
+            return self();
+        }
+"""
+
+_PHASE_MEMBERS = """
+    // ---- phases as data (--phase-specs) -------------------------------
+    protected com.ak.api.rest.utilities.phase.PhaseContext phaseContext() {
+        if (phaseContext == null) {
+            phaseContext = new com.ak.api.rest.utilities.phase.PhaseContext(
+                    client, ctx, row, softAssert, holder, testCaseId);
+        }
+        return phaseContext;
+    }
+
+    /** The suite steps class binds this to its generated Calls. */
+    protected io.restassured.response.Response dispatch(
+            com.ak.api.rest.utilities.phase.PhaseContext c,
+            com.ak.api.rest.utilities.phase.PhaseSpec p) throws Exception {
+        throw new IllegalStateException("no Calls bound for phase `" + p.step + "`");
+    }
+
+    private com.ak.api.rest.utilities.phase.CaseRegistry.Case requirePhases(String vocab) {
+        if (phases == null) {
+            throw new IllegalStateException("no phase table for case `" + testCaseId
+                    + "` (wanted `" + vocab + "`): start(row, caseId) binds it for converted "
+                    + "cases; hand-written flows use CustomerOnboarding");
+        }
+        return phases;
+    }
+
+    private boolean __stopped;
+
+    /**
+     * A prefix-merged cluster shares one @Test: the longest case's chain,
+     * with shorter members stopping early. The CSV row says where
+     * ({@code _stop_after} = number of REST calls to run); the text path
+     * checked that after every call, and so does this.
+     */
+    private void runParts(java.util.List<com.ak.api.rest.utilities.phase.PhaseSpec> parts)
+            throws Exception {
+        for (com.ak.api.rest.utilities.phase.PhaseSpec p : parts) {
+            if (__stopped) {
+                return;
+            }
+            if (p.isHookOnly()) {
+                com.ak.api.rest.utilities.phase.PhaseRunner.run(p, phaseContext(), null);
+                continue;
+            }
+            dispatch(phaseContext(), p);
+            __restStepIdx++;
+            if (__stopAfter != null && !__stopAfter.isEmpty()
+                    && __restStepIdx >= Integer.parseInt(__stopAfter.trim())) {
+                __stopped = true;
+                return;
+            }
+        }
+    }
+
+    protected S runPhase(String vocab, String step) throws Exception {
+        com.ak.api.rest.utilities.phase.CaseRegistry.Case cs = requirePhases(vocab);
+        runParts(step == null ? cs.only(vocab, false) : cs.named(vocab, step, false));
+        return self();
+    }
+
+    public void runVerify(String vocab, String step) throws Exception {
+        com.ak.api.rest.utilities.phase.CaseRegistry.Case cs = requirePhases(vocab);
+        runParts(step == null ? cs.only(vocab, true) : cs.named(vocab, step, true));
+    }
+"""
+
+
 def phase_model_run_vocabs() -> set:
     """The run-wide vocabulary set (phase_model.RUN_VOCABS), lazily imported."""
     _here = os.path.dirname(os.path.abspath(__file__))
@@ -15633,7 +15649,15 @@ def _finalize_framework_fluent(preps: list[_PreparedSuite]) -> None:
             saved_suite, saved_service = lead.suite_name, lead.service_name
             lead.suite_name = p.suite_name
             lead.service_name = p.service_name or lead.service_name
+            # --phase-specs: the suite's Insights wrappers and Calls binding
+            # must be built from THAT suite's spec'd names, which live on its
+            # own emitter -- not the lead's (a two-XML run compiled with 200
+            # `verifyProgramAccount` missing before this).
+            saved_specs = (lead._spec_verify_vocabs, lead._spec_vocabs)
+            lead._spec_verify_vocabs = p.emitter._spec_verify_vocabs
+            lead._spec_vocabs = p.emitter._spec_vocabs
             shared_fluent_files += lead.emit_suite_fluent_api(p.service_class)
+            lead._spec_verify_vocabs, lead._spec_vocabs = saved_specs
             # The per-case emit gate reads these; they are computed per suite.
             p.emitter._suite_local_phase_index = dict(
                 lead._suite_local_phase_index)
@@ -15776,6 +15800,8 @@ _PHASE_SPECS = False
 def _main_dispatch_inner(args):
     global _PHASE_SPECS
     _PHASE_SPECS = bool(getattr(args, "phase_specs", False))
+    import fluent_scenario as _fs
+    _fs.PHASE_SPECS = _PHASE_SPECS
     if _PHASE_SPECS:
         print("[ra_converter] --phase-specs: single-call phases are emitted as "
               "PhaseSpec data (one engine per client operation); compound "
