@@ -634,4 +634,30 @@ public class CtxFieldsTest {
         Assert.assertEquals(ctx.get("Properties.Website"), "www." + d2);
         Assert.assertTrue(ctx.get("Properties.Email").endsWith("@" + d2), ctx.get("Properties.Email"));
     }
+    @Test(groups = {"unit"})
+    @Story("author-literal email domain survives regen; underscore slots; Salesforce id shape")
+    @Description("B2B_4473 blocklist / B2B_3934 emailDomain, B2B-7504 username_1, B2B_3778 sfdcID.")
+    public void authorLiteralEmailDomain_survivesRegen() {
+        Map<String, String> ctx = new HashMap<>();
+        ctx.put("Properties.Hardcodeddomain", "laafd.com");
+        Map<String, String> row = new HashMap<>();
+        row.put("Properties.Domain", "mluifzha.org");
+        row.put("Properties.Email", "blackstone.com");
+        row.put("Properties.generatedemailAddress", "umzgxl@blackstone.com");
+        row.put("Properties.websiteDomain", "www.blackstone.com");
+        row.put("Properties.username_1", "saved1");
+        row.put("Properties.generatedemailAddress_1", "saved1@x.com");
+        ImportedScenario.regenRandomProperties(ctx, row);
+        Assert.assertEquals(ctx.get("Properties.Email"), "blackstone.com");
+        Assert.assertEquals(ctx.get("Properties.generatedemailAddress"), "umzgxl@blackstone.com");
+        Assert.assertEquals(ctx.get("Properties.websiteDomain"), "www.blackstone.com");
+        Assert.assertNotEquals(ctx.get("Properties.Username"), "", "the rest of the pack is still fresh");
+        Assert.assertEquals(ctx.get("Properties.username_1"), ctx.get("Properties.username1"));
+        Assert.assertEquals(ctx.get("Properties.generatedemailAddress_1"), ctx.get("Properties.generatedemailAddress1"));
+
+        String sf = CtxFields.valueFor("sfdcContactID");
+        Assert.assertEquals(sf.length(), 18, sf);
+        Assert.assertTrue(sf.chars().allMatch(Character::isLetterOrDigit), sf);
+        Assert.assertEquals(CtxFields.valueFor("salesforceLeadId").length(), 18);
+    }
 }

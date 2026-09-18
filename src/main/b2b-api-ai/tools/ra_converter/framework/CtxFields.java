@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 6
+// ra_converter-framework-rev: 7
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -319,6 +319,11 @@ public final class CtxFields {
         }
         if (p.contains("guestid") || p.contains("memberid") || p.contains("accountid")) {
             return FakeData.numericId();
+        }
+        // Salesforce record ids (sfdcID, sfdcContactID, salesforceLeadId):
+        // the API validates them by regex; a 6-letter word was rejected.
+        if ((p.contains("sfdc") || p.contains("salesforce")) && p.endsWith("id")) {
+            return FakeData.faker().regexify("[a-zA-Z0-9]{18}");
         }
         // Domain-shaped names first: "emailDomain" contains "email" and was
         // generated as an ADDRESS, which the API rejected as a constraint

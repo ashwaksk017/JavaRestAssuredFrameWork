@@ -52,6 +52,12 @@ public final class ProgramAccountApi {
         return client.createProgramAccount(token, guestId, queryParams, requestBody);
     }
 
+    /** With request-level headers (ReadyAPI sends content-language: zh-CN for transliteration cases). */
+    public Response createProgramAccount(String token, String guestId, Map<String, String> queryParams,
+                                         Map<String, String> extraHeaders, String requestBody) {
+        return client.createProgramAccount(token, guestId, queryParams, extraHeaders, requestBody);
+    }
+
     public Response deleteEmailDomain(String token, String guestId, String accountId, String emailDomain) {
         return client.deleteEmailDomain(token, guestId, accountId, emailDomain);
     }
@@ -102,6 +108,12 @@ public final class ProgramAccountApi {
 
     public Response readProgramAccount(String token, String accountId, Map<String, String> queryParams) {
         return client.readProgramAccount(token, accountId, queryParams);
+    }
+
+    /** With request-level headers (content-language / X-PrettyPrint on the recorded GETs). */
+    public Response readProgramAccount(String token, String accountId, Map<String, String> queryParams,
+                                       Map<String, String> extraHeaders) {
+        return client.readProgramAccount(token, accountId, queryParams, extraHeaders);
     }
 
     public Response rejectProgramAccount(String token, String accountId, String requestBody) {

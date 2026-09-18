@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 13
+// ra_converter-framework-rev: 14
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -940,6 +940,22 @@ public final class ImportedScenario {
         CtxFields.putBothCases(ctx, "Properties", "generatedemailAddress1", memberEmail);
         CtxFields.putBothCases(ctx, "Properties", "generatedemailAddress2", email2);
         CtxFields.putBothCases(ctx, "Properties", "generatedemailAddress3", email3);
+        // The suite also spells these slots with an underscore
+        // (username_1 / generatedemailAddress_1, B2B-7504/7505). Written only
+        // when the row names them, so ctx does not grow for everyone else.
+        String[][] underscored = {
+            {"username1", "username_1"}, {"Username2", "Username_2"},
+            {"generatedemailAddress1", "generatedemailAddress_1"},
+            {"generatedemailAddress2", "generatedemailAddress_2"},
+            {"generatedemailAddress3", "generatedemailAddress_3"},
+        };
+        for (String[] pair : underscored) {
+            if (row != null && (row.containsKey("Properties." + pair[1])
+                    || row.containsKey("Properties." + CtxFields.flipFirst(pair[1])))) {
+                CtxFields.putBothCases(ctx, "Properties", pair[1],
+                        ctx.getOrDefault("Properties." + pair[0], ""));
+            }
+        }
 
         CtxFields.putBothCases(ctx, "Properties", "Phone", phone);
         CtxFields.putBothCases(ctx, "Properties", "phoneNumber", phone);
@@ -982,6 +998,48 @@ public final class ImportedScenario {
         bindEmailsToSavedDomains(ctx, row);
         CtxFields.putBothCases(ctx, "Properties", "hhonorsNumber", hhon);
         applyCsvRandomDomains(ctx, row);
+        restoreAuthorLiteralEmail(ctx, row);
+    }
+
+    /**
+     * The author typed a DOMAIN into Properties.Email (blackstone.com for the
+     * blocklist case, qmekr.com for post_emaildomain) and the template reads
+     * it as one: emailDomains: ["${Properties#Email}"], "emailDomain":
+     * "${Properties#Email}". Regenerating it sent an address and the
+     * negative test stopped testing what it was written for. A value with no
+     * '@' cannot be a generated email, so it is the author's, and so are the
+     * generatedemailAddress / websiteDomain saved beside it.
+     */
+    private static boolean looksLikeDomain(String v) {
+        String d = normalizeDomain(v);
+        int dot = d.lastIndexOf('.');
+        if (dot <= 0 || dot == d.length() - 1) {
+            return false;
+        }
+        for (int i = 0; i < d.length(); i++) {
+            char c = d.charAt(i);
+            if (!(Character.isLetterOrDigit(c) || c == '.' || c == '-')) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static void restoreAuthorLiteralEmail(Map<String, String> ctx, Map<String, String> row) {
+        if (ctx == null || row == null) {
+            return;
+        }
+        String saved = firstNonBlank(row, "Properties.Email", "Properties.email");
+        if (saved == null || saved.isEmpty() || saved.indexOf('@') >= 0
+                || !looksLikeDomain(saved)) {
+            return;   // an address, or a manual-suite marker like <<email>>
+        }
+        for (String k : new String[] {"Email", "generatedemailAddress", "websiteDomain"}) {
+            String v = firstNonBlank(row, "Properties." + k, "Properties." + CtxFields.flipFirst(k));
+            if (v != null && !v.isEmpty()) {
+                CtxFields.putBothCases(ctx, "Properties", k, v);
+            }
+        }
     }
 
     /**

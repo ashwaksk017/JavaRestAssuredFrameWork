@@ -1936,6 +1936,7 @@ def test_emitted_digest_listener_is_v3():
     j = src.index("def emit_progress_listener", i)
     tpl = src[i:j]
     for must in ("digest v3", "server said:", "StepOutcomes.firstFailure()",
+                 "rootCauseSuffix(t)",
                  "StepOutcomes.firstFailureBody()", "ResponseMasking.mask(",
                  "OBSERVED", "INFERRED"):
         assert must in tpl, "template lost v3 marker: " + must
@@ -2066,6 +2067,48 @@ def test_clean_sweeps_the_client_under_every_name_the_suite_has_used(tmp_path):
     left = sorted(_os.listdir(clients))
     assert left == ["OtherSuiteClient.java"], left            # another suite's client is untouched
     assert sum(1 for r in removed if r.endswith("Client.java")) == 2
+
+
+def test_csv_cell_id_rewrite_matches_field_not_step_name():
+    """A step named *guestid* must not turn a literal phone query value into
+    an @Properties_qry_..._phoneNumber@ placeholder (B2B-5268 regex 400)."""
+    import ra_converter as rc
+    kept = rc._csv_cell("9012978932", "qry_get_guestid_bussinesses_verify_Checkforduplicates_false_phoneNumber")
+    assert kept == "9012978932", kept
+    live = rc._csv_cell("2000016128", "PropertiesDetails.accountID")
+    assert live == "@Properties_accountID@", live
+    # a qry_ column keeps its full name as the placeholder field (ctxGet's
+    # trailing-field walk resolves accountId); the point is that it IS rewritten
+    live2 = rc._csv_cell("2000016128", "qry_http_request_200_compare_name_account_country_accountId")
+    assert live2.startswith("@Properties_") and live2.endswith("_accountId@"), live2
+
+
+def test_request_level_headers_are_parsed():
+    """ReadyAPI's WsdlRequest@request-headers setting carries content-language:
+    zh-CN as an escaped fragment; Content-Type stays with the client."""
+    import ra_converter as rc
+    from xml.etree import ElementTree as ET
+    xml = (
+        '<con:restRequest xmlns:con="http://eviware.com/soapui/config" name="s">'
+        '<con:settings>'
+        '<con:setting id="com.eviware.soapui.impl.wsdl.WsdlRequest@request-headers">'
+        '&lt;con:entry key="content-language" value="zh-CN" xmlns:con="http://eviware.com/soapui/config"/&gt;'
+        '&lt;con:entry key="Content-Type" value="application/json" xmlns:con="http://eviware.com/soapui/config"/&gt;'
+        '</con:setting>'
+        '<con:setting id="other">x</con:setting>'
+        '</con:settings></con:restRequest>')
+    got = rc._request_level_headers(ET.fromstring(xml))
+    assert got == {"content-language": "zh-CN"}, got
+    assert rc._request_level_headers(None) == {}
+
+
+def test_message_content_not_exists_renders_absent():
+    """`not exists` is an absence check, not an equality against the saved
+    value (71 elements across the suites)."""
+    import ra_converter as rc
+    src = open(rc.__file__, encoding="utf-8").read()
+    assert "op_norm in _ABSENT_OPS" in src
+    assert '"not exists"' in src and "jsonAbsent(softAssert, {response_var}" in src
 
 
 def test_script_runner_is_the_last_thing_in_this_file():

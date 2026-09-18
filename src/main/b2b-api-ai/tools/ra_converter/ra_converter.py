@@ -295,6 +295,42 @@ def _parse_assertion(a_el: ET.Element) -> Assertion:
     return a
 
 
+_REQ_HEADER_ENTRY_RX = re.compile(r'<con:entry\s+key="([^"]*)"\s+value="([^"]*)"')
+
+
+def _request_level_headers(req_el) -> dict:
+    """Headers ReadyAPI stores on the request itself, not as parameters:
+    a <con:setting id="...WsdlRequest@request-headers"> whose TEXT is an
+    escaped <con:entry key= value=/> fragment. content-language: zh-CN
+    on the create-account step is what makes the API produce
+    nameLocalizations / addressLocalizations; without it every
+    localisation assert failed (6 rows). Content-Type is left to the
+    client (it already sends application/json)."""
+    out: dict = {}
+    if req_el is None:
+        return out
+    settings = req_el.find("con:settings", NS)
+    if settings is None:
+        return out
+    import html as _html
+    for st in settings.findall("con:setting", NS):
+        if not (st.get("id") or "").endswith("@request-headers"):
+            continue
+        frag = _html.unescape(st.text or "")
+        for k, v in _REQ_HEADER_ENTRY_RX.findall(frag):
+            k = k.strip()
+            if not k or k.lower() == "content-type":
+                continue
+            v = _html.unescape(v)
+            if "${#Project#" in v or "${#Global#" in v or "${#Env#" in v:
+                # One step reads ${#Project#content-language}, a property
+                # the project never defines: ReadyAPI sent it empty. A
+                # literal "#content-language#" on the wire would not be.
+                continue
+            out[k] = v
+    return out
+
+
 def _parse_rest_step(step_el: ET.Element) -> RestStep:
     step_name = step_el.get("name", "")
     cfg_el = step_el.find("con:config", NS)
@@ -377,6 +413,8 @@ def _parse_rest_step(step_el: ET.Element) -> RestStep:
             headers[k] = v
         else:
             query_params[k] = v
+    for k, v in _request_level_headers(req_el).items():
+        headers.setdefault(k, v)
 
     # Inline assertions attached to this REST step
     assertions = []
@@ -4980,7 +5018,12 @@ def _csv_cell(value: str, col_name: str = "") -> str:
             ID_HINTS = ("guestid", "accountid", "memberid", "hhonorsnumber",
                         "hhonors_number", "partneraccountid", "customerid",
                         "userid", "hilton_member_id", "hiltonmemberid")
-            if any(h in col_l for h in ID_HINTS):
+            # Match the FIELD, not the whole column: qry_<step>_<param>
+            # carries the step name, and a step called *guestid* turned a
+            # literal phone into @Properties_qry_..._phoneNumber@.
+            _toks = [t for t in re.split(r"[._]", col_l) if t]
+            _tails = {"_".join(_toks[-n:]) for n in (1, 2, 3) if len(_toks) >= n}
+            if any(h in t for t in _tails for h in ID_HINTS):
                 # Strip the trailing prefix segment (`PropertiesDetails.` etc.)
                 # so the placeholder maps to the bare field name that
                 # random_email_generator + ctxGet's alias-walk understand.
@@ -4989,6 +5032,9 @@ def _csv_cell(value: str, col_name: str = "") -> str:
     if any(c in s for c in (",", '"', "\n", "\r")):
         return '"' + s.replace('"', '""') + '"'
     return s
+
+
+_ABSENT_OPS = ("not exists", "notexists", "not-exists", "absent", "null", "is null")
 
 
 def _jlit(value: str) -> str:
@@ -8295,6 +8341,14 @@ public interface ImportedRestClient {{
             v = f"{vsid}_msg{idx}"
             fallback = assertion_fallback_literal(expected)
             op_norm = operator.strip().lower()
+            if op_norm in _ABSENT_OPS:
+                # `not exists` fell through to the equality branch and
+                # compared the field to the stale saved value (71 elements;
+                # digest: "JsonPath Match: inviteKey expected [xnSO...]").
+                lines.append(
+                    f'ResponseAsserts.jsonAbsent(softAssert, {response_var}, '
+                    f'"{_jlit(jpath)}");')
+                continue
             if op_norm not in ("=", "==", "equals", ""):
                 lines.append(
                     f'String actual_{v} = com.ak.api.rest.utilities.RestUtilities'
@@ -14760,7 +14814,28 @@ public class FailureDigestListener implements ITestListener {{
         }}
         if (first.isEmpty()) first = t.getClass().getSimpleName();
         if (first.length() > 180) first = first.substring(0, 180) + "...";
-        return t.getClass().getSimpleName() + " | " + mask(first);
+        return t.getClass().getSimpleName() + " | " + mask(first) + rootCauseSuffix(t);
+    }}
+
+    /**
+     * A wrapper like "RestStep X exchange failed" says where, not why: the
+     * why is the cause chain (SocketTimeoutException: Read timed out,
+     * SSLHandshakeException, JSON parse ...). Without it 17 identical
+     * signatures in one digest gave nothing to act on. Appends the deepest
+     * cause as {{@code <- Class: first line}}, masked like everything else.
+     */
+    private static String rootCauseSuffix(Throwable t) {{
+        Throwable root = t;
+        int hops = 0;
+        while (root.getCause() != null && root.getCause() != root && hops++ < 12) {{
+            root = root.getCause();
+        }}
+        if (root == t) return "";
+        String msg = root.getMessage() == null ? "" : root.getMessage().trim();
+        String first = msg.split("\\r?\\n", 2)[0].trim();
+        if (first.length() > 120) first = first.substring(0, 120) + "...";
+        return " <- " + root.getClass().getSimpleName()
+                + (first.isEmpty() ? "" : ": " + mask(first));
     }}
 
     private static String caseIdOf(ITestResult r) {{

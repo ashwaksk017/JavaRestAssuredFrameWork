@@ -72,12 +72,16 @@ public class MemberEmailAndPollStopTest {
         ImportedScenario.regenRandomProperties(ctx2, new HashMap<>());
         Assert.assertEquals(ctx2.get("Properties.generatedemailAddress"), ctx2.get("Properties.Email"));
 
+        // A saved Email with no '@' is the author's literal (the template
+        // reads it as a DOMAIN: emailDomains: ["${Properties#Email}"]), and
+        // the generatedemailAddress saved beside it is kept with it.
         Map<String, String> notEmails = new HashMap<>();
         notEmails.put("Properties.Email", "linkedin.com");
         notEmails.put("Properties.generatedemailAddress", "x@foliera.com");
         Map<String, String> ctx3 = new HashMap<>();
         ImportedScenario.regenRandomProperties(ctx3, notEmails);
-        Assert.assertEquals(ctx3.get("Properties.generatedemailAddress"), ctx3.get("Properties.Email"));
+        Assert.assertEquals(ctx3.get("Properties.Email"), "linkedin.com");
+        Assert.assertEquals(ctx3.get("Properties.generatedemailAddress"), "x@foliera.com");
     }
 
     @Test(groups = {"unit"})
