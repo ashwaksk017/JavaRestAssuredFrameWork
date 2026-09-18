@@ -77,7 +77,28 @@ public class FailureDigestListener implements ITestListener {
         }
         if (first.isEmpty()) first = t.getClass().getSimpleName();
         if (first.length() > 180) first = first.substring(0, 180) + "...";
-        return t.getClass().getSimpleName() + " | " + mask(first);
+        return t.getClass().getSimpleName() + " | " + mask(first) + rootCauseSuffix(t);
+    }
+
+    /**
+     * A wrapper like "RestStep X exchange failed" says where, not why: the
+     * why is the cause chain (SocketTimeoutException: Read timed out,
+     * SSLHandshakeException, JSON parse ...). Without it 17 identical
+     * signatures in one digest gave nothing to act on. Appends the deepest
+     * cause as {@code <- Class: first line}, masked like everything else.
+     */
+    private static String rootCauseSuffix(Throwable t) {
+        Throwable root = t;
+        int hops = 0;
+        while (root.getCause() != null && root.getCause() != root && hops++ < 12) {
+            root = root.getCause();
+        }
+        if (root == t) return "";
+        String msg = root.getMessage() == null ? "" : root.getMessage().trim();
+        String first = msg.split("\r?\n", 2)[0].trim();
+        if (first.length() > 120) first = first.substring(0, 120) + "...";
+        return " <- " + root.getClass().getSimpleName()
+                + (first.isEmpty() ? "" : ": " + mask(first));
     }
 
     private static String caseIdOf(ITestResult r) {
