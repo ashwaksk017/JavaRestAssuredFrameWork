@@ -370,7 +370,9 @@ def phases_class_java(pkg: str, cls: str, imports: list[str], cases: list[dict],
     groups: dict[tuple, list[str]] = {}
     order: list[tuple] = []
     for c in cases:
-        key = tuple((e["vocab"], e["step"], bool(e["verify"]), factory(e["spec_java"])) for e in c["entries"])
+        key = tuple((e["vocab"], e["step"], bool(e["verify"]),
+                     tuple(factory(sj) for sj in e.get("spec_javas") or [e["spec_java"]]))
+                    for e in c["entries"])
         if key not in groups:
             groups[key] = []
             order.append(key)
@@ -389,10 +391,11 @@ def phases_class_java(pkg: str, cls: str, imports: list[str], cases: list[dict],
             body.append("        for (String id : new String[] {" + ", ".join(jstr(i) for i in ids) + "}) {")
             body.append("            CaseRegistry.register(id)")
             pad = "                "
-        for idx, (vocab, step, verify, fname) in enumerate(key):
+        for idx, (vocab, step, verify, fnames) in enumerate(key):
             kind = "verify" if verify else "phase"
             end = ";" if idx == len(key) - 1 else ""
-            body.append(f"{pad}.{kind}({jstr(vocab)}, {jstr(step)}, {cls}::{fname}){end}")
+            refs = ", ".join(f"{cls}::{f}" for f in fnames)
+            body.append(f"{pad}.{kind}({jstr(vocab)}, {jstr(step)}, {refs}){end}")
         if not key:
             body[-1] += ";"
         if len(ids) > 1:

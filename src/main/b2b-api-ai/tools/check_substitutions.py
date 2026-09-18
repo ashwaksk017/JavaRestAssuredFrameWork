@@ -74,25 +74,36 @@ def properties_fallback_keys(raw: str) -> set:
 _SPEC_EXTRACT_RX = re.compile(r'\.extract(?:Whole|RawRequest|RawRequestPath)?\(\s*"([^"]+)"')
 
 
-def spec_producers(root: str) -> set:
-    """Keys a --phase-specs tree produces as DATA (support/<suite>/cases/):
-    `.extract("K", ...)` and friends on a PhaseSpec, plus the `<step>_RawRequest`
-    PhaseRunner keeps for every phase. Invisible to the body walk below."""
-    keys: set = set()
+_HOOK_HEAD_RX = re.compile(r"static void hook\w+\([^)]*\)\s*throws Exception\s*\{")
+
+
+def spec_producers(root: str) -> tuple:
+    """(exact, wildcard) producers a --phase-specs tree declares as DATA
+    (support/<suite>/cases/): `.extract("K", ...)` and friends on a
+    PhaseSpec, the `<step>_RawRequest` PhaseRunner keeps for every phase,
+    and whatever the generated hook methods write (their bodies are
+    `static void hookN(...)`, which the method-head walk below skips)."""
+    exact: set = set()
+    wild: set = set()
     for path in _walk_java(os.path.join(root, "src/main/java")):
         norm = path.replace(chr(92), "/")
         if "/support/" not in norm or "/cases/" not in norm:
             continue
         text = _read(path)
-        keys.update(_SPEC_EXTRACT_RX.findall(text))
-        keys.update(s + "_RawRequest" for s in re.findall(r'PhaseSpec\.phase\(\s*"([^"]+)"', text))
-    return keys
+        exact.update(_SPEC_EXTRACT_RX.findall(text))
+        exact.update(s + "_RawRequest" for s in re.findall(r'PhaseSpec\.phase\(\s*"([^"]+)"', text))
+        for _n, body in _bodies(text, _HOOK_HEAD_RX, group=0):
+            w, _r, _s = method_effects(body)
+            for k in w:
+                (wild if k.endswith("*") else exact).add(k[:-1] if k.endswith("*") else k)
+    return exact, wild
 
 
 def collect_producers(root: str) -> tuple:
     """(exact keys, wildcard prefixes) written anywhere in the tree."""
-    exact: set = set(spec_producers(root))
-    wild: set = set()
+    exact, wild = spec_producers(root)
+    exact = set(exact)
+    wild = set(wild)
     for path in _walk_java(os.path.join(root, "src/main/java")):
         text = _read(path)
         if "putExtracted" not in text and "seedFromRow" not in text:

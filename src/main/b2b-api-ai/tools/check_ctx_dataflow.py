@@ -250,8 +250,13 @@ _SPEC_EXTRACT_RX = re.compile(r'\.extract(?:Whole|RawRequest|RawRequestPath)?\(\
 _SPEC_WRITE_RX = re.compile(r'putExtracted\(\s*ctx\s*,\s*"([^"]+)"')
 
 
-def spec_producers(root: str) -> set:
+_HOOK_HEAD_RX = re.compile(r"static void hook\w+\([^)]*\)\s*throws Exception\s*\{")
+
+
+def spec_producers(root: str) -> tuple:
+    """(exact keys, wildcard prefixes) a --phase-specs tree produces as data."""
     keys: set = set()
+    wild: set = set()
     base = os.path.join(root, "src/main/java")
     for path in _walk_java(base):
         norm = path.replace(chr(92), "/")
@@ -263,7 +268,12 @@ def spec_producers(root: str) -> set:
         # RestStep keeps the resolved request under <step>_RawRequest for
         # every phase; PhaseRunner does the same.
         keys.update(s + "_RawRequest" for s in re.findall(r'PhaseSpec\.phase\(\s*"([^"]+)"', text))
-    return keys
+        # the generated hooks write too (seedFromRow wildcards, ctx.put)
+        for _n, body in _bodies(text, _HOOK_HEAD_RX, group=0):
+            w, _r, _s = method_effects(body)
+            for k in w:
+                (wild if k.endswith("*") else keys).add(k[:-1] if k.endswith("*") else k)
+    return keys, wild
 
 
 def satisfied(alts: tuple, available: set, wildcards: set) -> bool:
@@ -327,7 +337,7 @@ def analyse(root: str) -> tuple:
     # Keys a --phase-specs tree produces as data. Credited at chain start:
     # the check cannot see which chained name is a spec, and a spec's
     # extracts are, by construction, the extracts its old body had.
-    spec_keys = spec_producers(root)
+    spec_keys, spec_wild = spec_producers(root)
     tests_root = os.path.join(root, "src/test/java/com/ak/api/tests/imported")
     for path in _walk_java(tests_root):
         text = _read(path)
@@ -347,7 +357,7 @@ def analyse(root: str) -> tuple:
         for tname, entry, steps in chains_in(text):
             stats["chains"] += 1
             available: set = set(spec_keys)
-            wildcards: set = set()
+            wildcards: set = set(spec_wild)
             # The entry class bootstrap runs before the first chained step.
             # An index-0 entry class declares no override and inherits
             # ScenarioSteps.bootstrap(); crediting it with nothing made every

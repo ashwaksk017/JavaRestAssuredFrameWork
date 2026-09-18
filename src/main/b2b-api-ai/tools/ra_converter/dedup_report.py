@@ -156,6 +156,66 @@ def _normalise_asserts(body: str) -> list[tuple]:
     return found
 
 
+def template_stats(root: str) -> dict | None:
+    """Request templates: files, distinct shapes, and same-shape families
+    that share their placeholders (mergeable into one template + tpl_*
+    CSV columns) -- the reuse a case can get without any code."""
+    import glob
+    import hashlib
+    import json
+    base = os.path.join(root, "src", "main", "resources", "templates")
+    files = glob.glob(os.path.join(base, "**", "*.json"), recursive=True)
+    if not files:
+        return None
+
+    def walk(o, path=""):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                yield from walk(v, f"{path}.{k}" if path else k)
+        elif isinstance(o, list):
+            for i, v in enumerate(o):
+                yield from walk(v, f"{path}[{i}]")
+        else:
+            yield path, o
+
+    shapes: dict[tuple, list[str]] = defaultdict(list)
+    families: dict[tuple, list[str]] = defaultdict(list)
+    merged = 0
+    for f in files:
+        name = os.path.basename(f)
+        if "_merged_" in name:
+            merged += 1
+        try:
+            with open(f, encoding="utf-8") as fh:
+                tree = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        leaves = list(walk(tree))
+        sig = tuple((p, type(v).__name__) for p, v in leaves)
+        phs = tuple((p, v) for p, v in leaves if isinstance(v, str) and re.fullmatch(r"#[^#]+#", v))
+        shapes[sig].append(name)
+        families[(sig, phs)].append(name)
+    mergeable = [v for v in families.values() if len(v) > 1]
+    return {"files": len(files), "merged": merged, "shapes": len(shapes),
+            "families": len(families),
+            "mergeable_files": sum(len(v) for v in mergeable),
+            "mergeable_groups": len(mergeable),
+            "largest": sorted(mergeable, key=len, reverse=True)[:5]}
+
+
+def render_templates(ts: dict | None) -> str:
+    if not ts:
+        return ""
+    o = ["", "== request templates ==",
+         f"template files: {ts['files']} ({ts['merged']} already merged)  ->  distinct JSON shapes: {ts['shapes']}  "
+         f"->  same shape AND same placeholders: {ts['families']} families",
+         f"still mergeable: {ts['mergeable_files']} files in {ts['mergeable_groups']} families "
+         f"(same shape, same placeholders, different literals -> one template + tpl_* columns)"]
+    for fam in ts["largest"]:
+        o.append(f"   {len(fam)}x  " + ", ".join(fam[:4]) + (" ..." if len(fam) > 4 else ""))
+    return "\n".join(o) + "\n"
+
+
 def scan_tree(root: str, package_root: str) -> list[dict]:
     recs, _entries = scan_tree_full(root, package_root)
     return recs
@@ -237,7 +297,7 @@ def render_entries(entries: list[dict], egroups: list[dict], limit: int = 12) ->
 
 
 def render(recs: list[dict], groups: list[dict], limit: int = 40,
-           entries: list[dict] | None = None) -> str:
+           entries: list[dict] | None = None, root_for_templates: str | None = None) -> str:
     single = [r for r in recs if r.get("rest_steps") == 1]
     compound = [r for r in recs if r.get("rest_steps", 0) > 1]
     none = [r for r in recs if r.get("rest_steps", 0) == 0]
@@ -272,6 +332,8 @@ def render(recs: list[dict], groups: list[dict], limit: int = 40,
     text = "\n".join(o) + "\n"
     if entries:
         text += render_entries(entries, group_entries(entries, 2))
+    if root_for_templates:
+        text += render_templates(template_stats(root_for_templates))
     return text
 
 
@@ -288,7 +350,7 @@ def write_audit(root: str, package_root: str, suite_name: str) -> str | None:
         return None
     groups = group_by_shape(recs, 2)
     egroups = group_entries(entries, 2)
-    text = render(recs, groups, entries=entries)
+    text = render(recs, groups, entries=entries, root_for_templates=root)
     audit_dir = os.path.join(root, "_audit", suite_name)
     os.makedirs(audit_dir, exist_ok=True)
     with open(os.path.join(audit_dir, "dedup_report.txt"), "w", encoding="utf-8") as fh:
@@ -301,6 +363,10 @@ def write_audit(root: str, package_root: str, suite_name: str) -> str | None:
     if entries:
         headline += (f"; {len(entries)} entry classes -> "
                      f"{len({e['shape'] for e in entries})} setup shapes")
+    ts = template_stats(root)
+    if ts:
+        headline += (f"; {ts['files']} templates -> {ts['families']} shape+placeholder families "
+                     f"({ts['mergeable_files']} still mergeable)")
     summary = os.path.join(audit_dir, "summary.md")
     section = ["", "## Reuse (same call, different data)", "",
                headline + ".",
@@ -337,7 +403,7 @@ def main(argv=None) -> int:
         print(f"[dedup_report] no generated methods under {a.root} -- convert first")
         return 1
     groups = group_by_shape(recs, a.min)
-    text = render(recs, groups, a.limit, entries=entries)
+    text = render(recs, groups, a.limit, entries=entries, root_for_templates=a.root)
     print(text, end="")
     if a.out:
         os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)

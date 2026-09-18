@@ -103,6 +103,19 @@ public final class PhaseSpec {
         return new Builder(step);
     }
 
+    /**
+     * A part of a compound phase that makes NO call: translated steps that
+     * sat between two REST calls, or before the first one. The runner only
+     * runs the hook.
+     */
+    public static PhaseSpec hookOnly(String step, Hook hook) {
+        return new Builder(step).call("NONE", "/").after(hook).build();
+    }
+
+    public boolean isHookOnly() {
+        return "NONE".equals(verb);
+    }
+
     /** The i-th path parameter, in template order. */
     public Ref arg(int i) {
         if (i < 0 || i >= pathArgs.size()) {

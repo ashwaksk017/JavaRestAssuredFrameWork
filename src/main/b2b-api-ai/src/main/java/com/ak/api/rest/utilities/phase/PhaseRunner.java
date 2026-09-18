@@ -36,6 +36,12 @@ public final class PhaseRunner {
      */
     public static Response run(PhaseSpec spec, PhaseContext c, RestStep.Exchange exchange)
             throws Exception {
+        if (spec.isHookOnly()) {
+            if (spec.hook != null) {
+                spec.hook.after(null, c);
+            }
+            return null;
+        }
         RestStep step = RestStep.exec(c.ctx, c.row, c.softAssert, c.holder, c.testCaseId)
                 .name(spec.step);
         if (spec.template != null) {

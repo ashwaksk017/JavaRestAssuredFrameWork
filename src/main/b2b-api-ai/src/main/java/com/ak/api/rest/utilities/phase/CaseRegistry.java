@@ -1,6 +1,7 @@
 package com.ak.api.rest.utilities.phase;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -28,26 +29,40 @@ import java.util.function.Supplier;
  */
 public final class CaseRegistry {
 
-    /** One phase of one case. */
+    /**
+     * One phase of one case: one or more parts run in order. A phase that
+     * was one REST call has one part; a compound phase (several calls,
+     * translated steps between them) has one part per call plus hook-only
+     * parts for the steps in between.
+     */
     public static final class Entry {
         public final String vocab;
         public final String step;
         public final boolean verify;
-        private final Supplier<PhaseSpec> supplier;
-        private PhaseSpec built;
+        private final List<Supplier<PhaseSpec>> suppliers;
+        private List<PhaseSpec> built;
 
-        Entry(String vocab, String step, boolean verify, Supplier<PhaseSpec> supplier) {
+        Entry(String vocab, String step, boolean verify, List<Supplier<PhaseSpec>> suppliers) {
             this.vocab = vocab;
             this.step = step;
             this.verify = verify;
-            this.supplier = supplier;
+            this.suppliers = suppliers;
         }
 
-        public synchronized PhaseSpec spec() {
+        public synchronized List<PhaseSpec> specs() {
             if (built == null) {
-                built = supplier.get();
+                List<PhaseSpec> out = new ArrayList<>();
+                for (Supplier<PhaseSpec> s : suppliers) {
+                    out.add(s.get());
+                }
+                built = Collections.unmodifiableList(out);
             }
             return built;
+        }
+
+        /** The first part -- what a single-call phase is. */
+        public PhaseSpec spec() {
+            return specs().get(0);
         }
     }
 
@@ -60,13 +75,15 @@ public final class CaseRegistry {
             this.caseId = caseId;
         }
 
-        public Case phase(String vocab, String step, Supplier<PhaseSpec> spec) {
-            entries.add(new Entry(vocab, step, false, spec));
+        @SafeVarargs
+        public final Case phase(String vocab, String step, Supplier<PhaseSpec>... parts) {
+            entries.add(new Entry(vocab, step, false, Arrays.asList(parts)));
             return this;
         }
 
-        public Case verify(String vocab, String step, Supplier<PhaseSpec> spec) {
-            entries.add(new Entry(vocab, step, true, spec));
+        @SafeVarargs
+        public final Case verify(String vocab, String step, Supplier<PhaseSpec>... parts) {
+            entries.add(new Entry(vocab, step, true, Arrays.asList(parts)));
             return this;
         }
 
@@ -75,10 +92,10 @@ public final class CaseRegistry {
         }
 
         /** The only phase named {@code vocab}; loud when there are several. */
-        public PhaseSpec only(String vocab, boolean verify) {
+        public List<PhaseSpec> only(String vocab, boolean verify) {
             List<Entry> hits = named(vocab, verify);
             if (hits.size() == 1) {
-                return hits.get(0).spec();
+                return hits.get(0).specs();
             }
             if (hits.isEmpty()) {
                 throw new IllegalStateException("case `" + caseId + "` has no "
@@ -93,10 +110,10 @@ public final class CaseRegistry {
         }
 
         /** The phase named {@code vocab} whose ReadyAPI step is {@code step}. */
-        public PhaseSpec named(String vocab, String step, boolean verify) {
+        public List<PhaseSpec> named(String vocab, String step, boolean verify) {
             for (Entry e : named(vocab, verify)) {
                 if (e.step.equals(step)) {
-                    return e.spec();
+                    return e.specs();
                 }
             }
             throw new IllegalStateException("case `" + caseId + "` has no "

@@ -4481,6 +4481,20 @@ def _group_has_placeholder_divergence(group: list[dict]) -> bool:
     return False
 
 
+def _placeholder_map(tree) -> tuple:
+    """((leafPath, placeholder), ...) -- the identity that must not merge
+    across: same shape, different Properties.* slots at the same path."""
+    if tree is None:
+        return ()
+    out = []
+    for path, val in _walk_leaves(tree):
+        if isinstance(val, (dict, list)):
+            continue
+        if _leaf_is_placeholder(val):
+            out.append((path, str(val)))
+    return tuple(sorted(out))
+
+
 def _sanitize_path_for_col(json_path: str) -> str:
     """Convert a JSON-path expression into a CSV-column-safe identifier.
     e.g. `contactInfo.email.address` -> `contactInfo_email_address`;
@@ -5611,6 +5625,7 @@ class Emitter:
         self._suite_hook_java: list[str] = []
         self._spec_vocabs: set[str] = set()
         self._spec_verify_vocabs: dict[str, set] = {}
+        self._spec_fallbacks: dict[str, int] = {}
         # Populated by main() before emit_test_class runs. Maps case name to
         # the flow dict (or missing = no shared flow covers this case).
         self._flow_by_case: dict[str, dict] = {}
@@ -11533,7 +11548,10 @@ public class {class_name} extends BaseApiTest {{
         spec_entries: list[dict] = []
         chain: list[tuple] = []
         verify_chain: list[tuple] = []
-        use_specs = self.phase_specs_enabled and not emit_stop_checks
+        # Prefix-merged clusters too: runPhase counts REST parts and honours
+        # the row's _stop_after itself, so the text path's __restStepIdx
+        # guards are not needed in a spec body.
+        use_specs = self.phase_specs_enabled
         for fname, gsteps in flow_groups:
             entry = None
             if use_specs:
@@ -11567,7 +11585,11 @@ public class {class_name} extends BaseApiTest {{
             # A residual text-path body may read the response of a step that
             # is now a spec: that response lives in the PhaseContext, not in
             # a `<step>Res` field any more.
-            _v2s = {e["res_var"]: e["step"] for e in spec_entries if e.get("res_var")}
+            _v2s = {}
+            for e in spec_entries:
+                for part in e.get("parts", []):
+                    if part.get("spec") is not None and part.get("res_var"):
+                        _v2s[part["res_var"]] = part["spec"].sid
             if _v2s:
                 _rx = re.compile(r"\b(" + "|".join(re.escape(v) for v in sorted(_v2s, key=len, reverse=True)) + r")\b")
                 def _fix(lines: list[str]) -> list[str]:
@@ -11631,42 +11653,104 @@ public class {class_name} extends BaseApiTest {{
         import phase_emit
         from fluent_scenario import rewrite_response_to_fields
         rendered: list[list[str]] = []
+        specs: list = []          # captured PhaseSpec per step (None for non-REST)
+        res_vars: list = []
         for step in gsteps:
+            self._last_phase_spec = None
             rendered.append(self._render_step(step, service_class_name))
+            if isinstance(step, RestStep):
+                specs.append(self._last_phase_spec)
+                res_vars.append(self.response_var_by_step.get(step.step_name))
+            else:
+                specs.append(None)
+                res_vars.append(None)
         body: list[str] = []
         for lines in rendered:
             body.extend(lines)
             body.append("")
         body = rewrite_response_to_fields(body)
-        rest = [s for s in gsteps if isinstance(s, RestStep)]
-        if len(rest) != 1 or not isinstance(gsteps[0], RestStep):
+        def _lines_all(rend, rewrite):
+            out: list[str] = []
+            for lines in rend:
+                out.extend(rewrite(list(lines)))
+            return [ln for ln in out if ln.strip()]
+
+        rest_idx = [i for i, s in enumerate(gsteps) if isinstance(s, RestStep)]
+        def _fallback(reason: str):
+            self._spec_fallbacks[reason] = self._spec_fallbacks.get(reason, 0) + 1
             return None, body
-        spec = self._last_phase_spec
-        if spec is None or spec.step_name != gsteps[0].step_name:
-            return None, body
-        res_var = self.response_var_by_step.get(gsteps[0].step_name)
-        if not res_var:
-            return None, body
-        rest_lines = rewrite_response_to_fields(list(rendered[0]))
-        post: list[str] = []
-        for lines in rendered[1:]:
-            post.extend(rewrite_response_to_fields(list(lines)))
-        split = phase_emit.split_rest_body(rest_lines, res_var, spec.sid)
-        if not split.chain_seen:
-            return None, body
-        leftover = split.leftover + [ln for ln in post if ln.strip()]
-        if phase_emit.hook_blockers(leftover):
-            return None, body
+        if not rest_idx:
+            # translated-only phase (groovy / properties / delay under a
+            # phase banner): one hook-only part, named like any other phase
+            lines = _lines_all(rendered, rewrite_response_to_fields)
+            if not lines:
+                return _fallback("empty group")
+            if phase_emit.hook_blockers(lines):
+                return _fallback("hook lines: " + phase_emit.hook_blockers(lines))
+            vocab = fname
+            if verify:
+                self._spec_verify_vocabs.setdefault(vcls or "Insights", set()).add(vocab)
+            else:
+                self._spec_vocabs.add(vocab)
+            v2s0 = {v: s for s, v in self.response_var_by_step.items()}
+            entry = {
+                "vocab": vocab, "step": sanitize_identifier(getattr(gsteps[0], "step_name", fname) or fname),
+                "parts": [{"spec": None, "split": None, "leftover": lines,
+                           "res_var": None, "var_to_step": v2s0}],
+                "spec": None, "res_var": None, "var_to_step": v2s0,
+                "verify": verify, "vcls": vcls or "Insights", "compound": False,
+            }
+            return entry, body
+        for i in rest_idx:
+            if specs[i] is None or specs[i].step_name != gsteps[i].step_name or not res_vars[i]:
+                return _fallback("spec not captured for a REST step")
+        v2s = {v: s for s, v in self.response_var_by_step.items()}
+
+        def _lines(a: int, b: int) -> list[str]:
+            out: list[str] = []
+            for k in range(a, b):
+                out.extend(rewrite_response_to_fields(list(rendered[k])))
+            return [ln for ln in out if ln.strip()]
+
+        def _lines_all(rend, rewrite):
+            out: list[str] = []
+            for lines in rend:
+                out.extend(rewrite(list(lines)))
+            return [ln for ln in out if ln.strip()]
+
+        parts: list[dict] = []
+        pre = _lines(0, rest_idx[0])
+        if pre:
+            # translated steps BEFORE the first call: a hook-only part
+            if phase_emit.hook_blockers(pre):
+                return _fallback("pre-call lines: " + phase_emit.hook_blockers(pre))
+            parts.append({"spec": None, "split": None, "leftover": pre,
+                          "res_var": None, "var_to_step": v2s})
+        for k, i in enumerate(rest_idx):
+            spec = specs[i]
+            res_var = res_vars[i]
+            rest_lines = rewrite_response_to_fields(list(rendered[i]))
+            split = phase_emit.split_rest_body(rest_lines, res_var, spec.sid)
+            if not split.chain_seen:
+                return _fallback("REST chain not recognised in rendered body")
+            nxt = rest_idx[k + 1] if k + 1 < len(rest_idx) else len(gsteps)
+            leftover = split.leftover + _lines(i + 1, nxt)
+            if phase_emit.hook_blockers(leftover):
+                return _fallback("hook lines: " + phase_emit.hook_blockers(leftover))
+            parts.append({"spec": spec, "split": split, "leftover": leftover,
+                          "res_var": res_var, "var_to_step": v2s})
         vocab = fname
         if verify:
             self._spec_verify_vocabs.setdefault(vcls or "Insights", set()).add(vocab)
         else:
             self._spec_vocabs.add(vocab)
+        first = specs[rest_idx[0]]
         entry = {
-            "vocab": vocab, "step": spec.sid, "spec": spec, "split": split,
-            "leftover": leftover, "res_var": res_var,
-            "var_to_step": {v: s for s, v in self.response_var_by_step.items()},
+            "vocab": vocab, "step": first.sid, "parts": parts,
+            # first-part views, for the residual-body rewrite and reports
+            "spec": first, "res_var": res_vars[rest_idx[0]], "var_to_step": v2s,
             "verify": verify, "vcls": vcls or "Insights",
+            "compound": len(rest_idx) > 1,
         }
         return entry, body
 
@@ -12490,19 +12574,43 @@ public abstract class ScenarioSteps<S extends ScenarioSteps<S>> {{
         return phases;
     }}
 
+    private boolean __stopped;
+
+    /**
+     * A prefix-merged cluster shares one @Test: the longest case's chain,
+     * with shorter members stopping early. The CSV row says where
+     * ({{@code _stop_after}} = number of REST calls to run); the text path
+     * checked that after every call, and so does this.
+     */
+    private void runParts(java.util.List<com.ak.api.rest.utilities.phase.PhaseSpec> parts)
+            throws Exception {{
+        for (com.ak.api.rest.utilities.phase.PhaseSpec p : parts) {{
+            if (__stopped) {{
+                return;
+            }}
+            if (p.isHookOnly()) {{
+                com.ak.api.rest.utilities.phase.PhaseRunner.run(p, phaseContext(), null);
+                continue;
+            }}
+            dispatch(phaseContext(), p);
+            __restStepIdx++;
+            if (__stopAfter != null && !__stopAfter.isEmpty()
+                    && __restStepIdx >= Integer.parseInt(__stopAfter.trim())) {{
+                __stopped = true;
+                return;
+            }}
+        }}
+    }}
+
     protected S runPhase(String vocab, String step) throws Exception {{
         com.ak.api.rest.utilities.phase.CaseRegistry.Case cs = requirePhases(vocab);
-        com.ak.api.rest.utilities.phase.PhaseSpec p =
-                step == null ? cs.only(vocab, false) : cs.named(vocab, step, false);
-        dispatch(phaseContext(), p);
+        runParts(step == null ? cs.only(vocab, false) : cs.named(vocab, step, false));
         return self();
     }}
 
     public void runVerify(String vocab, String step) throws Exception {{
         com.ak.api.rest.utilities.phase.CaseRegistry.Case cs = requirePhases(vocab);
-        com.ak.api.rest.utilities.phase.PhaseSpec p =
-                step == null ? cs.only(vocab, true) : cs.named(vocab, step, true);
-        dispatch(phaseContext(), p);
+        runParts(step == null ? cs.only(vocab, true) : cs.named(vocab, step, true));
     }}
 {vocab_methods}
 {chr(10).join(flow_methods)}
@@ -12662,21 +12770,28 @@ public abstract class {cls}<S extends {cls}<S>> extends ScenarioSteps<S> {{
                     continue
                 ents = []
                 for e in entries:
-                    hook_ref = None
-                    if e["leftover"]:
-                        key = (tuple(e["leftover"]), e["res_var"])
-                        hname = hook_by_body.get(key)
-                        if hname is None:
-                            hname = f"hook{len(hook_by_body) + 1}_{sanitize_identifier(e['step'])[:40]}"
-                            hook_by_body[key] = hname
-                            self._suite_hook_java.append(phase_emit.hook_java(
-                                hname, e["leftover"], e["res_var"], e["var_to_step"]))
-                        hook_ref = f"Hooks::{hname}"
-                    sj = phase_emit.spec_builder_java(
-                        e["spec"], e["split"], e["spec"].template_expr,
-                        e["var_to_step"], hook_ref)
+                    spec_javas = []
+                    for part in e["parts"]:
+                        hook_ref = None
+                        if part["leftover"]:
+                            key = (tuple(part["leftover"]), part["res_var"])
+                            hname = hook_by_body.get(key)
+                            if hname is None:
+                                hname = f"hook{len(hook_by_body) + 1}_{sanitize_identifier(e['step'])[:40]}"
+                                hook_by_body[key] = hname
+                                self._suite_hook_java.append(phase_emit.hook_java(
+                                    hname, part["leftover"], part["res_var"] or "__noneRes",
+                                    part["var_to_step"]))
+                            hook_ref = f"Hooks::{hname}"
+                        if part["spec"] is None:
+                            spec_javas.append(
+                                f"PhaseSpec.hookOnly({phase_emit.jstr(e['step'])}, {hook_ref})")
+                            continue
+                        spec_javas.append(phase_emit.spec_builder_java(
+                            part["spec"], part["split"], part["spec"].template_expr,
+                            part["var_to_step"], hook_ref))
                     ents.append({"vocab": e["vocab"], "step": e["step"],
-                                 "verify": e["verify"], "spec_java": sj})
+                                 "verify": e["verify"], "spec_javas": spec_javas})
                 cases_out.append({"case": case.name, "entries": ents})
         if not cases_out:
             return None
@@ -12727,6 +12842,8 @@ public abstract class {cls}<S extends {cls}<S>> extends ScenarioSteps<S> {{
         print(f"[ra_converter] --phase-specs: {len(self._phases_classes)} Phases class(es), "
               f"{len(set(ops))} engine(s) in Calls, {len(self._spec_vocabs)} vocabulary name(s), "
               f"{len(self._suite_hook_java)} distinct hook(s)")
+        for reason, n in sorted(self._spec_fallbacks.items(), key=lambda kv: -kv[1]):
+            print(f"[ra_converter] --phase-specs: {n} group(s) kept the text path: {reason}")
         return written
 
     def _suite_steps_class(self, service_class_name: str) -> str:
@@ -14134,20 +14251,30 @@ public final class {support_name} {{
         hash_to_path: dict[str, str] = {}
         merged_count = 0
 
+        # Owner enroll vs member enroll (and similar dual-guest bodies)
+        # share JSON shape but point at different Properties.* slots.
+        # Collapsing those into `#tpl_username#` / `#tpl_email_emailAddress#`
+        # made both steps in one case share one CSV cell --
+        # MemberHHonorsEnroll 409'd because it reused the owner's email.
+        # Such a group is SPLIT by its placeholder map instead of being
+        # dropped to exact-body files wholesale: bodies that reference the
+        # same placeholders at the same paths and differ only in literals
+        # still merge (472 files -> ~356 on programaccountregression).
+        work: list[list[dict]] = []
         for sig, group in shape_groups.items():
+            if not _group_has_placeholder_divergence(group):
+                work.append(group)
+                continue
+            by_ph: dict[tuple, list[dict]] = {}
+            for e in group:
+                by_ph.setdefault(_placeholder_map(e.get("tree")), []).append(e)
+            work.extend(by_ph.values())
+
+        for group in work:
             unique_hashes = {e["hash"] for e in group}
             if len(unique_hashes) <= 1:
                 # Nothing to merge -- all entries in this shape group already
                 # share one exact-body hash. Fall through to Tier 1.
-                self._emit_tier1_for(group, hash_to_path)
-                continue
-            # Owner enroll vs member enroll (and similar dual-guest
-            # bodies) share JSON shape but point at different
-            # Properties.* slots. Collapsing those into `#tpl_username#`
-            # / `#tpl_email_emailAddress#` made both steps in one case
-            # share one CSV cell -- MemberHHonorsEnroll 409'd because
-            # it reused the owner's email. Keep exact-body files.
-            if _group_has_placeholder_divergence(group):
                 self._emit_tier1_for(group, hash_to_path)
                 continue
             # Tier 2 merge: multiple distinct exact-bodies with identical

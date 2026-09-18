@@ -191,6 +191,49 @@ public class PhaseRunnerTest {
     }
 
     @Test(groups = {"unit", "guards"})
+    @Story("a hook-only part runs its hook and makes no call")
+    public void hookOnlyPartRunsWithoutACall() throws Exception {
+        Map<String, String> ctx = new LinkedHashMap<>();
+        PhaseContext c = context(ctx, new LinkedHashMap<>(), new SoftAssert());
+        PhaseSpec part = PhaseSpec.hookOnly("groovy_between", (res, flow) -> flow.ctx.put("ran", "yes"));
+        Assert.assertTrue(part.isHookOnly());
+        Assert.assertNull(PhaseRunner.run(part, c, null));
+        Assert.assertEquals(ctx.get("ran"), "yes");
+    }
+
+    @Test(groups = {"unit", "guards"})
+    @Story("the registry resolves by vocabulary, names repeats, and keeps compound parts in order")
+    public void registryResolvesByVocabularyAndStep() {
+        com.ak.api.rest.utilities.phase.CaseRegistry.Case cs =
+                com.ak.api.rest.utilities.phase.CaseRegistry.register("unit-case")
+                .phase("enrollGuest", "HHonorsEnroll",
+                        () -> PhaseSpec.phase("HHonorsEnroll").post("/realms/guests/enroll").build())
+                .phase("readProgramAccount", "get_1",
+                        () -> PhaseSpec.phase("get_1").get("/businesses/{id}").args(Ref.literal("a")).build())
+                .phase("readProgramAccount", "get_2",
+                        () -> PhaseSpec.phase("get_2").get("/businesses/{id}").args(Ref.literal("b")).build(),
+                        () -> PhaseSpec.hookOnly("get_2", (r, f) -> { }));
+        Assert.assertEquals(cs.only("enrollGuest", false).size(), 1);
+        try {
+            cs.only("readProgramAccount", false);
+            Assert.fail("two readProgramAccount phases must not resolve silently");
+        } catch (IllegalStateException e) {
+            Assert.assertTrue(e.getMessage().contains("say which one: readProgramAccount(\"get_1\", \"get_2\")"),
+                    e.getMessage());
+        }
+        java.util.List<PhaseSpec> parts = cs.named("readProgramAccount", "get_2", false);
+        Assert.assertEquals(parts.size(), 2, "compound: call + hook-only part, in order");
+        Assert.assertFalse(parts.get(0).isHookOnly());
+        Assert.assertTrue(parts.get(1).isHookOnly());
+        try {
+            cs.named("readProgramAccount", "nope", false);
+            Assert.fail();
+        } catch (IllegalStateException e) {
+            Assert.assertTrue(e.getMessage().contains("it has: enrollGuest(\"HHonorsEnroll\")"), e.getMessage());
+        }
+    }
+
+    @Test(groups = {"unit", "guards"})
     @Story("toString names the call, the step and what varies -- readable in a failure")
     public void specDescribesItself() {
         PhaseSpec spec = PhaseSpec.phase("get_account").get("/businesses/{accountId}")
