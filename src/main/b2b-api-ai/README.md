@@ -116,6 +116,18 @@ Credential redaction is **on by default** and covers every sink — Extent HTML,
 per-test logs, console (so a redirected `> full-run.log` is safe too), and
 Allure attachments.
 
+**Non-Latin test data is logged as-is, not as `??????`.** ReadyAPI datasheets
+carry CJK / accented values (`tpl_contactInfo_name`, addresses, ...). The wire
+was always right (Rest Assured sends JSON as UTF-8); the `?` came from the
+Windows JDK 17 default charset (Cp1252) at three points, all pinned to UTF-8
+now: `RestUtilities.getRequestTemplate` (template read), the Log4j console
+layout (`charset="UTF-8"` in `log4j2.xml`) plus the surefire fork
+(`-Dfile.encoding=UTF-8 ...` in the pom `argLine`), and the Maven JVM itself
+via `.mvn/jvm.config` — Surefire re-prints the fork's output and the failure
+summary through Maven's own stdout, so that JVM has to be UTF-8 too. Nothing
+to set on the command line; `mvn test > full-run.log` writes UTF-8. If a
+`?` still shows up in a payload, it was a `?` in the datasheet.
+
 ---
 
 ### Phases as data (`--phase-specs`)

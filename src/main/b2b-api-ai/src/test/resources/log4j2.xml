@@ -29,7 +29,12 @@
 <Configuration status="WARN" packages="com.ak.api.security">
     <Appenders>
         <Console name="ConsoleRaw" target="SYSTEM_OUT">
-            <PatternLayout pattern="%d{HH:mm:ss.SSS} [%t] %-5level %logger{36} - %msg%n"/>
+            <!-- charset: a Windows JVM defaults to Cp1252 and prints every
+                 non-Latin character in a request/response body as '?'. The
+                 wire is UTF-8 (RestAssured encodes JSON as UTF-8), so the
+                 log should be too - the run log is redirected to a file and
+                 read later, and '?' reads as a substitution failure. -->
+            <PatternLayout pattern="%d{HH:mm:ss.SSS} [%t] %-5level %logger{36} - %msg%n" charset="UTF-8"/>
         </Console>
         <!-- All console output flows through the redactor. Loggers must
              reference "Console" (this Rewrite appender), never

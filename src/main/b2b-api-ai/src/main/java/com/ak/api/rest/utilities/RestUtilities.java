@@ -1129,7 +1129,12 @@ public class RestUtilities {
                     "Template not found on classpath: " + resource
                             + "  (looked under src/main/resources/" + resource + ")");
         }
-        return new InputStreamReader(in);
+        // UTF-8 explicitly: templates are written as UTF-8 by the converter
+        // and one of them carries CJK literally. The platform default on a
+        // Windows JDK 17 is Cp1252, which would read those bytes as mojibake
+        // and RestAssured would then encode the mojibake as UTF-8 -- double
+        // encoded on the wire. (CSV cells were already read as UTF-8.)
+        return new InputStreamReader(in, java.nio.charset.StandardCharsets.UTF_8);
     }
 
     /**
@@ -1204,7 +1209,8 @@ public class RestUtilities {
         if (out.exists() && !out.delete()) {
             // Non-fatal -- most likely locked by an open editor. Continue and append.
         }
-        try (PrintWriter writer = new PrintWriter(new BufferedWriter(new FileWriter(out)))) {
+        try (PrintWriter writer = new PrintWriter(java.nio.file.Files.newBufferedWriter(
+                out.toPath(), java.nio.charset.StandardCharsets.UTF_8))) {
             for (Object h : rpdlist) {
                 writer.println(((RestLoggerUtilityDataHolder) h).getJsonLog());
             }
