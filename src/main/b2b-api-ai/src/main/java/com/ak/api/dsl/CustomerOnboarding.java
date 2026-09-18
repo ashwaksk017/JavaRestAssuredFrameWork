@@ -108,7 +108,14 @@ public final class CustomerOnboarding {
     /** Typed view over the SAME map -- see ScenarioContext. */
     private final ScenarioContext sc;
     private final Map<String, String> row;
-    private final SoftAssert softAssert;
+    /**
+     * The test's own SoftAssert -- the one {@code ImportedScenario.bind(...)}
+     * handed to this flow, so {@code scenario.softAssert.assertAll()} and the
+     * test's {@code softAssert.assertAll()} are the same call. Public and
+     * final: hand-written tests reach for it, and a private field made them
+     * fail to compile ("softAssert has private access").
+     */
+    public final SoftAssert softAssert;
     private final RestLoggerUtilityDataHolder holder;
     private final DomainApis apis;
     private final String testCaseId;
@@ -352,6 +359,11 @@ public final class CustomerOnboarding {
      * silently apply to every later call in the chain, which is the
      * kind of quiet wrong-body bug this layer exists to avoid.</p>
      */
+    /** Same object as {@link #softAssert}; the method spelling. */
+    public SoftAssert softAssert() {
+        return softAssert;
+    }
+
     public CustomerOnboarding using(Template template) {
         this.pendingTemplate = template;
         return this;
