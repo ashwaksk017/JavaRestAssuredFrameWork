@@ -234,6 +234,23 @@ public class PhaseRunnerTest {
     }
 
     @Test(groups = {"unit", "guards"})
+    @Story("a case's bootstrap is registered parts plus the SetupHelper REST offset")
+    public void registryHoldsTheBootstrapAndItsRestOffset() {
+        Map<String, String> ctx = new LinkedHashMap<>();
+        com.ak.api.rest.utilities.phase.CaseRegistry.Case cs =
+                com.ak.api.rest.utilities.phase.CaseRegistry.register("unit-boot")
+                .bootstrap(() -> PhaseSpec.hookOnly("bootstrap", (r, f) -> f.ctx.put("boot", "ran")))
+                .restOffset(2);
+        Assert.assertTrue(cs.hasBootstrap());
+        Assert.assertEquals(cs.restOffset(), 2);
+        Assert.assertEquals(cs.bootstrapParts().size(), 1);
+        com.ak.api.rest.utilities.phase.CaseRegistry.Case none =
+                com.ak.api.rest.utilities.phase.CaseRegistry.register("unit-noboot");
+        Assert.assertFalse(none.hasBootstrap(), "a case with no setup steps registers no bootstrap");
+        Assert.assertEquals(none.restOffset(), 0);
+    }
+
+    @Test(groups = {"unit", "guards"})
     @Story("toString names the call, the step and what varies -- readable in a failure")
     public void specDescribesItself() {
         PhaseSpec spec = PhaseSpec.phase("get_account").get("/businesses/{accountId}")

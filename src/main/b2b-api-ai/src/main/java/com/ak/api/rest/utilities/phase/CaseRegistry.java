@@ -70,9 +70,49 @@ public final class CaseRegistry {
     public static final class Case {
         public final String caseId;
         private final List<Entry> entries = new ArrayList<>();
+        private final List<Supplier<PhaseSpec>> bootstrap = new ArrayList<>();
+        private List<PhaseSpec> bootstrapBuilt;
+        private int restOffset;
 
         Case(String caseId) {
             this.caseId = caseId;
+        }
+
+        /**
+         * What ran before the first chained phase: the SetupHelper flow
+         * and the translated data-generation steps. One entry class per
+         * suite runs these; the 132 `Onboarding2..6 / ...Guestidmember1..11`
+         * classes were this list rendered as text.
+         */
+        @SafeVarargs
+        public final Case bootstrap(Supplier<PhaseSpec>... parts) {
+            bootstrap.addAll(Arrays.asList(parts));
+            return this;
+        }
+
+        /** REST calls the SetupHelper flow makes; counts toward {@code _stop_after}. */
+        public Case restOffset(int n) {
+            this.restOffset = n;
+            return this;
+        }
+
+        public int restOffset() {
+            return restOffset;
+        }
+
+        public boolean hasBootstrap() {
+            return !bootstrap.isEmpty();
+        }
+
+        public synchronized List<PhaseSpec> bootstrapParts() {
+            if (bootstrapBuilt == null) {
+                List<PhaseSpec> out = new ArrayList<>();
+                for (Supplier<PhaseSpec> s : bootstrap) {
+                    out.add(s.get());
+                }
+                bootstrapBuilt = Collections.unmodifiableList(out);
+            }
+            return bootstrapBuilt;
         }
 
         @SafeVarargs

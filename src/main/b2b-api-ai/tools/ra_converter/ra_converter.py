@@ -5620,9 +5620,13 @@ class Emitter:
         self._last_plan: dict | None = None     # last _fluent_render_groups result
         self._current_cluster: list | None = None
         self._case_phase_specs: dict[str, list] = {}   # case name -> spec entries
+        self._case_bootstrap: dict[str, tuple] = {}    # case name -> (hook part | None, rest offset)
         self._phases_classes: list[str] = []
-        self._suite_hooks: dict[tuple, str] = {}       # (leftover lines, res var) -> Hooks.<name>
+        self._suite_hooks: dict[tuple, str] = {}       # (leftover lines, res var) -> HooksN.<name>
         self._suite_hook_java: list[str] = []
+        # 150 hooks per file: 743 in one class was 2,046 KB, and IntelliJ
+        # stops code insight at 2,500 KB. A method ref names its chunk.
+        self._hooks_per_file = 150
         self._spec_vocabs: set[str] = set()
         self._spec_verify_vocabs: dict[str, set] = {}
         self._spec_fallbacks: dict[str, int] = {}
@@ -11624,6 +11628,25 @@ public class {class_name} extends BaseApiTest {{
                     "if (!__stopAfter.isEmpty() && __restStepIdx >= "
                     "Integer.parseInt(__stopAfter)) { return this; }")
         bootstrap_lines.extend(start_java)
+        bootstrap_part = None
+        rest_offset = 0
+        if self.phase_specs_enabled:
+            from fluent_scenario import suite_agnostic_body as _agn
+            import phase_emit as _pe
+            kept: list[str] = []
+            for ln in _agn(list(bootstrap_lines)):
+                m = re.match(r"\s*__restStepIdx \+= (\d+);", ln)
+                if m:
+                    rest_offset += int(m.group(1))
+                    continue
+                if "__stopAfter" in ln:
+                    continue          # the entry checks the marker itself
+                if ln.strip():
+                    kept.append(ln)
+            if kept and not _pe.hook_blockers(kept):
+                bootstrap_part = {"spec": None, "split": None, "leftover": kept,
+                                  "res_var": None,
+                                  "var_to_step": {v: s for s, v in self.response_var_by_step.items()}}
         plan = {
             "assigned_flow": assigned_flow,
             "skip_count": skip_count,
@@ -11637,6 +11660,8 @@ public class {class_name} extends BaseApiTest {{
             "spec_entries": spec_entries,
             "chain": chain,
             "verify_chain": verify_chain,
+            "bootstrap_part": bootstrap_part,
+            "rest_offset": rest_offset,
         }
         self._last_plan = plan
         return plan
@@ -12249,6 +12274,10 @@ public class {class_name} extends BaseApiTest {{
         self._entry_class_names = names
 
     def shared_entry_class(self, index: int) -> str:
+        if getattr(self, "phase_specs_enabled", False):
+            # one entry per suite: the bootstrap is registered data, so the
+            # vote-allocated names (OnboardingFlowAGuestidmember8) mean nothing
+            return "Onboarding"
         """Entry type for a shared bootstrap, named after its setup."""
         if not self._entry_class_names:
             self._derive_entry_class_names()
@@ -12363,7 +12392,8 @@ public class {class_name} extends BaseApiTest {{
         base = self._emit_suite_steps_base(service_class_name)
         if base:
             suite.append(base)
-            for i in range(max(1, len(self._shared_bootstraps))):
+            n_entries = 1 if self.phase_specs_enabled else max(1, len(self._shared_bootstraps))
+            for i in range(n_entries):
                 suite.append(
                     self._emit_suite_customer_onboarding(service_class_name, i))
             suite.extend(self._emit_suite_verify_wrappers(service_class_name))
@@ -12435,7 +12465,7 @@ public class {class_name} extends BaseApiTest {{
         # would hide the parent's and silently split the value in two.
         self._framework_resp = list(resp)
         boot_body = "        return self();"
-        if self._shared_bootstrap:
+        if self._shared_bootstrap and not self.phase_specs_enabled:
             boot_body = (
                 f"{self._indent_java(self._as_self_body(self._shared_bootstrap['body']), 8)}\n"
                 f"        return self();")
@@ -12551,6 +12581,16 @@ public abstract class ScenarioSteps<S extends ScenarioSteps<S>> {{
     }}
 
     protected S bootstrap() throws Exception {{
+        if (phases != null && phases.hasBootstrap()) {{
+            __restStepIdx += phases.restOffset();
+            if (__stopAfter != null && !__stopAfter.isEmpty()
+                    && __restStepIdx >= Integer.parseInt(__stopAfter.trim())) {{
+                __stopped = true;
+                return self();
+            }}
+            runParts(phases.bootstrapParts());
+            return self();
+        }}
 {boot_body}
     }}
 
@@ -12787,7 +12827,7 @@ public abstract class {cls}<S extends {cls}<S>> extends ScenarioSteps<S> {{
                                 self._suite_hook_java.append(phase_emit.hook_java(
                                     hname, part["leftover"], part["res_var"] or "__noneRes",
                                     part["var_to_step"]))
-                            hook_ref = f"Hooks::{hname}"
+                            hook_ref = f"{self._hooks_class_of(hname)}::{hname}"
                         if part["spec"] is None:
                             spec_javas.append(
                                 f"PhaseSpec.hookOnly({phase_emit.jstr(e['step'])}, {hook_ref})")
@@ -12797,7 +12837,20 @@ public abstract class {cls}<S extends {cls}<S>> extends ScenarioSteps<S> {{
                             part["var_to_step"], hook_ref))
                     ents.append({"vocab": e["vocab"], "step": e["step"],
                                  "verify": e["verify"], "spec_javas": spec_javas})
-                cases_out.append({"case": case.name, "entries": ents})
+                boot_javas: list[str] = []
+                boot_part, rest_offset = self._case_bootstrap.get(case.name, (None, 0))
+                if boot_part is not None:
+                    key = (tuple(boot_part["leftover"]), None)
+                    hname = hook_by_body.get(key)
+                    if hname is None:
+                        hname = f"hook{len(hook_by_body) + 1}_bootstrap"
+                        hook_by_body[key] = hname
+                        self._suite_hook_java.append(phase_emit.hook_java(
+                            hname, boot_part["leftover"], "__noneRes", boot_part["var_to_step"]))
+                    boot_javas.append(
+                        f'PhaseSpec.hookOnly("bootstrap", {self._hooks_class_of(hname)}::{hname})')
+                cases_out.append({"case": case.name, "entries": ents,
+                                  "bootstrap": boot_javas, "rest_offset": rest_offset})
         if not cases_out:
             return None
         imports = list(self._PHASES_IMPORTS) + [
@@ -12811,6 +12864,11 @@ public abstract class {cls}<S extends {cls}<S>> extends ScenarioSteps<S> {{
         if cls not in self._phases_classes:
             self._phases_classes.append(cls)
         return rel
+
+    def _hooks_class_of(self, hook_name: str) -> str:
+        """`hook37_x` -> `Hooks1`, `hook151_x` -> `Hooks2`: the chunk it lives in."""
+        n = int(re.match(r"hook(\d+)_", hook_name).group(1))
+        return f"Hooks{(n - 1) // self._hooks_per_file + 1}"
 
     def emit_phase_index_and_calls(self) -> list[str]:
         """CaseIndex (loads every Phases class) + Calls (the engine switch)."""
@@ -12830,9 +12888,12 @@ public abstract class {cls}<S extends {cls}<S>> extends ScenarioSteps<S> {{
             f"{self.package_root}.support.{self.suite_name}.TestSupport",
             f"{self.package_root}.templates.{self.suite_name}.Templates",
         ]
-        rel = f"src/main/java/{cases_pkg.replace('.', '/')}/Hooks.java"
-        self._write(rel, phase_emit.hooks_class_java(cases_pkg, imports, self._suite_hook_java))
-        written.append(rel)
+        per = self._hooks_per_file
+        chunks = [self._suite_hook_java[i:i + per] for i in range(0, len(self._suite_hook_java), per)] or [[]]
+        for idx, chunk in enumerate(chunks, start=1):
+            rel = f"src/main/java/{cases_pkg.replace('.', '/')}/Hooks{idx}.java"
+            self._write(rel, phase_emit.hooks_class_java(cases_pkg, imports, chunk, f"Hooks{idx}"))
+            written.append(rel)
         ops = []
         for (op, path), java_name in self.client_method_by_op.items():
             key = (op, path)
@@ -13150,6 +13211,9 @@ public final class {type_name} {{
         skip_count = plan["skip_count"]
         self._last_fluent_shared_entry = self._case_uses_only_shared_fluent(
             case, flow_java, verify_java, plan["bootstrap_lines"])
+        if self.phase_specs_enabled and not flow_java and not verify_java:
+            # the bootstrap is registered data, run by the one entry class
+            self._last_fluent_shared_entry = self.shared_entry_class(0)
         if self._last_fluent_shared_entry:
             pending = getattr(self, "_pending_fluent_imports", None)
             shared_pkg = self._suite_scenario_pkg()
@@ -13548,6 +13612,7 @@ public final class {support_name} {{
             members = list(self._current_cluster or [case])
             for member in members:
                 self._case_phase_specs[member.name] = list(plan["spec_entries"])
+                self._case_bootstrap[member.name] = (plan.get("bootstrap_part"), plan.get("rest_offset", 0))
         else:
             chain = "".join(f"\n                .{fname}()" for fname, _b in flow_java)
         entry = self._last_fluent_shared_entry or support_name
