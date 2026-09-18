@@ -11687,11 +11687,12 @@ public class {class_name} extends BaseApiTest {{
                 return _fallback("empty group")
             if phase_emit.hook_blockers(lines):
                 return _fallback("hook lines: " + phase_emit.hook_blockers(lines))
-            vocab = fname
+            vocab = fname if verify else phase_emit.safe_vocab(fname)
             if verify:
                 self._spec_verify_vocabs.setdefault(vcls or "Insights", set()).add(vocab)
             else:
                 self._spec_vocabs.add(vocab)
+                phase_model_run_vocabs().add(vocab)
             v2s0 = {v: s for s, v in self.response_var_by_step.items()}
             entry = {
                 "vocab": vocab, "step": sanitize_identifier(getattr(gsteps[0], "step_name", fname) or fname),
@@ -11739,11 +11740,12 @@ public class {class_name} extends BaseApiTest {{
                 return _fallback("hook lines: " + phase_emit.hook_blockers(leftover))
             parts.append({"spec": spec, "split": split, "leftover": leftover,
                           "res_var": res_var, "var_to_step": v2s})
-        vocab = fname
+        vocab = fname if verify else phase_emit.safe_vocab(fname)
         if verify:
             self._spec_verify_vocabs.setdefault(vcls or "Insights", set()).add(vocab)
         else:
             self._spec_vocabs.add(vocab)
+            phase_model_run_vocabs().add(vocab)
         first = specs[rest_idx[0]]
         entry = {
             "vocab": vocab, "step": first.sid, "parts": parts,
@@ -12457,9 +12459,12 @@ public class {class_name} extends BaseApiTest {{
         if self.phase_specs_enabled:
             import phase_emit as _pe
             # a spec'd name must not also be a text-path phase name
-            taken = set(self._shared_phases) | set(self._suite_local_phases())
+            import phase_model as _pm
+            taken = set(self._shared_phases) | set(self._suite_local_phases()) | set(_pm.RUN_TAKEN)
+            _pm.RUN_TAKEN.update(taken)
             self._taken_vocab_names = taken
-            vocab_methods = _pe.vocab_methods_java(sorted(self._spec_vocabs), taken)
+            vocab_methods = _pe.vocab_methods_java(
+                sorted(self._spec_vocabs | _pm.RUN_VOCABS), taken)
         content = f"""package {pkg};
 
 import java.util.Map;
@@ -13520,6 +13525,16 @@ public final class {support_name} {{
             if _here not in sys.path:
                 sys.path.insert(0, _here)
             import phase_emit
+            # (vocab, step) is the registry key: a case whose two translated
+            # groups both came from a step named `Groovy Script` would register
+            # twice and resolve the first silently. Later duplicates get #2, #3.
+            _seen_keys: dict[tuple, int] = {}
+            for e in plan["spec_entries"]:
+                k = (e["vocab"], e["step"], e["verify"])
+                n = _seen_keys.get(k, 0) + 1
+                _seen_keys[k] = n
+                if n > 1:
+                    e["step"] = f"{e['step']}#{n}"
             phase_pairs = [(e["vocab"], e["step"]) for k, e in plan["chain"] if k == "spec"]
             spec_calls = iter(phase_emit.chain_calls(
                 phase_pairs, getattr(self, "_taken_vocab_names", set())))
@@ -15177,6 +15192,15 @@ def _default_suite_name(xml_path: str) -> str:
     lowercased + non-alphanum -> _). Overridable via --suite-name."""
     b = os.path.splitext(os.path.basename(xml_path))[0]
     return sanitize_identifier(b).lower()
+
+
+def phase_model_run_vocabs() -> set:
+    """The run-wide vocabulary set (phase_model.RUN_VOCABS), lazily imported."""
+    _here = os.path.dirname(os.path.abspath(__file__))
+    if _here not in sys.path:
+        sys.path.insert(0, _here)
+    import phase_model
+    return phase_model.RUN_VOCABS
 
 
 def _fs_path(path: str, force: bool = False) -> str:

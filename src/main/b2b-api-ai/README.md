@@ -118,6 +118,47 @@ Allure attachments.
 
 ---
 
+### Phases as data (`--phase-specs`)
+
+```
+python tools/ra_converter/ra_converter.py --input tools/ra_converter/input --output . --package-root com.ak.api --clean --max-name-len 40 --phase-specs
+```
+
+Opt-in for now (the default output is unchanged until a regression run
+matches it). With the flag, a ReadyAPI step is no longer copied into a
+method of its own -- 1,304 of them on programaccountregression, 30,000
+lines in one class -- but described as data:
+
+- `support/<suite>/cases/<TestClass>Phases.java` registers each case's
+  phases in `CaseRegistry`: step name, verb + path, where each path
+  parameter comes from (`Ref.ctx` / `Ref.resp` / `Ref.row` / literal),
+  token, template, expected status, polling, query placeholders,
+  extracts and the CSV-driven checks. A compound phase is a sequence of
+  parts.
+- `support/<suite>/cases/Hooks.java` holds each distinct translated
+  Groovy / transfer / script-assertion block once; a spec names its hook.
+- `support/<suite>/Calls.java` is the engine: one `case` per typed
+  client operation, the only per-call code left.
+- The chain reads `.enrollGuest().createProgramAccount().readProgramAccount()`.
+  When a case runs the same phase twice, every occurrence names its
+  ReadyAPI step: `.readProgramAccount("get_account_after_activate")` --
+  the same name the CSV columns and the `step=` log lines use.
+- `Insights.verifyProgramAccount(scenario, expected)` runs that case's
+  verify spec through the same engine.
+
+The run ends with `[ra_converter] reuse: ...` -- the duplication report
+(`_audit/<suite>/dedup_report.txt`, also in `summary.md`): methods that
+are the same call with different data, entry classes that differ only
+in generated fields, and templates that are the same shape with the
+same placeholders. Under the flag the first two read `0 groups`.
+
+Run-time rules worth knowing: `readProgramAccount()` throws if the case
+runs it more than once ("say which one: readProgramAccount(\"a\", \"b\")");
+a prefix-merged cluster's shorter members stop after the REST count in
+their `_stop_after` CSV cell -- and, unlike the text path, make no further
+calls at all once stopped. Hand-written flows (`MasterClass`) are
+unaffected: they drive `RestStep` themselves.
+
 ## What's inside
 
 | Concern | Where | Notes |

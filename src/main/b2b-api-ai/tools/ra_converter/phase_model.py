@@ -150,6 +150,10 @@ class PhaseSpec:
 # because the converter renders through several Emitter instances in a
 # multi-XML run and saves the catalog from only one of them.
 RUN_SPECS: dict[str, dict] = {}
+# Vocabulary names spec'd by ANY suite in this process: ScenarioSteps is
+# emitted once per conversion, so its methods must cover every suite.
+RUN_VOCABS: set[str] = set()
+RUN_TAKEN: set[str] = set()
 
 
 def record(spec: PhaseSpec, key) -> None:
@@ -158,6 +162,8 @@ def record(spec: PhaseSpec, key) -> None:
 
 def reset_run() -> None:
     RUN_SPECS.clear()
+    RUN_VOCABS.clear()
+    RUN_TAKEN.clear()
 
 
 class ShapeRegistry:

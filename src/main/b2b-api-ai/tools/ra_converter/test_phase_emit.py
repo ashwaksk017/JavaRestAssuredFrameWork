@@ -113,6 +113,24 @@ def test_hook_prelude_declares_only_the_responses_the_lines_use():
     assert "__domainApis" in h and " domain " not in h     # no local named `domain`: translated Groovy declares its own
 
 
+def test_reserved_vocabulary_names_get_a_suffix():
+    j = pe.vocab_methods_java(["start", "enrollGuest"])
+    assert "public S startPhase()" in j and "public S start()" not in j
+    assert pe.chain_calls([("start", "s"), ("enrollGuest", "e")]) == [".startPhase()", ".enrollGuest()"]
+
+
+def test_extracts_keep_the_last_write_in_the_old_order():
+    spec = pm.PhaseSpec(
+        suite="s", case="c", step_name="x", sid="x", verb="GET", path="/a", client_method="m",
+        receiver="client", template_expr=None, regen=False, expected_status=200,
+        extracts=(("Properties.guestID", "json", "guestId"), ("K", "json", "first")),
+        engine_id="m/0", path_refs=(), token_ref=("ctx", "t"))
+    sp = pe.Split(extracts=[("K", "second", "json")])          # a transfer step after the call
+    j = pe.spec_builder_java(spec, sp, None, {}, None, indent=0)
+    assert '.extract("K", "second")' in j and '.extract("K", "first")' not in j
+    assert j.index('.extract("Properties.guestID", "guestId")') < j.index('.extract("K", "second")')
+
+
 def test_phases_class_registers_each_case_once():
     j = pe.phases_class_java("com.x.cases", "FooTestPhases", ["java.util.Map"], [
         {"case": "B2B-1_a", "entries": [

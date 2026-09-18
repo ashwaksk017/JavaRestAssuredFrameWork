@@ -248,11 +248,20 @@ def spec_builder_java(spec, split: Split, template_java_expr: str | None,
         parts.append(f".query({jstr(k)}, {jstr(v)})")
     for k, v in spec.headers:
         parts.append(f".header({jstr(k)}, {jstr(v)})")
-    seen = set()
+    # A key written twice in the old body kept the LAST value (putExtracted
+    # overwrites). Keep the last occurrence, in the old order: the auto-
+    # extracts of the REST block first, then the transfer steps after it.
+    ordered: list[tuple] = []
     for key, kind, path in spec.extracts:
-        if (key, kind) in seen:
+        ordered.append((key, kind, path))
+    for key, path, kind in split.extracts:
+        ordered.append((key, kind, path))
+    last: dict[str, int] = {}
+    for i, (key, _k, _p) in enumerate(ordered):
+        last[key] = i
+    for i, (key, kind, path) in enumerate(ordered):
+        if last[key] != i:
             continue
-        seen.add((key, kind))
         if kind == "json":
             parts.append(f".extract({jstr(key)}, {jstr(path)})")
         elif kind == "whole":
@@ -261,12 +270,6 @@ def spec_builder_java(spec, split: Split, template_java_expr: str | None,
             parts.append(f".extractRawRequest({jstr(key)})")
         else:
             parts.append(f".extractRawRequestPath({jstr(key)}, {jstr(path)})")
-    for key, path, kind in split.extracts:
-        if (key, kind) in seen:
-            continue
-        seen.add((key, kind))
-        parts.append(f".extract({jstr(key)}, {jstr(path)})" if kind == "json"
-                     else f".extractWhole({jstr(key)})")
     for kind, path, expected in split.checks:
         if kind == "equals":
             parts.append(f".equals({jstr(path)}, {jstr(expected)})")
@@ -327,8 +330,9 @@ def chain_calls(entries: list[tuple[str, str]], force_step=()) -> list[str]:
         counts[vocab] = counts.get(vocab, 0) + 1
     out = []
     for vocab, step in entries:
-        out.append(f".{vocab}()" if counts[vocab] == 1 and vocab not in force_step
-                   else f".{vocab}({jstr(step)})")
+        name = safe_vocab(vocab)
+        out.append(f".{name}()" if counts[vocab] == 1 and vocab not in force_step
+                   else f".{name}({jstr(step)})")
     return out
 
 
@@ -505,6 +509,20 @@ def calls_java(pkg: str, ops: list[tuple[str, int, bool, bool, bool]]) -> str:
     return "\n".join(lines) + "\n"
 
 
+# ScenarioSteps' own members; a vocabulary name that lands on one of these
+# would override it. The vocabulary is business verbs + nouns, so this is
+# defensive -- but `start`/`complete` are plausible business words.
+RESERVED_VOCAB = frozenset({
+    "start", "bootstrap", "self", "complete", "current", "runPhase", "runVerify",
+    "dispatch", "phaseContext", "requirePhases", "runParts", "toString", "hashCode",
+    "equals", "getClass", "notify", "notifyAll", "wait",
+})
+
+
+def safe_vocab(v: str) -> str:
+    return v + "Phase" if v in RESERVED_VOCAB else v
+
+
 def vocab_methods_java(vocabs: list[str], taken=()) -> str:
     """`enrollGuest()` / `enrollGuest(String step)` on ScenarioSteps, once per name.
 
@@ -512,7 +530,7 @@ def vocab_methods_java(vocabs: list[str], taken=()) -> str:
     overload is emitted for it, and chains always pass the step.
     """
     out = []
-    for v in sorted(set(vocabs)):
+    for v in sorted({safe_vocab(x) for x in vocabs}):
         if v not in taken:
             out.append(
                 f"    public S {v}() throws Exception {{\n"

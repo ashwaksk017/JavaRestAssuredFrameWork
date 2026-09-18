@@ -78,24 +78,8 @@ public final class PhaseRunner {
         String raw = RestStep.lastResolvedBody();
         ImportedScenario.putExtracted(c.ctx, spec.step + "_RawRequest", raw == null ? "" : raw);
 
-        for (PhaseSpec.Extract e : spec.extracts) {
-            String value;
-            switch (e.kind) {
-                case WHOLE:
-                    value = RestUtilities.getResponseAsString(res);
-                    break;
-                case RAW_REQUEST:
-                    value = raw;
-                    break;
-                case RAW_REQUEST_PATH:
-                    value = RestUtilities.safeJsonExtractFromString(raw, e.path);
-                    break;
-                default:
-                    value = RestUtilities.safeJsonExtract(res, e.path);
-            }
-            ImportedScenario.putExtracted(c.ctx, e.key, value == null ? "" : value);
-        }
-
+        // Checks BEFORE extracts: the old body ran its assertions, then the
+        // auto-extracts, then any transfer step. Same order here.
         for (PhaseSpec.Check k : spec.checks) {
             switch (k.kind) {
                 case EQUALS:
@@ -120,6 +104,24 @@ public final class PhaseRunner {
                 default:
                     throw new IllegalStateException("unknown check kind " + k.kind);
             }
+        }
+
+        for (PhaseSpec.Extract e : spec.extracts) {
+            String value;
+            switch (e.kind) {
+                case WHOLE:
+                    value = RestUtilities.getResponseAsString(res);
+                    break;
+                case RAW_REQUEST:
+                    value = raw;
+                    break;
+                case RAW_REQUEST_PATH:
+                    value = RestUtilities.safeJsonExtractFromString(raw, e.path);
+                    break;
+                default:
+                    value = RestUtilities.safeJsonExtract(res, e.path);
+            }
+            ImportedScenario.putExtracted(c.ctx, e.key, value == null ? "" : value);
         }
 
         if (spec.hook != null) {
