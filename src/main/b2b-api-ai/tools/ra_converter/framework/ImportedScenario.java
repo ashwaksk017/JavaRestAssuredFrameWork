@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 16
+// ra_converter-framework-rev: 17
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -818,6 +818,18 @@ public final class ImportedScenario {
         if (memberEmail.equals(ownerEmail)) {
             return ctx;
         }
+        // Two users in the pack (owner enrolls with generatedemailAddress,
+        // member with Email -- 871 of 1101 cases): Email IS the member's,
+        // and the later steps that send it again (CreatePendingAccountmember
+        // "guestId": memberGuestID + "emailAddress": Email; a second member
+        // enroll on generatedemailAddress1) must see the same address. The
+        // overlay is for the one-user convention only, where owner and
+        // member enrolls both read Email.
+        String ownerGen = ctx.get("Properties.generatedemailAddress");
+        if (ownerGen != null && !ownerGen.isEmpty() && ownerEmail != null
+                && !ownerGen.equalsIgnoreCase(ownerEmail)) {
+            return ctx;
+        }
         Map<String, String> copy = new HashMap<>(ctx);
         CtxFields.putBothCases(copy, "Properties", "Email", memberEmail);
         CtxFields.putBothCases(copy, "Properties", "EmailAddress", memberEmail);
@@ -870,8 +882,13 @@ public final class ImportedScenario {
                 ctx.getOrDefault("Properties.hardcodeddomain", ""));
         String csvDomain = firstNonBlank(row,
                 "Properties.Domain", "Properties.domain", "Domain");
+        // DataGen never writes a "www." into Domain; the amex cases' Groovy
+        // does (def generatedDomain = 'www.amexoneclickuser234.com', 13
+        // rows, emails on it too). That is the author's literal, verbatim.
+        boolean literalWwwDomain = csvDomain != null
+                && csvDomain.trim().toLowerCase(Locale.ROOT).startsWith("www.");
         boolean keepCsvDomain = csvDomain != null && !csvDomain.isEmpty()
-                && (isFreemailDomain(csvDomain) || expectedCreate400(row));
+                && (isFreemailDomain(csvDomain) || expectedCreate400(row) || literalWwwDomain);
         boolean hasFrozenDomain = !keepCsvDomain
                 && frozen != null && !frozen.isEmpty();
         // Hardcodeddomain is a Properties value the row always carries; its
@@ -884,7 +901,9 @@ public final class ImportedScenario {
         // does; with no saved identity values the freeze stays.
         boolean usingFrozenDomain = hasFrozenDomain && !rowUsedOwnDomain(row, frozen);
         String domain;
-        if (keepCsvDomain) {
+        if (literalWwwDomain) {
+            domain = csvDomain.trim();
+        } else if (keepCsvDomain) {
             domain = normalizeDomain(csvDomain);
         } else if (usingFrozenDomain) {
             domain = frozen;
@@ -917,6 +936,8 @@ public final class ImportedScenario {
         CtxFields.putBothCases(ctx, "Properties", "usernamemember", memberUname);
         // usernameM IS the member under another name -- alias on purpose.
         CtxFields.putBothCases(ctx, "Properties", "usernameM", memberUname);
+        CtxFields.putBothCases(ctx, "Properties", "usernamemember2",
+                distinctUsername(ownerUname, memberUname, extraUname, uname2, uname3));
         CtxFields.putBothCases(ctx, "Properties", "Username2", uname2);
         CtxFields.putBothCases(ctx, "Properties", "username3", uname3);
         CtxFields.putBothCases(ctx, "Properties", "username1", extraUname);

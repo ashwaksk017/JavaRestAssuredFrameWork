@@ -2912,15 +2912,52 @@ def _is_member_enroll_step(step_name: str) -> bool:
             or ("member" in n and "hhonorsenroll" in n))
 
 
-def _remap_member_enroll_email_placeholders(step_name: str, body: str) -> str:
-    """ReadyAPI MemberHHonorsEnroll often uses ``${Properties#Email}``
-    for the *member* guest. The identity pack binds ``Email`` to the
-    owner, so leave that literal as-is and the member enroll 409s.
+def _case_needs_member_email_remap(case) -> bool:
+    """Only the ONE-user convention needs the remap: owner and member enrolls
+    both read ``${Properties#Email}``. Two signals say a case is not that:
 
-    Rewrite owner-email placeholders to the member slot
-    (``generatedemailAddress1`` / ``EmailMember``).
+    - it names ``generatedemailAddress1`` itself (a second member enroll on
+      that slot, B2B-6851 family): remapping the first enroll onto the same
+      slot enrolled one address twice (409, 7 rows);
+    - its saved Properties hold two users (``Email`` != ``generatedemailAddress``,
+      871 of 1101 cases): the owner enrolls with ``generatedemailAddress`` and
+      ``Email`` IS the member's, which every later step (CreatePendingAccount-
+      member, add-member) sends again -- remapping the enroll alone made the
+      member's address disagree with them (509 "already in use", 404).
+    The runtime overlay (ImportedScenario.ctxForStep) applies the same rule
+    for hand-written flows and for the one-user cases this still rewrites.
+    """
+    if case is None:
+        return True
+    email = generated = None
+    for st in getattr(case, "steps", []) or []:
+        props = getattr(st, "properties", None)
+        if isinstance(props, dict):
+            email = props.get("Email", email) or email
+            generated = props.get("generatedemailAddress", generated) or generated
+        body = getattr(st, "request_body", "") or ""
+        if "generatedemailAddress1" in body:
+            return False
+        for bag in (getattr(st, "query_params", None) or {}, getattr(st, "headers", None) or {}):
+            if any("generatedemailAddress1" in (v or "") for v in bag.values()):
+                return False
+    if email and generated and "@" in email and "@" in generated \
+            and email.strip().lower() != generated.strip().lower():
+        return False
+    return True
+
+
+def _remap_member_enroll_email_placeholders(step_name: str, body: str, case=None) -> str:
+    """ReadyAPI MemberHHonorsEnroll often uses ``${Properties#Email}``
+    for the *member* guest. In the ONE-user convention the identity pack
+    binds ``Email`` to the owner, so leaving that literal as-is made the
+    member enroll a 409: rewrite owner-email placeholders to the member
+    slot (``generatedemailAddress1``). See `_case_needs_member_email_remap`
+    for the two conventions that must NOT be rewritten.
     """
     if not body or not _is_member_enroll_step(step_name):
+        return body
+    if not _case_needs_member_email_remap(case):
         return body
     replacements = (
         ("${Properties#Email}", "${Properties#generatedemailAddress1}"),
@@ -5014,7 +5051,11 @@ def _csv_cell(value: str, col_name: str = "") -> str:
         # honorsMembership.hhonorsNumber=1234567891). Rewriting those to
         # @Properties_expected_…@ hid the XML value and made jsonEquals
         # compare against the unresolved placeholder string.
-        if not col_l.startswith("path_") and not col_l.startswith("expected_"):
+        # memberGuestID is a fixed pre-existing guest the author adds as a
+        # member (six ids, 66 cases); rewriting it to a live placeholder
+        # made the pack invent a guest that does not exist (404).
+        if (not col_l.startswith("path_") and not col_l.startswith("expected_")
+                and not col_l.endswith("memberguestid")):
             ID_HINTS = ("guestid", "accountid", "memberid", "hhonorsnumber",
                         "hhonors_number", "partneraccountid", "customerid",
                         "userid", "hilton_member_id", "hiltonmemberid")
@@ -14245,7 +14286,7 @@ public final class {support_name} {{
                     continue
                 translated, _ph = soapui_body_to_placeholders(
                     _remap_member_enroll_email_placeholders(
-                        step.step_name, step.request_body))
+                        step.step_name, step.request_body, case))
                 translated = Emitter._rewrite_unquoted_id_placeholders(translated)
                 # Rewrite hardcoded id-shaped values in known id fields
                 # (guestId / accountId / memberId / etc.) to framework

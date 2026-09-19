@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 8
+// ra_converter-framework-rev: 9
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -436,6 +436,13 @@ public final class CtxFields {
         String p = field.toLowerCase();
         boolean sfId = (p.contains("sfdc") || p.contains("salesforce")) && p.endsWith("id");
         if (sfId && !value.matches("[A-Za-z0-9]{15,18}")) {
+            ctx.put(key, value);
+            return;
+        }
+        // memberGuestID is one of six fixed, pre-existing guests the author
+        // adds as a member (1900747836 in 29 cases); never Groovy-set. A
+        // generated id is a guest that does not exist -> add-member 404.
+        if (p.equals("memberguestid") && value.matches("\\d{6,}")) {
             ctx.put(key, value);
             return;
         }

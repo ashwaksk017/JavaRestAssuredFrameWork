@@ -739,4 +739,45 @@ public class CtxFieldsTest {
         Assert.assertTrue(ctx2.get("Properties.updateemail").endsWith("@sa.hilton.com/"), ctx2.get("Properties.updateemail"));
         Assert.assertNotEquals(ctx2.get("Properties.updateemail"), "rfful@sa.hilton.com/", "fresh local part");
     }
+    @Test(groups = {"unit"})
+    @Story("two-user pack: Email is the member's, no overlay; one-user pack still overlays")
+    @Description("B2B-6851 family: member enroll on Email, 2nd on generatedemailAddress1, add-member on Email -- the overlay sent three different addresses for two people (409/509).")
+    public void twoUserPack_skipsMemberOverlay() {
+        Map<String, String> row = new HashMap<>();
+        row.put("Properties.Email", "member@x.com");
+        row.put("Properties.generatedemailAddress", "owner@x.com");   // distinct -> two users
+        Map<String, String> ctx = new HashMap<>();
+        ImportedScenario.regenRandomProperties(ctx, row);
+        Assert.assertNotEquals(ctx.get("Properties.Email"), ctx.get("Properties.generatedemailAddress"));
+        Map<String, String> memberCtx = ImportedScenario.ctxForStep(ctx, "MemberHHonorsEnroll");
+        Assert.assertEquals(memberCtx.get("Properties.Email"), ctx.get("Properties.Email"), "no overlay: Email is the member");
+        Assert.assertNotEquals(ctx.get("Properties.usernamemember2"), ctx.get("Properties.usernamemember"));
+        Assert.assertNotEquals(ctx.get("Properties.usernamemember2"), ctx.get("Properties.Username"));
+
+        Map<String, String> one = new HashMap<>();
+        ImportedScenario.regenRandomProperties(one);                     // one user: Email == generatedemailAddress
+        Map<String, String> oneMember = ImportedScenario.ctxForStep(one, "MemberHHonorsEnroll");
+        Assert.assertNotEquals(oneMember.get("Properties.Email"), one.get("Properties.Email"), "one-user pack keeps the overlay");
+    }
+
+    @Test(groups = {"unit"})
+    @Story("memberGuestID literal wins the seed; amex literal www. domain is kept verbatim")
+    public void memberGuestId_andLiteralWwwDomain() {
+        Map<String, String> ctx = new HashMap<>();
+        CtxFields.generate(ctx, "Properties", "memberGuestID");
+        Map<String, String> row = new HashMap<>();
+        row.put("Properties.memberGuestID", "1900747836");
+        CtxFields.seedFromRow(ctx, row, "Properties.");
+        Assert.assertEquals(ctx.get("Properties.memberGuestID"), "1900747836");
+
+        Map<String, String> amex = new HashMap<>();
+        amex.put("Properties.Domain", "www.amexoneclickuser234.com");
+        amex.put("Properties.Email", "4i586@www.amexoneclickuser234.com");
+        Map<String, String> ctx2 = new HashMap<>();
+        ctx2.put("Properties.Hardcodeddomain", "laafd.com");
+        ImportedScenario.regenRandomProperties(ctx2, amex);
+        Assert.assertEquals(ctx2.get("Properties.Domain"), "www.amexoneclickuser234.com");
+        Assert.assertTrue(ctx2.get("Properties.Email").endsWith("@www.amexoneclickuser234.com"), ctx2.get("Properties.Email"));
+        Assert.assertNotEquals(ctx2.get("Properties.Email"), "4i586@www.amexoneclickuser234.com", "fresh local part");
+    }
 }

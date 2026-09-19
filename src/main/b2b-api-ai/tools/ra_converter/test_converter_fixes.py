@@ -2079,6 +2079,8 @@ def test_csv_cell_id_rewrite_matches_field_not_step_name():
     assert live == "@Properties_accountID@", live
     # a qry_ column keeps its full name as the placeholder field (ctxGet's
     # trailing-field walk resolves accountId); the point is that it IS rewritten
+    kept2 = rc._csv_cell("1900747836", "Properties.memberGuestID")
+    assert kept2 == "1900747836", kept2          # a fixed pre-existing guest, the author's
     live2 = rc._csv_cell("2000016128", "qry_http_request_200_compare_name_account_country_accountId")
     assert live2.startswith("@Properties_") and live2.endswith("_accountId@"), live2
 
@@ -2109,6 +2111,31 @@ def test_message_content_not_exists_renders_absent():
     src = open(rc.__file__, encoding="utf-8").read()
     assert "op_norm in _ABSENT_OPS" in src
     assert '"not exists"' in src and "jsonAbsent(softAssert, {response_var}" in src
+
+
+def test_member_email_remap_is_one_user_only():
+    """Two-enroll cases and two-user packs keep ${Properties#Email} on the
+    member enroll; the one-user convention still gets the member slot."""
+    import ra_converter as rc
+    body = '{"username":"${Properties#usernamemember}","email":{"emailAddress":"${Properties#Email}"}}'
+
+    class P:  # PropertiesStep stand-in
+        def __init__(self, d): self.properties = d
+
+    class R:  # RestStep stand-in
+        def __init__(self, b): self.request_body = b; self.query_params = {}; self.headers = {}
+
+    class Case:
+        def __init__(self, steps): self.steps = steps
+
+    one_user = Case([P({"Email": "a@x.com", "generatedemailAddress": "a@x.com"}), R(body)])
+    assert "generatedemailAddress1" in rc._remap_member_enroll_email_placeholders("MemberHHonorsEnroll", body, one_user)
+    two_user = Case([P({"Email": "m@x.com", "generatedemailAddress": "o@x.com"}), R(body)])
+    assert rc._remap_member_enroll_email_placeholders("MemberHHonorsEnroll", body, two_user) == body
+    second = Case([P({"Email": "a@x.com", "generatedemailAddress": "a@x.com"}), R(body),
+                   R('{"emailAddress":"${Properties#generatedemailAddress1}"}')])
+    assert rc._remap_member_enroll_email_placeholders("MemberHHonorsEnroll", body, second) == body
+    assert rc._remap_member_enroll_email_placeholders("HHonorsEnroll", body, one_user) == body
 
 
 def test_script_runner_is_the_last_thing_in_this_file():
