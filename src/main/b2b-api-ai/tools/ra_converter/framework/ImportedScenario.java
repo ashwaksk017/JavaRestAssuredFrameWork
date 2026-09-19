@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 15
+// ra_converter-framework-rev: 16
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -16,6 +16,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Enumeration;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Locale;
 import java.util.Map;
@@ -989,9 +990,20 @@ public final class ImportedScenario {
         // and createAccount sends emailDomains: ["${Properties#emailDomain}"].
         // Left alone they kept the pack's random value while the owner email
         // moved here -> 400/503 "Email address domain must match".
-        if (firstNonBlank(row, "Properties.emailDomain", "Properties.emaildomain") != null
-                || firstNonBlank(ctx, "Properties.emailDomain", "Properties.emaildomain") != null) {
+        String savedEmailDomain = firstNonBlank(row, "Properties.emailDomain",
+                "Properties.EmailDomain", "Properties.emaildomain");
+        if (savedEmailDomain == null || savedEmailDomain.isEmpty()) {
+            // not in the row (a generator pack may still have put one in ctx)
+            if (firstNonBlank(ctx, "Properties.emailDomain", "Properties.emaildomain",
+                    "Properties.EmailDomain") != null) {
+                CtxFields.putBothCases(ctx, "Properties", "emailDomain", domain);
+            }
+        } else if (sameDomainOrLabel(normalizeDomain(savedEmailDomain), normalizeDomain(csvDomain))) {
             CtxFields.putBothCases(ctx, "Properties", "emailDomain", domain);
+        } else {
+            // the amex rows keep EmailDomain = sa.hilton.com, a literal on a
+            // domain that is not the identity: the author's, kept as saved
+            CtxFields.putBothCases(ctx, "Properties", "emailDomain", savedEmailDomain);
         }
         String savedSite = firstNonBlank(row, "Properties.Website", "Properties.website");
         if (savedSite != null && !savedSite.isEmpty()
@@ -1017,9 +1029,96 @@ public final class ImportedScenario {
         }
         regenNumberedDomains(ctx, row);
         bindEmailsToSavedDomains(ctx, row);
+        regenRowShapedIdentity(ctx, row, domain, csvDomain);
         CtxFields.putBothCases(ctx, "Properties", "hhonorsNumber", hhon);
         applyCsvRandomDomains(ctx, row);
         restoreAuthorLiteralEmail(ctx, row);
+    }
+
+    /** Keys the named regeneration above already decided; the generic pass leaves them. */
+    private static final Set<String> NAMED_IDENTITY_KEYS = Set.of(
+            "email", "emailaddress", "generatedemail", "generatedemailaddress",
+            "generatedemailaddress1", "generatedemailaddress2", "generatedemailaddress3",
+            "generatedemailaddress_1", "generatedemailaddress_2", "generatedemailaddress_3",
+            "emailmember", "guestmemberemail", "email1", "email2", "email3",
+            "email_1", "email_2", "email_3", "hardcodedemail", "updatedemail",
+            "updatedmailaddress", "phone", "phonenumber", "hhonorsnumber");
+
+    /**
+     * Every OTHER email- or phone-shaped saved Properties value follows what
+     * the row says ReadyAPI's DataGen did with it (coupling scan over 697
+     * rows: updateemail 51, generateEmail 37, employeeEmail 9,
+     * updateEmployeeEmail 5, guestMemberEmail1 4; Phone2 95, newPhone 15,
+     * updatedPhone 6, Phone_1..3, phoneNumber1 -- all Groovy-set per run):
+     * <ul>
+     *   <li>saved on the identity domain -> fresh local part on the
+     *       regenerated identity domain (left alone, it pointed at the OLD
+     *       domain and the API answered 503 "must match an allowed domain",
+     *       or re-sent the same address every run);</li>
+     *   <li>saved on another saved slot (Domain2, Hardcodeddomain) ->
+     *       already moved by bindEmailsToSavedDomains, untouched here;</li>
+     *   <li>saved on a foreign literal domain (sa.hilton.com/) -> the
+     *       author's domain, fresh local part;</li>
+     *   <li>digits-only phone -> a fresh number of the same length, except
+     *       names that say "exist" (existPhoneNo is an author literal).</li>
+     * </ul>
+     */
+    static void regenRowShapedIdentity(Map<String, String> ctx, Map<String, String> row,
+                                       String domain, String csvDomain) {
+        if (ctx == null || row == null || row.isEmpty()) {
+            return;
+        }
+        Set<String> slotDomains = new HashSet<>();
+        for (String f : BINDABLE_DOMAINS) {
+            String d = normalizeDomain(firstNonBlank(row, "Properties." + f));
+            if (!d.isEmpty()) {
+                slotDomains.add(d);
+            }
+        }
+        Set<String> used = new HashSet<>();
+        for (Map.Entry<String, String> e : ctx.entrySet()) {
+            if (e.getKey() != null && e.getKey().startsWith("Properties.") && e.getValue() != null
+                    && e.getValue().indexOf('@') > 0) {
+                used.add(e.getValue().toLowerCase(Locale.ROOT));
+            }
+        }
+        for (Map.Entry<String, String> e : row.entrySet()) {
+            String key = e.getKey();
+            String saved = e.getValue() == null ? "" : e.getValue().trim();
+            if (key == null || !key.startsWith("Properties.") || saved.isEmpty()) {
+                continue;
+            }
+            String field = key.substring("Properties.".length());
+            String fl = field.toLowerCase(Locale.ROOT);
+            if (NAMED_IDENTITY_KEYS.contains(fl)) {
+                continue;
+            }
+            int at = saved.lastIndexOf('@');
+            if (at > 0 && at < saved.length() - 1 && fl.contains("mail")) {
+                String savedDom = saved.substring(at + 1);
+                String nd = normalizeDomain(savedDom);
+                String target;
+                if (sameDomainOrLabel(nd, normalizeDomain(csvDomain))) {
+                    target = domain;
+                } else if (slotDomains.contains(nd)) {
+                    continue;
+                } else {
+                    target = savedDom;          // author's literal domain, verbatim
+                }
+                String fresh = FakeData.username() + "@" + target;
+                for (int i = 0; i < 8 && used.contains(fresh.toLowerCase(Locale.ROOT)); i++) {
+                    fresh = FakeData.username() + "@" + target;
+                }
+                used.add(fresh.toLowerCase(Locale.ROOT));
+                CtxFields.putBothCases(ctx, "Properties", field, fresh);
+                continue;
+            }
+            if (fl.contains("phone") && !fl.contains("exist") && saved.length() >= 9
+                    && saved.chars().allMatch(Character::isDigit)) {
+                CtxFields.putBothCases(ctx, "Properties", field,
+                        FakeData.faker().numerify("#".repeat(saved.length())));
+            }
+        }
     }
 
     /**

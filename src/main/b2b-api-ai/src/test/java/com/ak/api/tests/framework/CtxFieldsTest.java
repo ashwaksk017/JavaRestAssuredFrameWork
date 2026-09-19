@@ -701,4 +701,42 @@ public class CtxFieldsTest {
         Assert.assertEquals(ctx.get("Properties.sfdcContactID"), "12345");
         Assert.assertEquals(ctx.get("Properties.sfdcID").length(), 18);
     }
+    @Test(groups = {"unit"})
+    @Story("every other email-/phone-shaped saved value follows what the row says")
+    @Description("updateemail (51 rows) / generateEmail (37) on the identity domain move with it; amex EmailDomain/updateemail on sa.hilton.com keep the author's domain; Phone2 (95 rows) is fresh; existPhoneNo is kept.")
+    public void rowShapedIdentity_followsWhatTheRowSays() {
+        Map<String, String> ctx = new HashMap<>();
+        ctx.put("Properties.Hardcodeddomain", "laafd.com");
+        Map<String, String> row = new HashMap<>();
+        row.put("Properties.Domain", "ernestpackaging.com");
+        row.put("Properties.Email", "abc@ernestpackaging.com");
+        row.put("Properties.updateemail", "jdqcd@ernestpackaging.com");
+        row.put("Properties.generateEmail", "omdveq@ernestpackaging.com");
+        row.put("Properties.Phone2", "126715693");
+        row.put("Properties.newPhone", "1234567890");
+        row.put("Properties.existPhoneNo", "555000111");
+        row.put("expected_http_request_200_createAccount_status_code", "200");
+        ImportedScenario.regenRandomProperties(ctx, row);
+        String domain = ctx.get("Properties.Domain");
+        Assert.assertTrue(ctx.get("Properties.updateemail").endsWith("@" + domain), ctx.get("Properties.updateemail"));
+        Assert.assertTrue(ctx.get("Properties.generateEmail").endsWith("@" + domain), ctx.get("Properties.generateEmail"));
+        Assert.assertNotEquals(ctx.get("Properties.updateemail"), ctx.get("Properties.generateEmail"));
+        Assert.assertNotEquals(ctx.get("Properties.updateemail"), ctx.get("Properties.Email"));
+        String p2 = ctx.get("Properties.Phone2");
+        Assert.assertEquals(p2.length(), 9);
+        Assert.assertNotEquals(p2, "126715693");
+        Assert.assertEquals(ctx.get("Properties.newPhone").length(), 10);
+        Assert.assertNull(ctx.get("Properties.existPhoneNo"), "author literal: regen leaves it to the row seed");
+
+        Map<String, String> amex = new HashMap<>();
+        amex.put("Properties.Domain", "www.amexoneclickuser234.com");
+        amex.put("Properties.Email", "4i586@www.amexoneclickuser234.com");
+        amex.put("Properties.EmailDomain", "sa.hilton.com");
+        amex.put("Properties.updateemail", "rfful@sa.hilton.com/");
+        Map<String, String> ctx2 = new HashMap<>();
+        ImportedScenario.regenRandomProperties(ctx2, amex);
+        Assert.assertEquals(ctx2.get("Properties.EmailDomain"), "sa.hilton.com", "a literal on another domain is the author's");
+        Assert.assertTrue(ctx2.get("Properties.updateemail").endsWith("@sa.hilton.com/"), ctx2.get("Properties.updateemail"));
+        Assert.assertNotEquals(ctx2.get("Properties.updateemail"), "rfful@sa.hilton.com/", "fresh local part");
+    }
 }
