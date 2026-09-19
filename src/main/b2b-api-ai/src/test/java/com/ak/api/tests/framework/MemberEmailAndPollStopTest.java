@@ -81,7 +81,10 @@ public class MemberEmailAndPollStopTest {
         Map<String, String> ctx3 = new HashMap<>();
         ImportedScenario.regenRandomProperties(ctx3, notEmails);
         Assert.assertEquals(ctx3.get("Properties.Email"), "linkedin.com");
-        Assert.assertEquals(ctx3.get("Properties.generatedemailAddress"), "x@foliera.com");
+        // saved on a different domain than the literal -> regenerated (an
+        // address re-sent verbatim was a 409 on the owner enroll every run)
+        String gen3 = ctx3.get("Properties.generatedemailAddress");
+        Assert.assertTrue(gen3.contains("@") && !gen3.equals("x@foliera.com"), gen3);
     }
 
     @Test(groups = {"unit"})

@@ -649,7 +649,9 @@ public class CtxFieldsTest {
         row.put("Properties.generatedemailAddress_1", "saved1@x.com");
         ImportedScenario.regenRandomProperties(ctx, row);
         Assert.assertEquals(ctx.get("Properties.Email"), "blackstone.com");
-        Assert.assertEquals(ctx.get("Properties.generatedemailAddress"), "umzgxl@blackstone.com");
+        String gen = ctx.get("Properties.generatedemailAddress");
+        Assert.assertTrue(gen.endsWith("@blackstone.com"), "author's domain: " + gen);
+        Assert.assertNotEquals(gen, "umzgxl@blackstone.com", "fresh local part, or the owner enroll is a 409 every run");
         Assert.assertEquals(ctx.get("Properties.websiteDomain"), "www.blackstone.com");
         Assert.assertNotEquals(ctx.get("Properties.Username"), "", "the rest of the pack is still fresh");
         Assert.assertEquals(ctx.get("Properties.username_1"), ctx.get("Properties.username1"));
@@ -659,5 +661,44 @@ public class CtxFieldsTest {
         Assert.assertEquals(sf.length(), 18, sf);
         Assert.assertTrue(sf.chars().allMatch(Character::isLetterOrDigit), sf);
         Assert.assertEquals(CtxFields.valueFor("salesforceLeadId").length(), 18);
+    }
+    @Test(groups = {"unit"})
+    @Story("Email1..3 / Email_1..3 / username_3 saved literals follow the regenerated identity")
+    @Description("B2B-3503: no Properties.Email, Email1..3 on the saved Domain -> Domain fell to the frozen one while Email1 stayed (503). B2B-7505: username_3 literal -> 504 every run.")
+    public void numberedEmailSlots_followIdentity() {
+        Map<String, String> ctx = new HashMap<>();
+        ctx.put("Properties.Hardcodeddomain", "laafd.com");
+        Map<String, String> row = new HashMap<>();
+        row.put("Properties.Domain", "oenpnooe.org");
+        row.put("Properties.Email1", "zfcdpbyg@oenpnooe.org");
+        row.put("Properties.Email2", "eosdgdws@oenpnooe.org");
+        row.put("Properties.username_3", "lkfjar");
+        row.put("Properties.Email_1", "1i2v2@oenpnooe.org");
+        ImportedScenario.regenRandomProperties(ctx, row);
+        String domain = ctx.get("Properties.Domain");
+        Assert.assertNotEquals(domain, "laafd.com", "Email1 on the saved Domain means the row used its own domain");
+        Assert.assertTrue(ctx.get("Properties.Email1").endsWith("@" + domain), ctx.get("Properties.Email1"));
+        Assert.assertTrue(ctx.get("Properties.Email2").endsWith("@" + domain), ctx.get("Properties.Email2"));
+        Assert.assertTrue(ctx.get("Properties.Email_1").endsWith("@" + domain), ctx.get("Properties.Email_1"));
+        Assert.assertNotEquals(ctx.get("Properties.Email1"), ctx.get("Properties.Email2"));
+        String u3 = ctx.get("Properties.username_3");
+        Assert.assertTrue(u3 != null && !u3.isEmpty() && !u3.equals("lkfjar"), "username_3 regenerated: " + u3);
+        Assert.assertNotEquals(u3, ctx.get("Properties.username_1"));
+        Assert.assertNotEquals(u3, ctx.get("Properties.Username2"));
+    }
+
+    @Test(groups = {"unit"})
+    @Story("an invalid Salesforce-id literal in the row is the author's and survives generation")
+    @Description("B2B_3778 value_number / numberandspecialcharacters / morethan_20chars expect Fault 999.")
+    public void invalidSalesforceIdLiteral_wins() {
+        Map<String, String> ctx = new HashMap<>();
+        CtxFields.generate(ctx, "Properties", "sfdcContactID", "sfdcID");
+        Assert.assertEquals(ctx.get("Properties.sfdcContactID").length(), 18);
+        Map<String, String> row = new HashMap<>();
+        row.put("Properties.sfdcContactID", "12345");
+        row.put("Properties.sfdcID", "AskjBT4C2dF0DmbNh");        // 17 alnum: plausible, generated wins
+        CtxFields.seedFromRow(ctx, row, "Properties.");
+        Assert.assertEquals(ctx.get("Properties.sfdcContactID"), "12345");
+        Assert.assertEquals(ctx.get("Properties.sfdcID").length(), 18);
     }
 }

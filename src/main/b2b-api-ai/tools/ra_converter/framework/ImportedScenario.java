@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 14
+// ra_converter-framework-rev: 15
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -904,6 +904,7 @@ public final class ImportedScenario {
         // entropy would have fixed. Mirrors the email block, where
         // generatedemailAddress2 has always been distinct.
         String uname2 = distinctUsername(ownerUname, memberUname, extraUname);
+        String uname3 = distinctUsername(ownerUname, memberUname, extraUname, uname2);
         String ownerEmail = FakeData.username() + "@" + domain;
         String memberEmail = distinctEmail(domain, ownerEmail);
         String email2 = distinctEmail(domain, ownerEmail, memberEmail);
@@ -916,6 +917,7 @@ public final class ImportedScenario {
         // usernameM IS the member under another name -- alias on purpose.
         CtxFields.putBothCases(ctx, "Properties", "usernameM", memberUname);
         CtxFields.putBothCases(ctx, "Properties", "Username2", uname2);
+        CtxFields.putBothCases(ctx, "Properties", "username3", uname3);
         CtxFields.putBothCases(ctx, "Properties", "username1", extraUname);
 
         // generatedemailAddress is a DIFFERENT person from Email in most
@@ -945,6 +947,7 @@ public final class ImportedScenario {
         // when the row names them, so ctx does not grow for everyone else.
         String[][] underscored = {
             {"username1", "username_1"}, {"Username2", "Username_2"},
+            {"username3", "username_3"},
             {"generatedemailAddress1", "generatedemailAddress_1"},
             {"generatedemailAddress2", "generatedemailAddress_2"},
             {"generatedemailAddress3", "generatedemailAddress_3"},
@@ -957,6 +960,24 @@ public final class ImportedScenario {
             }
         }
 
+        // Numbered owner/member emails the suite keeps as saved literals
+        // (B2B-3503 Email1..3, B2B-7505 Email_1..3). Saved on the identity
+        // domain -> fresh addresses on the regenerated one, distinct from
+        // each other; saved on another slot -> bindEmailsToSavedDomains.
+        String[] usedEmails = {ownerEmail, memberEmail, email2, email3, generatedEmailAddress};
+        for (String k : new String[] {"Email1", "Email2", "Email3", "Email_1", "Email_2", "Email_3"}) {
+            String savedN = firstNonBlank(row, "Properties." + k);
+            int atN = savedN == null ? -1 : savedN.lastIndexOf('@');
+            if (atN <= 0) {
+                continue;
+            }
+            if (sameDomainOrLabel(normalizeDomain(savedN.substring(atN + 1)), normalizeDomain(csvDomain))) {
+                String fresh = distinctEmail(domain, usedEmails);
+                usedEmails = java.util.Arrays.copyOf(usedEmails, usedEmails.length + 1);
+                usedEmails[usedEmails.length - 1] = fresh;
+                CtxFields.putBothCases(ctx, "Properties", k, fresh);
+            }
+        }
         CtxFields.putBothCases(ctx, "Properties", "Phone", phone);
         CtxFields.putBothCases(ctx, "Properties", "phoneNumber", phone);
         CtxFields.putBothCases(ctx, "Properties", "Domain", domain);
@@ -1034,11 +1055,27 @@ public final class ImportedScenario {
                 || !looksLikeDomain(saved)) {
             return;   // an address, or a manual-suite marker like <<email>>
         }
-        for (String k : new String[] {"Email", "generatedemailAddress", "websiteDomain"}) {
+        for (String k : new String[] {"Email", "websiteDomain"}) {
             String v = firstNonBlank(row, "Properties." + k, "Properties." + CtxFields.flipFirst(k));
             if (v != null && !v.isEmpty()) {
                 CtxFields.putBothCases(ctx, "Properties", k, v);
             }
+        }
+        // The saved generatedemailAddress (umzgxl@blackstone.com) is
+        // Username + "@" + that literal domain; re-sending it verbatim made
+        // the owner enroll a 409 on every run after the first (13 rows).
+        // Fresh local part, the author's domain.
+        String savedGen = firstNonBlank(row, "Properties.generatedemailAddress",
+                "Properties.GeneratedemailAddress");
+        int genAt = savedGen == null ? -1 : savedGen.lastIndexOf('@');
+        if (genAt > 0 && normalizeDomain(savedGen.substring(genAt + 1))
+                .equalsIgnoreCase(normalizeDomain(saved))) {
+            String local = firstNonBlank(ctx, "Properties.Username", "Properties.username");
+            if (local == null || local.isEmpty()) {
+                local = FakeData.username();
+            }
+            CtxFields.putBothCases(ctx, "Properties", "generatedemailAddress",
+                    local + "@" + normalizeDomain(saved));
         }
     }
 
@@ -1163,6 +1200,8 @@ public final class ImportedScenario {
     private static final String[] BINDABLE_EMAILS = {
         "Email", "EmailAddress", "GeneratedEmail", "generatedemailAddress",
         "generatedemailAddress1", "generatedemailAddress2", "generatedemailAddress3",
+        "generatedemailAddress_1", "generatedemailAddress_2", "generatedemailAddress_3",
+        "Email1", "Email2", "Email3", "Email_1", "Email_2", "Email_3",
         "EmailMember", "guestMemberEmail",
     };
 
@@ -1293,7 +1332,9 @@ public final class ImportedScenario {
             return false;
         }
         for (String k : new String[] {"Properties.Email", "Properties.generatedemailAddress",
-                "Properties.EmailAddress", "Properties.GeneratedEmail"}) {
+                "Properties.EmailAddress", "Properties.GeneratedEmail",
+                "Properties.Email1", "Properties.Email2", "Properties.Email3",
+                "Properties.Email_1", "Properties.Email_2", "Properties.Email_3"}) {
             String v = row.get(k);
             int at = v == null ? -1 : v.lastIndexOf('@');
             if (at > 0 && sameDomainOrLabel(v.substring(at + 1).trim(), domain)) {

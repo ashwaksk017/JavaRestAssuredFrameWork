@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 7
+// ra_converter-framework-rev: 8
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -243,7 +243,7 @@ public final class CtxFields {
                 if (f == null || f.isEmpty()) continue;
                 String key = f.startsWith(keyPrefix) ? f : keyPrefix + f;
                 if (isCapturedSalesforceSessionKey(key)) continue;
-                ImportedScenario.putIfNonEmpty(ctx, key, ImportedScenario.testData(row, key));
+                seedOne(ctx, key, ImportedScenario.testData(row, key));
             }
             return;
         }
@@ -258,7 +258,7 @@ public final class CtxFields {
         }
         for (String key : keys) {
             if (isCapturedSalesforceSessionKey(key)) continue;
-            ImportedScenario.putIfNonEmpty(ctx, key, ImportedScenario.testData(row, key));
+            seedOne(ctx, key, ImportedScenario.testData(row, key));
         }
         // Underscore-separated CSV columns for the same prefix.
         //
@@ -422,6 +422,24 @@ public final class CtxFields {
         if (domains.isEmpty()) return null;
         if (domains.size() == 1) return domains.get(0);
         return domains.get(rnd.nextInt(domains.size() - 1));
+    }
+
+    /**
+     * Seed one key: the generated value normally wins (putIfAbsent), except
+     * for a Salesforce-id field whose saved value is NOT a plausible id
+     * (12345, abc$%, 25 chars): that is the author's deliberately invalid
+     * literal for a negative test (B2B_3778 value_* rows), and it wins.
+     */
+    private static void seedOne(Map<String, String> ctx, String key, String value) {
+        if (value == null || value.isEmpty()) return;
+        String field = key.contains(".") ? key.substring(key.lastIndexOf('.') + 1) : key;
+        String p = field.toLowerCase();
+        boolean sfId = (p.contains("sfdc") || p.contains("salesforce")) && p.endsWith("id");
+        if (sfId && !value.matches("[A-Za-z0-9]{15,18}")) {
+            ctx.put(key, value);
+            return;
+        }
+        ImportedScenario.putIfNonEmpty(ctx, key, value);
     }
 
     static boolean isDomainField(String field) {
