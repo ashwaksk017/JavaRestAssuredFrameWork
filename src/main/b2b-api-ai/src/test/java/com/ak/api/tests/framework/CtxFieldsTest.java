@@ -655,7 +655,6 @@ public class CtxFieldsTest {
         Assert.assertEquals(ctx.get("Properties.websiteDomain"), "www.blackstone.com");
         Assert.assertNotEquals(ctx.get("Properties.Username"), "", "the rest of the pack is still fresh");
         Assert.assertEquals(ctx.get("Properties.username_1"), ctx.get("Properties.username1"));
-        Assert.assertEquals(ctx.get("Properties.generatedemailAddress_1"), ctx.get("Properties.generatedemailAddress1"));
 
         String sf = CtxFields.valueFor("sfdcContactID");
         Assert.assertEquals(sf.length(), 18, sf);
@@ -779,5 +778,41 @@ public class CtxFieldsTest {
         Assert.assertEquals(ctx2.get("Properties.Domain"), "www.amexoneclickuser234.com");
         Assert.assertTrue(ctx2.get("Properties.Email").endsWith("@www.amexoneclickuser234.com"), ctx2.get("Properties.Email"));
         Assert.assertNotEquals(ctx2.get("Properties.Email"), "4i586@www.amexoneclickuser234.com", "fresh local part");
+    }
+    @Test(groups = {"unit"})
+    @Story("Domain_1 / websitedomain_1 / generatedemailAddress_1 move together; literal-Email rows keep the owner's own domain")
+    @Description("B2B-7505: createAccount sent ownerEmailAddress on the identity domain with emailDomains [Domain_1] (503). B2B-5264: owner on the saved website domain, not the frozen one.")
+    public void underscoreNumberedSlots_moveTogether() {
+        Map<String, String> ctx = new HashMap<>();
+        ctx.put("Properties.Hardcodeddomain", "laafd.com");
+        Map<String, String> row = new HashMap<>();
+        row.put("Properties.Domain", "plgawaps.org");
+        row.put("Properties.Email", "abc@plgawaps.org");
+        row.put("Properties.Domain_1", "oobveifd.org");
+        row.put("Properties.websitedomain_1", "www.oobveifd.org");
+        row.put("Properties.generatedemailAddress_1", "raboum@oobveifd.org");
+        row.put("Properties.Email_1", "1i2v2@oobveifd.org");
+        row.put("Properties.username_1", "fvzfuc");
+        ImportedScenario.regenRandomProperties(ctx, row);
+        String d1 = ctx.get("Properties.Domain_1");
+        Assert.assertNotNull(d1);
+        Assert.assertNotEquals(d1, "oobveifd.org", "Domain_1 is a numbered slot: regenerated");
+        Assert.assertNotEquals(d1, ctx.get("Properties.Domain"));
+        Assert.assertEquals(ctx.get("Properties.websitedomain_1"), "www." + d1);
+        Assert.assertTrue(ctx.get("Properties.generatedemailAddress_1").endsWith("@" + d1), ctx.get("Properties.generatedemailAddress_1"));
+        Assert.assertTrue(ctx.get("Properties.Email_1").endsWith("@" + d1), ctx.get("Properties.Email_1"));
+        Assert.assertNotEquals(ctx.get("Properties.username_1"), "fvzfuc");
+
+        Map<String, String> social = new HashMap<>();
+        social.put("Properties.Domain", "jqnbtnbc.org");
+        social.put("Properties.Email", "linkedin.com");
+        social.put("Properties.generatedemailAddress", "yvwlsf@test.highbook.com");
+        social.put("Properties.websiteDomain", "test.highbook.com");
+        Map<String, String> ctx2 = new HashMap<>();
+        ctx2.put("Properties.Hardcodeddomain", "laafd.com");
+        ImportedScenario.regenRandomProperties(ctx2, social);
+        Assert.assertTrue(ctx2.get("Properties.generatedemailAddress").endsWith("@test.highbook.com"), ctx2.get("Properties.generatedemailAddress"));
+        Assert.assertNotEquals(ctx2.get("Properties.generatedemailAddress"), "yvwlsf@test.highbook.com");
+        Assert.assertEquals(ctx2.get("Properties.websiteDomain"), "test.highbook.com");
     }
 }

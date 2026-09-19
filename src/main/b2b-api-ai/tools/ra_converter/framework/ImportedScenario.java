@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 17
+// ra_converter-framework-rev: 18
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -970,9 +970,6 @@ public final class ImportedScenario {
         String[][] underscored = {
             {"username1", "username_1"}, {"Username2", "Username_2"},
             {"username3", "username_3"},
-            {"generatedemailAddress1", "generatedemailAddress_1"},
-            {"generatedemailAddress2", "generatedemailAddress_2"},
-            {"generatedemailAddress3", "generatedemailAddress_3"},
         };
         for (String[] pair : underscored) {
             if (row != null && (row.containsKey("Properties." + pair[1])
@@ -1185,17 +1182,21 @@ public final class ImportedScenario {
         // Username + "@" + that literal domain; re-sending it verbatim made
         // the owner enroll a 409 on every run after the first (13 rows).
         // Fresh local part, the author's domain.
+        // B2B-5264: Email = linkedin.com, generatedemailAddress =
+        // yvwlsf@test.highbook.com, websiteDomain = test.highbook.com -- the
+        // owner sits on the WEBSITE domain, a third one. Whatever domain the
+        // author put the saved address on is the one the API is meant to
+        // see beside that websiteDomain; only the local part is fresh.
         String savedGen = firstNonBlank(row, "Properties.generatedemailAddress",
                 "Properties.GeneratedemailAddress");
         int genAt = savedGen == null ? -1 : savedGen.lastIndexOf('@');
-        if (genAt > 0 && normalizeDomain(savedGen.substring(genAt + 1))
-                .equalsIgnoreCase(normalizeDomain(saved))) {
+        if (genAt > 0 && genAt < savedGen.length() - 1) {
             String local = firstNonBlank(ctx, "Properties.Username", "Properties.username");
             if (local == null || local.isEmpty()) {
                 local = FakeData.username();
             }
             CtxFields.putBothCases(ctx, "Properties", "generatedemailAddress",
-                    local + "@" + normalizeDomain(saved));
+                    local + "@" + savedGen.substring(genAt + 1).trim());
         }
     }
 
@@ -1291,19 +1292,32 @@ public final class ImportedScenario {
             return;
         }
         for (int n = 1; n <= 9; n++) {
-            String key = "Properties.Domain" + n;
-            String seeded = firstNonBlank(ctx, key, "Properties.domain" + n);
+            // both spellings: Domain2 (most cases) and Domain_1 (B2B-7505 family)
+            for (String sep : new String[] {"", "_"}) {
+                regenNumberedDomain(ctx, row, n, sep);
+            }
+        }
+    }
+
+    private static void regenNumberedDomain(Map<String, String> ctx, Map<String, String> row,
+                                            int n, String sep) {
+        {
+            String key = "Properties.Domain" + sep + n;
+            String seeded = firstNonBlank(ctx, key, "Properties.domain" + sep + n);
+            if (seeded == null || seeded.isEmpty()) {
+                seeded = firstNonBlank(row, key, "Properties.domain" + sep + n);   // row not yet seeded into ctx
+            }
             if (seeded == null || seeded.isEmpty() || isFreemailDomain(seeded)) {
-                continue;
+                return;
             }
             // The row's saved DomainN is the shape to preserve; the ctx value
             // may already be a word the translated generator pack put there.
-            String savedN = firstNonBlank(row, key, "Properties.domain" + n);
+            String savedN = firstNonBlank(row, key, "Properties.domain" + sep + n);
             String shape = savedN != null && !savedN.isEmpty() ? savedN : seeded;
             String fresh = freshDomainLike(normalizeDomain(shape));
-            CtxFields.putBothCases(ctx, "Properties", "Domain" + n, fresh);
-            for (String siteKey : new String[] {"Website", "Website" + n,
-                    "websitedomain" + n, "websiteDomain" + n}) {
+            CtxFields.putBothCases(ctx, "Properties", "Domain" + sep + n, fresh);
+            for (String siteKey : new String[] {"Website", "Website" + sep + n,
+                    "websitedomain" + sep + n, "websiteDomain" + sep + n}) {
                 String site = firstNonBlank(ctx, "Properties." + siteKey);
                 String savedSiteN = firstNonBlank(row, "Properties." + siteKey);
                 boolean follows = (site != null && site.equalsIgnoreCase("www." + seeded))
@@ -1328,6 +1342,8 @@ public final class ImportedScenario {
     private static final String[] BINDABLE_DOMAINS = {
         "Hardcodeddomain", "Domain2", "Domain1", "Domain3", "Domain4",
         "Domain5", "Domain6", "Domain7", "Domain8", "Domain9",
+        "Domain_1", "Domain_2", "Domain_3", "Domain_4", "Domain_5",
+        "Domain_6", "Domain_7", "Domain_8", "Domain_9",
     };
 
     /**
