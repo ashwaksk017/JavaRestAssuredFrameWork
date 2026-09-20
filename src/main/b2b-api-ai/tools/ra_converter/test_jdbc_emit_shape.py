@@ -44,6 +44,11 @@ SCRIPTS = {
     "otp_multi": NEW_INSTANCE
                  + "\nsql.eachRow(\"SELECT email_otp, totp_code FROM account_member\")"
                    " { row -> emailOtp = row.email_otp; totpCode = row.totp_code }",
+    # A property code column: alphanumeric, never zero-padded. The pad
+    # once matched it on the word "code" (prop_code -> 6-digit string).
+    "propcode_each": NEW_INSTANCE
+                     + "\nsql.eachRow(\"SELECT prop_code FROM segment.account_member WHERE guest_id=1\")"
+                       " { row -> propCode = row.prop_code.toString() }",
     "plain_each": NEW_INSTANCE
                   + "\nsql.eachRow(\"SELECT status FROM account\") { row -> st = row.status }",
     "execute_concat": NEW_INSTANCE
@@ -184,3 +189,16 @@ if __name__ == "__main__":
     if failed:
         sys.exit(1)
     print(f"{len(tests)} passed")
+
+
+def test_property_code_column_is_not_zero_padded():
+    """prop_code is a 5-char alphanumeric property code; the OTP zero-pad
+    (email_otp / totp_code) must not touch it, or a numeric-looking value
+    becomes '0XXXXX' and fails the propCode regex."""
+    out = _emit(SCRIPTS["propcode_each"])
+    assert 'row.get("prop_code")' in out or '"prop_code"' in out, out
+    assert "OTP pad" not in out, out
+    assert "%06d" not in out, out
+    otp = _emit(SCRIPTS["otp_multi"])          # the multi-column path is the one that pads
+    assert "OTP pad" in otp and "%06d" in otp, otp
+

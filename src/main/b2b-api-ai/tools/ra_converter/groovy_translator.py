@@ -3379,9 +3379,19 @@ def translate(script: str, response_var_by_step: dict[str, str],
                 # don't accidentally pad legitimate ids that happen to
                 # be numeric but do NOT have leading zeros in the
                 # original DB representation.
-                _is_code_like = any(
-                    kw in outer.lower() or kw in field.lower()
-                    for kw in ("otp", "pin", "code", "totp"))
+                # "code" alone also matched prop_code / brand_code /
+                # rate_code -- alphanumeric property codes, never
+                # zero-padded numbers. A 5-char property code that the
+                # driver happened to return as a Number would have been
+                # padded to 6 digits and rejected by the propCode regex.
+                _nm = (outer + " " + field).lower()
+                _is_code_like = (
+                    any(kw in _nm for kw in ("otp", "totp", "pin"))
+                    or ("code" in _nm and not any(
+                        x in _nm for x in ("prop", "brand", "product", "rate",
+                                           "room", "zip", "postal", "country",
+                                           "currency", "iata", "airport",
+                                           "source", "record", "record_type"))))
                 if _is_code_like:
                     lines.append(
                         f'                        if (__v_{outer} != null) {{')
