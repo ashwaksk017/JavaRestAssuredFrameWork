@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 18
+// ra_converter-framework-rev: 19
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -1050,14 +1050,74 @@ public final class ImportedScenario {
         regenRowShapedIdentity(ctx, row, domain, csvDomain);
         CtxFields.putBothCases(ctx, "Properties", "hhonorsNumber", hhon);
         applyCsvRandomDomains(ctx, row);
+        alignPackEmailsToIdentity(ctx, row, domain, frozen);
         restoreAuthorLiteralEmail(ctx, row);
+    }
+
+    /**
+     * The translated DataGen pack generates its extra email fields
+     * (generatedemailAddress_2, Email4, employeeEmail2 ...) on ONE random
+     * domain before regen runs; regen then moves the identity to a fresh
+     * domain and those emails stay behind (B2B-3233: the member enrolled on
+     * the random domain, add-member 503 "must match an allowed domain").
+     * ReadyAPI builds every pack email on generatedDomain, so a pack email
+     * that is on none of the domains the row or regen own is moved onto
+     * the identity domain, local part kept. Row-saved values and the keys
+     * regen writes are not pack emails and are left alone.
+     */
+    static void alignPackEmailsToIdentity(Map<String, String> ctx, Map<String, String> row,
+                                          String domain, String frozen) {
+        if (ctx == null || domain == null || domain.isEmpty()) {
+            return;
+        }
+        String identity = normalizeDomain(domain);
+        Set<String> keep = new HashSet<>();
+        keep.add(identity);
+        if (frozen != null && !frozen.isEmpty()) {
+            keep.add(normalizeDomain(frozen));
+        }
+        for (String f : BINDABLE_DOMAINS) {
+            String d = normalizeDomain(firstNonBlank(row, "Properties." + f));
+            if (!d.isEmpty()) {
+                keep.add(d);
+            }
+            d = normalizeDomain(firstNonBlank(ctx, "Properties." + f));
+            if (!d.isEmpty()) {
+                keep.add(d);
+            }
+        }
+        for (String key : new java.util.ArrayList<>(ctx.keySet())) {
+            if (key == null || !key.startsWith("Properties.")) {
+                continue;
+            }
+            String field = key.substring("Properties.".length());
+            String fl = field.toLowerCase(Locale.ROOT);
+            if (NAMED_IDENTITY_KEYS.contains(fl) || !fl.contains("mail")) {
+                continue;
+            }
+            if (row != null && (row.containsKey(key)
+                    || row.containsKey("Properties." + CtxFields.flipFirst(field)))) {
+                continue;   // a saved value: regenRowShapedIdentity's business
+            }
+            String v = ctx.get(key);
+            int at = v == null ? -1 : v.lastIndexOf('@');
+            if (at <= 0 || at == v.length() - 1) {
+                continue;
+            }
+            String d = normalizeDomain(v.substring(at + 1));
+            if (d.isEmpty() || keep.contains(d) || isFreemailDomain(d)) {
+                continue;
+            }
+            CtxFields.putBothCases(ctx, "Properties", field, v.substring(0, at) + "@" + domain);
+        }
     }
 
     /** Keys the named regeneration above already decided; the generic pass leaves them. */
     private static final Set<String> NAMED_IDENTITY_KEYS = Set.of(
             "email", "emailaddress", "generatedemail", "generatedemailaddress",
             "generatedemailaddress1", "generatedemailaddress2", "generatedemailaddress3",
-            "generatedemailaddress_1", "generatedemailaddress_2", "generatedemailaddress_3",
+            // generatedemailAddress_N is no longer written by regen (it lives on
+            // Domain_N when saved, and is a pack email when not): not named here
             "emailmember", "guestmemberemail", "email1", "email2", "email3",
             "email_1", "email_2", "email_3", "hardcodedemail", "updatedemail",
             "updatedmailaddress", "phone", "phonenumber", "hhonorsnumber");

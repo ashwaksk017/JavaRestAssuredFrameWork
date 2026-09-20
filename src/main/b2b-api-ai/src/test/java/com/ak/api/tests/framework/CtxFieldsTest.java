@@ -815,4 +815,30 @@ public class CtxFieldsTest {
         Assert.assertNotEquals(ctx2.get("Properties.generatedemailAddress"), "yvwlsf@test.highbook.com");
         Assert.assertEquals(ctx2.get("Properties.websiteDomain"), "test.highbook.com");
     }
+    @Test(groups = {"unit"})
+    @Story("pack-generated emails the row never saved follow the identity domain")
+    @Description("B2B-3233: generatedemailAddress_2 came from the DataGen pack on a random domain; the member enrolled there and add-member got 503.")
+    public void packEmails_moveToIdentityDomain() {
+        Map<String, String> ctx = new HashMap<>();
+        ctx.put("Properties.Hardcodeddomain", "laafd.com");
+        CtxFields.generate(ctx, "Properties", "generatedemailAddress_2", "employeeEmail2", "Email");
+        String packDomain = ctx.get("Properties.Email").substring(ctx.get("Properties.Email").indexOf('@') + 1);
+        ctx.put("Properties.hardcodedemail", "keep@laafd.com");
+        Map<String, String> row = new HashMap<>();
+        row.put("Properties.Domain", "rteet.com");
+        row.put("Properties.Email", "ymu7s@rteet.com");
+        row.put("Properties.generatedemailAddress", "eodxiiyll@rteet.com");
+        row.put("Properties.Domain2", "other.com");
+        ctx.put("Properties.onDomain2", "x@other.com");
+        ctx.put("Properties.freeEmail", "y@gmail.com");
+        ImportedScenario.regenRandomProperties(ctx, row);
+        String domain = ctx.get("Properties.Domain");
+        Assert.assertNotEquals(domain, packDomain);
+        Assert.assertTrue(ctx.get("Properties.generatedemailAddress_2").endsWith("@" + domain), ctx.get("Properties.generatedemailAddress_2"));
+        Assert.assertTrue(ctx.get("Properties.employeeEmail2").endsWith("@" + domain), ctx.get("Properties.employeeEmail2"));
+        Assert.assertNotEquals(ctx.get("Properties.generatedemailAddress_2"), ctx.get("Properties.Email"));
+        Assert.assertEquals(ctx.get("Properties.hardcodedemail").substring(ctx.get("Properties.hardcodedemail").indexOf('@')), "@laafd.com", "frozen slot kept");
+        Assert.assertEquals(ctx.get("Properties.onDomain2"), "x@other.com", "saved slot domain kept");
+        Assert.assertEquals(ctx.get("Properties.freeEmail"), "y@gmail.com", "freemail kept");
+    }
 }
