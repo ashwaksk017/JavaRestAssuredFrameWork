@@ -860,4 +860,35 @@ public class CtxFieldsTest {
         Assert.assertEquals(ctx.get("Properties.Websitedomain"), "www." + domain);
         Assert.assertEquals(ctx.get("Properties.EMAIL"), ctx.get("Properties.Email"));
     }
+    @Test(groups = {"unit"})
+    @Story("a pack twin never overwrites the key regen wrote")
+    @Description("Digest 21: the pack's random `websitedomain` was mirrored over regen's `websiteDomain`; 70 new rows.")
+    public void packSpelling_neverOverwritesRegenKey() {
+        Map<String, String> ctx = new HashMap<>();
+        ctx.put("Properties.Hardcodeddomain", "laafd.com");
+        ctx.put("Properties.websitedomain", "randompack.com");     // generator pack, pre-regen
+        Map<String, String> row = new HashMap<>();
+        row.put("Properties.Domain", "wtubacvk.com");
+        row.put("Properties.Email", "abc@wtubacvk.com");
+        row.put("Properties.websiteDomain", "www.wtubacvk.com");
+        CtxFields.seedFromRow(ctx, row, "Properties.");
+        ImportedScenario.regenRandomProperties(ctx, row);
+        String domain = ctx.get("Properties.Domain");
+        Assert.assertNotEquals(domain, "wtubacvk.com");
+        Assert.assertEquals(ctx.get("Properties.websiteDomain"), domain, "regen's own value stays");
+        Assert.assertNotEquals(ctx.get("Properties.websiteDomain"), "www.randompack.com");
+        Assert.assertNotEquals(ctx.get("Properties.websitedomain"), "www." + domain + "x", "pack-only spelling is never mirrored back over the row key");
+
+        // the author-literal website must survive too (B2B-5267: www.etsy.com)
+        Map<String, String> lit = new HashMap<>();
+        lit.put("Properties.Domain", "ecwuzlqh.com");
+        lit.put("Properties.Email", "linkedin.com");
+        lit.put("Properties.generatedemailAddress", "suwbau@etsy.com");
+        lit.put("Properties.websiteDomain", "www.etsy.com");
+        Map<String, String> ctx2 = new HashMap<>();
+        ctx2.put("Properties.websitedomain", "randompack.com");
+        CtxFields.seedFromRow(ctx2, lit, "Properties.");
+        ImportedScenario.regenRandomProperties(ctx2, lit);
+        Assert.assertEquals(ctx2.get("Properties.websiteDomain"), "www.etsy.com");
+    }
 }

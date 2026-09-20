@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 20
+// ra_converter-framework-rev: 21
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -878,6 +878,9 @@ public final class ImportedScenario {
         if (ctx == null) {
             return;
         }
+        // What ctx held before this call: the generator pack's values, the
+        // row seed. Anything different afterwards is what regen decided.
+        Map<String, String> before = new HashMap<>(ctx);
         String frozen = ctx.getOrDefault("Properties.Hardcodeddomain",
                 ctx.getOrDefault("Properties.hardcodeddomain", ""));
         String csvDomain = firstNonBlank(row,
@@ -1052,7 +1055,7 @@ public final class ImportedScenario {
         applyCsvRandomDomains(ctx, row);
         alignPackEmailsToIdentity(ctx, row, domain, frozen);
         restoreAuthorLiteralEmail(ctx, row);
-        mirrorRowSpellings(ctx, row);
+        mirrorRowSpellings(ctx, row, before);
     }
 
     /**
@@ -1065,9 +1068,13 @@ public final class ImportedScenario {
      * ignoring case, beyond the first-letter flip) takes the twin's value;
      * the row's own "www." shape is kept.
      */
-    static void mirrorRowSpellings(Map<String, String> ctx, Map<String, String> row) {
+    static void mirrorRowSpellings(Map<String, String> ctx, Map<String, String> row,
+                                   Map<String, String> before) {
         if (ctx == null || row == null || row.isEmpty()) {
             return;
+        }
+        if (before == null) {
+            before = new HashMap<>();
         }
         Map<String, java.util.List<String>> byLower = new HashMap<>();
         for (String k : ctx.keySet()) {
@@ -1092,9 +1099,16 @@ public final class ImportedScenario {
             if (twins == null) {
                 continue;
             }
+            // Direction: the row spelling regen wrote itself is canonical
+            // and must not take anything from a twin (digest 21: the pack's
+            // random `websitedomain` overwrote regen's `websiteDomain`).
+            // Only a twin whose value regen CHANGED in this call is fresh.
+            if (changedByRegen(ctx, before, key) || changedByRegen(ctx, before, flipped)) {
+                continue;
+            }
             String fresh = null;
             for (String t : twins) {
-                if (t.equals(key) || t.equals(flipped)) {
+                if (t.equals(key) || t.equals(flipped) || !changedByRegen(ctx, before, t)) {
                     continue;
                 }
                 String v = ctx.get(t);
@@ -1564,6 +1578,16 @@ public final class ImportedScenario {
             }
         }
         return false;
+    }
+
+    private static boolean changedByRegen(Map<String, String> ctx, Map<String, String> before,
+                                          String key) {
+        String now = ctx.get(key);
+        String was = before.get(key);
+        if (now == null || now.isEmpty()) {
+            return false;
+        }
+        return was == null || !was.equals(now);
     }
 
     static boolean rowUsedOwnDomain(Map<String, String> row, String frozen) {
