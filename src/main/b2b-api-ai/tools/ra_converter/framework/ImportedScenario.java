@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 19
+// ra_converter-framework-rev: 20
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -1052,6 +1052,69 @@ public final class ImportedScenario {
         applyCsvRandomDomains(ctx, row);
         alignPackEmailsToIdentity(ctx, row, domain, frozen);
         restoreAuthorLiteralEmail(ctx, row);
+        mirrorRowSpellings(ctx, row);
+    }
+
+    /**
+     * putBothCases writes {@code websiteDomain} and {@code WebsiteDomain};
+     * the datasheet also spells it {@code websitedomain} (66 rows, 7
+     * templates read {@code #Properties_websitedomain#}). The row seed put
+     * the OLD domain under that spelling and regen never touched it, so a
+     * fresh identity went out with a stale website. Every row spelling of
+     * an identity-shaped key that has a regenerated twin (same name
+     * ignoring case, beyond the first-letter flip) takes the twin's value;
+     * the row's own "www." shape is kept.
+     */
+    static void mirrorRowSpellings(Map<String, String> ctx, Map<String, String> row) {
+        if (ctx == null || row == null || row.isEmpty()) {
+            return;
+        }
+        Map<String, java.util.List<String>> byLower = new HashMap<>();
+        for (String k : ctx.keySet()) {
+            if (k != null && k.startsWith("Properties.")) {
+                byLower.computeIfAbsent(k.toLowerCase(Locale.ROOT), x -> new java.util.ArrayList<>()).add(k);
+            }
+        }
+        for (Map.Entry<String, String> e : row.entrySet()) {
+            String key = e.getKey();
+            if (key == null || !key.startsWith("Properties.")) {
+                continue;
+            }
+            String field = key.substring("Properties.".length());
+            String fl = field.toLowerCase(Locale.ROOT);
+            if (!(fl.contains("domain") || fl.contains("mail") || fl.contains("phone")
+                    || fl.contains("username") || fl.contains("website") || fl.contains("weburl"))) {
+                continue;
+            }
+            String flipped = "Properties." + CtxFields.flipFirst(field);
+            String rowValue = e.getValue() == null ? "" : e.getValue().trim();
+            java.util.List<String> twins = byLower.get(key.toLowerCase(Locale.ROOT));
+            if (twins == null) {
+                continue;
+            }
+            String fresh = null;
+            for (String t : twins) {
+                if (t.equals(key) || t.equals(flipped)) {
+                    continue;
+                }
+                String v = ctx.get(t);
+                if (v != null && !v.isEmpty() && !v.trim().equalsIgnoreCase(rowValue)) {
+                    fresh = v.trim();
+                    break;
+                }
+            }
+            if (fresh == null) {
+                continue;
+            }
+            boolean rowWww = rowValue.toLowerCase(Locale.ROOT).startsWith("www.");
+            boolean freshWww = fresh.toLowerCase(Locale.ROOT).startsWith("www.");
+            if (rowWww && !freshWww && fresh.indexOf('@') < 0) {
+                fresh = "www." + fresh;
+            } else if (!rowWww && freshWww && rowValue.indexOf('@') < 0 && !rowValue.isEmpty()) {
+                fresh = fresh.substring(4);
+            }
+            CtxFields.putBothCases(ctx, "Properties", field, fresh);
+        }
     }
 
     /**

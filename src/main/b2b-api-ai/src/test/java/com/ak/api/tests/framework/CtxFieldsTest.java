@@ -841,4 +841,23 @@ public class CtxFieldsTest {
         Assert.assertEquals(ctx.get("Properties.onDomain2"), "x@other.com", "saved slot domain kept");
         Assert.assertEquals(ctx.get("Properties.freeEmail"), "y@gmail.com", "freemail kept");
     }
+    @Test(groups = {"unit"})
+    @Story("the row's own spelling of an identity key follows the regenerated twin")
+    @Description("66 rows save `websitedomain` (all lowercase) and 7 templates read it; regen only wrote websiteDomain/WebsiteDomain.")
+    public void rowSpelling_websitedomain_followsRegen() {
+        Map<String, String> ctx = new HashMap<>();
+        ctx.put("Properties.Hardcodeddomain", "laafd.com");
+        Map<String, String> row = new HashMap<>();
+        row.put("Properties.Domain", "wtubacvk.com");
+        row.put("Properties.Email", "abc@wtubacvk.com");
+        row.put("Properties.websitedomain", "www.wtubacvk.com");
+        row.put("Properties.EMAIL", "abc@wtubacvk.com");
+        CtxFields.seedFromRow(ctx, row, "Properties.");
+        ImportedScenario.regenRandomProperties(ctx, row);
+        String domain = ctx.get("Properties.Domain");
+        Assert.assertNotEquals(domain, "wtubacvk.com");
+        Assert.assertEquals(ctx.get("Properties.websitedomain"), "www." + domain, "row spelling, row shape");
+        Assert.assertEquals(ctx.get("Properties.Websitedomain"), "www." + domain);
+        Assert.assertEquals(ctx.get("Properties.EMAIL"), ctx.get("Properties.Email"));
+    }
 }
