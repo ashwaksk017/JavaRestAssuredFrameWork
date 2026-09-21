@@ -40,7 +40,7 @@ import io.restassured.response.Response;
  *
  * <p><b>Before</b> (B2B-9098 {@code http_request_200_enroll_guest}):</p>
  * <pre>
- * TestSupport.regenRandomProperties(ctx);
+ * ImportedScenario.regenRandomProperties(ctx, row);
  * String payload = RestUtilities.mapJsonValues(
  *     RestUtilities.getRequestTemplate(Templates.REALMS_HHONORSENROLL_MERGED),
  *     TestSupport.mergedRow(row, ctx), false);

@@ -34,6 +34,8 @@ def test_emitter_tables_equal_defaults_before_apply():
     proj = cc.DEFAULTS["project"]
     assert rc._REGEN_TRIGGER_KEYS == frozenset(ident["regen_trigger_keys"])
     assert tuple(rc._ID_HINTS) == tuple(ident["id_hint_fields"])
+    assert rc._PATH_ID_PARAM_NAMES == frozenset(ident["id_param_names"])
+    assert tuple(rc.Emitter._HARDCODED_ID_FIELDS) == tuple(ident["id_param_names"])
     assert tuple(rc._MEMBER_ENROLL_PATTERNS) == tuple(ident["member_enroll_step_patterns"])
     assert rc._FIXTURE_LITERAL_FIELDS == {k.lower(): v for k, v in ident["fixture_literal_fields"].items()}
     assert rc._PRODUCT_LINE_FLOW_TOKENS == frozenset(proj["product_line_tokens"])

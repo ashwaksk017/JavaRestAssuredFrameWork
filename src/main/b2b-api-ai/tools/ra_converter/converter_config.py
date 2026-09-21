@@ -87,6 +87,7 @@ DEFAULTS: dict[str, Any] = {
         "id_hint_fields": ["guestid", "accountid", "memberid", "hhonorsnumber",
                            "hhonors_number", "partneraccountid", "customerid",
                            "userid", "hilton_member_id", "hiltonmemberid"],
+        "id_param_names": ["guestId", "guestID", "accountId", "accountID", "memberId", "memberID", "hhonorsNumber", "hHonorsNumber", "partnerAccountId", "partnerAccountID", "customerId", "userId"],
         "frozen_domain_key": "Hardcodeddomain",
         "allowed_domains_config_key": "ALLOWED_DOMAINS",
         "freemail_domains": [
@@ -203,6 +204,7 @@ def validate(cfg: dict) -> list[str]:
 
     ident = cfg.get("identity") or {}
     for key in ("standard_fields", "regen_trigger_keys", "identity_hints", "id_hint_fields",
+                "id_param_names",
                 "freemail_domains", "bindable_emails", "bindable_domains",
                 "named_identity_keys", "member_enroll_step_patterns"):
         v = ident.get(key)
@@ -268,6 +270,8 @@ def apply_to_modules(cfg: dict) -> None:
     if rc is not None:
         rc._REGEN_TRIGGER_KEYS = frozenset(s.lower() for s in ident.get("regen_trigger_keys", []))
         rc._ID_HINTS = tuple(s.lower() for s in ident.get("id_hint_fields", []))
+        rc._PATH_ID_PARAM_NAMES = frozenset(ident.get("id_param_names", []))
+        rc.Emitter._HARDCODED_ID_FIELDS = tuple(ident.get("id_param_names", []))
         rc._MEMBER_ENROLL_PATTERNS = tuple(s.lower() for s in ident.get("member_enroll_step_patterns", []))
         rc._FIXTURE_LITERAL_FIELDS = {k.lower(): v for k, v in (ident.get("fixture_literal_fields") or {}).items()}
         rc._PRODUCT_LINE_FLOW_TOKENS = frozenset(s.lower() for s in proj.get("product_line_tokens", []))

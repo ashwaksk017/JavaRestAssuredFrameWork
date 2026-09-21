@@ -65,6 +65,7 @@
     "id_hint_fields": ["guestid", "accountid", "memberid", "hhonorsnumber",
                        "hhonors_number", "partneraccountid", "customerid",
                        "userid", "hilton_member_id", "hiltonmemberid"],
+    "id_param_names": ["guestId", "guestID", "accountId", "accountID", "memberId", "memberID", "hhonorsNumber", "hHonorsNumber", "partnerAccountId", "partnerAccountID", "customerId", "userId"],
     "frozen_domain_key": "Hardcodeddomain",
     "allowed_domains_config_key": "ALLOWED_DOMAINS",
     "freemail_domains": [
@@ -99,6 +100,7 @@
       "regen_trigger_keys": "a request referencing one of these (lower-cased) Properties fields gets a fresh identity pack first",
       "identity_hints": "a Groovy setPropertyValue target containing one of these is identity data, not a literal",
       "id_hint_fields": "a CSV column whose field tail contains one of these is a live id and is rewritten to a placeholder",
+      "id_param_names": "exact path-parameter / body field names that carry a resource id: a baked-in 6+ digit value there is a stale fixture and becomes a live placeholder",
       "frozen_domain_key": "the Properties key ReadyAPI keeps fixed across runs",
       "allowed_domains_config_key": "program_configuration / -D key holding the comma-separated allowed identity domains",
       "member_enroll_step_patterns": "matched on the step name lower-cased without punctuation; 'a+b' means contains both",
