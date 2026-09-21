@@ -140,6 +140,34 @@ If a `?` still shows up in a payload after that, it was a `?` in the datasheet.
 
 ---
 
+### Test-case diagrams as images (`converter.config.json`)
+
+Every convert writes one Mermaid flowchart per ReadyAPI case under
+`_flows/<suite>/cases/<case>.md` (open in VS Code or GitHub with Mermaid
+preview). To also get an image per case, switch it on in the committed
+`tools/ra_converter/converter.config.json`, or per machine in a gitignored
+`converter.config.local.json` next to it, or for one run:
+
+```powershell
+python tools/ra_converter/ra_converter.py --input tools/ra_converter/input --output . --package-root com.ak.api --clean --max-name-len 40 --no-cursor-assist `
+    --diagram-png --diagram-cases "B2B-5264*"
+```
+
+Images land in `_flows/<suite>/png/<case>.png` (or `.svg`), the case file
+gets an **Image** link, and the suite index gains an Image column. Keys
+under `diagrams.png`: `enabled`, `format` (png/svg), `scale`, `background`,
+`cases` (`*`, a glob, `re:<regex>`, or a list of names), `renderer`
+(`auto`, `mmdc`, `playwright`). Rendering needs one of:
+
+- `npm i -g @mermaid-js/mermaid-cli` (the `mmdc` command), or
+- `pip install playwright && python -m playwright install chromium`.
+
+With Playwright, only the Mermaid library is fetched from jsDelivr; the
+diagram text is rendered inside the local headless browser and never
+leaves the machine. Without a renderer the convert still succeeds and says
+what to install. A full suite of ~700 diagrams takes a few minutes; the
+`cases` filter keeps a one-off render short.
+
 ### Phases as data (`--phase-specs`)
 
 ```

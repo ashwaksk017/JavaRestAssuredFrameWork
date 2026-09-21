@@ -1,0 +1,25 @@
+{
+  "_comment": "Project-level converter configuration. Committed with generic defaults; override per machine with --config <path> or a sibling converter.config.local.json (gitignored). Every key is optional: missing keys take the defaults below.",
+
+  "diagrams": {
+    "_comment": "Per-test-case Mermaid flowcharts under _flows/<suite>/cases/*.md are always written. The png block renders each of them to an image as well.",
+    "png": {
+      "enabled": false,
+      "format": "png",
+      "scale": 2,
+      "background": "white",
+      "cases": "*",
+      "renderer": "auto",
+      "output_dir": "_flows/{suite}/png",
+      "_keys": {
+        "enabled": "true to render images on every convert (or pass --diagram-png for one run)",
+        "format": "png or svg",
+        "scale": "device scale factor for png; 2 is crisp on high-DPI screens",
+        "background": "css colour behind the diagram",
+        "cases": "'*' for every case, a glob like 'B2B-5264*', a regex prefixed with 're:', or a JSON list of case names",
+        "renderer": "auto (mmdc if on PATH, else Python Playwright + Chromium), mmdc, or playwright",
+        "output_dir": "where the images go; {suite} is replaced with the suite name"
+      }
+    }
+  }
+}

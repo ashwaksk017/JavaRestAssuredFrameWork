@@ -10080,7 +10080,26 @@ public final class SetupHelper {{
             self._write(rel, self._render_case_flow_md(
                 c, landings.get(c.name), _lbl))
             case_files.append((c, f"cases/{unique}.md"))
-
+        # Optional images (converter.config.json diagrams.png / --diagram-png).
+        images: dict[str, str] = {}
+        png_cfg = (converter_config().get("diagrams") or {}).get("png") or {}
+        if png_cfg.get("enabled"):
+            import mermaid_png
+            images = mermaid_png.render_case_images(
+                self.output_dir, self.suite_name,
+                [(c.name, rel) for c, rel in case_files], png_cfg)
+            for c, rel in case_files:
+                img = images.get(c.name)
+                if not img:
+                    continue
+                abs_md = os.path.join(self.output_dir, suite_dir, rel)
+                with open(abs_md, encoding="utf-8") as f:
+                    md = f.read()
+                md = md.replace("\n```mermaid\n",
+                                f"\n- **Image**: [`{img}`](../{img})\n\n```mermaid\n", 1)
+                with open(abs_md, "w", encoding="utf-8", newline="\n") as f:
+                    f.write(md)
+        self._case_images = images
         index = self._render_flow_index(
             basename, source_xml, cases, flows, service_class,
             shared_ops_count, case_files, landings, _lbl)
@@ -10177,11 +10196,13 @@ public final class SetupHelper {{
             lines.append("_No shared SetupHelper flows detected._")
             lines.append("")
 
+        images = getattr(self, "_case_images", None) or {}
         lines.extend([
             "## Case index",
             "",
-            "| # | ReadyAPI case | Java `@Test` | Steps | Flow | Diagram |",
-            "|---:|---|---|---:|---|---|",
+            "| # | ReadyAPI case | Java `@Test` | Steps | Flow | Diagram |"
+            + (" Image |" if images else ""),
+            "|---:|---|---|---:|---|---|" + ("---|" if images else ""),
         ])
         for i, (c, rel) in enumerate(case_files, 1):
             f = self._flow_by_case.get(c.name)
@@ -10191,9 +10212,11 @@ public final class SetupHelper {{
             simple = fqn.rsplit(".", 1)[-1] if fqn else ""
             java = f"`{simple}.{method}`" if simple and method != "-" else method
             flow_id = f["id"] if f else "-"
+            img = images.get(c.name)
+            img_cell = (f" [{img}]({img}) |" if img else (" - |" if images else ""))
             lines.append(
                 f"| {i} | `{_lbl(c.name, 70)}` | {java} | {len(c.steps)} "
-                f"| {flow_id} | [{rel}]({rel}) |")
+                f"| {flow_id} | [{rel}]({rel}) |{img_cell}")
         lines.append("")
         return "\n".join(lines) + "\n"
 
@@ -15391,6 +15414,21 @@ _PHASE_MEMBERS = """
 """
 
 
+# Project-level configuration (tools/ra_converter/converter.config.json,
+# a gitignored converter.config.local.json, then --config). Loaded once in
+# main(); the emitter reads it through this global so library callers that
+# build an Emitter directly get the defaults.
+_CONVERTER_CONFIG: dict = {}
+
+
+def converter_config() -> dict:
+    global _CONVERTER_CONFIG
+    if not _CONVERTER_CONFIG:
+        import converter_config as _cc
+        _CONVERTER_CONFIG = _cc.load_config(None)
+    return _CONVERTER_CONFIG
+
+
 def phase_model_run_vocabs() -> set:
     """The run-wide vocabulary set (phase_model.RUN_VOCABS), lazily imported."""
     _here = os.path.dirname(os.path.abspath(__file__))
@@ -15826,6 +15864,16 @@ def main():
                         "ImportedTemplates, ImportedTestdataCleanup, "
                         "support/scenario/) are untouched. With a directory "
                         "--input, cleans each XML's suite independently.")
+    p.add_argument("--config", default=None,
+                   help="Project-level converter config (JSON). Layered over "
+                        "tools/ra_converter/converter.config.json and a sibling "
+                        "converter.config.local.json.")
+    p.add_argument("--diagram-png", action="store_true",
+                   help="Render every selected case diagram to an image this run "
+                        "(same as diagrams.png.enabled=true in the config).")
+    p.add_argument("--diagram-cases", default=None,
+                   help="Which cases to render: '*', a glob (B2B-5264*), 're:<regex>', "
+                        "or a comma-separated list of case names. Overrides the config.")
     p.add_argument("--diagrams-only", action="store_true",
                    help="Parse the XML and emit `_flows/<suite>/` mermaid "
                         "files only (no Java / CSV / template rewrite). "
@@ -15915,6 +15963,19 @@ _PHASE_SPECS = False
 
 def _main_dispatch_inner(args):
     global _PHASE_SPECS
+    global _CONVERTER_CONFIG
+    import converter_config as _cc
+    _CONVERTER_CONFIG = _cc.load_config(getattr(args, "config", None))
+    if getattr(args, "diagram_png", False):
+        _CONVERTER_CONFIG.setdefault("diagrams", {}).setdefault("png", {})["enabled"] = True
+    if getattr(args, "diagram_cases", None):
+        _sel = args.diagram_cases.strip()
+        _CONVERTER_CONFIG.setdefault("diagrams", {}).setdefault("png", {})["cases"] = (
+            [s.strip() for s in _sel.split(",") if s.strip()]
+            if ("," in _sel and not _sel.startswith("re:")) else _sel)
+    for _problem in _cc.validate(_CONVERTER_CONFIG):
+        print(f"[ra_converter] config: {_problem}")
+        return 2
     _PHASE_SPECS = bool(getattr(args, "phase_specs", False))
     import fluent_scenario as _fs
     _fs.PHASE_SPECS = _PHASE_SPECS

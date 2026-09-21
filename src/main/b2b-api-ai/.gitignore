@@ -64,6 +64,7 @@ program_configuration.json
 # are not.
 _audit/
 _flows/
+tools/ra_converter/converter.config.local.json
 Suites/
 src/main/java/com/ak/api/rest/clients/
 src/main/java/com/ak/api/support/
