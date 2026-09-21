@@ -1,5 +1,5 @@
 {
-  "_comment": "Project-level converter configuration. Committed with generic defaults; override per machine with --config <path> or a sibling converter.config.local.json (gitignored). Every key is optional: missing keys take the defaults below.",
+  "_comment": "Project-level converter configuration. Committed with the defaults of the suite this converter was first built on; override per machine with a sibling converter.config.local.json (gitignored) or --config <path>. Every key is optional and deep-merges over these values. Keys starting with _ are documentation.",
 
   "diagrams": {
     "_comment": "Per-test-case Mermaid flowcharts under _flows/<suite>/cases/*.md are always written. The png block renders each of them to an image as well.",
@@ -16,9 +16,114 @@
         "format": "png or svg",
         "scale": "device scale factor for png; 2 is crisp on high-DPI screens",
         "background": "css colour behind the diagram",
-        "cases": "'*' for every case, a glob like 'B2B-5264*', a regex prefixed with 're:', or a JSON list of case names",
+        "cases": "'*' for every case, a glob like 'B2B-5264*', a regex prefixed with 're:', or a JSON list of names/globs",
         "renderer": "auto (mmdc if on PATH, else Python Playwright + Chromium), mmdc, or playwright",
         "output_dir": "where the images go; {suite} is replaced with the suite name"
+      }
+    }
+  },
+
+  "project": {
+    "_comment": "How ReadyAPI case names are read. The ticket regex must capture (ticket)(remainder); the ticket is dropped from generated test names and kept in the audit. Product-line tokens are stripped from names so siblings share a class; partners map a token in the case name to the CSV partner column.",
+    "ticket_regex": "^([A-Z][A-Z0-9]*[-_]?\\d+)[-_ ]+(.+)$",
+    "product_line_tokens": ["h4l", "h4b", "h4bl", "lta", "smb", "amex", "silhouette"],
+    "partners": [
+      {"token": "amex", "partner": "amex"},
+      {"token": "silhouette", "partner": "silhouette"},
+      {"token": "h4l", "partner": "h4l"},
+      {"token": "h4b", "partner": "h4b"},
+      {"token": "lta", "partner": "lta"},
+      {"token": "_ta_", "partner": "lta"},
+      {"token": "smb", "partner": "smb"}
+    ]
+  },
+
+  "identity": {
+    "_comment": "The Properties vocabulary the identity regeneration owns: what ReadyAPI's DataGen script writes per run and what the framework therefore regenerates. Names are matched case-insensitively where the code says so. The Java runtime reads these through the emitted src/main/resources/converter_identity.json.",
+    "namespace": "Properties",
+    "standard_fields": [
+      "Username", "usernamemember", "usernameM",
+      "Email", "EmailMember", "guestMemberEmail",
+      "Phone", "phoneNumber", "hhonorsNumber",
+      "Domain", "websiteDomain",
+      "generatedemailAddress", "generatedEmail",
+      "guestId", "guestID", "memberGuestID",
+      "accountId", "accountID",
+      "memberId", "memberID",
+      "partnerAccountId", "partnerAccountID"
+    ],
+    "regen_trigger_keys": [
+      "username", "usernamemember",
+      "email", "emailaddress", "emailmember", "generatedemail",
+      "generatedemailaddress", "guestmemberemail",
+      "phone", "phonenumber",
+      "domain", "websitedomain", "weburl",
+      "hhonorsnumber"
+    ],
+    "identity_hints": ["username", "email", "name", "phone", "domain", "website",
+                       "firstname", "lastname", "address", "city", "state", "postal"],
+    "id_hint_fields": ["guestid", "accountid", "memberid", "hhonorsnumber",
+                       "hhonors_number", "partneraccountid", "customerid",
+                       "userid", "hilton_member_id", "hiltonmemberid"],
+    "frozen_domain_key": "Hardcodeddomain",
+    "allowed_domains_config_key": "ALLOWED_DOMAINS",
+    "freemail_domains": [
+      "yahoo.com", "gmail.com", "hotmail.com", "aol.com", "outlook.com",
+      "live.com", "msn.com", "icloud.com", "mail.com", "ymail.com",
+      "protonmail.com", "gmx.com", "zoho.com", "me.com", "mac.com"
+    ],
+    "bindable_emails": [
+      "Email", "EmailAddress", "GeneratedEmail", "generatedemailAddress",
+      "generatedemailAddress1", "generatedemailAddress2", "generatedemailAddress3",
+      "generatedemailAddress_1", "generatedemailAddress_2", "generatedemailAddress_3",
+      "Email1", "Email2", "Email3", "Email_1", "Email_2", "Email_3",
+      "EmailMember", "guestMemberEmail"
+    ],
+    "bindable_domains": [
+      "Hardcodeddomain", "Domain2", "Domain1", "Domain3", "Domain4",
+      "Domain5", "Domain6", "Domain7", "Domain8", "Domain9",
+      "Domain_1", "Domain_2", "Domain_3", "Domain_4", "Domain_5",
+      "Domain_6", "Domain_7", "Domain_8", "Domain_9"
+    ],
+    "named_identity_keys": [
+      "email", "emailaddress", "generatedemail", "generatedemailaddress",
+      "generatedemailaddress1", "generatedemailaddress2", "generatedemailaddress3",
+      "emailmember", "guestmemberemail", "email1", "email2", "email3",
+      "email_1", "email_2", "email_3", "hardcodedemail", "updatedemail",
+      "updatedmailaddress", "phone", "phonenumber", "hhonorsnumber"
+    ],
+    "member_enroll_step_patterns": ["memberhhonorsenroll", "hhonorsenrollmember", "member+hhonorsenroll"],
+    "fixture_literal_fields": {"memberGuestID": "\\d{6,}"},
+    "_keys": {
+      "standard_fields": "fields every DataGen pack writes; generated in this order",
+      "regen_trigger_keys": "a request referencing one of these (lower-cased) Properties fields gets a fresh identity pack first",
+      "identity_hints": "a Groovy setPropertyValue target containing one of these is identity data, not a literal",
+      "id_hint_fields": "a CSV column whose field tail contains one of these is a live id and is rewritten to a placeholder",
+      "frozen_domain_key": "the Properties key ReadyAPI keeps fixed across runs",
+      "allowed_domains_config_key": "program_configuration / -D key holding the comma-separated allowed identity domains",
+      "member_enroll_step_patterns": "matched on the step name lower-cased without punctuation; 'a+b' means contains both",
+      "fixture_literal_fields": "field -> regex: a saved value matching it is a pre-existing fixture and is never generated or rewritten"
+    }
+  },
+
+  "heuristics": {
+    "_comment": "Project-specific validation rules the emitter and runtime honour.",
+    "salesforce": {
+      "enabled": true,
+      "id_field_regex": "(?i)^(.*(sfdc|salesforce).*)id$",
+      "id_shape": "[A-Za-z0-9]{15,18}",
+      "session_key_fragment": "sftokenid"
+    },
+    "otp": {
+      "pad_width": 6,
+      "code_like": ["otp", "totp", "pin"],
+      "code_exclusions": ["prop", "brand", "product", "rate", "room", "zip",
+                          "postal", "country", "currency", "iata", "airport",
+                          "source", "record", "record_type"],
+      "_keys": {
+        "pad_width": "a JDBC code column shorter than this is left-padded with zeros",
+        "code_like": "column / variable name fragments that identify a one-time code",
+        "code_exclusions": "a name containing 'code' but also one of these is a property/brand/rate code, not padded"
       }
     }
   }

@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 21
+// ra_converter-framework-rev: 22
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -784,10 +784,7 @@ public final class ImportedScenario {
         if (stepName == null || stepName.isEmpty()) {
             return false;
         }
-        String n = stepName.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
-        return n.contains("memberhhonorsenroll")
-                || n.contains("hhonorsenrollmember")
-                || (n.contains("member") && n.contains("hhonorsenroll"));
+        return IdentityVocabulary.isMemberEnrollStep(stepName);
     }
 
     /**
@@ -881,8 +878,9 @@ public final class ImportedScenario {
         // What ctx held before this call: the generator pack's values, the
         // row seed. Anything different afterwards is what regen decided.
         Map<String, String> before = new HashMap<>(ctx);
-        String frozen = ctx.getOrDefault("Properties.Hardcodeddomain",
-                ctx.getOrDefault("Properties.hardcodeddomain", ""));
+        String frozenKey = "Properties." + IdentityVocabulary.frozenDomainKey();
+        String frozen = ctx.getOrDefault(frozenKey,
+                ctx.getOrDefault("Properties." + CtxFields.flipFirst(IdentityVocabulary.frozenDomainKey()), ""));
         String csvDomain = firstNonBlank(row,
                 "Properties.Domain", "Properties.domain", "Domain");
         // DataGen never writes a "www." into Domain; the amex cases' Groovy
@@ -1043,7 +1041,7 @@ public final class ImportedScenario {
             // EMAIL onto whichever domain the row shows it on.
             String hcEmail = extraUname + "@" + frozen;
             CtxFields.putBothCases(ctx, "Properties", "hardcodedemail", hcEmail);
-            CtxFields.putBothCases(ctx, "Properties", "Hardcodeddomain", frozen);
+            CtxFields.putBothCases(ctx, "Properties", IdentityVocabulary.frozenDomainKey(), frozen);
             String updatedEmail = "bh" + extraUname + "jff@" + frozen;
             CtxFields.putBothCases(ctx, "Properties", "updatedemail", updatedEmail);
             CtxFields.putBothCases(ctx, "Properties", "updatedmailAddress", updatedEmail);
@@ -1190,14 +1188,8 @@ public final class ImportedScenario {
     }
 
     /** Keys the named regeneration above already decided; the generic pass leaves them. */
-    private static final Set<String> NAMED_IDENTITY_KEYS = Set.of(
-            "email", "emailaddress", "generatedemail", "generatedemailaddress",
-            "generatedemailaddress1", "generatedemailaddress2", "generatedemailaddress3",
-            // generatedemailAddress_N is no longer written by regen (it lives on
-            // Domain_N when saved, and is a pack email when not): not named here
-            "emailmember", "guestmemberemail", "email1", "email2", "email3",
-            "email_1", "email_2", "email_3", "hardcodedemail", "updatedemail",
-            "updatedmailaddress", "phone", "phonenumber", "hhonorsnumber");
+    /** identity.named_identity_keys (lower-cased) via IdentityVocabulary. */
+    private static final Set<String> NAMED_IDENTITY_KEYS = IdentityVocabulary.namedIdentityKeys();
 
     /**
      * Every OTHER email- or phone-shaped saved Properties value follows what
@@ -1468,20 +1460,9 @@ public final class ImportedScenario {
     }
 
     /** Identity email slots, and the domain slots a row can bind them to. */
-    private static final String[] BINDABLE_EMAILS = {
-        "Email", "EmailAddress", "GeneratedEmail", "generatedemailAddress",
-        "generatedemailAddress1", "generatedemailAddress2", "generatedemailAddress3",
-        "generatedemailAddress_1", "generatedemailAddress_2", "generatedemailAddress_3",
-        "Email1", "Email2", "Email3", "Email_1", "Email_2", "Email_3",
-        "EmailMember", "guestMemberEmail",
-    };
-
-    private static final String[] BINDABLE_DOMAINS = {
-        "Hardcodeddomain", "Domain2", "Domain1", "Domain3", "Domain4",
-        "Domain5", "Domain6", "Domain7", "Domain8", "Domain9",
-        "Domain_1", "Domain_2", "Domain_3", "Domain_4", "Domain_5",
-        "Domain_6", "Domain_7", "Domain_8", "Domain_9",
-    };
+    /** identity.bindable_emails / bindable_domains via IdentityVocabulary. */
+    private static final String[] BINDABLE_EMAILS = IdentityVocabulary.bindableEmails();
+    private static final String[] BINDABLE_DOMAINS = IdentityVocabulary.bindableDomains();
 
     /**
      * Put each generated email on the domain ITS OWN saved value sat on.
@@ -1634,7 +1615,7 @@ public final class ImportedScenario {
      */
     static String freshDomainLike(String savedDomain) {
         String saved = savedDomain == null ? "" : savedDomain.toLowerCase(Locale.ROOT);
-        for (String d : Config.get("ALLOWED_DOMAINS", "").split(",")) {
+        for (String d : Config.get(IdentityVocabulary.allowedDomainsKey(), "").split(",")) {
             if (!saved.isEmpty() && saved.equals(d.trim().toLowerCase(Locale.ROOT))) {
                 return CtxFields.allowedDomainOrRandom();
             }
@@ -1709,10 +1690,8 @@ public final class ImportedScenario {
     }
 
     /** Consumer freemail domains ReadyAPI uses for expected-400 emailDomain cases. */
-    private static final Set<String> FREEMAIL_DOMAINS = Set.of(
-            "yahoo.com", "gmail.com", "hotmail.com", "aol.com", "outlook.com",
-            "live.com", "msn.com", "icloud.com", "mail.com", "ymail.com",
-            "protonmail.com", "gmx.com", "zoho.com", "me.com", "mac.com");
+    /** identity.freemail_domains via IdentityVocabulary. */
+    private static final Set<String> FREEMAIL_DOMAINS = IdentityVocabulary.freemailDomains();
 
     static boolean isFreemailDomain(String raw) {
         String d = normalizeDomain(raw);

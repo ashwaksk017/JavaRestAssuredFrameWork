@@ -140,6 +140,34 @@ If a `?` still shows up in a payload after that, it was a `?` in the datasheet.
 
 ---
 
+### Making the converter fit another ReadyAPI project (`converter.config.json`)
+
+The parser, translators, CSV/template emission, dedup, audit and digest are
+project-agnostic. What is not is the *data realism* layer: which
+`Properties.*` fields the ReadyAPI DataGen script regenerates per run,
+which key holds the frozen domain, what the member-enroll steps are
+called, which saved ids are pre-existing fixtures, and a few validation
+quirks (Salesforce ids, OTP zero-padding). All of that is now read from
+`tools/ra_converter/converter.config.json`:
+
+| Section | What it drives |
+|---|---|
+| `project` | ticket-prefix regex (dropped from test names), product-line tokens (stripped so siblings share a class), partner tokens (CSV `partner` column) |
+| `identity` | standard pack fields, regen trigger keys, identity/id hints, frozen-domain key, allowed-domains config key, freemail list, bindable email/domain slots, named identity keys, member-enroll step patterns, fixture-literal fields |
+| `heuristics` | Salesforce id field/shape/session key; OTP pad width, code-like names and exclusions |
+
+The Python emitter reads it directly; the Java runtime reads the same
+values from `src/main/resources/converter_identity.json`, which every
+convert regenerates from the config (never edit that file). The committed
+values are this suite's, so a convert with no overrides produces the same
+tree as before; a tree without the resource falls back to the same
+built-in defaults. For a new project: copy the config, change the
+`identity` names to what that project's DataGen script writes, adjust
+`project.ticket_regex` and the tokens, convert, and read the first
+digest. Still hand-written per API and next in line: the domain receiver
+tables and phase vocabulary in `fluent_scenario.py` /
+`phase_vocabulary.py`.
+
 ### Test-case diagrams as images (`converter.config.json`)
 
 Every convert writes one Mermaid flowchart per ReadyAPI case under

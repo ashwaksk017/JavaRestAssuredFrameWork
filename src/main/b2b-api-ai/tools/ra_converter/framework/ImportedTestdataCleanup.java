@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 2
+// ra_converter-framework-rev: 3
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -132,10 +132,11 @@ public final class ImportedTestdataCleanup {
         Set<String> shared = new LinkedHashSet<>();
         addCsv(shared, Config.get("WEBSITE_DOMAIN", ""));
         addCsv(shared, Config.get("ALLOWED_DOMAIN", ""));
-        addCsv(shared, Config.get("ALLOWED_DOMAINS", ""));
+        addCsv(shared, Config.get(IdentityVocabulary.allowedDomainsKey(), ""));
         if (ctx != null) {
-            addCsv(shared, ctx.get("Properties.Hardcodeddomain"));
-            addCsv(shared, ctx.get("Properties.hardcodeddomain"));
+            String fk = IdentityVocabulary.frozenDomainKey();
+            addCsv(shared, ctx.get("Properties." + fk));
+            addCsv(shared, ctx.get("Properties." + CtxFields.flipFirst(fk)));
             addCsv(shared, ctx.get("Properties.HardcodedDomain"));
         }
         return shared;

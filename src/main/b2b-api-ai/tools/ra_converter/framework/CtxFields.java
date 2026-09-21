@@ -1,6 +1,6 @@
 package com.ak.api.support;
 
-// ra_converter-framework-rev: 9
+// ra_converter-framework-rev: 10
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -72,17 +72,8 @@ public final class CtxFields {
      * even when the SoapUI DataGenInput script did not set them, so
      * templates that reference a variant never see a stale CSV value.
      */
-    public static final String[] STANDARD_FIELDS = {
-            "Username", "usernamemember", "usernameM",
-            "Email", "EmailMember", "guestMemberEmail",
-            "Phone", "phoneNumber", "hhonorsNumber",
-            "Domain", "websiteDomain",
-            "generatedemailAddress", "generatedEmail",
-            "guestId", "guestID", "memberGuestID",
-            "accountId", "accountID",
-            "memberId", "memberID",
-            "partnerAccountId", "partnerAccountID"
-    };
+    /** identity.standard_fields in converter.config.json (via IdentityVocabulary). */
+    public static final String[] STANDARD_FIELDS = IdentityVocabulary.standardFields();
 
     /**
      * B2B-9098 DataGenInput {@code setPropertyValue} targets that are
@@ -298,7 +289,9 @@ public final class CtxFields {
             return false;
         }
         String n = key.toLowerCase().replace("_", "").replace("-", "");
-        return n.contains("sftokenid") && n.endsWith("generatedtokenid");
+        return IdentityVocabulary.salesforceEnabled()
+                && n.contains(IdentityVocabulary.salesforceSessionKeyFragment())
+                && n.endsWith("generatedtokenid");
     }
 
     /** US state codes, for the {@code state} name shape. */
@@ -322,7 +315,8 @@ public final class CtxFields {
         }
         // Salesforce record ids (sfdcID, sfdcContactID, salesforceLeadId):
         // the API validates them by regex; a 6-letter word was rejected.
-        if ((p.contains("sfdc") || p.contains("salesforce")) && p.endsWith("id")) {
+        if (IdentityVocabulary.salesforceEnabled()
+                && IdentityVocabulary.salesforceIdField().matcher(p).matches()) {
             return FakeData.faker().regexify("[a-zA-Z0-9]{18}");
         }
         // Domain-shaped names first: "emailDomain" contains "email" and was
@@ -386,7 +380,7 @@ public final class CtxFields {
      * allowlist does not know -- CreatePendingAccountmember then 400s.</p>
      */
     public static String allowedDomainOrNull() {
-        String picked = pickAllowedDomain(Config.get("ALLOWED_DOMAINS", ""),
+        String picked = pickAllowedDomain(Config.get(IdentityVocabulary.allowedDomainsKey(), ""),
                 java.util.concurrent.ThreadLocalRandom.current());
         if (picked == null && WARNED_NO_ALLOWED_DOMAINS.compareAndSet(false, true)) {
             org.slf4j.LoggerFactory.getLogger(CtxFields.class).warn(
@@ -434,15 +428,17 @@ public final class CtxFields {
         if (value == null || value.isEmpty()) return;
         String field = key.contains(".") ? key.substring(key.lastIndexOf('.') + 1) : key;
         String p = field.toLowerCase();
-        boolean sfId = (p.contains("sfdc") || p.contains("salesforce")) && p.endsWith("id");
-        if (sfId && !value.matches("[A-Za-z0-9]{15,18}")) {
+        boolean sfId = IdentityVocabulary.salesforceEnabled()
+                && IdentityVocabulary.salesforceIdField().matcher(p).matches();
+        if (sfId && !IdentityVocabulary.salesforceIdShape().matcher(value).matches()) {
             ctx.put(key, value);
             return;
         }
-        // memberGuestID is one of six fixed, pre-existing guests the author
-        // adds as a member (1900747836 in 29 cases); never Groovy-set. A
-        // generated id is a guest that does not exist -> add-member 404.
-        if (p.equals("memberguestid") && value.matches("\\d{6,}")) {
+        // A saved value the author refers to as a pre-existing fixture
+        // (identity.fixture_literal_fields, e.g. memberGuestID) is never
+        // generated: a made-up id is a record that does not exist (404).
+        String fixture = IdentityVocabulary.fixtureLiteralShape(field);
+        if (fixture != null && value.matches(fixture)) {
             ctx.put(key, value);
             return;
         }

@@ -2905,11 +2905,18 @@ def _step_needs_regen(step: "RestStep") -> bool:
     return False
 
 
+# identity.member_enroll_step_patterns in converter.config.json; `a+b`
+# means the (lower-cased, punctuation-free) step name contains both.
+_MEMBER_ENROLL_PATTERNS = ("memberhhonorsenroll", "hhonorsenrollmember", "member+hhonorsenroll")
+
+
 def _is_member_enroll_step(step_name: str) -> bool:
     n = re.sub(r"[^a-z0-9]", "", (step_name or "").lower())
-    return ("memberhhonorsenroll" in n
-            or "hhonorsenrollmember" in n
-            or ("member" in n and "hhonorsenroll" in n))
+    for pat in _MEMBER_ENROLL_PATTERNS:
+        parts = [p for p in pat.lower().split("+") if p]
+        if parts and all(p in n for p in parts):
+            return True
+    return False
 
 
 def _case_needs_member_email_remap(case) -> bool:
@@ -3342,20 +3349,16 @@ def _jira_issue_from_case(case_name: str) -> str:
     return m.group(1).upper().replace("_", "-")
 
 
+# project.partners in converter.config.json, first match wins.
+_PARTNER_TOKENS = (("amex", "amex"), ("silhouette", "silhouette"), ("h4l", "h4l"),
+                   ("h4b", "h4b"), ("lta", "lta"), ("_ta_", "lta"), ("smb", "smb"))
+
+
 def _infer_partner(case_name: str) -> str:
     n = (case_name or "").lower()
-    if "amex" in n:
-        return "amex"
-    if "silhouette" in n:
-        return "silhouette"
-    if "h4l" in n:
-        return "h4l"
-    if "h4b" in n:
-        return "h4b"
-    if "lta" in n or "_ta_" in n:
-        return "lta"
-    if "smb" in n:
-        return "smb"
+    for token, partner in _PARTNER_TOKENS:
+        if token in n:
+            return partner
     return ""
 
 
@@ -3655,6 +3658,10 @@ _PRODUCT_LINE_FLOW_TOKENS = frozenset({
 })
 
 
+# project.ticket_regex in converter.config.json: (ticket)(remainder).
+_JIRA_TICKET_RX = re.compile(r"^([A-Z][A-Z0-9]*[-_]?\d+)[-_ ]+(.+)$")
+
+
 def _split_case_jira(name: str) -> tuple[str, str]:
     """Peel `B2B-9033_` / `B2B339_` / `B2B-2680[Bug]_` off a SoapUI case
     name. Returns (jira_key_or_empty, remainder). Flatten suffixes
@@ -3680,7 +3687,7 @@ def _split_case_jira(name: str) -> tuple[str, str]:
     # The separator after the ticket is `_` in most names but `-` in
     # `B2B_3778-activationsource...` and `B2B-3234-Post_...`; both are the
     # same author habit and both must strip.
-    m = re.match(r"^([A-Z][A-Z0-9]*[-_]?\d+)[-_ ]+(.+)$", working)
+    m = _JIRA_TICKET_RX.match(working)
     if m:
         return m.group(1), m.group(2)
     return "", working
@@ -5055,16 +5062,13 @@ def _csv_cell(value: str, col_name: str = "") -> str:
         # member (six ids, 66 cases); rewriting it to a live placeholder
         # made the pack invent a guest that does not exist (404).
         if (not col_l.startswith("path_") and not col_l.startswith("expected_")
-                and not col_l.endswith("memberguestid")):
-            ID_HINTS = ("guestid", "accountid", "memberid", "hhonorsnumber",
-                        "hhonors_number", "partneraccountid", "customerid",
-                        "userid", "hilton_member_id", "hiltonmemberid")
+                and not any(col_l.endswith(fx) for fx in _FIXTURE_LITERAL_FIELDS)):
             # Match the FIELD, not the whole column: qry_<step>_<param>
             # carries the step name, and a step called *guestid* turned a
             # literal phone into @Properties_qry_..._phoneNumber@.
             _toks = [t for t in re.split(r"[._]", col_l) if t]
             _tails = {"_".join(_toks[-n:]) for n in (1, 2, 3) if len(_toks) >= n}
-            if any(h in t for t in _tails for h in ID_HINTS):
+            if any(h in t for t in _tails for h in _ID_HINTS):
                 # Strip the trailing prefix segment (`PropertiesDetails.` etc.)
                 # so the placeholder maps to the bare field name that
                 # random_email_generator + ctxGet's alias-walk understand.
@@ -5076,6 +5080,14 @@ def _csv_cell(value: str, col_name: str = "") -> str:
 
 
 _ABSENT_OPS = ("not exists", "notexists", "not-exists", "absent", "null", "is null")
+
+# identity.id_hint_fields: a CSV column whose field tail contains one of these
+# is a live id and is rewritten to an @Properties_<field>@ placeholder.
+_ID_HINTS = ("guestid", "accountid", "memberid", "hhonorsnumber",
+             "hhonors_number", "partneraccountid", "customerid",
+             "userid", "hilton_member_id", "hiltonmemberid")
+# identity.fixture_literal_fields: never rewritten (a pre-existing fixture).
+_FIXTURE_LITERAL_FIELDS = {"memberguestid": r"\d{6,}"}
 
 
 def _jlit(value: str) -> str:
@@ -5850,6 +5862,7 @@ class Emitter:
         "ImportedTemplates.java",
         "ImportedTestdataCleanup.java",
         "TestThreadState.java",
+        "IdentityVocabulary.java",
     })
 
     def _write(self, rel_path: str, content: str) -> str:
@@ -10622,6 +10635,9 @@ public final class AuthHelper {{
         # with "cannot find symbol: TestThreadState" on generated code the user
         # never wrote.
         "TestThreadState.java",
+        # The project vocabulary (converter.config.json identity/heuristics),
+        # read by CtxFields / ImportedScenario / ImportedTestdataCleanup.
+        "IdentityVocabulary.java",
     )
 
     def emit_framework_support(self) -> list[str]:
@@ -10648,6 +10664,15 @@ public final class AuthHelper {{
                 content = content.replace("com.ak.api", self.package_root)
             rel = f"src/main/java/{pkg.replace('.', '/')}/{name}"
             written.append(self._write(rel, content))
+        # The runtime's copy of identity + heuristics (IdentityVocabulary
+        # reads it from the classpath). Regenerated every convert from
+        # converter.config.json; never hand-edited.
+        import json as _json
+        import converter_config as _cc
+        res = _cc.identity_resource(converter_config())
+        written.append(self._write(
+            "src/main/resources/" + "converter_identity.json",
+            _json.dumps(res, indent=2, ensure_ascii=False) + "\n"))
         return written
 
     def emit_per_method_csv_data_provider(self) -> str:
@@ -15976,6 +16001,7 @@ def _main_dispatch_inner(args):
     for _problem in _cc.validate(_CONVERTER_CONFIG):
         print(f"[ra_converter] config: {_problem}")
         return 2
+    _cc.apply_to_modules(_CONVERTER_CONFIG)
     _PHASE_SPECS = bool(getattr(args, "phase_specs", False))
     import fluent_scenario as _fs
     _fs.PHASE_SPECS = _PHASE_SPECS

@@ -705,8 +705,28 @@ def _var_backed_publications(script: str) -> dict:
     return out
 
 
+# identity.identity_hints in converter.config.json (rebound by
+# converter_config.apply_to_modules).
 _IDENTITY_HINTS = ("username", "email", "name", "phone", "domain", "website",
                    "firstname", "lastname", "address", "city", "state", "postal")
+# identity.standard_fields: what every generator pack writes.
+_STANDARD_FIELDS = [
+    "Username", "usernamemember", "usernameM",
+    "Email", "EmailMember", "guestMemberEmail",
+    "Phone", "phoneNumber", "hhonorsNumber",
+    "Domain", "websiteDomain",
+    "generatedemailAddress", "generatedEmail",
+    "guestId", "guestID", "memberGuestID",
+    "accountId", "accountID",
+    "memberId", "memberID",
+    "partnerAccountId", "partnerAccountID",
+]
+# heuristics.otp: which JDBC columns are one-time codes to zero-pad.
+_OTP_PAD_WIDTH = 6
+_OTP_CODE_LIKE = ("otp", "totp", "pin")
+_OTP_CODE_EXCLUSIONS = ("prop", "brand", "product", "rate", "room", "zip",
+                        "postal", "country", "currency", "iata", "airport",
+                        "source", "record", "record_type")
 
 
 def _second_namespace_extras(script: str, covered: set, skip_fields: set) -> dict:
@@ -2030,17 +2050,7 @@ def translate(script: str, response_var_by_step: dict[str, str],
         # ALWAYS set lives in CtxFields.STANDARD_FIELDS. Script
         # setPropertyValue targets that are not first-letter aliases of
         # that set (name, Firstname, guestID2, ...) are extras.
-        _standard = [
-            "Username", "usernamemember", "usernameM",
-            "Email", "EmailMember", "guestMemberEmail",
-            "Phone", "phoneNumber", "hhonorsNumber",
-            "Domain", "websiteDomain",
-            "generatedemailAddress", "generatedEmail",
-            "guestId", "guestID", "memberGuestID",
-            "accountId", "accountID",
-            "memberId", "memberID",
-            "partnerAccountId", "partnerAccountID",
-        ]
+        _standard = list(_STANDARD_FIELDS)
         covered = set()
         for s in _standard:
             covered.add(s)
@@ -3386,12 +3396,8 @@ def translate(script: str, response_var_by_step: dict[str, str],
                 # padded to 6 digits and rejected by the propCode regex.
                 _nm = (outer + " " + field).lower()
                 _is_code_like = (
-                    any(kw in _nm for kw in ("otp", "totp", "pin"))
-                    or ("code" in _nm and not any(
-                        x in _nm for x in ("prop", "brand", "product", "rate",
-                                           "room", "zip", "postal", "country",
-                                           "currency", "iata", "airport",
-                                           "source", "record", "record_type"))))
+                    any(kw in _nm for kw in _OTP_CODE_LIKE)
+                    or ("code" in _nm and not any(x in _nm for x in _OTP_CODE_EXCLUSIONS)))
                 if _is_code_like:
                     lines.append(
                         f'                        if (__v_{outer} != null) {{')
@@ -3402,7 +3408,7 @@ def translate(script: str, response_var_by_step: dict[str, str],
                     # different width, add a config override.
                     lines.append(
                         f'                                {outer} = String.format('
-                        f'"%06d", ((Number) __v_{outer}).longValue());')
+                        f'"%0{_OTP_PAD_WIDTH}d", ((Number) __v_{outer}).longValue());')
                     lines.append(
                         f'                            }} else {{')
                     lines.append(
@@ -3423,11 +3429,11 @@ def translate(script: str, response_var_by_step: dict[str, str],
                         f'                                {outer} = {outer}.trim();')
                     lines.append(
                         f'                                if (!{outer}.isEmpty() '
-                        f'&& {outer}.length() < 6 && {outer}.chars()'
+                        f'&& {outer}.length() < {_OTP_PAD_WIDTH} && {outer}.chars()'
                         f'.allMatch(Character::isDigit)) {{')
                     lines.append(
                         f'                                    String __padded = '
-                        f'String.format("%6s", {outer}).replace(\' \', \'0\');')
+                        f'String.format("%{_OTP_PAD_WIDTH}s", {outer}).replace(\' \', \'0\');')
                     lines.append(
                         f'                                    LOG.info(" .. [OTP pad] '
                         f'expanding {{}}-char DB value \'{{}}\' -> \'{{}}\'", '
