@@ -1,6 +1,0 @@
-# SoapUI project XMLs are inputs, not converter code. Keep local.
-input/
-
-# Python bytecode cache
-__pycache__/
-*.pyc

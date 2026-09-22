@@ -39,13 +39,15 @@ src/main/resources/program_configuration.json
 program_configuration.json
 
 # ra_converter output derived from customer SoapUI project XMLs.
-# The input XML is gitignored (tools/ra_converter/.gitignore), and the
+# The input XML is gitignored (src/main/b2b-api-ai/tools/ra_converter/
+# .gitignore), and the
 # EMITTED artifacts (tests, CSVs, request-body templates, audit ledger,
 # flow diagrams, suite XMLs) leak customer-internal API details --
 # endpoint paths, request/response schemas, test-case IDs, hardcoded
 # usernames/emails/IDs. Keep them purely local. Framework files under
 # src/main/java/com/ak/api/{data,reporting,rest/utilities,tests/BaseApiTest}
-# and tools/ra_converter/*.py are committed; suite-scoped outputs below
+# and src/main/b2b-api-ai/tools/ra_converter/*.py are committed;
+# suite-scoped outputs below
 # are not.
 _audit/
 _flows/
