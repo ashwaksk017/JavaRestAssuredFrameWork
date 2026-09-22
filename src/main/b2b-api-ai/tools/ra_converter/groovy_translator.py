@@ -1299,6 +1299,26 @@ _CONTEXT_EXPAND_ANY_RX = re.compile(
 # publish it to ctx under its own name, so both direct references
 # (`sql.execute("... = ?", [X])` -> our #ident# rewrite finds `X` in
 # ctx) and re-refs (`context.expand('${X}')`) resolve.
+# Every DB-touching Groovy script expands these four to build its own
+# JDBC connection. The emitted Java never uses them -- Db owns the
+# connection and reads db.url / db.user / db.password / db.driver itself.
+# Binding them emitted eight dead lines per block AND made identical DB
+# blocks differ, which blocked phase reuse.
+_DB_CONNECTION_PROPS = ("DB_URL", "DB_USER", "DB_PASSWORD", "DB_DRIVER")
+
+
+def _is_db_connection_ref(ref: str) -> bool:
+    """True for `${#Project#DB_URL}` and friends.
+
+    Matched on the PROPERTY name, not the Groovy variable: this suite
+    binds DB_DRIVER to both `driver` and `dbDriver`, so a variable-name
+    list would leave one of them behind and the blocks still would not
+    match each other.
+    """
+    m = re.search(r"#Project#([A-Za-z0-9_]+)\}", ref or "")
+    return bool(m) and m.group(1).upper() in _DB_CONNECTION_PROPS
+
+
 _DEF_CONTEXT_EXPAND_RX = re.compile(
     r"def\s+(?P<var>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
     r"context\.expand\(\s*['\"](?P<ref>\$\{[^}]+\})['\"]\s*\)")
@@ -1578,13 +1598,29 @@ def translate(script: str, response_var_by_step: dict[str, str],
     # or use `#X#` placeholders -- the raw Java local is a
     # translation artifact, not a public contract.
     _context_expand_vars: list[tuple[str, str, str]] = []
+    _dropped_db_props: list[str] = []
     for m in _DEF_CONTEXT_EXPAND_RX.finditer(script):
         var = m.group("var")
         if any(v[0] == var for v in _context_expand_vars):
             continue
+        ref = m.group("ref")
+        if _is_db_connection_ref(ref):
+            prop = re.search(r"#Project#([A-Za-z0-9_]+)\}", ref).group(1)
+            if prop not in _dropped_db_props:
+                _dropped_db_props.append(prop)
+            continue
         java_expr = _translate_soapui_ref_to_java_expr(
-            m.group("ref"), response_var_by_step)
-        _context_expand_vars.append((var, java_expr, m.group("ref")))
+            ref, response_var_by_step)
+        _context_expand_vars.append((var, java_expr, ref))
+    if _dropped_db_props:
+        # One line of provenance beats eight dead ones: a reader who goes
+        # looking for the connection setup finds out where it went.
+        lines.append(
+            "// [translated] DB connection properties ("
+            + ", ".join(_dropped_db_props)
+            + ") not bound -- Db opens the connection from its own config")
+        patterns_matched.append("context_expand_db_config_dropped")
+        consumed = True
     if _context_expand_vars:
         lines.append('{')
         for var, java_expr, ref in _context_expand_vars:

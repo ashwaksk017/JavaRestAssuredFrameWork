@@ -1406,6 +1406,90 @@ def parse_test_suites(xml_path: str) -> list[tuple[str, list[TestCase]]]:
 
 
 # ---------------------------------------------------------------------------
+_SECRET_RX = re.compile(r"(?i)(pass|pwd|secret|token|credential|apikey|api_key)")
+
+
+def _redact_argv(argv: list) -> str:
+    """Command line with any secret-looking flag VALUE masked. The converter
+    takes paths and names, but a future flag must not leak a credential into
+    a committed audit report."""
+    out: list[str] = []
+    mask_next = False
+    for a in argv:
+        a = str(a)
+        if mask_next and not a.startswith("-"):
+            out.append("***")
+            mask_next = False
+            continue
+        mask_next = False
+        if a.startswith("-") and _SECRET_RX.search(a):
+            if "=" in a:
+                out.append(a.split("=", 1)[0] + "=***")
+                continue
+            mask_next = True
+        out.append(a)
+    return " ".join(out)
+
+
+def _build_provenance(args) -> dict:
+    """What produced this tree: converter revision, command, config."""
+    import hashlib
+    import subprocess
+    here = os.path.dirname(os.path.abspath(__file__))
+    rev = ""
+    try:
+        rev = subprocess.run(
+            ["git", "-C", here, "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=10).stdout.strip()
+        dirty = subprocess.run(
+            ["git", "-C", here, "status", "--porcelain", "--", "."],
+            capture_output=True, text=True, timeout=10).stdout.strip()
+        if rev and dirty:
+            rev += " (uncommitted changes)"
+    except Exception:  # git absent or not a repo -- provenance is best effort
+        rev = ""
+    prov = {
+        "converter": rev or "unknown revision",
+        "command": _redact_argv(sys.argv),
+    }
+    try:
+        import converter_config as _cc
+        files = [p for p in (_cc.DEFAULT_PATH, _cc.LOCAL_PATH,
+                             getattr(args, "config", None))
+                 if p and os.path.isfile(p)]
+        prov["config_files"] = [
+            os.path.relpath(p, here) if str(p).startswith(here) else p
+            for p in files]
+        eff = json.dumps(converter_config(), sort_keys=True).encode()
+        prov["config_sha"] = hashlib.sha256(eff).hexdigest()[:16]
+    except Exception:
+        pass
+    res = os.path.join(args.output, "src", "main", "resources",
+                       "converter_identity.json")
+    if os.path.isfile(res):
+        prov["identity_resource"] = "src/main/resources/converter_identity.json"
+    return prov
+
+
+def _provenance_lines(prov: dict | None) -> list:
+    """Summary.md lines naming WHAT produced this tree. Without these, two
+    trees built from one XML can differ (different converter commit, flags
+    or converter.config.json) with nothing in the report explaining why."""
+    if not prov:
+        return []
+    out = ["- Converter: " + str(prov.get("converter", "unknown"))]
+    if prov.get("command"):
+        out.append(f"- Command: `{prov['command']}`")
+    cfgs = prov.get("config_files") or []
+    out.append("- Config: " + (", ".join(f"`{c}`" for c in cfgs)
+                               if cfgs else "built-in defaults only"))
+    if prov.get("config_sha"):
+        out.append(f"- Effective config sha256: `{prov['config_sha']}`")
+    if prov.get("identity_resource"):
+        out.append(f"- Runtime identity resource: `{prov['identity_resource']}`")
+    return out
+
+
 # Audit ledger: proves every SoapUI assertion / Groovy block was translated
 # (or explicitly skipped) so you can trust the conversion end-to-end.
 # ---------------------------------------------------------------------------
@@ -1540,6 +1624,24 @@ class AuditLedger:
     def add_placeholder(self, case, name, kind):
         self.placeholders.append((case, name, kind))
 
+    def add_case_coverage(self, soapui_suite, soapui_case, java_class_fqn,
+                           java_method, role, active_assertions,
+                           disabled_assertions):
+        """Record one converted ReadyAPI case and how its assertions are
+        covered.
+
+        A cluster emits ONE @Test method from its first case, and the other
+        members run that same Java with their own CSV row. Only the emitting
+        case reaches ``add_assertion``, so assertions.csv alone cannot be
+        reconciled against the source XML -- the members look absent.
+        ``role`` is 'emitted' for the case whose steps were rendered and
+        'shared' for a member covered by that method."""
+        if not hasattr(self, "case_coverage"):
+            self.case_coverage = []
+        self.case_coverage.append(
+            (soapui_suite, soapui_case, java_class_fqn, java_method, role,
+             active_assertions, disabled_assertions))
+
     def add_case_mapping(self, soapui_suite, soapui_case, xray_key,
                            java_class_fqn, java_method, csv_path,
                            cluster_size, cluster_row_index, expected_status):
@@ -1617,6 +1719,14 @@ class AuditLedger:
             "jdbc-mutation-skip": "untranslated Groovy JDBC mutation -- test throws SkipException",
             "unresolved-project-ref": "Groovy uses `#Project#Foo` not in Config -- resolves empty",
             "unresolved-step-ref": "`${step#Response#...}` refers to step not in the same method",
+            "framework-file-refreshed": "bundled framework file overwrote a stale on-disk copy",
+            "framework-file-kept": "author-editable file on disk kept; bundled version NOT emitted",
+            "bundled-framework-file-missing": "a support class could not be emitted -- compile will fail",
+            "phase-spec-text-path": "a phase group fell back to the text path instead of a spec",
+            "phase-spec-capture-failed": "phase bookkeeping threw; the step still emitted",
+            "diagram-image-not-rendered": "diagram images were requested but not produced",
+            "dedup-report-skipped": "the reuse section is missing from summary.md",
+            "service-client-name-collision": "two suites claimed one *Client name; second was renamed",
         }
         for cat, n in sorted(by_cat.items(), key=lambda x: -x[1]):
             meaning = MEANINGS.get(cat, "(no meaning registered)")
@@ -1647,7 +1757,7 @@ class AuditLedger:
             f.write("\n".join(lines) + "\n")
 
     def write(self, output_dir: str, source_xml: str, generated_at: str,
-               suite_name: str = "") -> None:
+               suite_name: str = "", provenance: dict | None = None) -> None:
         # Namespace the audit under the suite so multiple imports coexist.
         sub = suite_name if suite_name else "_default"
         base = os.path.join(output_dir, "_audit", sub)
@@ -1707,6 +1817,14 @@ class AuditLedger:
         # (see AuditLedger.add_preflight_finding). Written whether or not
         # findings exist so a QA lead can trust "empty preflight.csv =
         # nothing flagged" instead of second-guessing whether the check ran.
+        # Every converted case, including cluster members that share one
+        # @Test method. Lets summary.md reconcile the audit against the
+        # source XML instead of silently dropping shared members.
+        self._write_csv(
+            os.path.join(base, "case_coverage.csv"),
+            ["soapui_suite", "soapui_case", "java_class_fqn", "java_method",
+             "role", "active_assertions", "disabled_assertions"],
+            getattr(self, "case_coverage", []))
         pre_rows = getattr(self, "preflight", [])
         self._write_csv(
             os.path.join(base, "preflight.csv"),
@@ -1765,6 +1883,7 @@ class AuditLedger:
             f"- Generated: {generated_at}",
             f"- Source XML: `{source_xml}`",
             f"- Output root: `{output_dir}`",
+            *_provenance_lines(provenance),
             "",
             *preflight_callout,
             "## Coverage summary",
@@ -1791,6 +1910,35 @@ class AuditLedger:
             f"- True CSV columns: **{ph_counts.get('csv', 0)}** placeholders",
             "",
         ]
+
+        # ---- Source reconciliation -----------------------------------
+        cov_rows = getattr(self, "case_coverage", []) or []
+        if cov_rows:
+            emitted = [r for r in cov_rows if r[4] == "emitted"]
+            shared = [r for r in cov_rows if r[4] != "emitted"]
+            def _sum(rows, i):
+                return sum(int(r[i] or 0) for r in rows)
+            lines.extend([
+                "## Source reconciliation",
+                "",
+                "> Cluster members share one `@Test` method with the case that",
+                "> was rendered, running the same Java with their own CSV row.",
+                "> Only the rendered case reaches assertions.csv, so the rows",
+                "> there are fewer than the source XML holds. This table makes",
+                "> the difference explicit instead of leaving it unexplained.",
+                "",
+                "| Scope | Cases | Active assertions | Disabled |",
+                "|---|---:|---:|---:|",
+                f"| Converted (all) | {len(cov_rows)} | "
+                f"{_sum(cov_rows, 5)} | {_sum(cov_rows, 6)} |",
+                f"| Rendered (own rows in assertions.csv) | {len(emitted)} | "
+                f"{_sum(emitted, 5)} | {_sum(emitted, 6)} |",
+                f"| Share a rendered case's method | {len(shared)} | "
+                f"{_sum(shared, 5)} | {_sum(shared, 6)} |",
+                "",
+                f"Full list: `case_coverage.csv`.",
+                "",
+            ])
 
         # ---- ReadyAPI -> REST Assured case mapping -------------------
         if self.case_mapping:
@@ -4420,8 +4568,38 @@ def _cluster_cases_by_shape(cases: list["TestCase"]) -> list[list["TestCase"]]:
     return [clusters[k] for k in order]
 
 
+def _shorten_method_name(name: str, max_len: int, reserve: int = 0) -> str:
+    """Trim a `...Test` method name to `max_len`, keeping the suffix.
+
+    `reserve` holds back room for a collision counter the caller may still
+    append, so shortening cannot push a name back over the limit.
+
+    Cuts on a camelCase word boundary when one is available in the last
+    third of the budget, so `createAndActivateInternationalPostalCodeTest`
+    degrades to `createAndActivateInternationalTest` rather than to a
+    word fragment. Returns the name unchanged when it already fits or
+    when `max_len <= 0` (the documented way to disable truncation)."""
+    if max_len <= 0 or len(name) <= max_len:
+        return name
+    suffix = "Test" if name.endswith("Test") else ""
+    stem = name[:-len(suffix)] if suffix else name
+    budget = max_len - len(suffix) - reserve
+    if budget < 1:
+        return name
+    cut = stem[:budget]
+    # Prefer a word boundary, but never give back more than a third.
+    floor = max(1, int(budget * 0.66))
+    for i in range(len(cut) - 1, floor - 1, -1):
+        if cut[i].isupper():
+            cut = cut[:i]
+            break
+    cut = cut.rstrip("_") or stem[:budget]
+    return cut + suffix
+
+
 def _cluster_method_name(cluster: list["TestCase"],
-                          seen_bases: dict[str, int]) -> tuple[str, str, str]:
+                          seen_bases: dict[str, int],
+                          max_len: int = 0) -> tuple[str, str, str]:
     """Return (method_name, expected_status_code, variant) for a cluster.
 
     Uses the first case's business-intent name as the base. When multiple
@@ -4436,12 +4614,28 @@ def _cluster_method_name(cluster: list["TestCase"],
     # the non-clustered v2 code used before. Multi-case clusters drop
     # the variant from the method name (each case's variant is a CSV row).
     if len(cluster) == 1 and variant:
-        key = f"{base[:-4]}_{variant}Test"
+        # `V2Test`, not `_2Test`: an emitted name is camelCase throughout.
+        key = f"{base[:-4]}V{variant}Test"
     else:
         key = base
+    # Truncate BEFORE counting. Counting first would let two names that
+    # differ only past the cut share one counter slot, and two @Test
+    # methods would then resolve to the same CSV file.
+    key = _shorten_method_name(key, max_len, reserve=3)
     n = seen_bases.get(key, 0) + 1
     seen_bases[key] = n
-    final = key if n == 1 else f"{key[:-4]}_c{n}Test"
+    # `C2Test`, not `_c2Test` -- same reason as the variant above.
+    if n == 1:
+        final = key
+    else:
+        tag = f"C{n}"
+        final = f"{key[:-4]}{tag}Test"
+        # A name that already FIT the cap was never truncated, so the
+        # reserve above never applied to it -- appending the counter can
+        # still push it over. Re-trim with the tag width accounted for.
+        if 0 < max_len < len(final):
+            trimmed = _shorten_method_name(key, max_len - len(tag))
+            final = f"{trimmed[:-4]}{tag}Test"
     # Cluster-level status/variant only meaningful for single-case
     # clusters; for multi-case clusters they vary per row and are
     # blank at the method level.
@@ -5726,6 +5920,10 @@ class Emitter:
         # 150 hooks per file: 743 in one class was 2,046 KB, and IntelliJ
         # stops code insight at 2,500 KB. A method ref names its chunk.
         self._hooks_per_file = 150
+        # Builders are deduped SUITE-WIDE, not per Phases class.
+        self._suite_spec_java: list = []
+        self._spec_by_body: dict = {}
+        self._specs_per_file = 150
         self._spec_vocabs: set[str] = set()
         self._spec_verify_vocabs: dict[str, set] = {}
         self._spec_fallbacks: dict[str, int] = {}
@@ -5895,10 +6093,21 @@ class Emitter:
                         kept = " (could not back up: %s)" % exc
                     print(f"[ra_converter] REFRESH (stale author-editable): "
                           f"{rel_path} -- {reason}.{kept}")
+                    # Console-only, this decision silently changes which
+                    # framework code the run machine executes.
+                    if getattr(self, "ledger", None):
+                        self.ledger.add_preflight_finding(
+                            "MEDIUM", "framework-file-refreshed", rel_path,
+                            "bundled version overwrote the on-disk copy: %s" % reason)
                     # fall through and write the bundled version
                 else:
                     print(f"[ra_converter] SKIP (author-editable, exists): {rel_path}"
                           f" -- delete file to re-emit the bundled version.")
+                    # The mechanism that lets a tree run stale framework code.
+                    if getattr(self, "ledger", None):
+                        self.ledger.add_preflight_finding(
+                            "INFO", "framework-file-kept", rel_path,
+                            "on-disk author-editable copy kept; bundled version not emitted")
                     self.written.append(rel_path)
                     return abs_path
         # Windows caps traditional paths at MAX_PATH (260 chars). Suite +
@@ -6719,17 +6928,18 @@ public interface ImportedRestClient {{
                 rest_lines, 15000, step.step_name, expected_status)
             lines.extend(rest_lines)
         elif isinstance(step, GroovyStep):
-            # Console marker so a groovy-side hang or long-running side
-            # effect is attributable in the log stream.
+            # Console marker so a script-step hang or long-running side
+            # effect is attributable in the log stream. (The step is
+            # translated Java; 'groovy' only described the SOURCE.)
             lines.append(
-                f'LOG.info(" .. groovy step: {_jlit(step.step_name)}");')
+                f'LOG.info(" .. script step: {_jlit(step.step_name)}");')
             # Allure step marker so translated Groovy work (token extract,
             # data-gen, DB operations) shows up as its own node in the
             # Allure report tree instead of collapsing into the enclosing
             # REST step's attachments.
             lines.append(
                 f'io.qameta.allure.Allure.step('
-                f'"groovy: {_jlit(step.step_name)}");')
+                f'"script: {_jlit(step.step_name)}");')
             lines.extend(self._render_groovy_translated(step))
         elif isinstance(step, PropertiesStep):
             # Values still populate: CtxFields.seedFromRow reads CSV,
@@ -7919,6 +8129,10 @@ public interface ImportedRestClient {{
         except Exception as _spec_err:  # bookkeeping must never break emission
             print(f"[ra_converter] phase-spec capture failed for step "
                   f"{step.step_name!r}: {_spec_err}")
+            if getattr(self, "ledger", None):
+                self.ledger.add_preflight_finding(
+                    "MEDIUM", "phase-spec-capture-failed", self._current_case,
+                    "%s: %s" % (step.step_name, _spec_err))
 
         # Advance the cluster REST-step position so the next call reads
         # assertions from position+1.
@@ -9961,6 +10175,14 @@ public final class SetupHelper {{
             images = mermaid_png.render_case_images(
                 self.output_dir, self.suite_name,
                 [(c.name, rel) for c, rel in case_files], png_cfg)
+            _missing = [c.name for c, _ in case_files if not images.get(c.name)]
+            if _missing and getattr(self, "ledger", None):
+                # Rendering degrades quietly (no renderer, CDN blocked).
+                # Say so in the audit or a user sees only missing images.
+                self.ledger.add_preflight_finding(
+                    "INFO", "diagram-image-not-rendered", "",
+                    "%d of %d case diagram(s) produced no image; e.g. %s"
+                    % (len(_missing), len(case_files), _missing[0]))
             for c, rel in case_files:
                 img = images.get(c.name)
                 if not img:
@@ -10165,7 +10387,7 @@ public final class SetupHelper {{
             path = _lbl(step.resource_path or "", 48)
             return ("[", "]"), f"{verb} {name}<br/>{path}"
         if isinstance(step, GroovyStep):
-            return ("([", "])"), f"groovy: {name}"
+            return ("([", "])"), f"script: {name}"
         if isinstance(step, PropertiesStep):
             return ("[(", ")]"), f"seed {name}"
         if isinstance(step, DelayStep):
@@ -10180,7 +10402,7 @@ public final class SetupHelper {{
             path = _lbl(step.resource_path or "", 60)
             return "REST", f"{verb} `{path}`"
         if isinstance(step, GroovyStep):
-            return "GROOVY", "extract / generate / JDBC in Groovy"
+            return "SCRIPT", "extract / generate / JDBC"
         if isinstance(step, PropertiesStep):
             n = sum(1 for _k, v in (step.properties or {}).items() if (v or "").strip())
             return "PROPS", f"seedFromRow ({n} XML values)"
@@ -10517,6 +10739,10 @@ public final class AuthHelper {{
             src = os.path.join(src_dir, name)
             if not os.path.isfile(src):
                 print(f"[ra_converter] WARNING: bundled framework file missing: {src}")
+                if getattr(self, "ledger", None):
+                    self.ledger.add_preflight_finding(
+                        "MEDIUM", "bundled-framework-file-missing", name,
+                        "expected at %s; support class will be absent" % src)
                 continue
             with open(src, encoding="utf-8") as f:
                 content = f.read()
@@ -11258,7 +11484,8 @@ public final class PlaceholderResolver {{
         seen_bases: dict[str, int] = {}
         self._cluster_to_method: dict[int, tuple[str, str, str]] = {}
         for idx, cluster in enumerate(self._clusters):
-            self._cluster_to_method[idx] = _cluster_method_name(cluster, seen_bases)
+            self._cluster_to_method[idx] = _cluster_method_name(
+                cluster, seen_bases, self.max_name_len)
 
         method_names: list[str] = []
         rendered_methods: list[str] = []
@@ -11543,7 +11770,9 @@ public class {class_name} extends BaseApiTest {{
                     lines.append("__restStepIdx++;")
                     lines.append(
                         "if (!__stopAfter.isEmpty() && __restStepIdx >= "
-                        f"Integer.parseInt(__stopAfter)) {{ {early_return} }}")
+                        "Integer.parseInt(__stopAfter)) { "
+                        "__noteStoppedEarly(__stopAfter, __restStepIdx); "
+                        f"{early_return} }}")
                 lines.append("")
             return rewrite_response_to_fields(lines)
 
@@ -11629,7 +11858,9 @@ public class {class_name} extends BaseApiTest {{
                 bootstrap_lines.append(f"__restStepIdx += {helper_rest};")
                 bootstrap_lines.append(
                     "if (!__stopAfter.isEmpty() && __restStepIdx >= "
-                    "Integer.parseInt(__stopAfter)) { return this; }")
+                    "Integer.parseInt(__stopAfter)) { "
+                    "__noteStoppedEarly(__stopAfter, __restStepIdx); "
+                    "return this; }")
         bootstrap_lines.extend(start_java)
         bootstrap_part = None
         rest_offset = 0
@@ -12185,6 +12416,140 @@ public class {class_name} extends BaseApiTest {{
         print(f"[ra_converter] fluent reuse catalog: {path}  "
               f"({len(cat.get('phases') or {})} shared phase(s) across suites)")
 
+    # Families consolidated into one parameterised implementation.
+    # Deliberately narrow for the first cut: one family, so a regression
+    # cannot spread across the other 88.
+    # "*" = every family. Each group still needs an identical
+    # skeleton and at least one varying slot, so a family whose
+    # bodies genuinely differ is left exactly as it was.
+    # "*" = every family; empty = off. Env-var so an A/B convert needs
+    # no source edit (and so this can be switched off in the field
+    # without a patch if a family ever folds wrongly).
+    _CONSOLIDATE_FAMILIES = os.environ.get("RA_CONSOLIDATE", "*")
+
+    _STR_SLOT = re.compile(r'"(?:[^"\\]|\\.)*"')
+    _RES_SLOT = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*Res)\b")
+    _TMPL_SLOT = re.compile(r"Templates\.([A-Z0-9_]+)")
+
+    # Template constants are the dominant axis across these families; with
+    # no slot for them, bodies differing only by Templates.X cannot group.
+    # They are `static final String`, so they need no new parameter type.
+    #
+    # These asserts run at class creation. A dead pattern yields zero
+    # groups, which reads as "nothing to fold" rather than as a bug --
+    # exactly how the previous break hid. Now it fails at import.
+    assert _STR_SLOT.search('.name("x")'), "_STR_SLOT is dead"
+    assert _RES_SLOT.search('safeJsonExtract(fooRes, "a")'), "_RES_SLOT is dead"
+    assert _TMPL_SLOT.search('.template(Templates.X_Y)'), "_TMPL_SLOT is dead"
+
+    @classmethod
+    def _skeleton(cls, body: list[str]) -> tuple[str, list[tuple[str, str]]]:
+        """Body with code literals/response refs slotted out.
+
+        Returns (skeleton, slots) where each slot is (kind, value) and
+        kind is "S" for a string literal or "R" for a response field.
+        Comment-only lines are emitted verbatim and never slotted.
+        """
+        slots: list[tuple[str, str]] = []
+        out: list[str] = []
+        # A body that writes a response field and reads it back must not
+        # have the read parameterised: the impl would then use the
+        # caller's stale value instead of the one it just assigned.
+        assigned = set(re.findall(r"(?:this\.)?([A-Za-z_][A-Za-z0-9_]*Res)\s*=",
+                                  NL.join(body or [])))
+        for line in body or []:
+            stripped = line.strip()
+            if stripped.startswith("//") or stripped.startswith("*"):
+                out.append(line)
+                continue
+            # never slot an assignment target: `this.fooRes = ...`
+            lhs = ""
+            rest = line
+            m = re.match(r"(\s*(?:this\.)?[A-Za-z_][A-Za-z0-9_]*Res\s*=\s*)(.*)$", line)
+            if m:
+                lhs, rest = m.group(1), m.group(2)
+
+            def take_str(mo):
+                slots.append(("S", mo.group(0)))
+                return "\x00S%d\x00" % (len(slots) - 1)
+
+            def take_res(mo):
+                if mo.group(1) in assigned:
+                    return mo.group(0)
+                slots.append(("R", mo.group(1)))
+                return "\x00R%d\x00" % (len(slots) - 1)
+
+            rest = cls._STR_SLOT.sub(take_str, rest)
+            rest = cls._RES_SLOT.sub(take_res, rest)
+
+            def take_tmpl(mo):
+                slots.append(("T", mo.group(0)))
+                return "\x00T%d\x00" % (len(slots) - 1)
+
+            rest = cls._TMPL_SLOT.sub(take_tmpl, rest)
+            out.append(lhs + rest)
+        return NL.join(out), slots
+
+    @staticmethod
+    def _fill_skeleton(skel: str, values: list[str]) -> str:
+        for i, v in enumerate(values):
+            for kind in ("S", "R", "T"):
+                skel = skel.replace("\x00%s%d\x00" % (kind, i), v)
+        return skel
+
+    def _consolidate_families(self, phases: dict, name_of=None,
+                              suffix: str = "Impl") -> tuple[dict, list[str]]:
+        """Fold each group of same-skeleton methods into one implementation."""
+        groups: dict = {}
+        for fkey, body in phases.items():
+            fname = name_of(fkey) if name_of else fkey
+            stem = re.sub(r"\d+$", "", fname)
+            if self._CONSOLIDATE_FAMILIES != "*" and stem not in self._CONSOLIDATE_FAMILIES:
+                continue
+            skel, slots = self._skeleton(body)
+            groups.setdefault((stem, skel), []).append((fkey, slots))
+
+        if not groups:
+            return phases, []
+
+        out = dict(phases)
+        impls: list[str] = []
+        per_stem: dict = {}
+        for (stem, skel), members in sorted(groups.items(), key=lambda kv: kv[0][0]):
+            if len(members) < 2:
+                continue
+            n_slots = len(members[0][1])
+            if any(len(sl) != n_slots for _f, sl in members):
+                continue                      # defensive: shapes disagree
+            varying = [i for i in range(n_slots)
+                       if len({sl[i][1] for _f, sl in members}) > 1]
+            if not varying:
+                continue                      # identical bodies: existing dedup owns these
+            kinds = [members[0][1][i][0] for i in varying]
+            params = ["p%d" % (k + 1) for k in range(len(varying))]
+            sig = ", ".join(
+                ("Response %s" if kinds[k] == "R" else "String %s") % params[k]
+                for k in range(len(varying)))
+
+            filled = list(members[0][1])
+            body_vals = [v for _k, v in filled]
+            for k, i in enumerate(varying):
+                body_vals[i] = params[k]
+            n = per_stem.get(stem, 0) + 1
+            per_stem[stem] = n
+            impl = stem + suffix + (str(n) if n > 1 else "")
+            impl_body = self._fill_skeleton(skel, body_vals)
+            impls.append(
+                "    private void %s(%s) throws Exception {%s%s%s    }%s"
+                % (impl, sig, NL,
+                   self._indent_java(impl_body.split(NL), 8), NL, NL))
+            for fkey, slots in members:
+                args = ", ".join(slots[i][1] for i in varying)
+                out[fkey] = ["%s(%s);" % (impl, args)]
+            print("[ra_converter] consolidated %s: %d methods -> 1 impl(%d param) + %d wrapper(s)"
+                  % (stem, len(members), len(varying), len(members)))
+        return out, impls
+
     def _fluent_fingerprint(self, body: list[str]) -> str:
         _here = os.path.dirname(os.path.abspath(__file__))
         if _here not in sys.path:
@@ -12202,7 +12567,7 @@ public class {class_name} extends BaseApiTest {{
         if not shared:
             return False
         return self._fluent_fingerprint(body) == self._fluent_fingerprint(
-            shared.get("body") or [])
+            shared.get("match_body") or shared.get("body") or [])
 
     def _shared_verify_matches(self, vcls: str, vmeth: str,
                                body: list[str]) -> bool:
@@ -12210,7 +12575,7 @@ public class {class_name} extends BaseApiTest {{
         if not shared:
             return False
         return self._fluent_fingerprint(body) == self._fluent_fingerprint(
-            shared.get("body") or [])
+            shared.get("match_body") or shared.get("body") or [])
 
     def _shared_bootstrap_index(self, body: list[str]) -> int | None:
         """Which shared bootstrap this case renders, if any."""
@@ -12474,6 +12839,19 @@ public class {class_name} extends BaseApiTest {{
                 f"        return self();")
         flow_methods = []
         from fluent_scenario import suite_agnostic_body as _agnostic
+        _shared_bodies = {n: i["body"] for n, i in self._shared_phases.items()}
+        _shared_bodies, _shared_impls = self._consolidate_families(_shared_bodies)
+        for n, b in _shared_bodies.items():
+            info = self._shared_phases[n]
+            info["match_body"] = list(info["body"])
+            info["body"] = b
+        _shared_vbodies = {k: i["body"] for k, i in self._shared_verifies.items()}
+        _shared_vbodies, _shared_vimpls = self._consolidate_families(
+            _shared_vbodies, name_of=lambda k: k[1], suffix="VerifyImpl")
+        for k, b in _shared_vbodies.items():
+            info = self._shared_verifies[k]
+            info["match_body"] = list(info["body"])
+            info["body"] = b
         for fname, info in sorted(self._shared_phases.items()):
             body = self._as_self_body(_agnostic(info["body"]))
             flow_methods.append(
@@ -12481,6 +12859,8 @@ public class {class_name} extends BaseApiTest {{
                 f"{self._indent_java(body, 8)}\n"
                 f"        return self();\n"
                 f"    }}\n")
+        flow_methods.extend(_shared_impls)
+        flow_methods.extend(_shared_vimpls)
         verify_runners = []
         for (vcls, vmeth), info in sorted(self._shared_verifies.items()):
             runner = "run" + vmeth[0].upper() + vmeth[1:]
@@ -12560,6 +12940,7 @@ public abstract class ScenarioSteps<S extends ScenarioSteps<S>> {{
     protected String testCaseId;
     protected int __restStepIdx;
     protected String __stopAfter;
+    protected boolean __stoppedNoted;
 {phase_fields}{resp_decls}
 
     protected ScenarioSteps(ImportedRestClient client,
@@ -12579,6 +12960,35 @@ public abstract class ScenarioSteps<S extends ScenarioSteps<S>> {{
     @SuppressWarnings("unchecked")
     protected final S self() {{
         return (S) this;
+    }}
+
+    /**
+     * A prefix-merged case stops early: every later phase returns the
+     * builder unchanged. Left silent, a truncated run is indistinguishable
+     * from a full pass. Record it ONCE (the guard fires on every remaining
+     * phase) so the log, the ctx and the report all show what was skipped.
+     *
+     * <p>Takes both values as arguments: per-case Support classes declare
+     * their own {{@code __restStepIdx}} / {{@code __stopAfter}}, which shadow
+     * the fields here, so reading them from this frame would see "".
+     */
+    protected final void __noteStoppedEarly(String stopAfter, int idx) {{
+        if (__stoppedNoted) {{
+            return;
+        }}
+        __stoppedNoted = true;
+        String detail = "chain stopped early at REST step " + idx
+                + " (_stop_after=" + stopAfter + "); later phases were skipped";
+        LOG.warn(" .. {{}}", detail);
+        if (ctx != null) {{
+            ctx.put("__stoppedEarly", String.valueOf(idx));
+            ctx.put("__stoppedEarlyDetail", detail);
+        }}
+        try {{
+            io.qameta.allure.Allure.step("stopped early: " + detail);
+        }} catch (Throwable ignored) {{
+            // reporting must never fail a test
+        }}
     }}
 
     public static ScenarioSteps<?> current() {{
@@ -12616,10 +13026,18 @@ public abstract class ScenarioSteps<S extends ScenarioSteps<S>> {{
         cls = self._suite_steps_class(service_class_name)
         phases = self._suite_local_phases()
         verifies = self._suite_local_verifies()
+        _raw_phases = dict(phases)
+        _raw_verifies = dict(verifies)
+        _raw_bodies = list(_raw_phases.values()) + list(_raw_verifies.values())
+        # Before the index: it fingerprints these bodies, and the emitted
+        # class must agree with it or per-case classes re-declare methods.
+        phases, _suite_impls = self._consolidate_families(phases)
         self._suite_local_phase_index = {
-            n: self._fluent_fingerprint(b) for n, b in phases.items()}
+            n: self._fluent_fingerprint(b) for n, b in _raw_phases.items()}
+        verifies, _suite_vimpls = self._consolidate_families(
+            verifies, name_of=lambda k: k[1], suffix="VerifyImpl")
         self._suite_local_verify_index = {
-            k: self._fluent_fingerprint(b) for k, b in verifies.items()}
+            k: self._fluent_fingerprint(b) for k, b in _raw_verifies.items()}
         if not phases and not verifies and not self.phase_specs_enabled:
             return ""
 
@@ -12628,7 +13046,7 @@ public abstract class ScenarioSteps<S extends ScenarioSteps<S>> {{
             sys.path.insert(0, _here)
         from fluent_scenario import collect_response_fields
         resp: list[str] = []
-        for body in list(phases.values()) + list(verifies.values()):
+        for body in _raw_bodies:
             for n in collect_response_fields(body):
                 if n not in resp and n not in self._framework_resp:
                     resp.append(n)
@@ -12641,6 +13059,8 @@ public abstract class ScenarioSteps<S extends ScenarioSteps<S>> {{
                 + self._indent_java(self._as_self_body(body), 8) + NL
                 + "        return self();" + NL
                 + "    }" + NL)
+        methods.extend(_suite_impls)
+        methods.extend(_suite_vimpls)
         for (vcls, vmeth), body in sorted(verifies.items()):
             runner = "run" + vmeth[0].upper() + vmeth[1:]
             methods.append(
@@ -12765,12 +13185,12 @@ public abstract class {cls}<S extends {cls}<S>> extends ScenarioSteps<S> {{
                                     part["var_to_step"]))
                             hook_ref = f"{self._hooks_class_of(hname)}::{hname}"
                         if part["spec"] is None:
-                            spec_javas.append(
-                                f"PhaseSpec.hookOnly({phase_emit.jstr(e['step'])}, {hook_ref})")
+                            spec_javas.append(self._register_spec(
+                                f"PhaseSpec.hookOnly({phase_emit.jstr(e['step'])}, {hook_ref})"))
                             continue
-                        spec_javas.append(phase_emit.spec_builder_java(
+                        spec_javas.append(self._register_spec(phase_emit.spec_builder_java(
                             part["spec"], part["split"], part["spec"].template_expr,
-                            part["var_to_step"], hook_ref))
+                            part["var_to_step"], hook_ref)))
                     ents.append({"vocab": e["vocab"], "step": e["step"],
                                  "verify": e["verify"], "spec_javas": spec_javas})
                 boot_javas: list[str] = []
@@ -12783,23 +13203,42 @@ public abstract class {cls}<S extends {cls}<S>> extends ScenarioSteps<S> {{
                         hook_by_body[key] = hname
                         self._suite_hook_java.append(phase_emit.hook_java(
                             hname, boot_part["leftover"], "__noneRes", boot_part["var_to_step"]))
-                    boot_javas.append(
-                        f'PhaseSpec.hookOnly("bootstrap", {self._hooks_class_of(hname)}::{hname})')
+                    boot_javas.append(self._register_spec(
+                        f'PhaseSpec.hookOnly("bootstrap", {self._hooks_class_of(hname)}::{hname})'))
                 cases_out.append({"case": case.name, "entries": ents,
                                   "bootstrap": boot_javas, "rest_offset": rest_offset})
         if not cases_out:
             return None
-        imports = list(self._PHASES_IMPORTS) + [
-            f"{self.package_root}.support.{self.suite_name}.SetupHelper",
-            f"{self.package_root}.support.{self.suite_name}.TestSupport",
-            f"{self.package_root}.templates.{self.suite_name}.Templates",
-        ]
+        # Only CaseRegistry is named in a Phases class now. The 27-import
+        # block belongs to Specs<N>, where the builders actually live.
+        imports = ["com.ak.api.rest.utilities.phase.CaseRegistry"]
         content = phase_emit.phases_class_java(pkg, cls, imports, cases_out, hooks)
         rel = f"src/main/java/{pkg.replace('.', '/')}/{cls}.java"
         self._write(rel, content)
         if cls not in self._phases_classes:
             self._phases_classes.append(cls)
         return rel
+
+    def _register_spec(self, java: str) -> str:
+        """Suite-wide dedup for PhaseSpec builders -> `Specs<N>::specM`.
+
+        Factories used to be private to each Phases class, so a builder
+        shared by twelve classes was emitted twelve times. Keyed on
+        whitespace-normalised text so formatting never splits a group.
+        Returns a REFERENCE; the builder itself is emitted once.
+        """
+        key = re.sub(r"\s+", " ", java).strip()
+        name = self._spec_by_body.get(key)
+        if name is None:
+            name = "spec%d" % (len(self._spec_by_body) + 1)
+            self._spec_by_body[key] = name
+            self._suite_spec_java.append((name, java))
+        return "%s::%s" % (self._specs_class_of(name), name)
+
+    def _specs_class_of(self, spec_name: str) -> str:
+        """`spec37` -> `Specs1`, `spec151` -> `Specs2`: its chunk."""
+        n = int(re.match(r"spec(\d+)$", spec_name).group(1))
+        return "Specs%d" % ((n - 1) // self._specs_per_file + 1)
 
     def _hooks_class_of(self, hook_name: str) -> str:
         """`hook37_x` -> `Hooks1`, `hook151_x` -> `Hooks2`: the chunk it lives in."""
@@ -12830,6 +13269,14 @@ public abstract class {cls}<S extends {cls}<S>> extends ScenarioSteps<S> {{
             rel = f"src/main/java/{cases_pkg.replace('.', '/')}/Hooks{idx}.java"
             self._write(rel, phase_emit.hooks_class_java(cases_pkg, imports, chunk, f"Hooks{idx}"))
             written.append(rel)
+        sper = self._specs_per_file
+        schunks = [self._suite_spec_java[i:i + sper]
+                   for i in range(0, len(self._suite_spec_java), sper)] or [[]]
+        for idx, chunk in enumerate(schunks, start=1):
+            rel = f"src/main/java/{cases_pkg.replace(chr(46), chr(47))}/Specs{idx}.java"
+            self._write(rel, phase_emit.specs_class_java(
+                cases_pkg, f"Specs{idx}", imports, chunk))
+            written.append(rel)
         ops = []
         for (op, path), java_name in self.client_method_by_op.items():
             key = (op, path)
@@ -12842,10 +13289,15 @@ public abstract class {cls}<S extends {cls}<S>> extends ScenarioSteps<S> {{
         self._write(rel, phase_emit.calls_java(suite_pkg, ops))
         written.append(rel)
         print(f"[ra_converter] --phase-specs: {len(self._phases_classes)} Phases class(es), "
+              f"{len(self._suite_spec_java)} distinct spec(s) in Specs, "
               f"{len(set(ops))} engine(s) in Calls, {len(self._spec_vocabs)} vocabulary name(s), "
               f"{len(self._suite_hook_java)} distinct hook(s)")
         for reason, n in sorted(self._spec_fallbacks.items(), key=lambda kv: -kv[1]):
             print(f"[ra_converter] --phase-specs: {n} group(s) kept the text path: {reason}")
+            if getattr(self, "ledger", None):
+                self.ledger.add_preflight_finding(
+                    "INFO", "phase-spec-text-path", "",
+                    "%s group(s): %s" % (n, reason))
         return written
 
     def _suite_steps_class(self, service_class_name: str) -> str:
@@ -13291,7 +13743,9 @@ public final class {type_name} {{
                 begin_extra += f"            __restStepIdx += {helper_rest};\n"
                 begin_extra += (
                     "            if (!__stopAfter.isEmpty() && __restStepIdx >= "
-                    "Integer.parseInt(__stopAfter)) { return this; }\n")
+                    "Integer.parseInt(__stopAfter)) { "
+                    "__noteStoppedEarly(__stopAfter, __restStepIdx); "
+                    "return this; }\n")
         begin_extra += indent_block(start_java, 12)
         if begin_extra and not begin_extra.endswith("\n"):
             begin_extra += "\n"
@@ -13604,15 +14058,27 @@ public final class {support_name} {{
         # or reports and logs would all read "imported".
         start_extra = (f', "{_jlit(case.name)}"'
                        if self._last_fluent_shared_entry else "")
+        # `complete()` parks the flow on ImportedScenario and builds a
+        # typed record of the ids this case extracted. Only the verify
+        # helpers consume that record, so bind it to a name ONLY when one
+        # of them will read it -- otherwise the tree carries a dead local
+        # in every such test (325 of 599 before this).
         body_lines = [
             f'LOG.info("========== STARTED {method_name} ==========");',
             'Expected expected = expected(row);',
-            f'var scenario =',
-            f'        {entry}.start(row{start_extra}){chain}',
-            '                .complete();',
         ]
         if verify_calls:
+            body_lines.extend([
+                f'var scenario =',
+                f'        {entry}.start(row{start_extra}){chain}',
+                '                .complete();',
+            ])
             body_lines.extend(verify_calls)
+        else:
+            body_lines.extend([
+                f'{entry}.start(row{start_extra}){chain}',
+                '                .complete();',
+            ])
         body_lines.append('softAssert.assertAll();')
         body_lines.append(
             f'LOG.info("========== FINISHED {method_name} ==========");')
@@ -15560,6 +16026,9 @@ def _discover_input_xmls(path: str) -> list[str]:
     raise SystemExit(f"[ra_converter] --input not found: {path}")
 
 
+_STARTUP_FINDINGS: list = []
+
+
 def _dedupe_service_names(
         jobs: list[tuple[str, str, str]]) -> list[tuple[str, str, str]]:
     """Each suite must own a unique *Client.java file.
@@ -15579,6 +16048,12 @@ def _dedupe_service_names(
                 n += 1
             print(f"[ra_converter] WARNING: {svc}Client already assigned to "
                   f"suite {used[svc]}; suite {suite} will use {unique}Client")
+            # No ledger exists yet at name-resolution time; drained into the
+            # audit in main() once the per-suite ledger is built.
+            _STARTUP_FINDINGS.append((
+                "MEDIUM", "service-client-name-collision", suite,
+                "%sClient already assigned to suite %s; using %sClient"
+                % (svc, used[svc], unique)))
             svc = unique
         used[svc] = suite
         out.append((xml, suite, svc))
@@ -15776,6 +16251,12 @@ def main():
                    help="Stage 1b: emit single-call phases as PhaseSpec data "
                         "(support/<suite>/cases/*Phases.java + Calls.java) "
                         "instead of one copied method per phase")
+    p.add_argument("--no-phase-specs", dest="phase_specs",
+                   action="store_false",
+                   help="Opt OUT of PhaseSpec data emission. On by "
+                        "default since suite-wide spec dedup made it "
+                        "size-neutral (97,560 -> 63,290 lines).")
+    p.set_defaults(phase_specs=True)
     p.add_argument("--cursor-assist", action="store_true",
                    help="After convert, write a conversion-gap report and, if "
                         "the audit shows confusion (TODO/STUB/PARTIAL or HIGH "
@@ -15843,7 +16324,7 @@ def _main_dispatch(args):
                 print(f"[ra_converter] cursor assist failed: {e}")
 
 
-_PHASE_SPECS = False
+_PHASE_SPECS = True
 
 
 def _main_dispatch_inner(args):
@@ -15862,7 +16343,7 @@ def _main_dispatch_inner(args):
         print(f"[ra_converter] config: {_problem}")
         return 2
     _cc.apply_to_modules(_CONVERTER_CONFIG)
-    _PHASE_SPECS = bool(getattr(args, "phase_specs", False))
+    _PHASE_SPECS = bool(getattr(args, "phase_specs", True))
     import fluent_scenario as _fs
     _fs.PHASE_SPECS = _PHASE_SPECS
     if _PHASE_SPECS:
@@ -16375,6 +16856,22 @@ def _emit_imported_tests(prep: _PreparedSuite) -> int:
                     f"{class_simple}/{mname}.csv")
                 for row_idx, c in enumerate(cluster, start=1):
                     xray = c.prefix if re.match(r"^[A-Z]+-\d+$", c.prefix or "") else ""
+                    # Cluster[0] is the case whose steps were rendered; the
+                    # rest run that same Java with their own CSV row and so
+                    # never reach add_assertion. Record all of them or the
+                    # audit cannot be reconciled against the source XML.
+                    _act = _dis = 0
+                    for _st in getattr(c, "steps", []) or []:
+                        if not isinstance(_st, RestStep):
+                            continue
+                        for _a in getattr(_st, "assertions", []) or []:
+                            if getattr(_a, "disabled", False):
+                                _dis += 1
+                            else:
+                                _act += 1
+                    ledger.add_case_coverage(
+                        soapui_sname, c.name, fqn, mname,
+                        "emitted" if row_idx == 1 else "shared", _act, _dis)
                     ledger.add_case_mapping(
                         soapui_sname, c.name, xray, fqn, mname,
                         csv_rel_path, len(cluster), row_idx, status)
@@ -16459,7 +16956,10 @@ def _emit_imported_tests(prep: _PreparedSuite) -> int:
     from datetime import datetime as _dt
     stamp = os.environ.get("RA_CONVERTER_TIMESTAMP") or \
             _dt.utcnow().strftime("%Y-%m-%d %H:%M:%SZ")
-    ledger.write(args.output, args.input, stamp, suite_name=suite_name)
+    for _f in _STARTUP_FINDINGS:
+        ledger.add_preflight_finding(*_f)
+    ledger.write(args.output, args.input, stamp, suite_name=suite_name,
+                 provenance=_build_provenance(args))
     try:
         import cursor_assist
         n = len(cursor_assist.enqueue(suite_name, ledger))
@@ -16495,6 +16995,9 @@ def _emit_imported_tests(prep: _PreparedSuite) -> int:
                   f"-> _audit/{suite_name}/dedup_report.txt")
     except Exception as _dedup_err:  # a report must never fail a conversion
         print(f"[ra_converter] dedup report skipped: {_dedup_err}")
+        ledger.add_preflight_finding(
+            "MEDIUM", "dedup-report-skipped", "",
+            "reuse section missing from summary.md: %s" % _dedup_err)
     a_total = len(ledger.assertions)
     g_total = len(ledger.groovy)
     a_full = sum(1 for r in ledger.assertions if r[6] == "FULL")

@@ -132,28 +132,71 @@ def test_extracts_keep_the_last_write_in_the_old_order():
 
 
 def test_phases_class_registers_each_case_once():
-    j = pe.phases_class_java("com.x.cases", "FooTestPhases", ["java.util.Map"], [
-        {"case": "B2B-1_a", "entries": [
-            {"vocab": "enrollGuest", "step": "HHonorsEnroll", "verify": False, "spec_java": 'PhaseSpec.phase("HHonorsEnroll").build()'},
-            {"vocab": "verifyAccountid", "step": "v", "verify": True, "spec_java": 'PhaseSpec.phase("v").build()'}]},
-    ], [])
+    """A Phases class is registration only: refs in, no builders."""
+    j = pe.phases_class_java(
+        "com.x.cases", "FooTestPhases",
+        ["com.ak.api.rest.utilities.phase.CaseRegistry"], [
+            {"case": "B2B-1_a", "entries": [
+                {"vocab": "enrollGuest", "step": "HHonorsEnroll",
+                 "verify": False, "spec_javas": ["Specs1::spec1"]},
+                {"vocab": "verifyAccountid", "step": "v",
+                 "verify": True, "spec_javas": ["Specs1::spec2"]}]},
+        ], [])
     assert 'CaseRegistry.register("B2B-1_a")' in j
-    assert '.phase("enrollGuest", "HHonorsEnroll", FooTestPhases::spec1)' in j
-    assert '.verify("verifyAccountid", "v", FooTestPhases::spec2);' in j
-    assert "private static PhaseSpec spec1()" in j and "public static synchronized void register()" in j
+    assert '.phase("enrollGuest", "HHonorsEnroll", Specs1::spec1)' in j
+    assert '.verify("verifyAccountid", "v", Specs1::spec2);' in j
+    assert "public static synchronized void register()" in j
+    # The builders live in Specs<N> now. A factory reappearing here means
+    # per-class duplication is back -- that was 17,948 redundant lines.
+    assert "private static PhaseSpec" not in j, "factory leaked into a Phases class"
+    # One import (CaseRegistry), not the old 27-line block; and no LOG,
+    # which was declared 337 times and used zero.
+    assert j.count("import ") == 1, j
+    assert "Logger LOG" not in j
 
 
-def test_cluster_members_register_through_one_loop_and_share_factories():
+def test_cluster_members_register_through_one_loop_and_share_one_ref():
+    """Cluster members still collapse into a single registration loop."""
     same = [{"vocab": "enrollGuest", "step": "HHonorsEnroll", "verify": False,
-             "spec_java": 'PhaseSpec.phase("HHonorsEnroll").build()'}]
+             "spec_javas": ["Specs1::spec1"]}]
     j = pe.phases_class_java("com.x.cases", "FooTestPhases", [], [
         {"case": "B2B-1_a", "entries": same}, {"case": "B2B-1_b", "entries": same},
         {"case": "B2B-2_c", "entries": [dict(same[0], step="Other")]},
     ], [])
     assert 'for (String id : new String[] {"B2B-1_a", "B2B-1_b"}) {' in j
     assert 'CaseRegistry.register("B2B-2_c")' in j
-    assert j.count("private static PhaseSpec spec") == 1, "one builder text -> one factory"
-    assert j.count("FooTestPhases::spec1") == 2
+    assert j.count("Specs1::spec1") == 2, "both members reference the one spec"
+    assert "private static PhaseSpec" not in j
+
+
+def test_specs_are_deduped_suite_wide_not_per_class():
+    """One builder text -> one Specs method, however many classes use it.
+
+    Per-class factories meant a builder shared by twelve classes was
+    emitted twelve times. Whitespace must not split a group: real builders
+    differ only in indentation and trailing newlines.
+    """
+    import ra_converter as rc
+    em = rc.Emitter("out", suite_name="s1")
+    a = 'PhaseSpec.phase("x")\n                    .engine("e/1b")\n                    .build()'
+    r1 = em._register_spec(a)
+    r2 = em._register_spec(a)
+    r3 = em._register_spec(a + "\n")
+    r4 = em._register_spec(a.replace("\n                    ", "\n        "))
+    assert r1 == r2 == r3 == r4, "whitespace split a group"
+    assert len(em._suite_spec_java) == 1, em._suite_spec_java
+
+    other = em._register_spec('PhaseSpec.phase("y").build()')
+    assert other != r1
+    assert len(em._suite_spec_java) == 2
+
+    # chunked like Hooks, so no single file grows unbounded
+    assert em._specs_class_of("spec1") == "Specs1"
+    assert em._specs_class_of("spec151") == "Specs2"
+    assert r1.startswith("Specs1::spec")
+
+    out = pe.specs_class_java("p", "Specs1", [], em._suite_spec_java)
+    assert out.count("static PhaseSpec spec") == 2, out
 
 
 if __name__ == "__main__":

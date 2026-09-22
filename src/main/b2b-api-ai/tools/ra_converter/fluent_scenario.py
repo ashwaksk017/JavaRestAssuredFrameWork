@@ -32,7 +32,7 @@ import phase_vocabulary
 # `putEnvScoped` broke the build when it was first added.
 # Set by ra_converter from --phase-specs; gates naming changes that would
 # otherwise move the default tree.
-PHASE_SPECS = False
+PHASE_SPECS = True
 
 _DUAL_HOME_HELPERS = (
     "ctxGet",
@@ -328,14 +328,88 @@ def fluent_name_from_url(step) -> str | None:
     return None
 
 
-def step_fluent_override(step) -> str | None:
-    """Do not name fluent methods from ReadyAPI step titles.
+# A Groovy step that only talks to the database. Named from the SQL it
+# runs, never from the ReadyAPI step title: this suite calls the same
+# UPDATE "DBupdate", "DB update" and "Update account status_Limited".
+_DB_SQL_RX = re.compile(
+    r"(?is)\b(SELECT|UPDATE|INSERT\s+INTO|DELETE\s+FROM|MERGE\s+INTO)\b")
+# Reading a REST response keeps the step fused: the response variable is
+# a local of the REST step's method, so the SQL cannot move away from it.
+_DB_RESPONSE_RX = re.compile(
+    r"(?i)(#response#|messageExchange|responseContent|getResponseContent)")
+_DB_UPDATE_RX = re.compile(
+    r"(?is)\bUPDATE\s+([A-Za-z0-9_.]+)\s+SET\s+([A-Za-z0-9_]+)")
+_DB_SELECT_RX = re.compile(r"(?is)\bSELECT\s+(.+?)\s+FROM\s+([A-Za-z0-9_.]+)")
+_DB_DELETE_RX = re.compile(r"(?is)\bDELETE\s+FROM\s+([A-Za-z0-9_.]+)")
+_DB_INSERT_RX = re.compile(r"(?is)\bINSERT\s+INTO\s+([A-Za-z0-9_.]+)")
+# Long enough to stay readable, short enough that the @Test name cap does
+# not have to truncate it afterwards.
+_DB_NAME_MAX = 42
 
-    ``HHonorsEnroll`` / ``MemberHHonorsEnroll`` are both POST
-    ``/realms/guests/enroll``. Mapping the latter to enrollTravelAdvisor
-    was a one-suite role guess, not a URL.
+
+def _db_ident(raw: str) -> str:
+    """`segment.account_member` -> `AccountMember`, `a.account_id` -> `AAccountId`.
+
+    Everything that is not a letter or digit becomes a word boundary, so
+    an aliased column cannot carry a dot into a Java identifier.
     """
-    return None
+    parts = [p for p in re.split(r"[^A-Za-z0-9]+", raw or "") if p]
+    return "".join(p[:1].upper() + p[1:] for p in parts)
+
+
+def db_phase_name(script: str) -> str | None:
+    """Fluent name for a DB-only Groovy script, or None to leave it fused.
+
+    None means "not mine": no SQL, a response reference, or a statement
+    shape this does not recognise. Every None keeps today's behaviour.
+    """
+    text = script or ""
+    if not _DB_SQL_RX.search(text) or _DB_RESPONSE_RX.search(text):
+        return None
+    m = _DB_UPDATE_RX.search(text)
+    if m:
+        name = "db" + _db_ident(m.group(1)) + "Set" + _db_ident(m.group(2))
+    else:
+        m = _DB_SELECT_RX.search(text)
+        if m:
+            col = re.split(r"[,\s]", m.group(1).strip())[0]
+            col = "All" if col.strip() == "*" else _db_ident(col)
+            name = "dbRead" + col + "From" + _db_ident(m.group(2))
+        else:
+            m = _DB_DELETE_RX.search(text)
+            if m:
+                name = "dbDelete" + _db_ident(m.group(1))
+            else:
+                m = _DB_INSERT_RX.search(text)
+                if not m:
+                    return None
+                name = "dbInsert" + _db_ident(m.group(1))
+    if len(name) > _DB_NAME_MAX:
+        # Trim on a word boundary so the tail stays a whole word.
+        cut = name[:_DB_NAME_MAX]
+        for i in range(len(cut) - 1, int(_DB_NAME_MAX * 0.6), -1):
+            if cut[i].isupper():
+                cut = cut[:i]
+                break
+        name = cut
+    return name if re.fullmatch(r"[a-z][A-Za-z0-9]*", name) else None
+
+
+def step_fluent_override(step) -> str | None:
+    """Per-step fluent name for the cases a URL cannot describe.
+
+    Deliberately NOT from ReadyAPI step titles: ``HHonorsEnroll`` and
+    ``MemberHHonorsEnroll`` are both POST ``/realms/guests/enroll``, and
+    mapping the latter to enrollTravelAdvisor was a one-suite role guess.
+
+    A DB-only Groovy step is named from the SQL it runs instead, which is
+    content, not an author's title. That name differs from the preceding
+    REST phase, and a group breaks on a name change, so the database work
+    lands in its own method rather than inside whichever call came first.
+    """
+    if type(step).__name__ != "GroovyStep":
+        return None
+    return db_phase_name(getattr(step, "script", None))
 
 
 def has_payload_asserts(step) -> bool:
