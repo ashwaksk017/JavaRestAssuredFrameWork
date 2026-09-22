@@ -508,17 +508,19 @@ gives you a **green build that ran none of your hand-written tests**. No
 error, no "skipped" count, nothing to notice. The only clue is a test total
 that does not include yours.
 
-To actually run them you MUST pass both of these:
+To actually run them you MUST pass the suite file:
 
 ```powershell
-mvn test "-DsuiteXmlFile=src/test/resources/testng-manual.xml" -Dmanual.client=ProgramaccountregressionClient
+mvn test "-DsuiteXmlFile=src/test/resources/testng-manual.xml"
 ```
 
 - `-DsuiteXmlFile=...` selects `testng-manual.xml` instead of the default
-  sample suite. Without it, your package is never scanned.
-- `-Dmanual.client=...` names the generated client to bind. Without it the
-  test skips, `using(...)` throws, and `ManualCleanup` silently does nothing
-  (see **Config** below).
+  sample suite. Without it, your package is never scanned. This is still the
+  silent trap: the build goes green having run none of your tests.
+- `-Dmanual.client=...` is **optional**. Each manual test names its own
+  default client, and templates and cleanup derive the suite from the client
+  the test actually bound (`FooClient` -> `foo`). Pass it only to run against
+  a different client.
 
 Sanity check: the run total should go up by the number of `@Test` methods you
 added. If it did not change, your suite file argument did not take.
@@ -558,11 +560,13 @@ Active env: `-Denv=qa` (or `TEST_ENV`), else `qa`. Values come from `program_con
 - `api_config.api_end_point` / `version` → `base_url`
 - `api_config.client_id` / `client_secret` / `token_end_point` / `token_route`
 - `database.*` if a phase runs JDBC
-- `manual.client` -- **required for hand-written tests.** It names the
-  generated client to bind, AND its derived suite name (`FooClient` -> `foo`)
-  is what resolves `templates/<suite>/_index.csv` for `using(...)` and locates
-  the generated `SuiteCleanup` for `ManualCleanup`. Get it wrong and the test
-  skips, `using(...)` throws, and cleanup silently does nothing.
+- `manual.client` -- **optional override.** It names the generated client to
+  bind, and its derived suite name (`FooClient` -> `foo`) selects
+  `templates/<suite>/_index.csv` for `using(...)` and the generated
+  `SuiteCleanup` for `ManualCleanup`. Left unset, all three come from the
+  client the test bound, so a hand-written test needs no flag. Set it to a
+  client whose suite was never converted and `using(...)` throws -- it will
+  not quietly fall back to whichever suite happens to be present.
 - `salesforce_assertion` / `sf_config.*` if you chain `prepareSalesforceAccount`
 
 Do not invent Salesforce credentials or a full HWS Selenium flow.
@@ -643,7 +647,7 @@ mvn -o test-compile
 
 mvn -o test "-Dtest=com.ak.api.tests.manual.CreateLimitedAccountTest"
 
-mvn -o test "-DsuiteXmlFile=src/test/resources/testng-manual.xml" -Dmanual.client=ProgramaccountregressionClient
+mvn -o test "-DsuiteXmlFile=src/test/resources/testng-manual.xml"
 ```
 
 `pom.xml` default suite is `src/test/resources/testng.xml`. Passing `-DsuiteXmlFile` selects yours.
@@ -693,7 +697,7 @@ To have the same story generated for everyone, add it to the ReadyAPI project an
 - [ ] Unique HTTP lives in Support + `RestStep`, not in the `@Test`
 - [ ] No token `@Test`; no before-test domain wipe
 - [ ] New client methods / templates documented if path C
-- [ ] Runs via `-DsuiteXmlFile=src/test/resources/testng-manual.xml` with `-Dmanual.client=<TheClient>`
+- [ ] Runs via `-DsuiteXmlFile=src/test/resources/testng-manual.xml`
 - [ ] `mvn -o test-compile` succeeds
 - [ ] Ran the method once (`-Dtest=...`) and checked logs for STARTED/FINISHED + REST steps
 

@@ -79,7 +79,7 @@ Green = hand-written framework. Blue = generated.
 | `rest/utilities/` | 12 | hand-written — `RestStep`, `RestUtilities`, `ResponseAsserts`, `AuthHelper`, `Headers` |
 | `rest/utilities/phase/` | 5 | hand-written — `PhaseSpec`, `PhaseRunner`, `PhaseContext`, `CaseRegistry`, `Ref` |
 | `data/` | 9 | hand-written — `PerMethodCsvDataProvider`, `PlaceholderResolver`, `Expected`, `FakeData` |
-| `dsl/` | 4 | hand-written — **the manual-test surface** (see §5) |
+| `dsl/` | 5 | hand-written — **the manual-test surface** (see §5) |
 | `db/`, `db/repo/`, `db/schema/` | 7 | hand-written |
 | `domain/` (+ account/guest/member) | 4 | hand-written facades |
 | `retry/`, `security/`, `schema/`, `auth/`, `config/`, `context/` | — | hand-written |

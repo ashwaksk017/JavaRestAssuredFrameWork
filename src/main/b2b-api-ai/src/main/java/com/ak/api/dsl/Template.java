@@ -209,8 +209,15 @@ public final class Template {
      * <p>The bound suite name is not enough on its own: a hand-written test
      * binds {@code ImportedScenario.bind(..., "manual")} and there is no
      * {@code templates/manual/} tree. So an explicit property wins, then the
-     * bound name if it actually has an index, then the name derived from
-     * {@code -Dmanual.client}.</p>
+     * bound name if it actually has an index, then the suite of the CLIENT
+     * bound to this thread ({@code FooClient -> foo}), then the name derived
+     * from {@code -Dmanual.client}.</p>
+     *
+     * <p>The bound client comes before the property because it is the client
+     * actually sending the requests -- a manual test needs no flag to find its
+     * own templates. Every branch is still gated on {@link #exists}, so an
+     * unconverted client falls through rather than silently resolving against
+     * whichever suite happens to be present.</p>
      */
     private static String suite() {
         String explicit = Config.get(SUITE_PROPERTY, "");
@@ -228,14 +235,13 @@ public final class Template {
         if (bound != null && !bound.isEmpty() && exists(bound)) {
             return bound;
         }
-        String client = Config.get("manual.client", "");
-        if (client != null && client.endsWith("Client")) {
-            String derived = client
-                    .substring(0, client.length() - "Client".length())
-                    .toLowerCase(Locale.ROOT);
-            if (exists(derived)) {
-                return derived;
-            }
+        String fromBoundClient = SuiteName.ofBoundClient();
+        if (fromBoundClient != null && exists(fromBoundClient)) {
+            return fromBoundClient;
+        }
+        String configured = SuiteName.ofConfiguredClient();
+        if (configured != null && exists(configured)) {
+            return configured;
         }
         return bound == null ? "" : bound;
     }

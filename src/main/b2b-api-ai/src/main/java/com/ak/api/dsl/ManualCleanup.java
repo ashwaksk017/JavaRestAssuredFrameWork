@@ -2,14 +2,12 @@ package com.ak.api.dsl;
 
 import java.lang.reflect.Method;
 import java.util.LinkedHashSet;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.ak.api.config.Config;
 import com.ak.api.support.ImportedScenario;
 
 /**
@@ -72,21 +70,25 @@ public final class ManualCleanup {
             }
         }
         LOG.warn("ManualCleanup: no generated SuiteCleanup found (tried {}). "
-                + "Rows created by this test are NOT being deleted. Convert the "
-                + "suite, or pass -Dmanual.client=<TheClient> so the suite name "
-                + "can be derived.", candidateSuites());
+                + "Rows created by this test are NOT being deleted. Convert that "
+                + "suite, or name it explicitly with -Dmanual.client=<TheClient>.",
+                candidateSuites());
     }
 
     /**
      * Suite package names to try, best first.
      *
      * <p>The bound name comes first, but a manual test binds the literal
-     * {@code "manual"}, which is not a generated package -- so the
-     * {@code manual.client} derivation ({@code FooClient -> foo}) is what
-     * actually resolves. That is the same derivation
-     * {@code Template.suite()} uses, kept consistent on purpose so templates
-     * and cleanup cannot disagree about which suite a manual test is
-     * running against.</p>
+     * {@code "manual"}, which is not a generated package. What actually
+     * resolves is the suite of the CLIENT bound to this thread
+     * ({@code FooClient -> foo}) -- the client the test constructed, so it
+     * names the suite those rows were created against and cannot select a
+     * different suite's DELETEs. {@code -Dmanual.client} stays last as an
+     * explicit override.</p>
+     *
+     * <p>This is the same derivation {@link Template} uses, shared through
+     * {@link SuiteName} on purpose: templates and cleanup disagreeing about
+     * the suite would mean writing against one and cleaning up another.</p>
      */
     private static Set<String> candidateSuites() {
         Set<String> out = new LinkedHashSet<>();
@@ -99,10 +101,13 @@ public final class ManualCleanup {
             // Cleanup can be called with nothing bound; fall through.
             LOG.debug("ManualCleanup: no bound session");
         }
-        String client = Config.get("manual.client", "");
-        if (client != null && client.endsWith("Client")) {
-            out.add(client.substring(0, client.length() - "Client".length())
-                    .toLowerCase(Locale.ROOT));
+        String fromBoundClient = SuiteName.ofBoundClient();
+        if (fromBoundClient != null) {
+            out.add(fromBoundClient);
+        }
+        String configured = SuiteName.ofConfiguredClient();
+        if (configured != null) {
+            out.add(configured);
         }
         return out;
     }
