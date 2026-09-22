@@ -102,8 +102,16 @@ Green = hand-written framework. Blue = generated.
 |---|---|---|
 | phases live as | data (`Specs`/`Phases`) | copied Java methods |
 | entry classes | 1 (`Onboarding`) | 134, of which 101 numbered |
-| `ScenarioSteps` | ~963 lines | ~12,786 lines |
+| `ScenarioSteps` methods | 192 (96 vocabulary names × 2) | 540 |
 | per-case setup | `CaseRegistry.forCase(id)` | one class per bootstrap variant |
+
+Compare **method counts, not line counts**. The emitter preserves
+`protected Response` fields already declared in an existing
+`ScenarioSteps.java` (see `_existing_scenario_steps_resp_fields`), so a
+tree that has had several suites converted into it carries their fields
+too. A fresh single-suite convert emits ~963 lines; this repo's tree is
+1,188 because 225 fields survive from earlier suite converts. The method
+count is unaffected by that and is the stable comparison.
 
 Both modes produce the same tests, the same CSV columns and the same
 TestNG suites. The default exists because numbered clones
