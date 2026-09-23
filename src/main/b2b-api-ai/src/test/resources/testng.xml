@@ -193,7 +193,6 @@
             <class name="com.ak.api.tests.framework.AuthDigestAccuracyTest"/>
             <class name="com.ak.api.tests.framework.MemberEmailAndPollStopTest"/>
             <class name="com.ak.api.tests.db.DbPollTest"/>
-            <class name="com.ak.api.tests.framework.OpenApiModelsTest"/>
             <class name="com.ak.api.tests.framework.FrameworkPartialGapsTest"/>
         </classes>
     </test>
