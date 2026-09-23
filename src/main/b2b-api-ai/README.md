@@ -6,9 +6,25 @@ The utility layer (`RestUtilities`, `RestLoggerUtilityDataHolder`, `RestLogAppen
 
 ## Quick start — commands
 
-> **Order matters on a fresh checkout.** The committed Java imports
-> `com.ak.api.support.*`, which the converter generates. `mvn compile` on a
-> clean tree fails until you have converted at least once. Convert first.
+> **Two ways in on a fresh checkout.** The committed Java imports
+> `com.ak.api.support.*`, which is generated and gitignored — a clone has none
+> of it, so `mvn compile` fails until it exists. Either convert an XML
+> (step 1 below), or — to write a hand-written test **before** you have any
+> XML — emit just the framework types:
+>
+> ```bash
+> python tools/ra_converter/ra_converter.py --bootstrap --output . --package-root com.ak.api
+> ```
+>
+> `--bootstrap` needs no `--input`. It writes the bundled support types plus an
+> `ImportedRestClient` covering every method the committed tree calls, so the
+> build succeeds and a manual test can run. What it does NOT give you is
+> anything needing a converted suite: `templates/<suite>/_index.csv` does not
+> exist, so 11 of the 175 guards fail on a bare clone and `Template.of(case,
+> step)` has nothing to resolve — use `Template.ofPath(...)` until you convert.
+> A later convert replaces `ImportedRestClient` with the real union and leaves
+> the other framework files alone. See **CreateTestCase.md §0**, "Starting from
+> a clone with no conversions".
 
 ### 1. Generate everything from the ReadyAPI XMLs
 

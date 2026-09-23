@@ -27,7 +27,7 @@ first" was not available either. Nothing compiled.
 Bootstrap the framework types once, with no XML:
 
 ```bash
-python tools/ra_converter/ra_converter.py --bootstrap     --output . --package-root com.ak.api
+python tools/ra_converter/ra_converter.py --bootstrap --output . --package-root com.ak.api
 ```
 
 That writes the bundled support types plus an `ImportedRestClient` carrying

@@ -157,7 +157,7 @@ python tools/ra_converter/ra_converter.py \
 
 # framework types only, no XML -- makes a fresh clone compile so a
 # hand-written test can be authored before anything is converted
-python tools/ra_converter/ra_converter.py --bootstrap     --output . --package-root com.ak.api
+python tools/ra_converter/ra_converter.py --bootstrap --output . --package-root com.ak.api
 ```
 
 `--bootstrap` exists because `support/` is generated and gitignored while the
