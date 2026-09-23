@@ -233,8 +233,12 @@ public class CreateLimitedAccountTest extends BaseApiTest {
 
     private ProgramAccountClient client;
 
-    // LinkedHashMap + synchronized: insertion-order aliases + parallel="methods" safety.
-    // Suites use parallel="classes" today (one instance = one thread).
+    // Per-class SEED only -- NOT the map your chain writes to.
+    // ImportedScenario.bind calls isolateCtx, so each @Test gets its own map
+    // (seeded with the accessToken); extracted ids land there and cleanup reads
+    // them back via boundCtxOr -- which is why cleanup runs BEFORE unbind().
+    // LinkedHashMap keeps insertion order so aliases overwrite correctly.
+    // The synchronized wrapper is NOT what makes parallel="methods" safe.
     private final Map<String, String> ctx =
             java.util.Collections.synchronizedMap(new java.util.LinkedHashMap<>());
 

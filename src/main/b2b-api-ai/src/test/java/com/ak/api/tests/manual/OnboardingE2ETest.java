@@ -54,7 +54,18 @@ public class OnboardingE2ETest extends BaseApiTest {
      */
     private ImportedRestClient client;
 
-    /** ctx carries IDs between phases for one test. */
+    /**
+     * Per-class SEED for the scenario context -- NOT the map the chain writes to.
+     *
+     * <p>{@code ImportedScenario.bind} calls {@code isolateCtx}, which (unless
+     * {@code test.isolateCtxPerMethod=false}) gives each {@code @Test} its own
+     * map seeded with just the accessToken. Extracted ids land in that isolated
+     * map, and cleanup reads them back through {@code boundCtxOr} -- which is
+     * why {@code ManualCleanup} must run BEFORE {@code unbind()}.</p>
+     *
+     * <p>The {@code synchronizedMap} wrapper is not what makes
+     * {@code parallel="methods"} safe; {@code isolateCtx} is.</p>
+     */
     private final Map<String, String> ctx =
             java.util.Collections.synchronizedMap(new java.util.LinkedHashMap<>());
 

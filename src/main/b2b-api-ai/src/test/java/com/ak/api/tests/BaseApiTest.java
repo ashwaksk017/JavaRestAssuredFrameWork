@@ -235,8 +235,11 @@ public abstract class BaseApiTest {
      * true exactly ONCE across all concurrent calls -- the winner skips
      * the sleep, all others sleep. Under the current parallel="classes"
      * config this is uncontended -- pure defense-in-depth. Matches the
-     * `holders → synchronizedList` and translator-side `ctx →
-     * synchronizedMap` pattern for other parallel-methods landmines.</p>
+     * `holders → synchronizedList` pattern for other parallel-methods
+     * landmines. The generated `ctx → synchronizedMap` is NOT a second
+     * example: ctx is made method-safe by `ImportedScenario.isolateCtx`,
+     * which hands each @Test its own map, so the wrapper there guards only
+     * the per-class seed.</p>
      */
     private final java.util.concurrent.atomic.AtomicBoolean firstTestOnThisInstance =
             new java.util.concurrent.atomic.AtomicBoolean(true);
