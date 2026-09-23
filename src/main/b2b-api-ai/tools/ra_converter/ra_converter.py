@@ -11675,15 +11675,16 @@ public class {class_name} extends BaseApiTest {{
     // (runtime-generated value) firing AFTER the row-time entry so its
     // aliases overwrite the older CSV value. HashMap's arbitrary iteration
     // order broke that guarantee.
-    // Wrapped in Collections.synchronizedMap so a Suites/*.xml that
-    // ever flips to parallel="methods" (multiple threads sharing one
-    // test-class instance, each running its own @BeforeMethod) cannot
-    // corrupt ctx with concurrent put/clear. Under the current
-    // parallel="classes" config, one instance = one thread, so the
-    // sync wrapper has zero contention -- defense-in-depth for a
-    // config change we would otherwise silently mis-behave on. Same
-    // landmine class as BaseApiTest.holders (which was defused in the
-    // Tier 1 audit sweep).
+    // Collections.synchronizedMap is NOT what makes a parallel="methods"
+    // flip safe -- ImportedScenario.bind is. bind calls isolateCtx, which
+    // (unless test.isolateCtxPerMethod=false) hands each @Test its OWN map,
+    // seeded with just the accessToken; SuiteCleanup reads that map back via
+    // ImportedScenario.boundCtxOr. So this field is only the per-class SEED.
+    // Extracted ids are written to the isolated map, never here.
+    // The wrapper guards only the case where isolateCtx is switched off and
+    // two threads share this map -- and even then it would not make that
+    // configuration correct, since clear() would wipe a sibling's ids and
+    // iterating a synchronized map requires the caller to hold its monitor.
     private final Map<String, String> ctx = java.util.Collections.synchronizedMap(new java.util.LinkedHashMap<>());
 
     @BeforeClass(alwaysRun = true)
@@ -16275,6 +16276,11 @@ def main():
                    help="Do not run converter unit scripts before emit. "
                         "Default is to run test_converter_fixes.py then "
                         "test_cross_case_contracts.py and abort on failure.")
+    p.add_argument("--skip-dataflow-check", action="store_true",
+                   help="Do not run tools/check_ctx_dataflow.py after emit. "
+                        "Default is to verify that every ctx key a chain READS "
+                        "is WRITTEN earlier in that same chain, and abort if "
+                        "not.")
     args = p.parse_args()
     return _main_dispatch(args)
 
@@ -16307,6 +16313,55 @@ def _run_converter_self_tests() -> None:
     print("[ra_converter] self-tests passed")
 
 
+def _run_post_emit_dataflow_check(args) -> None:
+    """Every ctx key a chain READS must be WRITTEN earlier in that chain.
+
+    Runs AFTER emit, deliberately not alongside the self-tests: those run
+    BEFORE emit, so putting this there would grade the PREVIOUS convert's
+    output and pass for the wrong reason.
+
+    The failure it catches is created by conversion itself. Which methods a
+    case chains is decided by body fingerprint, so a chain can compile and run
+    while reading a key nothing ahead of it ever wrote; `ctxGet` returns "" and
+    the request goes out with an empty bearer. A 401 then looks like an
+    environment problem rather than a converter bug -- which is exactly how it
+    was missed before the guard existed.
+
+    Enforcement is conditional on the triage baseline being reachable. The
+    guard resolves it as `<root>/tools/ctx_dataflow_baseline.json`, and `root`
+    has to be the OUTPUT tree for it to see the emitted Java. When output is
+    not the repo root (a scratch convert) no baseline sits there, every
+    already-triaged finding would resurface as NEW, and aborting on that would
+    be noise -- so the result is reported and the convert stands.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    guard = os.path.normpath(
+        os.path.join(here, os.pardir, "check_ctx_dataflow.py"))
+    if not os.path.isfile(guard):
+        print(f"[ra_converter] dataflow check skipped: {guard} not found")
+        return
+    root = getattr(args, "output", None) or "."
+    enforced = os.path.isfile(
+        os.path.join(root, "tools", "ctx_dataflow_baseline.json"))
+    mode = "enforced" if enforced else "advisory (no triage baseline under %s)" % root
+    print(f"[ra_converter] post-emit dataflow check [{mode}] ...")
+    result = subprocess.run([sys.executable, guard, "--root", root])
+    if result.returncode == 0:
+        print("[ra_converter] dataflow check passed")
+        return
+    if not enforced:
+        print("[ra_converter] dataflow check reported unsatisfied reads; NOT "
+              "aborting, because the triage baseline is not reachable from "
+              f"{root}. Convert with --output at the repo root to enforce.")
+        return
+    raise SystemExit(
+        "[ra_converter] post-emit dataflow check FAILED: a chain reads a ctx "
+        "key that nothing writes earlier in it, so the value arrives empty at "
+        "runtime. The tree WAS written -- inspect it, then either fix the "
+        "converter or triage the key in tools/ctx_dataflow_baseline.json. "
+        "Use --skip-dataflow-check to bypass.")
+
+
 def _main_dispatch(args):
     _here = os.path.dirname(os.path.abspath(__file__))
     if _here not in sys.path:
@@ -16314,7 +16369,7 @@ def _main_dispatch(args):
     if not getattr(args, "skip_self_test", False):
         _run_converter_self_tests()
     try:
-        return _main_dispatch_inner(args)
+        rc = _main_dispatch_inner(args)
     finally:
         if not getattr(args, "diagrams_only", False):
             try:
@@ -16322,6 +16377,13 @@ def _main_dispatch(args):
                 cursor_assist.flush(args)
             except Exception as e:
                 print(f"[ra_converter] cursor assist failed: {e}")
+    # AFTER emit, never with the self-tests: the check reads the Java this run
+    # just wrote. --diagrams-only emits no Java, so there is nothing to check.
+    if (rc == 0
+            and not getattr(args, "diagrams_only", False)
+            and not getattr(args, "skip_dataflow_check", False)):
+        _run_post_emit_dataflow_check(args)
+    return rc
 
 
 _PHASE_SPECS = True

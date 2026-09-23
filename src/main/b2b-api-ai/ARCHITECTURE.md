@@ -161,3 +161,24 @@ compile and TestNG). Note that the guard suite does **not** spawn a
 converter process — it inspects source, unit-tests emitters, and builds
 `Emitter` in process. Changes that only show up in a full convert need an
 actual convert plus a compile as evidence.
+
+The reverse direction does happen: a convert runs guards of its own.
+
+| when | what runs | on failure |
+|---|---|---|
+| **before** emit | `test_converter_fixes.py`, `test_cross_case_contracts.py` | convert aborts, nothing written |
+| **after** emit | `tools/check_ctx_dataflow.py` | convert aborts — but the tree is already written |
+
+The dataflow check has to run after emit, because it reads the Java the run
+just produced; putting it with the self-tests would grade the *previous*
+convert. It catches a failure conversion itself creates — which methods a case
+chains is decided by body fingerprint, so a chain can compile and run while
+reading a ctx key nothing ahead of it wrote. `ctxGet` then returns `""` and the
+request goes out with an empty bearer, which reads as a 401 from the
+environment rather than a converter bug.
+
+It enforces only when the triage baseline
+(`<output>/tools/ctx_dataflow_baseline.json`) is reachable. Converting to a
+scratch directory has no baseline there, so every already-triaged finding would
+resurface as new — in that case the result is reported and the convert stands.
+Opt out entirely with `--skip-dataflow-check`.
