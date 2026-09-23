@@ -4,6 +4,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.testng.IConfigurationListener;
 import org.testng.ITestContext;
 import org.testng.ITestListener;
 import org.testng.ITestResult;
@@ -27,7 +28,7 @@ import org.testng.ITestResult;
  * bodies -- those show sequential progress within one thread; this
  * listener shows the framework-level lifecycle across threads.</p>
  */
-public class ProgressLogListener implements ITestListener {
+public class ProgressLogListener implements ITestListener, IConfigurationListener {
 
     private static final Logger LOG = LoggerFactory.getLogger(ProgressLogListener.class);
     private static final ConcurrentHashMap<String, Long> STARTS = new ConcurrentHashMap<>();
@@ -142,8 +143,55 @@ public class ProgressLogListener implements ITestListener {
         if (elapsed < 5) {
             return;
         }
-        LOG.info("[TEST] SKIPPED  {}  ({}ms) [attempt {}]",
-                label(r), elapsed, attempt);
+        // WHY it skipped. Without this the console said only
+        //     [TEST] SKIPPED  B2B722ActivateProgramAccountTest#... (23ms)
+        // while the SkipException text -- "Client com.ak...ProgramaccountregressionClient
+        // is not on the classpath -- convert the ReadyAPI XML that generates
+        // it, or point this test at another client with -Dmanual.client=..."
+        // -- went only to the Allure/surefire report. That one missing string
+        // cost two diagnostic rounds on a real run.
+        LOG.info("[TEST] SKIPPED  {}  ({}ms) [attempt {}]{}",
+                label(r), elapsed, attempt, reasonOf(r));
+    }
+
+    /**
+     * A {@code @BeforeClass} that throws leaves NO console trace of its own.
+     *
+     * <p>TestNG routes it to {@code onConfigurationFailure} (or
+     * {@code onConfigurationSkip} for a SkipException), neither of which this
+     * listener implemented -- so the whole visible outcome of a failed
+     * {@code initClient()} was a reasonless SKIPPED line on the test it
+     * prevented. The configuration method's name is what points at the cause.</p>
+     */
+    @Override
+    public void onConfigurationFailure(ITestResult r) {
+        LOG.warn("[TEST] CONFIG FAILED  {}{}  -- tests that depend on it will "
+                + "not run", label(r), reasonOf(r));
+    }
+
+    @Override
+    public void onConfigurationSkip(ITestResult r) {
+        LOG.warn("[TEST] CONFIG SKIPPED {}{}", label(r), reasonOf(r));
+    }
+
+    /**
+     * {@code " -- <exception>: <message>"}, or {@code ""} when there is none.
+     * First line only: a stack trace here would bury the SUITE FINISH summary.
+     */
+    private static String reasonOf(ITestResult r) {
+        Throwable t = r == null ? null : r.getThrowable();
+        if (t == null) {
+            return "";
+        }
+        String msg = t.getMessage();
+        if (msg == null || msg.isBlank()) {
+            return " -- " + t.getClass().getSimpleName();
+        }
+        String firstLine = msg.strip().split("\\R", 2)[0];
+        if (firstLine.length() > 400) {
+            firstLine = firstLine.substring(0, 400) + " ...";
+        }
+        return " -- " + t.getClass().getSimpleName() + ": " + firstLine;
     }
 
     @Override

@@ -152,7 +152,20 @@ public final class CustomerOnboarding implements OnboardingFlow.AccountReady {
         s.testCaseId = testCaseId;
         primeTokenIfAbsent(s.ctx);
         DomainApis apis = DomainApis.bind((ImportedRestClient) s.client);
-        LOG.info("=== CustomerOnboarding.start  testCaseId={} ===", testCaseId);
+        // WHICH client is sending the requests, and which suite that implies.
+        // `-Dmanual.client` decides both, and getting it wrong fails in two
+        // ways that name neither: the scaffold ManualClient throws
+        // UnsupportedOperationException from whatever endpoint you reach
+        // first, and a suite derived from the wrong name makes ManualCleanup
+        // find no SuiteCleanup so rows are never deleted. Nothing printed the
+        // resolved value, so both had to be inferred from their symptoms.
+        String clientName = s.client == null
+                ? "none" : s.client.getClass().getName();
+        String derivedSuite = SuiteName.ofBoundClient();
+        LOG.info("=== CustomerOnboarding.start  testCaseId={}  client={}  "
+                + "suite={} ===", testCaseId, clientName,
+                derivedSuite == null ? "(none -- cleanup will not resolve)"
+                                     : derivedSuite);
         return new CustomerOnboarding(s.ctx, bound, s.softAssert, s.holder, apis, testCaseId);
     }
 
