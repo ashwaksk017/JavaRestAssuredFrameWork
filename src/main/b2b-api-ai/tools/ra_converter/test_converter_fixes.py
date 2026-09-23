@@ -2302,6 +2302,33 @@ def test_generated_token_key_is_bearer_prefixed_on_every_lookup_path():
         assert "Bearer " + '" + value' in src, name
 
 
+def test_case_with_every_step_disabled_skips_instead_of_passing_empty():
+    """A case whose business steps are all disabled must not emit a green test.
+
+    B2B-7576 had 12 of its 15 steps disabled in the ReadyAPI source. The
+    three that remained are the auth preamble, which the converter folds
+    into shared setup -- so the chain rendered as
+    `start(row, id).complete();`: a @Test that issued no request, asserted
+    nothing, and PASSED. A green run implied the case had been exercised.
+    """
+    src = open(os.path.join(os.path.dirname(__file__), "ra_converter.py"),
+               encoding="utf8").read()
+    # the empty-chain branch exists and precedes the normal emit
+    guard = src.index("fully_disabled = not chain.strip() and not verify_calls")
+    throw = src.index("throw new org.testng.SkipException(", guard)
+    normal = src.index("elif verify_calls:", guard)
+    assert guard < throw < normal
+    # nothing unreachable is appended after the throw
+    tail = src.index("if not fully_disabled:", guard)
+    assert throw < tail
+    assert "softAssert.assertAll();" in src[tail:tail + 400]
+    # and the audit names it
+    assert 'add_runtime_skip(' in src[guard:normal]
+    assert '"case-fully-disabled"' in src
+    assert src.count('"case-fully-disabled"') >= 2, (
+        "needs both the finding and its MEANINGS entry")
+
+
 def test_script_runner_is_the_last_thing_in_this_file():
     """verify_all runs this file as a SCRIPT, not under pytest.
 

@@ -74,8 +74,11 @@ def test_notifier_takes_its_values_as_arguments():
 def test_scenario_is_bound_only_when_something_reads_it():
     """274 of 599 tests pass the record to a verify helper; the other 325
     bound a local and never touched it."""
-    seg = SRC.split("Expected expected = expected(row);", 1)[1][:1200]
-    assert "if verify_calls:" in seg
+    # Window widened and the anchor is now `elif`: a fully-disabled case
+    # (every business step disabled upstream) branches first and throws
+    # SkipException instead of emitting a chain that would pass empty.
+    seg = SRC.split("Expected expected = expected(row);", 1)[1][:3000]
+    assert "elif verify_calls:" in seg
     assert "var scenario =" in seg
     assert "else:" in seg
     # the else-branch calls the chain as a statement, with no binding

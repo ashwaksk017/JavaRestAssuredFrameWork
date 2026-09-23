@@ -1717,6 +1717,7 @@ class AuditLedger:
             "token-injected": "synthetic tokenRequest cloned from suite",
             "missing-token-with-no-canonical": "no token step + no template to clone -- REST will 401",
             "jdbc-mutation-skip": "untranslated Groovy JDBC mutation -- test throws SkipException",
+            "case-fully-disabled": "every business step disabled upstream -- test throws SkipException instead of passing empty",
             "unresolved-project-ref": "Groovy uses `#Project#Foo` not in Config -- resolves empty",
             "unresolved-step-ref": "`${step#Response#...}` refers to step not in the same method",
             "framework-file-refreshed": "bundled framework file overwrote a stale on-disk copy",
@@ -14119,7 +14120,35 @@ public final class {support_name} {{
             f'LOG.info("========== STARTED {method_name} ==========");',
             'Expected expected = expected(row);',
         ]
-        if verify_calls:
+        # A case whose every business step is disabled upstream folds down to
+        # nothing: the auth preamble (tokenRequest / Token / tokenId) becomes
+        # shared setup, and no phase is left. Emitting the chain anyway
+        # produced `start(row, id).complete();` -- a @Test that issues no
+        # request, asserts nothing, and PASSES. That is worse than not
+        # emitting it, because a green run implies the case was exercised.
+        # Skip loudly instead, so it shows as skipped and says why.
+        fully_disabled = not chain.strip() and not verify_calls
+        if fully_disabled:
+            # `expected` would be an unread local, and everything after the
+            # throw is unreachable -- which javac rejects. So this branch
+            # replaces the body rather than appending to it.
+            body_lines = [
+                f'LOG.info("========== STARTED {method_name} ==========");',
+                'throw new org.testng.SkipException(',
+                f'        "{_jlit(case.name)}: no enabled step remains after "',
+                '                + "the shared auth preamble -- every business step is "',
+                '                + "disabled in the ReadyAPI source. Re-enable them in "',
+                '                + "the XML and reconvert.");',
+            ]
+            self.ledger.add_runtime_skip(
+                case.prefix, case.name, method_name,
+                "every business step disabled in source; nothing left to run",
+                "")
+            self.ledger.add_preflight_finding(
+                "MEDIUM", "case-fully-disabled", case.name,
+                "emitted as a runtime skip: no enabled step survived the "
+                "auth preamble, so the chain would have asserted nothing")
+        elif verify_calls:
             body_lines.extend([
                 f'var scenario =',
                 f'        {entry}.start(row{start_extra}){chain}',
@@ -14131,9 +14160,10 @@ public final class {support_name} {{
                 f'{entry}.start(row{start_extra}){chain}',
                 '                .complete();',
             ])
-        body_lines.append('softAssert.assertAll();')
-        body_lines.append(
-            f'LOG.info("========== FINISHED {method_name} ==========");')
+        if not fully_disabled:
+            body_lines.append('softAssert.assertAll();')
+            body_lines.append(
+                f'LOG.info("========== FINISHED {method_name} ==========");')
         indented = "\n".join("        " + l if l else "" for l in body_lines)
 
         xray_id_raw = case.prefix if re.match(r"^[A-Z]+-\d+$", case.prefix) else case.name
