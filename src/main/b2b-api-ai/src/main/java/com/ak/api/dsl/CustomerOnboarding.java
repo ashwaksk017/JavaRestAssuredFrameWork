@@ -368,8 +368,43 @@ public final class CustomerOnboarding implements OnboardingFlow.AccountReady {
      */
     public CustomerOnboarding db(String sql) {
         LOG.info(" .. db step");
-        Db.executeTranslated(sql, ImportedScenario.mergedRow(row, ctx), ctx);
+        // Db.executeTranslated warns and returns when `db.url` is unset, which
+        // is right for a CONVERTED suite -- its REST steps should still run on
+        // a machine with no database. It is wrong here. A hand-written chain
+        // names this step explicitly, so silently not running it turns the
+        // NEXT assertion into the visible failure: the account never reaches
+        // the state the test arranged, and the report blames attestation.
+        // Fail where the cause is.
+        if (!Db.isConfigured()) {
+            throw new IllegalStateException(
+                    "CustomerOnboarding.db(...) needs a database, but `db.url` "
+                    + "is not set. Add db.url / db.user / db.password to "
+                    + "program_configuration.json for this env, or drop the "
+                    + "db(...) step. Statement: " + preview(sql));
+        }
+        int rows = Db.executeTranslated(sql, ImportedScenario.mergedRow(row, ctx), ctx);
+        if (rows == 0) {
+            // Ran, matched nothing. Usually a WHERE keyed on a value the
+            // server normalised -- e.g. web_site='#website_domain#' when the
+            // stored domain was lower-cased or stripped of "www.". Not fatal
+            // (an idempotent cleanup legitimately matches nothing), but it is
+            // the quiet reason a later assertion fails, so say it once here.
+            LOG.warn(" .. db step affected 0 rows -- the WHERE matched nothing. "
+                    + "If a later assertion fails, this is why. Statement: {}",
+                    preview(sql));
+        } else if (rows > 0) {
+            LOG.info(" .. db step affected {} row(s)", rows);
+        }
         return this;
+    }
+
+    /** First line of a statement, capped, for a one-line diagnostic. */
+    private static String preview(String sql) {
+        if (sql == null) {
+            return "(null)";
+        }
+        String flat = sql.replaceAll("\\s+", " ").trim();
+        return flat.length() <= 160 ? flat : flat.substring(0, 160) + " ...";
     }
 
     /**

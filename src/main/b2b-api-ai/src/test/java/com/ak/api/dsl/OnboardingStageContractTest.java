@@ -142,6 +142,45 @@ public class OnboardingStageContractTest {
     }
 
     @Test(groups = {"unit", "dsl"})
+    @Story("db() fails loudly when there is no database")
+    @Description("""
+            Db.executeTranslated warns and returns when db.url is unset -- right
+            for a converted suite, wrong for a hand-written db(...) step, which
+            would silently not run and make the NEXT assertion the visible
+            failure.
+            """)
+    public void dbWithoutAConfiguredDatabaseFailsAtTheDbStep() throws Exception {
+        // Always checkable, whatever this machine's config says.
+        Assert.assertEquals(
+                CustomerOnboarding.class.getMethod("db", String.class).getReturnType(),
+                CustomerOnboarding.class);
+        Assert.assertEquals(com.ak.api.db.Db.DID_NOT_RUN, -1,
+                "DID_NOT_RUN must stay distinct from 0 -- 0 means the statement "
+                + "RAN and matched no rows, which db() only warns about");
+
+        // The unconfigured path needs db.url absent. It comes from
+        // program_configuration.json as well as -D, so on a machine that has
+        // one it cannot be cleared from here; assert the reachable half and
+        // say why rather than passing vacuously.
+        String saved = System.getProperty("db.url");
+        System.clearProperty("db.url");
+        try {
+            if (com.ak.api.db.Db.isConfigured()) {
+                return;
+            }
+            Assert.assertEquals(
+                    com.ak.api.db.Db.executeTranslated("UPDATE account SET x=1",
+                            new java.util.HashMap<>(), new java.util.HashMap<>()),
+                    com.ak.api.db.Db.DID_NOT_RUN,
+                    "unconfigured Db must report DID_NOT_RUN, not 0 rows");
+        } finally {
+            if (saved != null) {
+                System.setProperty("db.url", saved);
+            }
+        }
+    }
+
+    @Test(groups = {"unit", "dsl"})
     @Story("stages are cumulative")
     public void stagesAreCumulative() {
         Assert.assertTrue(

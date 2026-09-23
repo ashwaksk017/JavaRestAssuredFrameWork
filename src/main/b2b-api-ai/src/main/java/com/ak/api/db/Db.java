@@ -340,13 +340,18 @@ public final class Db {
      * @param rawSql    SQL with {@code #placeholder#} refs, as translated
      * @param mergedRow row + ctx merge used for placeholder resolution
      * @param ctx       scenario context
+     * @return rows affected, or {@link #DID_NOT_RUN} when the statement was
+     *         skipped or threw. A caller that needs the difference between
+     *         "ran and changed nothing" and "never ran" can now see it;
+     *         callers that do not care keep ignoring the value, which is why
+     *         widening this from void is source-compatible.
      */
-    public static void executeTranslated(String rawSql,
-                                         Map<String, String> mergedRow,
-                                         Map<String, String> ctx) {
+    public static int executeTranslated(String rawSql,
+                                        Map<String, String> mergedRow,
+                                        Map<String, String> ctx) {
         if (!isConfigured()) {
             LOG.warn("Skipping JDBC step (Db not configured): {}", preview(rawSql));
-            return;
+            return DID_NOT_RUN;
         }
         try {
             String sql = com.ak.api.rest.utilities.RestUtilities.mapSqlValues(
@@ -354,14 +359,22 @@ public final class Db {
             String reason = unsafeSqlReason(sql);
             if (reason != null) {
                 LOG.warn(" .. jdbc SKIPPED ({}): {}", reason, sql);
-                return;
+                return DID_NOT_RUN;
             }
             LOG.info(" .. jdbc SQL: {}", sql);
-            execute(sql);
+            return execute(sql);
         } catch (Exception e) {
             LOG.warn("JDBC execute failed: {}", e.getMessage());
+            return DID_NOT_RUN;
         }
     }
+
+    /**
+     * Returned by {@link #executeTranslated} when the statement never
+     * reached the database -- no config, refused by the SQL guard, or threw.
+     * Distinct from {@code 0}, which means it RAN and matched no rows.
+     */
+    public static final int DID_NOT_RUN = -1;
 
     /**
      * Guard + log + execute + swallow, for SQL the caller has ALREADY
