@@ -104,11 +104,19 @@ public final class Template {
     private final String label;
     private final String caseName;
     private final String stepName;
+    /** Non-null for a hand-authored body: resolve() returns this verbatim. */
+    private final String directPath;
 
     private Template(String label, String caseName, String stepName) {
+        this(label, caseName, stepName, null);
+    }
+
+    private Template(String label, String caseName, String stepName,
+                     String directPath) {
         this.label = label;
         this.caseName = caseName;
         this.stepName = stepName;
+        this.directPath = directPath;
     }
 
     /**
@@ -141,6 +149,29 @@ public final class Template {
                 : of(label, text.substring(0, i), text.substring(i + HANDLE.length()));
     }
 
+    /**
+     * Name a body you wrote yourself, by classpath resource.
+     *
+     * <pre>
+     * .using(Template.ofPath("rejected domain, custom",
+     *                        "templates/manual/rejected_domain.json"))
+     * </pre>
+     *
+     * <p>A converter-emitted body must be named with {@link #of} instead: its
+     * filename carries a content hash, so the path changes the moment the body
+     * does. A file you wrote has no hash, so the path IS the stable handle --
+     * which is why this bypasses {@code _index.csv} entirely and works with no
+     * suite bound and no index present.</p>
+     *
+     * <p>Put the file under {@code src/test/resources/templates/manual/}. NOT
+     * under {@code src/main/resources/templates/<suite>/}: the converter's
+     * {@code --clean} deletes that directory, and the whole tree is gitignored,
+     * so a body kept there is lost on the next convert and cannot be shared.</p>
+     */
+    public static Template ofPath(String label, String classpathResource) {
+        return new Template(label, null, null, classpathResource);
+    }
+
     public String label() {
         return label;
     }
@@ -155,7 +186,9 @@ public final class Template {
 
     @Override
     public String toString() {
-        return label + " (" + caseName + " / " + stepName + ")";
+        return directPath != null
+                ? label + " (" + directPath + ")"
+                : label + " (" + caseName + " / " + stepName + ")";
     }
 
     /**
@@ -167,6 +200,18 @@ public final class Template {
      *         whole class exists to prevent.
      */
     public String resolve() {
+        if (directPath != null) {
+            if (Thread.currentThread().getContextClassLoader()
+                    .getResource(directPath) == null) {
+                throw new IllegalStateException(
+                        "Template " + this + " is not on the classpath. A body "
+                        + "you wrote belongs under "
+                        + "src/test/resources/templates/manual/ -- "
+                        + "src/main/resources/templates/<suite>/ is regenerated "
+                        + "and --clean deletes it.");
+            }
+            return directPath;
+        }
         Map<String, String> index = index();
         String hit = index.get(key(caseName, stepName));
         if (hit != null) {
@@ -193,6 +238,10 @@ public final class Template {
 
     /** Resolve, or {@code null} when absent -- for callers wanting a fallback. */
     public String resolveOrNull() {
+        if (directPath != null) {
+            return Thread.currentThread().getContextClassLoader()
+                    .getResource(directPath) == null ? null : directPath;
+        }
         return index().get(key(caseName, stepName));
     }
 

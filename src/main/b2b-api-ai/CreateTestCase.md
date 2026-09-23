@@ -16,6 +16,33 @@ Reuse is **not** applied by editing imported Java. It is applied at convert time
 
 If the case already exists in a ReadyAPI XML, prefer converting that XML instead of cloning it by hand.
 
+### Starting from a clone with no conversions
+
+`src/main/java/com/ak/api/support/` is generated and gitignored, so a fresh
+clone has none of it — and the committed `dsl/`, `domain/`, `BaseApiTest` and
+`TokenRefresh` all reference it. A clone also has no ReadyAPI XML
+(`tools/ra_converter/input/` is gitignored too), so "just convert something
+first" was not available either. Nothing compiled.
+
+Bootstrap the framework types once, with no XML:
+
+```bash
+python tools/ra_converter/ra_converter.py --bootstrap     --output . --package-root com.ak.api
+```
+
+That writes the bundled support types plus an `ImportedRestClient` carrying
+every method the committed tree calls, so `mvn -o test-compile` succeeds and
+you can write and run a hand-written test immediately.
+
+What it does **not** give you is anything that needs a converted suite:
+`templates/<suite>/_index.csv` does not exist, so `Template.singleMemberOnboarding`
+and the `case >> step` CSV handle have nothing to resolve against — 11 of the
+173 guards fail for that reason on a bare clone. Use `Template.ofPath(...)`
+with your own body (section 7) until you convert a suite.
+
+A later convert overwrites `ImportedRestClient` with the real union and leaves
+the other framework files alone; they are author-editable and skip-if-exists.
+
 ---
 
 ## 1. Do not put author tests next to imported suites
@@ -450,10 +477,39 @@ If only your Support calls a **typed** `ProgramAccountClient`, you can skip `Imp
 
 ### Template
 
-1. Add JSON under `src/main/resources/templates/<suite>/<area>/your_step.json`.
-2. Use `#Properties_Email#`, `#c_id#`, `#tpl_...#` — not frozen env IDs.
-3. Either add a constant on `com.ak.api.templates.<suite>.Templates` or pass the classpath string into `RestStep.template(...)`.
-4. `Templates` for converted suites is **regenerated** on convert; prefer `ImportedTemplates.get("CONSTANT")` only if that field exists on the bound suite’s `Templates` class.
+**Put it under `src/test/resources/templates/manual/your_step.json`.**
+
+NOT under `src/main/resources/templates/<suite>/`, which the older version of
+this section advised. That path fails twice: `--clean` deletes
+`src/main/resources/templates/<suite>` on the next convert, and the whole
+`templates/` tree is gitignored, so a body kept there is lost and cannot be
+shared. `src/test/resources/` is committed, untouched by `--clean`, and still
+on the classpath (`target/test-classes`), so it resolves the same way.
+
+1. Write the body. Use `#Properties_Email#`, `#c_id#`, `#tpl_...#` — not
+   frozen env IDs. `mergedRow` resolves them from ctx → row → Config, exactly
+   as for a generated body.
+2. Name it in code:
+
+   ```java
+   .using(Template.ofPath("rejected domain, custom",
+                          "templates/manual/rejected_domain.json"))
+   .createH4BAccount()
+   ```
+
+   A path is the right handle here: the brittleness of a path applies to
+   *generated* bodies, whose filenames carry a content hash. Yours has no
+   hash, so the path IS stable. `ofPath` bypasses `_index.csv` entirely, so it
+   also works with no suite bound and no index present.
+3. Or per row, from the CSV — the column takes a path as well as a handle:
+
+   ```
+   template_createH4BAccount
+   templates/manual/rejected_domain.json
+   ```
+
+Use `Template.of(label, case, step)` instead whenever the body already exists
+in the converted suite; see section 13.
 
 ---
 

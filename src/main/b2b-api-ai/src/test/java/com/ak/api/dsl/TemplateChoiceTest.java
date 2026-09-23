@@ -138,4 +138,42 @@ public class TemplateChoiceTest {
                     "near misses must be listed: " + expected.getMessage());
         }
     }
+
+    @Test(groups = {"unit"})
+    @Story("a hand-authored body is named by path, not by an index handle")
+    @Description("""
+            ofPath bypasses _index.csv entirely, so it resolves with no suite
+            bound and no index present -- the state of a clone that has not
+            converted anything yet. A path is the right handle here because a
+            body you wrote carries no content hash to go stale.
+            """)
+    public void ofPathResolvesItsOwnResource() {
+        System.clearProperty("manual.suite");
+
+        Assert.assertEquals(
+                Template.ofPath("hand-authored", "log4j2.xml").resolve(),
+                "log4j2.xml");
+    }
+
+    @Test(groups = {"unit"})
+    @Story("NEGATIVE CONTROL: a missing hand-authored body says where to put it")
+    @Description("""
+            Section 7 used to send authors to
+            src/main/resources/templates/<suite>/, which --clean deletes and
+            gitignore hides -- so the body was lost on the next convert. The
+            failure text has to name the right directory or the mistake just
+            repeats.
+            """)
+    public void ofPathMissingResourceNamesTheRightDirectory() {
+        try {
+            Template.ofPath("typo", "templates/manual/does_not_exist.json")
+                    .resolve();
+            Assert.fail("expected IllegalStateException for a missing body");
+        } catch (IllegalStateException expected) {
+            Assert.assertTrue(
+                    expected.getMessage()
+                            .contains("src/test/resources/templates/manual"),
+                    expected.getMessage());
+        }
+    }
 }

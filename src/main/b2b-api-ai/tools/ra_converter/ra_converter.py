@@ -16223,7 +16223,7 @@ def _finalize_framework_fluent(preps: list[_PreparedSuite]) -> None:
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--input", required=True,
+    p.add_argument("--input", required=False,
                    help="ReadyAPI/SoapUI project XML, or a directory of XMLs "
                         "(converts every suite in one pass so fluent reuse "
                         "is computed across the whole imported codebase)")
@@ -16308,6 +16308,11 @@ def main():
                    help="Do not run converter unit scripts before emit. "
                         "Default is to run test_converter_fixes.py then "
                         "test_cross_case_contracts.py and abort on failure.")
+    p.add_argument("--bootstrap", action="store_true",
+                   help="Emit only the framework support types plus a baseline "
+                        "ImportedRestClient so a clone with no conversions "
+                        "compiles and hand-written tests can be authored "
+                        "first. Needs no --input.")
     p.add_argument("--skip-dataflow-check", action="store_true",
                    help="Do not run tools/check_ctx_dataflow.py after emit. "
                         "Default is to verify that every ctx key a chain READS "
@@ -16413,6 +16418,7 @@ def _main_dispatch(args):
     # just wrote. --diagrams-only emits no Java, so there is nothing to check.
     if (rc == 0
             and not getattr(args, "diagrams_only", False)
+            and not getattr(args, "bootstrap", False)
             and not getattr(args, "skip_dataflow_check", False)):
         _run_post_emit_dataflow_check(args)
     return rc
@@ -16437,6 +16443,14 @@ def _main_dispatch_inner(args):
         print(f"[ra_converter] config: {_problem}")
         return 2
     _cc.apply_to_modules(_CONVERTER_CONFIG)
+    # Bootstrap emits framework types only -- no XML is parsed, so it runs
+    # before every input-dependent step below.
+    if getattr(args, "bootstrap", False):
+        return _run_bootstrap(args)
+    if not getattr(args, "input", None):
+        print("[ra_converter] --input is required for a convert "
+              "(use --bootstrap to emit only the framework support types)")
+        return 2
     _PHASE_SPECS = bool(getattr(args, "phase_specs", True))
     import fluent_scenario as _fs
     _fs.PHASE_SPECS = _PHASE_SPECS
@@ -16576,6 +16590,49 @@ def _mark_catalog_incomplete(reasons: list) -> None:
               "phases rather than inherit partial votes")
     except Exception as exc:  # never mask the real failure
         print(f"[ra_converter] WARN: could not mark catalog incomplete: {exc}")
+
+
+def _run_bootstrap(args) -> int:
+    """Make a fresh clone compile WITHOUT converting anything first.
+
+    support/ is generated and gitignored, so a clone has none of it -- yet the
+    committed DSL, the domain facades, BaseApiTest and TokenRefresh all
+    reference it. That made "write a manual test first" impossible: you had to
+    obtain a ReadyAPI XML and convert before the tree would even build, and a
+    clone has no XML either (tools/ra_converter/input is gitignored too).
+
+    Emits the bundled framework types plus ImportedRestClient, reusing
+    `emit_imported_rest_client` rather than deriving the signatures here: that
+    scanner already walks every file mentioning ImportedRestClient and learns
+    how the tree reaches the client -- a field of that type, or an accessor
+    returning it. A second derivation would be one more copy to drift, and it
+    had already missed `TokenRefresh.client.tokenRequest(...)` when tried.
+
+    With no fluent_catalog.json (not committed) the union degrades to exactly
+    the committed call sites, which is the bootstrap case. A later convert
+    replaces the interface with the real suite union and leaves the framework
+    files alone -- they are author-editable / skip-if-exists.
+    """
+    ledger = AuditLedger()
+    emitter = Emitter(output_dir=args.output, package_root=args.package_root,
+                      ledger=ledger, suite_name="bootstrap",
+                      max_name_len=args.max_name_len)
+    written = emitter.emit_framework_support()
+    written.append(emitter.emit_imported_rest_client())
+    iface = os.path.join(args.output, "src/main/java",
+                         args.package_root.replace(".", "/"),
+                         "support", "ImportedRestClient.java")
+    declared = 0
+    if os.path.isfile(iface):
+        with open(iface, encoding="utf-8") as fh:
+            declared = fh.read().count("default Response ")
+    print("[ra_converter] --bootstrap: wrote %d file(s); ImportedRestClient "
+          "declares %d method(s) found in the committed tree"
+          % (len(written), declared))
+    for w in written:
+        print("    %s" % w)
+    print("[ra_converter] no convert needed to compile now: mvn -o test-compile")
+    return 0
 
 
 def _run_convert(args):

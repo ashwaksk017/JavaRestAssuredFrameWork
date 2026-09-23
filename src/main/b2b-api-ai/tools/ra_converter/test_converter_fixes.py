@@ -2138,6 +2138,50 @@ def test_member_email_remap_is_one_user_only():
     assert rc._remap_member_enroll_email_placeholders("HHonorsEnroll", body, one_user) == body
 
 
+def test_bootstrap_reuses_the_converters_own_client_scanner():
+    """--bootstrap must not carry its own derivation of the interface.
+
+    The first version derived signatures from the domain facades and the DSL
+    and missed `TokenRefresh.client.tokenRequest(...)` -- a committed caller in
+    a directory it never looked at -- so the bootstrapped clone failed to
+    compile. `emit_imported_rest_client` already walks every file mentioning
+    ImportedRestClient and learns how the tree reaches it.
+
+    A second copy of a rule drifting from the original is the same failure that
+    made the dedup report advertise template merges that must never happen.
+    """
+    import inspect
+    import ra_converter as rc
+    src = inspect.getsource(rc._run_bootstrap)
+    assert "emit_imported_rest_client" in src, src
+    assert "emit_framework_support" in src, src
+    assert "_derive_baseline_client_methods" not in src, (
+        "a parallel derivation is back in _run_bootstrap")
+
+
+def test_bootstrap_writes_the_framework_with_no_xml(tmp_path):
+    """The point of the flag: a tree with no conversions gets support types.
+
+    Run as a subprocess so the real CLI wiring is exercised -- --input has to
+    be optional, or the flag is unusable on the clone it exists for.
+    """
+    import subprocess as _sp
+    out = str(tmp_path)
+    proc = _sp.run([sys.executable,
+                    os.path.join(HERE, "ra_converter.py"),
+                    "--bootstrap", "--output", out,
+                    "--package-root", "com.ak.api",
+                    "--skip-self-test"],
+                   capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    support = os.path.join(out, "src", "main", "java", "com", "ak", "api",
+                           "support")
+    for name in ("ImportedScenario.java", "TestThreadState.java",
+                 "CtxFields.java", "ImportedTemplates.java",
+                 "ImportedRestClient.java"):
+        assert os.path.isfile(os.path.join(support, name)), name
+
+
 def test_script_runner_is_the_last_thing_in_this_file():
     """verify_all runs this file as a SCRIPT, not under pytest.
 

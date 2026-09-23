@@ -154,7 +154,19 @@ python tools/ra_converter/ra_converter.py \
 
 # opt out of phase-spec emission
 ... --no-phase-specs
+
+# framework types only, no XML -- makes a fresh clone compile so a
+# hand-written test can be authored before anything is converted
+python tools/ra_converter/ra_converter.py --bootstrap     --output . --package-root com.ak.api
 ```
+
+`--bootstrap` exists because `support/` is generated and gitignored while the
+committed `dsl/`, `domain/`, `BaseApiTest` and `TokenRefresh` all reference it,
+and a clone has no input XML either — so nothing compiled until something was
+converted. It emits the bundled framework types plus `ImportedRestClient`,
+whose signatures come from `emit_imported_rest_client()` (the same scanner a
+convert uses) rather than a second hand-maintained list. With no
+`fluent_catalog.json` the union degrades to exactly the committed call sites.
 
 Guards run with `python tools/verify_all.py` (add `--full` for the Java
 compile and TestNG). Note that the guard suite does **not** spawn a
