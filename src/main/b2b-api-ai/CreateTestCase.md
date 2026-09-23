@@ -754,6 +754,11 @@ Columns: `case,step,template,constant`.
 
 ### Using it
 
+Three ways to choose a body. They resolve to the same file -- pick by how
+the choice varies.
+
+**1. A curated constant** — the body has a name worth reusing:
+
 ```java
 MasterClass.onboarding(row)
     .using(Template.singleMemberOnboarding)
@@ -761,10 +766,44 @@ MasterClass.onboarding(row)
     .complete();
 ```
 
+**2. Inline, no constant** — `Template.of` is public, so a one-off body
+needs no entry in `Template`. Copy columns 1 and 2 straight out of
+`_index.csv`:
+
+```java
+MasterClass.onboarding(row)
+    .enrollOwner()
+    .using(Template.of("H4B member, optional fields",
+                       "B2B-4955_post_regular_flow_optional_field_member_record_200",
+                       "http_request_200_3-CreatePendingAccountmember"))
+    .createH4BAccount()
+    .complete();
+```
+
+**3. Per row, from the CSV** — different rows need different bodies. The
+cell takes that same `<case> >> <step>` handle:
+
+```
+test_case_id,template_createH4BAccount
+H4B-001,B2B-4955_post_regular_flow_optional_field_member_record_200 >> http_request_200_3-CreatePendingAccountmember
+H4B-002,B2B-6157_H4B_post_member_with_unique_invite_key_diff_domain_200 >> http_request_200_3-CreatePendingAccountmember
+```
+
+The cell still accepts a raw classpath path
+(`templates/<suite>/<bucket>/<file>.json`), which is what it held
+historically. **Prefer the handle.** A path carries the body's content
+hash, so it stops resolving the moment that body changes and the file is
+renamed; the handle is looked up in `_index.csv` at run time and survives.
+
 Precedence for a phase body: explicit `.using(...)` > the
 `template_<phase>` CSV column > the converter default. `using(...)`
 applies to the **next phase only**, so a template cannot silently leak
 into the rest of the chain.
+
+A handle that does not resolve throws from `Template.resolve()` listing the
+near misses. It never falls back to the converter default -- a
+plausible-looking wrong body is the exact failure this mechanism exists to
+prevent.
 
 ### Adding a name
 

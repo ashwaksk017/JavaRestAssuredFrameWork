@@ -795,7 +795,17 @@ public final class CustomerOnboarding {
             return null;
         }
         String fromRow = row.get("template_" + phase);
-        return (fromRow == null || fromRow.isEmpty()) ? null : fromRow;
+        if (fromRow == null || fromRow.isEmpty()) {
+            return null;
+        }
+        // Two accepted forms. A `<case> >> <step>` handle is resolved through
+        // templates/<suite>/_index.csv, so it keeps working when the body
+        // changes; anything else is passed through as a classpath path, which
+        // is what this column has always held. A wrong handle throws from
+        // Template.resolve() naming near misses, rather than quietly sending
+        // the converter default.
+        Template handle = Template.fromHandle("template_" + phase, fromRow);
+        return handle != null ? handle.resolve() : fromRow;
     }
 
     /**

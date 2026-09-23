@@ -88,4 +88,54 @@ public class TemplateChoiceTest {
                 CustomerOnboarding.chooseTemplate(null, row, "someOtherPhase"),
                 "templates/other/phase.json");
     }
+
+    @Test(groups = {"unit"})
+    @Story("the CSV column accepts a `case >> step` handle, not just a path")
+    @Description("""
+            A path in this column carries the body's content hash, so it stops
+            resolving the moment that body changes and the file is renamed. A
+            handle is looked up in _index.csv at run time, which is the same
+            stability code already gets from using(Template.of(...)).
+            """)
+    public void csvColumnAcceptsAnIndexHandle() {
+        System.setProperty("manual.suite", "programaccountregression");
+        Map<String, String> row = new HashMap<>();
+        row.put("template_" + PHASE,
+                "B2B-4955_post_regular_flow_optional_field_member_record_200"
+                + Template.HANDLE
+                + "http_request_200_3-CreatePendingAccountmember");
+
+        Assert.assertEquals(
+                CustomerOnboarding.chooseTemplate(null, row, PHASE),
+                Template.singleMemberOnboarding.resolve(),
+                "the handle must resolve to the body its constant names");
+    }
+
+    @Test(groups = {"unit"})
+    @Story("NEGATIVE CONTROL: an unknown handle fails loudly")
+    @Description("""
+            Falling through to the converter default would send a
+            plausible-looking wrong body -- the silent failure this class
+            exists to prevent. The message must also name the near misses, or
+            an author cannot tell a typo from a renamed case.
+            """)
+    public void anUnknownHandleThrowsRatherThanFallingBack() {
+        System.setProperty("manual.suite", "programaccountregression");
+        Map<String, String> row = new HashMap<>();
+        row.put("template_" + PHASE,
+                "NoSuchCase" + Template.HANDLE
+                + "http_request_200_3-CreatePendingAccountmember");
+
+        try {
+            CustomerOnboarding.chooseTemplate(null, row, PHASE);
+            Assert.fail("expected IllegalStateException for an unknown handle");
+        } catch (IllegalStateException expected) {
+            Assert.assertTrue(expected.getMessage().contains("_index.csv"),
+                    expected.getMessage());
+            Assert.assertTrue(
+                    expected.getMessage()
+                            .contains("http_request_200_3-CreatePendingAccountmember"),
+                    "near misses must be listed: " + expected.getMessage());
+        }
+    }
 }

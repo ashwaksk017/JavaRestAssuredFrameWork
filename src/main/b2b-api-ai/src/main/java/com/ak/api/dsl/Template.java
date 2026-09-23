@@ -122,6 +122,25 @@ public final class Template {
         return new Template(label, caseName, stepName);
     }
 
+    /**
+     * Parse {@code "<case> >> <step>"}, or {@code null} when {@code text} is
+     * not a handle.
+     *
+     * <p>Lets a {@code template_<phase>} CSV cell name a body the same way
+     * code does. A cell holding a classpath path still works, but that path
+     * carries the body's content hash, so it stops resolving the moment the
+     * body changes; a handle is looked up in {@code _index.csv} at run time
+     * and survives.</p>
+     */
+    public static Template fromHandle(String label, String text) {
+        if (text == null) {
+            return null;
+        }
+        int i = text.indexOf(HANDLE);
+        return i < 0 ? null
+                : of(label, text.substring(0, i), text.substring(i + HANDLE.length()));
+    }
+
     public String label() {
         return label;
     }
@@ -181,7 +200,13 @@ public final class Template {
     // Index
     // =====================================================================
 
-    private static final String SEPARATOR = " >> ";
+    /**
+     * Separator between case and step in an index handle, as written in
+     * {@code _index.csv} and accepted by a {@code template_<phase>} CSV cell.
+     */
+    public static final String HANDLE = " >> ";
+
+    private static final String SEPARATOR = HANDLE;
 
     private static String key(String caseName, String stepName) {
         return norm(caseName) + SEPARATOR + norm(stepName);
