@@ -73,7 +73,7 @@ import io.restassured.response.Response;
  * -- the same CSV contract as imported tests, so both kinds of test are driven
  * the same way.
  */
-public final class CustomerOnboarding {
+public final class CustomerOnboarding implements OnboardingFlow.AccountReady {
 
     private static final Logger LOG = LoggerFactory.getLogger(CustomerOnboarding.class);
 
@@ -142,7 +142,7 @@ public final class CustomerOnboarding {
      * Bind to the test's session. Requires {@code ImportedScenario.bind(...)}
      * to have run -- {@code BaseApiTest} subclasses do that in @BeforeMethod.
      */
-    public static CustomerOnboarding start(Map<String, String> row) {
+    public static OnboardingFlow.Start start(Map<String, String> row) {
         ImportedScenario.Session s = ImportedScenario.current();
         String testCaseId = row == null
                 ? "manual" : row.getOrDefault("test_case_id", "manual");
@@ -209,6 +209,20 @@ public final class CustomerOnboarding {
                 apis.accounts().createProgramAccount(token(), required("guestId"), q, body));
         sc.put(ScenarioContext.ACCOUNT_ID,
                 com.ak.api.rest.utilities.RestUtilities.safeJsonExtract(res, "accountId"));
+        // The response also carries the OWNER's member record, created with
+        // the account -- the converted phase extracts it too
+        // (`.extract("..._Response_memberId", "memberId")`), and its
+        // confirmMemberTotp then reads it back through the MEMBER_ID alias
+        // `PropertiesaccountID.hilton-member-id`. Without this the chain
+        // `createH4LAccount().confirmOwner()` -- which both committed E2E
+        // tests use, and which is the real ReadyAPI order -- threw
+        // "MEMBER_ID is not available", because only addMember() published it.
+        // putIfNonEmpty, so a later addMember() for another role still wins.
+        String ownerMemberId =
+                com.ak.api.rest.utilities.RestUtilities.safeJsonExtract(res, "memberId");
+        if (ownerMemberId != null && !ownerMemberId.isEmpty()) {
+            sc.put(ScenarioContext.MEMBER_ID, ownerMemberId);
+        }
         return this;
     }
 

@@ -48,9 +48,16 @@ public final class MasterClass {
     /**
      * Start a story chain for one CSV row.
      *
+     * <p>Returns the {@link OnboardingFlow.Start} stage, so completion
+     * offers only the phases that are legal before anything is published --
+     * {@code createH4BAccount()} appears once a guest is enrolled, and
+     * {@code confirmOwner()} once an account exists. Ordering mistakes are
+     * compile errors rather than a {@code required(...)} throw at run time.</p>
+     *
      * @see CustomerOnboarding
+     * @see OnboardingFlow
      */
-    public static CustomerOnboarding onboarding(Map<String, String> row) {
+    public static OnboardingFlow.Start onboarding(Map<String, String> row) {
         return CustomerOnboarding.start(row);
     }
 
