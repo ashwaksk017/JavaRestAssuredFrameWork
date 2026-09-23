@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 import org.testng.asserts.SoftAssert;
 
 import com.ak.api.context.ScenarioContext;
+import com.ak.api.db.Db;
 import com.ak.api.domain.DomainApis;
 import com.ak.api.rest.utilities.RestLoggerUtilityDataHolder;
 import com.ak.api.rest.utilities.ResponseAsserts;
@@ -322,6 +323,52 @@ public final class CustomerOnboarding implements OnboardingFlow.AccountReady {
                 apis.client().createAccount(sfToken(), body));
         exec("createSalesforceDistribution", 201, (body, q, h) ->
                 apis.client().createDistribution(sfToken(), body));
+        return this;
+    }
+
+    // =====================================================================
+    // Database  (the ReadyAPI `groovy` steps that set up state mid-flow)
+    // =====================================================================
+
+    /**
+     * Run a SQL statement in the middle of the chain, the way a ReadyAPI
+     * Groovy step does.
+     *
+     * <pre>
+     * MasterClass.onboarding(row)
+     *     .enrollOwner()
+     *     .createH4BAccount()
+     *     .db("UPDATE account SET status='L', attestation_source='leadspace' "
+     *       + "WHERE web_site='#website_domain#'")
+     *     .activateProgramAccount()
+     *     .complete();
+     * </pre>
+     *
+     * <p>Several converted cases put a DB write between two requests --
+     * attestation state, account status, OTP rows -- because the API has no
+     * endpoint for it. Without this the chain had to be broken in half and
+     * resumed around a bare {@code Db.execute}, which lost the fluent shape
+     * and the phase logging.</p>
+     *
+     * <p>{@code #key#} placeholders resolve against the CSV row and ctx,
+     * exactly as they do in a request template, so the id an earlier phase
+     * published can be referenced by name.</p>
+     *
+     * <h2>Same guard as the converted path</h2>
+     *
+     * Routed through {@link Db#executeTranslated}, which is what the
+     * generated hooks call. That means identical behaviour in three places
+     * where a hand-rolled call would differ: the statement is refused when
+     * {@link Db#unsafeSqlReason} objects, it is skipped with a warning when
+     * no database is configured (so a manual test still runs), and a failure
+     * is logged rather than thrown. A test asserting on DB state should read
+     * it back and assert; this method is for arranging state, not verifying.
+     *
+     * @param sql statement, optionally containing {@code #key#} placeholders
+     */
+    public CustomerOnboarding db(String sql) {
+        LOG.info(" .. db step");
+        Db.executeTranslated(sql, ImportedScenario.mergedRow(row, ctx), ctx);
         return this;
     }
 

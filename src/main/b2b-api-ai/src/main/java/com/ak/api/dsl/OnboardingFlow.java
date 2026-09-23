@@ -88,6 +88,13 @@ public final class OnboardingFlow {
 
         Start expectCaptured(String ctxKey, String expected);
 
+        /**
+         * Run SQL mid-chain, as a ReadyAPI Groovy step does. Available at
+         * every stage: cases set account status before activating, and
+         * seed rows before enrolling. {@code #key#} resolves from row/ctx.
+         */
+        Start db(String sql);
+
         // -- phases that need nothing published ---------------------------
 
         /** Needs {@code travelAgentId} from the CSV row, not from a phase. */
@@ -139,6 +146,8 @@ public final class OnboardingFlow {
 
         @Override Enrolled expectCaptured(String ctxKey, String expected);
 
+        @Override Enrolled db(String sql);
+
         @Override Enrolled createTravelAgency();
 
         @Override Enrolled prepareSalesforceAccount();
@@ -187,6 +196,8 @@ public final class OnboardingFlow {
         @Override AccountReady expectJsonTree(String jsonPath, String expectedJson);
 
         @Override AccountReady expectCaptured(String ctxKey, String expected);
+
+        @Override AccountReady db(String sql);
 
         @Override AccountReady createTravelAgency();
 
