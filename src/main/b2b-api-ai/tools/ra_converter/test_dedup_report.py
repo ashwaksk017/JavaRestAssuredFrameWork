@@ -186,6 +186,68 @@ def test_write_audit_produces_the_file_and_extends_summary(tmp_path=None):
         assert dr.write_audit(os.path.join(root, "nowhere"), "com.ak.api", "unit") is None
 
 
+def _templates_root(tmp, bodies):
+    """Write {name: tree} under a throwaway src/main/resources/templates/s."""
+    import json
+    d = os.path.join(tmp, "src", "main", "resources", "templates", "s")
+    os.makedirs(d, exist_ok=True)
+    for name, tree in bodies.items():
+        with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+            json.dump(tree, fh)
+    return tmp
+
+
+def test_two_identity_slots_are_never_one_family():
+    """A mis-read placeholder invents merge opportunities that must not exist.
+
+    Both pairs below were advertised as "still mergeable" until
+    template_stats started sharing ra_converter._leaf_is_placeholder:
+
+      @Properties_guestIDmember2@ vs @Properties_memberGuestID@
+          -- `@...@` was not matched at all by the old `#[^#]+#` regex
+      #Properties_username##Properties_Hardcodeddomain#
+          -- concatenated, so an inner `#` defeated the same regex
+
+    Merging either makes two different identity slots share one CSV cell.
+    That is the failure that made MemberHHonorsEnroll 409 on a duplicate
+    email, and the Tier-2 merger already refuses it -- only the audit
+    disagreed.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _templates_root(tmp, {
+            "a_1.json": {"guestId": "@Properties_guestIDmember2@"},
+            "a_2.json": {"guestId": "@Properties_memberGuestID@"},
+            "b_1.json": {"emailDomain":
+                         "#Properties_username##Properties_Hardcodeddomain#"},
+            "b_2.json": {"emailDomain":
+                         "#Properties_username##Properties_Domain#"},
+        })
+        st = dr.template_stats(root)
+    assert st["files"] == 4, st
+    assert st["mergeable_groups"] == 0, (
+        "different identity slots reported mergeable: %s" % (st["largest"],))
+    assert st["families"] == 4, st
+
+
+def test_same_placeholders_different_literals_still_merge():
+    """NEGATIVE CONTROL: the fix must not silence real merge candidates.
+
+    Identical placeholders at identical paths, differing only in literal
+    data, is precisely what Tier 2 collapses into one template plus tpl_*
+    columns. If this stops being reported, the audit has gone blind rather
+    than accurate.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _templates_root(tmp, {
+            "c_1.json": {"guestId": "@Properties_memberGuestID@", "city": "Houston"},
+            "c_2.json": {"guestId": "@Properties_memberGuestID@", "city": "Austin"},
+        })
+        st = dr.template_stats(root)
+    assert st["files"] == 2, st
+    assert st["mergeable_groups"] == 1, (
+        "a genuine literal-only difference was not reported: %s" % (st,))
+    assert st["mergeable_files"] == 2, st
+
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
     failed = 0

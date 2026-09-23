@@ -159,10 +159,26 @@ def _normalise_asserts(body: str) -> list[tuple]:
 def template_stats(root: str) -> dict | None:
     """Request templates: files, distinct shapes, and same-shape families
     that share their placeholders (mergeable into one template + tpl_*
-    CSV columns) -- the reuse a case can get without any code."""
+    CSV columns) -- the reuse a case can get without any code.
+
+    Placeholder detection MUST be the converter's own `_leaf_is_placeholder`.
+    A local regex here drifted from it and reported two families as
+    "still mergeable" that the merger had correctly refused:
+
+      #Properties_username##Properties_Hardcodeddomain#  (concatenated -- an
+          inner `#` broke `#[^#]+#`, so it read as a literal)
+      @Properties_guestIDmember2@ vs @Properties_memberGuestID@  (`@...@` was
+          not matched at all, so two different identity slots looked equal)
+
+    Both would have merged a member's guest id with another member's -- the
+    same failure that made MemberHHonorsEnroll 409 on a duplicate email.
+    """
     import glob
     import hashlib
     import json
+    # Function-level: ra_converter imports this module (write_audit), so a
+    # module-level import back would be circular.
+    from ra_converter import _leaf_is_placeholder
     base = os.path.join(root, "src", "main", "resources", "templates")
     files = glob.glob(os.path.join(base, "**", "*.json"), recursive=True)
     if not files:
@@ -192,7 +208,7 @@ def template_stats(root: str) -> dict | None:
             continue
         leaves = list(walk(tree))
         sig = tuple((p, type(v).__name__) for p, v in leaves)
-        phs = tuple((p, v) for p, v in leaves if isinstance(v, str) and re.fullmatch(r"#[^#]+#", v))
+        phs = tuple((p, v) for p, v in leaves if _leaf_is_placeholder(v))
         shapes[sig].append(name)
         families[(sig, phs)].append(name)
     mergeable = [v for v in families.values() if len(v) > 1]
