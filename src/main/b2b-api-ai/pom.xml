@@ -55,6 +55,11 @@
         <!-- OpenAPI models from src/main/resources/openapi/*.yaml. Off only if
              you need a compile without the generator plugin. -->
         <openapi.codegen.skip>true</openapi.codegen.skip>
+        <!-- Test sources that reference the generated models. Skipped
+             alongside the generator, and restored by the `openapi-codegen`
+             profile. A pattern rather than a hard-coded exclude so adding a
+             second such test is a one-word change here. -->
+        <openapi.test.excludes>**/OpenApiModelsTest.java</openapi.test.excludes>
         <!-- -Dconverter.precondition.skip=true bypasses the
              converted-output check (see maven-enforcer-plugin). -->
         <converter.precondition.skip>false</converter.precondition.skip>
@@ -295,6 +300,23 @@ No converted output found -- this tree has not been through the converter yet.
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>${compiler.version}</version>
+                <configuration>
+                    <!-- Tests that compile only against openapi-generator
+                         output. The spec that feeds the generator is
+                         gitignored on purpose (vendor API contract, public
+                         repo), so on a clone without it the models do not
+                         exist and these files cannot compile, taking
+                         java-compile AND java-tests down with them for a
+                         reason unrelated to the change under test.
+
+                         Excluded by default; the `openapi-codegen` profile
+                         below puts them back when you enable generation with
+                         -Dopenapi.codegen.skip=false, which is the only
+                         configuration where they can compile at all. -->
+                    <testExcludes>
+                        <testExclude>${openapi.test.excludes}</testExclude>
+                    </testExcludes>
+                </configuration>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -435,4 +457,39 @@ No converted output found -- this tree has not been through the converter yet.
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!--
+          Activated by the same flag that turns the generator on:
+
+              mvn test -Dopenapi.codegen.skip=false
+
+          Generation and the tests that depend on it are one decision, so they
+          are driven by one flag. Without this the two could disagree: models
+          generated but their tests still excluded, or the tests compiled
+          against models that were never generated. That second case is the
+          failure this profile exists to remove: `cannot find symbol: class
+          ProgramAccount` taking down java-compile and java-tests on any clone
+          lacking the gitignored spec.
+
+          Maven activates on a -D property, not on the <properties> default, so
+          the everyday build stays on the safe path and only an explicit opt-in
+          pulls these sources in.
+        -->
+        <profile>
+            <id>openapi-codegen</id>
+            <activation>
+                <property>
+                    <name>openapi.codegen.skip</name>
+                    <value>false</value>
+                </property>
+            </activation>
+            <properties>
+                <!-- A pattern that matches nothing, so nothing is excluded.
+                     Maven has no way to clear an inherited list, so the list
+                     stays and its contents are neutralised. -->
+                <openapi.test.excludes>**/__no_such_test__.java</openapi.test.excludes>
+            </properties>
+        </profile>
+    </profiles>
 </project>
