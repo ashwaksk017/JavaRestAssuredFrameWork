@@ -2389,6 +2389,43 @@ def test_editing_a_bundled_framework_file_requires_bumping_its_rev():
         % (set(_FRAMEWORK_REVS) - seen))
 
 
+def test_bootstrap_creates_the_dirs_a_hand_written_test_needs():
+    """Neither templates/manual nor csv/ can arrive with a clone.
+
+    src/test/resources/csv/ is gitignored outright, and templates/manual/ is
+    committed but git does not store empty directories -- so a fresh tree has
+    neither, and the first manual test dies on a classpath miss whose message
+    is about a template rather than about a missing folder.
+
+    Also asserts the README is skip-if-exists: it carries the rule that bodies
+    are published while CSV rows are not, and an author who edits it must not
+    lose that on the next bootstrap.
+    """
+    import tempfile
+    import ra_converter as rc
+    with tempfile.TemporaryDirectory() as out:
+        args = SimpleNamespace(output=out, package_root="com.ak.api")
+        made = rc._bootstrap_author_dirs(None, args)
+        tpl = os.path.join(out, "src/test/resources/templates/manual")
+        csvd = os.path.join(out, "src/test/resources/csv")
+        readme = os.path.join(tpl, "README.md")
+        assert os.path.isdir(tpl), made
+        assert os.path.isdir(csvd), made
+        assert os.path.isfile(readme), made
+        body = open(readme, encoding="utf-8").read()
+        # the two things an author gets wrong first
+        assert "templates/manual/" in body
+        assert "gitignored" in body and "#enroll_password#" in body, body
+        # ofPath takes the CLASSPATH path, without the src/test/resources prefix
+        assert 'Template.ofPath("b2b722Enroll", "templates/manual/' in body
+
+        # second run: idempotent, and an edited README survives
+        open(readme, "a", encoding="utf-8").write("\nAUTHOR EDIT\n")
+        again = rc._bootstrap_author_dirs(None, args)
+        assert "AUTHOR EDIT" in open(readme, encoding="utf-8").read()
+        assert not [p for p in again if p.endswith("README.md")], again
+
+
 def test_script_runner_is_the_last_thing_in_this_file():
     """verify_all runs this file as a SCRIPT, not under pytest.
 

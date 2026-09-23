@@ -16860,6 +16860,69 @@ def _write_facade_endpoint_map(output_dir: str, package_root: str,
         len(rows), missing)
 
 
+_MANUAL_TEMPLATES_README = """\
+# Hand-written request bodies
+
+Bodies for manual tests live here. Reference one by its CLASSPATH path,
+which drops the `src/test/resources/` prefix:
+
+    .using(Template.ofPath("b2b722Enroll", "templates/manual/b2b722_enroll.json"))
+    .enrollOwner()
+
+`using(...)` applies to the NEXT phase only.
+
+## Why not src/main/resources/templates/
+
+That tree is converter output. It is gitignored, it is renumbered on every
+convert, and `--clean` deletes it. `Template.of(case, step)` resolves through
+the generated index and so moves with it; `Template.ofPath` points at a file
+you own, which a reconvert cannot touch.
+
+## This directory IS committed -- keep secrets out
+
+Unlike `src/test/resources/csv/`, this path is not gitignored, so anything
+here is published with the repo. Put no password, token, or real customer
+value in a body. Reference a CSV column instead:
+
+    { "password": "#enroll_password#" }
+
+and hold the value in the per-method CSV, which is gitignored. `#key#`
+resolves against the CSV row and ctx, so an id an earlier phase captured can
+be referenced by name too.
+"""
+
+
+def _bootstrap_author_dirs(emitter, args) -> list:
+    """Create the two directories a hand-written test needs.
+
+    Neither can arrive with a clone. `src/test/resources/csv/` is gitignored
+    outright, and `templates/manual/` is committed but empty directories are
+    not something git stores -- so a fresh tree has neither, and the first
+    manual test fails on a classpath miss whose message is about a template
+    rather than about a missing folder.
+
+    The README doubles as the thing that makes the committed directory exist
+    in git at all, and records the split that matters: bodies are published,
+    CSV rows are not, so credentials belong in the CSV.
+    """
+    out = []
+    tpl_dir = os.path.join(args.output, "src/test/resources/templates/manual")
+    csv_dir = os.path.join(args.output, "src/test/resources/csv")
+    for d in (tpl_dir, csv_dir):
+        if not os.path.isdir(d):
+            os.makedirs(d, exist_ok=True)
+            out.append(os.path.relpath(d, args.output).replace("\\", "/") + "/")
+    readme = os.path.join(tpl_dir, "README.md")
+    if os.path.exists(readme):
+        print("[ra_converter] SKIP (exists): %s"
+              % os.path.relpath(readme, args.output).replace("\\", "/"))
+    else:
+        with open(readme, "w", encoding="utf-8") as fh:
+            fh.write(_MANUAL_TEMPLATES_README)
+        out.append(os.path.relpath(readme, args.output).replace("\\", "/"))
+    return out
+
+
 def _run_bootstrap(args) -> int:
     """Make a fresh clone compile WITHOUT converting anything first.
 
@@ -16895,6 +16958,10 @@ def _run_bootstrap(args) -> int:
     pr = args.package_root
     written.append(emitter._write(
         stub_rel, _MANUAL_CLIENT_STUB % (pr, pr, pr, pr)))
+    # Where a hand-written body and its per-method CSV go. Neither survives a
+    # clone on its own, so create them here rather than making the author
+    # discover the layout from a classpath error.
+    written.extend(_bootstrap_author_dirs(emitter, args))
     iface = os.path.join(args.output, "src/main/java",
                          args.package_root.replace(".", "/"),
                          "support", "ImportedRestClient.java")
