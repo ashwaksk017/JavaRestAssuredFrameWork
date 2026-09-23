@@ -30,9 +30,23 @@ Bootstrap the framework types once, with no XML:
 python tools/ra_converter/ra_converter.py --bootstrap --output . --package-root com.ak.api
 ```
 
-That writes the bundled support types plus an `ImportedRestClient` carrying
-every method the committed tree calls, so `mvn -o test-compile` succeeds and
-you can write and run a hand-written test immediately.
+That writes the bundled support types, an `ImportedRestClient` carrying every
+method the committed tree calls, and a scaffold at
+`src/main/java/com/ak/api/rest/manual/client/ManualClient.java` — so
+`mvn -o test-compile` succeeds and you can write and run a hand-written test
+immediately.
+
+The scaffold matters because generated clients live in `rest/clients/`, which
+is gitignored and only exists after a convert. `ManualClient` is yours:
+committed, shared, and skip-if-exists so a later bootstrap or convert never
+overwrites it. Override only the endpoints your chain reaches — every other
+method on `ImportedRestClient` throws `UnsupportedOperationException` naming
+itself, so run the test and let it tell you what to add next. Point at it by
+FULLY QUALIFIED name, since a bare one resolves under `rest.clients`:
+
+```java
+Config.get("manual.client", "com.ak.api.rest.manual.client.ManualClient")
+```
 
 What it does **not** give you is anything that needs a converted suite:
 `templates/<suite>/_index.csv` does not exist, so `Template.singleMemberOnboarding`

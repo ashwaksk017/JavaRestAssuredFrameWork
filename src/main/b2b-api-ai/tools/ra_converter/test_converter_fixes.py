@@ -2182,6 +2182,46 @@ def test_bootstrap_writes_the_framework_with_no_xml(tmp_path):
         assert os.path.isfile(os.path.join(support, name)), name
 
 
+def test_bootstrap_scaffolds_a_manual_client_and_never_clobbers_it(tmp_path):
+    """--bootstrap leaves an editable client, and a re-run preserves edits.
+
+    Unlike everything else bootstrap writes, this lands in COMMITTED space and
+    the author fills in the endpoint bodies. Overwriting it on a later
+    bootstrap or convert would silently discard their work, so the basename is
+    in _AUTHOR_EDITABLE_BASENAMES (skip-if-exists).
+
+    The scaffold exists to encode three contracts that fail confusingly when
+    missed: the (String baseUrl) constructor SharedClients builds through, a
+    name ending in Client for SuiteName, and implements ImportedRestClient.
+    """
+    import subprocess as _sp
+    out = str(tmp_path)
+
+    def boot():
+        return _sp.run([sys.executable,
+                        os.path.join(HERE, "ra_converter.py"),
+                        "--bootstrap", "--output", out,
+                        "--package-root", "com.ak.api", "--skip-self-test"],
+                       capture_output=True, text=True)
+
+    first = boot()
+    assert first.returncode == 0, first.stdout + first.stderr
+    stub = os.path.join(out, "src", "main", "java", "com", "ak", "api",
+                        "rest", "manual", "client", "ManualClient.java")
+    assert os.path.isfile(stub), "bootstrap did not scaffold ManualClient"
+    body = open(stub, encoding="utf-8").read()
+    assert "implements ImportedRestClient" in body, body[:400]
+    assert "public ManualClient(String baseUrl)" in body, body[:400]
+
+    marker = "// AUTHOR EDIT sentinel"
+    with open(stub, "a", encoding="utf-8") as fh:
+        fh.write("\n" + marker + "\n")
+    second = boot()
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert marker in open(stub, encoding="utf-8").read(), (
+        "a second --bootstrap overwrote the author's ManualClient")
+
+
 def test_script_runner_is_the_last_thing_in_this_file():
     """verify_all runs this file as a SCRIPT, not under pytest.
 

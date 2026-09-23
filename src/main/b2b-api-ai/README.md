@@ -16,9 +16,12 @@ The utility layer (`RestUtilities`, `RestLoggerUtilityDataHolder`, `RestLogAppen
 > python tools/ra_converter/ra_converter.py --bootstrap --output . --package-root com.ak.api
 > ```
 >
-> `--bootstrap` needs no `--input`. It writes the bundled support types plus an
-> `ImportedRestClient` covering every method the committed tree calls, so the
-> build succeeds and a manual test can run. What it does NOT give you is
+> `--bootstrap` needs no `--input`. It writes the bundled support types, an
+> `ImportedRestClient` covering every method the committed tree calls, and a
+> `rest/manual/client/ManualClient.java` scaffold for you to fill in — the
+> generated clients live in gitignored `rest/clients/` and only exist after a
+> convert. The scaffold is skip-if-exists, so re-running never touches your
+> edits. What it does NOT give you is
 > anything needing a converted suite: `templates/<suite>/_index.csv` does not
 > exist, so 11 of the 175 guards fail on a bare clone and `Template.of(case,
 > step)` has nothing to resolve — use `Template.ofPath(...)` until you convert.

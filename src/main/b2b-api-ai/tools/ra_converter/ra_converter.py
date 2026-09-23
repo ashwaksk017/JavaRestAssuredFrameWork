@@ -6049,6 +6049,10 @@ class Emitter:
     # content varies with the SoapUI input XML.
     _AUTHOR_EDITABLE_BASENAMES = frozenset({
         "AuthHelper.java",
+        # Scaffold written by --bootstrap into COMMITTED space. The author
+        # fills in the endpoints, so a later bootstrap or convert must never
+        # overwrite it.
+        "ManualClient.java",
         "PerMethodCsvDataProvider.java",
         "PlaceholderResolver.java",
         "ProgressLogListener.java",
@@ -16592,6 +16596,84 @@ def _mark_catalog_incomplete(reasons: list) -> None:
         print(f"[ra_converter] WARN: could not mark catalog incomplete: {exc}")
 
 
+_MANUAL_CLIENT_STUB = """package %s.rest.manual.client;
+
+import java.util.Map;
+
+import io.restassured.RestAssured;
+import io.restassured.http.ContentType;
+import io.restassured.response.Response;
+
+import %s.rest.utilities.Headers;
+import %s.support.ImportedRestClient;
+
+/**
+ * Hand-written client for tests authored BEFORE -- or without -- converting a
+ * ReadyAPI XML.
+ *
+ * <p>Generated clients live in {@code rest/clients/}, which is gitignored and
+ * only exists after a convert. This one is yours: committed, shared, and never
+ * overwritten (a later bootstrap or convert skips it because the file exists).</p>
+ *
+ * <h2>Three contracts that are easy to get wrong</h2>
+ * <ul>
+ *   <li>the {@code (String baseUrl)} constructor -- SharedClients builds the
+ *       instance reflectively through it;</li>
+ *   <li>a class name ending in {@code Client} -- SuiteName derives the suite
+ *       from it, so {@code ManualClient} means the {@code manual} suite and
+ *       therefore {@code templates/manual/};</li>
+ *   <li>{@code implements ImportedRestClient} -- bind() rejects anything else.</li>
+ * </ul>
+ *
+ * <p>Point your test at it by FULLY QUALIFIED name; a bare name is resolved
+ * under {@code rest.clients} instead:</p>
+ *
+ * <pre>
+ * Config.get("manual.client", "%s.rest.manual.client.ManualClient")
+ * </pre>
+ *
+ * <p>Override only what your chain actually calls. Every other method on
+ * ImportedRestClient throws {@code UnsupportedOperationException} naming
+ * itself, so run the test and let it tell you what to add next.</p>
+ */
+public class ManualClient implements ImportedRestClient {
+
+    private final String baseUrl;
+
+    public ManualClient(String baseUrl) {
+        this.baseUrl = baseUrl;
+    }
+
+    /** Bearer + JSON headers, matching what a generated client sends. */
+    protected Map<String, String> headers(String token) {
+        return Headers.builder()
+                .contentTypeJson()
+                .acceptJson()
+                .header("Authorization",
+                        token == null || token.isEmpty() || token.startsWith("Bearer ")
+                                ? token : "Bearer " + token)
+                .correlationId()
+                .build();
+    }
+
+    /** The base URL this client was built for. */
+    protected String baseUrl() {
+        return baseUrl;
+    }
+
+    // Worked example -- uncomment and adjust the path for your endpoint.
+    // The imports above are already in place for it.
+    //
+    // @Override
+    // public Response hHonorsEnroll(String token, String requestBody) {
+    //     return RestAssured.given().headers(headers(token))
+    //             .contentType(ContentType.JSON).body(requestBody)
+    //             .post(baseUrl() + "/realms/guests/enroll");
+    // }
+}
+"""
+
+
 def _run_bootstrap(args) -> int:
     """Make a fresh clone compile WITHOUT converting anything first.
 
@@ -16619,6 +16701,14 @@ def _run_bootstrap(args) -> int:
                       max_name_len=args.max_name_len)
     written = emitter.emit_framework_support()
     written.append(emitter.emit_imported_rest_client())
+    # A scaffold, not generated output: bootstrap leaves the author a client
+    # that already satisfies the constructor / naming / interface contracts.
+    # In _AUTHOR_EDITABLE_BASENAMES, so re-running never overwrites edits.
+    stub_rel = ("src/main/java/%s/rest/manual/client/ManualClient.java"
+                % args.package_root.replace(".", "/"))
+    pr = args.package_root
+    written.append(emitter._write(
+        stub_rel, _MANUAL_CLIENT_STUB % (pr, pr, pr, pr)))
     iface = os.path.join(args.output, "src/main/java",
                          args.package_root.replace(".", "/"),
                          "support", "ImportedRestClient.java")
