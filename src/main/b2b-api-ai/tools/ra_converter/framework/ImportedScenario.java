@@ -243,7 +243,40 @@ public final class ImportedScenario {
         return expandPlaceholders(ctx, ctxGetRaw(ctx, primaryKey));
     }
 
+    /**
+     * A GeneratedTokenID value always comes back "Bearer "-prefixed, whichever
+     * lookup path found it.
+     *
+     * <p>{@link #hiltonTokenFallback} already applied the prefix, but it is
+     * the LAST resort in the resolver: with {@code accessToken} sitting in
+     * ctx, {@code resolveDeclared} (or the trailing-field walk) matched first
+     * and returned the bare JWT, so the Authorization header went out as
+     * {@code eyJ...} instead of {@code Bearer eyJ...}. SetupHelper writes the
+     * key as {@code "Bearer " + token}, so consumers assume the prefix is
+     * part of the value -- the two paths disagreed.</p>
+     *
+     * <p>Additive on purpose: it only ever ADDS, only for keys naming a
+     * generated token, and never when the prefix is already there. Keys that
+     * merely end in {@code accessToken} (the Salesforce token among them) are
+     * left exactly as resolved, so no caller starts receiving a different
+     * token than before.</p>
+     */
+    static String bearerForGeneratedToken(String primaryKey, String value) {
+        if (value == null || value.isEmpty() || primaryKey == null) {
+            return value;
+        }
+        if (!primaryKey.toLowerCase(Locale.ROOT).contains("generatedtoken")) {
+            return value;
+        }
+        return value.regionMatches(true, 0, "Bearer ", 0, 7)
+                ? value : "Bearer " + value;
+    }
+
     static String ctxGetRaw(Map<String, String> ctx, String primaryKey) {
+        return bearerForGeneratedToken(primaryKey, ctxGetResolved(ctx, primaryKey));
+    }
+
+    private static String ctxGetResolved(Map<String, String> ctx, String primaryKey) {
         if (ctx == null || primaryKey == null) {
             return "";
         }

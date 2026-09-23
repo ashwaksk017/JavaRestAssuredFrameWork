@@ -1553,7 +1553,9 @@ def test_testsupport_ctxget_consults_declared_aliases_before_name_walk():
     Properties.accountID ahead of the real PropertiesDetails.accountID."""
     src = open(os.path.join(os.path.dirname(__file__), "ra_converter.py"),
                encoding="utf8").read()
-    start = src.index("static String ctxGetRaw(Map<String, String> ctx, String primaryKey) {{\n"
+    # The resolution steps live in ctxGetResolved; ctxGetRaw is now the thin
+    # wrapper that Bearer-normalises what it returns.
+    start = src.index("private static String ctxGetResolved(Map<String, String> ctx, String primaryKey) {{\n"
                       "        if (ctx == null || primaryKey == null) return \"\";")
     body = src[start:src.index("private static String expandPlaceholders", start)]
     known_empty = body.index("if (ctx.containsKey(primaryKey))")
@@ -1566,7 +1568,9 @@ def test_testsupport_ctxget_tries_same_key_other_case_before_aliases():
     """B2B-3216: ReadyAPI resolves ${PropertiesGuestId#guestID} to guestId."""
     src = open(os.path.join(os.path.dirname(__file__), "ra_converter.py"),
                encoding="utf8").read()
-    start = src.index("static String ctxGetRaw(Map<String, String> ctx, String primaryKey) {{\n"
+    # The resolution steps live in ctxGetResolved; ctxGetRaw is now the thin
+    # wrapper that Bearer-normalises what it returns.
+    start = src.index("private static String ctxGetResolved(Map<String, String> ctx, String primaryKey) {{\n"
                       "        if (ctx == null || primaryKey == null) return \"\";")
     body = src[start:src.index("private static String expandPlaceholders", start)]
     known_empty = body.index("if (ctx.containsKey(primaryKey))")
@@ -2265,6 +2269,37 @@ def test_facade_endpoint_map_resolves_aliases_and_flags_throwers(tmp_path):
     assert "via hHonorsEnroll" in body, body
     assert "`readAllEmails` | NOT IMPLEMENTED" in body, body
     assert "not implemented: 1" in body, body
+
+
+def test_generated_token_key_is_bearer_prefixed_on_every_lookup_path():
+    """A GeneratedTokenID lookup is Bearer-prefixed however it resolved.
+
+    hiltonTokenFallback prefixed it, but it is the LAST resort in the
+    resolver: with `accessToken` in ctx, resolveDeclared matched first and
+    handed back the bare JWT, so the Authorization header went out
+    unprefixed while SetupHelper writes the same key as "Bearer " + token.
+    FrameworkPartialGapsTest asserted this and had never run -- it lives
+    only in testng.xml, which could not start.
+
+    Guards BOTH copies: the bundled framework ImportedScenario and the
+    TestSupport template, because generated code calls the latter.
+    """
+    here = os.path.dirname(__file__)
+    py = open(os.path.join(here, "ra_converter.py"), encoding="utf8").read()
+    java = open(os.path.join(here, "framework", "ImportedScenario.java"),
+                encoding="utf8").read()
+    for name, src in (("TestSupport template", py),
+                      ("framework/ImportedScenario.java", java)):
+        assert "bearerForGeneratedToken" in src, name
+        # ctxGetRaw must route through it, not resolve directly.
+        assert ("return bearerForGeneratedToken(primaryKey, "
+                "ctxGetResolved(ctx, primaryKey));") in src, name
+        # Additive only: adds a prefix, never strips one, and only for a
+        # key naming a generated token -- a Salesforce `*.accessToken` key
+        # must keep resolving to the same value it did before.
+        assert 'contains("generatedtoken")' in src, name
+        assert 'regionMatches(true, 0, "Bearer ", 0, 7)' in src, name
+        assert "Bearer " + '" + value' in src, name
 
 
 def test_script_runner_is_the_last_thing_in_this_file():
