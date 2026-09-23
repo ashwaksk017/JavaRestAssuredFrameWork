@@ -11550,7 +11550,7 @@ public final class PlaceholderResolver {{
             ]
 
         if self.phase_specs_enabled:
-            self._emit_phases_class(class_name)
+            self._emit_phases_class(class_name, subpackage_override or "")
         csv_dir = (f"{self.suite_name}/{subpackage_override}/{class_name}"
                    if subpackage_override
                    else f"{self.suite_name}/{class_name}")
@@ -13154,14 +13154,25 @@ public abstract class {cls}<S extends {cls}<S>> extends ScenarioSteps<S> {{
         "com.ak.api.support.ImportedScenario", "com.ak.api.support.ImportedTemplates",
     )
 
-    def _emit_phases_class(self, class_name: str) -> str | None:
-        """support/<suite>/cases/<TestClass>Phases.java for the clusters just rendered."""
+    def _emit_phases_class(self, class_name: str, area: str = "") -> str | None:
+        """support/<suite>/cases/<Area><TestClass>Phases.java for the clusters just rendered.
+
+        `cases/` is FLAT while test classes are split into business-area
+        packages, so the class simple name alone is not unique: seven names
+        (RegularFlowTest, CreateAccountTest, AddMemberTest, ...) exist in two
+        areas each. Keyed by simple name the second emit overwrote the first
+        and its registrations vanished -- 15 @Test methods then threw
+        `no phase table for case` at runtime, because CaseRegistry never saw
+        them. The area prefix is what the CSV directory already uses for the
+        same reason.
+        """
         _here = os.path.dirname(os.path.abspath(__file__))
         if _here not in sys.path:
             sys.path.insert(0, _here)
         import phase_emit
         pkg = self._suite_cases_pkg()
-        cls = f"{class_name}Phases"
+        prefix = to_camel_case(area, upper_first=True) if area else ""
+        cls = f"{prefix}{class_name}Phases"
         cases_out: list[dict] = []
         hooks: list[str] = []          # none per class: hooks live in the suite Hooks class
         hook_by_body = self._suite_hooks
@@ -13219,9 +13230,21 @@ public abstract class {cls}<S extends {cls}<S>> extends ScenarioSteps<S> {{
         imports = ["com.ak.api.rest.utilities.phase.CaseRegistry"]
         content = phase_emit.phases_class_java(pkg, cls, imports, cases_out, hooks)
         rel = f"src/main/java/{pkg.replace('.', '/')}/{cls}.java"
-        self._write(rel, content)
-        if cls not in self._phases_classes:
+        # A second write to the same path silently discards the first file's
+        # registrations -- the exact failure the area prefix above removes.
+        # Never let it return quietly if some future naming change reopens it.
+        if cls in self._phases_classes:
+            lost = ", ".join(c["case"] for c in cases_out[:6])
+            msg = (f"two test classes both emit {cls}.java; the second "
+                   f"overwrites the first and its cases never register "
+                   f"(would lose: {lost}"
+                   f"{' ...' if len(cases_out) > 6 else ''})")
+            print(f"[ra_converter] PHASES COLLISION: {msg}")
+            self.ledger.add_preflight_finding(
+                "HIGH", "phases-class-collision", cls, msg)
+        else:
             self._phases_classes.append(cls)
+        self._write(rel, content)
         return rel
 
     def _register_spec(self, java: str) -> str:
@@ -16674,6 +16697,115 @@ public class ManualClient implements ImportedRestClient {
 """
 
 
+_FACADE_DOC_RX = re.compile(
+    r"/\*\*\s*\n\s*\*\s*([A-Z]+)\s+(\S+)\s*\n(?:\s*\*.*\n)*?\s*\*/\s*\n"
+    r"\s*public Response (\w+)\s*\(")
+_FACADE_THIN_RX = re.compile(
+    r"public\s+Response\s+(\w+)\s*\([^)]*\)\s*\{\s*return\s+client\.(\w+)\s*\(", re.S)
+_FACADE_ALIAS_RX = re.compile(
+    r"public\s+Response\s+(\w+)\s*\([^)]*\)\s*\{\s*return\s+(?!client\.)(\w+)\s*\(", re.S)
+
+
+def _write_facade_endpoint_map(output_dir: str, package_root: str,
+                               suite_name: str) -> str | None:
+    """`_audit/<suite>/facade_endpoints.md`: which endpoint each facade hits.
+
+    The domain facades are the authoring surface -- what an author reaches
+    through MasterClass.guests() and ctrl-clicks -- but they are thin
+    delegators with no javadoc, so the verb and path live two hops away in the
+    GENERATED client. Finding `POST /realms/guests/enroll` behind
+    `enrollHhonors` meant opening a file that only exists after a convert.
+
+    This cannot live on the facades themselves: they are committed and
+    suite-agnostic, while the path (and whether the method resolves at all) is
+    a property of one converted XML. So it is written per suite, next to the
+    other audits.
+
+    It also records what no committed file could: a facade method whose client
+    method this suite's client never implements. Those compile, autocomplete,
+    and throw UnsupportedOperationException at runtime.
+    """
+    import glob as _g
+    pkg = package_root.replace(".", "/")
+    base = os.path.join(output_dir, "src", "main", "java", pkg)
+    clients = sorted(_g.glob(os.path.join(base, "rest", "clients", "*Client.java")))
+    if not clients:
+        return None
+    # The suite's own client decides what resolves; another suite's client
+    # implementing a method says nothing about this one.
+    want = (suite_name or "").replace("_", "").lower() + "client.java"
+    chosen = next((c for c in clients
+                   if os.path.basename(c).lower() == want), None) or clients[0]
+    with open(chosen, encoding="utf-8") as fh:
+        csrc = fh.read()
+    paths = {m: (v, p) for v, p, m in _FACADE_DOC_RX.findall(csrc)}
+
+    facades = sorted(_g.glob(os.path.join(base, "domain", "**", "*Api.java"),
+                             recursive=True))
+    if not facades:
+        return None
+    rows: list = []
+    missing = 0
+    for f in facades:
+        with open(f, encoding="utf-8") as fh:
+            fsrc = fh.read()
+        # Keyed by NAME, not signature: overloads differ in optional query
+        # params / headers / body, never in destination -- measured 0 divergent
+        # names across all three facades. Collected as a SET anyway so a future
+        # suite that does diverge is reported instead of silently collapsed to
+        # whichever overload happened to parse last.
+        thin_all: dict = {}
+        for _fac, _cli in _FACADE_THIN_RX.findall(fsrc):
+            thin_all.setdefault(_fac, set()).add(_cli)
+        thin = {k: sorted(v)[0] for k, v in thin_all.items()}
+        alias = dict(_FACADE_ALIAS_RX.findall(fsrc))
+
+        def resolve(name, seen=()):
+            """facade method -> client method, following facade->facade hops."""
+            if name in thin:
+                return thin[name]
+            if name in alias and name not in seen:
+                return resolve(alias[name], seen + (name,))
+            return None
+
+        cls = os.path.basename(f)[:-len(".java")]
+        for fac in sorted(set(list(thin) + list(alias))):
+            cli = resolve(fac)
+            reached = {paths.get(c) for c in thin_all.get(fac, {cli} if cli else set())}
+            if len(reached) > 1 and None not in reached:
+                rows.append((cls, fac, " / ".join("%s %s" % r for r in sorted(reached)),
+                             "DIVERGENT overloads -- check the signature you call"))
+                continue
+            if cli and cli in paths:
+                verb, path = paths[cli]
+                note = "" if fac in thin else "via %s" % alias.get(fac, "")
+                rows.append((cls, fac, "%s %s" % (verb, path), note))
+            else:
+                missing += 1
+                rows.append((cls, fac, "NOT IMPLEMENTED by this client -- throws",
+                             "client.%s" % (cli or "?")))
+
+    out = ["# Facade endpoints -- `%s`" % suite_name, "",
+           "Which endpoint each `domain/*Api` method reaches, resolved through",
+           "`%s`." % os.path.basename(chosen), "",
+           "`NOT IMPLEMENTED` means the facade compiles and autocompletes but",
+           "throws `UnsupportedOperationException` at runtime: the interface is a",
+           "union across suites, and this suite's client never overrode it.", "",
+           "| facade | method | endpoint | note |", "|---|---|---|---|"]
+    for cls, fac, ep, note in rows:
+        out.append("| %s | `%s` | %s | %s |" % (cls, fac, ep, note))
+    out += ["", "resolved: %d   not implemented: %d   total: %d"
+            % (len(rows) - missing, missing, len(rows)), ""]
+
+    rel = os.path.join("_audit", suite_name, "facade_endpoints.md")
+    target = os.path.join(output_dir, rel)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("\n".join(out))
+    return "%d facade method(s), %d not implemented by this client" % (
+        len(rows), missing)
+
+
 def _run_bootstrap(args) -> int:
     """Make a fresh clone compile WITHOUT converting anything first.
 
@@ -17239,6 +17371,22 @@ def _emit_imported_tests(prep: _PreparedSuite) -> int:
         ledger.add_preflight_finding(
             "MEDIUM", "dedup-report-skipped", "",
             "reuse section missing from summary.md: %s" % _dedup_err)
+    # Which endpoint each facade method reaches, and which ones throw.
+    try:
+        _fac_line = _write_facade_endpoint_map(
+            args.output, args.package_root, suite_name)
+        if _fac_line:
+            print(f"[ra_converter] facade endpoints: {_fac_line} "
+                  f"-> _audit/{suite_name}/facade_endpoints.md")
+        else:
+            # Not an error: the facades are COMMITTED source, so a convert
+            # whose --output is a scratch tree has none to map. Say so rather
+            # than vanishing -- a silent skip cost an hour of chasing.
+            print("[ra_converter] facade endpoint map skipped: no "
+                  "domain/*Api.java or rest/clients/*Client.java under "
+                  f"{args.output} (expected when --output is not the repo root)")
+    except Exception as _fac_err:  # documentation must never fail a convert
+        print(f"[ra_converter] facade endpoint map failed: {_fac_err}")
     a_total = len(ledger.assertions)
     g_total = len(ledger.groovy)
     a_full = sum(1 for r in ledger.assertions if r[6] == "FULL")

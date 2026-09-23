@@ -357,6 +357,38 @@ and its numeric suffixes are cluster-derived and move between runs
 bound to those names breaks silently on the next convert -- which is exactly
 why `MasterClass` exposes only hand-written and stable client methods.
 
+### Which endpoint does a facade method hit?
+
+The `domain/*Api` facades are thin delegators with no javadoc, so
+ctrl-clicking `MasterClass.guests().enrollHhonors(...)` lands on another
+delegate, and the verb and path only appear two hops down in the **generated**
+client. Every convert now writes the answer:
+
+```
+_audit/<suite>/facade_endpoints.md
+```
+
+```
+| GuestApi | `enrollHhonors`             | POST /realms/guests/enroll | via hHonorsEnroll |
+| GuestApi | `hHonorsEnroll`             | POST /realms/guests/enroll |  |
+| GuestApi | `httpRequest200EnrollGuest` | NOT IMPLEMENTED by this client -- throws |
+```
+
+Read the last line carefully: `ImportedRestClient` is a **union across suites**,
+so a facade method can compile and autocomplete while this suite's client never
+implemented it -- and throw `UnsupportedOperationException` at run time. For
+`programaccountregression` that is 15 of 95 methods, 9 of them on `MemberApi`.
+The map is the only place that distinction is written down, because the facades
+are committed and suite-agnostic while the answer belongs to one converted XML.
+
+Rows are keyed by method NAME, not signature: overloads differ in optional
+query params, headers or body, never in destination (measured: 0 divergent
+names). Should a future suite diverge, that row is marked `DIVERGENT` rather
+than silently collapsed.
+
+Being an audit, it needs a convert -- a `--bootstrap` tree has no client and so
+no endpoints to map.
+
 The complete set, with the `exec()` phase name each one reports under (that
 is the name the per-phase CSV columns in section 3 key off):
 

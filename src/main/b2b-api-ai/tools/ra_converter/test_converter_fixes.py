@@ -2222,6 +2222,51 @@ def test_bootstrap_scaffolds_a_manual_client_and_never_clobbers_it(tmp_path):
         "a second --bootstrap overwrote the author's ManualClient")
 
 
+def test_facade_endpoint_map_resolves_aliases_and_flags_throwers(tmp_path):
+    """The map exists so an author can see the endpoint behind a facade method.
+
+    The facades are thin delegators with no javadoc, so `enrollHhonors` gives
+    no hint that it reaches POST /realms/guests/enroll -- the verb and path
+    live two hops away in the GENERATED client. It cannot be annotated on the
+    facades themselves: those are committed and suite-agnostic, while the path
+    (and whether the method resolves at all) belongs to one converted XML.
+
+    Three behaviours are pinned: a thin delegator resolves, an alias resolves
+    THROUGH the method it forwards to, and a client method this suite never
+    implemented is called out -- those compile and autocomplete, then throw.
+    """
+    import ra_converter as rc
+    root = str(tmp_path)
+    base = os.path.join(root, "src", "main", "java", "com", "ak", "api")
+    os.makedirs(os.path.join(base, "rest", "clients"))
+    os.makedirs(os.path.join(base, "domain", "guest"))
+    with open(os.path.join(base, "rest", "clients", "MysuiteClient.java"),
+              "w", encoding="utf-8") as fh:
+        fh.write("public class MysuiteClient {\n"
+                 "    /**\n     * POST /realms/guests/enroll\n     */\n"
+                 "    public Response hHonorsEnroll(String token, String body) { }\n"
+                 "}\n")
+    with open(os.path.join(base, "domain", "guest", "GuestApi.java"),
+              "w", encoding="utf-8") as fh:
+        fh.write("public final class GuestApi {\n"
+                 "    public Response hHonorsEnroll(String token, String body) {\n"
+                 "        return client.hHonorsEnroll(token, body);\n    }\n"
+                 "    public Response enrollHhonors(String token, String body) {\n"
+                 "        return hHonorsEnroll(token, body);\n    }\n"
+                 "    public Response readAllEmails(String token) {\n"
+                 "        return client.readAllEmails(token);\n    }\n"
+                 "}\n")
+    line = rc._write_facade_endpoint_map(root, "com.ak.api", "mysuite")
+    assert line, "no map written"
+    body = open(os.path.join(root, "_audit", "mysuite", "facade_endpoints.md"),
+                encoding="utf-8").read()
+    assert "`hHonorsEnroll` | POST /realms/guests/enroll" in body, body
+    assert "`enrollHhonors` | POST /realms/guests/enroll" in body, body
+    assert "via hHonorsEnroll" in body, body
+    assert "`readAllEmails` | NOT IMPLEMENTED" in body, body
+    assert "not implemented: 1" in body, body
+
+
 def test_script_runner_is_the_last_thing_in_this_file():
     """verify_all runs this file as a SCRIPT, not under pytest.
 
