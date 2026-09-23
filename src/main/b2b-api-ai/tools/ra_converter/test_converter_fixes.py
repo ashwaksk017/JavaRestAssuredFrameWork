@@ -2329,6 +2329,66 @@ def test_case_with_every_step_disabled_skips_instead_of_passing_empty():
         "needs both the finding and its MEANINGS entry")
 
 
+# basename -> (expected ra_converter-framework-rev, sha256[:16] of the file
+# with the rev line masked). The hash ignores the rev line itself, so bumping
+# the rev alone does not change the fingerprint of the code it guards.
+_FRAMEWORK_REVS = {
+    "CtxFields.java": (10, "d1ca472292ddbb67"),
+    "IdentityVocabulary.java": (1, "5f31f59ad2c688aa"),
+    "ImportedScenario.java": (23, "81773778929c7a45"),
+    "ImportedTemplates.java": (2, "ebfd1453c10b5676"),
+    "ImportedTestdataCleanup.java": (3, "8d404ea000343756"),
+    "TestThreadState.java": (2, "fa194ad25091bd71"),
+}
+
+
+def test_editing_a_bundled_framework_file_requires_bumping_its_rev():
+    """Change the code, bump the rev -- or run machines keep the old copy.
+
+    _staleness_reason checks the revision marker FIRST and returns as soon
+    as it finds one; the missing-declaration check is only reached for files
+    that have no marker. So for these six, an unbumped rev means the
+    converter SKIPS the file on any tree that already has it, and the run
+    machine silently keeps executing the previous version.
+
+    That is not hypothetical: the ctxGet Bearer fix shipped without a bump.
+    ImportedScenario stayed at rev 22 on disk and at rev 22 in the bundle,
+    so every existing tree would have kept the unprefixed-token code while
+    the commit claimed to fix it.
+    """
+    import hashlib
+    import re as _re
+    here = os.path.join(os.path.dirname(__file__), "framework")
+    rx = _re.compile(r"ra_converter-framework-rev:\s*(\d+)")
+    seen = set()
+    for fn in sorted(os.listdir(here)):
+        if not fn.endswith(".java"):
+            continue
+        seen.add(fn)
+        assert fn in _FRAMEWORK_REVS, (
+            "%s is bundled but not in _FRAMEWORK_REVS -- add it with its rev "
+            "and hash so an edit cannot ship without a bump" % fn)
+        text = open(os.path.join(here, fn), encoding="utf-8").read()
+        m = rx.search(text)
+        assert m, "%s has no ra_converter-framework-rev marker" % fn
+        want_rev, want_hash = _FRAMEWORK_REVS[fn]
+        got = hashlib.sha256(
+            rx.sub("ra_converter-framework-rev: X", text).encode("utf-8")
+        ).hexdigest()[:16]
+        if got != want_hash:
+            raise AssertionError(
+                "%s changed (hash %s != %s). Bump "
+                "`ra_converter-framework-rev` in the file AND update "
+                "_FRAMEWORK_REVS here, or existing trees will keep the old "
+                "copy: _staleness_reason short-circuits on the rev marker."
+                % (fn, got, want_hash))
+        assert int(m.group(1)) == want_rev, (
+            "%s rev is %s, expected %s" % (fn, m.group(1), want_rev))
+    assert seen == set(_FRAMEWORK_REVS), (
+        "_FRAMEWORK_REVS lists files that no longer exist: %s"
+        % (set(_FRAMEWORK_REVS) - seen))
+
+
 def test_script_runner_is_the_last_thing_in_this_file():
     """verify_all runs this file as a SCRIPT, not under pytest.
 
