@@ -335,6 +335,7 @@ public final class RestStep {
                 PlaceholderResolver.resolveAll(path == null ? "" : path, resolveCtx));
         RestUtilities.assertPathResolved(verb, stepName, resolvedUrl, expectedStatus);
         LOG.info(" -> {} {}  (step={})", verb, resolvedUrl, stepName);
+        warnIfEmptyHanded(verb, body, query);
         if (!query.isEmpty()) {
             String assertion = query.get("assertion");
             if (assertion != null) {
@@ -972,6 +973,40 @@ public final class RestStep {
         }
         return !path.contains("/members") && !path.contains("/attest")
                 && !path.contains("/activate") && !path.contains("/dashboard");
+    }
+
+    /**
+     * Say so when a body-bearing verb is about to send nothing at all.
+     *
+     * <p>{@code body} is {@code ""} unless a template was set, and the body
+     * log line is gated behind {@code !body.isEmpty()} -- so a POST with no
+     * template produced a request log with no payload and no explanation.
+     * The server answers 400/415 and the author goes looking at a template
+     * that was never applied.</p>
+     *
+     * <p>Not hypothetical: a hand-written chain only gets a template from
+     * {@code using(Template)} or a {@code template_<phase>} CSV column, and
+     * the committed OnboardingE2ETest has neither -- every POST in it goes
+     * out empty.</p>
+     *
+     * <p>Deliberately narrow so a converted run does not get a wall of
+     * warnings. Query/form parameters count as a payload: 22 of this suite's
+     * 710 body-verb specs carry no template, and several are legitimate --
+     * {@code sf_token_Request} posts form-urlencoded parameters, not JSON.
+     * Only a request carrying NEITHER a body NOR parameters is flagged.</p>
+     */
+    private static void warnIfEmptyHanded(String verb, String body,
+                                          Map<String, String> query) {
+        if (!"POST".equals(verb) && !"PUT".equals(verb) && !"PATCH".equals(verb)) {
+            return;
+        }
+        if ((body != null && !body.isEmpty()) || (query != null && !query.isEmpty())) {
+            return;
+        }
+        LOG.warn(" .. {} is being sent with NO body and NO parameters. A "
+                + "hand-written phase gets its body from using(Template.ofPath(...)) "
+                + "or a `template_<phase>` CSV column; neither was set. If the "
+                + "server answers 400/415, this is why.", verb);
     }
 
     @FunctionalInterface

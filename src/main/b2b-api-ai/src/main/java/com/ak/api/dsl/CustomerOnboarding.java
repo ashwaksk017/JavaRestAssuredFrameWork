@@ -317,8 +317,27 @@ public final class CustomerOnboarding implements OnboardingFlow.AccountReady {
      */
     public CustomerOnboarding prepareSalesforceAccount() {
         LOG.info(" .. prepareSalesforceAccount (token + account + distribution)");
-        exec("fetchSalesforceToken", 200, (body, q, h) ->
+        Response tokenRes = exec("fetchSalesforceToken", 200, (body, q, h) ->
                 com.ak.api.rest.utilities.SalesforceAuth.requestToken(q));
+        // SalesforceAuth.requestToken RETURNS the response; it does not touch
+        // ctx. Without this the token was fetched and dropped: sfToken() read
+        // an empty SALESFORCE_TOKEN, the next two calls 401'd, and
+        // activateThroughHws() then threw "'leadId' is not in ctx yet -- an
+        // earlier phase must publish it (e.g. enrollOwner() before
+        // createH4LAccount())", which points at guest enrolment and is nowhere
+        // near the cause. The converted flow does this in its sf-Token hook;
+        // the DSL had no equivalent.
+        String sf = com.ak.api.rest.utilities.RestUtilities
+                .safeJsonExtract(tokenRes, "access_token");
+        if (sf == null || sf.isEmpty()) {
+            LOG.warn(" .. fetchSalesforceToken returned no access_token -- the "
+                    + "Salesforce calls below will 401. Check sf_config / "
+                    + "salesforce_assertion in program_configuration.json.");
+        } else {
+            // Stored WITH the prefix, as the converted hook does: the value is
+            // used verbatim as the Authorization header.
+            sc.put(ScenarioContext.SALESFORCE_TOKEN, "Bearer " + sf);
+        }
         exec("createSalesforceAccount", 201, (body, q, h) ->
                 apis.client().createAccount(sfToken(), body));
         exec("createSalesforceDistribution", 201, (body, q, h) ->

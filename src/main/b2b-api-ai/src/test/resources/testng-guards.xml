@@ -26,6 +26,7 @@
             <class name="com.ak.api.dsl.ManualAuthTest"/>
             <class name="com.ak.api.dsl.SuiteNameTest"/>
             <class name="com.ak.api.dsl.OnboardingStageContractTest"/>
+            <class name="com.ak.api.dsl.ManualPayloadGapsTest"/>
             <class name="com.ak.api.dsl.PhaseExpectationTest"/>
             <class name="com.ak.api.dsl.PhaseCaptureTest"/>
         </classes>

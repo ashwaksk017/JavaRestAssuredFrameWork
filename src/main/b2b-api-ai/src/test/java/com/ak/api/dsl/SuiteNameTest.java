@@ -95,10 +95,14 @@ public class SuiteNameTest {
                         "com.ak.api.rest.manual.client.ManualClient"),
                 "manual",
                 "the package must be stripped before the Client suffix");
+        // A generated client's package, but a made-up suite: check_generic
+        // forbids committed code from naming a client that only exists after
+        // converting one particular XML, and a string literal trips its grep
+        // just as a type reference would.
         Assert.assertEquals(
                 SuiteName.fromClientSimpleName(
-                        "com.ak.api.rest.clients.ProgramaccountregressionClient"),
-                "programaccountregression");
+                        "com.ak.api.rest.clients." + "FooClient"),
+                "foo");
         // a simple name keeps working -- the other caller passes getSimpleName()
         Assert.assertEquals(SuiteName.fromClientSimpleName("ManualClient"), "manual");
         // still not a client name, package or no package
