@@ -79,6 +79,34 @@ public class SuiteNameTest {
     }
 
     @Test(groups = {"unit"})
+    @Story("a fully-qualified -Dmanual.client still derives the right suite")
+    @Description("""
+            CreateTestCase.md tells authors to point manual.client at
+            com.ak.api.rest.manual.client.ManualClient, because a bare name
+            resolves under rest.clients and the scaffold is not there. That
+            string ends in `Client`, so stripping only the suffix produced the
+            suite `com.ak.api.rest.manual.client.manual` -- no SuiteCleanup
+            matched it and a real run reported "Rows created by this test are
+            NOT being deleted" while everything else passed.
+            """)
+    public void aFullyQualifiedClientNameDerivesItsSimpleSuite() {
+        Assert.assertEquals(
+                SuiteName.fromClientSimpleName(
+                        "com.ak.api.rest.manual.client.ManualClient"),
+                "manual",
+                "the package must be stripped before the Client suffix");
+        Assert.assertEquals(
+                SuiteName.fromClientSimpleName(
+                        "com.ak.api.rest.clients.ProgramaccountregressionClient"),
+                "programaccountregression");
+        // a simple name keeps working -- the other caller passes getSimpleName()
+        Assert.assertEquals(SuiteName.fromClientSimpleName("ManualClient"), "manual");
+        // still not a client name, package or no package
+        Assert.assertNull(SuiteName.fromClientSimpleName("com.ak.api.rest.Foo"));
+        Assert.assertNull(SuiteName.fromClientSimpleName("com.ak.api.rest.Client"));
+    }
+
+    @Test(groups = {"unit"})
     @Story("NEGATIVE CONTROL: names that are not client names yield null")
     @Description("A bare Client must not derive the empty string: that would be "
             + "offered as a candidate suite and looked up as a SuiteCleanup in "

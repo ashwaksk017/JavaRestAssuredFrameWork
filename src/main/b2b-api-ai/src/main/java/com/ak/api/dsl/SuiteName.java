@@ -48,10 +48,27 @@ final class SuiteName {
      *
      * <p>A bare {@code "Client"} yields {@code null} rather than the empty
      * string, which would otherwise be offered as a candidate suite.</p>
+     *
+     * <p>Accepts a FULLY QUALIFIED name too. One caller passes
+     * {@code getSimpleName()}, but the other passes {@code -Dmanual.client}
+     * verbatim, and CreateTestCase.md tells authors to set that to
+     * {@code com.ak.api.rest.manual.client.ManualClient} -- a bare name
+     * resolves under {@code rest.clients}, so the scaffold needs the package.
+     * That string still ends in {@code Client}, so the old code stripped only
+     * the suffix and produced the suite
+     * {@code com.ak.api.rest.manual.client.manual}: no SuiteCleanup matched,
+     * and a real run reported "Rows created by this test are NOT being
+     * deleted" while every other part of the test passed.</p>
      */
-    static String fromClientSimpleName(String simpleName) {
-        if (simpleName == null
-                || !simpleName.endsWith(CLIENT_SUFFIX)
+    static String fromClientSimpleName(String clientName) {
+        if (clientName == null) {
+            return null;
+        }
+        int lastDot = clientName.lastIndexOf('.');
+        String simpleName = lastDot >= 0
+                ? clientName.substring(lastDot + 1)
+                : clientName;
+        if (!simpleName.endsWith(CLIENT_SUFFIX)
                 || simpleName.length() == CLIENT_SUFFIX.length()) {
             return null;
         }
