@@ -1,6 +1,12 @@
 {
   "_comment": "Project-level converter configuration. Committed with the defaults of the suite this converter was first built on; override per machine with a sibling converter.config.local.json (gitignored) or --config <path>. Every key is optional and deep-merges over these values. Keys starting with _ are documentation.",
 
+  "placeholder_aliases": {
+    "_comment": "Placeholder spellings Config.LEGACY_ALIASES resolves to the same key. Folded to the canonical form before a template body is hashed so two bodies that make an identical request are one file. Only pairs Java already treats as equal.",
+    "c_id": "client_id",
+    "c_sec": "client_secret"
+  },
+
   "diagrams": {
     "_comment": "Per-test-case Mermaid flowcharts under _flows/<suite>/cases/*.md are always written. The png block renders each of them to an image as well.",
     "png": {

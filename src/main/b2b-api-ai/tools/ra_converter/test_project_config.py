@@ -24,7 +24,7 @@ import ra_converter as rc  # noqa: E402
 def test_committed_file_equals_code_defaults():
     """Editing the JSON without DEFAULTS (or vice versa) is a drift."""
     committed = cc._read(cc.DEFAULT_PATH)
-    for section in ("project", "identity", "heuristics"):
+    for section in ("project", "identity", "heuristics", "placeholder_aliases"):
         assert committed[section] == cc.DEFAULTS[section], section
     assert cc.validate(cc.load_config(None)) == []
 
@@ -71,6 +71,46 @@ def test_java_defaults_equal_config_defaults():
     sf = cc.DEFAULTS["heuristics"]["salesforce"]
     assert f'D_SALESFORCE_ID_SHAPE = "{sf["id_shape"]}"' in src
     assert f'D_SALESFORCE_SESSION_KEY = "{sf["session_key_fragment"]}"' in src
+
+
+def test_placeholder_aliases_agree_with_java_config():
+    """Each pair must resolve to ONE key in Config.LEGACY_ALIASES.
+
+    The converter folds `#c_id#` to `#client_id#` before hashing a template
+    body, which is sound only while Java maps both spellings to the same
+    config key. If either is ever repointed, this table would start merging
+    two DIFFERENT values into a single template -- silently, because the
+    merged body still looks correct.
+    """
+    java_path = os.path.join(HERE, "..", "..", "src", "main", "java", "com",
+                             "ak", "api", "config", "Config.java")
+    src = open(java_path, encoding="utf-8").read()
+    resolved = dict(re.findall(
+        r'LEGACY_ALIASES\.put\(\s*"([^"]+)"\s*,\s*"([^"]+)"', src))
+    aliases = cc.DEFAULTS["placeholder_aliases"]
+    assert aliases, "no placeholder aliases configured"
+    for alias, canonical in aliases.items():
+        assert alias in resolved, "Config.java has no LEGACY_ALIAS %r" % alias
+        assert canonical in resolved, "Config.java has no LEGACY_ALIAS %r" % canonical
+        assert resolved[alias] == resolved[canonical], (
+            "%s -> %s but %s -> %s; folding them would merge two different "
+            "values into one template"
+            % (alias, resolved[alias], canonical, resolved[canonical]))
+
+
+def test_folding_makes_the_two_token_bodies_one():
+    """The duplicate this table exists for.
+
+    Same request, two spellings, so exact-body dedup kept two files and the
+    ordinal made REALMS_TOKENREQUEST the 1-case outlier while _2 served 690.
+    """
+    a = '{"client_id": "#c_id#", "client_secret": "#c_sec#"}'
+    b = '{"client_id": "#client_id#", "client_secret": "#client_secret#"}'
+    assert a != b
+    assert rc._fold_placeholder_aliases(a) == rc._fold_placeholder_aliases(b)
+    # and a body with no alias in it is returned untouched
+    plain = '{"guestId": "@Properties_memberGuestID@"}'
+    assert rc._fold_placeholder_aliases(plain) == plain
 
 
 def test_apply_rebinds_emitter_tables_and_restores():

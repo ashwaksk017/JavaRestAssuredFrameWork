@@ -14686,6 +14686,10 @@ public final class {support_name} {{
                 # XML as JSON and fall through to whitespace-collapse,
                 # which is fine but the file extension needs to match so
                 # editors + IDEs open with the right syntax highlighting.
+                # Fold config-key aliases FIRST: the hash below decides whether
+                # two bodies are one file, and `#c_id#` / `#client_id#` make the
+                # same request.
+                translated = _fold_placeholder_aliases(translated)
                 mt = (step.media_type or "application/json").split(";")[0].strip().lower()
                 is_json_mt = (mt in ("application/json", "application/vnd.api+json")
                               or mt.endswith("+json"))
@@ -15779,6 +15783,34 @@ def converter_config() -> dict:
         import converter_config as _cc
         _CONVERTER_CONFIG = _cc.load_config(None)
     return _CONVERTER_CONFIG
+
+
+def _fold_placeholder_aliases(text: str) -> str:
+    """Rewrite `#c_id#` -> `#client_id#` before a body is hashed or written.
+
+    Config.LEGACY_ALIASES maps both spellings to api_config.client_id, and
+    TestSupport.CONFIG_KEYS pulls both into the merged row, so the two bodies
+    issue the IDENTICAL request. They differ only as text -- which was enough
+    for exact-body dedup to keep two files, and for Tier 2 to read a
+    placeholder divergence it must never merge across.
+
+    On programaccountregression that was the entire remaining duplication:
+    tokenrequest_44b965290c (`#client_id#`, 1 case) and _45567051ce (`#c_id#`,
+    690 cases). The split also produced the naming trap it leaves behind --
+    REALMS_TOKENREQUEST is the one-case outlier while REALMS_TOKENREQUEST_2
+    serves the other 690.
+
+    Folding is safe in either direction because both spellings resolve; the
+    canonical one is fixed in config rather than chosen by whichever is more
+    common, so output does not change shape from suite to suite.
+    """
+    aliases = converter_config().get("placeholder_aliases") or {}
+    for alias, canonical in aliases.items():
+        if alias.startswith("_"):
+            continue
+        for delim in ("#", "@"):
+            text = text.replace(delim + alias + delim, delim + canonical + delim)
+    return text
 
 
 def phase_model_run_vocabs() -> set:

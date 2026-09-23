@@ -37,6 +37,15 @@ DEFAULT_PATH = os.path.join(HERE, "converter.config.json")
 LOCAL_PATH = os.path.join(HERE, "converter.config.local.json")
 
 DEFAULTS: dict[str, Any] = {
+    # Placeholder spellings that Config.LEGACY_ALIASES resolves to the SAME
+    # config key. Folded to the canonical form before a template body is
+    # hashed, so two bodies that make an identical request stop being two
+    # files. Only add a pair Java already treats as equal --
+    # test_project_config checks that against Config.java.
+    "placeholder_aliases": {
+        "c_id": "client_id",
+        "c_sec": "client_secret"
+    },
     "diagrams": {
         "png": {
             "enabled": False,
