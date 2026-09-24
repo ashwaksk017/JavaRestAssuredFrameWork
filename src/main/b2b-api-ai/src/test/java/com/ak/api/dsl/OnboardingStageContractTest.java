@@ -52,6 +52,21 @@ public class OnboardingStageContractTest {
     }
 
     /**
+     * Stage methods that deliberately return something OTHER than a stage,
+     * because they READ rather than advance. Named one by one, not exempted
+     * as a category: the whole point of this test is that a phase which
+     * forgets its covariant override returns the wrong thing, and a blanket
+     * "non-stage returns are fine" rule would wave that through.
+     *
+     * <p>Their return types are checked below -- an entry here buys an
+     * exemption from "must return a stage", not from being checked at all.</p>
+     */
+    private static final Map<String, Class<?>> READERS = Map.of(
+            "lastResponse()", io.restassured.response.Response.class,
+            "lastPhase()", String.class,
+            "responseOf(String)", io.restassured.response.Response.class);
+
+    /**
      * Most specific return type per signature. getMethods() reports BOTH
      * sides of a covariant override, so picking either arbitrarily would
      * make this test pass or fail on JVM method ordering.
@@ -81,6 +96,16 @@ public class OnboardingStageContractTest {
                 Class<?> ret = e.getValue();
                 if (ret == void.class) {
                     continue;              // complete()
+                }
+                Class<?> reader = READERS.get(e.getKey());
+                if (reader != null) {
+                    // A reader still has a contract: lastResponse() returning
+                    // a String would compile and would be just as wrong as a
+                    // phase returning one.
+                    Assert.assertEquals(ret, reader,
+                            stage.getSimpleName() + "." + e.getKey()
+                            + " must return " + reader.getSimpleName());
+                    continue;
                 }
                 if (!ret.isAssignableFrom(stage) && !stage.isAssignableFrom(ret)) {
                     problems.add(stage.getSimpleName() + "." + e.getKey()

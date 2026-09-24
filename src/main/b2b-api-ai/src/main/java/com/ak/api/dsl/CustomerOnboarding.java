@@ -14,6 +14,7 @@ import com.ak.api.db.Db;
 import com.ak.api.domain.DomainApis;
 import com.ak.api.rest.utilities.RestLoggerUtilityDataHolder;
 import com.ak.api.rest.utilities.ResponseAsserts;
+import com.ak.api.rest.utilities.LastExchange;
 import com.ak.api.rest.utilities.RestStep;
 import com.ak.api.support.ImportedRestClient;
 import com.ak.api.support.ImportedScenario;
@@ -495,6 +496,42 @@ public final class CustomerOnboarding implements OnboardingFlow.AccountReady {
     public CustomerOnboarding using(Template template) {
         this.pendingTemplate = template;
         return this;
+    }
+
+    /**
+     * The response the last phase received, or null before the first.
+     *
+     * <p>A breakpoint on {@code .enrollOwner()} stops on the CHAIN, not on the
+     * exchange -- the Response is a local inside {@code exec} -- so without
+     * this you would step into three frames to see what the server said.
+     * Evaluate this instead.</p>
+     *
+     * <p>Also for assertions the {@code expect*} verbs cannot state: a header
+     * combination, a response time, a body shape.</p>
+     *
+     * <p>Reads the same per-thread record every other path writes to, so the
+     * value here and {@code LastExchange.response()} can never disagree. Not a
+     * stage method: it reads, it does not advance, so it returns the Response
+     * rather than the flow.</p>
+     *
+     * @see com.ak.api.rest.utilities.LastExchange
+     */
+    public Response lastResponse() {
+        return LastExchange.response();
+    }
+
+    /** Which phase {@link #lastResponse()} came from, or null. */
+    public String lastPhase() {
+        return LastExchange.step();
+    }
+
+    /**
+     * The response of an EARLIER phase by name --
+     * {@code responseOf("createProgramAccount")} read three phases later.
+     * Null when no phase of that name ran on this thread.
+     */
+    public Response responseOf(String phase) {
+        return LastExchange.of(phase);
     }
 
     /**

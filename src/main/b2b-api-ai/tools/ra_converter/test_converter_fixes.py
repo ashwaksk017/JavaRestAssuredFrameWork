@@ -2487,6 +2487,37 @@ def test_prune_is_wired_post_emit_and_can_be_turned_off():
     assert 'getattr(args, "bootstrap", False)' in src[at - 400:at]
 
 
+def test_generated_chain_exposes_the_response_accessors():
+    """A converted test must be able to read what the server said.
+
+    The generated chain returns S from every phase and keeps each response in
+    a PROTECTED `<step>Res` field, so before this the only way to a body from
+    a test class was to step into RestStep in a debugger. These three
+    accessors sit on ScenarioSteps, which every suite's Steps class extends,
+    so they are reachable mid-chain in every converted test -- and they read
+    the same per-thread LastExchange record the manual chain and the legacy
+    tests read, so there is one answer rather than three.
+
+    Guarded here because the emitter is one f-string: a careless edit to the
+    template silently drops them from every future convert.
+    """
+    src = open(os.path.join(os.path.dirname(__file__), "ra_converter.py"),
+               encoding="utf-8").read()
+    head = src.index("public abstract class ScenarioSteps<S extends ScenarioSteps<S>>")
+    body = src[head:src.index('rel = f"src/main/java/', head)]
+    for sig in ("public final Response lastResponse()",
+                "public final String lastStep()",
+                "public final Response responseOf(String stepName)"):
+        assert sig in body, "ScenarioSteps template lost: " + sig
+    # Delegation, not a private copy: a second source of truth would let the
+    # chain and LastExchange disagree about the same call.
+    assert body.count("com.ak.api.rest.utilities.LastExchange.") == 3, (
+        "the accessors must delegate to LastExchange, all three of them")
+    # public, so a @Test method can call them -- protected would compile here
+    # and fail in the test class, which is where it matters.
+    assert "protected final Response lastResponse()" not in body
+
+
 def test_script_runner_is_the_last_thing_in_this_file():
     """verify_all runs this file as a SCRIPT, not under pytest.
 

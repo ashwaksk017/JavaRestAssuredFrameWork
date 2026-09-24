@@ -368,6 +368,10 @@ public final class RestStep {
                             cached.getStatusCode(), System.currentTimeMillis() - t0, stepName);
                     ResponseAsserts.statusFromStepColumn(
                             softAssert, cached, row, stepName, expectedStatus);
+                    // Recorded like any other step: a cache hit is still the
+                    // response this step got, and a debugger should not be able
+                    // to tell the difference.
+                    LastExchange.record(stepName, verb, resolvedUrl, cached);
                     return cached;
                 }
             }
@@ -401,6 +405,10 @@ public final class RestStep {
             final int assertedStatus = effectiveExpectedStatus();
             AuthDiagnostics.expectStatus(assertedStatus);
             Response res;
+            // Lend the step name to the recording filter for the duration of
+            // the call, so the filter's entry and the settled entry below are
+            // the same row rather than two.
+            LastExchange.naming(stepName);
             try {
                 res = RestUtilities.callWithTransientRetry(
                         stepName, DEFAULT_RETRY_DEADLINE_MS, expectedStatus, exchange);
@@ -460,6 +468,7 @@ public final class RestStep {
                 }
             } finally {
                 AuthDiagnostics.clearExpectedStatus();
+                LastExchange.doneNaming();
             }
             if (res != null) {
                 // So a later "EMPTY path segment" failure can name the call
@@ -477,6 +486,10 @@ public final class RestStep {
                 StepOutcomes.record(stepName, res.getStatusCode(), assertedStatus,
                         failBody);
             }
+            // Here, not inside the exchange supplier: `res` is the response the
+            // step SETTLED on, so a retried step records the attempt that
+            // counted rather than the 503 that got thrown away.
+            LastExchange.record(stepName, verb, resolvedUrl, res);
             LOG.info(" <- HTTP {} in {}ms  (step={})",
                     res.getStatusCode(), System.currentTimeMillis() - t0, stepName);
             logTruncatedBody(res);

@@ -30,6 +30,21 @@ public class RestAssuredRecordingFilter implements Filter {
 
         logAuthDiagnostic(requestSpec, response);
 
+        // Every call reaches here -- a converted chain, a manual chain, an
+        // auth fetch, a legacy test calling RestUtilities directly -- so
+        // recording once covers the paths RestStep never sees. RestStep
+        // re-records its own calls afterwards with the settled response; the
+        // borrowed step name makes that the same entry, not a second one.
+        String step = com.ak.api.rest.utilities.LastExchange.pendingStep();
+        if (step == null || step.isBlank()) {
+            // No step to borrow: name it by what it did, so a legacy test can
+            // still say responseOf("POST /program-accounts").
+            step = requestSpec.getMethod() + " " + pathOf(requestSpec.getURI());
+        }
+        com.ak.api.rest.utilities.LastExchange.record(
+                step, requestSpec.getMethod(),
+                Secrets.redact(requestSpec.getURI()), response);
+
         // Redact HERE, at buffer-entry, rather than in each listener:
         // ExtentReportListener and TestCaseLogListener both read this
         // buffer, so one call covers the Extent HTML and every
@@ -60,6 +75,20 @@ public class RestAssuredRecordingFilter implements Filter {
         }
 
         return response;
+    }
+
+    /**
+     * Path portion of a URI, or the URI itself when it will not parse. The
+     * host varies by environment and the query string varies by run, so
+     * neither belongs in a key someone types into a debugger.
+     */
+    private static String pathOf(String uri) {
+        try {
+            String path = java.net.URI.create(uri).getPath();
+            return path == null || path.isBlank() ? uri : path;
+        } catch (Exception e) {
+            return uri;
+        }
     }
 
     /**

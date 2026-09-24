@@ -113,6 +113,27 @@ public final class OnboardingFlow {
 
         Enrolled enrollEmployee();
 
+
+        /**
+         * The response the last phase received, or null before the first.
+         *
+         * <p>Reads, does not advance -- so it returns the Response, not the
+         * stage. A breakpoint on {@code .enrollOwner()} stops on the CHAIN;
+         * the Response is a local inside exec. Evaluate this instead of
+         * stepping into three frames.</p>
+         */
+        io.restassured.response.Response lastResponse();
+
+        /** Which phase {@link #lastResponse()} came from, or null. */
+        String lastPhase();
+
+        /**
+         * The response of an EARLIER phase by name --
+         * {@code responseOf("createProgramAccount")} read three phases later.
+         * Null when no phase of that name ran on this thread.
+         */
+        io.restassured.response.Response responseOf(String phase);
+
         /** Flush soft assertions. Call at the end of every chain. */
         void complete();
     }

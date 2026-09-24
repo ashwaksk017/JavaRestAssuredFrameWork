@@ -249,6 +249,10 @@ public abstract class BaseApiTest {
         // Deferred ReadyAPI Delay budget is per-scenario; a leftover
         // budget would let one test spend another test's wait.
         com.ak.api.retry.AsyncBudget.reset();
+        // TestNG pools threads, so without this the next test on this thread
+        // would open on the PREVIOUS test's responses. A stale 200 read at a
+        // breakpoint is worse than an empty accessor: it looks like an answer.
+        com.ak.api.rest.utilities.LastExchange.clear();
         // ReadyAPI-style test isolation cool-down:
         //   ReadyAPI users typically run test cases INTERACTIVELY (clicking
         //   Run on one case at a time) or via a suite runner with larger

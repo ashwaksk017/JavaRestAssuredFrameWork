@@ -12993,6 +12993,47 @@ public abstract class ScenarioSteps<S extends ScenarioSteps<S>> {{
     }}
 
     /**
+     * The response the most recent phase received, or null before the first.
+     *
+     * <p>A breakpoint on a phase call stops on the CHAIN -- the Response is a
+     * local inside RestStep -- and the {{@code <step>Res}} fields above are
+     * protected, so a test class cannot read them. This is the reachable one:
+     * it works mid-chain, because every phase returns {{@code S}}.</p>
+     *
+     * <pre>{{@code
+     * Onboarding.start(row, "B2B-722")
+     *     .enrollGuest()
+     *     .createProgramAccount()
+     *     .lastResponse()            // the create response, right here
+     * }}</pre>
+     *
+     * <p>Reads the per-thread record every call path writes to, so a converted
+     * test, a manual chain and a legacy test all reach a response the same
+     * way.</p>
+     *
+     * @see com.ak.api.rest.utilities.LastExchange
+     */
+    public final Response lastResponse() {{
+        return com.ak.api.rest.utilities.LastExchange.response();
+    }}
+
+    /** Which step {{@link #lastResponse()}} came from, or null. */
+    public final String lastStep() {{
+        return com.ak.api.rest.utilities.LastExchange.step();
+    }}
+
+    /**
+     * The response of an EARLIER step by name --
+     * {{@code responseOf("http_request_200_createAccount")}} read several
+     * phases later. The name is the one in the Allure step title and in the
+     * {{@code expected_<step>_status_code}} CSV column. Null when no step of
+     * that name ran on this thread.
+     */
+    public final Response responseOf(String stepName) {{
+        return com.ak.api.rest.utilities.LastExchange.of(stepName);
+    }}
+
+    /**
      * A prefix-merged case stops early: every later phase returns the
      * builder unchanged. Left silent, a truncated run is indistinguishable
      * from a full pass. Record it ONCE (the guard fires on every remaining

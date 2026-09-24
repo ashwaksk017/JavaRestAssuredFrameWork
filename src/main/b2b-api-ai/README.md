@@ -9,6 +9,7 @@ The utility layer (`RestUtilities`, `RestLoggerUtilityDataHolder`, `RestLogAppen
 | I want to… | Go to |
 |---|---|
 | put a ReadyAPI XML in so the converter picks it up | [Quick start §1](#1-generate-everything-from-the-readyapi-xmls) — `tools/ra_converter/input/` |
+| put the Swagger / OpenAPI spec in | [Where the OpenAPI (Swagger) spec goes](#where-the-openapi-swagger-spec-goes) — `src/main/resources/openapi/` |
 | make a tree compile without any XML | `--bootstrap`, [Quick start §1](#1-generate-everything-from-the-readyapi-xmls) |
 | read a value from the datasheet into a request body | [Authoring template values](#authoring-template-values--types-the-datasheet-and-random-data) |
 | send a number or boolean rather than a string | [Authoring template values](#authoring-template-values--types-the-datasheet-and-random-data) |
@@ -19,6 +20,7 @@ The utility layer (`RestUtilities`, `RestLoggerUtilityDataHolder`, `RestLogAppen
 | see which phases the DSL offers | [PHASES.md](PHASES.md) |
 | understand convert-time vs run-time | [ARCHITECTURE.md](ARCHITECTURE.md) |
 | tune retries | [Configuration hierarchy](#configuration-hierarchy) — `wholeTestRetry`, `tokenRetry` |
+| see the response at a breakpoint, mid-chain | [Reading the response](#reading-the-response--lastresponse) — `lastResponse()` |
 | run only the framework guards (no HTTP, no DB) | [Quick start §3](#3-run-the-tests) — `testng-guards.xml` |
 
 The companion docs: **[CreateTestCase.md](CreateTestCase.md)** (writing a test
@@ -555,6 +557,61 @@ void    assertResponseTimeBelow(Response r, long ceilingMs);
 String  toJson(Object payload);                                // Jackson serialize
 ```
 
+### Reading the response — `lastResponse()`
+
+Every call path here returns something other than the `Response`: a chained
+phase returns the flow so the chain can continue, and a converted chain keeps
+each response in a `protected <step>Res` field the test class cannot read. So
+a breakpoint on `.enrollOwner()` stops on the **builder**, not on the
+exchange, and the body used to be three frames down inside `RestStep`.
+
+Three accessors fix that, and they are on every path:
+
+```java
+lastResponse()            // the response of the call that just happened
+lastStep()                // which step that was  (lastPhase() on the manual chain)
+responseOf("createProgramAccount")   // an EARLIER step, by name
+```
+
+Where they live:
+
+| Path | Call it on |
+|---|---|
+| converted test | the chain — `Onboarding.start(row).enrollGuest().lastResponse()` |
+| manual chain | the flow — `CustomerOnboarding` / `OnboardingFlow` stages |
+| legacy-style test | `LastExchange.response()` — the test already holds its own `Response` too |
+| anywhere, including a breakpoint in generated code | `LastExchange.response()` |
+
+All four read the **same** per-thread record
+([`LastExchange`](src/main/java/com/ak/api/rest/utilities/LastExchange.java)),
+so they cannot disagree about the same call. It is written by `RestStep` and
+by the global Rest Assured recording filter, which means an auth fetch and a
+plain `RestUtilities.post(...)` are recorded too — anything that reached the
+wire.
+
+At a breakpoint, type any of these in the evaluate window:
+
+```java
+LastExchange.response().getStatusCode()
+LastExchange.body()                    // the body as a String
+LastExchange.steps()                   // every step so far, in call order
+LastExchange.all()                     // each one as "POST /accounts -> 201  (createAccount)"
+LastExchange.of("enrollGuest").jsonPath().getString("guestId")
+```
+
+Two rules worth knowing:
+
+* **it is the settled response.** A step that transiently retried, or that
+  refreshed a dead token and replayed, records the attempt that counted — not
+  the 503 that was thrown away.
+* **it is per test.** `BaseApiTest`'s `@BeforeMethod` clears it, because
+  TestNG pools threads and a stale `200` read at a breakpoint looks like an
+  answer.
+
+The step name is the one already in the Allure step title and in the
+`expected_<step>_status_code` CSV column, so there is nothing new to look up
+before calling `responseOf(...)`.
+
 ### `SchemaValidator`
 
 ```java
@@ -562,6 +619,52 @@ SchemaValidator.validate(response, "post-schema.json");       // throws Assertio
 boolean ok = SchemaValidator.matches(response, "post-schema.json");
 SchemaValidator.validateOpenApi(response, "ProgramAccount");  // Swagger definitions in the YAML spec
 ```
+
+### Where the OpenAPI (Swagger) spec goes
+
+Drop the `.yaml` / `.json` spec here:
+
+```
+src/main/resources/openapi/
+```
+
+That directory is gitignored (`.gitignore`, `src/main/resources/openapi/`)
+for the same reason `tools/ra_converter/input/` is: a spec is a vendor API
+contract — endpoint paths, schemas, examples — and this repo is public. So a
+fresh clone has **no** spec, and you supply your own.
+
+Generation is **off by default** (`<openapi.codegen.skip>true</openapi.codegen.skip>`
+in `pom.xml`), which is what lets a clone with no spec still compile. Turn it
+on for a run:
+
+```powershell
+mvn clean test -Dopenapi.codegen.skip=false
+```
+
+That flag does three things at once, via the `openapi-codegen` profile:
+
+| | |
+|---|---|
+| runs `openapi-generator` at `generate-sources` | reading `${project.basedir}/src/main/resources/openapi/ProgramAccounts-1.0.71.yaml` |
+| emits models into `target/generated-sources/openapi` | package `com.ak.api.openapi.programaccounts.model` |
+| restores the tests that reference them | `${openapi.test.excludes}` — today `OpenApiModelsTest.java` |
+
+**Using a differently-named spec.** The `<inputSpec>` path in `pom.xml` names
+the file exactly, so either save yours as `ProgramAccounts-1.0.71.yaml` or
+edit that one line. A spec in the folder that `<inputSpec>` does not name is
+simply ignored — the build will not find it and will not tell you so.
+
+Two things the spec is used for, and only one of them needs generation:
+
+* **typed models** — `OpenApiModels.as(res, ProgramAccount.class)`. Needs
+  generation on, so it needs the flag.
+* **schema assertions** — `SchemaValidator.validateOpenApi(res, "ProgramAccount")`
+  reads the YAML's `definitions` at runtime off the classpath. It needs the
+  spec present, not generated, so it works without the flag.
+
+Neither is required by a converted test: those assert with JsonPath and a
+`Map<String,String>` ctx, so a tree with no spec at all runs the full imported
+suite. Typed binding is additive.
 
 ### OpenAPI models (Program Accounts)
 
