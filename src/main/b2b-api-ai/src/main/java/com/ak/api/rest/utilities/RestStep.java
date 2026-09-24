@@ -433,16 +433,30 @@ public final class RestStep {
                         && stepName.toLowerCase().contains("tokenrequest"))) {
                     TokenCache.storeFrom(res);
                 }
-                if (TokenRefresh.shouldAttempt(stepName, expectedStatus, res)) {
-                    LOG.info(" .. [token-refresh] step={} HTTP {} -- regenerating {} then retrying once",
-                            stepName, res.getStatusCode(), TokenRefresh.CTX_TOKEN);
-                    if (TokenRefresh.refreshHiltonToken(ctx)) {
-                        res = RestUtilities.callWithTransientRetry(
-                                stepName, DEFAULT_RETRY_DEADLINE_MS, expectedStatus, exchange);
-                    } else {
+                // Attempts driven by `tokenRetry` (program_configuration.json
+                // or -DtokenRetry). Default 1 == the previous hardcoded
+                // "retry once", so an unset key changes nothing. 0 disables
+                // the replay; auth.tokenRefresh.enabled stays the master
+                // switch. shouldAttempt is re-evaluated each pass, so a
+                // request that comes back with its expected status, or with a
+                // 401 that no longer looks like a dead token, stops the loop
+                // rather than spending the remaining budget.
+                int tokenRetries = Config.tokenRetryCount();
+                for (int attempt = 1;
+                        attempt <= tokenRetries
+                        && TokenRefresh.shouldAttempt(stepName, expectedStatus, res);
+                        attempt++) {
+                    LOG.info(" .. [token-refresh] step={} HTTP {} -- regenerating {} "
+                            + "then retrying (attempt {} of {})",
+                            stepName, res.getStatusCode(), TokenRefresh.CTX_TOKEN,
+                            attempt, tokenRetries);
+                    if (!TokenRefresh.refreshHiltonToken(ctx)) {
                         LOG.warn(" .. [token-refresh] step={} refresh failed -- keeping original HTTP {}",
                                 stepName, res.getStatusCode());
+                        break;
                     }
+                    res = RestUtilities.callWithTransientRetry(
+                            stepName, DEFAULT_RETRY_DEADLINE_MS, expectedStatus, exchange);
                 }
             } finally {
                 AuthDiagnostics.clearExpectedStatus();

@@ -342,8 +342,39 @@ public final class Config {
 
     // -------- Retry --------
 
+    /**
+     * How many times {@code RetryAnalyzer} re-runs a failed {@code @Test}.
+     *
+     * <p>Key: {@code wholeTestRetry} in program_configuration.json (or
+     * {@code -DwholeTestRetry}). Named for what it retries, so it cannot be
+     * confused with {@link #tokenRetryCount()}, which re-sends ONE request
+     * after refreshing a dead token. The two are independent: a whole-test
+     * retry replays the entire chain from the first phase.</p>
+     *
+     * <p>{@code retry.maxCount} is still honoured so existing configs and
+     * {@code -D} flags keep working; the new key wins when both are set.</p>
+     */
     public static int retryMaxCount() {
-        return getInt("retry.maxCount", 2);
+        int legacy = getInt("retry.maxCount", 2);
+        return getInt("wholeTestRetry", legacy);
+    }
+
+    /**
+     * How many times a step may refresh a dead token and re-send itself.
+     *
+     * <p>Key: {@code tokenRetry}. Default 1, which is the behaviour this
+     * replaced: on an unexpected 401 whose shape says the token is dead,
+     * regenerate {@code tokenId.GeneratedTokenID} and replay the request
+     * once. 0 disables the replay without disabling refresh elsewhere;
+     * {@code auth.tokenRefresh.enabled=false} remains the master switch.</p>
+     *
+     * <p>Raising it only helps where the auth service hands back a token
+     * that is itself immediately rejected. Each attempt is a full token
+     * fetch plus a replay, so this is not a substitute for fixing a
+     * misconfigured token endpoint.</p>
+     */
+    public static int tokenRetryCount() {
+        return Math.max(0, getInt("tokenRetry", 1));
     }
 
     // -------- Reporting --------

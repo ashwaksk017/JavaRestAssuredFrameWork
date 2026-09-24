@@ -16,6 +16,7 @@
             <class name="com.ak.api.tests.framework.ScenarioContextTest"/>
             <class name="com.ak.api.tests.framework.AsyncBudgetTest"/>
             <class name="com.ak.api.tests.framework.TokenRefreshTest"/>
+            <class name="com.ak.api.tests.framework.RetryConfigKeysTest"/>
             <class name="com.ak.api.tests.framework.AuthDigestAccuracyTest"/>
             <class name="com.ak.api.tests.framework.ConfigEnvVarNamingTest"/>
             <class name="com.ak.api.tests.framework.DigestDiagnosticsTest"/>
