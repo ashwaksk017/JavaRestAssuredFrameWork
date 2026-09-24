@@ -31,7 +31,23 @@ import io.restassured.response.Response;
  */
 public final class OpenApiModels {
 
-    public static final String PROGRAM_ACCOUNTS_SPEC = "openapi/ProgramAccounts-1.0.71.yaml";
+    /**
+     * Classpath resource of the Program Accounts spec.
+     *
+     * <p>The file name carries the API version, so it changes whenever the
+     * vendor publishes one. Resolved from the {@code openapi.spec} key --
+     * the SAME key {@code pom.xml} feeds to the generator's
+     * {@code <inputSpec>} -- so {@code -Dopenapi.spec=abc.yaml} moves the
+     * build and this lookup together. Moving only one of them gives you
+     * models generated from one spec and validated against another, which
+     * fails far from its cause.</p>
+     *
+     * <p>Also settable in {@code program_configuration.json} or as
+     * {@code OPENAPI_SPEC}, by the usual Config precedence.</p>
+     */
+    public static final String PROGRAM_ACCOUNTS_SPEC =
+            "openapi/" + com.ak.api.config.Config.get(
+                    "openapi.spec", "ProgramAccounts-1.0.71.yaml");
     public static final String PROGRAM_ACCOUNTS_MODEL_PACKAGE =
             "com.ak.api.openapi.programaccounts.model";
 

@@ -55,6 +55,18 @@
         <!-- OpenAPI models from src/main/resources/openapi/*.yaml. Off only if
              you need a compile without the generator plugin. -->
         <openapi.codegen.skip>true</openapi.codegen.skip>
+        <!-- File name of the OpenAPI/Swagger spec inside
+             src/main/resources/openapi/. A property, not a literal in
+             inputSpec, because the name carries the API VERSION and so
+             changes on every vendor release: -Dopenapi.spec=abc.yaml.
+             com.ak.api.openapi.OpenApiModels reads the same key at runtime
+             (Config.get), so one flag moves the build AND the classpath
+             lookup together. Moving only one of them is the failure this
+             property exists to prevent: models generated from one spec,
+             bodies validated against another.
+             (No double hyphen anywhere above: XML forbids it inside a
+             comment, which is the same trap log4j2.xml documents.) -->
+        <openapi.spec>ProgramAccounts-1.0.71.yaml</openapi.spec>
         <!-- Test sources that reference the generated models. Skipped
              alongside the generator, and restored by the `openapi-codegen`
              profile. A pattern rather than a hard-coded exclude so adding a
@@ -382,7 +394,7 @@ No converted output found -- this tree has not been through the converter yet.
                         </goals>
                         <configuration>
                             <skip>${openapi.codegen.skip}</skip>
-                            <inputSpec>${project.basedir}/src/main/resources/openapi/ProgramAccounts-1.0.71.yaml</inputSpec>
+                            <inputSpec>${project.basedir}/src/main/resources/openapi/${openapi.spec}</inputSpec>
                             <generatorName>java</generatorName>
                             <output>${project.build.directory}/generated-sources/openapi</output>
                             <modelPackage>com.ak.api.openapi.programaccounts.model</modelPackage>

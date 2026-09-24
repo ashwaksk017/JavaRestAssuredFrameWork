@@ -628,6 +628,11 @@ Drop the `.yaml` / `.json` spec here:
 src/main/resources/openapi/
 ```
 
+`--bootstrap` creates that directory and drops a README in it, so a fresh
+tree shows you where the file goes instead of leaving you to find it in the
+pom. The README is the only file in there git tracks -- without it the
+directory is invisible on a clone, because git stores no empty directories.
+
 That directory is gitignored (`.gitignore`, `src/main/resources/openapi/`)
 for the same reason `tools/ra_converter/input/` is: a spec is a vendor API
 contract — endpoint paths, schemas, examples — and this repo is public. So a
@@ -645,14 +650,27 @@ That flag does three things at once, via the `openapi-codegen` profile:
 
 | | |
 |---|---|
-| runs `openapi-generator` at `generate-sources` | reading `${project.basedir}/src/main/resources/openapi/ProgramAccounts-1.0.71.yaml` |
+| runs `openapi-generator` at `generate-sources` | reading `src/main/resources/openapi/${openapi.spec}` — default `ProgramAccounts-1.0.71.yaml` |
 | emits models into `target/generated-sources/openapi` | package `com.ak.api.openapi.programaccounts.model` |
 | restores the tests that reference them | `${openapi.test.excludes}` — today `OpenApiModelsTest.java` |
 
-**Using a differently-named spec.** The `<inputSpec>` path in `pom.xml` names
-the file exactly, so either save yours as `ProgramAccounts-1.0.71.yaml` or
-edit that one line. A spec in the folder that `<inputSpec>` does not name is
-simply ignored — the build will not find it and will not tell you so.
+**When the version changes.** The file name carries the API version, so it
+changes on every vendor release. Two readers need it — the generator's
+`<inputSpec>` at build time, and `OpenApiModels`' classpath lookup at run
+time — and both take it from one key, `openapi.spec`:
+
+```powershell
+mvn clean test -Dopenapi.codegen.skip=false -Dopenapi.spec=abc.yaml
+```
+
+Change the pom's `<openapi.spec>` default instead when the new version is
+permanent, or set `openapi.spec` in `program_configuration.json` /
+`OPENAPI_SPEC`, by the usual [Configuration hierarchy](#configuration-hierarchy).
+
+They share a key on purpose: moving only one of them generates models from
+one spec and validates bodies against another, and that mismatch surfaces
+nowhere near its cause. A spec in the folder that `openapi.spec` does not
+name is simply ignored — the build will not find it and will not say so.
 
 Two things the spec is used for, and only one of them needs generation:
 

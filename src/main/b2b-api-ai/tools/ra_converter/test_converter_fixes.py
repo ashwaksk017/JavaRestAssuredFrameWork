@@ -2390,12 +2390,18 @@ def test_editing_a_bundled_framework_file_requires_bumping_its_rev():
 
 
 def test_bootstrap_creates_the_dirs_a_hand_written_test_needs():
-    """Neither templates/manual nor csv/ can arrive with a clone.
+    """None of templates/manual, csv/ or openapi/ can arrive with a clone.
 
     src/test/resources/csv/ is gitignored outright, and templates/manual/ is
     committed but git does not store empty directories -- so a fresh tree has
     neither, and the first manual test dies on a classpath miss whose message
     is about a template rather than about a missing folder.
+
+    src/main/resources/openapi/ is here for a different reason: nothing fails
+    without it, since codegen is off by default. It is created so "where does
+    the Swagger file go" is answerable by LOOKING at the tree. Its README is
+    the one file in that folder git tracks -- without it the directory is
+    invisible on a clone, which is the state that prompted the question.
 
     Also asserts the README is skip-if-exists: it carries the rule that bodies
     are published while CSV rows are not, and an author who edits it must not
@@ -2408,10 +2414,19 @@ def test_bootstrap_creates_the_dirs_a_hand_written_test_needs():
         made = rc._bootstrap_author_dirs(None, args)
         tpl = os.path.join(out, "src/test/resources/templates/manual")
         csvd = os.path.join(out, "src/test/resources/csv")
+        specd = os.path.join(out, "src/main/resources/openapi")
         readme = os.path.join(tpl, "README.md")
+        spec_readme = os.path.join(specd, "README.md")
         assert os.path.isdir(tpl), made
         assert os.path.isdir(csvd), made
+        assert os.path.isdir(specd), made
         assert os.path.isfile(readme), made
+        assert os.path.isfile(spec_readme), made
+        spec_body = open(spec_readme, encoding="utf-8").read()
+        # the three facts someone needs before their spec does anything
+        assert "src/main/resources/openapi/" in spec_body
+        assert "-Dopenapi.spec=" in spec_body, "must show how a new VERSION is set"
+        assert "-Dopenapi.codegen.skip=false" in spec_body, "generation is off by default"
         body = open(readme, encoding="utf-8").read()
         # the two things an author gets wrong first
         assert "templates/manual/" in body
@@ -2421,8 +2436,10 @@ def test_bootstrap_creates_the_dirs_a_hand_written_test_needs():
 
         # second run: idempotent, and an edited README survives
         open(readme, "a", encoding="utf-8").write("\nAUTHOR EDIT\n")
+        open(spec_readme, "a", encoding="utf-8").write("\nAUTHOR EDIT\n")
         again = rc._bootstrap_author_dirs(None, args)
         assert "AUTHOR EDIT" in open(readme, encoding="utf-8").read()
+        assert "AUTHOR EDIT" in open(spec_readme, encoding="utf-8").read()
         assert not [p for p in again if p.endswith("README.md")], again
 
 
@@ -2516,6 +2533,67 @@ def test_generated_chain_exposes_the_response_accessors():
     # public, so a @Test method can call them -- protected would compile here
     # and fail in the test class, which is where it matters.
     assert "protected final Response lastResponse()" not in body
+
+
+def test_openapi_spec_file_name_is_one_key_for_build_and_runtime():
+    """The spec file name carries the API VERSION, so it changes often.
+
+    Two readers need it -- the generator's <inputSpec> at build time, and
+    OpenApiModels' classpath lookup at run time. Hard-coded in both, a new
+    version is two edits, and doing only one of them generates models from
+    one spec while validating bodies against another: a mismatch that
+    surfaces nowhere near its cause.
+
+    So both take it from `openapi.spec`, and -Dopenapi.spec=abc.yaml moves
+    them together.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    pom = open(os.path.join(root, "pom.xml"), encoding="utf-8").read()
+    assert "<openapi.spec>" in pom, "pom must declare the property"
+    assert "openapi/${openapi.spec}</inputSpec>" in pom, (
+        "inputSpec must READ the property, not repeat the file name")
+
+    java = open(os.path.join(root, "src/main/java/com/ak/api/openapi",
+                             "OpenApiModels.java"), encoding="utf-8").read()
+    assert '"openapi.spec"' in java, (
+        "the runtime lookup must read the same key the pom uses")
+    assert '"openapi/ProgramAccounts-1.0.71.yaml"' not in java, (
+        "the full resource path must no longer be hard-coded")
+
+
+def test_openapi_readme_travels_but_no_spec_does():
+    """The folder must be visible on a clone; the specs must not be.
+
+    Those pull opposite ways. Ignoring `openapi/` outright hides the whole
+    directory -- git stores no empty directories -- which is what made "where
+    does the Swagger file go" unanswerable by looking at the tree. But a spec
+    is a vendor API contract (endpoint paths, schemas, examples) and this repo
+    is public, so no spec may ever be committed.
+
+    The resolution is `openapi/*` plus a negation for the README: git never
+    descends into an EXCLUDED DIRECTORY, so the bare `openapi/` form would
+    make the negation dead and silently drop the README. Both halves are
+    asserted here because either one alone is a bug -- one hides the folder,
+    the other publishes a vendor spec.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    lines = [ln.strip() for ln in
+             open(os.path.join(root, ".gitignore"), encoding="utf-8")]
+    assert "src/main/resources/openapi/*" in lines, (
+        "must ignore the CONTENTS; the bare directory form makes the "
+        "negation below dead")
+    assert "src/main/resources/openapi/" not in lines, (
+        "the bare directory form excludes the directory itself, so git never "
+        "descends into it and the README negation cannot re-include anything")
+    assert "!src/main/resources/openapi/README.md" in lines, (
+        "without the README the folder is invisible on a clone")
+    # Nothing may re-include an actual spec.
+    bad = [ln for ln in lines
+           if ln.startswith("!src/main/resources/openapi/")
+           and not ln.endswith("/README.md")]
+    assert not bad, "only the README may be re-included, not: %s" % bad
 
 
 def test_script_runner_is_the_last_thing_in_this_file():

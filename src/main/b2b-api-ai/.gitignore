@@ -75,7 +75,15 @@ src/main/resources/templates/
 # schemas, examples) and this repo is public, so it stays local:
 # drop it in to enable model generation / schema assertions, and it
 # will not be committed.
-src/main/resources/openapi/
+# Contents, NOT the directory itself: git never descends into an excluded
+# directory, so `openapi/` followed by a negation would not re-include
+# anything. `openapi/*` leaves the directory visible and excludes what is in
+# it, which is what lets the README through.
+src/main/resources/openapi/*
+# The README is the exception, and the reason the folder is tracked at all:
+# git stores no empty directories, so ignoring everything made "where does
+# the Swagger file go" unanswerable by looking at the tree. No spec travels.
+!src/main/resources/openapi/README.md
 src/main/resources/test_data_defaults/
 src/main/resources/converter_identity.json
 src/main/resources/config/

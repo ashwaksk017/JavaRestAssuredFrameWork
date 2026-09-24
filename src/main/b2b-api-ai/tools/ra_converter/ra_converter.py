@@ -16988,14 +16988,73 @@ be referenced by name too.
 """
 
 
-def _bootstrap_author_dirs(emitter, args) -> list:
-    """Create the two directories a hand-written test needs.
+_OPENAPI_README = """# OpenAPI / Swagger specs
 
-    Neither can arrive with a clone. `src/test/resources/csv/` is gitignored
-    outright, and `templates/manual/` is committed but empty directories are
-    not something git stores -- so a fresh tree has neither, and the first
-    manual test fails on a classpath miss whose message is about a template
-    rather than about a missing folder.
+Put the spec for the API under test in THIS directory.
+
+```
+src/main/resources/openapi/<YourApi>-<version>.yaml
+```
+
+Every file here is gitignored EXCEPT this README -- a spec is a vendor API
+contract (endpoint paths, schemas, examples) and this repo is public. So a
+clone arrives with this file and no spec. That is expected; supply your own.
+
+## Naming: the version is a flag, not an edit
+
+The file name carries the API version, so it changes on every vendor
+release. Both readers take it from ONE key, `openapi.spec`:
+
+| Reader | Where |
+|---|---|
+| the generator's `<inputSpec>` | `pom.xml`, property `openapi.spec` |
+| the runtime classpath lookup | `OpenApiModels.PROGRAM_ACCOUNTS_SPEC` via `Config.get` |
+
+So a new version is a flag, not two edits:
+
+```
+mvn clean test -Dopenapi.codegen.skip=false -Dopenapi.spec=abc.yaml
+```
+
+Change the pom default instead if the new version is permanent. Moving only
+one of the two readers gives you models generated from one spec and bodies
+validated against another -- a mismatch that surfaces far from its cause,
+which is why they share a key.
+
+## Generation is OFF by default
+
+`<openapi.codegen.skip>true</openapi.codegen.skip>` is what lets a clone with
+no spec here still compile. Turn it on per run with
+`-Dopenapi.codegen.skip=false`, which also restores the tests that reference
+the generated models.
+
+Two uses, and only one of them needs generation:
+
+* `OpenApiModels.as(res, ProgramAccount.class)` -- typed binding. Needs the
+  models, so it needs the flag.
+* `SchemaValidator.validateOpenApi(res, "ProgramAccount")` -- reads this
+  YAML's `definitions` off the classpath at run time. Needs the file present,
+  not generated, so it works without the flag.
+
+Neither is required by a converted or a hand-written test: those assert with
+JsonPath and a `Map<String,String>` ctx. A tree with no spec at all runs the
+full suite.
+"""
+
+def _bootstrap_author_dirs(emitter, args) -> list:
+    """Create the directories a hand-written test needs.
+
+    None of them can arrive with a clone. `src/test/resources/csv/` and
+    `src/main/resources/openapi/` are gitignored outright, and
+    `templates/manual/` is committed but empty directories are not something
+    git stores -- so a fresh tree has none of them, and the first manual test
+    fails on a classpath miss whose message is about a template rather than
+    about a missing folder.
+
+    openapi/ is here for a different reason than the other two: nothing fails
+    without it, because codegen is off by default. It is created so that
+    "where does the Swagger file go" has an answer you can SEE in the tree,
+    with a README next to it, rather than one you have to find in a pom.
 
     The README doubles as the thing that makes the committed directory exist
     in git at all, and records the split that matters: bodies are published,
@@ -17004,18 +17063,22 @@ def _bootstrap_author_dirs(emitter, args) -> list:
     out = []
     tpl_dir = os.path.join(args.output, "src/test/resources/templates/manual")
     csv_dir = os.path.join(args.output, "src/test/resources/csv")
-    for d in (tpl_dir, csv_dir):
+    spec_dir = os.path.join(args.output, "src/main/resources/openapi")
+    for d in (tpl_dir, csv_dir, spec_dir):
         if not os.path.isdir(d):
             os.makedirs(d, exist_ok=True)
             out.append(os.path.relpath(d, args.output).replace("\\", "/") + "/")
-    readme = os.path.join(tpl_dir, "README.md")
-    if os.path.exists(readme):
-        print("[ra_converter] SKIP (exists): %s"
-              % os.path.relpath(readme, args.output).replace("\\", "/"))
-    else:
+    for readme, body in ((os.path.join(tpl_dir, "README.md"),
+                          _MANUAL_TEMPLATES_README),
+                         (os.path.join(spec_dir, "README.md"),
+                          _OPENAPI_README)):
+        rel = os.path.relpath(readme, args.output).replace("\\", "/")
+        if os.path.exists(readme):
+            print("[ra_converter] SKIP (exists): %s" % rel)
+            continue
         with open(readme, "w", encoding="utf-8") as fh:
-            fh.write(_MANUAL_TEMPLATES_README)
-        out.append(os.path.relpath(readme, args.output).replace("\\", "/"))
+            fh.write(body)
+        out.append(rel)
     return out
 
 
