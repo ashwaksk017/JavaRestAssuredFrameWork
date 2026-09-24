@@ -2426,6 +2426,67 @@ def test_bootstrap_creates_the_dirs_a_hand_written_test_needs():
         assert not [p for p in again if p.endswith("README.md")], again
 
 
+def _prune_mod():
+    import importlib.util
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(here, "prune_dead_props.py")
+    spec = importlib.util.spec_from_file_location("prune_dead_props", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_prune_keeps_any_column_something_can_reach():
+    """A column survives unless NOTHING references it, in any spelling.
+
+    The dangerous mistake is matching only the exact column name.
+    ImportedScenario.ctxGet falls back to a trailing-field walk, so
+    `Properties.AccountID` can answer a lookup for
+    `PropertiesDetails.accountID` without ever being named in full. Deleting
+    it would take a value the suite depends on.
+    """
+    p = _prune_mod()
+    blob = (
+        'template has #Properties_Email#\n'
+        'spec has Ref.ctx("Properties.guestID")\n'
+        'java has "Properties_websiteDomain"\n'
+        'alias walk sees "PropertiesDetails.accountID"\n'
+        'at-form @Properties_totpCode@\n'
+    )
+    for col in ("Properties.Email", "Properties.guestID",
+                "Properties.websiteDomain", "Properties.totpCode"):
+        assert p.is_referenced(col, blob), col
+    # reachable only through the trailing-field walk
+    assert p.is_referenced("Properties.accountID", blob), "trailing-field miss"
+    # genuinely unreachable
+    assert p.is_referenced("Properties.Pair_47_RatePlanCode", blob) is None
+
+
+def test_prune_never_touches_framework_columns():
+    """Only the ReadyAPI properties bag is in scope."""
+    p = _prune_mod()
+    for keep in ("test_case_id", "_stop_after", "expected_enrollGuest_status_code",
+                 "expected_readProgramAccount_jsonpath_attestationSummary_status",
+                 "template_readProgramAccount", "groups", "jira_xray_id"):
+        assert not p.prunable(keep), keep
+    for drop in ("Properties.Pair_2_RatePlanCode", "Properties.guestID_3",
+                 "PropertiesGuestId_guestID"):
+        assert p.prunable(drop), drop
+
+
+def test_prune_is_wired_post_emit_and_can_be_turned_off():
+    src = open(os.path.join(os.path.dirname(__file__), "ra_converter.py"),
+               encoding="utf8").read()
+    assert '"--keep-dead-props"' in src, "opt-out flag must exist"
+    assert "_run_prune_dead_props(args)" in src, "must run after emit"
+    # after the dataflow check, so that guard sees the tree exactly as emitted
+    assert (src.index("_run_post_emit_dataflow_check(args)\n")
+            < src.index("_run_prune_dead_props(args)\n"))
+    # never on a bootstrap (no XML parsed, so no CSVs of its own)
+    at = src.index("_run_prune_dead_props(args)\n")
+    assert 'getattr(args, "bootstrap", False)' in src[at - 400:at]
+
+
 def test_script_runner_is_the_last_thing_in_this_file():
     """verify_all runs this file as a SCRIPT, not under pytest.
 

@@ -16399,6 +16399,14 @@ def main():
                         "Default is to verify that every ctx key a chain READS "
                         "is WRITTEN earlier in that same chain, and abort if "
                         "not.")
+    p.add_argument("--keep-dead-props", action="store_true",
+                   help="Keep emitted Properties* CSV columns that no "
+                        "template, spec, hook or framework class reads. "
+                        "Default is to drop them: a ReadyAPI properties step "
+                        "carries every slot the author ever added, so a "
+                        "generated CSV can open with dozens of columns that "
+                        "drive nothing. What was removed is listed in "
+                        "_audit/<suite>/pruned_columns.csv.")
     args = p.parse_args()
     return _main_dispatch(args)
 
@@ -16502,7 +16510,54 @@ def _main_dispatch(args):
             and not getattr(args, "bootstrap", False)
             and not getattr(args, "skip_dataflow_check", False)):
         _run_post_emit_dataflow_check(args)
+    # Also after emit, and after the dataflow check: pruning reads the
+    # templates/specs/hooks this run just wrote to decide what is unreferenced,
+    # and the dataflow check should see the tree exactly as emitted.
+    if (rc == 0
+            and not getattr(args, "diagrams_only", False)
+            and not getattr(args, "bootstrap", False)
+            and not getattr(args, "keep_dead_props", False)):
+        _run_prune_dead_props(args)
     return rc
+
+
+def _run_prune_dead_props(args) -> None:
+    """Drop emitted Properties* CSV columns that nothing reads.
+
+    A ReadyAPI `properties` step is a bag: the author's literals sit beside
+    slots the case never expanded, and the converter carries all of it. On
+    the reference suite that is 85 of 317 Properties* columns, 71 of them
+    Pair_2_RatePlanCode .. Pair_47_RatePlanCode from a single step. They
+    break nothing, but they are the first thing an author sees in a data
+    file and none of them drive anything.
+
+    Usage-driven, never prefix-driven: generated identity columns look like
+    literals too, and regenRandomProperties READS the row to decide whether
+    to keep the CSV domain. A column survives unless nothing references it in
+    any spelling the framework can resolve -- including the trailing-field
+    walk ctxGet falls back to, where a column answers a lookup without ever
+    being named in full.
+
+    Advisory: a prune that fails must not fail a conversion that otherwise
+    succeeded. The tree is already written and correct without it.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    tool = os.path.normpath(os.path.join(here, os.pardir, "prune_dead_props.py"))
+    if not os.path.isfile(tool):
+        print(f"[ra_converter] prune skipped: {tool} not found")
+        return
+    cmd = [sys.executable, tool, "--root", getattr(args, "output", None) or ".",
+           "--apply"]
+    # Scope to the suite this run emitted, so a tree holding several converted
+    # suites is not re-scanned (and so the audit lands in _audit/<suite>/
+    # beside that suite's other reports rather than in _audit/all/).
+    suite = getattr(args, "suite_name", None)
+    if suite:
+        cmd += ["--suite", suite]
+    try:
+        subprocess.run(cmd, check=False)
+    except Exception as exc:  # a cleanup step must never fail the convert
+        print(f"[ra_converter] prune failed (tree is still valid): {exc}")
 
 
 _PHASE_SPECS = True
