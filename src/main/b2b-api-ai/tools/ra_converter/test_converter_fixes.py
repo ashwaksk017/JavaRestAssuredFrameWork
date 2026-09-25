@@ -2775,6 +2775,66 @@ def test_an_unhandled_step_says_what_it_dropped():
                       '<con:settings/><con:config/></con:testStep>' % CON)) == ""
 
 
+def test_every_filesystem_call_goes_through_fs_path():
+    """One unwrapped call site is enough to fail a convert that worked.
+
+    Windows refuses paths over 260 characters through the classic APIs, and
+    _fs_path lifts that. The writer used it; other sites did not, and the
+    failures were nothing like each other:
+
+      * _verify_emitted_suite_support reported TestSupport=MISSING for files
+        it had just written, and exited non-zero naming them
+      * _write_facade_endpoint_map reported "facade endpoint map failed" for
+        a client it had just emitted
+      * emit_template_index raised FileNotFoundError at 262 characters and
+        killed the run outright
+
+    Same root cause, three unrelated-looking symptoms, and each one was found
+    only by converting into a directory that happened to be deep enough. So
+    this is enforced by counting rather than by judgement: _fs_path is a
+    no-op off Windows and under 240 characters, which is exactly why wrapping
+    uniformly is cheap and deciding case by case is not.
+    """
+    import re as _re
+    src = open(os.path.join(os.path.dirname(__file__), "ra_converter.py"),
+               encoding="utf-8").read()
+    lines = src.splitlines()
+
+    calls = ("open", "os.makedirs", "os.path.isfile", "os.path.exists",
+             "shutil.copyfile")
+    # _fs_path itself does path arithmetic; it cannot call itself.
+    body_start = src.index("def _fs_path(")
+    body_end = src.index("\ndef ", body_start + 10)
+    fs_path_lines = set(range(
+        src[:body_start].count("\n") + 1,
+        src[:body_end].count("\n") + 2))
+
+    offenders = []
+    for i, ln in enumerate(lines, 1):
+        if i in fs_path_lines or "_fs_path" in ln:
+            continue
+        stripped = ln.strip()
+        if stripped.startswith("#") or stripped.startswith(("*", '"', "'")):
+            continue
+        for call in calls:
+            m = _re.search(r"(?<![\w.])" + _re.escape(call) + r"\(\s*([^)\s,]+)", ln)
+            if not m:
+                continue
+            arg = m.group(1)
+            # A literal path inside the tool's own directory is fixed-length
+            # and short by construction; it is the COMPUTED output paths that
+            # grow with the tree.
+            if arg.startswith(("'", '"')):
+                continue
+            offenders.append((i, stripped[:100]))
+            break
+
+    assert not offenders, (
+        "filesystem call(s) bypassing _fs_path -- a deep output tree will "
+        "fail here with a message pointing somewhere else:\n  "
+        + "\n  ".join("line %d: %s" % o for o in offenders))
+
+
 def test_script_runner_is_the_last_thing_in_this_file():
     """verify_all runs this file as a SCRIPT, not under pytest.
 

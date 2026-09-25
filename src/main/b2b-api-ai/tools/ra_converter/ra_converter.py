@@ -1355,10 +1355,10 @@ def parse_test_suites(xml_path: str) -> list[tuple[str, list[TestCase]]]:
     editors) include a byte-order mark; ET.parse chokes on that unless
     we pre-read and strip it. Falls back to a bytes-level open + parse
     when the file starts with \\xEF\\xBB\\xBF."""
-    with open(xml_path, "rb") as _f:
+    with open(_fs_path(xml_path), "rb") as _f:
         _head = _f.read(3)
     if _head == b"\xef\xbb\xbf":
-        with open(xml_path, "r", encoding="utf-8-sig") as _f:
+        with open(_fs_path(xml_path), "r", encoding="utf-8-sig") as _f:
             tree = ET.parse(_f)
     else:
         tree = ET.parse(xml_path)
@@ -1543,7 +1543,7 @@ def _build_provenance(args) -> dict:
         import converter_config as _cc
         files = [p for p in (_cc.DEFAULT_PATH, _cc.LOCAL_PATH,
                              getattr(args, "config", None))
-                 if p and os.path.isfile(p)]
+                 if p and os.path.isfile(_fs_path(p))]
         prov["config_files"] = [
             os.path.relpath(p, here) if str(p).startswith(here) else p
             for p in files]
@@ -1553,7 +1553,7 @@ def _build_provenance(args) -> dict:
         pass
     res = os.path.join(args.output, "src", "main", "resources",
                        "converter_identity.json")
-    if os.path.isfile(res):
+    if os.path.isfile(_fs_path(res)):
         prov["identity_resource"] = "src/main/resources/converter_identity.json"
     return prov
 
@@ -1759,8 +1759,8 @@ class AuditLedger:
             (prefix, case, step_name, prop_name, literal_value, ctx_key))
 
     def _write_csv(self, path: str, header: list[str], rows: list[tuple]):
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8", newline="") as f:
+        os.makedirs(_fs_path(os.path.dirname(path)), exist_ok=True)
+        with open(_fs_path(path), "w", encoding="utf-8", newline="") as f:
             import csv as _csv
             w = _csv.writer(f)
             w.writerow(header)
@@ -1839,8 +1839,8 @@ class AuditLedger:
             if len(items) > 50:
                 lines.append(f"| ... | ... | _(+{len(items) - 50} more in preflight.csv)_ |")
             lines.append("")
-        os.makedirs(base, exist_ok=True)
-        with open(os.path.join(base, "preflight.md"), "w",
+        os.makedirs(_fs_path(base), exist_ok=True)
+        with open(_fs_path(os.path.join(base, "preflight.md")), "w",
                   encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
 
@@ -2246,8 +2246,8 @@ class AuditLedger:
                      "no recognizer for. Fix the recognizer (in "
                      "`groovy_translator.py` or `Emitter._render_assertion`) "
                      "and regenerate to move an item out of this list.")
-        os.makedirs(base, exist_ok=True)
-        with open(os.path.join(base, "summary.md"), "w",
+        os.makedirs(_fs_path(base), exist_ok=True)
+        with open(_fs_path(os.path.join(base, "summary.md")), "w",
                   encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
 
@@ -5917,7 +5917,7 @@ def _staleness_reason(existing_path: str, bundled: str):
     Returns a human-readable reason, or None when the file is current.
     """
     try:
-        with open(existing_path, encoding="utf-8", errors="replace") as fh:
+        with open(_fs_path(existing_path), encoding="utf-8", errors="replace") as fh:
             on_disk = fh.read()
     except OSError:
         return None
@@ -5945,7 +5945,7 @@ def _missing_declarations(existing_path: str, bundled: str) -> set:
     a wholly absent method is.
     """
     try:
-        with open(existing_path, encoding="utf-8", errors="replace") as fh:
+        with open(_fs_path(existing_path), encoding="utf-8", errors="replace") as fh:
             on_disk = fh.read()
     except OSError:
         return set()
@@ -6117,6 +6117,11 @@ class Emitter:
         # one meant a case whose phases were ALL shared still fell back to a
         # per-case Support class purely because its setup differed.
         self._shared_bootstraps: list = []
+        # Paths _write was asked for but did NOT write, because an
+        # author-editable copy was already on disk. Tracked separately from
+        # `written` -- which still lists them, so nothing downstream changes
+        # -- purely so a summary can stop claiming they were written.
+        self.skipped_existing: list = []
         self._entry_class_names: list = []
         self._framework_resp: list = []
         self._suite_local_phase_index: dict = {}
@@ -6176,7 +6181,7 @@ class Emitter:
         # to the (many) bundled-string emitters. Prints a visible line
         # so the intent is clear in the conversion tail.
         if os.path.basename(rel_path) in self._AUTHOR_EDITABLE_BASENAMES:
-            if os.path.exists(abs_path):
+            if os.path.exists(_fs_path(abs_path)):
                 # SKIP only while the on-disk copy can still satisfy the code
                 # we are emitting. When the bundled version declares a method
                 # the existing file does not have, that file is STALE: the
@@ -6193,7 +6198,7 @@ class Emitter:
                     import shutil
                     backup = abs_path + ".stale.orig"
                     try:
-                        shutil.copyfile(abs_path, backup)
+                        shutil.copyfile(_fs_path(abs_path), backup)
                         kept = " previous copy kept as " + os.path.basename(backup) + "."
                     except OSError as exc:
                         kept = " (could not back up: %s)" % exc
@@ -6215,6 +6220,7 @@ class Emitter:
                             "INFO", "framework-file-kept", rel_path,
                             "on-disk author-editable copy kept; bundled version not emitted")
                     self.written.append(rel_path)
+                    self.skipped_existing.append(rel_path)
                     return abs_path
         # Windows caps traditional paths at MAX_PATH (260 chars). Suite +
         # long test-case names easily overflow that. `\\?\` prefixes tell
@@ -6224,8 +6230,8 @@ class Emitter:
             norm = os.path.normpath(os.path.abspath(abs_path))
             if not norm.startswith("\\\\?\\"):
                 write_path = "\\\\?\\" + norm
-        os.makedirs(os.path.dirname(write_path), exist_ok=True)
-        with open(write_path, "w", encoding="utf-8") as f:
+        os.makedirs(_fs_path(os.path.dirname(write_path)), exist_ok=True)
+        with open(_fs_path(write_path), "w", encoding="utf-8") as f:
             f.write(content)
         self.written.append(rel_path)
         return abs_path
@@ -6514,7 +6520,7 @@ public interface ImportedRestClient {{
                     continue
                 path = os.path.join(scenario_dir, fn)
                 try:
-                    text = open(path, encoding="utf-8").read()
+                    text = open(_fs_path(path), encoding="utf-8").read()
                 except OSError:
                     continue
                 for name, args in _find_client_calls(text):
@@ -6555,7 +6561,7 @@ public interface ImportedRestClient {{
                 if not fn.endswith(".java"):
                     continue
                 try:
-                    text = open(os.path.join(dp, fn), encoding="utf-8").read()
+                    text = open(_fs_path(os.path.join(dp, fn)), encoding="utf-8").read()
                 except OSError:
                     continue
                 if "ImportedRestClient" not in text:
@@ -6586,7 +6592,7 @@ public interface ImportedRestClient {{
                     continue
                 path = os.path.join(clients_dir, fn)
                 try:
-                    text = open(path, encoding="utf-8").read()
+                    text = open(_fs_path(path), encoding="utf-8").read()
                 except OSError:
                     continue
                 for m in rx.finditer(text):
@@ -10306,7 +10312,7 @@ public final class SetupHelper {{
         # leave a stale 20k-line markdown next to the new tree.
         for stale in (f"_flows/{basename}.md", f"_flows/{self.suite_name}.md"):
             abs_stale = os.path.join(self.output_dir, stale)
-            if os.path.isfile(abs_stale):
+            if os.path.isfile(_fs_path(abs_stale)):
                 os.remove(abs_stale)
 
         abs_cases = os.path.join(self.output_dir, cases_dir)
@@ -10349,11 +10355,11 @@ public final class SetupHelper {{
                 if not img:
                     continue
                 abs_md = os.path.join(self.output_dir, suite_dir, rel)
-                with open(abs_md, encoding="utf-8") as f:
+                with open(_fs_path(abs_md), encoding="utf-8") as f:
                     md = f.read()
                 md = md.replace("\n```mermaid\n",
                                 f"\n- **Image**: [`{img}`](../{img})\n\n```mermaid\n", 1)
-                with open(abs_md, "w", encoding="utf-8", newline="\n") as f:
+                with open(_fs_path(abs_md), "w", encoding="utf-8", newline="\n") as f:
                     f.write(md)
         self._case_images = images
         index = self._render_flow_index(
@@ -10394,10 +10400,10 @@ public final class SetupHelper {{
         csv_path = os.path.join(
             self.output_dir, "_audit", self.suite_name,
             "case_to_method_mapping.csv")
-        if not os.path.isfile(csv_path):
+        if not os.path.isfile(_fs_path(csv_path)):
             return out
         import csv as _csv
-        with open(csv_path, encoding="utf-8", newline="") as f:
+        with open(_fs_path(csv_path), encoding="utf-8", newline="") as f:
             for rec in _csv.DictReader(f):
                 name = rec.get("soapui_case") or ""
                 if not name or name in out:
@@ -10898,14 +10904,14 @@ public final class AuthHelper {{
         pkg = f"{self.package_root}.support"
         for name in self._FRAMEWORK_SUPPORT_FILES:
             src = os.path.join(src_dir, name)
-            if not os.path.isfile(src):
+            if not os.path.isfile(_fs_path(src)):
                 print(f"[ra_converter] WARNING: bundled framework file missing: {src}")
                 if getattr(self, "ledger", None):
                     self.ledger.add_preflight_finding(
                         "MEDIUM", "bundled-framework-file-missing", name,
                         "expected at %s; support class will be absent" % src)
                 continue
-            with open(src, encoding="utf-8") as f:
+            with open(_fs_path(src), encoding="utf-8") as f:
                 content = f.read()
             if self.package_root != "com.ak.api":
                 content = content.replace("com.ak.api", self.package_root)
@@ -15243,8 +15249,8 @@ public final class Templates {{
                          "templates.csv"),
         ]
         for target in targets:
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            with open(target, "w", encoding="utf-8", newline="") as f:
+            os.makedirs(_fs_path(os.path.dirname(target)), exist_ok=True)
+            with open(_fs_path(target), "w", encoding="utf-8", newline="") as f:
                 f.write(text)
         return rel
 
@@ -15927,9 +15933,9 @@ def _existing_scenario_steps_resp_fields(output_dir: str, package_root: str) -> 
     rel = (f"src/main/java/{package_root.replace('.', '/')}"
            "/support/scenario/ScenarioSteps.java")
     path = os.path.join(output_dir, rel)
-    if not os.path.isfile(path):
+    if not os.path.isfile(_fs_path(path)):
         return []
-    with open(path, encoding="utf-8") as fh:
+    with open(_fs_path(path), encoding="utf-8") as fh:
         text = fh.read()
     seen: list[str] = []
     for name in _SCENARIO_RESP_FIELD_RX.findall(text):
@@ -16226,7 +16232,7 @@ def _clean_suite_output(output_dir: str, suite_name: str, package_root: str,
         pass
     for _n in sorted(_names):
         _p = os.path.join(_client_dir, f"{_n}Client.java")
-        if os.path.isfile(_p):
+        if os.path.isfile(_fs_path(_p)):
             os.remove(_fs_path(_p))
             removed.append(_p)
 
@@ -16281,7 +16287,7 @@ def _xmls_in_dir(path: str) -> list[str]:
     return sorted(
         os.path.join(path, f) for f in os.listdir(path)
         if f.lower().endswith(".xml")
-        and os.path.isfile(os.path.join(path, f)))
+        and os.path.isfile(_fs_path(os.path.join(path, f))))
 
 
 def _discover_input_xmls(path: str) -> list[str]:
@@ -16292,7 +16298,7 @@ def _discover_input_xmls(path: str) -> list[str]:
             raise SystemExit(
                 f"[ra_converter] no .xml files in --input directory: {path}")
         return xmls
-    if os.path.isfile(path):
+    if os.path.isfile(_fs_path(path)):
         parent = os.path.dirname(path)
         siblings = _xmls_in_dir(parent)
         # Conventional drop-folder: converting any file under `input/`
@@ -16347,6 +16353,21 @@ def _dedupe_service_names(
     return out
 
 
+def _emitted_file_exists(path: str) -> bool:
+    """os.path.isfile that agrees with the writer about long paths.
+
+    The writer goes through _fs_path, which lifts the classic 260-character
+    Win32 limit; this check did not. On an output tree nested deeply enough,
+    every file was written correctly and then reported MISSING -- and the
+    convert exited non-zero naming support files that were sitting on disk.
+
+    A verifier that disagrees with the writer is worse than no verifier: it
+    fails runs that worked, and it does so with a message pointing at the
+    wrong thing entirely.
+    """
+    return os.path.isfile(_fs_path(path))
+
+
 def _verify_emitted_suite_support(output_dir: str, package_root: str,
                                   jobs: list[tuple[str, str, str]]) -> list[str]:
     """Fail the convert if suite or framework support files are missing."""
@@ -16356,7 +16377,7 @@ def _verify_emitted_suite_support(output_dir: str, package_root: str,
         output_dir, "src/main/java", package_root.replace(".", "/"), "support")
     for name in Emitter._FRAMEWORK_SUPPORT_FILES:
         p = os.path.join(fw_base, name)
-        ok = os.path.isfile(p)
+        ok = _emitted_file_exists(p)
         print(f"  - {name}: {'yes' if ok else 'MISSING'}")
         if not ok:
             missing.append(name)
@@ -16372,7 +16393,7 @@ def _verify_emitted_suite_support(output_dir: str, package_root: str,
         flags = []
         gap = False
         for label, p in checks.items():
-            ok = os.path.isfile(p)
+            ok = _emitted_file_exists(p)
             flags.append(f"{label}={'yes' if ok else 'MISSING'}")
             if not ok:
                 gap = True
@@ -16598,7 +16619,7 @@ def _run_converter_self_tests() -> None:
     failed: list[str] = []
     for name in CONVERTER_SELF_TESTS:
         path = os.path.join(here, name)
-        if not os.path.isfile(path):
+        if not os.path.isfile(_fs_path(path)):
             raise SystemExit(
                 f"[ra_converter] missing self-test script: {path}")
         print(f"[ra_converter]   -> {name}")
@@ -16636,7 +16657,7 @@ def _run_post_emit_dataflow_check(args) -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     guard = os.path.normpath(
         os.path.join(here, os.pardir, "check_ctx_dataflow.py"))
-    if not os.path.isfile(guard):
+    if not os.path.isfile(_fs_path(guard)):
         print(f"[ra_converter] dataflow check skipped: {guard} not found")
         return
     root = getattr(args, "output", None) or "."
@@ -16716,7 +16737,7 @@ def _run_prune_dead_props(args) -> None:
     """
     here = os.path.dirname(os.path.abspath(__file__))
     tool = os.path.normpath(os.path.join(here, os.pardir, "prune_dead_props.py"))
-    if not os.path.isfile(tool):
+    if not os.path.isfile(_fs_path(tool)):
         print(f"[ra_converter] prune skipped: {tool} not found")
         return
     cmd = [sys.executable, tool, "--root", getattr(args, "output", None) or ".",
@@ -16884,14 +16905,14 @@ def _mark_catalog_incomplete(reasons: list) -> None:
             sys.path.insert(0, _here)
         from fluent_scenario import catalog_path
         path = catalog_path()
-        if not os.path.isfile(path):
+        if not os.path.isfile(_fs_path(path)):
             return
-        with open(path, encoding="utf-8") as fh:
+        with open(_fs_path(path), encoding="utf-8") as fh:
             data = json.load(fh)
         data["incomplete"] = True
         data["incompleteReason"] = reasons[:10]
         tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
+        with open(_fs_path(tmp), "w", encoding="utf-8") as fh:
             fh.write(json.dumps(data, indent=2) + "\n")
         os.replace(tmp, path)
         print("[ra_converter] fluent_catalog.json marked INCOMPLETE "
@@ -17018,7 +17039,11 @@ def _write_facade_endpoint_map(output_dir: str, package_root: str,
     want = (suite_name or "").replace("_", "").lower() + "client.java"
     chosen = next((c for c in clients
                    if os.path.basename(c).lower() == want), None) or clients[0]
-    with open(chosen, encoding="utf-8") as fh:
+    # Same long-path rule as the writer: this reader raised
+    # "No such file or directory" for a client it had just emitted, and the
+    # convert reported "facade endpoint map failed" on a run that produced
+    # every file correctly.
+    with open(_fs_path(chosen), encoding="utf-8") as fh:
         csrc = fh.read()
     paths = {m: (v, p) for v, p, m in _FACADE_DOC_RX.findall(csrc)}
 
@@ -17029,7 +17054,7 @@ def _write_facade_endpoint_map(output_dir: str, package_root: str,
     rows: list = []
     missing = 0
     for f in facades:
-        with open(f, encoding="utf-8") as fh:
+        with open(_fs_path(f), encoding="utf-8") as fh:
             fsrc = fh.read()
         # Keyed by NAME, not signature: overloads differ in optional query
         # params / headers / body, never in destination -- measured 0 divergent
@@ -17081,8 +17106,8 @@ def _write_facade_endpoint_map(output_dir: str, package_root: str,
 
     rel = os.path.join("_audit", suite_name, "facade_endpoints.md")
     target = os.path.join(output_dir, rel)
-    os.makedirs(os.path.dirname(target), exist_ok=True)
-    with open(target, "w", encoding="utf-8", newline="\n") as fh:
+    os.makedirs(_fs_path(os.path.dirname(target)), exist_ok=True)
+    with open(_fs_path(target), "w", encoding="utf-8", newline="\n") as fh:
         fh.write("\n".join(out))
     return "%d facade method(s), %d not implemented by this client" % (
         len(rows), missing)
@@ -17198,17 +17223,17 @@ def _bootstrap_author_dirs(emitter, args) -> list:
     spec_dir = os.path.join(args.output, "src/main/resources/openapi")
     for d in (tpl_dir, csv_dir, spec_dir):
         if not os.path.isdir(d):
-            os.makedirs(d, exist_ok=True)
+            os.makedirs(_fs_path(d), exist_ok=True)
             out.append(os.path.relpath(d, args.output).replace("\\", "/") + "/")
     for readme, body in ((os.path.join(tpl_dir, "README.md"),
                           _MANUAL_TEMPLATES_README),
                          (os.path.join(spec_dir, "README.md"),
                           _OPENAPI_README)):
         rel = os.path.relpath(readme, args.output).replace("\\", "/")
-        if os.path.exists(readme):
+        if os.path.exists(_fs_path(readme)):
             print("[ra_converter] SKIP (exists): %s" % rel)
             continue
-        with open(readme, "w", encoding="utf-8") as fh:
+        with open(_fs_path(readme), "w", encoding="utf-8") as fh:
             fh.write(body)
         out.append(rel)
     return out
@@ -17257,14 +17282,28 @@ def _run_bootstrap(args) -> int:
                          args.package_root.replace(".", "/"),
                          "support", "ImportedRestClient.java")
     declared = 0
-    if os.path.isfile(iface):
-        with open(iface, encoding="utf-8") as fh:
+    if os.path.isfile(_fs_path(iface)):
+        with open(_fs_path(iface), encoding="utf-8") as fh:
             declared = fh.read().count("default Response ")
-    print("[ra_converter] --bootstrap: wrote %d file(s); ImportedRestClient "
-          "declares %d method(s) found in the committed tree"
-          % (len(written), declared))
-    for w in written:
+    # Report the two outcomes apart. The summary used to count every path
+    # _write was ASKED for, so a run that skipped seven of nine files -- and
+    # said so, seven lines earlier -- still announced "wrote 9 file(s)" and
+    # listed them. Reading only the tail, you would conclude a framework fix
+    # had reached the tree when the on-disk copy had in fact been kept, which
+    # is the exact question the tail is consulted to answer.
+    skipped = set(getattr(emitter, "skipped_existing", []))
+    # `written` holds rel paths for emitted files and absolute-ish ones for
+    # the scaffolded dirs, so compare on the basename-bearing tail.
+    really = [w for w in written
+              if not any(w.replace(chr(92), "/").endswith(k.replace(chr(92), "/"))
+                         for k in skipped)]
+    print("[ra_converter] --bootstrap: wrote %d file(s), kept %d existing; "
+          "ImportedRestClient declares %d method(s) found in the committed tree"
+          % (len(really), len(skipped), declared))
+    for w in really:
         print("    %s" % w)
+    for k in sorted(skipped):
+        print("    (kept) %s" % k)
     print("[ra_converter] no convert needed to compile now: mvn -o test-compile")
     return 0
 
@@ -17760,8 +17799,8 @@ def _emit_imported_tests(prep: _PreparedSuite) -> int:
         import csv as _csv
         mapping_path = os.path.join(
             args.output, "_audit", suite_name, "name_mapping.csv")
-        os.makedirs(os.path.dirname(mapping_path), exist_ok=True)
-        with open(mapping_path, "w", encoding="utf-8", newline="") as f:
+        os.makedirs(_fs_path(os.path.dirname(mapping_path)), exist_ok=True)
+        with open(_fs_path(mapping_path), "w", encoding="utf-8", newline="") as f:
             w = _csv.writer(f)
             w.writerow(["short", "original", "kind"])
             for short, orig in sorted(emitter.name_mapping.items()):
