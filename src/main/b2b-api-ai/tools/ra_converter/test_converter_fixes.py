@@ -2524,12 +2524,19 @@ def test_generated_chain_exposes_the_response_accessors():
     body = src[head:src.index('rel = f"src/main/java/', head)]
     for sig in ("public final Response lastResponse()",
                 "public final String lastStep()",
-                "public final Response responseOf(String stepName)"):
+                "public final Response responseOf(String stepName)",
+                "public final String lastRequestBody()",
+                "public final String requestBodyOf(String stepName)"):
         assert sig in body, "ScenarioSteps template lost: " + sig
+    # The no-argument forms are the point: you already hold the chain after
+    # .enrollGuest(), so needing its ReadyAPI step name to read what it sent
+    # sends you to the step-map comment for something the object knows.
+    assert "public final String lastRequestBody()" in body
     # Delegation, not a private copy: a second source of truth would let the
     # chain and LastExchange disagree about the same call.
-    assert body.count("com.hi.api.rest.utilities.LastExchange.") == 3, (
-        "the accessors must delegate to LastExchange, all three of them")
+    assert body.count("com.hi.api.rest.utilities.LastExchange.") == 5, (
+        "every accessor must delegate to LastExchange -- a private copy would "
+        "let the chain and the record disagree about the same call")
     # public, so a @Test method can call them -- protected would compile here
     # and fail in the test class, which is where it matters.
     assert "protected final Response lastResponse()" not in body

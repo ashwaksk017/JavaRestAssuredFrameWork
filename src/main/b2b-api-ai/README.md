@@ -693,8 +693,36 @@ LastExchange.of("enrollGuest").jsonPath().getString("guestId")
 
 #### Inspecting the REQUEST
 
-The same record holds what went out, so you can compare the two without
-leaving the debugger:
+**On the chain, with no name and no import.** You already hold the object, so
+it knows which call it just made:
+
+```java
+var flow = Onboarding.start(row, "<case id>")
+        .enrollGuest();
+
+LOG.info("sent {}", flow.lastRequestBody());        // enrollGuest's request
+LOG.info("got  {}", flow.lastResponse().asString());  // and its response
+
+flow.createProgramAccount().complete();             // carry on
+```
+
+The chain exposes five, and the two sides match:
+
+| Call | Gives you |
+|---|---|
+| `lastRequestBody()` | what the last phase SENT |
+| `lastResponse()` | what it got back |
+| `lastStep()` | which ReadyAPI step that was |
+| `requestBodyOf("<step>")` | an EARLIER step's request |
+| `responseOf("<step>")` | an EARLIER step's response |
+
+The two that take a name want the **ReadyAPI step name** — the left column of
+the step-map comment at the top of every generated test. The no-argument
+forms need nothing, and are the ones to reach for right after the phase you
+care about.
+
+**At a breakpoint, with no code change at all**, the same values are on the
+static record:
 
 ```java
 LastExchange.requestBody()                      // what the last call SENT

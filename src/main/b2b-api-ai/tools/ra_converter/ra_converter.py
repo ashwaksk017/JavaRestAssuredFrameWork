@@ -13437,6 +13437,34 @@ public abstract class ScenarioSteps<S extends ScenarioSteps<S>> {{
     }}
 
     /**
+     * The REDACTED body the most recent phase SENT.
+     *
+     * <p>No step name needed: you already hold the chain, so after
+     * {{@code .enrollGuest()}} this is enrollGuest's request. That is the
+     * common case, and asking it to be named meant looking the ReadyAPI step
+     * up in the map comment first.</p>
+     *
+     * <pre>{{@code
+     * var flow = Onboarding.start(row, "<case>").enrollGuest();
+     * LOG.info("sent {{}} got {{}}", flow.lastRequestBody(),
+     *          flow.lastResponse().asString());
+     * }}</pre>
+     *
+     * <p>Redacted because the token call's body is the client secret.</p>
+     */
+    public final String lastRequestBody() {{
+        return com.hi.api.rest.utilities.LastExchange.requestBody();
+    }}
+
+    /**
+     * The REDACTED body an EARLIER step sent, by its ReadyAPI step name --
+     * the left column of the step-map comment at the top of the test.
+     */
+    public final String requestBodyOf(String stepName) {{
+        return com.hi.api.rest.utilities.LastExchange.requestBodyOf(stepName);
+    }}
+
+    /**
      * The response of an EARLIER step by name --
      * {{@code responseOf("http_request_200_createAccount")}} read several
      * phases later. The name is the one in the Allure step title and in the
