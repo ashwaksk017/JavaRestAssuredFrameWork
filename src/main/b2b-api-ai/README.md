@@ -633,6 +633,54 @@ by the global Rest Assured recording filter, which means an auth fetch and a
 plain `RestUtilities.post(...)` are recorded too — anything that reached the
 wire.
 
+#### Worked example: the response of one step in a converted test
+
+A converted chain returns the flow, so `.enrollGuest()` hands back the chain,
+not the response. Three ways to reach it, in the order they are usually
+wanted.
+
+**1. Break the chain and ask.** Every phase returns `S`, so the accessors are
+available mid-chain:
+
+```java
+var flow = Onboarding.start(row, "<case id>")
+        .enrollGuest();
+Response enrolled = flow.lastResponse();          // what enrollGuest got
+String   id       = enrolled.jsonPath().getString("guestId");
+flow.createProgramAccount().complete();           // carry on
+```
+
+**2. By ReadyAPI step name, from anywhere later in the test.** The step map
+at the top of every generated method gives you the name to pass — that is
+what it is for:
+
+```java
+// ReadyAPI steps -> where each one runs here:
+//   HHonorsEnroll        .enrollGuest()          <- this name
+//   http_request_200_1   .createProgramAccount()
+
+Onboarding.start(row, "<case id>")
+        .enrollGuest()
+        .createProgramAccount()
+        .complete();
+
+Response enrolled = LastExchange.of("HHonorsEnroll");   // still available
+```
+
+**3. At a breakpoint, with no code change at all.** Put the breakpoint on the
+line *after* the phase you care about — stopping *on* `.enrollGuest()` means
+it has not run yet — and evaluate:
+
+```java
+LastExchange.response()                  // the call that just happened
+LastExchange.of("HHonorsEnroll")         // that step specifically
+LastExchange.body()                      // its body as a String
+LastExchange.steps()                     // every step so far, in order
+```
+
+This is the one that needs no edit and no re-run, so it is usually the right
+one while debugging.
+
 At a breakpoint, type any of these in the evaluate window:
 
 ```java
