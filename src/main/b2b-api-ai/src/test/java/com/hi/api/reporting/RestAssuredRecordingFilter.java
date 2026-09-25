@@ -41,9 +41,14 @@ public class RestAssuredRecordingFilter implements Filter {
             // still say responseOf("POST /program-accounts").
             step = requestSpec.getMethod() + " " + pathOf(requestSpec.getURI());
         }
+        // The redacted request body rides along: the filter is the only place
+        // that sees what actually went on the wire, and without it a
+        // breakpoint can read the response but not the request that caused
+        // it. Redacted, because the token call's body is the client secret.
         com.hi.api.rest.utilities.LastExchange.record(
                 step, requestSpec.getMethod(),
-                Secrets.redact(requestSpec.getURI()), response);
+                Secrets.redact(requestSpec.getURI()), response,
+                Secrets.redact(requestBody));
 
         // Redact HERE, at buffer-entry, rather than in each listener:
         // ExtentReportListener and TestCaseLogListener both read this

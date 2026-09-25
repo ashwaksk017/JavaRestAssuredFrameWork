@@ -75,12 +75,15 @@ public final class LastExchange {
         private final String method;
         private final String uri;
         private final Response response;
+        private final String requestBody;
 
-        Recorded(String step, String method, String uri, Response response) {
+        Recorded(String step, String method, String uri, Response response,
+                 String requestBody) {
             this.step = step;
             this.method = method;
             this.uri = uri;
             this.response = response;
+            this.requestBody = requestBody;
         }
 
         public String step() {
@@ -97,6 +100,19 @@ public final class LastExchange {
 
         public Response response() {
             return response;
+        }
+
+        /**
+         * The request body as it went on the wire, REDACTED, or "" when the
+         * call had none.
+         *
+         * <p>Redacted because the token request's body is client_id and
+         * client_secret: a debugging aid must not become the second place a
+         * credential is readable. The recording filter redacts before this
+         * ever holds it.</p>
+         */
+        public String requestBody() {
+            return requestBody == null ? "" : requestBody;
         }
 
         public int status() {
@@ -124,11 +140,30 @@ public final class LastExchange {
      * answered correctly.</p>
      */
     public static void record(String step, String method, String uri, Response res) {
+        record(step, method, uri, res, null);
+    }
+
+    /**
+     * As {@link #record(String, String, String, Response)}, with the request
+     * body that produced the response.
+     *
+     * <p>A null body means "I do not know it" and KEEPS whatever this step
+     * already had -- RestStep re-records a call after it settles and has no
+     * body to hand, and losing the filter's copy there would make the
+     * request unreadable for exactly the steps that retried.</p>
+     */
+    public static void record(String step, String method, String uri, Response res,
+                              String requestBody) {
         try {
             String key = (step == null || step.isBlank()) ? "(unnamed)" : step;
-            Recorded rec = new Recorded(key, method == null ? "?" : method,
-                    uri == null ? "?" : uri, res);
             Map<String, Recorded> map = LOG_BY_STEP.get();
+            String body = requestBody;
+            if (body == null) {
+                Recorded prev = map.get(key);
+                body = prev == null ? null : prev.requestBody;
+            }
+            Recorded rec = new Recorded(key, method == null ? "?" : method,
+                    uri == null ? "?" : uri, res, body);
             // Re-put so a repeated step name keeps its LATEST response and
             // moves to the end -- a chain that calls readAccount twice should
             // report the second read, in the position it ran.
@@ -178,6 +213,24 @@ public final class LastExchange {
     public static int status() {
         Recorded r = LAST.get();
         return r == null ? -1 : r.status();
+    }
+
+    /**
+     * REDACTED request body of the most recent call, or "" when it had none.
+     *
+     * <p>The counterpart to {@link #body()}: that is what came back, this is
+     * what went out. Both are on the record, so a breakpoint can compare the
+     * two without stepping into the filter.</p>
+     */
+    public static String requestBody() {
+        Recorded r = LAST.get();
+        return r == null ? "" : r.requestBody();
+    }
+
+    /** REDACTED request body of an earlier step by name, or "". */
+    public static String requestBodyOf(String stepName) {
+        Recorded r = LOG_BY_STEP.get().get(stepName);
+        return r == null ? "" : r.requestBody();
     }
 
     /** Body of the most recent call as a String, or "" before the first call. */

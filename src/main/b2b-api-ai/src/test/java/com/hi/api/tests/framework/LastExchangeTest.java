@@ -169,6 +169,64 @@ public class LastExchangeTest {
     }
 
     @Test(groups = {"unit", "framework"})
+    @Story("the request is on the record too, not just the response")
+    @Description("""
+            Reading a response at a breakpoint answers half the question. The
+            other half -- what did we SEND -- was only in the log and the
+            Allure attachment, so comparing the two meant leaving the
+            debugger.
+            """)
+    public void theRequestBodyIsRecordedAlongsideTheResponse() {
+        LastExchange.record("createAccount", "POST", "/accounts", null,
+                "{\"name\":\"acme\"}");
+
+        Assert.assertEquals(LastExchange.requestBody(), "{\"name\":\"acme\"}");
+        Assert.assertEquals(LastExchange.requestBodyOf("createAccount"),
+                "{\"name\":\"acme\"}");
+        Assert.assertEquals(LastExchange.last().requestBody(),
+                "{\"name\":\"acme\"}");
+        // a step that never ran has no body, and asking must not throw
+        Assert.assertEquals(LastExchange.requestBodyOf("neverRan"), "");
+    }
+
+    @Test(groups = {"unit", "framework"})
+    @Story("a re-record keeps the body the filter captured")
+    @Description("""
+            RestStep re-records a call once it has settled, and has no request
+            body to hand at that point. Overwriting with null would erase the
+            filter's copy for exactly the steps that retried -- the ones whose
+            request you most want to read.
+            """)
+    public void reRecordingWithoutABodyKeepsTheOneAlreadyHeld() {
+        LastExchange.record("createAccount", "POST", "/accounts", null,
+                "{\"attempt\":1}");
+        // RestStep's settled re-record: same step, no body
+        LastExchange.record("createAccount", "POST", "/accounts", null);
+
+        Assert.assertEquals(LastExchange.requestBodyOf("createAccount"),
+                "{\"attempt\":1}", "the captured request was lost on re-record");
+        Assert.assertEquals(LastExchange.steps().size(), 1, "still one entry");
+    }
+
+    @Test(groups = {"unit", "framework"})
+    @Story("the recorded request never holds a raw credential")
+    @Description("""
+            The token call's body IS the client secret. A debugging aid must
+            not become the second place a credential is readable -- the
+            recording filter redacts before LastExchange ever holds it, and
+            this pins that the filter passes the redacted form.
+            """)
+    public void theFilterRecordsTheRedactedBody() throws Exception {
+        String src = java.nio.file.Files.readString(java.nio.file.Path.of(
+                "src/test/java/com/hi/api/reporting/RestAssuredRecordingFilter.java"));
+        int i = src.indexOf("LastExchange.record(");
+        Assert.assertTrue(i > 0, "the filter must record the exchange");
+        String call = src.substring(i, Math.min(src.length(), i + 400));
+        Assert.assertTrue(call.contains("Secrets.redact(requestBody)"),
+                "the filter must pass the REDACTED request body: " + call);
+    }
+
+    @Test(groups = {"unit", "framework"})
     @Story("a call outside a step is still recorded")
     @Description("""
             A legacy-style test calls RestUtilities directly and never

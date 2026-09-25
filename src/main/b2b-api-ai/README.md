@@ -691,6 +691,30 @@ LastExchange.all()                     // each one as "POST /accounts -> 201  (c
 LastExchange.of("enrollGuest").jsonPath().getString("guestId")
 ```
 
+#### Inspecting the REQUEST
+
+The same record holds what went out, so you can compare the two without
+leaving the debugger:
+
+```java
+LastExchange.requestBody()                      // what the last call SENT
+LastExchange.requestBodyOf("HHonorsEnroll")     // what that step sent
+LastExchange.last().method()                    // POST
+LastExchange.last().uri()                       // the resolved URL
+```
+
+**It is redacted.** The token call's body IS the client secret, so the
+recording filter redacts before the record ever holds it — a debugging aid
+must not become the second place a credential is readable.
+
+Three other views of the request, when you want more than the body:
+
+| Want | Where |
+|---|---|
+| the resolved body of the most recent `RestStep` | `RestStep.lastResolvedBody()` |
+| verb, path, query keys, body, per step | the run log — `-> POST /path`, `.. query/form keys=[...]`, `.. request body (N chars)` |
+| request + response side by side, per step | the Allure attachments on that step |
+
 Two rules worth knowing:
 
 * **it is the settled response.** A step that transiently retried, or that
