@@ -6066,6 +6066,12 @@ _DECL_SKIP = {"if", "for", "while", "switch", "catch", "return", "new"}
 _FRAMEWORK_REV_RX = re.compile(r"ra_converter-framework-rev:\s*(\d+)")
 
 
+# Cases whose setup could not be represented as a phase-spec hook. Collected
+# rather than printed at the point of loss: one line per case in a 692-case
+# convert scrolls past, and the number of them is the thing that matters.
+_BOOTSTRAP_DROPPED: list = []
+
+
 def _staleness_reason(existing_path: str, bundled: str):
     """Why the on-disk author-editable file cannot serve the code we emit.
 
@@ -12242,10 +12248,31 @@ public class {class_name} extends BaseApiTest {{
                     continue          # the entry checks the marker itself
                 if ln.strip():
                     kept.append(ln)
-            if kept and not _pe.hook_blockers(kept):
+            _blocker = _pe.hook_blockers(kept) if kept else None
+            if kept and not _blocker:
                 bootstrap_part = {"spec": None, "split": None, "leftover": kept,
                                   "res_var": None,
                                   "var_to_step": {v: s for s, v in self.response_var_by_step.items()}}
+            elif _blocker:
+                # The blocker itself is right -- a hook runs AFTER a response
+                # and cannot make a request. What was wrong was the response
+                # to it: bootstrap_part stayed None and the ENTIRE setup was
+                # emitted as nothing, so a case whose setup did not match a
+                # shared SetupHelper flow lost its inline tokenRequest. The
+                # registration then has no bootstrap, bootstrap() returns
+                # immediately, and the first phase sends an empty
+                # tokenId.GeneratedTokenID -- a 401 that reads like a
+                # credentials problem rather than a missing step.
+                _rest = sum(1 for _l in kept if "RestStep.exec(" in _l)
+                if getattr(self, "ledger", None):
+                    self.ledger.add_preflight_finding(
+                        "BLOCKER" if _rest else "MEDIUM",
+                        "bootstrap-dropped", case.name,
+                        "setup cannot be represented as a phase-spec hook (%s); "
+                        "%d REST call(s) in it will NOT run -- the case has no "
+                        "shared setup flow, so its token request is inline"
+                        % (_blocker, _rest))
+                _BOOTSTRAP_DROPPED.append((case.name, _blocker, _rest))
         plan = {
             "assigned_flow": assigned_flow,
             "skip_count": skip_count,
@@ -16933,6 +16960,17 @@ def _run_post_emit_dataflow_check(args) -> None:
     enforced = os.path.isfile(
         os.path.join(root, "tools", "ctx_dataflow_baseline.json"))
     mode = "enforced" if enforced else "advisory (no triage baseline under %s)" % root
+    if _BOOTSTRAP_DROPPED:
+        _rest_total = sum(n for _c, _b, n in _BOOTSTRAP_DROPPED if n)
+        print("[ra_converter] BOOTSTRAP DROPPED for %d case(s); %d REST call(s) "
+              "will NOT run" % (len(_BOOTSTRAP_DROPPED), _rest_total))
+        for _c, _b, _n in _BOOTSTRAP_DROPPED[:10]:
+            print("    %-58s %s (%d REST)" % (_c[:58], _b, _n))
+        if _rest_total:
+            print("    ^ no shared setup flow, so the token request is inline "
+                  "and is lost with the rest of the setup. Every call in these "
+                  "cases goes out unauthenticated -- see "
+                  "tools/check_step_parity.py")
     print(f"[ra_converter] post-emit dataflow check [{mode}] ...")
     result = subprocess.run([sys.executable, guard, "--root", root])
     if result.returncode == 0:

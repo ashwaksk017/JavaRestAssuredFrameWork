@@ -3009,6 +3009,58 @@ def test_the_loop_picks_its_driver_by_name_not_by_position():
         "case, so a positional guess picks the wrong sheet: " + case.ds_gap)
 
 
+def test_a_bootstrap_that_cannot_be_a_hook_must_not_vanish():
+    """Dropping the bootstrap drops the token, and every call then 401s.
+
+    phase-specs represent a case's setup as `bootstrap(...)`. The body has to
+    fit in a hook, and hook_blockers correctly refuses one containing
+    `RestStep.exec(` -- a hook runs AFTER a response and cannot itself make a
+    request. That much is right.
+
+    What was wrong is the response to it: bootstrap_part stayed None and the
+    whole setup was emitted as nothing at all. A case whose setup did not
+    match a shared SetupHelper flow keeps its tokenRequest INLINE, so it hits
+    exactly that branch -- and the emitted registration then has no
+    bootstrap, `bootstrap()` returns immediately because hasBootstrap() is
+    false, and the first phase sends .token(Ref.ctx("tokenId.GeneratedTokenID"))
+    with nothing having populated that key.
+
+    Eight cases in one suite are in that state. Nothing in the output says
+    so; it surfaces as a 401 on the first call, which reads like an
+    environment or credentials problem rather than a missing step.
+
+    This pins the two halves that must stay true: the blocker still fires on
+    a REST call, and the emitter no longer treats "cannot hook it" as
+    "emit nothing" silently.
+    """
+    import phase_emit as pe
+
+    # the blocker itself: a REST call cannot live in a hook
+    assert pe.hook_blockers(["Response r = RestStep.exec(ctx, row);"]) == (
+        "a second REST call")
+    assert pe.hook_blockers(["__restStepIdx += 2;"]) is not None
+    assert pe.hook_blockers(["return this;"]) is not None
+    # ordinary setup lines are fine
+    assert pe.hook_blockers(['LOG.info("hello");']) is None
+    assert pe.hook_blockers([
+        'ImportedScenario.runSetup("flow_B", client, ctx, row, '
+        'softAssert, holder, testCaseId);']) is None, (
+        "a shared setup flow is a method call, not a RestStep -- this is why "
+        "cases WITH a flow keep their token and cases without it lose one")
+
+    # and the emitter must not silently swallow the blocked case
+    src = open(os.path.join(os.path.dirname(__file__), "ra_converter.py"),
+               encoding="utf-8").read()
+    i = src.index("bootstrap_part = None")
+    window = src[i:i + 2600]
+    assert "hook_blockers" in window, "the guard must still be consulted here"
+    assert ("_BOOTSTRAP_DROPPED" in window or "add_preflight_finding" in window
+            or "dropped" in window.lower()), (
+        "a bootstrap that cannot be represented must be REPORTED, not "
+        "silently replaced with nothing -- that is how 8 cases lost their "
+        "token request")
+
+
 def test_script_runner_is_the_last_thing_in_this_file():
     """verify_all runs this file as a SCRIPT, not under pytest.
 
