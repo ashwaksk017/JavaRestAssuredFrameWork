@@ -25,31 +25,10 @@
       "http_request_200_compare_name_dbn_country",
       "http_request_200_compare_name_dbn_only"
     ],
-    "B2B-3137_verify_allowaccounttobe_retrieved_if_noemail_domainsset": [
-      "tokenRequest"
-    ],
     "B2B-317_get_attestProgramAccount_400_2": [
       "http_request_400_1",
       "http_request_400_2",
       "http_request_400_4"
-    ],
-    "B2B-3197_verify_account_with_update_email_domains_blacklist": [
-      "tokenRequest"
-    ],
-    "B2B-3197_verify_account_with_update_email_domains_nonblacklist": [
-      "tokenRequest"
-    ],
-    "B2B-3197_verify_account_with_zero_email_domains_activate": [
-      "tokenRequest"
-    ],
-    "B2B-3197_verify_account_with_zero_email_domains_activate_blacklist": [
-      "tokenRequest"
-    ],
-    "B2B-3197_verify_account_withat_least_one_email_domain_activate": [
-      "tokenRequest"
-    ],
-    "B2B-3197_verify_account_withat_least_one_email_domain_activate_yahoo": [
-      "tokenRequest"
     ],
     "B2B-3233_post_email_domain_active_member_active_account_201": [
       "http_request_200-Get-account-details",
@@ -58,9 +37,6 @@
     "B2B-3233_post_email_domain_active_member_active_account_incorrect_guestid_403": [
       "http_request_403_post_email_domain"
     ],
-    "B2B-3233_post_email_domain_travel_coordinator_403": [
-      "tokenRequest"
-    ],
     "B2B-5268_Program_account_Verify_endpoint": [
       "get_guestid_bussinesses_verify_Checkforduplicates=false &amp; emaildomain",
       "get_guestid_bussinesses_verify_Checkforduplicates=false &amp; website",
@@ -68,21 +44,6 @@
     ],
     "B2B-6832_role_premission_different_memberid_404": [
       "put_rolePremission_404"
-    ],
-    "B2B-8240_put-businessprofile_Active_SMB_account_204": [
-      "tokenRequest"
-    ],
-    "B2B-8240_put-businessprofile_Active_SMB_account_400": [
-      "tokenRequest"
-    ],
-    "B2B-8240_put-businessprofile_Active_SMB_account_403": [
-      "tokenRequest"
-    ],
-    "B2B-8240_put-businessprofile_Active_SMB_account_404": [
-      "tokenRequest"
-    ],
-    "B2B-96_get_businesses_200_testEnv": [
-      "tokenRequest"
     ]
   }
 }

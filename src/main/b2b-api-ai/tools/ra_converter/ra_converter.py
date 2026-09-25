@@ -6072,6 +6072,20 @@ _FRAMEWORK_REV_RX = re.compile(r"ra_converter-framework-rev:\s*(\d+)")
 _BOOTSTRAP_DROPPED: list = []
 
 
+def _strip_this_for_hook(line: str, known_vars: set) -> str:
+    """`this.fooRes = ...` -> `fooRes = ...` for a hook body.
+
+    Only for names the hook's prelude declares as locals. A blanket
+    `this.` -> `` would also rewrite an unrelated field into an undeclared
+    identifier, trading one compile error for another that is harder to read.
+    """
+    for _v in known_vars:
+        if not _v:
+            continue
+        line = re.sub(r"\bthis\.%s\b" % re.escape(_v), _v, line)
+    return line
+
+
 def _staleness_reason(existing_path: str, bundled: str):
     """Why the on-disk author-editable file cannot serve the code we emit.
 
@@ -12248,7 +12262,22 @@ public class {class_name} extends BaseApiTest {{
                     continue          # the entry checks the marker itself
                 if ln.strip():
                     kept.append(ln)
-            _blocker = _pe.hook_blockers(kept) if kept else None
+            # allow_rest: the setup IS where a ReadyAPI case does its
+            # token request, and a bootstrap hook runs before any
+            # phase, so a call in it breaks no accounting. Without
+            # this the whole setup was dropped and 26 cases lost
+            # their token. See phase_emit.hook_blockers.
+            # The bootstrap body was rendered for the SCENARIO, where a
+            # response var is a field: `this.tokenRequestRes = ...`. A hook
+            # is static, so `this.` does not compile there -- and it is not
+            # needed: hook_java's prelude already declares a local of that
+            # name for every var in var_to_step. Strip the qualifier so the
+            # assignment lands on the local the prelude provides.
+            if kept:
+                _vars = set(self.response_var_by_step.values())
+                kept = [_strip_this_for_hook(_ln, _vars) for _ln in kept]
+            _blocker = (_pe.hook_blockers(kept, allow_rest=True)
+                        if kept else None)
             if kept and not _blocker:
                 bootstrap_part = {"spec": None, "split": None, "leftover": kept,
                                   "res_var": None,

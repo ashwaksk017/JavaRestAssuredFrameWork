@@ -209,14 +209,32 @@ def split_rest_body(lines: list[str], res_var: str, step_sid: str) -> Split:
     return out
 
 
-def hook_blockers(leftover: list[str]) -> str | None:
-    """Why these lines cannot live in a hook (None = they can)."""
+def hook_blockers(leftover: list[str], allow_rest: bool = False) -> str | None:
+    """Why these lines cannot live in a hook (None = they can).
+
+    `allow_rest` is for the BOOTSTRAP hook only. A REST call is refused
+    in a PHASE hook because that hook runs after a phase's response, and
+    a second call there breaks the step accounting (__restStepIdx) and
+    the response wiring. A bootstrap hook has neither problem: it runs
+    before any phase, and its generated prelude already declares ctx /
+    row / softAssert / holder / testCaseId / client -- exactly what
+    RestStep.exec needs.
+
+    Refusing it there cost 26 cases their tokenRequest. A case whose
+    setup matches a shared SetupHelper flow calls runSetup(...), which is
+    a method call and passes; one with no matching flow keeps the token
+    inline, hit this blocker, and had its ENTIRE bootstrap emitted as
+    nothing -- so every call in it went out unauthenticated.
+
+    The stop-marker and early-return blockers still apply either way:
+    those genuinely cannot be expressed in a hook.
+    """
     joined = "\n".join(leftover)
     if "__stopAfter" in joined or "__restStepIdx" in joined:
         return "prefix-merged stop marker"
     if re.search(r"\breturn this;|\breturn self\(\);", joined):
         return "early return"
-    if "RestStep.exec(" in joined:
+    if not allow_rest and "RestStep.exec(" in joined:
         return "a second REST call"
     return None
 
