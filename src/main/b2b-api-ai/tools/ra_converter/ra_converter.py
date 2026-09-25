@@ -749,6 +749,36 @@ def _parse_properties_step(step_el: ET.Element) -> PropertiesStep:
     return PropertiesStep(step_name=step_name, properties=props)
 
 
+def _dropped_content_summary(step_el) -> str:
+    """What an unhandled step type is carrying that we are about to drop.
+
+    A step type with no parser becomes a placeholder Groovy comment. That is
+    the right fallback, but the placeholder used to say only WHICH type was
+    unhandled, never whether the element was empty or full -- so an empty
+    step and one carrying twelve assertions produced byte-identical output,
+    and a downstream rule could call either one a no-op.
+
+    Counting is enough and is the reason this is generic: no rule has to
+    know what an `assertionteststep` or a `datasink` contains to know that
+    dropping eleven child elements is not a no-op.
+    """
+    interesting: dict[str, int] = {}
+    for child in step_el.iter():
+        if child is step_el:
+            continue
+        tag = child.tag.rsplit("}", 1)[-1]
+        if tag in ("settings", "config"):
+            continue          # containers, not content
+        if not (child.text or "").strip() and not child.attrib and len(child) == 0:
+            continue          # empty marker element
+        interesting[tag] = interesting.get(tag, 0) + 1
+    if not interesting:
+        return ""
+    top = sorted(interesting.items(), key=lambda kv: -kv[1])[:4]
+    return " -- NOT imported: " + ", ".join(
+        "%d %s" % (n, t) for t, n in top)
+
+
 def _parse_datasource_step(step_el: ET.Element) -> DataSourceStep:
     step_name = step_el.get("name", "")
     ds = DataSourceStep(step_name=step_name, ds_type="unknown")
@@ -1420,10 +1450,17 @@ def parse_test_suites(xml_path: str) -> list[tuple[str, list[TestCase]]]:
                 step_type = step_el.get("type", "")
                 parser = _STEP_PARSERS.get(step_type)
                 if parser is None:
-                    # Unknown step type -- store as a placeholder Groovy with a note
+                    # Unknown step type -- store as a placeholder Groovy with a note.
+                    # The note carries what is being dropped, so a later rule
+                    # can tell an EMPTY step of this type from a full one. It
+                    # could not before: both produced the same placeholder,
+                    # and the rule for `assertionteststep` called every one a
+                    # no-op because all four in the first project happened to
+                    # be empty.
                     gs = GroovyStep(
                         step_name=step_el.get("name", ""),
-                        script=f"// UNSUPPORTED STEP TYPE: {step_type}  (manual review)",
+                        script=("// UNSUPPORTED STEP TYPE: %s  (manual review)%s"
+                                % (step_type, _dropped_content_summary(step_el))),
                     )
                     tc.steps.append(gs)
                 else:

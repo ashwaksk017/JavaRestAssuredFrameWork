@@ -1483,10 +1483,27 @@ def translate(script: str, response_var_by_step: dict[str, str],
 
     # ---- ReadyAPI non-Groovy step types stored as placeholder scripts
     if re.match(r"\s*// UNSUPPORTED STEP TYPE: assertionteststep", script):
-        lines.append(
-            '// [assertionteststep] empty ReadyAPI assertion step -- no-op')
-        patterns_matched.append("empty_assertionteststep")
-        consumed = True
+        # An EMPTY assertionteststep really is a no-op, and calling it FULL is
+        # right. A populated one is not -- and this rule used to assert the
+        # first without checking, because all four in the first project
+        # converted were empty. Same shape as the DataSource Loop: a verdict
+        # that is true of one project stated as though it were true of the
+        # construct.
+        #
+        # The premise is now testable, because the placeholder says what was
+        # dropped.
+        if "NOT imported:" in script:
+            lines.append(
+                '// [assertionteststep] assertions present but NOT imported '
+                '-- see the step note above')
+            patterns_matched.append("assertionteststep_with_content")
+            consumed = True
+            coverage_override = "PARTIAL"
+        else:
+            lines.append(
+                '// [assertionteststep] empty ReadyAPI assertion step -- no-op')
+            patterns_matched.append("empty_assertionteststep")
+            consumed = True
     elif re.match(r"\s*// UNSUPPORTED STEP TYPE: datasourceloop", script):
         # PARTIAL, not FULL. A DataSource Loop runs its block once per row of
         # the DataSource it follows; skipping it means the converted test

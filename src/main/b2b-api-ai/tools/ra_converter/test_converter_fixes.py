@@ -2726,6 +2726,55 @@ def test_a_skipped_datasource_loop_is_partial_not_full():
     assert meta2["coverage"] == "STUB", meta2["coverage"]
 
 
+def test_an_unhandled_step_says_what_it_dropped():
+    """An empty unhandled step and a full one must not look identical.
+
+    A step type with no parser becomes a placeholder Groovy comment. The
+    placeholder used to name only the TYPE, so a step carrying twelve
+    assertions and an empty one produced byte-identical output -- and any
+    rule reading it had to guess. The rule for `assertionteststep` guessed
+    "no-op, FULL", which was true of all four in the first project converted
+    and is not true of the construct.
+
+    Counting children is what makes this generic: no rule needs to know what
+    an assertionteststep or a datasink CONTAINS to know that dropping eleven
+    child elements is not a no-op.
+    """
+    import xml.etree.ElementTree as ET
+    import ra_converter as rc
+    import groovy_translator as gt
+
+    CON = 'xmlns:con="http://eviware.com/soapui/config"'
+    empty = ET.fromstring(
+        '<con:testStep %s type="assertionteststep" name="X">'
+        '<con:settings/><con:config/></con:testStep>' % CON)
+    full = ET.fromstring(
+        '<con:testStep %s type="assertionteststep" name="Y"><con:config>'
+        '<con:assertion type="JsonPath Match"><con:path>$.id</con:path></con:assertion>'
+        '<con:assertion type="Valid HTTP Status Codes"><con:codes>200</con:codes></con:assertion>'
+        '</con:config></con:testStep>' % CON)
+
+    assert rc._dropped_content_summary(empty) == "", "an empty step drops nothing"
+    note = rc._dropped_content_summary(full)
+    assert "NOT imported" in note and "assertion" in note, note
+
+    def cover(el):
+        script = ("// UNSUPPORTED STEP TYPE: assertionteststep  (manual review)"
+                  + rc._dropped_content_summary(el))
+        return gt.translate(script, {}, "AssertStep")[1]["coverage"]
+
+    # The empty case must stay FULL: it genuinely is a no-op, and a fix that
+    # downgrades it would just move the inaccuracy in the other direction.
+    assert cover(empty) == "FULL"
+    assert cover(full) == "PARTIAL", "assertions were dropped -- that is not FULL"
+
+    # Containers are not content: <con:settings/> and <con:config> must not
+    # by themselves make an empty step look populated.
+    assert rc._dropped_content_summary(
+        ET.fromstring('<con:testStep %s type="whatever" name="Z">'
+                      '<con:settings/><con:config/></con:testStep>' % CON)) == ""
+
+
 def test_script_runner_is_the_last_thing_in_this_file():
     """verify_all runs this file as a SCRIPT, not under pytest.
 
