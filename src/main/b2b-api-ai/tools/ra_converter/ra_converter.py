@@ -14768,13 +14768,10 @@ public final class {support_name} {{
         verifies = [e for e in entries if e.get("verify")]
         if not verifies:
             return None
-        # A vocabulary that is also a PHASE name resolves to the phase
-        # method, which runs runPhase instead of runVerify. Keep the old
-        # shape rather than emit a call that looks right and does something
-        # else.
-        phase_names = getattr(self, "_spec_vocabs", set())
-        if any(e.get("vocab") in phase_names for e in verifies):
-            return None
+        # A vocabulary that is also a phase name used to be refused here,
+        # because the emitted method ran runPhase unconditionally. runPhase
+        # now asks the CASE which side the name is registered on, so the same
+        # call is right either way and the verify can chain.
         seen = {}
         for e in verifies:
             seen[e.get("vocab")] = seen.get(e.get("vocab"), 0) + 1
@@ -16452,7 +16449,16 @@ _PHASE_MEMBERS = """
 
     protected S runPhase(String vocab, String step) throws Exception {
         com.ak.api.rest.utilities.phase.CaseRegistry.Case cs = requirePhases(vocab);
-        runParts(step == null ? cs.only(vocab, false) : cs.named(vocab, step, false));
+        // A vocabulary can be a phase in one case and a verify in another --
+        // `verifyProgramAccount` is both -- so which side it is belongs to the
+        // CASE, not to the name. Asking the case is what lets a verify chain
+        // in order with the steps around it instead of running after
+        // complete(), where the request it makes is invisible. Phase wins if a
+        // case registers both, because that is the side the call was emitted
+        // for.
+        boolean asVerify = !cs.has(vocab, false) && cs.has(vocab, true);
+        runParts(step == null ? cs.only(vocab, asVerify)
+                              : cs.named(vocab, step, asVerify));
         return self();
     }
 

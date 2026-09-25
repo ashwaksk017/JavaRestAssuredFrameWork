@@ -131,6 +131,20 @@ public final class CaseRegistry {
             return Collections.unmodifiableList(entries);
         }
 
+        /**
+         * Does this case register {@code vocab} on the given side?
+         *
+         * <p>Asking without throwing is what lets ONE generated method serve a
+         * name that is a phase in one case and a verify in another --
+         * {@code verifyProgramAccount} is both. Before this, a chained
+         * {@code .verifyProgramAccount()} had to be refused wherever the name
+         * collided, so 239 verifies kept running after the chain where the
+         * request they make is invisible.</p>
+         */
+        public boolean has(String vocab, boolean verify) {
+            return !named(vocab, verify).isEmpty();
+        }
+
         /** The only phase named {@code vocab}; loud when there are several. */
         public List<PhaseSpec> only(String vocab, boolean verify) {
             List<Entry> hits = named(vocab, verify);
