@@ -11836,20 +11836,30 @@ public final class PlaceholderResolver {{
         # Prime state so per-method emitters know their audit-ledger cursor.
         self._current_prefix = soapui_suite_name
 
-        # Auth-priming decision: if ANY case in this bucket has an inline
-        # token-fetch REST step (directly OR via a SetupHelper flow whose
-        # setup steps include one), the @BeforeClass call to AuthHelper
-        # would be a REDUNDANT second fetch -- skip it. Priming only helps
-        # classes where no method fetches its own token (e.g. Groovy-only
-        # cleanup classes that still need auth for their downstream
-        # framework calls).
-        has_inline_token_fetch = False
+        # Auth-priming decision. This used to ask "does ANY case here fetch
+        # its own token?" and skip priming when one did, to avoid a redundant
+        # second fetch. The question is per-CASE and the answer was applied
+        # per CLASS: one token-fetching case turned priming off for every
+        # method beside it, including cases that fetch nothing at all.
+        #
+        # Such a case then leans on ctxGet's token fallback, which reads
+        # ctx.accessToken and then the STATIC TokenCache -- so it works only
+        # because some other test already filled that cache. Across a full
+        # suite it usually holds and looks fine; run the case on its own and
+        # the cache is empty, the Authorization header goes out blank, and
+        # the 401 looks like a credentials problem.
+        #
+        # So the question is inverted: prime when ANY case here lacks its own
+        # fetch. Safe to do so -- AuthHelper returns early when ctx already
+        # holds a non-empty accessToken, @BeforeClass runs before any @Test on
+        # that instance, each class has its own ctx map, and TokenCache guards
+        # its state with an AtomicReference. Worst case is one extra token
+        # fetch per class; there is no race and no double-fetch per method.
+        has_inline_token_fetch = True
         for case in cases:
-            for step in case.steps:
-                if isinstance(step, RestStep) and _is_token_fetch_step(step):
-                    has_inline_token_fetch = True
-                    break
-            if has_inline_token_fetch:
+            if not any(isinstance(step, RestStep) and _is_token_fetch_step(step)
+                       for step in case.steps):
+                has_inline_token_fetch = False   # this case needs priming
                 break
 
         # Cluster cases by REST-step shape (verb + path + body-hash per step)
