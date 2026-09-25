@@ -3076,15 +3076,18 @@ def test_every_generated_test_maps_its_readyapi_steps():
     src = open(os.path.join(os.path.dirname(__file__), "ra_converter.py"),
                encoding="utf-8").read()
     i = src.index("def _readyapi_step_map")
-    body = src[i:i + 2200]
+    body = src[i:i + 3200]
     assert "_case_phase_specs" in body, (
         "the map must come from the registration, not be re-derived")
     assert "_case_bootstrap" in body, "a step served by .start() must say so"
     assert "check_step_parity" in body, (
         "an unreachable step must point at the check that explains it")
-    # emitted for BOTH body shapes -- the verify-carrying one and the plain
-    # one; the plain shape is where an empty-looking chain appears
-    assert src.count("self._readyapi_step_map(case)") == 2
+    # emitted for EVERY body shape: the chained-verify one, the
+    # trailing-verify fallback, and the plain one -- the plain shape being
+    # where an empty-looking chain appears and needs the map most
+    assert src.count("self._readyapi_step_map(case)") >= 3, (
+        "a body shape that skips the map is one where the count can be "
+        "questioned again with no answer in the file")
 
 
 def test_script_runner_is_the_last_thing_in_this_file():

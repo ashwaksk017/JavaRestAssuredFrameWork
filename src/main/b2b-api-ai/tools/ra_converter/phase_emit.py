@@ -569,6 +569,38 @@ def safe_vocab(v: str) -> str:
     return v + "Phase" if v in RESERVED_VOCAB else v
 
 
+def verify_vocab_methods_java(vocabs: list[str]) -> str:
+    """`verifyProgramAccount()` on ScenarioSteps, returning S so it chains.
+
+    A verify runs the same way a phase does -- runVerify -> runParts ->
+    dispatch -- but it was only reachable as a static call AFTER the chain:
+
+        Onboarding.start(row, id).enrollGuest()....complete();
+        Insights.verifyProgramAccount(scenario, expected);
+
+    so the trailing read-back it performs was invisible to anyone counting
+    the chain against the ReadyAPI case. Returning S puts it where it
+    happens, in order, with the steps around it.
+
+    The step overload matters: runVerify(vocab, null) resolves through
+    only(vocab), which throws when a case registers two verifies under one
+    vocabulary. Callers pass the step name in that case.
+    """
+    out = []
+    for v in sorted({safe_vocab(x) for x in vocabs}):
+        out.append(
+            f"    public S {v}() throws Exception {{\n"
+            f"        runVerify({jstr(v)}, null);\n"
+            f"        return self();\n"
+            f"    }}\n")
+        out.append(
+            f"    public S {v}(String step) throws Exception {{\n"
+            f"        runVerify({jstr(v)}, step);\n"
+            f"        return self();\n"
+            f"    }}\n")
+    return "\n".join(out)
+
+
 def vocab_methods_java(vocabs: list[str], taken=()) -> str:
     """`enrollGuest()` / `enrollGuest(String step)` on ScenarioSteps, once per name.
 

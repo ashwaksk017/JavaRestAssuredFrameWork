@@ -179,6 +179,17 @@ def analyse(root: str):
         for kind, name, step in calls:
             hits = [i for i, (k, v, _s) in enumerate(entries)
                     if k == kind and v == name]
+            if not hits and kind == "phase":
+                # A verify now chains BEFORE complete() where it used to be
+                # a static call after it, so position no longer tells the two
+                # apart. Resolve by what the registry holds: a pre-complete
+                # call naming a registered VERIFY is that verify, not a
+                # missing phase. Kept as a fallback rather than a rename so a
+                # genuinely missing phase is still reported as one.
+                hits = [i for i, (k, v, _s) in enumerate(entries)
+                        if k == "verify" and v == name]
+                if hits:
+                    kind = "verify"
             if step:
                 hits = [i for i in hits if entries[i][2] == step]
             if not hits:

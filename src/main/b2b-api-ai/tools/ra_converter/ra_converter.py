@@ -13308,6 +13308,19 @@ public class {class_name} extends BaseApiTest {{
             self._taken_vocab_names = taken
             vocab_methods = _pe.vocab_methods_java(
                 sorted(self._spec_vocabs | _pm.RUN_VOCABS), taken)
+            # Verifies chain too, so a trailing read-back sits in the chain
+            # with the steps around it instead of after .complete().
+            _vv = set()
+            for _names in (self._spec_verify_vocabs or {}).values():
+                _vv |= set(_names)
+            # A name used as BOTH a phase and a verify already has a method
+            # here, and it calls runPhase. Emitting a second one is a compile
+            # error; silently reusing the phase method would run the wrong
+            # thing. Such names keep the trailing-call shape -- see
+            # _chainable_verifies, which refuses them for the same reason.
+            _vv -= (self._spec_vocabs | _pm.RUN_VOCABS)
+            if _vv:
+                vocab_methods += "\n" + _pe.verify_vocab_methods_java(sorted(_vv))
         content = f"""package {pkg};
 
 import java.util.Map;
@@ -14580,6 +14593,16 @@ public final class {support_name} {{
                 "MEDIUM", "case-fully-disabled", case.name,
                 "emitted as a runtime skip: no enabled step survived the "
                 "auth preamble, so the chain would have asserted nothing")
+        elif verify_calls and self._chainable_verifies(case) is not None:
+            # Registered verifies become chain calls. Same runVerify
+            # underneath; the difference is that the request they perform is
+            # now visible in the order it happens.
+            body_lines.extend(self._readyapi_step_map(case))
+            body_lines.extend([
+                f'{entry}.start(row{start_extra}){chain}'
+                f'{self._chainable_verifies(case)}',
+                '                .complete();',
+            ])
         elif verify_calls:
             body_lines.extend(self._readyapi_step_map(case))
             body_lines.extend([
@@ -14725,6 +14748,48 @@ public final class {support_name} {{
                 out.append(",".join(copy))
         return out
 
+    def _chainable_verifies(self, case) -> str | None:
+        """Chain suffix for this case's verifies, or None to keep the old shape.
+
+        None whenever anything is uncertain -- no phase-specs, no registered
+        entries, a verify the registration does not describe. The old shape
+        still works, so falling back costs legibility and nothing else, while
+        guessing would move a real request.
+
+        A vocabulary used twice in one case is passed its step name:
+        runVerify(vocab, null) resolves through only(vocab), which throws on
+        an ambiguous match rather than picking one.
+        """
+        if not getattr(self, "phase_specs_enabled", False):
+            return None
+        entries = getattr(self, "_case_phase_specs", {}).get(case.name)
+        if not entries:
+            return None
+        verifies = [e for e in entries if e.get("verify")]
+        if not verifies:
+            return None
+        # A vocabulary that is also a PHASE name resolves to the phase
+        # method, which runs runPhase instead of runVerify. Keep the old
+        # shape rather than emit a call that looks right and does something
+        # else.
+        phase_names = getattr(self, "_spec_vocabs", set())
+        if any(e.get("vocab") in phase_names for e in verifies):
+            return None
+        seen = {}
+        for e in verifies:
+            seen[e.get("vocab")] = seen.get(e.get("vocab"), 0) + 1
+        out = []
+        for e in verifies:
+            vocab = e.get("vocab")
+            if not vocab:
+                return None
+            if seen[vocab] > 1:
+                out.append('\n                .%s(%s)'
+                           % (vocab, phase_emit.jstr(str(e.get("step") or ""))))
+            else:
+                out.append("\n                .%s()" % vocab)
+        return "".join(out)
+
     def _readyapi_step_map(self, case) -> list[str]:
         """Comment lines mapping each ReadyAPI REST step to where it runs.
 
@@ -14743,6 +14808,11 @@ public final class {support_name} {{
             return []
         boot_part, _off = getattr(self, "_case_bootstrap", {}).get(
             case.name, (None, 0))
+        # Whether the verifies chain decides how to describe them, so the
+        # map cannot say "after .complete()" about a call that is now in the
+        # chain. Same source as the emitter -- a second opinion here would
+        # drift the moment either changed.
+        chained = self._chainable_verifies(case) is not None
         by_step = {}
         for e in entries:
             by_step[sanitize_identifier(str(e.get("step") or "")).lower()] = (
@@ -14757,8 +14827,12 @@ public final class {support_name} {{
             hit = by_step.get(key)
             if hit:
                 kind, vocab = hit
-                where = (".%s()" % vocab if kind == "phase"
-                         else "verify %s(...)  [after .complete()]" % vocab)
+                if kind == "phase":
+                    where = ".%s()" % vocab
+                elif chained:
+                    where = ".%s()  [verify]" % vocab
+                else:
+                    where = "verify %s(...)  [after .complete()]" % vocab
             elif boot_part is not None:
                 where = ".start(...)  [setup]"
             else:
