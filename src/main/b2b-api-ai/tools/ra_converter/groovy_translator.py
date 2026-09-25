@@ -530,6 +530,20 @@ def _find_setproperty_targets(script: str) -> list[tuple[str, str, str]]:
         r"\.getTestStepByName\(['\"]([^'\"]+)['\"]\)",
         script):
         step_bindings[m.group(1)] = m.group(2)
+    # The SUBSCRIPT form names the same thing:
+    #     def propsStep = context.testCase.testSteps["generateDates"]
+    #     propsStep.setPropertyValue("arrivalDate", formattedArrDate)
+    # Only getTestStepByName was bound, so a script written this way
+    # published nothing -- and `arrivalDate` / `departureDate` are exactly
+    # the keys the DataSource spreadsheets reference, so every imported row
+    # carrying ${...#arrivalDate} resolved to empty. Same shape as the
+    # receiver gap above: another spelling of "which step", not another
+    # feature.
+    for m in re.finditer(
+        r"def\s+(\w+)\s*=\s*(?:testRunner|context)\.testCase"
+        r"\.testSteps\s*\[\s*['\"]([^'\"]+)['\"]\s*\]",
+        script):
+        step_bindings.setdefault(m.group(1), m.group(2))
     # Then: `X.setPropertyValue("field", expr)` with paren-balanced expr.
     # The prefix regex now matches:
     #   - `<localvar>.setPropertyValue(...)`  (existing)
@@ -1504,6 +1518,26 @@ def translate(script: str, response_var_by_step: dict[str, str],
                 '// [assertionteststep] empty ReadyAPI assertion step -- no-op')
             patterns_matched.append("empty_assertionteststep")
             consumed = True
+    elif re.match(r"\s*// UNSUPPORTED STEP TYPE: datasink", script):
+        # DELIBERATE, not a gap. A ReadyAPI DataSink writes the run's results
+        # back into the spreadsheet's right-hand columns -- Actual_Response,
+        # Result, FailedAssertionsList, Time of Execution.
+        #
+        # Every one of those is already captured, and better: the Allure
+        # attachments carry the full request and response per step, the
+        # failure digest carries the assertion that failed, and the per-test
+        # log carries the timing. Writing a second copy into a workbook would
+        # produce a report nobody reads, and one that cannot be diffed or
+        # linked to.
+        #
+        # FULL because the OUTCOME is covered, and counting it as a hole
+        # buries the holes that are not covered.
+        lines.append(
+            '// [datasink] results are NOT written back to the spreadsheet: '
+            'the Allure attachments, the failure digest and the per-test log '
+            'already carry request, response, assertion and timing.')
+        patterns_matched.append("datasink_results_go_to_the_report")
+        consumed = True
     elif re.match(r"\s*// UNSUPPORTED STEP TYPE: datasourceloop", script):
         # PARTIAL, not FULL. A DataSource Loop runs its block once per row of
         # the DataSource it follows; skipping it means the converted test
@@ -1534,6 +1568,25 @@ def translate(script: str, response_var_by_step: dict[str, str],
             patterns_matched.append("datasourceloop_skip")
             consumed = True
             coverage_override = "PARTIAL"
+
+    # ---- ReadyAPI environment switching
+    elif re.search(r"\.setActiveEnvironment\s*\(|activeEnvironment\s*=", script):
+        # ReadyAPI can flip the active environment mid-run. This framework
+        # takes its environment from program_configuration.json (selected by
+        # `env` / -Denv), one environment per JVM, so there is nothing to
+        # flip -- every call in the run goes to the configured environment.
+        #
+        # PARTIAL rather than FULL: if a case ever DID depend on switching
+        # mid-flow, ignoring the switch would send the rest of its calls to
+        # the wrong environment and still pass. Saying so keeps that visible
+        # instead of asserting it cannot happen.
+        lines.append(
+            'LOG.warn("environment switch ignored: this run uses the '
+            'environment configured in program_configuration.json for every '
+            'call");')
+        patterns_matched.append("switchenv_uses_configured_env")
+        consumed = True
+        coverage_override = "PARTIAL"
 
     # ---- testRunner...testSuites["X"].testCases["Y"].testSteps["Z"].run
     # ReadyAPI testdata-cleanup invokes Cleanup_testdata_creation / cleanup_db
@@ -3692,7 +3745,80 @@ def translate(script: str, response_var_by_step: dict[str, str],
         r'  (?:java\.time\.)?Instant\.now\(\)\s*\.toString\(\s*\)'
         r')', re.VERBOSE)
 
+    # ---- the GROOVY Date idiom, which java.time patterns above never match.
+    #
+    #     def currentDate = new Date()
+    #     def arr = currentDate.plus(22).format('yyyy-MM-dd')
+    #     def sdf = new SimpleDateFormat("yyyyMMddHHmmssSSS")
+    #     def uniqueId = sdf.format(new Date())
+    #
+    # ReadyAPI users write this at least as often as LocalDate.now(), and it
+    # produced nothing: the whole block fell to the untranslated stub, so the
+    # arrivalDate / departureDate the spreadsheet cells reference were never
+    # published and every row carrying ${...#arrivalDate} resolved to empty.
+    #
+    # Groovy's Date.plus(n) adds DAYS -- that is the whole reason this cannot
+    # be folded into the LocalDate pattern, which names its unit.
+    _NOW_DATE_VARS = set(re.findall(
+        r'def\s+([A-Za-z_][A-Za-z_0-9]*)\s*=\s*new\s+Date\s*\(\s*\)', _date_src))
+    _SDF_BY_VAR = dict(re.findall(
+        r'def\s+([A-Za-z_][A-Za-z_0-9]*)\s*=\s*new\s+SimpleDateFormat\s*\(\s*'
+        r'["\']([^"\']+)["\']\s*\)', _date_src))
+
+    _GROOVY_DATE_ARITH_RX = re.compile(
+        r'def\s+(?P<var>[A-Za-z_][A-Za-z_0-9]*)\s*=\s*'
+        r'(?P<src>[A-Za-z_][A-Za-z_0-9]*)'
+        r'(?:\.plus\(\s*(?P<plus>-?\d+)\s*\))?'
+        r'(?:\.minus\(\s*(?P<minus>-?\d+)\s*\))?'
+        r'\s*\.format\(\s*["\'](?P<fmt>[^"\']+)["\']\s*\)')
+
+    _SDF_FORMAT_RX = re.compile(
+        r'def\s+(?P<var>[A-Za-z_][A-Za-z_0-9]*)\s*=\s*'
+        r'(?P<sdf>[A-Za-z_][A-Za-z_0-9]*)\.format\(\s*new\s+Date\s*\(\s*\)\s*\)')
+
     date_arith_vars: list[str] = []
+
+    for m in _GROOVY_DATE_ARITH_RX.finditer(_date_src):
+        if m.group("src") not in _NOW_DATE_VARS:
+            continue                      # not derived from `new Date()`
+        var = m.group("var")
+        days = 0
+        if m.group("plus"):
+            days += int(m.group("plus"))
+        if m.group("minus"):
+            days -= int(m.group("minus"))
+        chain = ".plusDays(%d)" % days if days else ""
+        fmt_esc = m.group("fmt").replace('"', '\\"')
+        if not date_arith_vars:
+            lines.append('{ // [groovy] Date arithmetic -> java.time')
+        date_arith_vars.append(var)
+        lines.append(
+            f'    String {var} = java.time.LocalDate.now(){chain}'
+            f'.format(java.time.format.DateTimeFormatter.ofPattern("{fmt_esc}"));')
+        lines.append(
+            f'    LOG.info(" .. [groovy date] {var}={{}} (fmt=\\"{fmt_esc}\\")", {var});')
+
+    for m in _SDF_FORMAT_RX.finditer(_date_src):
+        fmt = _SDF_BY_VAR.get(m.group("sdf"))
+        if not fmt:
+            continue                      # formatter not resolvable -- stay a stub
+        var = m.group("var")
+        if var in date_arith_vars:
+            continue
+        fmt_esc = fmt.replace('"', '\\"')
+        if not date_arith_vars:
+            lines.append('{ // [groovy] Date arithmetic -> java.time')
+        date_arith_vars.append(var)
+        # LocalDateTime, not LocalDate: a SimpleDateFormat pattern carrying
+        # HHmmss on a LocalDate throws UnsupportedTemporalTypeException at
+        # runtime, which is a worse outcome than not translating it.
+        lines.append(
+            f'    String {var} = java.time.LocalDateTime.now()'
+            f'.format(java.time.format.DateTimeFormatter.ofPattern("{fmt_esc}"));')
+        lines.append(
+            f'    LOG.info(" .. [groovy date] {var}={{}} (fmt=\\"{fmt_esc}\\")", {var});')
+
+
     for m in _DATE_ARITH_RX.finditer(_date_src):
         var = m.group("var")
         chain = m.group("chain")

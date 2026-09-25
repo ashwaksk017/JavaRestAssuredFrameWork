@@ -182,12 +182,20 @@ def scan(root: str) -> tuple[list[Finding], Counter]:
                     break
 
                 # 4. half-collapsed helper variable
-                declared = "String __jdbcReason" in src
-                used = ("__jdbcReason !=" in src) or ("__jdbcReason," in src)
-                if declared != used:
-                    findings.append(Finding(
-                        "HALF-COLLAPSED", rel,
-                        f"__jdbcReason declared={declared} used={used}"))
+                #
+                # Per NAME, not per prefix. A hook holding several JDBC steps
+                # suffixes them -- __jdbcReason_Postgres -- and the old
+                # substring test saw "String __jdbcReason" (declared) but not
+                # "__jdbcReason !=" (used, because the suffix sits between),
+                # so correct code was reported half-collapsed. Checking each
+                # declared name against its own uses cannot make that mistake.
+                for _name in set(re.findall(
+                        r"String (__jdbcReason\w*)", src)):
+                    _used = (f"{_name} !=" in src) or (f"{_name}," in src)
+                    if not _used:
+                        findings.append(Finding(
+                            "HALF-COLLAPSED", rel,
+                            f"{_name} declared but never used"))
 
                 # 5b. Conversion holes that do not say TODO. Counted rather
                 # than reported per-file: these are pre-existing and numerous,
