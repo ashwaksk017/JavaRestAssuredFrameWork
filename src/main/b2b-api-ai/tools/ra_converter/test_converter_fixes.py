@@ -2835,6 +2835,53 @@ def test_every_filesystem_call_goes_through_fs_path():
         + "\n  ".join("line %d: %s" % o for o in offenders))
 
 
+def test_an_unconverted_assertion_can_be_made_to_fail():
+    """A test may not report green on coverage it does not have.
+
+    An assertion the converter cannot translate is already reported three
+    ways -- an audit row, a LOG.warn, and the original script as an Allure
+    attachment -- so nothing is hidden. But the test still PASSES, and a
+    green run says nothing about validating less than the ReadyAPI case did.
+    On one project that is 74 assertions across 77.
+
+    Failing by default is not the answer: it would break every case carrying
+    one the moment a team upgrades the converter. So the honest state is
+    available and opting into it is a decision.
+
+    Deliberately NOT a recognizer for those 74. They are 26 distinct bespoke
+    scripts, and the shortest shape -- asserting ReadyAPI's
+    activeEnvironment.name -- would translate into an assertion on an
+    environment name this framework does not use, i.e. one that always
+    fails. A recognizer that mistranslates is worse than a reported gap.
+    """
+    import json as _json
+    here = os.path.dirname(__file__)
+    cfg = _json.load(open(os.path.join(here, "converter.config.json"),
+                          encoding="utf-8"))
+    block = cfg.get("assertions") or {}
+    assert "fail_on_unconverted" in block, "the switch must be declared"
+    assert block["fail_on_unconverted"] is False, (
+        "must default OFF -- on would break every existing suite carrying "
+        "an unconverted assertion, silently, on upgrade")
+    assert "_keys" in block and "fail_on_unconverted" in block["_keys"], (
+        "every config key carries its own explanation in this file")
+
+    src = open(os.path.join(here, "ra_converter.py"), encoding="utf-8").read()
+    # anchor on the GroovyScriptAssertion stub specifically -- "unrecognized"
+    # appears in other emitters too, and matching the first one tested a
+    # different function entirely
+    i = src.index('[GroovyScriptAssertion] "{assert_name_j}" -- unrecognized')
+    window = src[i:i + 2500]
+    assert 'get("assertions")' in window, "the emitter must read the switch"
+    assert "softAssert.fail(" in window, (
+        "strict mode records a soft-assert failure")
+    # soft, not a throw: one unconverted assertion must not hide the real
+    # failures behind it by aborting the case.
+    assert "throw new AssertionError" not in window
+    # and the gap stays reported either way
+    assert "LOG.warn(" in window and "addAttachment(" in window
+
+
 def test_script_runner_is_the_last_thing_in_this_file():
     """verify_all runs this file as a SCRIPT, not under pytest.
 

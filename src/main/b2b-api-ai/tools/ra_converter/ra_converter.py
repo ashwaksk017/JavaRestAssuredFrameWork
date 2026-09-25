@@ -9138,7 +9138,16 @@ public interface ImportedRestClient {{
         script_j = _jlit(script)
         assert_name_j = _jlit(a.name)
         step_name_j = _jlit(step_name)
-        return ([
+        # The gap is always REPORTED: an audit row, a runtime warning, and
+        # the original script as an Allure attachment so porting it by hand
+        # is mechanical. What is configurable is whether it also FAILS.
+        #
+        # Reporting alone leaves a test green while validating less than the
+        # ReadyAPI case did, and a green run says nothing. Failing by default
+        # would instead break every case carrying one the moment a team
+        # upgrades the converter -- so the honest state is available, and
+        # opting into it is a decision, not a surprise.
+        _lines = [
             f'// [GroovyScriptAssertion] "{assert_name_j}" -- unrecognized '
             f'Groovy pattern; original script attached to Allure report',
             f'LOG.warn("STUBBED GroovyScriptAssertion for step \\"{step_name_j}\\": '
@@ -9146,7 +9155,17 @@ public interface ImportedRestClient {{
             f'io.qameta.allure.Allure.addAttachment('
             f'"STUBBED Groovy assertion: {assert_name_j}", "text/x-groovy", '
             f'"{script_j}");',
-        ], "TODO")
+        ]
+        if (converter_config().get("assertions") or {}).get(
+                "fail_on_unconverted"):
+            # softAssert, not a hard throw: the rest of the case still runs,
+            # so one unconverted assertion does not hide the real failures
+            # behind it.
+            _lines.append(
+                f'softAssert.fail("assertion not converted: '
+                f'{assert_name_j} (step {step_name_j}) -- see the Allure '
+                f'attachment for the original ReadyAPI script");')
+        return (_lines, "TODO")
 
     def _render_groovy_translated(self, step: GroovyStep) -> list[str]:
         """Feed the Groovy translator; runnable stub if nothing matches.

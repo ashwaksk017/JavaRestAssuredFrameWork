@@ -44,6 +44,13 @@
     ]
   },
 
+  "assertions": {
+    "_comment": "What happens to a ReadyAPI assertion the converter cannot translate. It is always reported -- audit row, LOG.warn, and the original script as an Allure attachment -- but by default the test still PASSES, which means it validates less than the ReadyAPI case did and nothing in a green run says so.",
+    "fail_on_unconverted": false,
+    "_keys": {
+      "fail_on_unconverted": "true records a soft-assert failure where an assertion could not be translated, so a test cannot report green on coverage it does not have. Off by default: turning it on fails every case carrying one, which is the honest state but not a change to make silently on an existing suite."
+    }
+  },
   "identity": {
     "_comment": "The Properties vocabulary the identity regeneration owns: what ReadyAPI's DataGen script writes per run and what the framework therefore regenerates. Names are matched case-insensitively where the code says so. The Java runtime reads these through the emitted src/main/resources/converter_identity.json.",
     "namespace": "Properties",
