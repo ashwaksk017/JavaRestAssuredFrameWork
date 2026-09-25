@@ -3839,7 +3839,18 @@ def translate(script: str, response_var_by_step: dict[str, str],
                     has_var_concat = True
                     break
         if has_interp or has_var_concat or has_shorthand_chain:
-            preview = stripped[:80].replace('*/', '* /')
+            # Collapse first, THEN truncate. A Groovy log statement is
+            # routinely a multi-line concatenation:
+            #
+            #     log.info "Checking Property=${currentHcrs}" +
+            #              " Arrival=${arrivalDate}" +
+            #              " Departure=${departureDate}"
+            #
+            # Commenting only the first line left the continuations standing
+            # as bare Java -- "not a statement", and an unclosed string
+            # literal where the truncation fell mid-quote. The whole
+            # statement has to end up on the one comment line.
+            preview = " ".join(stripped.split())[:80].replace('*/', '* /')
             lines.append(f'// [log.{level}] skipped (references Groovy-only vars): {preview}')
             consumed = True
             continue

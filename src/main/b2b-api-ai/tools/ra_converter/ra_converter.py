@@ -12380,6 +12380,7 @@ public class {class_name} extends BaseApiTest {{
             vocab = fname if verify else phase_emit.safe_vocab(fname)
             if verify:
                 self._spec_verify_vocabs.setdefault(vcls or "Insights", set()).add(vocab)
+                _ALL_VERIFY_VOCABS.add(vocab)
             else:
                 self._spec_vocabs.add(vocab)
                 phase_model_run_vocabs().add(vocab)
@@ -12433,6 +12434,7 @@ public class {class_name} extends BaseApiTest {{
         vocab = fname if verify else phase_emit.safe_vocab(fname)
         if verify:
             self._spec_verify_vocabs.setdefault(vcls or "Insights", set()).add(vocab)
+            _ALL_VERIFY_VOCABS.add(vocab)
         else:
             self._spec_vocabs.add(vocab)
             phase_model_run_vocabs().add(vocab)
@@ -13316,8 +13318,15 @@ public class {class_name} extends BaseApiTest {{
             taken = set(self._shared_phases) | set(self._suite_local_phases()) | set(_pm.RUN_TAKEN)
             _pm.RUN_TAKEN.update(taken)
             self._taken_vocab_names = taken
+            # Union with whatever a PRIOR suite left here. Without it the
+            # last suite converted wins the shared base and every other
+            # suite's chain calls stop resolving -- see
+            # _existing_scenario_steps_vocabs.
+            _prev_phase, _prev_verify = _existing_scenario_steps_vocabs(
+                self.output_dir, self.package_root)
             vocab_methods = _pe.vocab_methods_java(
-                sorted(self._spec_vocabs | _pm.RUN_VOCABS), taken)
+                sorted(self._spec_vocabs | _pm.RUN_VOCABS | set(_prev_phase)),
+                taken)
             # Verifies chain too, so a trailing read-back sits in the chain
             # with the steps around it instead of after .complete().
             _vv = set()
@@ -13328,6 +13337,7 @@ public class {class_name} extends BaseApiTest {{
             # error; silently reusing the phase method would run the wrong
             # thing. Such names keep the trailing-call shape -- see
             # _chainable_verifies, which refuses them for the same reason.
+            _vv |= set(_prev_verify) | set(_ALL_VERIFY_VOCABS)
             _vv -= (self._spec_vocabs | _pm.RUN_VOCABS)
             if _vv:
                 vocab_methods += "\n" + _pe.verify_vocab_methods_java(sorted(_vv))
@@ -16389,6 +16399,56 @@ def _rest_call_receiver(client_method: str, setup_flow: bool) -> str:
 
 
 _SCENARIO_RESP_FIELD_RX = re.compile(r"protected Response (\w+);")
+
+
+_SCENARIO_PHASE_VOCAB_RX = re.compile(
+    r"public S (\w+)\(\) throws Exception \{\s*return runPhase\(")
+_SCENARIO_VERIFY_VOCAB_RX = re.compile(
+    r"public S (\w+)\(\) throws Exception \{\s*runVerify\(")
+
+
+# Verify vocabularies seen anywhere in this process.
+#
+# ScenarioSteps is emitted BEFORE a suite's cases are rendered, so the
+# per-emitter _spec_verify_vocabs is still empty at that point. Phases survive
+# that because they also land in phase_model's RUN_VOCABS, which is
+# module-level; verifies had no such registry, so every verify method was
+# missing from the shared base and the only reason the tree compiled was that
+# nothing chained a verify yet. The day verifies became chain calls, 200
+# "cannot find symbol" appeared.
+_ALL_VERIFY_VOCABS: set = set()
+
+
+def _existing_scenario_steps_vocabs(output_dir: str, package_root: str) -> tuple:
+    """Vocabulary methods a PRIOR suite convert left on ScenarioSteps.
+
+    Same hazard as _existing_scenario_steps_resp_fields, and it arrived the
+    day verifies became chain calls. Before that a verify was a static
+    Insights.verifyX(scenario, expected) in the suite's OWN class, so one
+    suite's convert could not affect another's. Now `.verifyX()` is a method
+    on the SHARED base, and a single-XML convert rewrites that base from one
+    suite's vocabulary -- the other suite's tests then fail to compile on 200
+    "cannot find symbol: method verifyBusinessesSmbAttest()".
+
+    Returns (phase_vocabs, verify_vocabs) so each can be re-emitted in its own
+    form: a phase returns runPhase, a verify runs runVerify and returns self.
+    """
+    rel = (f"src/main/java/{package_root.replace('.', '/')}"
+           "/support/scenario/ScenarioSteps.java")
+    path = os.path.join(output_dir, rel)
+    if not os.path.isfile(_fs_path(path)):
+        return ([], [])
+    with open(_fs_path(path), encoding="utf-8") as fh:
+        text = fh.read()
+    phases = []
+    for n in _SCENARIO_PHASE_VOCAB_RX.findall(text):
+        if n not in phases:
+            phases.append(n)
+    verifies = []
+    for n in _SCENARIO_VERIFY_VOCAB_RX.findall(text):
+        if n not in verifies:
+            verifies.append(n)
+    return (phases, verifies)
 
 
 def _existing_scenario_steps_resp_fields(output_dir: str, package_root: str) -> list[str]:
