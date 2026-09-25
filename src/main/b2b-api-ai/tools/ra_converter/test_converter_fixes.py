@@ -3061,6 +3061,32 @@ def test_a_bootstrap_that_cannot_be_a_hook_must_not_vanish():
         "token request")
 
 
+def test_every_generated_test_maps_its_readyapi_steps():
+    """The chain does not show every request, so the test must say so.
+
+    The token runs inside .start() and a trailing read-back inside a verify,
+    which is about one call in six invisible to anyone counting the chain
+    against the ReadyAPI case. That was reported twice as the converter
+    dropping steps; both times the steps were there and confirming it meant
+    tracing Phases -> Specs -> Hooks -> SetupHelper by hand.
+
+    The map is built from the SAME registration the runtime resolves, so it
+    cannot drift into describing a chain that is not there.
+    """
+    src = open(os.path.join(os.path.dirname(__file__), "ra_converter.py"),
+               encoding="utf-8").read()
+    i = src.index("def _readyapi_step_map")
+    body = src[i:i + 2200]
+    assert "_case_phase_specs" in body, (
+        "the map must come from the registration, not be re-derived")
+    assert "_case_bootstrap" in body, "a step served by .start() must say so"
+    assert "check_step_parity" in body, (
+        "an unreachable step must point at the check that explains it")
+    # emitted for BOTH body shapes -- the verify-carrying one and the plain
+    # one; the plain shape is where an empty-looking chain appears
+    assert src.count("self._readyapi_step_map(case)") == 2
+
+
 def test_script_runner_is_the_last_thing_in_this_file():
     """verify_all runs this file as a SCRIPT, not under pytest.
 

@@ -14581,6 +14581,7 @@ public final class {support_name} {{
                 "emitted as a runtime skip: no enabled step survived the "
                 "auth preamble, so the chain would have asserted nothing")
         elif verify_calls:
+            body_lines.extend(self._readyapi_step_map(case))
             body_lines.extend([
                 f'var scenario =',
                 f'        {entry}.start(row{start_extra}){chain}',
@@ -14588,6 +14589,7 @@ public final class {support_name} {{
             ])
             body_lines.extend(verify_calls)
         else:
+            body_lines.extend(self._readyapi_step_map(case))
             body_lines.extend([
                 f'{entry}.start(row{start_extra}){chain}',
                 '                .complete();',
@@ -14721,6 +14723,47 @@ public final class {support_name} {{
                     if val is not None:
                         copy[i] = _csv_cell(val, col)
                 out.append(",".join(copy))
+        return out
+
+    def _readyapi_step_map(self, case) -> list[str]:
+        """Comment lines mapping each ReadyAPI REST step to where it runs.
+
+        The chain does not show every request the test makes. The token is
+        fetched inside `.start()` and a trailing read-back runs inside a
+        verify, so about one call in six is invisible to someone counting
+        the chain against the ReadyAPI case -- which has twice been reported
+        as the converter dropping steps.
+
+        Rather than restructure what executes, state it. The map is derived
+        from the same registration the runtime uses, so it cannot drift into
+        describing a chain that is not there.
+        """
+        entries = getattr(self, "_case_phase_specs", {}).get(case.name)
+        if not entries:
+            return []
+        boot_part, _off = getattr(self, "_case_bootstrap", {}).get(
+            case.name, (None, 0))
+        by_step = {}
+        for e in entries:
+            by_step[sanitize_identifier(str(e.get("step") or "")).lower()] = (
+                "verify" if e.get("verify") else "phase", e.get("vocab"))
+        rest = [st for st in getattr(case, "steps", [])
+                if isinstance(st, RestStep)]
+        if not rest:
+            return []
+        out = ["// ReadyAPI steps -> where each one runs here:"]
+        for st in rest:
+            key = sanitize_identifier(st.step_name or "").lower()
+            hit = by_step.get(key)
+            if hit:
+                kind, vocab = hit
+                where = (".%s()" % vocab if kind == "phase"
+                         else "verify %s(...)  [after .complete()]" % vocab)
+            elif boot_part is not None:
+                where = ".start(...)  [setup]"
+            else:
+                where = "NOT REACHED -- see tools/check_step_parity.py"
+            out.append("//   %-34s %s" % (st.step_name[:34], where))
         return out
 
     def emit_csv_per_method(self, class_name: str, method_name: str,
