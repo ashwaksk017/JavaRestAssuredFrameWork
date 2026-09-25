@@ -210,10 +210,10 @@ def test_entry_classes_import_what_a_bootstrap_body_needs():
     CtxFields generators, Db calls. The two imports the bootstrap-less entry
     class needed produced 409 "cannot find symbol" errors across 63 files."""
     tmpl = SRC.split("def _emit_suite_customer_onboarding", 1)[1][:4000]
-    for need in ("com.ak.api.support.CtxFields",
-                 "com.ak.api.config.Config",
-                 "com.ak.api.db.Db",
-                 "com.ak.api.rest.utilities.RestStep"):
+    for need in ("com.hi.api.support.CtxFields",
+                 "com.hi.api.config.Config",
+                 "com.hi.api.db.Db",
+                 "com.hi.api.rest.utilities.RestStep"):
         assert need in tmpl, need
 
 

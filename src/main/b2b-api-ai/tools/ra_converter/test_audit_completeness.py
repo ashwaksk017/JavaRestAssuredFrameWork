@@ -131,7 +131,7 @@ def test_framework_skip_and_refresh_are_recorded():
     out = tempfile.mkdtemp()
     em = rc.Emitter(out, suite_name="s1")
     name = sorted(em._AUTHOR_EDITABLE_BASENAMES)[0]
-    rel = "src/main/java/com/ak/api/support/%s" % name
+    rel = "src/main/java/com/hi/api/support/%s" % name
     em._write(rel, "// ra_converter-framework-rev: 1\nclass A {}\n")
     assert not getattr(em.ledger, "preflight", []), "first write is not a decision"
 

@@ -138,7 +138,7 @@ public final class OnboardingFlowAGuestidmember2 extends ProgramAccountsSteps<On
 '''
 ENTRY_B = ENTRY_A.replace("OnboardingFlowAGuestidmember2", "OnboardingFlowAGuestidmember3").replace(
     '"generatedemailAddress2");',
-    '"partnerProgramAccountNumber");\n            ImportedScenario.putExtracted(ctx, "Properties.role", com.ak.api.data.FakeData.oneOf("admin", "employee", "owner"));')
+    '"partnerProgramAccountNumber");\n            ImportedScenario.putExtracted(ctx, "Properties.role", com.hi.api.data.FakeData.oneOf("admin", "employee", "owner"));')
 ENTRY_C = ENTRY_A.replace("OnboardingFlowAGuestidmember2", "OnboardingFlowB").replace('"flow_A"', '"flow_B"')
 
 
@@ -168,7 +168,7 @@ def test_report_counts_entry_classes():
 def test_write_audit_produces_the_file_and_extends_summary(tmp_path=None):
     with tempfile.TemporaryDirectory() as d:
         root = tmp_path or d
-        support = os.path.join(root, "src", "main", "java", "com", "ak", "api", "support", "s")
+        support = os.path.join(root, "src", "main", "java", "com", "hi", "api", "support", "s")
         os.makedirs(support)
         with open(os.path.join(support, "Steps.java"), "w", encoding="utf-8") as fh:
             fh.write(FIXTURE)
@@ -176,14 +176,14 @@ def test_write_audit_produces_the_file_and_extends_summary(tmp_path=None):
         os.makedirs(audit)
         with open(os.path.join(audit, "summary.md"), "w", encoding="utf-8") as fh:
             fh.write("# summary\n")
-        headline = dr.write_audit(root, "com.ak.api", "unit")
+        headline = dr.write_audit(root, "com.hi.api", "unit")
         assert headline and "2 methods in 1 groups" in headline, headline
         assert os.path.exists(os.path.join(audit, "dedup_report.txt"))
         summary = open(os.path.join(audit, "summary.md"), encoding="utf-8").read()
         assert "## Reuse (same call, different data)" in summary
         assert "GET /guests/{}/businesses/verify" in summary
         # a tree with nothing generated is not an error, just no report
-        assert dr.write_audit(os.path.join(root, "nowhere"), "com.ak.api", "unit") is None
+        assert dr.write_audit(os.path.join(root, "nowhere"), "com.hi.api", "unit") is None
 
 
 def _templates_root(tmp, bodies):

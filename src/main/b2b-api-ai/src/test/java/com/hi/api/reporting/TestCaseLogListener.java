@@ -1,0 +1,189 @@
+// =============================================================================
+// TestCaseLogListener -- one .log file per test method, overwritten each run
+// -----------------------------------------------------------------------------
+// Produces `logs/<ClassName>__<methodName>.log` on every test completion
+// (pass, fail, or skip). Contents:
+//   - Header:  class, method, status, timestamp, duration, groups
+//   - For each HTTP exchange captured by RestAssuredRecordingFilter:
+//       -> METHOD URL   (status, response time)
+//       -> REQUEST BODY (pretty-printed if JSON)
+//       -> RESPONSE BODY (pretty-printed if JSON)
+//   - Footer: assertion summary if the test failed
+//
+// The file is opened with truncate semantics -- the second run of the same
+// test overwrites the first, so `logs/` always reflects the LATEST run.
+//
+// Registration order matters: this listener must come BEFORE
+// ExtentReportListener in testng.xml, because it reads via ReportBuffer.snapshot()
+// (non-destructive) so Extent can still call drain() after and clear the buffer.
+// =============================================================================
+
+package com.hi.api.reporting;
+
+import java.io.BufferedWriter;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.util.List;
+
+import org.testng.ITestContext;
+import org.testng.ITestListener;
+import org.testng.ITestResult;
+
+import io.restassured.path.json.JsonPath;
+
+public final class TestCaseLogListener implements ITestListener {
+
+    private static final String LOG_DIR = "logs";
+    private static final DateTimeFormatter TS =
+            DateTimeFormatter.ISO_LOCAL_DATE_TIME.withZone(ZoneId.systemDefault());
+    private static final String DIVIDER = "=".repeat(80);
+    private static final String SUB     = "-".repeat(80);
+
+    @Override
+    public void onTestSuccess(ITestResult result) { write(result, "PASSED"); }
+
+    @Override
+    public void onTestFailure(ITestResult result) { write(result, "FAILED"); }
+
+    @Override
+    public void onTestSkipped(ITestResult result) { write(result, "SKIPPED"); }
+
+    // -----------------------------------------------------------------------
+
+    private void write(ITestResult result, String status) {
+        // FQN with dots -> underscores so two `GetTest` classes in
+        // different sub-packages (common in the ra_converter output)
+        // don't overwrite each other's per-method logs under
+        // parallel="classes". Header label still uses the short name
+        // (that's what a human wants to see); only the filename gets
+        // the FQN treatment.
+        String className  = result.getTestClass().getRealClass().getSimpleName();
+        String fileClass  = result.getTestClass().getRealClass().getName()
+                .replace('.', '_')
+                .replace('$', '_');
+        String methodName = result.getMethod().getMethodName();
+        // Per-row disambiguator so a data-driven method with N rows
+        // produces N log files instead of TRUNCATING to only the LAST
+        // row's evidence. Same param-hash strategy RetryAnalyzer +
+        // ProgressLogListener use for their per-invocation keys.
+        String rowSuffix = rowSuffix(result);
+        Path out = Paths.get(LOG_DIR, fileClass + "__" + methodName + rowSuffix + ".log");
+
+        try {
+            Files.createDirectories(out.getParent());
+        } catch (IOException e) {
+            throw new UncheckedIOException("Could not create log dir " + out.getParent(), e);
+        }
+
+        // Truncate + write -- overwrite on every run.
+        try (BufferedWriter w = Files.newBufferedWriter(out, StandardCharsets.UTF_8,
+                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING)) {
+
+            writeHeader(w, result, className, methodName, status);
+            writeExchanges(w);
+            writeFooter(w, result, status);
+
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed to write test-case log " + out, e);
+        }
+    }
+
+    private static void writeHeader(BufferedWriter w, ITestResult r, String cls, String method,
+                                    String status) throws IOException {
+        w.write(DIVIDER); w.newLine();
+        w.write("TEST      : " + cls + "." + method); w.newLine();
+        w.write("STATUS    : " + status); w.newLine();
+        w.write("STARTED   : " + TS.format(Instant.ofEpochMilli(r.getStartMillis()))); w.newLine();
+        w.write("DURATION  : " + (r.getEndMillis() - r.getStartMillis()) + " ms"); w.newLine();
+        String[] groups = r.getMethod().getGroups();
+        if (groups != null && groups.length > 0) {
+            w.write("GROUPS    : " + String.join(", ", groups)); w.newLine();
+        }
+        w.write(DIVIDER); w.newLine();
+        w.newLine();
+    }
+
+    private static void writeExchanges(BufferedWriter w) throws IOException {
+        List<ReportBuffer.Exchange> exchanges = ReportBuffer.snapshot();
+        if (exchanges.isEmpty()) {
+            w.write("(no HTTP exchanges recorded for this test)"); w.newLine();
+            return;
+        }
+        int i = 1;
+        for (ReportBuffer.Exchange ex : exchanges) {
+            w.write("[" + i + "] " + ex.method + " " + ex.url); w.newLine();
+            w.write("     status=" + ex.statusCode + "  responseTime=" + ex.responseTimeMs + "ms");
+            w.newLine();
+            w.newLine();
+
+            w.write(SUB); w.newLine();
+            w.write("REQUEST BODY"); w.newLine();
+            w.write(SUB); w.newLine();
+            w.write(prettyIfJson(ex.requestBody)); w.newLine();
+            w.newLine();
+
+            w.write(SUB); w.newLine();
+            w.write("RESPONSE BODY"); w.newLine();
+            w.write(SUB); w.newLine();
+            w.write(prettyIfJson(ex.responseBody)); w.newLine();
+            w.newLine();
+            w.write(DIVIDER); w.newLine();
+            w.newLine();
+            i++;
+        }
+    }
+
+    private static void writeFooter(BufferedWriter w, ITestResult r, String status) throws IOException {
+        if ("FAILED".equals(status) && r.getThrowable() != null) {
+            w.write("FAILURE"); w.newLine();
+            w.write(SUB); w.newLine();
+            w.write(r.getThrowable().toString()); w.newLine();
+        } else if ("SKIPPED".equals(status) && r.getThrowable() != null) {
+            w.write("SKIP REASON"); w.newLine();
+            w.write(SUB); w.newLine();
+            w.write(r.getThrowable().getMessage() == null
+                    ? r.getThrowable().toString()
+                    : r.getThrowable().getMessage());
+            w.newLine();
+        }
+    }
+
+    private static String prettyIfJson(String s) {
+        if (s == null || s.isBlank()) return "(empty)";
+        try {
+            return new JsonPath(s).prettify();
+        } catch (Exception ignore) {
+            return s;
+        }
+    }
+
+    /**
+     * Build a filename-safe per-invocation suffix. Uses
+     * {@code Arrays.deepHashCode(params)} so different data-provider rows
+     * of the same @Test method get distinct log files, while a retry of
+     * the same row (same params) OVERWRITES its own prior file (which is
+     * what we want -- one file per row, with the latest attempt's data).
+     * Empty string when the method has no params -- keeps legacy naming
+     * for the non-data-driven case.
+     */
+    private static String rowSuffix(ITestResult r) {
+        Object[] params = r.getParameters();
+        if (params == null || params.length == 0) return "";
+        int h = java.util.Arrays.deepHashCode(params);
+        // Use unsigned hex so the suffix is deterministic + short.
+        return "__row" + Integer.toHexString(h & 0x7fffffff);
+    }
+
+    // ITestContext hooks unused -- keep no-op defaults from interface.
+    @Override public void onStart(ITestContext ctx)  { /* no-op */ }
+    @Override public void onFinish(ITestContext ctx) { /* no-op */ }
+    @Override public void onTestStart(ITestResult r) { /* no-op */ }
+}

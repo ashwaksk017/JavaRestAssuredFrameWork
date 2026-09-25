@@ -22,14 +22,14 @@ framework. Single emission mode:
     Bodies with identical JSON shape merge into ONE template with
     #tpl_<jsonPath># placeholders; per-case literal values live in CSV cells.
   - Convention CSV DataProvider + faker/property placeholder resolver:
-      src/main/java/com/ak/api/data/PerMethodCsvDataProvider.java
-      src/main/java/com/ak/api/data/PlaceholderResolver.java
+      src/main/java/com/hi/api/data/PerMethodCsvDataProvider.java
+      src/main/java/com/hi/api/data/PlaceholderResolver.java
   - Master TestNG suite XMLs at Suites/<Suite>_Regression.xml + _Smoke.xml
     with Allure + Extent + Xray listeners wired in.
   - Env config JSON (qa + prod stubs) at src/main/resources/config/<env>.json.
-  - Shared service client at src/main/java/com/ak/api/rest/clients/<Service>Client.java.
+  - Shared service client at src/main/java/com/hi/api/rest/clients/<Service>Client.java.
   - Setup-flow helper for opening step-sequences reused by >=10 cases.
-  - Framework-level ScenarioSteps (`com.ak.api.support.scenario`) shared
+  - Framework-level ScenarioSteps (`com.hi.api.support.scenario`) shared
     across every imported suite when HTTP choreography matches. A catalog
     at tools/ra_converter/fluent_catalog.json accumulates votes so any
     later XML reuses identical phases (enrollGuest, createProgramAccount,
@@ -54,9 +54,9 @@ Coverage:
 
 Usage:
   python ra_converter.py --input path/to/soapui.xml --output . \\
-                         --package-root com.ak.api --service-name YourService
+                         --package-root com.hi.api --service-name YourService
   python ra_converter.py --input tools/ra_converter/input --output . \\
-                         --package-root com.ak.api --clean --max-name-len 40
+                         --package-root com.hi.api --clean --max-name-len 40
       (converts every XML in the directory; client names come from the
        fluent catalog or the XML basename)
   Copy cursor_agent.json.example -> cursor_agent.json, set apiKey + enabled.
@@ -3014,7 +3014,7 @@ def soapui_expr_to_java(expr: str,
             if not leaf:
                 leaf = "unknown"
             return _stash(
-                f'com.ak.api.rest.utilities.RestUtilities'
+                f'com.hi.api.rest.utilities.RestUtilities'
                 f'.safeJsonExtract({resp_var}, "{leaf}")')
         # Default: Response / AsJson -- existing safeJsonExtract with
         # translated JSONPath.
@@ -3023,7 +3023,7 @@ def soapui_expr_to_java(expr: str,
         # an empty/HTML body degrades to "" here instead of crashing the
         # whole test with an unchecked JsonPathException.
         return _stash(
-            f'com.ak.api.rest.utilities.RestUtilities'
+            f'com.hi.api.rest.utilities.RestUtilities'
             f'.safeJsonExtract({resp_var}, "{path}")')
     e = _STEP_RESPONSE_RX.sub(_step_response, e)
 
@@ -3032,7 +3032,7 @@ def soapui_expr_to_java(expr: str,
         step = sanitize_identifier(raw_step)
         path = _translate_soapui_jsonpath(m.group(2))
         return _stash(
-            f'com.ak.api.rest.utilities.RestUtilities'
+            f'com.hi.api.rest.utilities.RestUtilities'
             f'.safeJsonExtractFromString('
             f'TestSupport.ctxGet(ctx, "{step}_RawRequest"), "{path}")')
     e = _STEP_REQUEST_RX.sub(_step_request_body, e)
@@ -3048,7 +3048,7 @@ def soapui_expr_to_java(expr: str,
                         or response_var_by_step.get(step))
         if resp_var:
             return _stash(
-                f'com.ak.api.rest.utilities.RestUtilities'
+                f'com.hi.api.rest.utilities.RestUtilities'
                 f'.safeJsonExtract({resp_var}, "{path}")')
         key_field = re.sub(r"[^A-Za-z0-9_]", "_", path)
         return _stash(
@@ -5644,9 +5644,9 @@ def _translate_gsa_json_asserts(script: str, response_var: str,
         n_idx += 1
         v = f"{vsid}_gsa{n_idx}"
         gp = gpath or "$"
-        extract = ("com.ak.api.rest.utilities.RestUtilities"
+        extract = ("com.hi.api.rest.utilities.RestUtilities"
                    f'.safeJsonExtract({response_var}, "{_jlit(gp)}")')
-        get = ("com.ak.api.rest.utilities.RestUtilities"
+        get = ("com.hi.api.rest.utilities.RestUtilities"
                f'.safeJsonGet({response_var}, "{_jlit(gp)}")')
         return v, extract, get, gp
 
@@ -5667,7 +5667,7 @@ def _translate_gsa_json_asserts(script: str, response_var: str,
         if negated:
             lines.append(
                 f'softAssert.assertNotNull('
-                f'com.ak.api.rest.utilities.RestUtilities.safeJsonGet('
+                f'com.hi.api.rest.utilities.RestUtilities.safeJsonGet('
                 f'{response_var}, "{_jlit(gp)}"), '
                 f'"JsonPath present: {_jlit(gp)}");')
         else:
@@ -6148,7 +6148,7 @@ def _missing_declarations(existing_path: str, bundled: str) -> set:
 
 
 class Emitter:
-    def __init__(self, output_dir: str, package_root: str = "com.ak.api",
+    def __init__(self, output_dir: str, package_root: str = "com.hi.api",
                  ledger: Optional[AuditLedger] = None,
                  suite_name: str = "imported",
                  max_name_len: int = 40):
@@ -6468,7 +6468,7 @@ class Emitter:
             # https://test.salesforce.com), not the sandbox My Domain.
             # SalesforceAuth reads aud from the assertion form param.
             return (
-                'com.ak.api.rest.utilities.SalesforceAuth'
+                'com.hi.api.rest.utilities.SalesforceAuth'
                 '.tokenEndpointBase(queryParams)',
                 'Config.get("sf_config.token_route", '
                 '"/services/oauth2/token")',
@@ -6509,7 +6509,7 @@ class Emitter:
         safe = path_param_map.get(raw, raw)
         return (
             f"\n        if ({safe} == null || {safe}.isBlank()) {{\n"
-            f"            {safe} = com.ak.api.rest.utilities"
+            f"            {safe} = com.hi.api.rest.utilities"
             f".SalesforceAuth.resolveAccountId();\n"
             f"            path = \"/services/data/v55.0/sobjects/Account/\"\n"
             f"                    + ({safe} == null ? \"\" : {safe});\n"
@@ -6578,10 +6578,10 @@ import io.restassured.response.Response;
 import io.restassured.RestAssured;
 import io.restassured.http.ContentType;
 
-import com.ak.api.config.Config;
-import com.ak.api.rest.utilities.Headers;
-import com.ak.api.rest.utilities.RestUtilities;
-import com.ak.api.support.ImportedRestClient;
+import com.hi.api.config.Config;
+import com.hi.api.rest.utilities.Headers;
+import com.hi.api.rest.utilities.RestUtilities;
+import com.hi.api.support.ImportedRestClient;
 
 /**
  * Auto-generated service client for the "{service_name}" REST API.
@@ -6860,7 +6860,7 @@ public interface ImportedRestClient {{
         for p in raw_path_params:
             path_parts.append(f'"{p}"')
             path_parts.append(path_param_map[p])
-        path_expr = "com.ak.api.rest.ApiRoutes.fill(" + ", ".join(path_parts) + ")"
+        path_expr = "com.hi.api.rest.ApiRoutes.fill(" + ", ".join(path_parts) + ")"
         base_expr = "baseUrl"
         force_urlenc = False
         if self._is_salesforce_step(step):
@@ -6878,7 +6878,7 @@ public interface ImportedRestClient {{
      * Auto-generated from ReadyAPI operation: {op_name}
      */
     public Response {m_name}({params_str}) {{
-        return com.ak.api.rest.utilities.SalesforceAuth.requestToken(queryParams);
+        return com.hi.api.rest.utilities.SalesforceAuth.requestToken(queryParams);
     }}
 """
 
@@ -7077,7 +7077,7 @@ public interface ImportedRestClient {{
                 f"response != expected ({expected_status}). Deadline "
                 f"{deadline_ms}ms; tune with -Dtest.transientRetryDeadlineMs=<ms>.")
             out.append(
-                f"{indent}{var_decl} = com.ak.api.rest.utilities.RestUtilities."
+                f"{indent}{var_decl} = com.hi.api.rest.utilities.RestUtilities."
                 f"callWithTransientRetry(\"{safe_step}\", {deadline_ms}L, "
                 f"{expected_status}, () -> {call_expr});")
             wrapped = True
@@ -7434,7 +7434,7 @@ public interface ImportedRestClient {{
             _sanity_fn = ("unsafeSqlReasonForQuery" if _is_select_step
                           else "unsafeSqlReason")
             lines.append(
-                f'        String __jdbcReason_{sid} = com.ak.api.db.Db.{_sanity_fn}(__jdbcSql_{sid});')
+                f'        String __jdbcReason_{sid} = com.hi.api.db.Db.{_sanity_fn}(__jdbcSql_{sid});')
             lines.append(
                 f'        if (__jdbcReason_{sid} != null) {{')
             lines.append(
@@ -7524,10 +7524,10 @@ public interface ImportedRestClient {{
                 lines.append(
                     f'// [delay step] guards a negative assertion -- real sleep, not deferred')
                 lines.append(
-                    f'com.ak.api.retry.Poller.delayStrict({step.delay_ms}L, "{_jlit(step.step_name)}");')
+                    f'com.hi.api.retry.Poller.delayStrict({step.delay_ms}L, "{_jlit(step.step_name)}");')
             else:
                 lines.append(
-                    f'com.ak.api.retry.Poller.delay({step.delay_ms}L, "{_jlit(step.step_name)}");')
+                    f'com.hi.api.retry.Poller.delay({step.delay_ms}L, "{_jlit(step.step_name)}");')
             if step.delay_ms >= 5000:
                 safe_name = _jlit(step.step_name)
                 lines.append(
@@ -8311,7 +8311,7 @@ public interface ImportedRestClient {{
                 poll_spec = (_pf, _key, _dflt)
                 lines.append(
                     f'        .pollUntilJsonPresent("{_pf}", '
-                    f'com.ak.api.config.Config.getInt("{_key}", {_dflt}))')
+                    f'com.hi.api.config.Config.getInt("{_key}", {_dflt}))')
         lines.append(
             f'        .{rest_method}({resolved_path_expr},')
         _here = os.path.dirname(os.path.abspath(__file__))
@@ -8389,12 +8389,12 @@ public interface ImportedRestClient {{
                         # Whole response as string
                         lines.append(
                             f'TestSupport.putExtracted(ctx, "{_ph_key}", '
-                            f'com.ak.api.rest.utilities.RestUtilities'
+                            f'com.hi.api.rest.utilities.RestUtilities'
                             f'.getResponseAsString({response_var}));')
                     else:
                         lines.append(
                             f'TestSupport.putExtracted(ctx, "{_ph_key}", '
-                            f'com.ak.api.rest.utilities.RestUtilities'
+                            f'com.hi.api.rest.utilities.RestUtilities'
                             f'.safeJsonExtract({response_var}, "{_jlit(_field)}"));')
 
             # P3 auto-extract: `${STEP#RawRequest#JSONPATH}` reads the
@@ -8417,7 +8417,7 @@ public interface ImportedRestClient {{
                     else:
                         lines.append(
                             f'TestSupport.putExtracted(ctx, "{_ph_key}", '
-                            f'com.ak.api.rest.utilities.RestUtilities'
+                            f'com.hi.api.rest.utilities.RestUtilities'
                             f'.safeJsonExtractFromString('
                             f'{_payload_src}, "{_jlit(_gpath)}"));')
 
@@ -8692,7 +8692,7 @@ public interface ImportedRestClient {{
                     f'String rawStatus_{vsid} = row.get("{col_name}");',
                     f'java.util.Set<Integer> validCodes_{vsid} = {valid_set_lit};',
                     f'if (rawStatus_{vsid} != null && !rawStatus_{vsid}.isEmpty()) {{',
-                    f'    int expected_{vsid} = com.ak.api.rest.utilities.RestUtilities'
+                    f'    int expected_{vsid} = com.hi.api.rest.utilities.RestUtilities'
                     f'.parseIntOrDefault(rawStatus_{vsid}, {first_code}, "{col_name}");',
                     f'    softAssert.assertEquals({response_var}.statusCode(), expected_{vsid}, "expected status for {step_name} (CSV override of multi-code {code_list})");',
                     f'}} else {{',
@@ -8756,7 +8756,7 @@ public interface ImportedRestClient {{
                         f'default from before the later Groovy extract.')
                     pre_lines.append(
                         f'TestSupport.putExtracted(ctx, "{_jlit(hoisted_key)}", '
-                        f'com.ak.api.rest.utilities.RestUtilities'
+                        f'com.hi.api.rest.utilities.RestUtilities'
                         f'.safeJsonExtract({response_var}, "{path}"));')
                 return (pre_lines + [
                     # Empty-as-missing: treat blank CSV cell as "no
@@ -8831,7 +8831,7 @@ public interface ImportedRestClient {{
             path = _jlit(_jsonpath_to_gpath(cfg.get("path", "")))
             content = _jlit(cfg.get("content", ""))
             return ([
-                f'String matched_{vsid} = com.ak.api.rest.utilities.RestUtilities'
+                f'String matched_{vsid} = com.hi.api.rest.utilities.RestUtilities'
                 f'.safeJsonExtract({response_var}, "{path}");',
                 f'String pattern_{vsid} = {_row_expr(content)};',
                 f'softAssert.assertTrue(matched_{vsid} != null && matched_{vsid}.matches(pattern_{vsid}), '
@@ -8862,7 +8862,7 @@ public interface ImportedRestClient {{
             sla = cfg.get("SLA", cfg.get("sla", "1000"))
             return ([
                 f'String rawSla_{vsid} = row.get("{col_name}");',
-                f'long sla_{vsid} = com.ak.api.rest.utilities.RestUtilities'
+                f'long sla_{vsid} = com.hi.api.rest.utilities.RestUtilities'
                 f'.parseLongOrDefault(rawSla_{vsid}, {sla}L, "{col_name}");',
                 f'softAssert.assertTrue({response_var}.time() <= sla_{vsid}, "SLA " + sla_{vsid} + "ms");',
             ], "FULL")
@@ -8960,7 +8960,7 @@ public interface ImportedRestClient {{
                 continue
             if op_norm not in ("=", "==", "equals", ""):
                 lines.append(
-                    f'String actual_{v} = com.ak.api.rest.utilities.RestUtilities'
+                    f'String actual_{v} = com.hi.api.rest.utilities.RestUtilities'
                     f'.safeJsonExtract({response_var}, "{_jlit(jpath)}");')
                 lines.append(
                     f'String expected_{v} = PlaceholderResolver.resolveAll('
@@ -9028,7 +9028,7 @@ public interface ImportedRestClient {{
             v = f"{vsid}_dm{idx}"
             fallback = assertion_fallback_literal(expected)
             lines.append(
-                f'String actual_{v} = com.ak.api.rest.utilities.RestUtilities'
+                f'String actual_{v} = com.hi.api.rest.utilities.RestUtilities'
                 f'.safeJsonExtract({response_var}, "{_jlit(path)}");')
             # Wrap expected in PlaceholderResolver.resolveAll -- see the
             # MessageContentAssertion emit for full rationale. Same fix.
@@ -9476,7 +9476,7 @@ public interface ImportedRestClient {{
                 jp = _translate_soapui_jsonpath(src_path)
                 lines.append(
                     f'TestSupport.putExtracted(ctx, "{_jlit(ctx_key)}", '
-                    f'com.ak.api.rest.utilities.RestUtilities'
+                    f'com.hi.api.rest.utilities.RestUtilities'
                     f'.safeJsonExtract({src_resp}, "{_jlit(jp)}"));')
                 continue
 
@@ -9526,8 +9526,8 @@ import java.util.Set;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import com.ak.api.config.Config;
-import com.ak.api.data.FakeData;
+import com.hi.api.config.Config;
+import com.hi.api.data.FakeData;
 
 /**
  * Auto-generated by ra_converter. Small helpers the imported tests depend on;
@@ -9562,7 +9562,7 @@ public final class TestSupport {{
 
     /** SLF4J logger for framework-level diagnostics (putExtracted writes,
      *  putExtracted skips, ctx alias-walks). Emits at DEBUG so the volume
-     *  stays low; enable com.ak.api.** = DEBUG in log4j2.xml to see. */
+     *  stays low; enable com.hi.api.** = DEBUG in log4j2.xml to see. */
     private static final org.slf4j.Logger LOG =
             org.slf4j.LoggerFactory.getLogger(TestSupport.class);
 
@@ -9674,7 +9674,7 @@ public final class TestSupport {{
         // B2B-6860 asked for PropertiesaccountID.accountID, which its chain
         // never writes, and sent that random id instead of the account it
         // had stored under PropertiesDetails.accountID -- a 404.
-        String declared = com.ak.api.context.ScenarioContext.resolveDeclared(ctx, primaryKey);
+        String declared = com.hi.api.context.ScenarioContext.resolveDeclared(ctx, primaryKey);
         if (declared != null && !declared.isEmpty()) return declared;
         // Extract the trailing field name after the last dot.
         int lastDot = primaryKey.lastIndexOf('.');
@@ -9729,7 +9729,7 @@ public final class TestSupport {{
     static String hiltonTokenFallback(String primaryKey, Map<String, String> ctx) {{
         String access = (ctx == null) ? null : ctx.get("accessToken");
         if (access == null || access.isEmpty()) {{
-            access = com.ak.api.auth.TokenCache.getAccessToken();
+            access = com.hi.api.auth.TokenCache.getAccessToken();
         }}
         if (access == null || access.isEmpty()) return "";
         boolean wantBearer = primaryKey != null
@@ -9829,7 +9829,7 @@ public final class TestSupport {{
 
     /**
      * Keys present in the bundled test_data_defaults JSON.
-     * Used by {{@link com.ak.api.support.CtxFields#seedFromRow}} when
+     * Used by {{@link com.hi.api.support.CtxFields#seedFromRow}} when
      * no explicit field list is passed (unit tests).
      */
     public static Set<String> testDataDefaultKeys() {{
@@ -10104,7 +10104,7 @@ public final class TestSupport {{
         // Diagnostic: publish the ctx write so a placeholder-resolution
         // bug (where a subsequent step reads a DIFFERENT key) is
         // attributable. Log at DEBUG to keep INFO output lean; DEBUG is
-        // enabled for com.ak.api.** in the framework log4j2.xml default.
+        // enabled for com.hi.api.** in the framework log4j2.xml default.
         LOG.debug(" .. [putExtracted] {{}} <- {{}}", key,
                 value.length() > 60 ? value.substring(0, 60) + "..." : value);
         ctx.put(key, value);
@@ -10152,7 +10152,7 @@ public final class TestSupport {{
         }}
         // Full dump only at DEBUG -- see ImportedScenario.traceCtx for why.
         if (!log.isDebugEnabled()) {{
-            log.info(" .. [ctx@{{}}] {{}} keys (enable DEBUG on com.ak.api"
+            log.info(" .. [ctx@{{}}] {{}} keys (enable DEBUG on com.hi.api"
                     + " for the full dump)", tag, sorted.size());
             return;
         }}
@@ -10267,9 +10267,9 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.ak.api.config.Config;
-import com.ak.api.db.Db;
-import com.ak.api.support.ImportedTestdataCleanup;
+import com.hi.api.config.Config;
+import com.hi.api.db.Db;
+import com.hi.api.support.ImportedTestdataCleanup;
 
 /**
  * Auto-generated by ra_converter from ReadyAPI case(s): {names_csv}.
@@ -10319,7 +10319,7 @@ public final class SuiteCleanup {{
      * / {csv_key}). No ids and no unique domains: warn and return.
      */
     public static void afterEachTest(Map<String, String> ctx) {{
-        ctx = com.ak.api.support.ImportedScenario.boundCtxOr(ctx);
+        ctx = com.hi.api.support.ImportedScenario.boundCtxOr(ctx);
         if (!Db.isConfigured()) {{
             LOG.warn("Imported per-case cleanup skipped: DB is not configured");
             return;
@@ -10448,18 +10448,18 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testng.asserts.SoftAssert;
 
-import com.ak.api.config.Config;
-import com.ak.api.data.Expected;
-import com.ak.api.data.FakeData;
-import com.ak.api.data.PlaceholderResolver;
-import com.ak.api.db.Db;
-import com.ak.api.rest.clients.{service_class_name};
-import com.ak.api.rest.utilities.Headers;
-import com.ak.api.rest.utilities.ResponseAsserts;
-import com.ak.api.rest.utilities.RestLoggerUtilityDataHolder;
-import com.ak.api.rest.utilities.RestStep;
-import com.ak.api.rest.utilities.RestUtilities;
-import com.ak.api.support.CtxFields;
+import com.hi.api.config.Config;
+import com.hi.api.data.Expected;
+import com.hi.api.data.FakeData;
+import com.hi.api.data.PlaceholderResolver;
+import com.hi.api.db.Db;
+import com.hi.api.rest.clients.{service_class_name};
+import com.hi.api.rest.utilities.Headers;
+import com.hi.api.rest.utilities.ResponseAsserts;
+import com.hi.api.rest.utilities.RestLoggerUtilityDataHolder;
+import com.hi.api.rest.utilities.RestStep;
+import com.hi.api.rest.utilities.RestUtilities;
+import com.hi.api.support.CtxFields;
 import {self.package_root}.templates.{self.suite_name}.Templates;
 
 import io.restassured.response.Response;
@@ -10940,7 +10940,7 @@ public final class SetupHelper {{
         return rel
 
     def emit_auth_helper(self) -> str:
-        """Emit `com.ak.api.rest.utilities.AuthHelper` -- a framework-level
+        """Emit `com.hi.api.rest.utilities.AuthHelper` -- a framework-level
         one-time OAuth 2.0 token bootstrap. Every generated business-area
         class calls `AuthHelper.primeClientCredentialsToken(ctx)` in its
         `@BeforeClass` so N @Test methods reuse a single token instead of
@@ -10957,7 +10957,7 @@ public final class SetupHelper {{
         Also emits `HeadersHelper` alongside so both helpers ship as a
         pair -- HeadersHelper.defaultsWithAuth(ctx) collapses the
         10-line boilerplate header block per method into one call."""
-        pkg = "com.ak.api.rest.utilities"
+        pkg = "com.hi.api.rest.utilities"
         rel = f"src/main/java/{pkg.replace('.', '/')}/AuthHelper.java"
         content = f"""package {pkg};
 
@@ -10970,7 +10970,7 @@ import io.restassured.RestAssured;
 import io.restassured.http.ContentType;
 import io.restassured.response.Response;
 
-import com.ak.api.config.Config;
+import com.hi.api.config.Config;
 
 /**
  * One-time OAuth 2.0 bootstrap. Business-area test classes call
@@ -11072,7 +11072,7 @@ public final class AuthHelper {{
                         + "Body: {{}}", tokenUrl, status, snippet);
                 return;
             }}
-            String token = com.ak.api.rest.utilities.RestUtilities.safeJsonExtract(resp, "access_token");
+            String token = com.hi.api.rest.utilities.RestUtilities.safeJsonExtract(resp, "access_token");
             if (token == null || token.isEmpty()) {{
                 LOG.warn("AuthHelper: token endpoint {{}} returned 200 but no "
                         + "access_token field in body -- leaving ctx empty", tokenUrl);
@@ -11130,8 +11130,8 @@ public final class AuthHelper {{
                 continue
             with open(_fs_path(src), encoding="utf-8") as f:
                 content = f.read()
-            if self.package_root != "com.ak.api":
-                content = content.replace("com.ak.api", self.package_root)
+            if self.package_root != "com.hi.api":
+                content = content.replace("com.hi.api", self.package_root)
             rel = f"src/main/java/{pkg.replace('.', '/')}/{name}"
             written.append(self._write(rel, content))
         # The runtime's copy of identity + heuristics (IdentityVocabulary
@@ -11171,7 +11171,7 @@ import org.testng.annotations.DataProvider;
 /**
  * Convention-based TestNG DataProvider used by every ra_converter-emitted
  * test class. For a test method
- *   {{@code com.ak.api.tests.imported.<suite>[.<resource>].<Class>.<methodName>(Map<String,String> row)}}
+ *   {{@code com.hi.api.tests.imported.<suite>[.<resource>].<Class>.<methodName>(Map<String,String> row)}}
  * this provider loads
  *   {{@code classpath:/csv/<suite>[/<resource>]/<Class>/<methodName>.csv}}
  * -- the CSV directory tree mirrors the Java sub-package tree so two
@@ -11410,7 +11410,7 @@ public final class PerMethodCsvDataProvider {{
           - `resolveFakerTokens(String text)`                     -- <<X>> only
           - `resolveDollarRefs(String text, Map<String,String> ctx)` -- ${{X}} only
 
-        The Java class expects `com.ak.api.data.FakeData` to be present
+        The Java class expects `com.hi.api.data.FakeData` to be present
         (already exists in the framework)."""
         pkg = f"{self.package_root}.data"
         rel = f"src/main/java/{pkg.replace('.', '/')}/PlaceholderResolver.java"
@@ -12014,28 +12014,28 @@ import org.slf4j.LoggerFactory;
 import org.testng.annotations.BeforeClass;
 {before_method_import}import org.testng.annotations.Test;
 
-import com.ak.api.config.Config;
-import com.ak.api.data.Expected;
-import com.ak.api.data.FakeData;
-import com.ak.api.data.PerMethodCsvDataProvider;
-import com.ak.api.data.PlaceholderResolver;
-import com.ak.api.db.Db;
-import com.ak.api.rest.utilities.AuthHelper;
-import com.ak.api.rest.utilities.Headers;
-import com.ak.api.rest.utilities.ResponseAsserts;
-import com.ak.api.rest.utilities.RestStep;
-import com.ak.api.rest.utilities.RestUtilities;
-import com.ak.api.retry.RetryAnalyzer;
-import com.ak.api.support.CtxFields;
-import com.ak.api.support.ImportedScenario;
+import com.hi.api.config.Config;
+import com.hi.api.data.Expected;
+import com.hi.api.data.FakeData;
+import com.hi.api.data.PerMethodCsvDataProvider;
+import com.hi.api.data.PlaceholderResolver;
+import com.hi.api.db.Db;
+import com.hi.api.rest.utilities.AuthHelper;
+import com.hi.api.rest.utilities.Headers;
+import com.hi.api.rest.utilities.ResponseAsserts;
+import com.hi.api.rest.utilities.RestStep;
+import com.hi.api.rest.utilities.RestUtilities;
+import com.hi.api.retry.RetryAnalyzer;
+import com.hi.api.support.CtxFields;
+import com.hi.api.support.ImportedScenario;
 {fluent_imports}{suite_cleanup_import}import {self.package_root}.support.{self.suite_name}.SetupHelper;
 import {self.package_root}.support.{self.suite_name}.TestSupport;
 import {self.package_root}.templates.{self.suite_name}.Templates;
-import com.ak.api.tests.BaseApiTest;
-import com.ak.api.tests.ImportedTest;
-import com.ak.api.xray.XrayTest;
+import com.hi.api.tests.BaseApiTest;
+import com.hi.api.tests.ImportedTest;
+import com.hi.api.xray.XrayTest;
 
-import com.ak.api.rest.clients.{service_class_name};
+import com.hi.api.rest.clients.{service_class_name};
 
 import io.qameta.allure.Description;
 import io.qameta.allure.Epic;
@@ -12074,7 +12074,7 @@ public class {class_name} extends BaseApiTest {{
     @BeforeClass(alwaysRun = true)
     public void initClientAndAuth() {{
         String baseUrl = Config.get("base_url", Config.baseUrl());
-        client = com.ak.api.rest.SharedClients.get("{service_class_name}", baseUrl, {service_class_name}::new);
+        client = com.hi.api.rest.SharedClients.get("{service_class_name}", baseUrl, {service_class_name}::new);
 {auth_prime_line}        LOG.info("initialised {class_name} against baseUrl={{}}  (auth={{}})",
                 baseUrl, Config.authType());
     }}
@@ -13295,8 +13295,8 @@ public class {class_name} extends BaseApiTest {{
         phase_members = ""
         if self.phase_specs_enabled:
             phase_fields = (
-                "    protected com.ak.api.rest.utilities.phase.CaseRegistry.Case phases;\n"
-                "    private com.ak.api.rest.utilities.phase.PhaseContext phaseContext;\n")
+                "    protected com.hi.api.rest.utilities.phase.CaseRegistry.Case phases;\n"
+                "    private com.hi.api.rest.utilities.phase.PhaseContext phaseContext;\n")
             phase_boot_guard = _PHASE_BOOT_GUARD
             phase_members = _PHASE_MEMBERS
         if self.phase_specs_enabled:
@@ -13329,25 +13329,25 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testng.asserts.SoftAssert;
 
-import com.ak.api.config.Config;
-import com.ak.api.data.Expected;
-import com.ak.api.data.FakeData;
-import com.ak.api.data.PlaceholderResolver;
-import com.ak.api.domain.DomainApis;
-import com.ak.api.domain.account.ProgramAccountApi;
-import com.ak.api.domain.guest.GuestApi;
-import com.ak.api.domain.member.MemberApi;
-import com.ak.api.rest.utilities.AuthHelper;
-import com.ak.api.rest.utilities.Headers;
-import com.ak.api.db.Db;
-import com.ak.api.support.ImportedRestClient;
-import com.ak.api.support.ImportedTemplates;
-import com.ak.api.rest.utilities.ResponseAsserts;
-import com.ak.api.rest.utilities.RestLoggerUtilityDataHolder;
-import com.ak.api.rest.utilities.RestStep;
-import com.ak.api.rest.utilities.RestUtilities;
-import com.ak.api.support.CtxFields;
-import com.ak.api.support.ImportedScenario;
+import com.hi.api.config.Config;
+import com.hi.api.data.Expected;
+import com.hi.api.data.FakeData;
+import com.hi.api.data.PlaceholderResolver;
+import com.hi.api.domain.DomainApis;
+import com.hi.api.domain.account.ProgramAccountApi;
+import com.hi.api.domain.guest.GuestApi;
+import com.hi.api.domain.member.MemberApi;
+import com.hi.api.rest.utilities.AuthHelper;
+import com.hi.api.rest.utilities.Headers;
+import com.hi.api.db.Db;
+import com.hi.api.support.ImportedRestClient;
+import com.hi.api.support.ImportedTemplates;
+import com.hi.api.rest.utilities.ResponseAsserts;
+import com.hi.api.rest.utilities.RestLoggerUtilityDataHolder;
+import com.hi.api.rest.utilities.RestStep;
+import com.hi.api.rest.utilities.RestUtilities;
+import com.hi.api.support.CtxFields;
+import com.hi.api.support.ImportedScenario;
 
 import io.restassured.response.Response;
 
@@ -13415,15 +13415,15 @@ public abstract class ScenarioSteps<S extends ScenarioSteps<S>> {{
      * test, a manual chain and a legacy test all reach a response the same
      * way.</p>
      *
-     * @see com.ak.api.rest.utilities.LastExchange
+     * @see com.hi.api.rest.utilities.LastExchange
      */
     public final Response lastResponse() {{
-        return com.ak.api.rest.utilities.LastExchange.response();
+        return com.hi.api.rest.utilities.LastExchange.response();
     }}
 
     /** Which step {{@link #lastResponse()}} came from, or null. */
     public final String lastStep() {{
-        return com.ak.api.rest.utilities.LastExchange.step();
+        return com.hi.api.rest.utilities.LastExchange.step();
     }}
 
     /**
@@ -13434,7 +13434,7 @@ public abstract class ScenarioSteps<S extends ScenarioSteps<S>> {{
      * that name ran on this thread.
      */
     public final Response responseOf(String stepName) {{
-        return com.ak.api.rest.utilities.LastExchange.of(stepName);
+        return com.hi.api.rest.utilities.LastExchange.of(stepName);
     }}
 
     /**
@@ -13546,8 +13546,8 @@ public abstract class ScenarioSteps<S extends ScenarioSteps<S>> {{
             methods.append(
                 "    @Override" + NL
                 + "    protected io.restassured.response.Response dispatch(" + NL
-                + "            com.ak.api.rest.utilities.phase.PhaseContext c," + NL
-                + "            com.ak.api.rest.utilities.phase.PhaseSpec p) throws Exception {" + NL
+                + "            com.hi.api.rest.utilities.phase.PhaseContext c," + NL
+                + "            com.hi.api.rest.utilities.phase.PhaseSpec p) throws Exception {" + NL
                 + f"        return {self.package_root}.support.{self.suite_name}.Calls.call(c, p);" + NL
                 + "    }" + NL)
         content = f"""package {pkg};
@@ -13556,24 +13556,24 @@ import java.util.Map;
 
 import org.testng.asserts.SoftAssert;
 
-import com.ak.api.config.Config;
-import com.ak.api.data.Expected;
-import com.ak.api.data.FakeData;
-import com.ak.api.data.PlaceholderResolver;
-import com.ak.api.db.Db;
-import com.ak.api.rest.utilities.AuthHelper;
-import com.ak.api.rest.utilities.Headers;
-import com.ak.api.rest.utilities.ResponseAsserts;
-import com.ak.api.rest.utilities.RestLoggerUtilityDataHolder;
-import com.ak.api.rest.utilities.RestStep;
-import com.ak.api.rest.utilities.RestUtilities;
-import com.ak.api.support.CtxFields;
-import com.ak.api.support.ImportedRestClient;
-import com.ak.api.support.ImportedScenario;
-import com.ak.api.support.scenario.ScenarioSteps;
-import com.ak.api.support.{self.suite_name}.SetupHelper;
-import com.ak.api.support.{self.suite_name}.TestSupport;
-import com.ak.api.templates.{self.suite_name}.Templates;
+import com.hi.api.config.Config;
+import com.hi.api.data.Expected;
+import com.hi.api.data.FakeData;
+import com.hi.api.data.PlaceholderResolver;
+import com.hi.api.db.Db;
+import com.hi.api.rest.utilities.AuthHelper;
+import com.hi.api.rest.utilities.Headers;
+import com.hi.api.rest.utilities.ResponseAsserts;
+import com.hi.api.rest.utilities.RestLoggerUtilityDataHolder;
+import com.hi.api.rest.utilities.RestStep;
+import com.hi.api.rest.utilities.RestUtilities;
+import com.hi.api.support.CtxFields;
+import com.hi.api.support.ImportedRestClient;
+import com.hi.api.support.ImportedScenario;
+import com.hi.api.support.scenario.ScenarioSteps;
+import com.hi.api.support.{self.suite_name}.SetupHelper;
+import com.hi.api.support.{self.suite_name}.TestSupport;
+import com.hi.api.templates.{self.suite_name}.Templates;
 
 import io.restassured.response.Response;
 
@@ -13613,15 +13613,15 @@ public abstract class {cls}<S extends {cls}<S>> extends ScenarioSteps<S> {{
         "java.util.Map",
         "org.slf4j.Logger", "org.slf4j.LoggerFactory",
         "io.restassured.response.Response",
-        "com.ak.api.config.Config", "com.ak.api.data.Expected", "com.ak.api.data.FakeData",
-        "com.ak.api.data.PlaceholderResolver", "com.ak.api.db.Db",
-        "com.ak.api.rest.utilities.AuthHelper", "com.ak.api.rest.utilities.Headers",
-        "com.ak.api.rest.utilities.ResponseAsserts", "com.ak.api.rest.utilities.RestStep",
-        "com.ak.api.rest.utilities.RestUtilities", "com.ak.api.retry.Poller",
-        "com.ak.api.rest.utilities.phase.CaseRegistry", "com.ak.api.rest.utilities.phase.PhaseContext",
-        "com.ak.api.rest.utilities.phase.PhaseSpec", "com.ak.api.rest.utilities.phase.Ref",
-        "com.ak.api.support.CtxFields", "com.ak.api.support.ImportedRestClient",
-        "com.ak.api.support.ImportedScenario", "com.ak.api.support.ImportedTemplates",
+        "com.hi.api.config.Config", "com.hi.api.data.Expected", "com.hi.api.data.FakeData",
+        "com.hi.api.data.PlaceholderResolver", "com.hi.api.db.Db",
+        "com.hi.api.rest.utilities.AuthHelper", "com.hi.api.rest.utilities.Headers",
+        "com.hi.api.rest.utilities.ResponseAsserts", "com.hi.api.rest.utilities.RestStep",
+        "com.hi.api.rest.utilities.RestUtilities", "com.hi.api.retry.Poller",
+        "com.hi.api.rest.utilities.phase.CaseRegistry", "com.hi.api.rest.utilities.phase.PhaseContext",
+        "com.hi.api.rest.utilities.phase.PhaseSpec", "com.hi.api.rest.utilities.phase.Ref",
+        "com.hi.api.support.CtxFields", "com.hi.api.support.ImportedRestClient",
+        "com.hi.api.support.ImportedScenario", "com.hi.api.support.ImportedTemplates",
     )
 
     def _emit_phases_class(self, class_name: str, area: str = "") -> str | None:
@@ -13697,7 +13697,7 @@ public abstract class {cls}<S extends {cls}<S>> extends ScenarioSteps<S> {{
             return None
         # Only CaseRegistry is named in a Phases class now. The 27-import
         # block belongs to Specs<N>, where the builders actually live.
-        imports = ["com.ak.api.rest.utilities.phase.CaseRegistry"]
+        imports = ["com.hi.api.rest.utilities.phase.CaseRegistry"]
         content = phase_emit.phases_class_java(pkg, cls, imports, cases_out, hooks)
         rel = f"src/main/java/{pkg.replace('.', '/')}/{cls}.java"
         # A second write to the same path silently discards the first file's
@@ -13883,10 +13883,10 @@ public abstract class {cls}<S extends {cls}<S>> extends ScenarioSteps<S> {{
         phase_bind = ""
         if self.phase_specs_enabled:
             phase_bind = (
-                f"        flow.phases = com.ak.api.rest.utilities.phase.CaseRegistry.forCase(flow.testCaseId);{NL}"
+                f"        flow.phases = com.hi.api.rest.utilities.phase.CaseRegistry.forCase(flow.testCaseId);{NL}"
                 f"        if (flow.phases == null) {{{NL}"
                 f"            {self._suite_cases_pkg()}.CaseIndex.ensureLoaded();{NL}"
-                f"            flow.phases = com.ak.api.rest.utilities.phase.CaseRegistry.forCase(flow.testCaseId);{NL}"
+                f"            flow.phases = com.hi.api.rest.utilities.phase.CaseRegistry.forCase(flow.testCaseId);{NL}"
                 f"        }}{NL}")
         # An overridden bootstrap() is arbitrary translated Groovy for THIS
         # suite -- SetupHelper, Config, TestSupport, CtxFields. Same import
@@ -13895,23 +13895,23 @@ public abstract class {cls}<S extends {cls}<S>> extends ScenarioSteps<S> {{
 
 import java.util.Map;
 
-import com.ak.api.config.Config;
-import com.ak.api.data.Expected;
-import com.ak.api.data.FakeData;
-import com.ak.api.data.PlaceholderResolver;
-import com.ak.api.db.Db;
-import com.ak.api.rest.utilities.AuthHelper;
-import com.ak.api.rest.utilities.Headers;
-import com.ak.api.rest.utilities.ResponseAsserts;
-import com.ak.api.rest.utilities.RestStep;
-import com.ak.api.rest.utilities.RestUtilities;
-import com.ak.api.support.CtxFields;
-import com.ak.api.support.ImportedRestClient;
-import com.ak.api.support.ImportedScenario;
-import com.ak.api.support.ImportedTemplates;
-import com.ak.api.support.{self.suite_name}.SetupHelper;
-import com.ak.api.support.{self.suite_name}.TestSupport;
-import com.ak.api.templates.{self.suite_name}.Templates;
+import com.hi.api.config.Config;
+import com.hi.api.data.Expected;
+import com.hi.api.data.FakeData;
+import com.hi.api.data.PlaceholderResolver;
+import com.hi.api.db.Db;
+import com.hi.api.rest.utilities.AuthHelper;
+import com.hi.api.rest.utilities.Headers;
+import com.hi.api.rest.utilities.ResponseAsserts;
+import com.hi.api.rest.utilities.RestStep;
+import com.hi.api.rest.utilities.RestUtilities;
+import com.hi.api.support.CtxFields;
+import com.hi.api.support.ImportedRestClient;
+import com.hi.api.support.ImportedScenario;
+import com.hi.api.support.ImportedTemplates;
+import com.hi.api.support.{self.suite_name}.SetupHelper;
+import com.hi.api.support.{self.suite_name}.TestSupport;
+import com.hi.api.templates.{self.suite_name}.Templates;
 
 import io.restassured.response.Response;
 
@@ -13925,7 +13925,7 @@ public final class {cls} extends {base}<{cls}> {{
     private {cls}(ImportedRestClient client,
                   Map<String, String> ctx,
                   org.testng.asserts.SoftAssert softAssert,
-                  com.ak.api.rest.utilities.RestLoggerUtilityDataHolder holder) {{
+                  com.hi.api.rest.utilities.RestLoggerUtilityDataHolder holder) {{
         super(client, ctx, softAssert, holder);
     }}
 
@@ -13991,24 +13991,24 @@ public final class {cls} extends {base}<{cls}> {{
                 if vmeth in (self._spec_verify_vocabs or {}).get(vcls, set()):
                     methods.append(
                         f"    public static void {vmeth}(Object scenario, "
-                        "com.ak.api.data.Expected expected, String step) throws Exception {" + NL
-                        + f"        com.ak.api.support.scenario.ScenarioSteps.current().runVerify(\"{vmeth}\", step);" + NL
+                        "com.hi.api.data.Expected expected, String step) throws Exception {" + NL
+                        + f"        com.hi.api.support.scenario.ScenarioSteps.current().runVerify(\"{vmeth}\", step);" + NL
                         + "    }" + NL)
                     if vmeth not in _text_meths:
                         methods.append(
                             f"    public static void {vmeth}(Object scenario, "
-                            "com.ak.api.data.Expected expected) throws Exception {" + NL
-                            + f"        com.ak.api.support.scenario.ScenarioSteps.current().runVerify(\"{vmeth}\", null);" + NL
+                            "com.hi.api.data.Expected expected) throws Exception {" + NL
+                            + f"        com.hi.api.support.scenario.ScenarioSteps.current().runVerify(\"{vmeth}\", null);" + NL
                             + "    }" + NL)
                         continue
                     # also a text-path verify: the no-arg form below stays its runner
                 runner = "run" + vmeth[0].upper() + vmeth[1:]
                 methods.append(
                     f"    public static void {vmeth}(Object scenario, "
-                    "com.ak.api.data.Expected expected) throws Exception {" + NL
+                    "com.hi.api.data.Expected expected) throws Exception {" + NL
                     # Cast to the suite base: `ScenarioSteps.current()` is typed
                     # as the framework base and cannot see suite-local runners.
-                    + f"        (({base}<?>) com.ak.api.support.scenario"
+                    + f"        (({base}<?>) com.hi.api.support.scenario"
                       f".ScenarioSteps.current()).{runner}();" + NL
                     + "    }" + NL)
             content = f"""package {pkg};
@@ -14036,7 +14036,7 @@ public final class {vcls} {{
             runner = "run" + vmeth[0].upper() + vmeth[1:]
             methods.append(
                 f"    public static void {vmeth}(Object scenario, "
-                f"com.ak.api.data.Expected expected) throws Exception {{\n"
+                f"com.hi.api.data.Expected expected) throws Exception {{\n"
                 f"        ScenarioSteps.current().{runner}();\n"
                 f"    }}\n")
         content = f"""package {pkg};
@@ -14329,20 +14329,20 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testng.asserts.SoftAssert;
 
-import com.ak.api.config.Config;
-import com.ak.api.data.Expected;
-import com.ak.api.data.FakeData;
-import com.ak.api.data.PlaceholderResolver;
-import com.ak.api.rest.utilities.AuthHelper;
-import com.ak.api.rest.utilities.Headers;
-import com.ak.api.db.Db;
-import com.ak.api.rest.clients.{service_class_name};
-import com.ak.api.rest.utilities.ResponseAsserts;
-import com.ak.api.rest.utilities.RestLoggerUtilityDataHolder;
-import com.ak.api.rest.utilities.RestStep;
-import com.ak.api.rest.utilities.RestUtilities;
-import com.ak.api.support.CtxFields;
-import com.ak.api.support.ImportedScenario;
+import com.hi.api.config.Config;
+import com.hi.api.data.Expected;
+import com.hi.api.data.FakeData;
+import com.hi.api.data.PlaceholderResolver;
+import com.hi.api.rest.utilities.AuthHelper;
+import com.hi.api.rest.utilities.Headers;
+import com.hi.api.db.Db;
+import com.hi.api.rest.clients.{service_class_name};
+import com.hi.api.rest.utilities.ResponseAsserts;
+import com.hi.api.rest.utilities.RestLoggerUtilityDataHolder;
+import com.hi.api.rest.utilities.RestStep;
+import com.hi.api.rest.utilities.RestUtilities;
+import com.hi.api.support.CtxFields;
+import com.hi.api.support.ImportedScenario;
 {scenario_import}import {self.package_root}.support.{self.suite_name}.SetupHelper;
 import {self.package_root}.support.{self.suite_name}.TestSupport;
 import {self.package_root}.templates.{self.suite_name}.Templates;
@@ -15647,7 +15647,7 @@ public final class Templates {{
 
         The ReadyAPI case and step names, by contrast, are written by a
         human in the XML and survive a reconvert. Hand-authored tests
-        bind to those instead; see `com.ak.api.dsl.Template`.
+        bind to those instead; see `com.hi.api.dsl.Template`.
 
         Two copies, both inside trees `--clean` already owns, so this
         adds no new lifecycle:
@@ -15756,7 +15756,7 @@ public final class Templates {{
         Emits ONLY listeners we've verified are present on the classpath
         of this framework -- Allure via the always-present allure-testng
         dep, plus the ProgressLogListener that emit_progress_listener()
-        writes into `com.ak.api.reporting`. Extent / Xray / TMS
+        writes into `com.hi.api.reporting`. Extent / Xray / TMS
         integrations from the reference framework live in comments so
         authors can uncomment after adding those adapter classes."""
         pretty_suite = to_camel_case(self.suite_name, upper_first=True)
@@ -15787,33 +15787,33 @@ public final class Templates {{
         <!-- Progress banner listener: emitted by ra_converter (see
              emit_progress_listener). Prints class + method + timing to
              the mvn console so parallel classes are attributable. -->
-        <listener class-name="com.ak.api.reporting.ProgressLogListener"/>
+        <listener class-name="com.hi.api.reporting.ProgressLogListener"/>
         <!-- Failure digest: writes target/failure-digest.txt, failures
              GROUPED by masked signature with retries collapsed. Share
              that file instead of the multi-MB run log. -->
-        <listener class-name="com.ak.api.reporting.FailureDigestListener"/>
-        <!-- Suite-level counters + reset (src/test/java/com/ak/api/reporting/
+        <listener class-name="com.hi.api.reporting.FailureDigestListener"/>
+        <!-- Suite-level counters + reset (src/test/java/com/hi/api/reporting/
              TestSuiteListener.java). Advances pass/fail counters via TestNG
              callbacks so a test that throws before reaching assertAll still
              counts as failed. -->
-        <listener class-name="com.ak.api.reporting.TestSuiteListener"/>
+        <listener class-name="com.hi.api.reporting.TestSuiteListener"/>
         <!-- Per-test flow logging (TestCaseLogListener). Emits banner-separated
              per-test log files under logs/<Class>.log listing every REST
              exchange captured via RestAssuredRecordingFilter. -->
-        <listener class-name="com.ak.api.reporting.TestCaseLogListener"/>
+        <listener class-name="com.hi.api.reporting.TestCaseLogListener"/>
         <!-- ExtentReports HTML writer. Reads ReportBuffer (populated by
              RestAssuredRecordingFilter) at test end and attaches every
              request/response body to the ExtentTest node with pretty-
              printed JSON. Output: extent-reports/<timestamp>-Extent.html. -->
-        <listener class-name="com.ak.api.reporting.ExtentReportListener"/>
+        <listener class-name="com.hi.api.reporting.ExtentReportListener"/>
         <!-- Xray results pusher (JIRA Xray integration). No-op when
              xray.enabled=false in application.properties (default). -->
-        <listener class-name="com.ak.api.reporting.XrayReportListener"/>
+        <listener class-name="com.hi.api.reporting.XrayReportListener"/>
         <!-- Partner / Jira / account-type Allure labels from CSV + case name. -->
-        <listener class-name="com.ak.api.reporting.TestMetadataListener"/>
+        <listener class-name="com.hi.api.reporting.TestMetadataListener"/>
         <!-- GitLab CI summary + optional MR/issue notes. No-op on the API
              when gitlab.enabled=false. Always writes target/gitlab-summary.md. -->
-        <listener class-name="com.ak.api.reporting.GitLabReportListener"/>
+        <listener class-name="com.hi.api.reporting.GitLabReportListener"/>
     </listeners>
 
     <test name="{suite_display}Tests">
@@ -15834,7 +15834,7 @@ public final class Templates {{
         return rel
 
     def emit_failure_digest_listener(self) -> str:
-        """Emit com.ak.api.reporting.FailureDigestListener.
+        """Emit com.hi.api.reporting.FailureDigestListener.
 
         A full regression log is tens of MB -- too large to share, and
         the signal in it is a handful of distinct causes repeated
@@ -15895,11 +15895,11 @@ public class FailureDigestListener implements ITestListener {{
             java.util.Collections.synchronizedMap(new LinkedHashMap<>());
 
     private static Map<String, Integer> authVerdicts() {{
-        return com.ak.api.rest.utilities.AuthDiagnostics.snapshot();
+        return com.hi.api.rest.utilities.AuthDiagnostics.snapshot();
     }}
 
     /**
-     * Delegates to {{@link com.ak.api.rest.utilities.ResponseMasking}}.
+     * Delegates to {{@link com.hi.api.rest.utilities.ResponseMasking}}.
      *
      * <p>The masks used to live here and matched {{@code www.host}} only, so a
      * bare {{@code customer.com}} in an assertion message reached the digest
@@ -15908,7 +15908,7 @@ public class FailureDigestListener implements ITestListener {{
      * place to fix a leak.</p>
      */
     private static String mask(String s) {{
-        return com.ak.api.rest.utilities.ResponseMasking.mask(s);
+        return com.hi.api.rest.utilities.ResponseMasking.mask(s);
     }}
 
     /** First meaningful line of the failure, masked. */
@@ -15959,7 +15959,7 @@ public class FailureDigestListener implements ITestListener {{
 
     @Override
     public void onTestStart(ITestResult result) {{
-        com.ak.api.rest.utilities.StepOutcomes.reset();
+        com.hi.api.rest.utilities.StepOutcomes.reset();
     }}
 
     @Override
@@ -15977,8 +15977,8 @@ public class FailureDigestListener implements ITestListener {{
         // (already capped by RestStep) so the digest can quote the server's
         // own reason instead of the framework's symptom. Masked again here:
         // cheap, and it means a body from any producer is safe to print.
-        String upstream = com.ak.api.rest.utilities.StepOutcomes.firstFailure();
-        String body = com.ak.api.rest.utilities.StepOutcomes.firstFailureBody();
+        String upstream = com.hi.api.rest.utilities.StepOutcomes.firstFailure();
+        String body = com.hi.api.rest.utilities.StepOutcomes.firstFailureBody();
         FAILURES.put(key, new String[] {{
             signature(t), cls, result.getName(), caseIdOf(result),
             String.valueOf(Math.max(asserts, 1)),
@@ -16136,7 +16136,7 @@ public class FailureDigestListener implements ITestListener {{
         return rel
 
     def emit_progress_listener(self) -> str:
-        """Emit `com.ak.api.reporting.ProgressLogListener` -- a lightweight
+        """Emit `com.hi.api.reporting.ProgressLogListener` -- a lightweight
         TestNG listener that prints a one-line banner when each @Test
         method starts and finishes. Complements the per-method
         STARTED/FINISHED logs inside the test body: when tests run in
@@ -16395,9 +16395,9 @@ _PHASE_BOOT_GUARD = """        if (phases != null && phases.hasBootstrap()) {
 
 _PHASE_MEMBERS = """
     // ---- phases as data (--phase-specs) -------------------------------
-    protected com.ak.api.rest.utilities.phase.PhaseContext phaseContext() {
+    protected com.hi.api.rest.utilities.phase.PhaseContext phaseContext() {
         if (phaseContext == null) {
-            phaseContext = new com.ak.api.rest.utilities.phase.PhaseContext(
+            phaseContext = new com.hi.api.rest.utilities.phase.PhaseContext(
                     client, ctx, row, softAssert, holder, testCaseId);
         }
         return phaseContext;
@@ -16405,12 +16405,12 @@ _PHASE_MEMBERS = """
 
     /** The suite steps class binds this to its generated Calls. */
     protected io.restassured.response.Response dispatch(
-            com.ak.api.rest.utilities.phase.PhaseContext c,
-            com.ak.api.rest.utilities.phase.PhaseSpec p) throws Exception {
+            com.hi.api.rest.utilities.phase.PhaseContext c,
+            com.hi.api.rest.utilities.phase.PhaseSpec p) throws Exception {
         throw new IllegalStateException("no Calls bound for phase `" + p.step + "`");
     }
 
-    private com.ak.api.rest.utilities.phase.CaseRegistry.Case requirePhases(String vocab) {
+    private com.hi.api.rest.utilities.phase.CaseRegistry.Case requirePhases(String vocab) {
         if (phases == null) {
             throw new IllegalStateException("no phase table for case `" + testCaseId
                     + "` (wanted `" + vocab + "`): start(row, caseId) binds it for converted "
@@ -16427,14 +16427,14 @@ _PHASE_MEMBERS = """
      * ({@code _stop_after} = number of REST calls to run); the text path
      * checked that after every call, and so does this.
      */
-    private void runParts(java.util.List<com.ak.api.rest.utilities.phase.PhaseSpec> parts)
+    private void runParts(java.util.List<com.hi.api.rest.utilities.phase.PhaseSpec> parts)
             throws Exception {
-        for (com.ak.api.rest.utilities.phase.PhaseSpec p : parts) {
+        for (com.hi.api.rest.utilities.phase.PhaseSpec p : parts) {
             if (__stopped) {
                 return;
             }
             if (p.isHookOnly()) {
-                com.ak.api.rest.utilities.phase.PhaseRunner.run(p, phaseContext(), null);
+                com.hi.api.rest.utilities.phase.PhaseRunner.run(p, phaseContext(), null);
                 continue;
             }
             dispatch(phaseContext(), p);
@@ -16448,7 +16448,7 @@ _PHASE_MEMBERS = """
     }
 
     protected S runPhase(String vocab, String step) throws Exception {
-        com.ak.api.rest.utilities.phase.CaseRegistry.Case cs = requirePhases(vocab);
+        com.hi.api.rest.utilities.phase.CaseRegistry.Case cs = requirePhases(vocab);
         // A vocabulary can be a phase in one case and a verify in another --
         // `verifyProgramAccount` is both -- so which side it is belongs to the
         // CASE, not to the name. Asking the case is what lets a verify chain
@@ -16463,7 +16463,7 @@ _PHASE_MEMBERS = """
     }
 
     public void runVerify(String vocab, String step) throws Exception {
-        com.ak.api.rest.utilities.phase.CaseRegistry.Case cs = requirePhases(vocab);
+        com.hi.api.rest.utilities.phase.CaseRegistry.Case cs = requirePhases(vocab);
         runParts(step == null ? cs.only(vocab, true) : cs.named(vocab, step, true));
     }
 """
@@ -16948,7 +16948,7 @@ def main():
     # CSV cells, faker+property placeholder resolution at runtime, and
     # a master TestNG suite XML with Allure listeners wired in.)
     p.add_argument("--output", default="output", help="Output root directory")
-    p.add_argument("--package-root", default="com.ak.api", help="Java package root")
+    p.add_argument("--package-root", default="com.hi.api", help="Java package root")
     p.add_argument("--service-name", default=None,
                    help="Prefix for the generated *Client class. Unique per "
                         "suite so clients are not overwritten. Optional for a "

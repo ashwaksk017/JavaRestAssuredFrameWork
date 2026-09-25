@@ -1,6 +1,6 @@
-package com.ak.api.support;
+package com.hi.api.support;
 
-// ra_converter-framework-rev: 2
+// ra_converter-framework-rev: 3
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -9,7 +9,7 @@ package com.ak.api.support;
 
 import org.testng.asserts.SoftAssert;
 
-import com.ak.api.rest.utilities.RestLoggerUtilityDataHolder;
+import com.hi.api.rest.utilities.RestLoggerUtilityDataHolder;
 
 /**
  * The current test method's {@link SoftAssert} and log holder, per thread.

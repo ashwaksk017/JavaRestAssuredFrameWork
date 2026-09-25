@@ -33,13 +33,13 @@ what.
 ## Quick start — commands
 
 > **Two ways in on a fresh checkout.** The committed Java imports
-> `com.ak.api.support.*`, which is generated and gitignored — a clone has none
+> `com.hi.api.support.*`, which is generated and gitignored — a clone has none
 > of it, so `mvn compile` fails until it exists. Either convert an XML
 > (step 1 below), or — to write a hand-written test **before** you have any
 > XML — emit just the framework types:
 >
 > ```bash
-> python tools/ra_converter/ra_converter.py --bootstrap --output . --package-root com.ak.api
+> python tools/ra_converter/ra_converter.py --bootstrap --output . --package-root com.hi.api
 > ```
 >
 > `--bootstrap` needs no `--input`. It writes the bundled support types, an
@@ -75,7 +75,7 @@ If you only want a tree that compiles, you do not need an XML at all —
 `--bootstrap` emits the framework types without parsing anything:
 
 ```powershell
-python tools/ra_converter/ra_converter.py --bootstrap --output . --package-root com.ak.api
+python tools/ra_converter/ra_converter.py --bootstrap --output . --package-root com.hi.api
 ```
 
 Then convert:
@@ -84,7 +84,7 @@ Then convert:
 python tools/ra_converter/ra_converter.py `
     --input tools/ra_converter/input `
     --output . `
-    --package-root com.ak.api `
+    --package-root com.hi.api `
     --clean `
     --max-name-len 40 `
     --no-cursor-assist
@@ -103,7 +103,7 @@ Single suite (rarely what you want — see above):
 
 ```powershell
 python tools/ra_converter/ra_converter.py --input tools/ra_converter/input/membervalidationregression.xml `
-    --output . --package-root com.ak.api --service-name MemberValidation --clean --max-name-len 40
+    --output . --package-root com.hi.api --service-name MemberValidation --clean --max-name-len 40
 ```
 
 `--clean` deletes that suite's generated tests / CSVs / templates /
@@ -127,7 +127,7 @@ project, so it does not resolve here. Point the converter at the workbooks:
 
 ```powershell
 python tools/ra_converter/ra_converter.py --input tools/ra_converter/input/Project.xml `
-    --output . --package-root com.ak.api --data-dir C:\path	o\workbooks
+    --output . --package-root com.hi.api --data-dir C:\path	o\workbooks
 ```
 
 Only the file NAME is used. The converter looks in `--data-dir` first, then
@@ -200,7 +200,7 @@ mvn test "-DsuiteXmlFile=Suites/Programaccountregression_Smoke.xml"
 mvn test "-DsuiteXmlFile=src/test/resources/testng-guards.xml"
 
 # One class
-mvn test "-Dtest=com.ak.api.tests.imported.membervalidationregression.members.B2B2047ConfirmValidation200BugTest" -DfailIfNoTests=false
+mvn test "-Dtest=com.hi.api.tests.imported.membervalidationregression.members.B2B2047ConfirmValidation200BugTest" -DfailIfNoTests=false
 ```
 
 **Credentials are required for anything that talks to stg.** Fill
@@ -288,7 +288,7 @@ preview). To also get an image per case, switch it on in the committed
 `converter.config.local.json` next to it, or for one run:
 
 ```powershell
-python tools/ra_converter/ra_converter.py --input tools/ra_converter/input --output . --package-root com.ak.api --clean --max-name-len 40 --no-cursor-assist `
+python tools/ra_converter/ra_converter.py --input tools/ra_converter/input --output . --package-root com.hi.api --clean --max-name-len 40 --no-cursor-assist `
     --diagram-png --diagram-cases "B2B-5264*"
 ```
 
@@ -310,7 +310,7 @@ what to install. A full suite of ~700 diagrams takes a few minutes; the
 ### Phases as data (`--phase-specs`)
 
 ```
-python tools/ra_converter/ra_converter.py --input tools/ra_converter/input --output . --package-root com.ak.api --clean --max-name-len 40 --phase-specs
+python tools/ra_converter/ra_converter.py --input tools/ra_converter/input --output . --package-root com.hi.api --clean --max-name-len 40 --phase-specs
 ```
 
 Opt-in for now (the default output is unchanged until a regression run
@@ -352,21 +352,21 @@ unaffected: they drive `RestStep` themselves.
 
 | Concern | Where | Notes |
 |---|---|---|
-| **HTTP verbs** | `com.ak.api.rest.utilities.RestUtilities` | POST / GET / PUT / PATCH / DELETE, all thread-safe |
+| **HTTP verbs** | `com.hi.api.rest.utilities.RestUtilities` | POST / GET / PUT / PATCH / DELETE, all thread-safe |
 | **Placeholder templates** | `RestUtilities.mapJsonValues(schema, dataMap, strict)` | Regex-based, strict mode throws `UnresolvedPlaceholderException` |
-| **Environment config** | `com.ak.api.config.Config` + `application-{env}.properties` | Env-var > `-Dkey` > `application-{env}.properties` > `application.properties` > defaults |
-| **Auth** | `com.ak.api.auth.AuthUtilities` | Bearer / Basic / OAuth2 client-credentials with token cache |
-| **JSON schema validation** | `com.ak.api.schema.SchemaValidator` + `src/test/resources/schemas/*.json` | Wraps Rest Assured's `matchesJsonSchemaInClasspath`; `validateOpenApi` uses Swagger definitions |
-| **POJO models** | `com.ak.api.models.*` | Hand-written demo types; `RestUtilities.as(response, Post.class)` |
-| **OpenAPI models** | `com.ak.api.openapi.OpenApiModels` + generated `com.ak.api.openapi.programaccounts.model` | Maven codegen from `src/main/resources/openapi/ProgramAccounts-1.0.71.yaml`; imported tests stay JsonPath + ctx |
-| **Data-driven (CSV)** | `com.ak.api.data.CsvDataSource` + `DataProviders.csvData` | jackson-dataformat-csv; headers-as-keys map rows or typed POJOs; startRow/endRow range |
-| **Data-driven (JSON)** | `com.ak.api.data.JsonDataSource` + `DataProviders.jsonData` | Top-level array or `{rows: [...]}`; typed POJOs; same row-range semantics |
+| **Environment config** | `com.hi.api.config.Config` + `application-{env}.properties` | Env-var > `-Dkey` > `application-{env}.properties` > `application.properties` > defaults |
+| **Auth** | `com.hi.api.auth.AuthUtilities` | Bearer / Basic / OAuth2 client-credentials with token cache |
+| **JSON schema validation** | `com.hi.api.schema.SchemaValidator` + `src/test/resources/schemas/*.json` | Wraps Rest Assured's `matchesJsonSchemaInClasspath`; `validateOpenApi` uses Swagger definitions |
+| **POJO models** | `com.hi.api.models.*` | Hand-written demo types; `RestUtilities.as(response, Post.class)` |
+| **OpenAPI models** | `com.hi.api.openapi.OpenApiModels` + generated `com.hi.api.openapi.programaccounts.model` | Maven codegen from `src/main/resources/openapi/ProgramAccounts-1.0.71.yaml`; imported tests stay JsonPath + ctx |
+| **Data-driven (CSV)** | `com.hi.api.data.CsvDataSource` + `DataProviders.csvData` | jackson-dataformat-csv; headers-as-keys map rows or typed POJOs; startRow/endRow range |
+| **Data-driven (JSON)** | `com.hi.api.data.JsonDataSource` + `DataProviders.jsonData` | Top-level array or `{rows: [...]}`; typed POJOs; same row-range semantics |
 | **Response-time SLOs** | `RestUtilities.assertResponseTimeBelow(response, millis)` | AssertionError with actual vs ceiling |
-| **Retry** | `com.ak.api.retry.RetryAnalyzer` | Attach via `@Test(retryAnalyzer = RetryAnalyzer.class)`; max count from Config |
+| **Retry** | `com.hi.api.retry.RetryAnalyzer` | Attach via `@Test(retryAnalyzer = RetryAnalyzer.class)`; max count from Config |
 | **Reporting (Allure)** | `io.qameta.allure:allure-testng` + `AllureRestAssured` filter | Rich hierarchical HTML via `mvn allure:serve` or `allure:report` |
-| **Reporting (ExtentReports)** | `com.ak.api.reporting.ExtentReportListener` | Self-contained HTML in `extent-reports/`, no CLI to open |
-| **Request/response capture** | `com.ak.api.reporting.RestAssuredRecordingFilter` + `ReportBuffer` | Every exchange auto-attached to BOTH reports for passed AND failed tests |
-| **Counters + suite lifecycle** | `com.ak.api.reporting.TestSuiteListener` | Pass/fail totals via ITestListener; reset once per suite |
+| **Reporting (ExtentReports)** | `com.hi.api.reporting.ExtentReportListener` | Self-contained HTML in `extent-reports/`, no CLI to open |
+| **Request/response capture** | `com.hi.api.reporting.RestAssuredRecordingFilter` + `ReportBuffer` | Every exchange auto-attached to BOTH reports for passed AND failed tests |
+| **Counters + suite lifecycle** | `com.hi.api.reporting.TestSuiteListener` | Pass/fail totals via ITestListener; reset once per suite |
 
 ## Two reporting options — both run every time
 
@@ -425,7 +425,7 @@ ApiAutomationRestAssured/
 ├── src/
 │   ├── main/
 │   │   ├── java/
-│   │   │   └── com/ak/api/
+│   │   │   └── com/hi/api/
 │   │   │       ├── config/Config.java
 │   │   │       ├── auth/AuthUtilities.java
 │   │   │       ├── schema/SchemaValidator.java
@@ -446,7 +446,7 @@ ApiAutomationRestAssured/
 │   │       └── templates/createPost.json         -- template with #/%/@ placeholders
 │   └── test/
 │       ├── java/
-│       │   └── com/ak/api/
+│       │   └── com/hi/api/
 │       │       ├── reporting/
 │       │       │   ├── ReportBuffer.java         -- thread-local exchange buffer
 │       │       │   ├── RestAssuredRecordingFilter.java -- feeds ReportBuffer + ExtentListener
@@ -627,7 +627,7 @@ Where they live:
 | anywhere, including a breakpoint in generated code | `LastExchange.response()` |
 
 All four read the **same** per-thread record
-([`LastExchange`](src/main/java/com/ak/api/rest/utilities/LastExchange.java)),
+([`LastExchange`](src/main/java/com/hi/api/rest/utilities/LastExchange.java)),
 so they cannot disagree about the same call. It is written by `RestStep` and
 by the global Rest Assured recording filter, which means an auth fetch and a
 plain `RestUtilities.post(...)` are recorded too — anything that reached the
@@ -695,7 +695,7 @@ That flag does three things at once, via the `openapi-codegen` profile:
 | | |
 |---|---|
 | runs `openapi-generator` at `generate-sources` | reading `src/main/resources/openapi/${openapi.spec}` — default `ProgramAccounts-1.0.71.yaml` |
-| emits models into `target/generated-sources/openapi` | package `com.ak.api.openapi.programaccounts.model` |
+| emits models into `target/generated-sources/openapi` | package `com.hi.api.openapi.programaccounts.model` |
 | restores the tests that reference them | `${openapi.test.excludes}` — today `OpenApiModelsTest.java` |
 
 **When the version changes.** The file name carries the API version, so it
@@ -730,7 +730,7 @@ suite. Typed binding is additive.
 
 ### OpenAPI models (Program Accounts)
 
-Maven generates Jackson models from `src/main/resources/openapi/ProgramAccounts-1.0.71.yaml` into `target/generated-sources/openapi` (`com.ak.api.openapi.programaccounts.model`). Imported ReadyAPI tests keep JsonPath + `Map<String,String>` ctx; typed bind is additive:
+Maven generates Jackson models from `src/main/resources/openapi/ProgramAccounts-1.0.71.yaml` into `target/generated-sources/openapi` (`com.hi.api.openapi.programaccounts.model`). Imported ReadyAPI tests keep JsonPath + `Map<String,String>` ctx; typed bind is additive:
 
 ```java
 ProgramAccount account = OpenApiModels.as(res, ProgramAccount.class);
@@ -739,7 +739,7 @@ ProgramAccount typed = accounts.readAs(token, accountId, ProgramAccount.class);
 
 ### Auth wiring — exercised by AuthTests
 
-`AuthUtilities` (`bearer` / `basic` / `oauth2ClientCredentialsToken`) is verified end-to-end by [AuthTests](src/test/java/com/ak/api/tests/AuthTests.java) against [httpbin.org](https://httpbin.org):
+`AuthUtilities` (`bearer` / `basic` / `oauth2ClientCredentialsToken`) is verified end-to-end by [AuthTests](src/test/java/com/hi/api/tests/AuthTests.java) against [httpbin.org](https://httpbin.org):
 
 | Test | httpbin endpoint | Asserts |
 |---|---|---|
@@ -780,11 +780,11 @@ Map<String,String> h = Headers.builder()
 | `Headers.fromText(path)` | HTTP-style `Name: value` per line | `headers/qa.txt` |
 | `Headers.fromFile(path)` | Auto-detect by extension | any of the above |
 
-Sample fixtures ship under [src/test/resources/headers/](src/test/resources/headers/). Loader correctness + one httpbin round-trip are covered by [HeadersFromFileTests](src/test/java/com/ak/api/tests/HeadersFromFileTests.java).
+Sample fixtures ship under [src/test/resources/headers/](src/test/resources/headers/). Loader correctness + one httpbin round-trip are covered by [HeadersFromFileTests](src/test/java/com/hi/api/tests/HeadersFromFileTests.java).
 
 ### Live login sample — Tricentis DemoWebshop
 
-[DemoWebshopLoginTest](src/test/java/com/ak/api/tests/DemoWebshopLoginTest.java) drives the login contract at [demowebshop.tricentis.com](https://demowebshop.tricentis.com) end-to-end — a classic form-encoded ASP.NET login with cookie-based session (no JSON tokens). Three tests:
+[DemoWebshopLoginTest](src/test/java/com/hi/api/tests/DemoWebshopLoginTest.java) drives the login contract at [demowebshop.tricentis.com](https://demowebshop.tricentis.com) end-to-end — a classic form-encoded ASP.NET login with cookie-based session (no JSON tokens). Three tests:
 
 | Test | Signal |
 |---|---|
@@ -806,7 +806,7 @@ For persistent local override without committing anything: create `src/main/reso
 
 ### Jira Xray Cloud — result sync driven by a datasheet column
 
-The [XrayReportListener](src/test/java/com/ak/api/reporting/XrayReportListener.java)
+The [XrayReportListener](src/test/java/com/hi/api/reporting/XrayReportListener.java)
 captures a reserved column called **`jira_xray_id`** from every data-driven row
 and POSTs a single batched result import to
 [Xray Cloud's `/api/v2/import/execution`](https://docs.getxray.app/display/XRAYCLOUD/Import+Execution+Results+-+REST)
@@ -834,7 +834,7 @@ at the end of the suite.
    ```
 
 Live example in
-[PostsSmokeTests.get_singlePost_matchesPojoAndSchema()](src/test/java/com/ak/api/tests/PostsSmokeTests.java)
+[PostsSmokeTests.get_singlePost_matchesPojoAndSchema()](src/test/java/com/hi/api/tests/PostsSmokeTests.java)
 — replace `PROJ-DEMO-1` with your real Jira Xray test key.
 
 **Precedence when both are present:**
@@ -872,7 +872,7 @@ mvn test `
 
 Or via env vars: `XRAY_ENABLED=true`, `XRAY_CLIENTID=...`, `XRAY_CLIENTSECRET=...`.
 
-**Test status mapping** ([XrayResult.Status](src/main/java/com/ak/api/xray/XrayResult.java)):
+**Test status mapping** ([XrayResult.Status](src/main/java/com/hi/api/xray/XrayResult.java)):
 
 | TestNG outcome | Xray status |
 |---|---|
@@ -884,7 +884,7 @@ Or via env vars: `XRAY_ENABLED=true`, `XRAY_CLIENTID=...`, `XRAY_CLIENTSECRET=..
 Failure `throwable.getMessage()` (truncated at 2000 chars) is attached as the
 `comment` on the Xray test result.
 
-**Failure semantics** — [XrayClient](src/main/java/com/ak/api/xray/XrayClient.java)
+**Failure semantics** — [XrayClient](src/main/java/com/hi/api/xray/XrayClient.java)
 NEVER throws. Any auth / HTTP / network failure is logged to stdout with an
 `[XrayClient]` prefix and swallowed. Xray outages must not fail the local
 automation suite.
@@ -900,7 +900,7 @@ obvious why a run didn't publish.
 
 ### Database queries — plain JDBC via `Db`
 
-[Db](src/main/java/com/ak/api/db/Db.java) is a thin, zero-abstraction plain-JDBC
+[Db](src/main/java/com/hi/api/db/Db.java) is a thin, zero-abstraction plain-JDBC
 wrapper for the four operations tests actually reach for. Every call opens a
 fresh `DriverManager.getConnection(...)` and closes it via try-with-resources
 — no connection pool, no ORM.
@@ -946,8 +946,8 @@ Or via env vars: `DB_URL` / `DB_USER` / `DB_PASSWORD` (Config's dots-become-unde
 
 | Test | What it proves | When it runs |
 |---|---|---|
-| [H2QueryTest](src/test/java/com/ak/api/tests/H2QueryTest.java) | Every `Db` operation end-to-end against in-memory H2 in Postgres-compat mode | Always — H2 is a test-scoped dep, no external setup |
-| [PostgresQueryTest](src/test/java/com/ak/api/tests/PostgresQueryTest.java) | Live Postgres round-trip (`SELECT 1`, `pg_catalog` parameterized query) | Only when `db.url` is configured — else `@BeforeClass` throws `SkipException` |
+| [H2QueryTest](src/test/java/com/hi/api/tests/H2QueryTest.java) | Every `Db` operation end-to-end against in-memory H2 in Postgres-compat mode | Always — H2 is a test-scoped dep, no external setup |
+| [PostgresQueryTest](src/test/java/com/hi/api/tests/PostgresQueryTest.java) | Live Postgres round-trip (`SELECT 1`, `pg_catalog` parameterized query) | Only when `db.url` is configured — else `@BeforeClass` throws `SkipException` |
 
 **Result-set mapping** — every row comes back as a `LinkedHashMap<String,Object>`
 keyed by the ResultSetMetaData column *label* (so `SELECT foo AS bar` yields
@@ -983,7 +983,7 @@ JSON example ([posts.json](src/test/resources/testdata/posts.json)):
 ```
 
 **Read it from a test** — the base class ships an `expected(row)` helper that
-returns an [Expected](src/main/java/com/ak/api/data/Expected.java) wrapper
+returns an [Expected](src/main/java/com/hi/api/data/Expected.java) wrapper
 with typed getters:
 
 ```java
@@ -1002,16 +1002,16 @@ Getter surface: `get(k)`, `get(k, fallback)`, `getInt(k)`, `getInt(k, fallback)`
 `getLong(k)`, `getBool(k)`, `has(k)`, `keys()`, `size()`, `asMap()`.
 Typed getters without a fallback fail fast on missing key or unparseable value.
 
-Wired into [PostsCsvDrivenTest](src/test/java/com/ak/api/tests/PostsCsvDrivenTest.java),
-[PostsJsonDrivenTest](src/test/java/com/ak/api/tests/PostsJsonDrivenTest.java),
-and [ParameterizedLoginTest](src/test/java/com/ak/api/tests/ParameterizedLoginTest.java) —
+Wired into [PostsCsvDrivenTest](src/test/java/com/hi/api/tests/PostsCsvDrivenTest.java),
+[PostsJsonDrivenTest](src/test/java/com/hi/api/tests/PostsJsonDrivenTest.java),
+and [ParameterizedLoginTest](src/test/java/com/hi/api/tests/ParameterizedLoginTest.java) —
 each demonstrates the `expected` column driving real assertions.
 
 ### Data-driven tests — CSV + JSON
 
 Modernized replacement for the reference project's OpenCSV `@DataProvider(name="csvData")` in `BaseClass`.
 
-**Data sources** (`com.ak.api.data.CsvDataSource` / `JsonDataSource`) — direct programmatic use:
+**Data sources** (`com.hi.api.data.CsvDataSource` / `JsonDataSource`) — direct programmatic use:
 
 ```java
 // Every row as headers-as-keys map:
@@ -1029,7 +1029,7 @@ List<Map<String,String>> jsub  = JsonDataSource.rows("testdata/posts.json", "row
 List<PostCase> jcases = JsonDataSource.rows("testdata/posts.json", "rows", PostCase.class, 1, Integer.MAX_VALUE);
 ```
 
-**TestNG hookup** (`com.ak.api.data.DataProviders`) — reference by class + name:
+**TestNG hookup** (`com.hi.api.data.DataProviders`) — reference by class + name:
 
 ```java
 @Test(dataProvider = "csvData",  dataProviderClass = DataProviders.class)
@@ -1047,14 +1047,14 @@ Configure the data file per `<test>` block in `testng.xml`:
     <parameter name="dataStartRow" value="1"/>
     <parameter name="dataEndRow"   value="3"/>
     <groups><run><include name="csv"/></run></groups>
-    <classes><class name="com.ak.api.tests.data.PostsCsvDrivenTest"/></classes>
+    <classes><class name="com.hi.api.tests.data.PostsCsvDrivenTest"/></classes>
 </test>
 
 <test name="JsonDriven">
     <parameter name="dataFile"     value="testdata/posts.json"/>
     <parameter name="dataArrayKey" value="rows"/>
     <groups><run><include name="json"/></run></groups>
-    <classes><class name="com.ak.api.tests.data.PostsJsonDrivenTest"/></classes>
+    <classes><class name="com.hi.api.tests.data.PostsJsonDrivenTest"/></classes>
 </test>
 ```
 
@@ -1109,7 +1109,7 @@ logs/<TestClass>.log                 <- class-level banner log (reference-compat
 ## Per-test-case logs (overwritten each run)
 
 Every test method produces a self-contained log at `logs/<TestClass>__<method>.log`
-via the [TestCaseLogListener](src/test/java/com/ak/api/reporting/TestCaseLogListener.java).
+via the [TestCaseLogListener](src/test/java/com/hi/api/reporting/TestCaseLogListener.java).
 Each file contains:
 
 - **Header**: class + method, status (`PASSED` / `FAILED` / `SKIPPED`),
@@ -1150,7 +1150,7 @@ RESPONSE BODY
 
 ## Fake data — net.datafaker
 
-[FakeData](src/main/java/com/ak/api/data/FakeData.java) wraps `net.datafaker`
+[FakeData](src/main/java/com/hi/api/data/FakeData.java) wraps `net.datafaker`
 for the common patterns tests reach for. Every call yields a fresh value:
 
 ```java
@@ -1174,7 +1174,7 @@ Faker escape = FakeData.faker();                    // full library access
 mvn test "-Dgroups=faker" "-Dfake.seed=42"
 ```
 
-[FakerPostsTest](src/test/java/com/ak/api/tests/FakerPostsTest.java) shows the
+[FakerPostsTest](src/test/java/com/hi/api/tests/FakerPostsTest.java) shows the
 end-to-end pipeline: `FakeData.postDataMap()` → `RestUtilities.mapJsonValues()`
 (auto JSON-escapes string values) → POST → assert the server echoed the
 generated values back.
@@ -1296,9 +1296,9 @@ editing the pom or writing a shell script.
 
 ## Migrating from the reference `BatchPaymentAutomation`
 
-Point calling code at `com.ak.api.rest.utilities.RestUtilities` instead of `com.visa.b2b.connect.rest.utilities.RestUtilities`. Method names, argument order, placeholder rules, log file format are identical. `mapJsonValues` picks up strict mode via the new 3-arg overload — pass `strict=true` when you migrate to catch dataMap bugs the reference silently hid.
+Point calling code at `com.hi.api.rest.utilities.RestUtilities` instead of `com.visa.b2b.connect.rest.utilities.RestUtilities`. Method names, argument order, placeholder rules, log file format are identical. `mapJsonValues` picks up strict mode via the new 3-arg overload — pass `strict=true` when you migrate to catch dataMap bugs the reference silently hid.
 
 For domain-specific test data, drop your JSON templates in `src/main/resources/templates/` and feed the dataMap from Excel / CSV / DB / Vault. The reference used Apache POI for Excel; nothing in the utility layer is Excel-specific.
 
-python C:/Users/asuseelakamalas/Downloads/JavaRestAssuredFrameWork-main/tools/ra_converter/ra_converter.py --input tools/ra_converter/input/programaccountregression.xml --clean --output . --package-root com.ak.api --service-name ProgramAccounts --max-name-len 40
-mvn test -Dtest="com.ak.api.tests.imported.accountmemberregression.members.ActivateTest" -DfailIfNoTests=false
+python C:/Users/asuseelakamalas/Downloads/JavaRestAssuredFrameWork-main/tools/ra_converter/ra_converter.py --input tools/ra_converter/input/programaccountregression.xml --clean --output . --package-root com.hi.api --service-name ProgramAccounts --max-name-len 40
+mvn test -Dtest="com.hi.api.tests.imported.accountmemberregression.members.ActivateTest" -DfailIfNoTests=false

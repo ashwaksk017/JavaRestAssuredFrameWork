@@ -22,8 +22,8 @@ WHAT COUNTS AS A VIOLATION
 --------------------------
 A committed (non-generated) file naming a SUITE-SPECIFIC generated type:
 
-    com.ak.api.rest.clients.<Anything>Client   -- one per converted XML
-    com.ak.api.support.<suite>.*               -- per-suite TestSupport etc.
+    com.hi.api.rest.clients.<Anything>Client   -- one per converted XML
+    com.hi.api.support.<suite>.*               -- per-suite TestSupport etc.
 
 Suite-AGNOSTIC generated types are fine: the converter always emits them
 regardless of which XML was converted.
@@ -38,10 +38,10 @@ import sys
 
 # Generated trees -- skipped entirely; they are allowed to be specific.
 GENERATED_DIRS = {
-    os.path.join("src", "main", "java", "com", "ak", "api", "support"),
-    os.path.join("src", "main", "java", "com", "ak", "api", "rest", "clients"),
-    os.path.join("src", "main", "java", "com", "ak", "api", "templates"),
-    os.path.join("src", "test", "java", "com", "ak", "api", "tests", "imported"),
+    os.path.join("src", "main", "java", "com", "hi", "api", "support"),
+    os.path.join("src", "main", "java", "com", "hi", "api", "rest", "clients"),
+    os.path.join("src", "main", "java", "com", "hi", "api", "templates"),
+    os.path.join("src", "test", "java", "com", "hi", "api", "tests", "imported"),
 }
 
 # Emitted for every conversion, so committed code may depend on them.
@@ -51,14 +51,14 @@ SUITE_AGNOSTIC = {
     "CustomerOnboarding", "Insights",
 }
 
-CLIENT_REF = re.compile(r"com\.ak\.api\.rest\.clients\.(\w+)")
-SUITE_SUPPORT_REF = re.compile(r"com\.ak\.api\.support\.([a-z][\w]*)\.(\w+)")
+CLIENT_REF = re.compile(r"com\.hi\.api\.rest\.clients\.(\w+)")
+SUITE_SUPPORT_REF = re.compile(r"com\.hi\.api\.support\.([a-z][\w]*)\.(\w+)")
 
 # A mention inside a comment cannot break compilation.
 LINE_COMMENT = re.compile(r"^\s*(//|\*|/\*)")
 
 
-TEMPLATES_REF = re.compile(r"com\.ak\.api\.templates\.([a-z][\w]*)\.(\w+)")
+TEMPLATES_REF = re.compile(r"com\.hi\.api\.templates\.([a-z][\w]*)\.(\w+)")
 
 
 def _is_generated(path: str) -> bool:
@@ -96,7 +96,7 @@ def scan(root: str = "src"):
                     findings.append((path, i,
                                      f"per-suite support type '{pkg}.{cls}'",
                                      line.strip()[:90]))
-                # `com.ak.api.templates.<suite>.Templates` is per-suite too.
+                # `com.hi.api.templates.<suite>.Templates` is per-suite too.
                 # It was invisible here: the two regexes above cover clients
                 # and support only, so a committed file importing a suite
                 # Templates class passed this gate and then failed `mvn

@@ -22,7 +22,7 @@ import ra_converter  # noqa: E402
 
 
 def _emitter():
-    return ra_converter.Emitter(output_dir=".", package_root="com.ak.api")
+    return ra_converter.Emitter(output_dir=".", package_root="com.hi.api")
 
 
 def test_http_header_exists_is_converted():

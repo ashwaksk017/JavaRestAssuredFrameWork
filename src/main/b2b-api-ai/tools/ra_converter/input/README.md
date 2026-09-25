@@ -6,7 +6,7 @@ Drop your ReadyAPI / SoapUI project XMLs here, then run the converter.
 python tools/ra_converter/ra_converter.py `
     --input tools/ra_converter/input `
     --output . `
-    --package-root com.ak.api `
+    --package-root com.hi.api `
     --clean `
     --max-name-len 40 `
     --no-cursor-assist

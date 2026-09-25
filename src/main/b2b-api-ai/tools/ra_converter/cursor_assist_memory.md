@@ -176,9 +176,9 @@ Diff output format options
 
 ```
 ?? .cursor/skills/readyapi-restassured-migration/
-?? src/main/java/com/ak/api/db/Db.java
-?? src/main/java/com/ak/api/rest/utilities/AuthHelper.java
-?? src/main/java/com/ak/api/rest/utilities/ResponseAsserts.java
+?? src/main/java/com/hi/api/db/Db.java
+?? src/main/java/com/hi/api/rest/utilities/AuthHelper.java
+?? src/main/java/com/hi/api/rest/utilities/ResponseAsserts.java
 ?? tools/ra_converter/cursor_assist.py
 ?? tools/ra_converter/cursor_assist_memory.md
 ?? tools/ra_converter/fluent_scenario.py

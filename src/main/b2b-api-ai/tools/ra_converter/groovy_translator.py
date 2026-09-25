@@ -222,7 +222,7 @@ def _emit_def_publications(script: str, bindings: dict, ctx: dict,
         # ctxGet's alias-walk.
         out.extend([
             f'{{',
-            f'    String __ext_{new_var} = com.ak.api.rest.utilities.RestUtilities.safeJsonExtract('
+            f'    String __ext_{new_var} = com.hi.api.rest.utilities.RestUtilities.safeJsonExtract('
             f'{resp}, "{info["jsonpath"]}");',
             f'    if (__ext_{new_var} == null || __ext_{new_var}.isEmpty()) {{',
             f'        LOG.warn("Salesforce/OAuth token empty after '
@@ -265,7 +265,7 @@ def _emit_def_publications(script: str, bindings: dict, ctx: dict,
         # every downstream URL substitution.
         out.append(
             f'TestSupport.putExtracted(ctx, "{dest_key}", '
-            f'com.ak.api.rest.utilities.RestUtilities.safeJsonExtract('
+            f'com.hi.api.rest.utilities.RestUtilities.safeJsonExtract('
             f'{resp}, "{info["jsonpath"]}"));')
         published.add(var_name)
 
@@ -444,7 +444,7 @@ def _emit_token_extract(m: re.Match, ctx: dict) -> list[str]:
     return [
         f'// [translated] extract {field} from {step_name} response',
         f'String extractedToken = {prefix}'
-        f'com.ak.api.rest.utilities.RestUtilities.safeJsonExtract('
+        f'com.hi.api.rest.utilities.RestUtilities.safeJsonExtract('
         f'{resp}, "{field}");',
         f'TestSupport.putExtracted(ctx, "tokenId.GeneratedTokenID", extractedToken);',
         f'LOG.info("token extracted: {{}}", (extractedToken == null || extractedToken.isEmpty()) ? "null/empty" : "<redacted>");',
@@ -686,7 +686,7 @@ def _var_backed_publications(script: str) -> dict:
         items = re.findall(r"""(['"])((?:[^'"\\]|\\.)*)\1""", lm.group(1))
         values = [v for _q, v in items if v]
         if values:
-            picks[var] = ("com.ak.api.data.FakeData.oneOf("
+            picks[var] = ("com.hi.api.data.FakeData.oneOf("
                           + ", ".join('"%s"' % _java_escape(v) for v in values) + ")")
     literals = {m.group(1): m.group(3) for m in _VAR_LITERAL_RX.finditer(script)
                 if m.group(3)}
@@ -1061,7 +1061,7 @@ def _emit_incomplete_guestid_extract(
         '// [translated] incomplete guestId script -- infer '
         'resp_obj.guestId -> PropertiesGuestId.guestId',
         'TestSupport.putExtracted(ctx, "PropertiesGuestId.guestId", '
-        f'com.ak.api.rest.utilities.RestUtilities.safeJsonExtract('
+        f'com.hi.api.rest.utilities.RestUtilities.safeJsonExtract('
         f'{resp_var}, "guestId"));',
     ]
 
@@ -1401,7 +1401,7 @@ def _translate_soapui_ref_to_java_expr(
             resp_var = (response_var_by_step or {}).get(step_safe)
         if resp_var:
             jp = _translate_soapui_jsonpath(path)
-            return (f'com.ak.api.rest.utilities.RestUtilities'
+            return (f'com.hi.api.rest.utilities.RestUtilities'
                     f'.safeJsonExtract({resp_var}, "{jp}")')
         # Response var out of scope: read it from ctx instead.
         #
@@ -1590,7 +1590,7 @@ def translate(script: str, response_var_by_step: dict[str, str],
             '// [translated] generateRandomEmail',
             '{',
             '    String genEmail = FakeData.username() + "@" + '
-            'com.ak.api.config.Config.get("ALLOWED_DOMAIN", "example.com");',
+            'com.hi.api.config.Config.get("ALLOWED_DOMAIN", "example.com");',
             f'    TestSupport.putExtracted(ctx, "Properties.{field}", genEmail);',
             '}',
         ])
@@ -1612,7 +1612,7 @@ def translate(script: str, response_var_by_step: dict[str, str],
         lines.append(
             f'// [translated] room_rate_plan_script from step {resp_name}')
         lines.append(
-            f'com.ak.api.rest.utilities.RestUtilities'
+            f'com.hi.api.rest.utilities.RestUtilities'
             f'.extractRatePlanRoomTypePairs(ctx, {resp_var}, "{ns}");')
         patterns_matched.append("room_rate_plan_pairs")
         consumed = True
@@ -1787,7 +1787,7 @@ def translate(script: str, response_var_by_step: dict[str, str],
                 # ctxGet's alias-walk and cascade `//` empty segments).
                 lines.append(
                     f'TestSupport.putExtracted(ctx, "{_ctx_key(target_step, field)}", '
-                    f'com.ak.api.rest.utilities.RestUtilities.safeJsonExtract('
+                    f'com.hi.api.rest.utilities.RestUtilities.safeJsonExtract('
                     f'{resp_var}, "{path}"));')
                 if "setproperty_extract" not in patterns_matched:
                     patterns_matched.append("setproperty_extract")
@@ -2927,7 +2927,7 @@ def translate(script: str, response_var_by_step: dict[str, str],
                     # Db.execute\'s own refuse-WARN (two lines that read as
                     # "we ran it and then it failed" when we actually never
                     # attempted it).
-                    f'        String __jdbcReason = com.ak.api.db.Db.unsafeSqlReason(__jdbcSql);',
+                    f'        String __jdbcReason = com.hi.api.db.Db.unsafeSqlReason(__jdbcSql);',
                     f'        if (__jdbcReason != null) {{',
                     f'            LOG.warn(" .. jdbc SKIPPED ({{}}): {{}}", '
                     f'__jdbcReason, __jdbcSql);',
@@ -3401,13 +3401,13 @@ def translate(script: str, response_var_by_step: dict[str, str],
             # env or misconfigured connection) is visible even when the
             # branch takes "not configured" path.
             f'    LOG.info(" .. jdbc Db.isConfigured={{}} dbUrl={{}}", Db.isConfigured(), '
-            f'com.ak.api.config.Config.get("db.url", com.ak.api.config.Config.get("DB_URL", "<unset>")));',
+            f'com.hi.api.config.Config.get("db.url", com.hi.api.config.Config.get("DB_URL", "<unset>")));',
             f'    if (Db.isConfigured()) {{',
             f'        try {{',
             f'            String __jdbcSql = RestUtilities.mapSqlValues('
             f'{java_query}, TestSupport.mergedRow(row, ctx), ctx);',
             # sql.eachRow dispatches to Db.queryAll -- ForQuery variant.
-            f'            String __jdbcReason = com.ak.api.db.Db.unsafeSqlReasonForQuery(__jdbcSql);',
+            f'            String __jdbcReason = com.hi.api.db.Db.unsafeSqlReasonForQuery(__jdbcSql);',
             f'            if (__jdbcReason != null) {{',
             f'                LOG.warn(" .. jdbc SKIPPED ({{}}): {{}}", '
             f'__jdbcReason, __jdbcSql);',
@@ -3572,7 +3572,7 @@ def translate(script: str, response_var_by_step: dict[str, str],
             lines.append(
                 f'                    if (__otp_attempt < __otp_max) {{')
             lines.append(
-                f'                        com.ak.api.retry.Poller.delay(2000L, "OTP poll");')
+                f'                        com.hi.api.retry.Poller.delay(2000L, "OTP poll");')
             lines.append(
                 f'                    }} else {{')
             lines.append(

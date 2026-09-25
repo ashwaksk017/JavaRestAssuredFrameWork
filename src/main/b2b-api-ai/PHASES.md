@@ -47,7 +47,7 @@ declaring intent, which is why this does not violate the
 
 ## Every canonical phase
 
-✅ = already callable on `com.ak.api.dsl.CustomerOnboarding`.
+✅ = already callable on `com.hi.api.dsl.CustomerOnboarding`.
 The rest are named and reachable from imported suites; add a DSL
 wrapper when you need one for hand-written tests.
 

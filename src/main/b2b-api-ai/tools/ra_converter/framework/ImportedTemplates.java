@@ -1,6 +1,6 @@
-package com.ak.api.support;
+package com.hi.api.support;
 
-// ra_converter-framework-rev: 2
+// ra_converter-framework-rev: 3
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -23,7 +23,7 @@ public final class ImportedTemplates {
                     "ImportedScenario.bind(..., suiteName) was not called");
         }
         try {
-            return (String) Class.forName("com.ak.api.templates." + suite + ".Templates")
+            return (String) Class.forName("com.hi.api.templates." + suite + ".Templates")
                     .getField(name)
                     .get(null);
         } catch (ReflectiveOperationException e) {

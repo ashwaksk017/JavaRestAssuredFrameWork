@@ -104,7 +104,7 @@ def test_owner_vs_member_enroll_do_not_share_a_tier2_template():
 
 def test_existence_match_polarity_is_per_assertion_not_global():
     """6801 GET-after-update is content=false; other cases stay exists."""
-    emitter = ra_converter.Emitter(output_dir=".", package_root="com.ak.api")
+    emitter = ra_converter.Emitter(output_dir=".", package_root="com.hi.api")
     absent = ra_converter.Assertion(
         type="JsonPath Existence Match",
         name="Check for existence of [pendingEmailAddress]",

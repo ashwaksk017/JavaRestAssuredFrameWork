@@ -36,7 +36,7 @@ Files likely in play (trim to what this rescue needs):
 ## Reconvert (only after emit change)
 
 ```bash
-python tools/ra_converter/ra_converter.py --input tools/ra_converter/input --output . --package-root com.ak.api --clean --max-name-len 40
+python tools/ra_converter/ra_converter.py --input tools/ra_converter/input --output . --package-root com.hi.api --clean --max-name-len 40
 ```
 
 Or one XML with a unique `--service-name`. Snapshot `Suites/*_Smoke.xml` first; restore if rewritten.

@@ -68,7 +68,7 @@ def inlined_columns(root):
     found = set()
     rx = re.compile(r'row\.get\("(expected_[^"]+)"\)')
     for sub in ("support", "data", "rest"):
-        base = os.path.join(root, "src", "main", "java", "com", "ak", "api", sub)
+        base = os.path.join(root, "src", "main", "java", "com", "hi", "api", sub)
         for dirpath, _d, files in os.walk(base):
             for fn in files:
                 if fn.endswith(".java"):
@@ -100,7 +100,7 @@ JAVA_GUARDS = (
     # suite for the cache TTL (observed: 7,554 rejections in one run).
     ("RestStep.java", "AuthDiagnostics.invalidateCachedTokens(",
      "a rejected token must be cleared, or one revocation cascades"),
-    ("AuthDiagnostics.java", "com.ak.api.auth.TokenCache.clear()",
+    ("AuthDiagnostics.java", "com.hi.api.auth.TokenCache.clear()",
      "must clear TokenCache.HELD -- clearing only AuthUtilities' cache "
      "misses where this suite's token actually lives"),
     # Asserting a literal "#Key#" against a body can only ever be false.
@@ -119,7 +119,7 @@ def main():
     problems = []
 
     # 1. Java-side guards.
-    jroot = os.path.join(root, "src", "main", "java", "com", "ak", "api")
+    jroot = os.path.join(root, "src", "main", "java", "com", "hi", "api")
     for fname, needle, why in JAVA_GUARDS:
         hit = False
         for dirpath, _d, files in os.walk(jroot):

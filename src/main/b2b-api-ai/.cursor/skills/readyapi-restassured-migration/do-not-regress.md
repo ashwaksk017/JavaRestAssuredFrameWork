@@ -20,12 +20,12 @@ Keep these behaviors when touching converter or helpers.
 | Token fetch in setup, not a `@Test` | `AuthHelper` / `SetupHelper.flow_A` |
 | PerMethod CSV keeps multiline JSON cells | `PerMethodCsvDataProvider` |
 | `--clean` does not delete `support/scenario/` or `fluent_catalog.json` | `ra_converter.py` |
-| Credentials render only from `program_configuration.json`; every sink (Extent, per-test logs, console, Allure) redacts via `Secrets.redact` | `com.ak.api.security.Secrets` + `SecretRedactingRewritePolicy` |
+| Credentials render only from `program_configuration.json`; every sink (Extent, per-test logs, console, Allure) redacts via `Secrets.redact` | `com.hi.api.security.Secrets` + `SecretRedactingRewritePolicy` |
 | `AllureRestAssured` must NOT be re-wired in `BaseApiTest` -- it attaches bodies verbatim; use `AllureRedactingFilter` | `BaseApiTest.bootstrapRestAssured` |
 | log4j2 loggers reference the `Console` Rewrite appender, never `ConsoleRaw` | `src/test/resources/log4j2.xml` |
 | Fluent phase names come from `phase_vocabulary.canonical_name(verb, FULL path)` -- never from the first two path segments, or a sub-resource gets swallowed by its parent | `tools/ra_converter/phase_vocabulary.py` |
 | `fluent_catalog.json` carries `vocabularyVersion`; a mismatch discards stale `phases` (keeps `clientMethods`). Do not remove the stamp or old counter-suffixed names re-seed | `fluent_scenario.load_fluent_catalog` |
-| Role/partner aliases (`enrollOwner`, `createH4LAccount`) exist ONLY on the hand-authoring DSL. The converter still emits the neutral phase + CSV-driven role | `com.ak.api.dsl.CustomerOnboarding` |
+| Role/partner aliases (`enrollOwner`, `createH4LAccount`) exist ONLY on the hand-authoring DSL. The converter still emits the neutral phase + CSV-driven role | `com.hi.api.dsl.CustomerOnboarding` |
 | Hand-written tests live in `tests/manual/` and must not depend on generated `support/` types | `OnboardingE2ETest` |
 | Emitted class-name collisions are checked CASE-INSENSITIVELY. A case-only clash silently clobbers one class on Windows/macOS (file path is derived from the class name) | `Emitter.emit_test_class_per_suite` |
 | `Db.unsafeSqlReason` refuses blank, quote-only, unbalanced-quote and unbalanced-paren SQL. Doubled quotes (`'it''s'`) are SQL escapes and must still PASS | `Db.java` + `DbSqlGuardTest` |
@@ -48,4 +48,4 @@ Run `--full` before any reconvert or commit.
 Converter tests that lock these: `tools/ra_converter/test_converter_fixes.py`, `tools/ra_converter/test_cross_case_contracts.py`.
 Vocabulary is locked by `python tools/ra_converter/phase_vocabulary.py` (self-test).
 SQL guards are locked by `mvn test "-DsuiteXmlFile=src/test/resources/testng-guards.xml"`.
-Redaction is locked by `com.ak.api.tests.security.SecretsRedactionTest` (`mvn test "-DsuiteXmlFile=src/test/resources/testng-security.xml"`).
+Redaction is locked by `com.hi.api.tests.security.SecretsRedactionTest` (`mvn test "-DsuiteXmlFile=src/test/resources/testng-security.xml"`).

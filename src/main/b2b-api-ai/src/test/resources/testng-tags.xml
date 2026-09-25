@@ -41,10 +41,10 @@
 <suite name="ApiAutomationSuite-Tags" verbose="1" parallel="classes" thread-count="4">
 
     <listeners>
-        <listener class-name="com.ak.api.reporting.TestSuiteListener"/>
-        <listener class-name="com.ak.api.reporting.TestCaseLogListener"/>
-        <listener class-name="com.ak.api.reporting.ExtentReportListener"/>
-        <listener class-name="com.ak.api.reporting.GitLabReportListener"/>
+        <listener class-name="com.hi.api.reporting.TestSuiteListener"/>
+        <listener class-name="com.hi.api.reporting.TestCaseLogListener"/>
+        <listener class-name="com.hi.api.reporting.ExtentReportListener"/>
+        <listener class-name="com.hi.api.reporting.GitLabReportListener"/>
     </listeners>
 
     <!-- Parameters used by data-driven providers; harmless if a test doesn't need them. -->
@@ -55,22 +55,22 @@
 
     <test name="All-By-Tag">
         <classes>
-            <class name="com.ak.api.tests.samples.PostsSmokeTests"/>
-            <class name="com.ak.api.tests.data.PostsDataDrivenTest"/>
-            <class name="com.ak.api.tests.data.PostsCsvDrivenTest"/>
-            <class name="com.ak.api.tests.data.PostsJsonDrivenTest"/>
-            <class name="com.ak.api.tests.data.ParameterizedLoginTest"/>
-            <class name="com.ak.api.tests.samples.AuthTests"/>
-            <class name="com.ak.api.tests.samples.HeadersFromFileTests"/>
-            <class name="com.ak.api.tests.samples.DemoWebshopLoginTest"/>
-            <class name="com.ak.api.tests.samples.JsonPathDemoTests"/>
-            <class name="com.ak.api.tests.data.FakerPostsTest"/>
-            <class name="com.ak.api.tests.framework.CtxFieldsTest"/>
-            <class name="com.ak.api.tests.framework.ResponseAssertsTest"/>
-            <class name="com.ak.api.tests.framework.RestStepTest"/>
-            <class name="com.ak.api.tests.framework.AuthDigestAccuracyTest"/>
-            <class name="com.ak.api.tests.framework.MemberEmailAndPollStopTest"/>
-            <class name="com.ak.api.tests.db.DbPollTest"/>
+            <class name="com.hi.api.tests.samples.PostsSmokeTests"/>
+            <class name="com.hi.api.tests.data.PostsDataDrivenTest"/>
+            <class name="com.hi.api.tests.data.PostsCsvDrivenTest"/>
+            <class name="com.hi.api.tests.data.PostsJsonDrivenTest"/>
+            <class name="com.hi.api.tests.data.ParameterizedLoginTest"/>
+            <class name="com.hi.api.tests.samples.AuthTests"/>
+            <class name="com.hi.api.tests.samples.HeadersFromFileTests"/>
+            <class name="com.hi.api.tests.samples.DemoWebshopLoginTest"/>
+            <class name="com.hi.api.tests.samples.JsonPathDemoTests"/>
+            <class name="com.hi.api.tests.data.FakerPostsTest"/>
+            <class name="com.hi.api.tests.framework.CtxFieldsTest"/>
+            <class name="com.hi.api.tests.framework.ResponseAssertsTest"/>
+            <class name="com.hi.api.tests.framework.RestStepTest"/>
+            <class name="com.hi.api.tests.framework.AuthDigestAccuracyTest"/>
+            <class name="com.hi.api.tests.framework.MemberEmailAndPollStopTest"/>
+            <class name="com.hi.api.tests.db.DbPollTest"/>
         </classes>
     </test>
 

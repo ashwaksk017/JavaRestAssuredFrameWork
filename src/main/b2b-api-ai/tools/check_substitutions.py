@@ -126,7 +126,7 @@ def config_keys(root: str) -> set:
     producer reported them as broken.
     """
     keys: set = set()
-    cfg = _read(os.path.join(root, "src/main/java/com/ak/api/config/Config.java"))
+    cfg = _read(os.path.join(root, "src/main/java/com/hi/api/config/Config.java"))
     keys |= set(re.findall(r'LEGACY_ALIASES\.put\("([^"]+)"', cfg))
     keys |= set(re.findall(r'Config\.get\("([^"]+)"', cfg))
     for path in _walk_java(os.path.join(root, "src/main/java")):

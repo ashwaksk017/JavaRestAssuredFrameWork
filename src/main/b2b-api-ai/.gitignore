@@ -59,16 +59,16 @@ program_configuration.json
 # flow diagrams, suite XMLs) leak customer-internal API details --
 # endpoint paths, request/response schemas, test-case IDs, hardcoded
 # usernames/emails/IDs. Keep them purely local. Framework files under
-# src/main/java/com/ak/api/{data,reporting,rest/utilities,tests/BaseApiTest}
+# src/main/java/com/hi/api/{data,reporting,rest/utilities,tests/BaseApiTest}
 # and tools/ra_converter/*.py are committed; suite-scoped outputs below
 # are not.
 _audit/
 _flows/
 tools/ra_converter/converter.config.local.json
 Suites/
-src/main/java/com/ak/api/rest/clients/
-src/main/java/com/ak/api/support/
-src/main/java/com/ak/api/templates/
+src/main/java/com/hi/api/rest/clients/
+src/main/java/com/hi/api/support/
+src/main/java/com/hi/api/templates/
 src/main/resources/templates/
 # The OpenAPI spec the pom feeds to openapi-generator at
 # generate-sources. It is a vendor API contract (endpoint paths,
@@ -87,7 +87,7 @@ src/main/resources/openapi/*
 src/main/resources/test_data_defaults/
 src/main/resources/converter_identity.json
 src/main/resources/config/
-src/test/java/com/ak/api/tests/imported/
+src/test/java/com/hi/api/tests/imported/
 src/test/resources/csv/
 src/test/resources/testng-b2b-*.xml
 # Loose top-level request-body templates left over from earlier runs

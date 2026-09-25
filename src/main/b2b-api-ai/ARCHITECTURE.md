@@ -5,7 +5,7 @@ written by hand versus emitted by the converter.
 
 The single most important rule when reading this repo:
 
-> **Everything under `src/main/java/com/ak/api/support/`, `tests/imported/`,
+> **Everything under `src/main/java/com/hi/api/support/`, `tests/imported/`,
 > `src/test/resources/csv/`, `templates/`, `Suites/`, `_audit/` and `_flows/`
 > is GENERATED and gitignored.** It is rewritten on every convert and must
 > never be hand-edited — `--clean` deletes it.
@@ -126,16 +126,16 @@ per class instead cost ~18k duplicated lines.
 Hand-written tests use the **DSL**, not the generated classes:
 
 ```java
-import com.ak.api.dsl.CustomerOnboarding;   // hand-written, committed
+import com.hi.api.dsl.CustomerOnboarding;   // hand-written, committed
 ```
 
-`com/ak/api/dsl/` is deliberately independent of converter output. As its
+`com/hi/api/dsl/` is deliberately independent of converter output. As its
 own javadoc puts it: `ScenarioSteps` is converter output, regenerated and
 gitignored, so the DSL depends only on committed framework pieces
 (`RestStep`, the domain facades, `ImportedScenario`).
 
 **A converter run therefore cannot break hand-written tests.** Manual
-tests live in `src/test/java/com/ak/api/tests/manual/` and `…/dsl/`, are
+tests live in `src/test/java/com/hi/api/tests/manual/` and `…/dsl/`, are
 tracked in git, and are never touched by `--clean`.
 
 ## 6. Running the converter
@@ -145,19 +145,19 @@ tracked in git, and are never touched by `--clean`.
 # every imported suite at once
 python tools/ra_converter/ra_converter.py \
     --input tools/ra_converter/input \
-    --output . --package-root com.ak.api --clean --max-name-len 40
+    --output . --package-root com.hi.api --clean --max-name-len 40
 
 # one suite only
 python tools/ra_converter/ra_converter.py \
     --input tools/ra_converter/input/<suite>.xml \
-    --output . --package-root com.ak.api --clean --max-name-len 40
+    --output . --package-root com.hi.api --clean --max-name-len 40
 
 # opt out of phase-spec emission
 ... --no-phase-specs
 
 # framework types only, no XML -- makes a fresh clone compile so a
 # hand-written test can be authored before anything is converted
-python tools/ra_converter/ra_converter.py --bootstrap --output . --package-root com.ak.api
+python tools/ra_converter/ra_converter.py --bootstrap --output . --package-root com.hi.api
 ```
 
 `--bootstrap` exists because `support/` is generated and gitignored while the

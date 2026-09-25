@@ -47,8 +47,8 @@ def test_lines_outside_the_closed_set_go_to_the_hook():
 
 def test_a_transfer_extract_on_the_current_response_becomes_a_spec_extract():
     lines = _body("runVerifyVerify8") + [
-        '        TestSupport.putExtracted(ctx, "Properties.guestID", com.ak.api.rest.utilities.RestUtilities.safeJsonExtract(https_Get_verify_200Res, "guestId"));',
-        '        TestSupport.putExtracted(ctx, "Other", com.ak.api.rest.utilities.RestUtilities.safeJsonExtract(otherRes, "x"));',
+        '        TestSupport.putExtracted(ctx, "Properties.guestID", com.hi.api.rest.utilities.RestUtilities.safeJsonExtract(https_Get_verify_200Res, "guestId"));',
+        '        TestSupport.putExtracted(ctx, "Other", com.hi.api.rest.utilities.RestUtilities.safeJsonExtract(otherRes, "x"));',
     ]
     sp = pe.split_rest_body(lines, "https_Get_verify_200Res", "https_Get_verify_200")
     assert sp.extracts == [("Properties.guestID", "guestId", "json")]
@@ -58,7 +58,7 @@ def test_a_transfer_extract_on_the_current_response_becomes_a_spec_extract():
 def test_refs_parse_from_the_renderers_expressions():
     assert pe.parse_ref('TestSupport.ctxGet(ctx, "PropertiesDetails.accountID")', {}) == ("ctx", "PropertiesDetails.accountID")
     assert pe.parse_ref('ctx.getOrDefault("tokenId.GeneratedTokenID", "")', {}) == ("ctx", "tokenId.GeneratedTokenID")
-    assert pe.parse_ref('com.ak.api.rest.utilities.RestUtilities.safeJsonExtract(http_request_200_enroll_guestRes, "guestId")', V2S) \
+    assert pe.parse_ref('com.hi.api.rest.utilities.RestUtilities.safeJsonExtract(http_request_200_enroll_guestRes, "guestId")', V2S) \
         == ("resp", "http_request_200_enroll_guest", "guestId")
     assert pe.parse_ref('row.getOrDefault("path_x_id", "8888888888")', {}) == ("row", "path_x_id", "8888888888")
     assert pe.parse_ref('""', {}) == ("lit", "")
@@ -135,7 +135,7 @@ def test_phases_class_registers_each_case_once():
     """A Phases class is registration only: refs in, no builders."""
     j = pe.phases_class_java(
         "com.x.cases", "FooTestPhases",
-        ["com.ak.api.rest.utilities.phase.CaseRegistry"], [
+        ["com.hi.api.rest.utilities.phase.CaseRegistry"], [
             {"case": "B2B-1_a", "entries": [
                 {"vocab": "enrollGuest", "step": "HHonorsEnroll",
                  "verify": False, "spec_javas": ["Specs1::spec1"]},

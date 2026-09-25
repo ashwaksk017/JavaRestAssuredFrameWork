@@ -1,6 +1,6 @@
-package com.ak.api.support;
+package com.hi.api.support;
 
-// ra_converter-framework-rev: 3
+// ra_converter-framework-rev: 4
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -12,8 +12,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 
-import com.ak.api.config.Config;
-import com.ak.api.db.Db;
+import com.hi.api.config.Config;
+import com.hi.api.db.Db;
 
 /**
  * Harvests this-test-only identity from an imported test's {@code ctx}

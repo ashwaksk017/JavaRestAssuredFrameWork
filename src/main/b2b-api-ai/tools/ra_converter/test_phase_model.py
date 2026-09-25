@@ -151,7 +151,7 @@ def _rest_step(**over):
 
 
 def _emitter():
-    em = ra_converter.Emitter(output_dir=".", package_root="com.ak.api",
+    em = ra_converter.Emitter(output_dir=".", package_root="com.hi.api",
                               suite_name="unit")
     em._reset_per_method_state()
     em._current_case = "B2B-1_unit"

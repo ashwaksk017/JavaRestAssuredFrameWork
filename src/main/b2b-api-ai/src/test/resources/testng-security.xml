@@ -10,7 +10,7 @@
 <suite name="SecurityRedaction">
     <test name="SecretsRedaction">
         <classes>
-            <class name="com.ak.api.tests.security.SecretsRedactionTest"/>
+            <class name="com.hi.api.tests.security.SecretsRedactionTest"/>
         </classes>
     </test>
 </suite>

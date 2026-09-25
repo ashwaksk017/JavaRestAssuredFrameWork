@@ -39,8 +39,8 @@ import sys
 from collections import Counter
 
 GENERATED_ROOTS = [
-    os.path.join("src", "main", "java", "com", "ak", "api", "support"),
-    os.path.join("src", "test", "java", "com", "ak", "api", "tests", "imported"),
+    os.path.join("src", "main", "java", "com", "hi", "api", "support"),
+    os.path.join("src", "test", "java", "com", "hi", "api", "tests", "imported"),
 ]
 
 CLASS_DECL = re.compile(r"^\s*public\s+(?:final\s+|abstract\s+)?"
@@ -281,7 +281,7 @@ def main() -> int:
     import glob
     in_dir = os.path.join(args.root, "tools", "ra_converter", "input")
     support = os.path.join(args.root, "src", "main", "java",
-                           "com", "ak", "api", "support")
+                           "com", "hi", "api", "support")
     xmls = [x for x in glob.glob(os.path.join(in_dir, "*.xml"))]
     for xml in xmls:
         suite = os.path.splitext(os.path.basename(xml))[0].lower()

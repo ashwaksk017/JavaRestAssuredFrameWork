@@ -1,6 +1,6 @@
-package com.ak.api.support;
+package com.hi.api.support;
 
-// ra_converter-framework-rev: 23
+// ra_converter-framework-rev: 24
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -28,11 +28,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testng.asserts.SoftAssert;
 
-import com.ak.api.auth.TokenCache;
-import com.ak.api.config.Config;
-import com.ak.api.data.FakeData;
-import com.ak.api.data.PlaceholderResolver;
-import com.ak.api.rest.utilities.RestLoggerUtilityDataHolder;
+import com.hi.api.auth.TokenCache;
+import com.hi.api.config.Config;
+import com.hi.api.data.FakeData;
+import com.hi.api.data.PlaceholderResolver;
+import com.hi.api.rest.utilities.RestLoggerUtilityDataHolder;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -42,7 +42,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * <p>Generated {@code CustomerOnboarding.start(row)} (and per-case Support)
  * reach the test's client, ctx, softAssert, and holder without putting
  * those parameters on every {@code @Test}. Shared fluent steps in
- * {@code com.ak.api.support.scenario} call these methods so they are not
+ * {@code com.hi.api.support.scenario} call these methods so they are not
  * compiled against one suite's {@code TestSupport}.</p>
  *
  * <p>RestStep and CtxFields call helpers here rather than a suite
@@ -318,7 +318,7 @@ public final class ImportedScenario {
         // branch above returns early): a blank id is often the point of a
         // negative test, and filling it from a sibling would turn an expected
         // 400 into a 200 -- silently weakening the assertion.
-        String declared = com.ak.api.context.ScenarioContext.resolveDeclared(
+        String declared = com.hi.api.context.ScenarioContext.resolveDeclared(
                 ctx, primaryKey);
         if (declared != null && !declared.isEmpty()) {
             return declared;
@@ -694,7 +694,7 @@ public final class ImportedScenario {
         }
         try {
             java.lang.reflect.Field f = Class.forName(
-                    "com.ak.api.support." + suite + ".TestSupport")
+                    "com.hi.api.support." + suite + ".TestSupport")
                     .getDeclaredField("CONFIG_KEYS");
             f.setAccessible(true);
             Object v = f.get(null);
@@ -715,10 +715,10 @@ public final class ImportedScenario {
                                 String testCaseId) {
         String suite = requireSuite();
         try {
-            Class<?> helper = Class.forName("com.ak.api.support." + suite + ".SetupHelper");
+            Class<?> helper = Class.forName("com.hi.api.support." + suite + ".SetupHelper");
             for (java.lang.reflect.Method m : helper.getMethods()) {
                 if (flowId.equals(m.getName()) && m.getParameterCount() == 6) {
-                    m.invoke(null, com.ak.api.domain.DomainApis.unwrapRaw(client),
+                    m.invoke(null, com.hi.api.domain.DomainApis.unwrapRaw(client),
                             ctx, row, softAssert, holder, testCaseId);
                     return;
                 }
@@ -779,7 +779,7 @@ public final class ImportedScenario {
         // INFO it emitted roughly 950 lines per step -- enough to truncate
         // a run log and bury the request/response lines that matter.
         if (!LOG.isDebugEnabled()) {
-            LOG.info(" .. [ctx@{}] {} keys (enable DEBUG on com.ak.api"
+            LOG.info(" .. [ctx@{}] {} keys (enable DEBUG on com.hi.api"
                     + " for the full dump)", tag, sorted.size());
             return;
         }
@@ -1378,7 +1378,7 @@ public final class ImportedScenario {
         // The CSV values are a FROZEN snapshot of what ReadyAPI's Groovy
         // picked live from account_rules. Offer the live rows instead when
         // that is switched on; returns the CSV values untouched otherwise.
-        String[] resolved = com.ak.api.db.repo.DomainRules.overrideOrCsv(row, d1, d2);
+        String[] resolved = com.hi.api.db.repo.DomainRules.overrideOrCsv(row, d1, d2);
         boolean live1 = resolved[0] != null && !resolved[0].equals(d1);
         boolean live2 = resolved[1] != null && !resolved[1].equals(d2);
         d1 = resolved[0];

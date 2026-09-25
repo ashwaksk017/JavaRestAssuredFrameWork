@@ -338,7 +338,7 @@ def analyse(root: str) -> tuple:
     # the check cannot see which chained name is a spec, and a spec's
     # extracts are, by construction, the extracts its old body had.
     spec_keys, spec_wild = spec_producers(root)
-    tests_root = os.path.join(root, "src/test/java/com/ak/api/tests/imported")
+    tests_root = os.path.join(root, "src/test/java/com/hi/api/tests/imported")
     for path in _walk_java(tests_root):
         text = _read(path)
         if ".start(row" not in text:

@@ -11,10 +11,10 @@
 <suite name="ApiAutomationSuite-Smoke" verbose="1" parallel="classes" thread-count="2">
 
     <listeners>
-        <listener class-name="com.ak.api.reporting.TestSuiteListener"/>
-        <listener class-name="com.ak.api.reporting.TestCaseLogListener"/>
-        <listener class-name="com.ak.api.reporting.ExtentReportListener"/>
-        <listener class-name="com.ak.api.reporting.GitLabReportListener"/>
+        <listener class-name="com.hi.api.reporting.TestSuiteListener"/>
+        <listener class-name="com.hi.api.reporting.TestCaseLogListener"/>
+        <listener class-name="com.hi.api.reporting.ExtentReportListener"/>
+        <listener class-name="com.hi.api.reporting.GitLabReportListener"/>
     </listeners>
 
     <test name="Smoke-Only">
@@ -24,7 +24,7 @@
             </run>
         </groups>
         <classes>
-            <class name="com.ak.api.tests.samples.PostsSmokeTests"/>
+            <class name="com.hi.api.tests.samples.PostsSmokeTests"/>
         </classes>
     </test>
 

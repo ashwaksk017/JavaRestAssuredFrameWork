@@ -1,6 +1,6 @@
-package com.ak.api.support;
+package com.hi.api.support;
 
-// ra_converter-framework-rev: 1
+// ra_converter-framework-rev: 2
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by

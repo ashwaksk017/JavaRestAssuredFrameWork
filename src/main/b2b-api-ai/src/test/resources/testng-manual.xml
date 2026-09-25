@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">
 <!--
-  Hand-written tests (com.ak.api.tests.manual).
+  Hand-written tests (com.hi.api.tests.manual).
 
     mvn test "-DsuiteXmlFile=src/test/resources/testng-manual.xml"
 
@@ -11,7 +11,7 @@
   testng-guards.xml, which is committed for the same reason.
 
   The trailing `.*` is REQUIRED, not cosmetic. A plain
-  <package name="com.ak.api.tests.manual"/> does NOT recurse: measured on
+  <package name="com.hi.api.tests.manual"/> does NOT recurse: measured on
   TestNG 7.10.2, a class in a sub-package was silently skipped by the plain
   form and picked up by `.*` (41 vs 42 tests on an identical tree). Since
   CreateTestCase.md tells authors to use an optional <area>/ sub-folder,
@@ -24,7 +24,7 @@
 <suite name="Manual" configfailurepolicy="continue">
     <test name="Manual">
         <packages>
-            <package name="com.ak.api.tests.manual.*"/>
+            <package name="com.hi.api.tests.manual.*"/>
         </packages>
     </test>
 </suite>

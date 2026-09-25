@@ -1,6 +1,6 @@
 """Find generated methods that are the SAME CALL with different data.
 
-    python tools/ra_converter/dedup_report.py [--root .] [--package-root com.ak.api]
+    python tools/ra_converter/dedup_report.py [--root .] [--package-root com.hi.api]
                                               [--out target/dedup-report.txt] [--min 2]
 
 Runs on the EMITTED Java after a conversion -- no converter state needed,
@@ -409,7 +409,7 @@ def write_audit(root: str, package_root: str, suite_name: str) -> str | None:
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--root", default=".")
-    p.add_argument("--package-root", default="com.ak.api")
+    p.add_argument("--package-root", default="com.hi.api")
     p.add_argument("--out", default=None)
     p.add_argument("--min", type=int, default=2, help="group size to report (default 2)")
     p.add_argument("--limit", type=int, default=40)

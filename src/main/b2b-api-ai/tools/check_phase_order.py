@@ -141,7 +141,7 @@ def build_registry(root: str):
 def chains_in(root: str):
     """(path, testMethod, defaultCaseId, [(kind, name, step), ...]) per @Test."""
     out = []
-    base = os.path.join(root, "src/test/java/com/ak/api/tests/imported")
+    base = os.path.join(root, "src/test/java/com/hi/api/tests/imported")
     for path in _walk(base):
         text = _read(path)
         if ".start(row" not in text:

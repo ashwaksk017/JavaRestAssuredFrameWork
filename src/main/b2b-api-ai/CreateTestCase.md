@@ -18,7 +18,7 @@ If the case already exists in a ReadyAPI XML, prefer converting that XML instead
 
 ### Starting from a clone with no conversions
 
-`src/main/java/com/ak/api/support/` is generated and gitignored, so a fresh
+`src/main/java/com/hi/api/support/` is generated and gitignored, so a fresh
 clone has none of it — and the committed `dsl/`, `domain/`, `BaseApiTest` and
 `TokenRefresh` all reference it. A clone also has no ReadyAPI XML
 (`tools/ra_converter/input/` is gitignored too), so "just convert something
@@ -27,12 +27,12 @@ first" was not available either. Nothing compiled.
 Bootstrap the framework types once, with no XML:
 
 ```bash
-python tools/ra_converter/ra_converter.py --bootstrap --output . --package-root com.ak.api
+python tools/ra_converter/ra_converter.py --bootstrap --output . --package-root com.hi.api
 ```
 
 That writes the bundled support types, an `ImportedRestClient` carrying every
 method the committed tree calls, and a scaffold at
-`src/main/java/com/ak/api/rest/manual/client/ManualClient.java` — so
+`src/main/java/com/hi/api/rest/manual/client/ManualClient.java` — so
 `mvn -o test-compile` succeeds and you can write and run a hand-written test
 immediately.
 
@@ -45,7 +45,7 @@ itself, so run the test and let it tell you what to add next. Point at it by
 FULLY QUALIFIED name, since a bare one resolves under `rest.clients`:
 
 ```java
-Config.get("manual.client", "com.ak.api.rest.manual.client.ManualClient")
+Config.get("manual.client", "com.hi.api.rest.manual.client.ManualClient")
 ```
 
 What it does **not** give you is anything that needs a converted suite:
@@ -63,8 +63,8 @@ the other framework files alone; they are author-editable and skip-if-exists.
 
 `--clean` on a converter run **deletes**:
 
-- `src/test/java/com/ak/api/tests/imported/<suite>/`
-- `src/main/java/com/ak/api/support/<suite>/` (including generated `*Support`)
+- `src/test/java/com/hi/api/tests/imported/<suite>/`
+- `src/main/java/com/hi/api/support/<suite>/` (including generated `*Support`)
 - `src/test/resources/csv/<suite>/`
 - that suite’s templates, `_audit/<suite>/`, `_flows/<suite>/`
 
@@ -73,9 +73,9 @@ Imported `Suites/<Suite>_Regression.xml` / `_Smoke.xml` are also rewritten.
 **Put hand-written tests here:**
 
 ```
-src/test/java/com/ak/api/tests/manual/<optional-area>/YourTest.java
+src/test/java/com/hi/api/tests/manual/<optional-area>/YourTest.java
 src/test/resources/csv/YourTest/<methodName>.csv
-src/main/java/com/ak/api/support/manual/scenario/YourSupport.java   (only for path B)
+src/main/java/com/hi/api/support/manual/scenario/YourSupport.java   (only for path B)
 src/test/resources/testng-manual.xml   (committed; do NOT use Suites/, it is gitignored)
 ```
 
@@ -98,7 +98,7 @@ Two things it does **not** change:
   folder never appears in it. Two classes with the same simple name in
   different areas silently share one row folder. Keep simple names unique.
 - **Whether the suite finds it.** `testng-manual.xml` uses
-  `<package name="com.ak.api.tests.manual.*"/>`. The trailing `.*` is what
+  `<package name="com.hi.api.tests.manual.*"/>`. The trailing `.*` is what
   makes sub-packages run: measured on TestNG 7.10.2, the plain form without
   it skipped a sub-package class with no error at all. If you copy that
   suite, keep the `.*`.
@@ -112,9 +112,9 @@ Two things it does **not** change:
 | Bound by `suiteName` | Class / resource |
 |---|---|
 | REST client you construct | e.g. `ProgramAccountClient` |
-| Token + DataGen setup | `com.ak.api.support.<suite>.SetupHelper.flow_A` |
-| JSON templates | `com.ak.api.templates.<suite>.Templates` |
-| Per-test DB cleanup | `com.ak.api.support.<suite>.SuiteCleanup` |
+| Token + DataGen setup | `com.hi.api.support.<suite>.SetupHelper.flow_A` |
+| JSON templates | `com.hi.api.templates.<suite>.Templates` |
+| Per-test DB cleanup | `com.hi.api.support.<suite>.SuiteCleanup` |
 | Config-key list for `#c_id#` etc. | that suite’s `TestSupport.CONFIG_KEYS` |
 
 Known `suiteName` values today:
@@ -161,7 +161,7 @@ The provider looks at the test class FQN:
 - **Otherwise** (recommended for manual tests) the file is  
   `csv/<SimpleClassName>/<methodName>.csv` (or `.xlsx` / `.json`)
 
-Example: class `com.ak.api.tests.manual.CreateLimitedAccountTest`, method `createLimitedAccount`:
+Example: class `com.hi.api.tests.manual.CreateLimitedAccountTest`, method `createLimitedAccount`:
 
 ```
 src/test/resources/csv/CreateLimitedAccountTest/createLimitedAccount.csv
@@ -218,7 +218,7 @@ ignored -- nothing fails, the override just never applies.
 Regenerate this mapping any time with:
 
 ```
-grep -n 'exec("' src/main/java/com/ak/api/dsl/CustomerOnboarding.java
+grep -n 'exec("' src/main/java/com/hi/api/dsl/CustomerOnboarding.java
 ```
 
 ### One caveat for manual tests
@@ -243,10 +243,10 @@ Add a **row** to add a data variant. Do not copy the `@Test` method for the same
 
 ## 4. Path A — test class that reuses shared phases
 
-Create `src/test/java/com/ak/api/tests/manual/CreateLimitedAccountTest.java`.
+Create `src/test/java/com/hi/api/tests/manual/CreateLimitedAccountTest.java`.
 
 ```java
-package com.ak.api.tests.manual;
+package com.hi.api.tests.manual;
 
 import java.util.Map;
 
@@ -255,17 +255,17 @@ import org.testng.annotations.BeforeClass;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
-import com.ak.api.config.Config;
-import com.ak.api.data.PerMethodCsvDataProvider;
-import com.ak.api.dsl.CustomerOnboarding;
-import com.ak.api.dsl.CustomerOnboarding.Partner;
-import com.ak.api.dsl.CustomerOnboarding.Role;
-import com.ak.api.dsl.ManualCleanup;
-import com.ak.api.retry.RetryAnalyzer;
-import com.ak.api.support.ImportedRestClient;
-import com.ak.api.support.ImportedScenario;
-import com.ak.api.tests.BaseApiTest;
-import com.ak.api.xray.XrayTest;
+import com.hi.api.config.Config;
+import com.hi.api.data.PerMethodCsvDataProvider;
+import com.hi.api.dsl.CustomerOnboarding;
+import com.hi.api.dsl.CustomerOnboarding.Partner;
+import com.hi.api.dsl.CustomerOnboarding.Role;
+import com.hi.api.dsl.ManualCleanup;
+import com.hi.api.retry.RetryAnalyzer;
+import com.hi.api.support.ImportedRestClient;
+import com.hi.api.support.ImportedScenario;
+import com.hi.api.tests.BaseApiTest;
+import com.hi.api.xray.XrayTest;
 
 import io.qameta.allure.Description;
 import io.qameta.allure.Story;
@@ -346,11 +346,11 @@ carrying `__SET_ME__` placeholders never POSTs them at the token endpoint.
 ## 5. Which fluent methods exist
 
 Authoritative list for HAND-WRITTEN tests:
-`src/main/java/com/ak/api/dsl/CustomerOnboarding.java`. It is committed, and
+`src/main/java/com/hi/api/dsl/CustomerOnboarding.java`. It is committed, and
 the converter never touches it.
 
 Do **not** author against
-`src/main/java/com/ak/api/support/scenario/ScenarioSteps.java`. It is
+`src/main/java/com/hi/api/support/scenario/ScenarioSteps.java`. It is
 generated, gitignored and rewritten by every `--clean`, it is ~18,000 lines,
 and its numeric suffixes are cluster-derived and move between runs
 (`enrollGuest2` became `enrollGuest52` within one day of reconverts). A test
@@ -415,7 +415,7 @@ There are no numeric suffixes here. That is the point: the suffixed names in
 Regenerate this mapping any time with:
 
 ```
-grep -n 'exec("' src/main/java/com/ak/api/dsl/CustomerOnboarding.java
+grep -n 'exec("' src/main/java/com/hi/api/dsl/CustomerOnboarding.java
 ```
 
 **Do not use `Insights.*` from a hand-written test.** Every one of its
@@ -435,9 +435,9 @@ per-phase, row-overridable, and committed.
 
 When a call is not already a `ScenarioSteps` method:
 
-1. Add `src/main/java/com/ak/api/dsl/<Name>Flow.java`.
+1. Add `src/main/java/com/hi/api/dsl/<Name>Flow.java`.
 
-   > **Do not use `src/main/java/com/ak/api/support/manual/`.** `--clean`
+   > **Do not use `src/main/java/com/hi/api/support/manual/`.** `--clean`
    > spares it (it only wipes `support/<suite_name>`), but the WHOLE
    > `support/` tree is gitignored -- `git check-ignore` confirms it. Code
    > written there is never committed and disappears on a fresh clone.
@@ -450,7 +450,7 @@ When a call is not already a `ScenarioSteps` method:
    > `templates/<suite>/Templates`. `tools/check_generic.py` enforces
    > exactly that line.
 2. Nested builder `extends ScenarioSteps<YourType>`.
-3. Copy the shape of `start(row)` from `com.ak.api.dsl.CustomerOnboarding`
+3. Copy the shape of `start(row)` from `com.hi.api.dsl.CustomerOnboarding`
    (resolve the bound session, then `ImportedScenario.begin`). Note that
    `bootstrap()` is a `ScenarioSteps` method -- the `dsl` class has none,
    so inherit it from the builder you extend, not from there.
@@ -511,7 +511,7 @@ YourSupport.start(row)
 
 ### Client
 
-Generated clients live in `src/main/java/com/ak/api/rest/clients/`. They use `// @generated` markers so a **reconvert can overwrite** unmarked regions.
+Generated clients live in `src/main/java/com/hi/api/rest/clients/`. They use `// @generated` markers so a **reconvert can overwrite** unmarked regions.
 
 If `ScenarioSteps` or `CustomerOnboarding` will call the new method:
 
@@ -565,7 +565,7 @@ Do **not** add the class to `Suites/Programaccountregression_*.xml` (those
 files are regenerated).
 
 Use the committed **`src/test/resources/testng-manual.xml`**. It picks up the
-whole `com.ak.api.tests.manual` package, so a new class needs no registration.
+whole `com.hi.api.tests.manual` package, so a new class needs no registration.
 
 Do NOT put a suite under `Suites/` -- that directory is gitignored wholesale,
 so anything there cannot be shared and every author would have to recreate it.
@@ -581,11 +581,11 @@ For reference, its shape:
 <suite name="Manual" parallel="classes" thread-count="3" configfailurepolicy="continue">
     <parameter name="testSuite" value="manual"/>
     <listeners>
-        <listener class-name="com.ak.api.reporting.ProgressLogListener"/>
-        <listener class-name="com.ak.api.reporting.TestSuiteListener"/>
-        <listener class-name="com.ak.api.reporting.TestCaseLogListener"/>
-        <listener class-name="com.ak.api.reporting.ExtentReportListener"/>
-        <listener class-name="com.ak.api.reporting.XrayReportListener"/>
+        <listener class-name="com.hi.api.reporting.ProgressLogListener"/>
+        <listener class-name="com.hi.api.reporting.TestSuiteListener"/>
+        <listener class-name="com.hi.api.reporting.TestCaseLogListener"/>
+        <listener class-name="com.hi.api.reporting.ExtentReportListener"/>
+        <listener class-name="com.hi.api.reporting.XrayReportListener"/>
     </listeners>
     <test name="manual">
         <classes>
@@ -602,9 +602,9 @@ For reference, its shape:
 This is the single most common way to think a test ran when it did not.
 
 `pom.xml` defaults `<suiteXmlFile>` to `src/test/resources/testng.xml`. That
-suite lists only the sample classes (`com.ak.api.tests.samples`,
-`com.ak.api.tests.data`, ...) behind group filters. It never mentions
-`com.ak.api.tests.manual`. So a bare:
+suite lists only the sample classes (`com.hi.api.tests.samples`,
+`com.hi.api.tests.data`, ...) behind group filters. It never mentions
+`com.hi.api.tests.manual`. So a bare:
 
 ```powershell
 mvn test
@@ -679,7 +679,7 @@ Do not invent Salesforce credentials or a full HWS Selenium flow.
 
 #### Env var names are not what you would guess
 
-`Config.get` (`src/main/java/com/ak/api/config/Config.java`) resolves an env
+`Config.get` (`src/main/java/com/hi/api/config/Config.java`) resolves an env
 var as:
 
 ```java
@@ -751,7 +751,7 @@ form (`API_CONFIG_USERNAME`, `SF_CONFIG_UI_USERNAME`) for those.
 ```powershell
 mvn -o test-compile
 
-mvn -o test "-Dtest=com.ak.api.tests.manual.CreateLimitedAccountTest"
+mvn -o test "-Dtest=com.hi.api.tests.manual.CreateLimitedAccountTest"
 
 mvn -o test "-DsuiteXmlFile=src/test/resources/testng-manual.xml"
 ```
@@ -813,20 +813,20 @@ To have the same story generated for everyone, add it to the ReadyAPI project an
 
 ```
 # committed -- the converter never touches these
-src/main/java/com/ak/api/dsl/CustomerOnboarding.java     # the fluent verbs
-src/main/java/com/ak/api/dsl/MasterClass.java            # one entry point
-src/main/java/com/ak/api/dsl/Template.java               # bodies by name
-src/main/java/com/ak/api/dsl/ManualCleanup.java          # per-test cleanup
-src/main/java/com/ak/api/context/ScenarioContext.java    # declared ctx fields
-src/main/java/com/ak/api/data/PerMethodCsvDataProvider.java
-src/test/java/com/ak/api/tests/manual/OnboardingE2ETest.java        # bare chain
-src/test/java/com/ak/api/tests/manual/H4bMemberOnboardingTest.java  # + template/capture/assert
+src/main/java/com/hi/api/dsl/CustomerOnboarding.java     # the fluent verbs
+src/main/java/com/hi/api/dsl/MasterClass.java            # one entry point
+src/main/java/com/hi/api/dsl/Template.java               # bodies by name
+src/main/java/com/hi/api/dsl/ManualCleanup.java          # per-test cleanup
+src/main/java/com/hi/api/context/ScenarioContext.java    # declared ctx fields
+src/main/java/com/hi/api/data/PerMethodCsvDataProvider.java
+src/test/java/com/hi/api/tests/manual/OnboardingE2ETest.java        # bare chain
+src/test/java/com/hi/api/tests/manual/H4bMemberOnboardingTest.java  # + template/capture/assert
 src/test/resources/testng-manual.xml
 
 # generated + gitignored -- read, never edit or import from a manual test
-src/main/java/com/ak/api/support/ImportedScenario.java
-src/main/java/com/ak/api/support/scenario/ScenarioSteps.java
-src/main/java/com/ak/api/support/<suite>/SuiteCleanup.java
+src/main/java/com/hi/api/support/ImportedScenario.java
+src/main/java/com/hi/api/support/scenario/ScenarioSteps.java
+src/main/java/com/hi/api/support/<suite>/SuiteCleanup.java
 
 # local only, gitignored (endpoints / emails / ids -- public repo)
 src/test/resources/csv/<TestClass>/<methodName>.csv
@@ -910,7 +910,7 @@ prevent.
 ### Adding a name
 
 Look the pair up in `_index.csv`, then add a constant to
-`com.ak.api.dsl.Template`:
+`com.hi.api.dsl.Template`:
 
 ```java
 public static final Template myScenario = of(
@@ -927,9 +927,9 @@ body at runtime.
 
 | Path | Committed | Touched by convert |
 |---|---|---|
-| `com/ak/api/dsl/` (`MasterClass`, `Template`, `CustomerOnboarding`) | yes | never |
-| `com/ak/api/domain/` (facades over all 75 client methods) | yes | never |
-| `src/test/java/com/ak/api/tests/manual/` | yes | never |
+| `com/hi/api/dsl/` (`MasterClass`, `Template`, `CustomerOnboarding`) | yes | never |
+| `com/hi/api/domain/` (facades over all 75 client methods) | yes | never |
+| `src/test/java/com/hi/api/tests/manual/` | yes | never |
 | `src/test/resources/csv/<TestClass>/` | **no** (gitignored on purpose) | only `csv/<suite>` |
 
 Test data stays local by design: `csv/` is gitignored because those files

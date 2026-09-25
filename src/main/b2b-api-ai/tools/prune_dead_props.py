@@ -207,10 +207,10 @@ def main() -> int:
     # tests. Every column they read would look unreferenced and be deleted.
     # Refuse rather than prune against a partial view -- the same reasoning
     # check_ctx_dataflow.py uses when its triage baseline is unreachable.
-    marker = os.path.join(args.root, "src/main/java/com/ak/api/dsl/CustomerOnboarding.java")
+    marker = os.path.join(args.root, "src/main/java/com/hi/api/dsl/CustomerOnboarding.java")
     if not os.path.isfile(_lp(marker)):
         print("[prune-props] skipped: %s is not a full tree (no committed "
-              "framework under src/main/java/com/ak/api/dsl). Pruning needs "
+              "framework under src/main/java/com/hi/api/dsl). Pruning needs "
               "every consumer visible, or it would delete columns the "
               "framework reads." % args.root)
         return 0
@@ -223,7 +223,7 @@ def main() -> int:
     # would have been deleted for looking dead. The generated side has to be
     # there too, and it has to be there in proportion to the CSVs.
     cases_dirs = []
-    support = os.path.join(args.root, "src/main/java/com/ak/api/support")
+    support = os.path.join(args.root, "src/main/java/com/hi/api/support")
     if os.path.isdir(_lp(support)):
         for dirpath, dirs, _f in os.walk(_lp(support)):
             if os.path.basename(dirpath) == "cases":
@@ -234,7 +234,7 @@ def main() -> int:
     n_csv = len(csv_files(args.root, args.suite))
     if n_csv and specs == 0:
         print("[prune-props] REFUSING to prune: %d CSV file(s) but no "
-              "Specs*.java under src/main/java/com/ak/api/support/*/cases/. "
+              "Specs*.java under src/main/java/com/hi/api/support/*/cases/. "
               "That is a half-built tree -- a --clean convert that did not "
               "finish. Every column would look unreferenced. Re-run the "
               "convert, then prune." % n_csv)

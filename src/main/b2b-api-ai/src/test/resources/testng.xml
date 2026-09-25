@@ -7,12 +7,12 @@
              ExtentReportListener   : ExtentReports HTML with request/response bodies
              (Allure listener attaches automatically via allure-testng on the classpath) -->
     <listeners>
-        <listener class-name="com.ak.api.reporting.TestSuiteListener"/>
-        <listener class-name="com.ak.api.reporting.TestCaseLogListener"/>
-        <listener class-name="com.ak.api.reporting.ExtentReportListener"/>
-        <listener class-name="com.ak.api.reporting.XrayReportListener"/>
-        <listener class-name="com.ak.api.reporting.TestMetadataListener"/>
-        <listener class-name="com.ak.api.reporting.GitLabReportListener"/>
+        <listener class-name="com.hi.api.reporting.TestSuiteListener"/>
+        <listener class-name="com.hi.api.reporting.TestCaseLogListener"/>
+        <listener class-name="com.hi.api.reporting.ExtentReportListener"/>
+        <listener class-name="com.hi.api.reporting.XrayReportListener"/>
+        <listener class-name="com.hi.api.reporting.TestMetadataListener"/>
+        <listener class-name="com.hi.api.reporting.GitLabReportListener"/>
     </listeners>
 
     <!-- Smoke suite: runs everything tagged with @Test(groups="smoke") -->
@@ -23,7 +23,7 @@
             </run>
         </groups>
         <classes>
-            <class name="com.ak.api.tests.samples.PostsSmokeTests"/>
+            <class name="com.hi.api.tests.samples.PostsSmokeTests"/>
         </classes>
     </test>
 
@@ -35,8 +35,8 @@
             </run>
         </groups>
         <classes>
-            <class name="com.ak.api.tests.samples.PostsSmokeTests"/>
-            <class name="com.ak.api.tests.data.PostsDataDrivenTest"/>
+            <class name="com.hi.api.tests.samples.PostsSmokeTests"/>
+            <class name="com.hi.api.tests.data.PostsDataDrivenTest"/>
         </classes>
     </test>
 
@@ -51,7 +51,7 @@
             </run>
         </groups>
         <classes>
-            <class name="com.ak.api.tests.data.PostsCsvDrivenTest"/>
+            <class name="com.hi.api.tests.data.PostsCsvDrivenTest"/>
         </classes>
     </test>
 
@@ -64,7 +64,7 @@
             </run>
         </groups>
         <classes>
-            <class name="com.ak.api.tests.samples.AuthTests"/>
+            <class name="com.hi.api.tests.samples.AuthTests"/>
         </classes>
     </test>
 
@@ -83,7 +83,7 @@
             </run>
         </groups>
         <classes>
-            <class name="com.ak.api.tests.data.ParameterizedLoginTest"/>
+            <class name="com.hi.api.tests.data.ParameterizedLoginTest"/>
         </classes>
     </test>
 
@@ -98,7 +98,7 @@
             </run>
         </groups>
         <classes>
-            <class name="com.ak.api.tests.data.FakerPostsTest"/>
+            <class name="com.hi.api.tests.data.FakerPostsTest"/>
         </classes>
     </test>
 
@@ -112,7 +112,7 @@
             </run>
         </groups>
         <classes>
-            <class name="com.ak.api.tests.samples.JsonPathDemoTests"/>
+            <class name="com.hi.api.tests.samples.JsonPathDemoTests"/>
         </classes>
     </test>
 
@@ -127,7 +127,7 @@
             </run>
         </groups>
         <classes>
-            <class name="com.ak.api.tests.samples.DemoWebshopLoginTest"/>
+            <class name="com.hi.api.tests.samples.DemoWebshopLoginTest"/>
         </classes>
     </test>
 
@@ -141,7 +141,7 @@
             </run>
         </groups>
         <classes>
-            <class name="com.ak.api.tests.samples.HeadersFromFileTests"/>
+            <class name="com.hi.api.tests.samples.HeadersFromFileTests"/>
         </classes>
     </test>
 
@@ -158,7 +158,7 @@
             </run>
         </groups>
         <classes>
-            <class name="com.ak.api.tests.data.AccountStatementDataDrivenTest"/>
+            <class name="com.hi.api.tests.data.AccountStatementDataDrivenTest"/>
         </classes>
     </test>
 
@@ -172,9 +172,9 @@
             </run>
         </groups>
         <classes>
-            <class name="com.ak.api.tests.db.H2QueryTest"/>
-            <class name="com.ak.api.tests.db.PostgresQueryTest"/>
-            <class name="com.ak.api.tests.db.DbPollTest"/>
+            <class name="com.hi.api.tests.db.H2QueryTest"/>
+            <class name="com.hi.api.tests.db.PostgresQueryTest"/>
+            <class name="com.hi.api.tests.db.DbPollTest"/>
         </classes>
     </test>
 
@@ -187,13 +187,13 @@
             </run>
         </groups>
         <classes>
-            <class name="com.ak.api.tests.framework.CtxFieldsTest"/>
-            <class name="com.ak.api.tests.framework.ResponseAssertsTest"/>
-            <class name="com.ak.api.tests.framework.RestStepTest"/>
-            <class name="com.ak.api.tests.framework.AuthDigestAccuracyTest"/>
-            <class name="com.ak.api.tests.framework.MemberEmailAndPollStopTest"/>
-            <class name="com.ak.api.tests.db.DbPollTest"/>
-            <class name="com.ak.api.tests.framework.FrameworkPartialGapsTest"/>
+            <class name="com.hi.api.tests.framework.CtxFieldsTest"/>
+            <class name="com.hi.api.tests.framework.ResponseAssertsTest"/>
+            <class name="com.hi.api.tests.framework.RestStepTest"/>
+            <class name="com.hi.api.tests.framework.AuthDigestAccuracyTest"/>
+            <class name="com.hi.api.tests.framework.MemberEmailAndPollStopTest"/>
+            <class name="com.hi.api.tests.db.DbPollTest"/>
+            <class name="com.hi.api.tests.framework.FrameworkPartialGapsTest"/>
         </classes>
     </test>
 
@@ -209,7 +209,7 @@
             </run>
         </groups>
         <classes>
-            <class name="com.ak.api.tests.data.PostsJsonDrivenTest"/>
+            <class name="com.hi.api.tests.data.PostsJsonDrivenTest"/>
         </classes>
     </test>
 

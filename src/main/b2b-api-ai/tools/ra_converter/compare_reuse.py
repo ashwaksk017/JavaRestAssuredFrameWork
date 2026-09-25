@@ -193,7 +193,7 @@ def apply_before_emit(emitter) -> FluentMethodReuse:
     frozen = FluentMethodReuse()
     frozen.seed_catalog(load_fluent_catalog())
     output_dir = getattr(emitter, "output_dir", ".") or "."
-    package_root = getattr(emitter, "package_root", "com.ak.api") or "com.ak.api"
+    package_root = getattr(emitter, "package_root", "com.hi.api") or "com.hi.api"
     seeded = seed_from_support_tree(output_dir, package_root, frozen)
 
     before = duplicate_name_groups(getattr(emitter, "_fluent_phase_votes", {}) or {})
@@ -257,7 +257,7 @@ def _cli_scan(output_dir: str, package_root: str) -> int:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--output", default=".", help="Framework root (contains src/)")
-    p.add_argument("--package-root", default="com.ak.api")
+    p.add_argument("--package-root", default="com.hi.api")
     args = p.parse_args(argv)
     return _cli_scan(args.output, args.package_root)
 

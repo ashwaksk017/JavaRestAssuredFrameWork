@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   DEBUG-enabled verbose config for troubleshooting the current
-  Hilton stg test run. Framework loggers (com.ak.api.**) at DEBUG
+  Hilton stg test run. Framework loggers (com.hi.api.**) at DEBUG
   so retry-on-transient attempts, per-step diagnostics, and
   placeholder-resolution details are all visible. HTTP client
   libraries stay at WARN to prevent HttpClient wire-level noise
@@ -13,7 +13,7 @@
 
   CREDENTIAL REDACTION
   Every event passes through SecretRedactingRewritePolicy before it
-  reaches the console. This matters because DEBUG on com.ak.api dumps
+  reaches the console. This matters because DEBUG on com.hi.api dumps
   request bodies, and the console is routinely redirected to a file
   (mvn test > accountdashboard-full-run.log), so console output is
   durable rather than ephemeral. Redacting centrally here covers every
@@ -26,7 +26,7 @@
   Note: XML comments cannot contain the string of two consecutive
   hyphens, so this block uses single dashes throughout.
 -->
-<Configuration status="WARN" packages="com.ak.api.security">
+<Configuration status="WARN" packages="com.hi.api.security">
     <Appenders>
         <Console name="ConsoleRaw" target="SYSTEM_OUT">
             <!-- charset: a Windows JVM defaults to Cp1252 and prints every
@@ -58,13 +58,13 @@
 
              Turn the firehose back on for one run with
              -Dlog.level=debug. -->
-        <Logger name="com.ak.api" level="${sys:log.level:-info}"/>
+        <Logger name="com.hi.api" level="${sys:log.level:-info}"/>
         <!-- Emitted test classes under imported.*: shows every step's
              request/response body dump. Already emits at INFO by default;
              DEBUG surfaces any extra diagnostic the translator marked
              at that level (e.g. downgraded "Failed to delete..." lines
              from the b'.PROPER narrow fix). -->
-        <Logger name="com.ak.api.tests" level="${sys:log.level:-info}"/>
+        <Logger name="com.hi.api.tests" level="${sys:log.level:-info}"/>
         <!-- Keep HTTP-client noise quiet. Bump these to info/debug ONLY
              if you need to inspect the raw wire (connection reuse,
              DNS, TLS handshakes). -->

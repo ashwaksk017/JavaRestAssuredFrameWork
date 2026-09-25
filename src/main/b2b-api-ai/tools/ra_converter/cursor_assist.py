@@ -55,11 +55,11 @@ _WATCH_PATHS = (
     "tools/ra_converter/fluent_scenario.py",
     "tools/ra_converter/cursor_assist.py",
     "tools/ra_converter/cursor_assist_memory.md",
-    "src/main/java/com/ak/api/support/ImportedScenario.java",
-    "src/main/java/com/ak/api/support/CtxFields.java",
-    "src/main/java/com/ak/api/rest/utilities/ResponseAsserts.java",
-    "src/main/java/com/ak/api/rest/utilities/AuthHelper.java",
-    "src/main/java/com/ak/api/db/Db.java",
+    "src/main/java/com/hi/api/support/ImportedScenario.java",
+    "src/main/java/com/hi/api/support/CtxFields.java",
+    "src/main/java/com/hi/api/rest/utilities/ResponseAsserts.java",
+    "src/main/java/com/hi/api/rest/utilities/AuthHelper.java",
+    "src/main/java/com/hi/api/db/Db.java",
     ".cursor/skills/readyapi-restassured-migration/",
 )
 

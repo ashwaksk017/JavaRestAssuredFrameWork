@@ -83,7 +83,7 @@ def test_placeholder_aliases_agree_with_java_config():
     merged body still looks correct.
     """
     java_path = os.path.join(HERE, "..", "..", "src", "main", "java", "com",
-                             "ak", "api", "config", "Config.java")
+                             "hi", "api", "config", "Config.java")
     src = open(java_path, encoding="utf-8").read()
     resolved = dict(re.findall(
         r'LEGACY_ALIASES\.put\(\s*"([^"]+)"\s*,\s*"([^"]+)"', src))

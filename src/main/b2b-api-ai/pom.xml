@@ -4,7 +4,7 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>com.ak.api</groupId>
+    <groupId>com.hi.api</groupId>
     <artifactId>api-automation-restassured</artifactId>
     <version>1.0.0</version>
     <packaging>jar</packaging>
@@ -59,7 +59,7 @@
              src/main/resources/openapi/. A property, not a literal in
              inputSpec, because the name carries the API VERSION and so
              changes on every vendor release: -Dopenapi.spec=abc.yaml.
-             com.ak.api.openapi.OpenApiModels reads the same key at runtime
+             com.hi.api.openapi.OpenApiModels reads the same key at runtime
              (Config.get), so one flag moves the build AND the classpath
              lookup together. Moving only one of them is the failure this
              property exists to prevent: models generated from one spec,
@@ -255,12 +255,12 @@
         <plugins>
             <!-- Fail fast, and legibly, when the converter has not run.
 
-                 `com.ak.api.support` is converter OUTPUT: the framework
+                 `com.hi.api.support` is converter OUTPUT: the framework
                  files are copied from tools/ra_converter/framework and
                  ImportedRestClient is generated from the converted suites.
                  It is gitignored on purpose, so a fresh clone does not have
                  it, and `mvn compile` then failed with 26 misleading
-                 "package com.ak.api.support does not exist" errors that say
+                 "package com.hi.api.support does not exist" errors that say
                  nothing about the cause. One clear message instead. -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -278,13 +278,13 @@
                             <rules>
                                 <requireFilesExist>
                                     <files>
-                                        <file>${project.basedir}/src/main/java/com/ak/api/support/ImportedScenario.java</file>
-                                        <file>${project.basedir}/src/main/java/com/ak/api/support/ImportedRestClient.java</file>
+                                        <file>${project.basedir}/src/main/java/com/hi/api/support/ImportedScenario.java</file>
+                                        <file>${project.basedir}/src/main/java/com/hi/api/support/ImportedRestClient.java</file>
                                     </files>
                                     <message>
 No converted output found -- this tree has not been through the converter yet.
 
-  com.ak.api.support is GENERATED and gitignored, but the committed code
+  com.hi.api.support is GENERATED and gitignored, but the committed code
   (domain/, dsl/, rest/utilities/) imports it, so compilation cannot work
   until you convert at least once.
 
@@ -293,7 +293,7 @@ No converted output found -- this tree has not been through the converter yet.
      (see the README in that folder)
 
   2. Convert every XML in ONE run:
-         python tools/ra_converter/ra_converter.py --input tools/ra_converter/input --output . --package-root com.ak.api --clean --max-name-len 40 --no-cursor-assist
+         python tools/ra_converter/ra_converter.py --input tools/ra_converter/input --output . --package-root com.hi.api --clean --max-name-len 40 --no-cursor-assist
 
   3. Then build as normal.
 
@@ -397,9 +397,9 @@ No converted output found -- this tree has not been through the converter yet.
                             <inputSpec>${project.basedir}/src/main/resources/openapi/${openapi.spec}</inputSpec>
                             <generatorName>java</generatorName>
                             <output>${project.build.directory}/generated-sources/openapi</output>
-                            <modelPackage>com.ak.api.openapi.programaccounts.model</modelPackage>
-                            <apiPackage>com.ak.api.openapi.programaccounts.api</apiPackage>
-                            <invokerPackage>com.ak.api.openapi.programaccounts</invokerPackage>
+                            <modelPackage>com.hi.api.openapi.programaccounts.model</modelPackage>
+                            <apiPackage>com.hi.api.openapi.programaccounts.api</apiPackage>
+                            <invokerPackage>com.hi.api.openapi.programaccounts</invokerPackage>
                             <generateApis>false</generateApis>
                             <generateApiTests>false</generateApiTests>
                             <generateApiDocumentation>false</generateApiDocumentation>
@@ -424,7 +424,7 @@ No converted output found -- this tree has not been through the converter yet.
                 </executions>
             </plugin>
 
-            <!-- Optional: generate com.ak.api.db.generated from live Postgres.
+            <!-- Optional: generate com.hi.api.db.generated from live Postgres.
                  Skipped unless -Djooq.codegen.skip=false and db.* are set. -->
             <plugin>
                 <groupId>org.jooq</groupId>
@@ -452,7 +452,7 @@ No converted output found -- this tree has not been through the converter yet.
                                     <inputSchema>segment</inputSchema>
                                 </database>
                                 <target>
-                                    <packageName>com.ak.api.db.generated</packageName>
+                                    <packageName>com.hi.api.db.generated</packageName>
                                     <directory>${project.build.directory}/generated-sources/jooq</directory>
                                 </target>
                             </generator>

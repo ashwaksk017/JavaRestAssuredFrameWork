@@ -7,7 +7,7 @@ Every imported ReadyAPI case gets:
   - a short @Test that calls start → chain → complete → verify
 
 Identical phase bodies are extracted onto framework-level
-`com.ak.api.support.scenario.ScenarioSteps` so reuse spans every
+`com.hi.api.support.scenario.ScenarioSteps` so reuse spans every
 imported suite, not just one XML. Fingerprints ignore suite folder
 and template-hash suffixes. Per-case Support keeps only methods
 whose choreography differs.

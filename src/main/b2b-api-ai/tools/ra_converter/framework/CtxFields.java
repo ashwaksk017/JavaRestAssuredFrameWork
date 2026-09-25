@@ -1,6 +1,6 @@
-package com.ak.api.support;
+package com.hi.api.support;
 
-// ra_converter-framework-rev: 10
+// ra_converter-framework-rev: 11
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -11,8 +11,8 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 
-import com.ak.api.config.Config;
-import com.ak.api.data.FakeData;
+import com.hi.api.config.Config;
+import com.hi.api.data.FakeData;
 
 /**
  * Dual-case ctx writes and name-shape identity generation for imported

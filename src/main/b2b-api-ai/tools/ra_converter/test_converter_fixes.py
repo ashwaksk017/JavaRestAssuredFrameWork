@@ -400,7 +400,7 @@ def test_assert_default_value_existence_false():
 
 
 def test_render_existence_false_emits_json_absent():
-    emitter = ra_converter.Emitter(output_dir=".", package_root="com.ak.api")
+    emitter = ra_converter.Emitter(output_dir=".", package_root="com.hi.api")
     a = ra_converter.Assertion(
         type="JsonPath Existence Match",
         name="Check for existence of [pendingEmailAddress]",
@@ -417,7 +417,7 @@ def test_render_existence_false_emits_json_absent():
 
 
 def test_render_existence_true_emits_json_exists():
-    emitter = ra_converter.Emitter(output_dir=".", package_root="com.ak.api")
+    emitter = ra_converter.Emitter(output_dir=".", package_root="com.hi.api")
     a = ra_converter.Assertion(
         type="JsonPath Existence Match",
         name="Check for existence of [pendingEmailAddress]",
@@ -432,7 +432,7 @@ def test_render_existence_true_emits_json_exists():
 
 
 def test_render_datameta_equals_uses_value_in_response():
-    emitter = ra_converter.Emitter(output_dir=".", package_root="com.ak.api")
+    emitter = ra_converter.Emitter(output_dir=".", package_root="com.hi.api")
     a = ra_converter.Assertion(
         type="DataAndMetadataAssertion",
         name="dm",
@@ -471,7 +471,7 @@ def test_datameta_duplicate_element_names_get_unique_csv_cols():
     by_col = dict(cols)
     assert by_col[names[0]] == "999"
     assert by_col[names[1]] == "16"
-    emitter = ra_converter.Emitter(output_dir=".", package_root="com.ak.api")
+    emitter = ra_converter.Emitter(output_dir=".", package_root="com.hi.api")
     lines, cov = emitter._render_assertion(
         a, "res", "get_attest_readProgamAccount")
     joined = "\n".join(lines)
@@ -494,7 +494,7 @@ def test_empty_query_params_are_not_emitted():
 
 
 def test_render_datameta_contains_uses_substring_in_response():
-    emitter = ra_converter.Emitter(output_dir=".", package_root="com.ak.api")
+    emitter = ra_converter.Emitter(output_dir=".", package_root="com.hi.api")
     a = ra_converter.Assertion(
         type="DataAndMetadataAssertion",
         name="dm",
@@ -852,7 +852,7 @@ def test_compare_reuse_apply_before_emit_collapses_vote_names():
     empty = tempfile.mkdtemp()
     em = SimpleNamespace(
         output_dir=empty,
-        package_root="com.ak.api",
+        package_root="com.hi.api",
         _fluent_phase_votes=votes,
         _fluent_verify_votes=defaultdict(lambda: defaultdict(list)),
         _fluent_method_reuse=None,
@@ -881,7 +881,7 @@ def test_converter_hooks_compare_reuse_before_java():
 
 
 def test_delay_step_reason_is_java_string_literal():
-    emitter = ra_converter.Emitter(output_dir=".", package_root="com.ak.api")
+    emitter = ra_converter.Emitter(output_dir=".", package_root="com.hi.api")
     short = "\n".join(emitter._render_step(
         ra_converter.DelayStep("wait 2", 2000), "ProgramAccount"))
     assert 'Poller.delay(2000L, "wait 2")' in short, short
@@ -1123,9 +1123,9 @@ def test_salesforce_oauth_query_not_csv_wrapped():
 def test_catalog_delay_reason_is_quoted_in_scenario_steps():
     from fluent_scenario import suite_agnostic_body
     body = suite_agnostic_body([
-        "com.ak.api.retry.Poller.delay(10000L, 10Sec);",
-        'com.ak.api.retry.Poller.delay(1000L, "already");',
-        "com.ak.api.retry.Poller.delay(1000L, Delay 4);",
+        "com.hi.api.retry.Poller.delay(10000L, 10Sec);",
+        'com.hi.api.retry.Poller.delay(1000L, "already");',
+        "com.hi.api.retry.Poller.delay(1000L, Delay 4);",
     ])
     assert 'Poller.delay(10000L, "10Sec")' in body[0], body[0]
     assert 'Poller.delay(1000L, "already")' in body[1], body[1]
@@ -1152,13 +1152,13 @@ def test_setup_helper_rest_calls_stay_on_client():
 def test_existing_scenario_steps_resp_fields_merged():
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
-        pkg = os.path.join(tmp, "src", "main", "java", "com", "ak", "api",
+        pkg = os.path.join(tmp, "src", "main", "java", "com", "hi", "api",
                            "support", "scenario")
         os.makedirs(pkg)
         with open(os.path.join(pkg, "ScenarioSteps.java"), "w", encoding="utf-8") as fh:
             fh.write("protected Response http_request_200_1Res;\n"
                      "protected Response SendInvitationLinkRes;\n")
-        got = ra_converter._existing_scenario_steps_resp_fields(tmp, "com.ak.api")
+        got = ra_converter._existing_scenario_steps_resp_fields(tmp, "com.hi.api")
         assert got == ["http_request_200_1Res", "SendInvitationLinkRes"], got
         assert ra_converter._existing_scenario_steps_resp_fields(
             tmp, "com.other") == []
@@ -1174,9 +1174,9 @@ def test_class_names_differing_only_by_case_are_disambiguated():
     name no longer matches the class inside it. Real occurrence:
     B2B7389MemebrInviteTest vs B2B7389MemebrinviteTest.
     """
-    em = ra_converter.Emitter(output_dir=".", package_root="com.ak.api",
+    em = ra_converter.Emitter(output_dir=".", package_root="com.hi.api",
                               suite_name="s", max_name_len=40)
-    pkg = "com.ak.api.tests.imported.s.memberinvites"
+    pkg = "com.hi.api.tests.imported.s.memberinvites"
 
     def claim(class_name):
         """Mirror the guard in emit_test_class_per_suite."""
@@ -1513,13 +1513,13 @@ def _translate_guestid_groovy(script: str) -> str:
 def test_groovy_multi_response_script_publishes_each_id_from_its_own_response():
     """B2B-5530: guestId2/guestId3 were extracted from guest 1's response."""
     joined = _translate_guestid_groovy(_B2B5530_GUESTID_SCRIPT)
-    assert ('"PropertiesGuestId.guestId", com.ak.api.rest.utilities.RestUtilities'
+    assert ('"PropertiesGuestId.guestId", com.hi.api.rest.utilities.RestUtilities'
             '.safeJsonExtract(http_request_200_enroll_guestRes, "guestId")') in joined, joined
-    assert ('"PropertiesGuestId.guestId2", com.ak.api.rest.utilities.RestUtilities'
+    assert ('"PropertiesGuestId.guestId2", com.hi.api.rest.utilities.RestUtilities'
             '.safeJsonExtract(http_request_200_enroll_guest2Res, "guestId")') in joined, joined
-    assert ('"PropertiesGuestId.hhonorsNumber2", com.ak.api.rest.utilities.RestUtilities'
+    assert ('"PropertiesGuestId.hhonorsNumber2", com.hi.api.rest.utilities.RestUtilities'
             '.safeJsonExtract(http_request_200_enroll_guest2Res, "hhonorsNumber")') in joined, joined
-    assert ('"PropertiesGuestId.guestId3", com.ak.api.rest.utilities.RestUtilities'
+    assert ('"PropertiesGuestId.guestId3", com.hi.api.rest.utilities.RestUtilities'
             '.safeJsonExtract(http_request_200_enroll_guest3Res, "guestId")') in joined, joined
 
 
@@ -1544,7 +1544,7 @@ P.setPropertyValue("accountID2", o2.accountId.toString().trim())
     )
     joined = "\n".join(lines)
     assert 'safeJsonExtract(http_request_200_createAccount2Res, "accountId")' in joined, joined
-    assert ('"PropertiesaccountID.accountID", com.ak.api.rest.utilities.RestUtilities'
+    assert ('"PropertiesaccountID.accountID", com.hi.api.rest.utilities.RestUtilities'
             '.safeJsonExtract(http_request_200_createAccountRes, "accountId")') in joined, joined
 
 
@@ -1632,7 +1632,7 @@ def test_groovy_list_pick_publishes_one_of_the_list_not_a_random_word():
         _STAY_PERMISSION_SCRIPT, {}, step_name_hint="DataGenInput")
     java = "\n".join(lines)
     assert ('putExtracted(ctx, "Properties.randomstayPermission", '
-            'com.ak.api.data.FakeData.oneOf("viewEdit", "view", "private"))') in java, java
+            'com.hi.api.data.FakeData.oneOf("viewEdit", "view", "private"))') in java, java
     gen = [l for l in lines if "generateStandard" in l]
     assert gen and '"randomstayPermission"' not in gen[0], gen
     assert java.index("generateStandard") < java.index("randomstayPermission"), java
@@ -1667,7 +1667,7 @@ def test_groovy_var_publication_respects_last_write_wins():
     java = chr(10).join(lines)
     # the field whose LAST write is the pick IS published
     assert ('putExtracted(ctx, "Properties.mode", '
-            'com.ak.api.data.FakeData.oneOf("y", "z"))') in java, java
+            'com.hi.api.data.FakeData.oneOf("y", "z"))') in java, java
     # the field a later write owns is NOT published from the earlier pick
     assert 'putExtracted(ctx, "Properties.role"' not in java, java
 
@@ -1730,7 +1730,7 @@ def test_template_index_maps_readyapi_names_to_paths(tmp_path):
     import csv as _csv
     import io as _io
     em = ra_converter.Emitter(output_dir=str(tmp_path),
-                              package_root="com.ak.api", suite_name="demo")
+                              package_root="com.hi.api", suite_name="demo")
     em._template_path_by_step = {
         ("Reject_Limited_account_200", "Reject_Account"):
             "templates/demo/businesses/reject_aaaa.json",
@@ -1764,7 +1764,7 @@ def test_template_index_maps_readyapi_names_to_paths(tmp_path):
 def test_template_index_skipped_when_suite_has_no_templates(tmp_path):
     """An empty suite must not leave a stray header-only index behind."""
     em = ra_converter.Emitter(output_dir=str(tmp_path),
-                              package_root="com.ak.api", suite_name="empty")
+                              package_root="com.hi.api", suite_name="empty")
     em._template_path_by_step = {}
     assert em.emit_template_index() is None
     assert not (tmp_path / "src").exists()
@@ -1848,13 +1848,13 @@ def test_emitted_test_support_has_the_hilton_token_fallback(tmp_path):
     test still fails if the template stops being reached.
     """
     em = ra_converter.Emitter(output_dir=str(tmp_path),
-                              package_root="com.ak.api", suite_name="probe")
+                              package_root="com.hi.api", suite_name="probe")
     rel = em.emit_test_support()
     java = (tmp_path / rel).read_text(encoding="utf-8")
 
     assert "static boolean isHiltonTokenKey(" in java
     assert "static String hiltonTokenFallback(" in java
-    assert "com.ak.api.auth.TokenCache.getAccessToken()" in java
+    assert "com.hi.api.auth.TokenCache.getAccessToken()" in java
     # BOTH call sites: present-but-empty key, and after the trailing-field walk
     assert java.count("hiltonTokenFallback(primaryKey, ctx)") == 2, java.count(
         "hiltonTokenFallback(primaryKey, ctx)")
@@ -1865,7 +1865,7 @@ def test_emitted_test_support_has_the_hilton_token_fallback(tmp_path):
 def test_emitted_test_support_still_returns_empty_for_a_nontoken_key(tmp_path):
     """Positive control -- the fallback must be scoped to token keys only."""
     em = ra_converter.Emitter(output_dir=str(tmp_path),
-                              package_root="com.ak.api", suite_name="probe")
+                              package_root="com.hi.api", suite_name="probe")
     java = (tmp_path / em.emit_test_support()).read_text(encoding="utf-8")
     # the guard is a predicate, not an unconditional recovery
     assert "if (isHiltonTokenKey(primaryKey))" in java
@@ -1889,7 +1889,7 @@ def test_bundled_framework_offers_live_domains_for_random_domain_placeholders():
                         "framework", "ImportedScenario.java")
     src = io.open(path, encoding="utf-8").read()
 
-    assert "com.ak.api.db.repo.DomainRules.overrideOrCsv(row, d1, d2)" in src
+    assert "com.hi.api.db.repo.DomainRules.overrideOrCsv(row, d1, d2)" in src
     # Both placeholders resolved from the one call, so the pair stays distinct.
     assert "d1 = resolved[0];" in src
     assert "d2 = resolved[1];" in src
@@ -1948,7 +1948,7 @@ def test_emitted_digest_listener_is_v3():
         assert gone not in tpl, "template regressed to v2 marker: " + gone
     # the committed output must not drift from what the converter emits
     java = os.path.join(os.path.dirname(conv), "..", "..", "src", "main", "java",
-                        "com", "ak", "api", "reporting", "FailureDigestListener.java")
+                        "com", "hi", "api", "reporting", "FailureDigestListener.java")
     if os.path.exists(java):
         jsrc = io.open(java, encoding="utf-8").read()
         assert "digest v3" in jsrc and "server said:" in jsrc, \
@@ -2055,7 +2055,7 @@ def test_clean_sweeps_the_client_under_every_name_the_suite_has_used(tmp_path):
     two identities of the same suite, every method twice."""
     import fluent_scenario as fs, json as _json, os as _os
     root = str(tmp_path)
-    clients = _os.path.join(root, "src", "main", "java", "com", "ak", "api", "rest", "clients")
+    clients = _os.path.join(root, "src", "main", "java", "com", "hi", "api", "rest", "clients")
     _os.makedirs(clients)
     for n in ("ProgramaccountregressionClient", "ProgramAccountsClient", "OtherSuiteClient"):
         open(_os.path.join(clients, n + ".java"), "w").write("class X {}")
@@ -2065,7 +2065,7 @@ def test_clean_sweeps_the_client_under_every_name_the_suite_has_used(tmp_path):
     try:
         c = fs._empty_catalog(); c["suites"] = {"programaccountregression": {"serviceName": "ProgramAccounts"}}
         _json.dump(c, open(cat, "w"))
-        removed = ra_converter._clean_suite_output(root, "programaccountregression", "com.ak.api")
+        removed = ra_converter._clean_suite_output(root, "programaccountregression", "com.hi.api")
     finally:
         fs.catalog_path = orig
     left = sorted(_os.listdir(clients))
@@ -2174,11 +2174,11 @@ def test_bootstrap_writes_the_framework_with_no_xml(tmp_path):
     proc = _sp.run([sys.executable,
                     os.path.join(HERE, "ra_converter.py"),
                     "--bootstrap", "--output", out,
-                    "--package-root", "com.ak.api",
+                    "--package-root", "com.hi.api",
                     "--skip-self-test"],
                    capture_output=True, text=True)
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    support = os.path.join(out, "src", "main", "java", "com", "ak", "api",
+    support = os.path.join(out, "src", "main", "java", "com", "hi", "api",
                            "support")
     for name in ("ImportedScenario.java", "TestThreadState.java",
                  "CtxFields.java", "ImportedTemplates.java",
@@ -2205,12 +2205,12 @@ def test_bootstrap_scaffolds_a_manual_client_and_never_clobbers_it(tmp_path):
         return _sp.run([sys.executable,
                         os.path.join(HERE, "ra_converter.py"),
                         "--bootstrap", "--output", out,
-                        "--package-root", "com.ak.api", "--skip-self-test"],
+                        "--package-root", "com.hi.api", "--skip-self-test"],
                        capture_output=True, text=True)
 
     first = boot()
     assert first.returncode == 0, first.stdout + first.stderr
-    stub = os.path.join(out, "src", "main", "java", "com", "ak", "api",
+    stub = os.path.join(out, "src", "main", "java", "com", "hi", "api",
                         "rest", "manual", "client", "ManualClient.java")
     assert os.path.isfile(stub), "bootstrap did not scaffold ManualClient"
     body = open(stub, encoding="utf-8").read()
@@ -2241,7 +2241,7 @@ def test_facade_endpoint_map_resolves_aliases_and_flags_throwers(tmp_path):
     """
     import ra_converter as rc
     root = str(tmp_path)
-    base = os.path.join(root, "src", "main", "java", "com", "ak", "api")
+    base = os.path.join(root, "src", "main", "java", "com", "hi", "api")
     os.makedirs(os.path.join(base, "rest", "clients"))
     os.makedirs(os.path.join(base, "domain", "guest"))
     with open(os.path.join(base, "rest", "clients", "MysuiteClient.java"),
@@ -2260,7 +2260,7 @@ def test_facade_endpoint_map_resolves_aliases_and_flags_throwers(tmp_path):
                  "    public Response readAllEmails(String token) {\n"
                  "        return client.readAllEmails(token);\n    }\n"
                  "}\n")
-    line = rc._write_facade_endpoint_map(root, "com.ak.api", "mysuite")
+    line = rc._write_facade_endpoint_map(root, "com.hi.api", "mysuite")
     assert line, "no map written"
     body = open(os.path.join(root, "_audit", "mysuite", "facade_endpoints.md"),
                 encoding="utf-8").read()
@@ -2333,12 +2333,12 @@ def test_case_with_every_step_disabled_skips_instead_of_passing_empty():
 # with the rev line masked). The hash ignores the rev line itself, so bumping
 # the rev alone does not change the fingerprint of the code it guards.
 _FRAMEWORK_REVS = {
-    "CtxFields.java": (10, "d1ca472292ddbb67"),
-    "IdentityVocabulary.java": (1, "5f31f59ad2c688aa"),
-    "ImportedScenario.java": (23, "81773778929c7a45"),
-    "ImportedTemplates.java": (2, "ebfd1453c10b5676"),
-    "ImportedTestdataCleanup.java": (3, "8d404ea000343756"),
-    "TestThreadState.java": (2, "fa194ad25091bd71"),
+    "CtxFields.java": (11, "8f4899e1b5b55282"),
+    "IdentityVocabulary.java": (2, "f2faba88c0f4a21f"),
+    "ImportedScenario.java": (24, "449b02e4f89c5824"),
+    "ImportedTemplates.java": (3, "69ed930f09be446a"),
+    "ImportedTestdataCleanup.java": (4, "f7cff51999fd99a3"),
+    "TestThreadState.java": (3, "03c9b17a164928af"),
 }
 
 
@@ -2410,7 +2410,7 @@ def test_bootstrap_creates_the_dirs_a_hand_written_test_needs():
     import tempfile
     import ra_converter as rc
     with tempfile.TemporaryDirectory() as out:
-        args = SimpleNamespace(output=out, package_root="com.ak.api")
+        args = SimpleNamespace(output=out, package_root="com.hi.api")
         made = rc._bootstrap_author_dirs(None, args)
         tpl = os.path.join(out, "src/test/resources/templates/manual")
         csvd = os.path.join(out, "src/test/resources/csv")
@@ -2528,7 +2528,7 @@ def test_generated_chain_exposes_the_response_accessors():
         assert sig in body, "ScenarioSteps template lost: " + sig
     # Delegation, not a private copy: a second source of truth would let the
     # chain and LastExchange disagree about the same call.
-    assert body.count("com.ak.api.rest.utilities.LastExchange.") == 3, (
+    assert body.count("com.hi.api.rest.utilities.LastExchange.") == 3, (
         "the accessors must delegate to LastExchange, all three of them")
     # public, so a @Test method can call them -- protected would compile here
     # and fail in the test class, which is where it matters.
@@ -2554,7 +2554,7 @@ def test_openapi_spec_file_name_is_one_key_for_build_and_runtime():
     assert "openapi/${openapi.spec}</inputSpec>" in pom, (
         "inputSpec must READ the property, not repeat the file name")
 
-    java = open(os.path.join(root, "src/main/java/com/ak/api/openapi",
+    java = open(os.path.join(root, "src/main/java/com/hi/api/openapi",
                              "OpenApiModels.java"), encoding="utf-8").read()
     assert '"openapi.spec"' in java, (
         "the runtime lookup must read the same key the pom uses")

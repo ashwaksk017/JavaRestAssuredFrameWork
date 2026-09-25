@@ -80,16 +80,16 @@ Add a focused test next to `tools/ra_converter/test_converter_fixes.py` or `test
 Single XML (unique client name):
 
 ```bash
-python tools/ra_converter/ra_converter.py --input tools/ra_converter/input/<file>.xml --output . --package-root com.ak.api --service-name <UniqueClient> --clean --max-name-len 40
+python tools/ra_converter/ra_converter.py --input tools/ra_converter/input/<file>.xml --output . --package-root com.hi.api --service-name <UniqueClient> --clean --max-name-len 40
 ```
 
 All XMLs (fluent votes across suites; `--service-name` ignored):
 
 ```bash
-python tools/ra_converter/ra_converter.py --input tools/ra_converter/input --output . --package-root com.ak.api --clean --max-name-len 40
+python tools/ra_converter/ra_converter.py --input tools/ra_converter/input --output . --package-root com.hi.api --clean --max-name-len 40
 ```
 
-`--clean` must not delete `src/main/java/com/ak/api/support/scenario/` or `tools/ra_converter/fluent_catalog.json`.
+`--clean` must not delete `src/main/java/com/hi/api/support/scenario/` or `tools/ra_converter/fluent_catalog.json`.
 
 Known clients: `programaccountregression` → `ProgramAccount`; `accountmemberregression` → `ProgramAccounts`; `smbtohwsconsumerregressione2e` → `SmbToHwsConsumer`.
 
