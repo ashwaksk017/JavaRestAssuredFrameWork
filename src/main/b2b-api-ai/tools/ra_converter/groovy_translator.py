@@ -1475,6 +1475,11 @@ def translate(script: str, response_var_by_step: dict[str, str],
     }
     patterns_matched: list[str] = []
     consumed = False
+    # Set by a branch that RECOGNISES a construct but does not reproduce its
+    # effect. Without it the only outcomes are FULL (recognised) and STUB
+    # (not recognised), and a recognised-but-skipped step has to claim one or
+    # the other -- which is how a DataSource Loop came to be reported FULL.
+    coverage_override: str | None = None
 
     # ---- ReadyAPI non-Groovy step types stored as placeholder scripts
     if re.match(r"\s*// UNSUPPORTED STEP TYPE: assertionteststep", script):
@@ -1483,11 +1488,23 @@ def translate(script: str, response_var_by_step: dict[str, str],
         patterns_matched.append("empty_assertionteststep")
         consumed = True
     elif re.match(r"\s*// UNSUPPORTED STEP TYPE: datasourceloop", script):
+        # PARTIAL, not FULL. A DataSource Loop runs its block once per row of
+        # the DataSource it follows; skipping it means the converted test
+        # runs exactly ONE row. That is a real loss of coverage, and calling
+        # it FULL hides it in the very report you would check.
+        #
+        # It was FULL because the first project converted had a single loop
+        # over an incidental allow-list, where one row was as good as all of
+        # them. The second project drove 28 of its 29 cases this way, with
+        # 8 rows of input per case -- same construct, opposite consequence.
+        # So the honest classification is the one that does not depend on
+        # which project you happen to be converting.
         lines.append(
-            'LOG.warn("datasourceloop skipped -- AllowedDomains iteration '
-            'is not imported as a Java loop");')
+            'LOG.warn("datasourceloop NOT imported: this test runs ONE row, '
+            'where ReadyAPI ran one per DataSource row");')
         patterns_matched.append("datasourceloop_skip")
         consumed = True
+        coverage_override = "PARTIAL"
 
     # ---- testRunner...testSuites["X"].testCases["Y"].testSteps["Z"].run
     # ReadyAPI testdata-cleanup invokes Cleanup_testdata_creation / cleanup_db
@@ -3921,7 +3938,7 @@ def translate(script: str, response_var_by_step: dict[str, str],
         consumed = True
 
     # ---- Preserve original as commented block if nothing recognized
-    coverage = "FULL" if consumed else "STUB"
+    coverage = coverage_override or ("FULL" if consumed else "STUB")
     if not consumed:
         lines.append('// [groovy] NO PATTERN MATCHED -- test will run but this '
                      'block did not translate:')

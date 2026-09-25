@@ -2628,6 +2628,104 @@ def test_names_starting_with_a_digit_become_valid_java():
         assert not rc.to_camel_case(raw).startswith("_")
 
 
+def test_excel_datasource_is_parsed_in_both_readyapi_shapes():
+    """A DataSource the parser cannot read is reported FULL, not STUB.
+
+    The audit decides coverage with `STUB if step.file_path else FULL` --
+    correct, because a DataSource with no file is an inline Grid whose rows
+    live in the XML, while one naming a file is only as good as that file.
+    But the parser returned an empty file_path for every Excel DataSource in
+    a project, so all 34 took the "no file" branch and the convert reported
+    32/32 FULL while importing no data whatsoever.
+
+    Two shape assumptions caused it, and BOTH forms occur in one project
+    (467 of the first, 294 of the second here), so these are alternatives to
+    try, never a replacement:
+
+        <con:property><con:name>propCode</con:name></con:property>
+        <con:property>propCode</con:property>
+
+    and the Excel locator is written UNQUALIFIED inside <con:configuration>,
+    exactly like the JDBC variant's driver/connstr/pass/query:
+
+        <con:configuration><file>...</file><worksheet>..</worksheet></...>
+    """
+    import xml.etree.ElementTree as ET
+    import ra_converter as rc
+
+    xml = (
+        '<root xmlns:con="http://eviware.com/soapui/config">'
+        '<con:testStep type="datasource" name="DataSource">'
+        '<con:config>'
+        '<con:dataSource type="Excel">'
+        '<con:configuration><file>${projectDir}/data/book.xlsx</file>'
+        '<worksheet>200_success</worksheet><cell>A2</cell>'
+        '<ignoreEmpty>true</ignoreEmpty></con:configuration>'
+        '</con:dataSource>'
+        '<con:property>SlNo</con:property>'
+        '<con:property>propCode</con:property>'
+        '</con:config></con:testStep></root>')
+    ds = rc._parse_datasource_step(
+        ET.fromstring(xml).find("con:testStep", rc.NS))
+    assert ds.ds_type == "Excel", ds.ds_type
+    assert ds.file_path.endswith("book.xlsx"), ds.file_path
+    assert ds.worksheet == "200_success", ds.worksheet
+    assert ds.start_cell == "A2", ds.start_cell
+    assert ds.ignore_empty is True
+    assert ds.columns == ["SlNo", "propCode"], ds.columns
+
+    # the older name-child shape must keep working
+    xml2 = (
+        '<root xmlns:con="http://eviware.com/soapui/config">'
+        '<con:testStep type="datasource" name="DataSource">'
+        '<con:config><con:dataSource type="Excel">'
+        '<con:configuration><con:file>/data/old.xlsx</con:file>'
+        '</con:configuration></con:dataSource>'
+        '<con:property><con:name>guestId</con:name></con:property>'
+        '</con:config></con:testStep></root>')
+    ds2 = rc._parse_datasource_step(
+        ET.fromstring(xml2).find("con:testStep", rc.NS))
+    assert ds2.file_path == "/data/old.xlsx", ds2.file_path
+    assert ds2.columns == ["guestId"], ds2.columns
+
+    # A <con:property> carrying CHILDREN is a config block, not a column.
+    assert "" not in ds.columns and None not in ds.columns
+
+
+def test_a_skipped_datasource_loop_is_partial_not_full():
+    """Skipping the loop means the test runs ONE row. That is not FULL.
+
+    A DataSource Loop runs its block once per DataSource row. The converter
+    does not import it, so the emitted test runs a single row -- and it used
+    to report that as FULL, which hides the loss in the one report you would
+    check to find it.
+
+    It was FULL because the first project converted had exactly one loop,
+    over an incidental allow-list, where one row was as good as all of them.
+    The second drove 28 of its 29 cases this way with 8 rows of input each:
+    same construct, opposite consequence. PARTIAL is the classification that
+    does not depend on which project you happen to be converting.
+    """
+    import groovy_translator as gt
+    _lines, meta = gt.translate(
+        "// UNSUPPORTED STEP TYPE: datasourceloop  (manual review)", {}, "Loop")
+    assert meta["coverage"] == "PARTIAL", meta["coverage"]
+    assert "datasourceloop_skip" in meta["patterns_matched"]
+
+    # The runtime warning must say what was lost, not name one project's
+    # allow-list -- it was the hardcoded "AllowedDomains iteration" that made
+    # the rule look deliberate on a project it had never seen.
+    warn = " ".join(_lines)
+    assert "AllowedDomains" not in warn
+    assert "ONE row" in warn, warn
+
+    # A genuinely unrecognised script must still be STUB: PARTIAL is for
+    # constructs we RECOGNISE and decline to reproduce, and collapsing the
+    # two would make the distinction useless.
+    _l2, meta2 = gt.translate("def x = thisIsNotAPattern()", {}, "Whatever")
+    assert meta2["coverage"] == "STUB", meta2["coverage"]
+
+
 def test_script_runner_is_the_last_thing_in_this_file():
     """verify_all runs this file as a SCRIPT, not under pytest.
 

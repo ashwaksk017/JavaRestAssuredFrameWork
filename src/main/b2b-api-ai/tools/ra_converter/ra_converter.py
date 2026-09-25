@@ -153,6 +153,16 @@ class DataSourceStep:
     ds_type: str           # 'File', 'Excel', 'Grid', etc.
     columns: list[str] = field(default_factory=list)
     file_path: str = ""
+    # Excel DataSources address a sheet and a starting cell, and two
+    # workbooks in one project routinely share column names -- so the
+    # locator is (file, worksheet, cell), not the file alone. Kept as
+    # parsed: resolving ${projectDir} needs the project root, which the
+    # parser does not have.
+    worksheet: str = ""
+    start_cell: str = ""
+    # ReadyAPI's own "skip rows that are entirely blank" toggle. Carried so
+    # an importer can reproduce the row count ReadyAPI actually ran.
+    ignore_empty: bool = False
 
 
 @dataclass
@@ -746,19 +756,59 @@ def _parse_datasource_step(step_el: ET.Element) -> DataSourceStep:
     if cfg_el is not None:
         # ReadyAPI DataSource: dataSourceType attribute or child
         ds.ds_type = cfg_el.get("dataSourceType", "") or "unknown"
-        # collect column names from <con:property> children
+        # Column names, in BOTH shapes ReadyAPI writes them. One project can
+        # contain both -- this XML has 467 of the name-child form and 294 of
+        # the inline form -- so these are alternatives to try, never a
+        # replacement of one by the other.
+        #
+        #   <con:property><con:name>propCode</con:name></con:property>
+        #   <con:property>propCode</con:property>          <- text inline
+        #
+        # Reading only the first shape returned zero columns for an entire
+        # suite whose DataSources were all the second, and the convert still
+        # reported them FULL.
         for p in cfg_el.findall(".//con:property", NS):
             n = p.find("con:name", NS)
             if n is not None and n.text:
-                ds.columns.append(n.text)
+                ds.columns.append(n.text.strip())
+            elif (p.text or "").strip() and len(list(p)) == 0:
+                # Inline text, and no child elements -- a <con:property> with
+                # children is a config block, not a column name.
+                ds.columns.append(p.text.strip())
         # File-based DataSource references an external CSV/Excel via
         # <con:file> or <con:fileName>. Grab it so downstream code can
         # migrate the actual data file (or at least log its absence).
+        #
+        # Namespaced OR unqualified: ReadyAPI writes the Excel locator as
+        # bare <file>/<worksheet>/<cell> inside <con:configuration>, the
+        # same way it writes the JDBC variant's driver/connstr/pass/query
+        # handled below. Looking only for the namespaced spelling left
+        # file_path empty for every Excel DataSource in a project, so the
+        # converter could not even name the workbook it had failed to read.
         for tag in ("file", "fileName", "excelFile"):
             file_el = cfg_el.find(f".//con:{tag}", NS)
+            if file_el is None:
+                file_el = cfg_el.find(f".//{tag}")
             if file_el is not None and file_el.text:
                 ds.file_path = file_el.text.strip()
                 break
+        for tag, attr in (("worksheet", "worksheet"), ("cell", "start_cell")):
+            el = cfg_el.find(f".//con:{tag}", NS)
+            if el is None:
+                el = cfg_el.find(f".//{tag}")
+            if el is not None and el.text:
+                setattr(ds, attr, el.text.strip())
+        ign = cfg_el.find(".//con:ignoreEmpty", NS)
+        if ign is None:
+            ign = cfg_el.find(".//ignoreEmpty")
+        if ign is not None and (ign.text or "").strip().lower() == "true":
+            ds.ignore_empty = True
+        # The type lives on the <con:dataSource> element, not on <con:config>,
+        # so the dataSourceType attribute read above finds nothing for these.
+        if ds.ds_type in ("", "unknown"):
+            src_el = cfg_el.find("con:dataSource", NS)
+            if src_el is not None and src_el.get("type"):
+                ds.ds_type = src_el.get("type")
         # Audit fix #6: ReadyAPI JDBC DataSource variant embeds its
         # config as UNQUALIFIED elements inside <con:configuration>:
         #    <con:configuration>
@@ -7598,9 +7648,26 @@ public interface ImportedRestClient {{
                 f"{len(step.properties or {})} prop(s)",
                 "FULL", "")
         elif isinstance(step, DataSourceStep):
+            # A DataSource with no file is a Grid/inline source: its rows are
+            # in the XML, so there is nothing left outside to migrate. One
+            # that names a file is only as good as that file, which we do not
+            # read -- so it is a STUB however many columns we parsed.
+            #
+            # This branch was always right; it just never fired, because the
+            # parser returned an empty file_path for every Excel DataSource
+            # and the "no file" case reads as FULL. Two bugs pointing the
+            # same way: the audit said FULL for 34 steps that imported no
+            # data at all.
             cov = "STUB" if step.file_path else "FULL"
-            gap = (f"external file `{step.file_path}` not migrated"
-                   if step.file_path else "")
+            gap = ""
+            if step.file_path:
+                where = step.file_path.rsplit("/", 1)[-1]
+                if step.worksheet:
+                    where += f" [{step.worksheet}"
+                    where += f"!{step.start_cell}]" if step.start_cell else "]"
+                gap = (f"data file `{where}` not imported -- "
+                       f"{len(step.columns)} column(s) parsed, 0 rows; the "
+                       f"converted test runs ONE row with empty values")
             self.ledger.add_step(
                 self._current_prefix, self._current_case, step_name,
                 "DATASOURCE", step.ds_type or "-", step.file_path or "-",
