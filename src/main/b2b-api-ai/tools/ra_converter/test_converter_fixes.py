@@ -2596,6 +2596,38 @@ def test_openapi_readme_travels_but_no_spec_does():
     assert not bad, "only the README may be re-included, not: %s" % bad
 
 
+def test_names_starting_with_a_digit_become_valid_java():
+    """A ReadyAPI operation may be named `500TokenRequest`. Java's may not.
+
+    sanitize_identifier already guarded this; to_camel_case did not, and
+    to_camel_case is the one client method names go through. The result was
+    `public Response 500TokenRequest(` in the emitted client and
+    `c.client.500TokenRequest(...)` in Calls.java -- an entire suite that
+    could not compile on an identifier the converter itself produced. Found
+    converting a second, unrelated ReadyAPI project; the first one happened
+    to contain no name starting with a digit.
+
+    Both helpers must agree on the SPELLING, not merely each be valid: the
+    client declares the method and Calls.java calls it, so two different
+    prefixes would give a method nobody calls plus a call to a method that
+    does not exist.
+    """
+    import ra_converter as rc
+    for raw in ("500TokenRequest", "200_ok_response", "9lives"):
+        camel = rc.to_camel_case(raw)
+        pascal = rc.to_camel_case(raw, upper_first=True)
+        assert not camel[0].isdigit(), "%s -> %s is not a Java identifier" % (raw, camel)
+        assert not pascal[0].isdigit(), "%s -> %s is not a Java class name" % (raw, pascal)
+        assert camel.startswith("_"), "must use the same prefix as sanitize_identifier"
+        assert rc.sanitize_identifier(raw).startswith("_")
+
+    # A name that already starts with a letter is untouched: this fix must
+    # rename nothing in a suite that converts today.
+    for raw in ("createRatePlan", "case09_Get_thing_200", "tokenRequest"):
+        assert rc.to_camel_case(raw)[0].isalpha()
+        assert not rc.to_camel_case(raw).startswith("_")
+
+
 def test_script_runner_is_the_last_thing_in_this_file():
     """verify_all runs this file as a SCRIPT, not under pytest.
 

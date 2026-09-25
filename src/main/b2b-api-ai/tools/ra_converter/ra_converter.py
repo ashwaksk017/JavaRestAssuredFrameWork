@@ -3263,7 +3263,19 @@ def to_camel_case(s: str, upper_first: bool = False) -> str:
     """Convert to camelCase (or PascalCase when upper_first=True).
     Unicode-tolerant: non-ASCII chars get transliterated so `テスト_case`
     doesn't collapse to `unnamed`. Java-reserved-word safe: identifiers
-    matching Java keywords get a trailing `_` appended."""
+    matching Java keywords get a trailing `_` appended. Leading digits get a
+    `_` prefix, since no Java identifier may start with one.
+
+    The digit guard uses the SAME `_` prefix as sanitize_identifier, and that
+    is not cosmetic: a name can reach the emitted tree through either helper
+    -- the client declares the method, Calls.java calls it -- and two
+    different spellings of the same operation compile to a method nobody
+    calls plus a call to a method that does not exist.
+
+    Found on a ReadyAPI suite whose operation was literally named
+    `500TokenRequest`. It produced `public Response 500TokenRequest(` and
+    `c.client.500TokenRequest(...)`, and the whole convert failed to compile
+    on a name the converter itself had invented."""
     if s:
         s = _transliterate_non_ascii(s)
     parts = re.split(r"[^A-Za-z0-9]+", s or "")
@@ -3274,6 +3286,8 @@ def to_camel_case(s: str, upper_first: bool = False) -> str:
         result = "".join(p[:1].upper() + p[1:] for p in parts)
     else:
         result = parts[0][:1].lower() + parts[0][1:] + "".join(p[:1].upper() + p[1:] for p in parts[1:])
+    if result and result[0].isdigit():
+        result = "_" + result
     if result in _JAVA_RESERVED:
         result = result + "_"
     return result
@@ -6363,6 +6377,20 @@ public interface ImportedRestClient {{
         def add(name: str, params: str, prefer: bool = False) -> None:
             if not name or name in _OBJECT_METHODS:
                 return
+            # Fail closed on the identifier, here rather than at each source.
+            # Three feed this union -- on-disk *Client.java, client.foo(...)
+            # call sites, and fluent_catalog.json -- and the catalog records
+            # the RAW ReadyAPI operation name, so `500TokenRequest` reached
+            # the emitted interface even after the client and Calls.java had
+            # been fixed to `_500TokenRequest`. One gate covers all three and
+            # any source added later.
+            #
+            # to_camel_case, not a local rule: the client declares the method
+            # and this interface must name the SAME method, so the two have
+            # to spell it identically or the client stops implementing its
+            # own interface.
+            if name and name[0].isdigit():
+                name = to_camel_case(name)
             params = (params or "").strip()
             key = f"{name}|{_imported_client_type_sig(params)}"
             if prefer or key not in methods:
