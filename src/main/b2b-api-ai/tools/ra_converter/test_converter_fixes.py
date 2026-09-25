@@ -2882,6 +2882,133 @@ def test_an_unconverted_assertion_can_be_made_to_fail():
     assert "LOG.warn(" in window and "addAttachment(" in window
 
 
+def _xlsx_or_skip(tmp_path, sheet, header, rows):
+    """Write a real .xlsx, or return None when openpyxl is not installed."""
+    try:
+        import openpyxl
+    except ImportError:
+        return None
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = sheet
+    ws.append(header)
+    for r in rows:
+        ws.append(r)
+    path = os.path.join(str(tmp_path), "book.xlsx")
+    wb.save(path)
+    return path
+
+
+def test_datasource_rows_become_one_csv_row_each(tmp_path):
+    """A DataSource Loop runs once per workbook row; so must the test.
+
+    Not importing them is the difference between a case that exercised eight
+    inputs and one that sends empty strings once -- and the converted suite
+    did the latter while reporting FULL. The rows are the only place the
+    iteration can live, since the loop is not imported as a Java loop, and
+    the per-method data provider already replays one invocation per CSV row,
+    so no runtime support is needed.
+    """
+    import ra_converter as rc
+    book = _xlsx_or_skip(tmp_path, "200_success",
+                         ["SlNo", "propCode", "peakRooms"],
+                         [[1, "AAA", 12], [2, "BBB", 10], [3, "CCC", 8]])
+    if book is None:
+        return
+
+    ds = rc.DataSourceStep(step_name="DataSource", ds_type="Excel")
+    ds.file_path = "${projectDir}/somewhere/book.xlsx"
+    ds.worksheet = "200_success"
+    ds.start_cell = "A2"
+    rows, gap = rc._read_datasource_rows(ds, [str(tmp_path)])
+    assert gap == "", gap
+    assert len(rows) == 3, rows
+    assert rows[0]["propCode"] == "AAA"
+    assert rows[2]["peakRooms"] == "8"
+
+    # The stored path is ${projectDir}/... which exists only on the machine
+    # that exported the XML, so only the NAME may be used to find it.
+    assert "projectDir" not in str(rows)
+
+
+def test_a_missing_workbook_says_so_instead_of_importing_nothing(tmp_path):
+    """Three different "no rows" answers must not look like one.
+
+    A missing workbook, a missing reader and a missing worksheet need
+    different actions from whoever reads the report, and "0 rows" tells them
+    apart from nothing at all.
+    """
+    import ra_converter as rc
+    ds = rc.DataSourceStep(step_name="DataSource", ds_type="Excel")
+    ds.file_path = "${projectDir}/data/absent.xlsx"
+    rows, gap = rc._read_datasource_rows(ds, [str(tmp_path)])
+    assert rows == []
+    assert "absent.xlsx" in gap and "not found" in gap
+    assert str(tmp_path) in gap, "must say WHERE it looked"
+
+    # a worksheet that is not in the book
+    book = _xlsx_or_skip(tmp_path, "sheet_a", ["x"], [[1]])
+    if book is not None:
+        ds2 = rc.DataSourceStep(step_name="DataSource", ds_type="Excel")
+        ds2.file_path = "book.xlsx"
+        ds2.worksheet = "sheet_b"
+        rows2, gap2 = rc._read_datasource_rows(ds2, [str(tmp_path)])
+        assert rows2 == []
+        assert "sheet_b" in gap2 and "sheet_a" in gap2, gap2
+
+    # An inline Grid DataSource has no file and is NOT a gap: its rows are
+    # in the XML. Reporting one would make every Grid source look broken.
+    ds3 = rc.DataSourceStep(step_name="Grid", ds_type="Grid")
+    assert rc._read_datasource_rows(ds3, [str(tmp_path)]) == ([], "")
+
+
+def test_the_loop_picks_its_driver_by_name_not_by_position():
+    """A case can hold a lookup sheet AND the source that drives iteration.
+
+    Six cases in one project do. The lookup is four rows of shared
+    properties; taking the wrong one multiplies the whole suite by four and
+    drops the real data. The loop names its own source, so nothing has to be
+    inferred -- and the field it names is unqualified, like the Excel
+    locator.
+    """
+    import xml.etree.ElementTree as ET
+    import ra_converter as rc
+
+    xml = (
+        '<root xmlns:con="http://eviware.com/soapui/config">'
+        '<con:testSuite name="S"><con:testCase name="C">'
+        '<con:testStep type="datasource" name="PropertiesAndDates">'
+        '<con:config><con:dataSource type="Excel"><con:configuration>'
+        '<file>/d/lookup.xlsx</file><worksheet>properties</worksheet>'
+        '</con:configuration></con:dataSource>'
+        '<con:property>lookupCode</con:property></con:config></con:testStep>'
+        '<con:testStep type="datasource" name="DataSource">'
+        '<con:config><con:dataSource type="Excel"><con:configuration>'
+        '<file>/d/driver.xlsx</file><worksheet>200_success</worksheet>'
+        '</con:configuration></con:dataSource>'
+        '<con:property>propCode</con:property></con:config></con:testStep>'
+        '<con:testStep type="datasourceloop" name="Loop"><con:config>'
+        '<dataSourceStep>DataSource</dataSourceStep>'
+        '<targetStep>GET_Shop</targetStep>'
+        '</con:config></con:testStep>'
+        '</con:testCase></con:testSuite></root>')
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        xp = os.path.join(d, "p.xml")
+        open(xp, "w", encoding="utf-8").write(xml)
+        suites = rc.parse_test_suites(xp)
+    case = suites[0][1][0]
+    assert case.ds_loops == [{"loop": "Loop", "source": "DataSource",
+                              "target": "GET_Shop"}], case.ds_loops
+
+    # and the importer resolves the driver from that name, not from order
+    rc._import_datasource_rows([case], "p.xml", None)
+    assert "driver.xlsx" in case.ds_gap, (
+        "must have tried the LOOP's source; lookup.xlsx comes first in the "
+        "case, so a positional guess picks the wrong sheet: " + case.ds_gap)
+
+
 def test_script_runner_is_the_last_thing_in_this_file():
     """verify_all runs this file as a SCRIPT, not under pytest.
 

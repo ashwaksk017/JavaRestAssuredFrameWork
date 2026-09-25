@@ -153,6 +153,11 @@ class DataSourceStep:
     ds_type: str           # 'File', 'Excel', 'Grid', etc.
     columns: list[str] = field(default_factory=list)
     file_path: str = ""
+    # Rows the importer read from this source's workbook. -1 means the
+    # importer never looked (no loop drives this source); 0 means it looked
+    # and got nothing. The audit needs the three states apart to avoid
+    # calling an unread source FULL, which is how this started.
+    imported_rows: int = -1
     # Excel DataSources address a sheet and a starting cell, and two
     # workbooks in one project routinely share column names -- so the
     # locator is (file, worksheet, cell), not the file alone. Kept as
@@ -176,6 +181,18 @@ class TestCase:
     id: str
     name: str
     description: str
+    # DataSource Loops this case runs, as {loop, source, target} dicts. The
+    # loop is still emitted as an unsupported-step placeholder; this only
+    # records WHICH DataSource drives the iteration, which is the one thing
+    # the placeholder cannot say and the row importer needs.
+    ds_loops: list = field(default_factory=list)
+    # Rows read from the driving DataSource's workbook, one dict per row.
+    # Empty when there is no DataSource, no workbook on disk, or no reader
+    # installed -- all three are reported rather than assumed.
+    ds_rows: list = field(default_factory=list)
+    # Why ds_rows is empty, for the audit. "" when rows were imported or
+    # when the case never had a DataSource to import from.
+    ds_gap: str = ""
     steps: list = field(default_factory=list)  # ordered list of RestStep / GroovyStep / PropertiesStep / DataSourceStep / TransferStep
     # Test-management annotations mined from `<con:testCase>` attributes.
     # Populated by parse_test_suites when present in the source XML.
@@ -777,6 +794,139 @@ def _dropped_content_summary(step_el) -> str:
     top = sorted(interesting.items(), key=lambda kv: -kv[1])[:4]
     return " -- NOT imported: " + ", ".join(
         "%d %s" % (n, t) for t, n in top)
+
+
+def _datasource_search_dirs(xml_path: str, extra: str | None) -> list[str]:
+    """Where to look for a DataSource workbook, best guess first.
+
+    ReadyAPI stores the path as ``${projectDir}/...``, and projectDir is a
+    property of the installation that exported the XML -- it does not exist
+    on the machine running the converter. So the name is resolved against
+    directories we can actually know about, and the one that was used is
+    reported, because "which copy of that workbook did it read" is not a
+    question to leave to inference.
+    """
+    dirs = []
+    if extra:
+        dirs.append(extra)
+    here = os.path.dirname(os.path.abspath(xml_path))
+    dirs.append(here)                                   # beside the XML
+    dirs.append(os.path.join(here, "data"))
+    dirs.append(os.path.join(here, "..", "data"))
+    return [d for d in dirs if d]
+
+
+def _read_datasource_rows(ds, search_dirs: list[str]) -> tuple[list, str]:
+    """(rows, gap). rows is one dict per workbook row; gap says why not.
+
+    Never raises and never guesses. A missing workbook, a missing reader and
+    a missing worksheet are three different answers, and a converted suite
+    that quietly ran one empty row is what made all three worth naming.
+    """
+    if not ds.file_path:
+        return [], ""                       # inline Grid: rows are in the XML
+    want = os.path.basename(ds.file_path.replace(chr(92), "/"))
+    found = None
+    for d in search_dirs:
+        cand = os.path.join(d, want)
+        if os.path.isfile(_fs_path(cand)):
+            found = cand
+            break
+    if not found:
+        return [], ("workbook `%s` not found (looked in: %s)"
+                    % (want, ", ".join(os.path.normpath(d) for d in search_dirs)))
+    try:
+        import openpyxl                      # optional: only data-driven suites need it
+    except ImportError:
+        return [], ("workbook `%s` found but openpyxl is not installed "
+                    "(pip install openpyxl) -- no rows imported" % want)
+    try:
+        wb = openpyxl.load_workbook(_fs_path(found), data_only=True, read_only=True)
+    except Exception as e:                   # a corrupt or locked workbook
+        return [], "workbook `%s` could not be opened: %s" % (want, e)
+    try:
+        sheet = ds.worksheet or wb.sheetnames[0]
+        if sheet not in wb.sheetnames:
+            return [], ("worksheet `%s` not in `%s` (has: %s)"
+                        % (sheet, want, ", ".join(wb.sheetnames)))
+        ws = wb[sheet]
+        # ReadyAPI's start cell is the first DATA cell, so the header is the
+        # row above it. A2 -> header row 1, data from row 2.
+        first_data_row = 2
+        m = re.match(r"^[A-Za-z]+(\d+)$", (ds.start_cell or "A2").strip())
+        if m:
+            first_data_row = max(2, int(m.group(1)))
+        grid = list(ws.iter_rows(values_only=True))
+        if len(grid) < first_data_row:
+            return [], "worksheet `%s!%s` has no data rows" % (want, sheet)
+        header = [("" if h is None else str(h).strip())
+                  for h in grid[first_data_row - 2]]
+        rows = []
+        for raw in grid[first_data_row - 1:]:
+            if all(v is None or str(v).strip() == "" for v in raw):
+                if ds.ignore_empty:
+                    continue
+                # A wholly blank row is the end of the data in every
+                # ReadyAPI sheet seen so far; keeping it would add a row of
+                # empty values that looks exactly like the bug this import
+                # exists to fix.
+                break
+            row = {}
+            for i, name in enumerate(header):
+                if not name:
+                    continue
+                v = raw[i] if i < len(raw) else None
+                row[name] = "" if v is None else str(v)
+            if row:
+                rows.append(row)
+        if not rows:
+            return [], "worksheet `%s!%s` has a header but no data rows" % (want, sheet)
+        return rows, ""
+    finally:
+        try:
+            wb.close()
+        except Exception:
+            pass
+
+
+def _import_datasource_rows(cases: list, xml_path: str, extra_dir: str | None) -> None:
+    """Attach workbook rows to every case that a DataSource Loop drives.
+
+    A case can hold more than one DataSource -- typically a shared lookup
+    sheet plus the one that actually drives the iteration -- so the driver is
+    taken from the LOOP's own `dataSourceStep`, never from position. Guessing
+    would silently pick the lookup table and multiply the suite by its four
+    property rows.
+    """
+    dirs = _datasource_search_dirs(xml_path, extra_dir)
+    for case in cases:
+        sources = {s.step_name: s for s in case.steps
+                   if isinstance(s, DataSourceStep)}
+        if not sources:
+            continue
+        driver = None
+        for loop in case.ds_loops:
+            if loop.get("source") in sources:
+                driver = sources[loop["source"]]
+                break
+        if driver is None:
+            if case.ds_loops:
+                case.ds_gap = ("loop names DataSource `%s`, which this case "
+                               "does not have" % (case.ds_loops[0].get("source") or "?"))
+            continue
+        rows, gap = _read_datasource_rows(driver, dirs)
+        case.ds_rows = rows
+        case.ds_gap = gap
+        driver.imported_rows = len(rows)
+        if rows:
+            # Tell the loop's placeholder that its iteration DID survive, as
+            # CSV rows. Without this the loop keeps reporting PARTIAL on a
+            # case whose data was fully imported -- the same overstatement as
+            # the old FULL, just pointing the other way.
+            for st in case.steps:
+                if (isinstance(st, GroovyStep)
+                        and "UNSUPPORTED STEP TYPE: datasourceloop" in (st.script or "")):
+                    st.script += "  -- rows imported: %d" % len(rows)
 
 
 def _parse_datasource_step(step_el: ET.Element) -> DataSourceStep:
@@ -1448,6 +1598,22 @@ def parse_test_suites(xml_path: str) -> list[tuple[str, list[TestCase]]]:
                          step_el.get("name", "")))
                     continue
                 step_type = step_el.get("type", "")
+                if step_type == "datasourceloop":
+                    # Recorded, not parsed into a step: the loop stays an
+                    # unsupported-step placeholder (nothing emits a Java
+                    # loop), but WHICH DataSource it iterates is the one fact
+                    # the placeholder cannot carry, and importing rows is
+                    # impossible without it. Both children are unqualified,
+                    # like the Excel locator.
+                    cfg_l = step_el.find("con:config", NS)
+                    if cfg_l is not None:
+                        _src = cfg_l.find("dataSourceStep")
+                        _tgt = cfg_l.find("targetStep")
+                        tc.ds_loops.append({
+                            "loop": step_el.get("name", ""),
+                            "source": (_src.text or "").strip() if _src is not None else "",
+                            "target": (_tgt.text or "").strip() if _tgt is not None else "",
+                        })
                 parser = _STEP_PARSERS.get(step_type)
                 if parser is None:
                     # Unknown step type -- store as a placeholder Groovy with a note.
@@ -7701,9 +7867,16 @@ public interface ImportedRestClient {{
             # and the "no file" case reads as FULL. Two bugs pointing the
             # same way: the audit said FULL for 34 steps that imported no
             # data at all.
-            cov = "STUB" if step.file_path else "FULL"
+            # FULL only when the rows actually arrived. A file-backed
+            # source that was never read is a STUB no matter how many of its
+            # columns we parsed -- the columns are the shape, the rows are
+            # the data, and a test runs on the data.
+            if getattr(step, "imported_rows", -1) > 0:
+                cov = "FULL"
+            else:
+                cov = "STUB" if step.file_path else "FULL"
             gap = ""
-            if step.file_path:
+            if step.file_path and cov == "STUB":
                 where = step.file_path.rsplit("/", 1)[-1]
                 if step.worksheet:
                     where += f" [{step.worksheet}"
@@ -7711,6 +7884,11 @@ public interface ImportedRestClient {{
                 gap = (f"data file `{where}` not imported -- "
                        f"{len(step.columns)} column(s) parsed, 0 rows; the "
                        f"converted test runs ONE row with empty values")
+            elif step.file_path:
+                where = step.file_path.rsplit("/", 1)[-1]
+                if step.worksheet:
+                    where += f" [{step.worksheet}]"
+                gap = (f"{step.imported_rows} row(s) imported from `{where}`")
             self.ledger.add_step(
                 self._current_prefix, self._current_case, step_name,
                 "DATASOURCE", step.ds_type or "-", step.file_path or "-",
@@ -14438,6 +14616,57 @@ public final class {support_name} {{
         "zip":          "<<zip>>",
     }
 
+    def _expand_rows_for_datasource(self, cols: list, rows: list,
+                                    cluster: list) -> list:
+        """One row per case -> one per imported workbook row.
+
+        Only the DataSource_<column> cells change between the copies;
+        everything else in the row describes the CASE, not the data, so it is
+        carried across unchanged. A case with no imported rows is returned
+        exactly as it was -- which is every case when no workbook is on disk,
+        so this is inert until the data is actually there.
+        """
+        if len(rows) != len(cluster):
+            return rows                      # shapes disagree: do nothing
+        if not any(getattr(c, "ds_rows", None) for c in cluster):
+            return rows
+        # CSV cells are already quoted/escaped, so map by column INDEX and
+        # re-split each row the same way csv does.
+        import csv as _csv
+        idx_by_ds_col = {}
+        for i, name in enumerate(cols):
+            n = name.strip().strip('"')
+            if n.startswith("DataSource_"):
+                idx_by_ds_col[n[len("DataSource_"):]] = i
+        if not idx_by_ds_col:
+            return rows                      # nothing downstream reads the data
+        out = []
+        for row_text, case in zip(rows, cluster):
+            data_rows = getattr(case, "ds_rows", None)
+            if not data_rows:
+                out.append(row_text)
+                continue
+            cells = next(_csv.reader([row_text]))
+            if len(cells) != len(cols):
+                out.append(row_text)         # never emit a ragged row
+                continue
+            for data in data_rows:
+                copy = list(cells)
+                for col, i in idx_by_ds_col.items():
+                    # Match the workbook header case-insensitively: ReadyAPI
+                    # refers to the column by the spelling in the sheet, and
+                    # the two drift by capitalisation alone often enough.
+                    val = data.get(col)
+                    if val is None:
+                        for k, v in data.items():
+                            if k.lower() == col.lower():
+                                val = v
+                                break
+                    if val is not None:
+                        copy[i] = _csv_cell(val, col)
+                out.append(",".join(copy))
+        return out
+
     def emit_csv_per_method(self, class_name: str, method_name: str,
                               cluster: list[TestCase],
                               stop_markers: dict[str, str] = None,
@@ -14751,6 +14980,18 @@ public final class {support_name} {{
             )
             row_cells = group_a_cells + stop_cell + group_c_cells + group_d_cells
             rows.append(",".join(row_cells))
+
+        # One CSV row per case becomes one per WORKBOOK row, where the
+        # workbook was found. A DataSource Loop runs its block once per row;
+        # with the loop not imported as a Java loop, the rows are the only
+        # place that iteration can live -- and the data provider already
+        # runs a method once per CSV row, so this needs no runtime support.
+        #
+        # Post-processing the finished rows rather than threading the data
+        # through the assembly above: that code composes a row from six
+        # groups of cells, and the only thing that varies per workbook row
+        # is the handful of DataSource_ columns.
+        rows = self._expand_rows_for_datasource(cols, rows, cluster)
 
         content = header_row + "\n" + "\n".join(rows) + "\n"
         # CSV lives under the same package tail its Java class does, so
@@ -16607,6 +16848,15 @@ def main():
                         "ImportedRestClient so a clone with no conversions "
                         "compiles and hand-written tests can be authored "
                         "first. Needs no --input.")
+    p.add_argument("--data-dir",
+                    help="Directory holding the DataSource workbooks the "
+                         "ReadyAPI project references. Their paths are stored "
+                         "as ${projectDir}/... which does not exist on this "
+                         "machine, so only the file NAME is used and it is "
+                         "looked up here first, then beside the input XML. "
+                         "Without the workbooks a data-driven case converts "
+                         "to a single row of empty values, which the convert "
+                         "reports per case.")
     p.add_argument("--skip-dataflow-check", action="store_true",
                    help="Do not run tools/check_ctx_dataflow.py after emit. "
                         "Default is to verify that every ctx key a chain READS "
@@ -17347,6 +17597,26 @@ def _run_convert(args):
     # Legacy modes flatten across suites, which is fine because most SoapUI
     # exports carry a single suite anyway.
     parsed_suites: list[tuple[str, list[TestCase]]] = parse_test_suites(args.input)
+    # Read the DataSource workbooks before anything is emitted, so the CSV
+    # writer and the audit see the same answer. Reports per case: rows
+    # imported, or exactly which workbook was missing and where it looked.
+    for _sname, _cases in parsed_suites:
+        _import_datasource_rows(_cases, args.input, getattr(args, "data_dir", None))
+    _ds_ok = [c for _n, cs in parsed_suites for c in cs if c.ds_rows]
+    _ds_gap = [c for _n, cs in parsed_suites for c in cs if c.ds_gap]
+    if _ds_ok or _ds_gap:
+        print("[ra_converter] DataSource rows: %d case(s) imported %d row(s); "
+              "%d case(s) could not"
+              % (len(_ds_ok), sum(len(c.ds_rows) for c in _ds_ok), len(_ds_gap)))
+        for _c in _ds_ok:
+            print("    %-44s %d row(s)" % (_c.name[:44], len(_c.ds_rows)))
+        _seen_gap = set()
+        for _c in _ds_gap:
+            _key = _c.ds_gap.split("(")[0]
+            if _key in _seen_gap:
+                continue
+            _seen_gap.add(_key)
+            print("    [no data] %s" % _c.ds_gap[:150])
     cases_all: list[TestCase] = [c for _sn, cs in parsed_suites for c in cs]
     print(f"[ra_converter] found {len(cases_all)} test cases across "
           f"{len(parsed_suites)} SoapUI test suite(s)")

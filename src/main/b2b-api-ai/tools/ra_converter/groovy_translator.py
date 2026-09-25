@@ -1516,12 +1516,24 @@ def translate(script: str, response_var_by_step: dict[str, str],
         # 8 rows of input per case -- same construct, opposite consequence.
         # So the honest classification is the one that does not depend on
         # which project you happen to be converting.
-        lines.append(
-            'LOG.warn("datasourceloop NOT imported: this test runs ONE row, '
-            'where ReadyAPI ran one per DataSource row");')
-        patterns_matched.append("datasourceloop_skip")
-        consumed = True
-        coverage_override = "PARTIAL"
+        m_rows = re.search(r"rows imported:\s*(\d+)", script)
+        if m_rows:
+            # The iteration is reproduced -- as CSV rows, which the data
+            # provider replays one per @Test invocation. Nothing is lost, so
+            # nothing should be reported as lost.
+            lines.append(
+                '// [datasourceloop] iteration imported as %s CSV row(s); '
+                'the data provider runs this method once per row'
+                % m_rows.group(1))
+            patterns_matched.append("datasourceloop_imported")
+            consumed = True
+        else:
+            lines.append(
+                'LOG.warn("datasourceloop NOT imported: this test runs ONE row, '
+                'where ReadyAPI ran one per DataSource row");')
+            patterns_matched.append("datasourceloop_skip")
+            consumed = True
+            coverage_override = "PARTIAL"
 
     # ---- testRunner...testSuites["X"].testCases["Y"].testSteps["Z"].run
     # ReadyAPI testdata-cleanup invokes Cleanup_testdata_creation / cleanup_db

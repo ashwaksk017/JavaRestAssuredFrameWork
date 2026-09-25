@@ -10,6 +10,7 @@ The utility layer (`RestUtilities`, `RestLoggerUtilityDataHolder`, `RestLogAppen
 |---|---|
 | put a ReadyAPI XML in so the converter picks it up | [Quick start §1](#1-generate-everything-from-the-readyapi-xmls) — `tools/ra_converter/input/` |
 | put the Swagger / OpenAPI spec in | [Where the OpenAPI (Swagger) spec goes](#where-the-openapi-swagger-spec-goes) — `src/main/resources/openapi/` |
+| convert a suite driven by Excel DataSources | [Excel DataSources](#excel-datasources) — `--data-dir` |
 | make a tree compile without any XML | `--bootstrap`, [Quick start §1](#1-generate-everything-from-the-readyapi-xmls) |
 | read a value from the datasheet into a request body | [Authoring template values](#authoring-template-values--types-the-datasheet-and-random-data) |
 | send a number or boolean rather than a string | [Authoring template values](#authoring-template-values--types-the-datasheet-and-random-data) |
@@ -108,6 +109,49 @@ python tools/ra_converter/ra_converter.py --input tools/ra_converter/input/membe
 `--clean` deletes that suite's generated tests / CSVs / templates /
 `_audit` / `_flows` / SetupHelper / TestSupport / SuiteCleanup. It must NOT
 delete `support/scenario/` or `fluent_catalog.json`.
+
+### Excel DataSources
+
+A ReadyAPI case driven by a **DataSource + DataSource Loop** runs its steps
+once per row of a spreadsheet. The XML names that spreadsheet but does not
+contain it:
+
+```xml
+<con:dataSource type="Excel">
+  <con:configuration><file>${projectDir}/data/shopSearch.xlsx</file>
+  <worksheet>200_success</worksheet><cell>A2</cell></con:configuration>
+```
+
+`${projectDir}` is a property of the ReadyAPI installation that exported the
+project, so it does not resolve here. Point the converter at the workbooks:
+
+```powershell
+python tools/ra_converter/ra_converter.py --input tools/ra_converter/input/Project.xml `
+    --output . --package-root com.ak.api --data-dir C:\path	o\workbooks
+```
+
+Only the file NAME is used. The converter looks in `--data-dir` first, then
+beside the input XML, then a `data/` folder next to it, and reports which
+workbook it read so "which copy of that workbook was it" is never a guess.
+
+Each workbook row becomes **one CSV row**, so the per-method data provider
+replays the test once per row — the same iteration ReadyAPI's loop performed.
+Needs `openpyxl` (`pip install openpyxl`); without it the convert still
+succeeds and says why no rows arrived.
+
+**Without the workbooks the convert still works**, and says exactly what is
+missing per case:
+
+```
+[ra_converter] DataSource rows: 4 case(s) imported 32 row(s); 24 case(s) could not
+    get_shop_200                                 8 row(s)
+    [no data] workbook `ratePlans.xlsx` not found (looked in: ...)
+```
+
+A case with no data converts to a single row of **empty** values — it will
+run and send blanks. That is reported, not silent: the step shows `STUB` in
+`_audit/<suite>/steps.csv` with the workbook and worksheet named, and the
+loop shows `PARTIAL`. Both read `FULL` once the rows are imported.
 
 ### 2. Verify
 
