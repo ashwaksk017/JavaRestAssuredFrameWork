@@ -157,7 +157,14 @@ def chains_in(root: str):
             # Insights.verifyX(scenario, expected). Counting only the
             # pre-complete() calls reports every verify phase as an orphan.
             tail = body[cut:] if cut >= 0 else ""
-            calls = [("phase", n, s) for n, s in _CALL_RX.findall(head)]
+            # `.bootstrap()` is a chain call but not a registered phase: it
+            # runs the case's setup (the token request and whatever else
+            # precedes the first business step). It is in the chain so that
+            # request is visible; the registry describes it as a bootstrap,
+            # not as a phase, so matching it against phases reports every
+            # test as MISSING.
+            calls = [("phase", n, s) for n, s in _CALL_RX.findall(head)
+                     if n != "bootstrap"]
             calls += [("verify", n, s) for n, s in _INS_RX.findall(tail)]
             tn = re.search(r"public void (\w+)\(", seg)
             out.append((path, tn.group(1) if tn else "?",

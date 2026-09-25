@@ -77,12 +77,17 @@ def test_scenario_is_bound_only_when_something_reads_it():
     # Window widened and the anchor is now `elif`: a fully-disabled case
     # (every business step disabled upstream) branches first and throws
     # SkipException instead of emitting a chain that would pass empty.
-    seg = SRC.split("Expected expected = expected(row);", 1)[1][:3000]
+    # 4200, not 3000: the emitter grew a branch (verifies that chain) and
+    # every shape now opens with a .bootstrap() call, so the else-branch
+    # sits further from the anchor than when this window was chosen.
+    seg = SRC.split("Expected expected = expected(row);", 1)[1][:4200]
     assert "elif verify_calls:" in seg
     assert "var scenario =" in seg
     assert "else:" in seg
     # the else-branch calls the chain as a statement, with no binding
-    else_part = seg.split("else:", 1)[1][:400]
+    # 700, not 400: the chain now opens with a .bootstrap() call, so the
+    # statement runs a line longer than when this window was chosen.
+    else_part = seg.split("else:", 1)[1][:700]
     assert "var scenario" not in else_part, else_part[:200]
     assert ".complete();" in else_part
 

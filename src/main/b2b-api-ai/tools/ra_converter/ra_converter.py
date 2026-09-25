@@ -13375,6 +13375,7 @@ public abstract class ScenarioSteps<S extends ScenarioSteps<S>> {{
     protected int __restStepIdx;
     protected String __stopAfter;
     protected boolean __stoppedNoted;
+    protected boolean __bootstrapped;
 {phase_fields}{resp_decls}
 
     protected ScenarioSteps(ImportedRestClient client,
@@ -13475,7 +13476,24 @@ public abstract class ScenarioSteps<S extends ScenarioSteps<S>> {{
                 "CustomerOnboarding.start(row) was not called on this thread");
     }}
 
-    protected S bootstrap() throws Exception {{
+    /**
+     * The ReadyAPI setup block -- the token request and whatever else runs
+     * before the first business step.
+     *
+     * <p>Public and chainable so the request it makes is a visible step
+     * instead of something {{@code start()}} did on your behalf. A call that
+     * reaches the wire should be readable in the chain: that is what lets a
+     * converted test be compared against its ReadyAPI case at all.</p>
+     *
+     * <p>Idempotent. Calling it twice, or after something else already
+     * triggered it, runs the setup once -- re-fetching a token is harmless
+     * but re-running identity generation is not.</p>
+     */
+    public S bootstrap() throws Exception {{
+        if (__bootstrapped) {{
+            return self();
+        }}
+        __bootstrapped = true;
 {phase_boot_guard}{boot_body}
     }}
 {phase_members}{vocab_methods}
@@ -13951,7 +13969,7 @@ public final class {cls} extends {base}<{cls}> {{
         flow.__restStepIdx = 0;
         flow.__stopAfter = "";
         flow.__stopAfter = flow.row.getOrDefault("_stop_after", "");
-{phase_bind}        return flow.bootstrap();
+{phase_bind}        return flow;
     }}
 {override}
     public record Scenario() {{}}
@@ -14399,7 +14417,7 @@ public final class {support_name} {{
             s.testCaseId = flow.testCaseId;
             s.flow = flow;
 {stop_init}            flow.__stopAfter = flow.row.getOrDefault("_stop_after", "");
-            return flow.bootstrap();
+            return flow;
         }}
 
 {bootstrap_block}
@@ -14599,7 +14617,8 @@ public final class {support_name} {{
             # now visible in the order it happens.
             body_lines.extend(self._readyapi_step_map(case))
             body_lines.extend([
-                f'{entry}.start(row{start_extra}){chain}'
+                f'{entry}.start(row{start_extra})'
+                f'{self._bootstrap_chain_call(case)}{chain}'
                 f'{self._chainable_verifies(case)}',
                 '                .complete();',
             ])
@@ -14607,14 +14626,16 @@ public final class {support_name} {{
             body_lines.extend(self._readyapi_step_map(case))
             body_lines.extend([
                 f'var scenario =',
-                f'        {entry}.start(row{start_extra}){chain}',
+                f'        {entry}.start(row{start_extra})'
+                f'{self._bootstrap_chain_call(case)}{chain}',
                 '                .complete();',
             ])
             body_lines.extend(verify_calls)
         else:
             body_lines.extend(self._readyapi_step_map(case))
             body_lines.extend([
-                f'{entry}.start(row{start_extra}){chain}',
+                f'{entry}.start(row{start_extra})'
+                f'{self._bootstrap_chain_call(case)}{chain}',
                 '                .complete();',
             ])
         if not fully_disabled:
@@ -14748,6 +14769,34 @@ public final class {support_name} {{
                 out.append(",".join(copy))
         return out
 
+    def _bootstrap_chain_call(self, case) -> str:
+        """Chain call for the setup, named for the REST step it performs.
+
+        `.tokenRequest()` rather than `.bootstrap()` wherever the setup makes
+        exactly one request: the point of the call is that a reader can line
+        the chain up against the ReadyAPI case, and the case calls that step
+        tokenRequest. A setup with several requests, or none we can name,
+        falls back to `.bootstrap()` -- still visible, just not named after
+        one of them.
+        """
+        import phase_emit as _pe
+        boot_part, _off = getattr(self, "_case_bootstrap", {}).get(
+            case.name, (None, 0))
+        if boot_part is None:
+            return ""
+        names = []
+        for ln in boot_part.get("leftover") or []:
+            m = re.search(r'\.name\("([^"]+)"\)', ln)
+            if m:
+                names.append(m.group(1))
+        # Always `.bootstrap()`: it is a real method on ScenarioSteps. A
+        # call named for the ReadyAPI step (`.tokenRequest()`) would read
+        # better, but that alias has to exist on the base class, and the
+        # base is emitted before the per-case bootstraps are known -- so
+        # naming it here produces a chain that does not compile. The step
+        # map carries the ReadyAPI name, which is where a reader looks.
+        return "\n                .bootstrap()"
+
     def _chainable_verifies(self, case) -> str | None:
         """Chain suffix for this case's verifies, or None to keep the old shape.
 
@@ -14782,7 +14831,7 @@ public final class {support_name} {{
                 return None
             if seen[vocab] > 1:
                 out.append('\n                .%s(%s)'
-                           % (vocab, phase_emit.jstr(str(e.get("step") or ""))))
+                           % (vocab, _pe.jstr(str(e.get("step") or ""))))
             else:
                 out.append("\n                .%s()" % vocab)
         return "".join(out)
@@ -14831,7 +14880,7 @@ public final class {support_name} {{
                 else:
                     where = "verify %s(...)  [after .complete()]" % vocab
             elif boot_part is not None:
-                where = ".start(...)  [setup]"
+                where = ".bootstrap()  [setup]"
             else:
                 where = "NOT REACHED -- see tools/check_step_parity.py"
             out.append("//   %-34s %s" % (st.step_name[:34], where))
