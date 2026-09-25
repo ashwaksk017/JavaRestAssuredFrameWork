@@ -3090,6 +3090,73 @@ def test_every_generated_test_maps_its_readyapi_steps():
         "questioned again with no answer in the file")
 
 
+def test_bootstrap_seeds_an_empty_config_and_never_overwrites_a_real_one():
+    """A clone has no program_configuration.json, and nothing says so.
+
+    It is gitignored, because it is the one file credentials live in. So a
+    fresh tree has none, every Config lookup silently takes its default, and
+    the suite dies at the first authenticated call with the cause nowhere in
+    the output. --bootstrap now copies the tracked example across, so the
+    file exists with every key in place and empty.
+
+    The skip-if-exists half is the one that matters: overwriting a filled-in
+    config would destroy credentials that by design exist nowhere else in
+    this repo to restore them from. Both halves are pinned here because
+    getting either wrong is silent -- one leaves you debugging a 401, the
+    other loses the secrets.
+    """
+    import json
+    import shutil
+    import subprocess
+    import tempfile
+
+    # __file__ is tools/ra_converter/<this>; the repo root is three up
+    here = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    example = os.path.join(here, "src", "main", "resources",
+                           "program_configuration.example.json")
+    assert os.path.isfile(example), (
+        "the example must be TRACKED -- it is what travels to a clone")
+
+    # it must carry no secret of its own
+    data = json.load(open(example, encoding="utf-8"))
+    leaked = []
+    for env, block in data.items():
+        if env.startswith("_") or not isinstance(block, dict):
+            continue
+        for group, inner in block.items():
+            if not isinstance(inner, dict):
+                continue
+            for k, v in inner.items():
+                if isinstance(v, str) and v and v != "client_credentials":
+                    leaked.append("%s.%s.%s" % (env, group, k))
+    assert not leaked, "example file carries values: %s" % leaked
+
+    with tempfile.TemporaryDirectory() as out:
+        res = os.path.join(out, "src", "main", "resources")
+        os.makedirs(res)
+        shutil.copy(example, res)
+        cfg = os.path.join(res, "program_configuration.json")
+
+        argv = [sys.executable, os.path.join(HERE, "ra_converter.py"),
+                "--bootstrap", "--output", out,
+                "--package-root", "com.hi.api", "--skip-self-test"]
+        proc = subprocess.run(argv, capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert os.path.isfile(cfg), "bootstrap must seed the config"
+        assert json.load(open(cfg, encoding="utf-8")), "seeded config is empty JSON"
+
+        # and a second run must not clobber what the author filled in
+        open(cfg, "w", encoding="utf-8").write('{"stg": {"api_config": '
+                                               '{"client_id": "REAL"}}}')
+        proc2 = subprocess.run(argv, capture_output=True, text=True)
+        assert proc2.returncode == 0, proc2.stdout + proc2.stderr
+        kept = json.load(open(cfg, encoding="utf-8"))
+        assert kept["stg"]["api_config"]["client_id"] == "REAL", (
+            "bootstrap overwrote a filled-in config -- those credentials are "
+            "not recoverable from anywhere else in the repo")
+
+
 def test_script_runner_is_the_last_thing_in_this_file():
     """verify_all runs this file as a SCRIPT, not under pytest.
 

@@ -17694,6 +17694,33 @@ def _bootstrap_author_dirs(emitter, args) -> list:
         if not os.path.isdir(d):
             os.makedirs(_fs_path(d), exist_ok=True)
             out.append(os.path.relpath(d, args.output).replace("\\", "/") + "/")
+    # program_configuration.json is the ONE file credentials live in, and it
+    # is gitignored -- so a clone has none, every Config lookup falls back to
+    # a default, and the suite dies at the first authenticated call with
+    # nothing in the output naming the cause. Copy the tracked example across
+    # so the file exists, empty, with every key already in place.
+    #
+    # SKIP-IF-EXISTS is the entire point: overwriting a filled-in
+    # program_configuration.json would destroy credentials that, by design,
+    # exist nowhere else in this repo to restore them from.
+    cfg = os.path.join(args.output,
+                       "src/main/resources/program_configuration.json")
+    example = os.path.join(
+        args.output, "src/main/resources/program_configuration.example.json")
+    rel_cfg = os.path.relpath(cfg, args.output).replace(chr(92), "/")
+    if os.path.isfile(_fs_path(cfg)):
+        print("[ra_converter] SKIP (exists): %s -- credentials preserved"
+              % rel_cfg)
+    elif os.path.isfile(_fs_path(example)):
+        os.makedirs(_fs_path(os.path.dirname(cfg)), exist_ok=True)
+        with open(_fs_path(example), encoding="utf-8") as fh:
+            _body = fh.read()
+        with open(_fs_path(cfg), "w", encoding="utf-8") as fh:
+            fh.write(_body)
+        out.append(rel_cfg)
+        print("[ra_converter] wrote an EMPTY %s from the example -- fill it "
+              "in before running anything that authenticates" % rel_cfg)
+
     for readme, body in ((os.path.join(tpl_dir, "README.md"),
                           _MANUAL_TEMPLATES_README),
                          (os.path.join(spec_dir, "README.md"),

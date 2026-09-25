@@ -1,0 +1,52 @@
+{
+  "_comment": "Copy this file to program_configuration.json (same folder) and fill it in. THAT file is gitignored and is the ONLY place credentials live -- nothing else in this repo should ever hold a secret. Every key here is also settable as -Dkey or an env var (dots become underscores, uppercased), which is how CI supplies them without a file. The top-level key is the environment name, selected by `env` in application.properties or -Denv=<name>; add a sibling block per environment.",
+  "stg": {
+    "database": {
+      "username": "",
+      "password": "",
+      "host": "",
+      "port": "",
+      "schema": ""
+    },
+    "api_config": {
+      "api_end_point": "",
+      "version": "",
+      "access_token": "",
+      "token_end_point": "",
+      "token_route": "",
+      "client_id": "",
+      "client_secret": "",
+      "grant_type": "client_credentials"
+    },
+    "sf_config": {
+      "api_end_point": "",
+      "access_token": "",
+      "token_end_point": "",
+      "grant_type": "",
+      "assertion": "",
+      "token_route": "",
+      "ui_lead_url": "",
+      "ui_account_url": "",
+      "ui_username": "",
+      "ui_password": ""
+    },
+    "kafka_config": {
+      "api_end_point": "",
+      "version": "",
+      "access_token": "",
+      "token_end_point": "",
+      "token_route": "",
+      "client_id": "",
+      "client_secret": "",
+      "grant_type": "client_credentials"
+    },
+    "xray_api_config": {
+      "api_end_point": "",
+      "route": "",
+      "token": "",
+      "testExecutionKey": ""
+    },
+    "poll_interval": "",
+    "timeout": ""
+  }
+}
