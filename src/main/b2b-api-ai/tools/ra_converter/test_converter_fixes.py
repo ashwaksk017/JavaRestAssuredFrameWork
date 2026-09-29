@@ -1924,13 +1924,18 @@ def test_bundled_normalize_domain_never_returns_null():
     assert m and int(m.group(1)) >= 12
 
 
-def test_emitted_digest_listener_is_v3():
-    """The listener is a converter OUTPUT, so v3 must live in the template.
+def test_emitted_digest_listener_is_v4():
+    """The listener is a converter OUTPUT, so v4 must live in the template.
 
     The v3 edits were first made to the emitted .java alone and were wiped
     by the very next --clean run -- which is how a digest that still said
     "first bad call" while recording the LAST failure got pasted twice.
     Guards the template markers, and that the committed .java agrees.
+
+    v4 adds the REQUEST side. The digest could quote the server's
+    complaint but never the value that caused it, so
+    "Invalid JSON Parameter Value, fields:[startDate]" cost a round trip
+    to learn that startDate was `2026-12-17 00:00:00`.
     """
     import io
     import os
@@ -1939,19 +1944,28 @@ def test_emitted_digest_listener_is_v3():
     i = src.index("def emit_failure_digest_listener")
     j = src.index("def emit_progress_listener", i)
     tpl = src[i:j]
-    for must in ("digest v3", "server said:", "StepOutcomes.firstFailure()",
+    for must in ("digest v4", "server said:", "StepOutcomes.firstFailure()",
                  "rootCauseSuffix(t)",
                  "StepOutcomes.firstFailureBody()", "ResponseMasking.mask(",
-                 "OBSERVED", "INFERRED"):
-        assert must in tpl, "template lost v3 marker: " + must
-    for gone in ("digest v2", "lastFailure()", "Pattern[] MASKS", "recordAuthVerdict"):
-        assert gone not in tpl, "template regressed to v2 marker: " + gone
+                 "OBSERVED", "INFERRED",
+                 # v4: the request behind the first failure
+                 "StepOutcomes.firstFailureUrl()",
+                 "StepOutcomes.firstFailureRequest()",
+                 "offendingFields(", "queryValueOf(", "jsonValueOf(", "we sent"):
+        assert must in tpl, "template lost v4 marker: " + must
+    for gone in ("digest v2", "digest v3", "lastFailure()", "Pattern[] MASKS",
+                 "recordAuthVerdict"):
+        assert gone not in tpl, "template regressed to an older marker: " + gone
+    # the request body reaches the digest REDACTED -- it is pasted into
+    # chats and tickets, and a token request's body is the client secret.
+    assert "mask(req)" in tpl or "mask(url)" in tpl, \
+        "template must mask the request it prints"
     # the committed output must not drift from what the converter emits
     java = os.path.join(os.path.dirname(conv), "..", "..", "src", "main", "java",
                         "com", "hi", "api", "reporting", "FailureDigestListener.java")
     if os.path.exists(java):
         jsrc = io.open(java, encoding="utf-8").read()
-        assert "digest v3" in jsrc and "server said:" in jsrc, \
+        assert "digest v4" in jsrc and "offendingFields(" in jsrc, \
             "committed FailureDigestListener.java is behind the converter template"
 
 

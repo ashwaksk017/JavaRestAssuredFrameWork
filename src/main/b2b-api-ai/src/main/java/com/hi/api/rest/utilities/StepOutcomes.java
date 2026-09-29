@@ -38,6 +38,9 @@ public final class StepOutcomes {
     private StepOutcomes() {
     }
 
+    private static final ThreadLocal<String> FIRST_BAD_URL = new ThreadLocal<>();
+    private static final ThreadLocal<String> FIRST_BAD_REQ = new ThreadLocal<>();
+
     public static void record(String stepName, int statusCode) {
         record(stepName, statusCode, -1, null);
     }
@@ -73,6 +76,33 @@ public final class StepOutcomes {
         if (body != null && !body.isEmpty()) {
             FIRST_BAD_BODY.set(body);
         }
+        // The REQUEST behind that failure, captured now rather than
+        // reconstructed later.
+        //
+        // The digest could quote the server's complaint but never what we
+        // sent, so "Invalid JSON Parameter Value, fields:[startDate]" left
+        // the actual value invisible -- and the value was the whole bug
+        // (a date arriving as `2026-12-17 00:00:00`). One round trip per
+        // failure was spent asking for it.
+        //
+        // LastExchange already holds the URI and a REDACTED body keyed by
+        // step, so this is a lookup, not new plumbing. Guarded: a step
+        // that failed before any exchange was filed simply records
+        // nothing.
+        try {
+            com.hi.api.rest.utilities.LastExchange.Recorded r =
+                    com.hi.api.rest.utilities.LastExchange.recordedOf(stepName);
+            if (r != null) {
+                if (r.uri() != null && !r.uri().isEmpty()) {
+                    FIRST_BAD_URL.set(r.method() + " " + r.uri());
+                }
+                if (r.requestBody() != null && !r.requestBody().isEmpty()) {
+                    FIRST_BAD_REQ.set(r.requestBody());
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // Never let a reporting aid break a test run.
+        }
     }
 
     /** First non-2xx on this thread, or null when every call so far succeeded. */
@@ -91,9 +121,28 @@ public final class StepOutcomes {
         return FIRST_BAD_BODY.get();
     }
 
+    /** `METHOD uri` of the call behind {@link #firstFailure()}, or null. */
+    public static String firstFailureUrl() {
+        return FIRST_BAD_URL.get();
+    }
+
+    /**
+     * REDACTED request body of the call behind {@link #firstFailure()}.
+     *
+     * <p>Redacted at the source: LastExchange stores what the recording
+     * filter passed it, and the token request's body IS the client
+     * secret. A digest is pasted into chats and tickets, so it must not
+     * become the second place a credential is readable.</p>
+     */
+    public static String firstFailureRequest() {
+        return FIRST_BAD_REQ.get();
+    }
+
     /** Called at test start so a previous test's failure is not inherited. */
     public static void reset() {
         FIRST_BAD.remove();
         FIRST_BAD_BODY.remove();
+        FIRST_BAD_URL.remove();
+        FIRST_BAD_REQ.remove();
     }
 }

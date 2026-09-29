@@ -16488,6 +16488,156 @@ public class FailureDigestListener implements ITestListener {{
                 + (first.isEmpty() ? "" : ": " + mask(first));
     }}
 
+    private static final char QUOTE_CHAR = (char) 34;
+    private static final String QUOTE = String.valueOf(QUOTE_CHAR);
+
+    /**
+     * Pair each field the server REJECTED with the value we SENT for it.
+     *
+     * <p>The server names the field ({{@code "fields":["startDate"]}}) and
+     * we hold the request, so the one line that actually diagnoses the
+     * failure can be assembled rather than asked for. Looks in the JSON
+     * body first, then the query string, since a rejected parameter can
+     * live in either.</p>
+     *
+     * <p>Scanned with indexOf rather than a regex on purpose: this class
+     * is emitted from a Python template, and a regex here has to survive
+     * an f-string, a Python literal and javac. The first attempt did not
+     * -- it shipped a Pattern.compile whose backslashes had been eaten,
+     * and a replace() whose quote literal had collapsed. Neither
+     * compiled, and the comment describing it broke the template too.</p>
+     *
+     * <p>Best-effort: a field it cannot find is reported as such, and a
+     * miss costs nothing.</p>
+     */
+    private static String offendingFields(String serverBody, String request,
+                                          String url) {{
+        if (serverBody == null || serverBody.isEmpty()) {{
+            return "";
+        }}
+        java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<>();
+        String marker = QUOTE + "fields" + QUOTE;
+        int at = serverBody.indexOf(marker);
+        while (at >= 0) {{
+            int open = serverBody.indexOf('[', at);
+            int close = open < 0 ? -1 : serverBody.indexOf(']', open);
+            if (open < 0 || close < 0) {{
+                break;
+            }}
+            for (String rawName : serverBody.substring(open + 1, close).split(",")) {{
+                String n = rawName.replace(QUOTE, "").trim();
+                int dot = n.lastIndexOf('.');      // roomTypes.roomTypeCode
+                if (dot >= 0 && dot + 1 < n.length()) {{
+                    n = n.substring(dot + 1);
+                }}
+                if (!n.isEmpty()) {{
+                    names.add(n);
+                }}
+            }}
+            at = serverBody.indexOf(marker, close);
+        }}
+        if (names.isEmpty()) {{
+            return "";
+        }}
+        StringBuilder out = new StringBuilder();
+        for (String n : names) {{
+            String v = jsonValueOf(request, n);
+            if (v == null) {{
+                v = queryValueOf(url, n);
+            }}
+            if (out.length() > 0) {{
+                out.append("   ");
+            }}
+            out.append(n).append('=');
+            out.append(v == null ? "<not in the request>"
+                                 : QUOTE + fieldValue(n, v) + QUOTE);
+        }}
+        return out.toString();
+    }}
+
+    /**
+     * The offending value, shown rather than masked.
+     *
+     * <p>mask() replaces a date with {{@code <*>}}, which is right for the
+     * rest of the digest and exactly wrong here: the first value this
+     * line ever had to explain WAS a date -- an Excel cell arriving as
+     * {{@code 2026-12-17 00:00:00}} -- and a masked one says nothing.
+     * A field the server rejected is by definition the value to look
+     * at.</p>
+     *
+     * <p>Credential-shaped field names are redacted anyway. A digest is
+     * pasted into chats and tickets, and no diagnostic need justifies
+     * printing a secret; the request body beside it is redacted at the
+     * source for the same reason.</p>
+     */
+    private static String fieldValue(String name, String value) {{
+        String n = name == null ? "" : name.toLowerCase(java.util.Locale.ROOT);
+        for (String hint : new String[] {{"password", "passwd", "secret",
+                "token", "authorization", "apikey", "api_key", "assertion",
+                "credential"}}) {{
+            if (n.contains(hint)) {{
+                return "<redacted>";
+            }}
+        }}
+        String v = value.replace(chr10(), ' ').replace(chr13(), ' ');
+        return v.length() > 80 ? v.substring(0, 80) + " ...(capped)" : v;
+    }}
+
+    private static char chr10() {{
+        return (char) 10;
+    }}
+
+    private static char chr13() {{
+        return (char) 13;
+    }}
+
+    /** First JSON scalar for {{@code name}} in {{@code json}}, or null. */
+    private static String jsonValueOf(String json, String name) {{
+        if (json == null || json.isEmpty() || name == null) {{
+            return null;
+        }}
+        int k = json.indexOf(QUOTE + name + QUOTE);
+        if (k < 0) {{
+            return null;
+        }}
+        int colon = json.indexOf(':', k + name.length() + 2);
+        if (colon < 0) {{
+            return null;
+        }}
+        int i = colon + 1;
+        while (i < json.length() && Character.isWhitespace(json.charAt(i))) {{
+            i++;
+        }}
+        if (i >= json.length()) {{
+            return null;
+        }}
+        if (json.charAt(i) == QUOTE_CHAR) {{
+            int end = json.indexOf(QUOTE_CHAR, i + 1);
+            return end < 0 ? null : json.substring(i + 1, end);
+        }}
+        int end = i;
+        while (end < json.length()
+                && ",}}] ".indexOf(json.charAt(end)) < 0) {{
+            end++;
+        }}
+        return json.substring(i, end);
+    }}
+
+    /** Value of query parameter {{@code name}} in {{@code url}}, or null. */
+    private static String queryValueOf(String url, String name) {{
+        if (url == null || name == null || url.indexOf('?') < 0) {{
+            return null;
+        }}
+        String q = url.substring(url.indexOf('?') + 1);
+        for (String pair : q.split("&")) {{
+            int eq = pair.indexOf('=');
+            if (eq > 0 && pair.substring(0, eq).equals(name)) {{
+                return pair.substring(eq + 1);
+            }}
+        }}
+        return null;
+    }}
+
     private static String caseIdOf(ITestResult r) {{
         Object[] params = r.getParameters();
         if (params != null && params.length > 0 && params[0] instanceof Map) {{
@@ -16519,11 +16669,22 @@ public class FailureDigestListener implements ITestListener {{
         // cheap, and it means a body from any producer is safe to print.
         String upstream = com.hi.api.rest.utilities.StepOutcomes.firstFailure();
         String body = com.hi.api.rest.utilities.StepOutcomes.firstFailureBody();
+        // The REQUEST behind that failure. Quoting the server's complaint
+        // without the value that caused it is half a diagnosis: "Invalid
+        // JSON Parameter Value, fields:[startDate]" cost a round trip to
+        // learn that startDate was `2026-12-17 00:00:00`.
+        String url = com.hi.api.rest.utilities.StepOutcomes.firstFailureUrl();
+        String req = com.hi.api.rest.utilities.StepOutcomes.firstFailureRequest();
         FAILURES.put(key, new String[] {{
             signature(t), cls, result.getName(), caseIdOf(result),
             String.valueOf(Math.max(asserts, 1)),
             upstream == null ? "" : upstream,
             body == null ? "" : mask(body),
+            url == null ? "" : mask(url),
+            req == null ? "" : mask(req),
+            // What WE sent for each field the server named. The server
+            // says which field it rejected; this says what was in it.
+            offendingFields(body, req, url),
         }});
     }}
 
@@ -16564,10 +16725,14 @@ public class FailureDigestListener implements ITestListener {{
             w.printf("unique failing (test, row) pairs: %d   distinct signatures: %d%n",
                     all.size(), groups.size());
             w.println("(retries collapsed; ids/emails/domains/dates masked as <*>)");
-            w.println("digest v3 -- adds `server said:` (masked body of the FIRST"
-                    + " non-2xx), records the FIRST failed call rather than the"
-                    + " last, and separates auth verdicts OBSERVED on the wire"
-                    + " from those INFERRED from ctx");
+            w.println("digest v4 -- `we sent:` shows OUR value for each field the"
+                    + " server named, UNMASKED (a masked value explains"
+                    + " nothing; credential-shaped field names are redacted),"
+                    + " plus"
+                    + " `url:` and the redacted `request:` behind"
+                    + " the FIRST non-2xx. v3 added `server said:`, the FIRST"
+                    + " failed call rather than the last, and auth verdicts"
+                    + " OBSERVED on the wire vs INFERRED from ctx");
             w.println();
             w.println("== auth rejections (401/403), by cause ==");
             if (authVerdicts().isEmpty()) {{
@@ -16607,6 +16772,18 @@ public class FailureDigestListener implements ITestListener {{
                                     ? "   first bad call: " + f[5] : "");
                     if (f.length > 6 && !f[6].isEmpty()) {{
                         w.printf("         server said: %s%n", f[6]);
+                    }}
+                    if (f.length > 9 && !f[9].isEmpty()) {{
+                        w.printf("         we sent    : %s%n", f[9]);
+                    }}
+                    if (f.length > 7 && !f[7].isEmpty()) {{
+                        w.printf("         url        : %s%n", f[7]);
+                    }}
+                    if (f.length > 8 && !f[8].isEmpty()) {{
+                        w.printf("         request    : %s%n",
+                                f[8].length() > 400
+                                        ? f[8].substring(0, 400) + " ...(capped)"
+                                        : f[8]);
                     }}
                 }}
             }}

@@ -258,6 +258,19 @@ public final class LastExchange {
         return r == null ? null : r.response();
     }
 
+    /**
+     * The whole recorded exchange for a step -- URI, method, redacted
+     * request body -- or null when that step filed none.
+     *
+     * <p>{@link #of(String)} returns only the response, which is what a
+     * test asserting on a body wants. The failure digest needs the
+     * REQUEST side too: quoting the server's complaint without the value
+     * that caused it leaves the actual bug invisible.</p>
+     */
+    public static Recorded recordedOf(String stepName) {
+        return stepName == null ? null : LOG_BY_STEP.get().get(stepName);
+    }
+
     /** Every exchange this test has made, in call order. */
     public static List<Recorded> all() {
         return new ArrayList<>(LOG_BY_STEP.get().values());
