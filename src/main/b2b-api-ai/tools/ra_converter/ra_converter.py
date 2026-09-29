@@ -817,6 +817,55 @@ def _datasource_search_dirs(xml_path: str, extra: str | None) -> list[str]:
     return [d for d in dirs if d]
 
 
+def _excel_cell_text(v) -> str:
+    """One spreadsheet cell as the text ReadyAPI would have sent.
+
+    openpyxl returns TYPED values, and str() on them is not what the
+    sheet shows. A date column comes back as datetime, so str() gives
+    `2026-12-17 00:00:00` -- a Python repr with a space in it. That went
+    straight into a JSON body and a query string, and the server refused
+    it as malformed rather than out of range:
+
+        "startDate": "2026-12-17 00:00:00"  -> Invalid JSON Parameter Value
+        arrivalDate=2026-12-17 00:00:00     -> Invalid Query Parameter Value
+
+    ReadyAPI's Excel DataSource hands over the cell's displayed value, so
+    a date-formatted cell arrives as `2026-12-17`. This matches that.
+
+    Excel has no date-only type: a plain date is stored as a datetime at
+    midnight. Rendering midnight as a date is therefore the right call
+    for a date column, and the trade is a genuine midnight TIMESTAMP that
+    loses its zeroed time -- rare in test data, and the date it yields is
+    still a valid prefix of what was meant. The alternative, reading
+    cell.number_format, means giving up values_only and reading every
+    cell object for a case that may not exist in any sheet.
+
+    Floats that are whole numbers render as integers: an Excel numeric
+    cell is a float, so peakRooms 12 would otherwise be "12.0" and fail
+    an integer field.
+    """
+    import datetime as _d
+    if v is None:
+        return ""
+    if isinstance(v, bool):                 # before int: bool IS an int
+        return "true" if v else "false"
+    if isinstance(v, _d.datetime):
+        if (v.hour, v.minute, v.second, v.microsecond) == (0, 0, 0, 0):
+            return v.date().isoformat()
+        return v.replace(microsecond=0).isoformat()
+    if isinstance(v, _d.date):
+        return v.isoformat()
+    if isinstance(v, _d.time):
+        return v.replace(microsecond=0).isoformat()
+    if isinstance(v, _d.timedelta):         # Excel duration cell
+        total = int(v.total_seconds())
+        return "%02d:%02d:%02d" % (total // 3600, (total % 3600) // 60,
+                                   total % 60)
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v)
+
+
 def _read_datasource_rows(ds, search_dirs: list[str]) -> tuple[list, str]:
     """(rows, gap). rows is one dict per workbook row; gap says why not.
 
@@ -889,7 +938,7 @@ def _read_datasource_rows(ds, search_dirs: list[str]) -> tuple[list, str]:
                 #
                 # Edges only -- internal whitespace is content. A
                 # description keeps its spacing and its line breaks.
-                row[name] = "" if v is None else str(v).strip()
+                row[name] = _excel_cell_text(v).strip()
             if row:
                 rows.append(row)
         if not rows:
