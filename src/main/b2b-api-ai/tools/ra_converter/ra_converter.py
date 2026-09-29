@@ -18734,9 +18734,13 @@ def _emit_imported_tests(prep: _PreparedSuite) -> int:
 
     # ---- AUDIT LEDGER: proves every SoapUI assertion / Groovy block was ----
     # ---- accounted for (translated, stubbed, or explicitly TODO'd). --------
-    from datetime import datetime as _dt
+    # timezone-aware: utcnow() is deprecated and scheduled for removal
+    # (loud on 3.12+). The stamp prints a trailing Z, so a naive
+    # datetime.now() here would quietly start writing LOCAL time under a
+    # UTC label -- worse than the warning it silences.
+    from datetime import datetime as _dt, timezone as _tz
     stamp = os.environ.get("RA_CONVERTER_TIMESTAMP") or \
-            _dt.utcnow().strftime("%Y-%m-%d %H:%M:%SZ")
+            _dt.now(_tz.utc).strftime("%Y-%m-%d %H:%M:%SZ")
     for _f in _STARTUP_FINDINGS:
         ledger.add_preflight_finding(*_f)
     ledger.write(args.output, args.input, stamp, suite_name=suite_name,

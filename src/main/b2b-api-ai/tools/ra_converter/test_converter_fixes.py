@@ -1972,7 +1972,7 @@ def test_merged_template_cells_come_out_in_a_stable_column_order():
 
 
 def test_method_name_drops_the_b2b_ticket():
-    """`[A-Z]+[-_]?\d+` stopped at the first B of B2B, so every method
+    r"""`[A-Z]+[-_]?\d+` stopped at the first B of B2B, so every method
     came out `b2B2065Create...`. The ticket lives on @XrayTest, not here."""
     m, status, variant = ra_converter._business_method_name(
         "B2B-2065_create_and_activate_International_postalCode_200")
