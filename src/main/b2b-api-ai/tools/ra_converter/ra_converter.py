@@ -5870,6 +5870,20 @@ def _csv_cell(value: str, col_name: str = "") -> str:
     return s
 
 
+def _csv_quote(value: str) -> str:
+    """Quote one already-transformed cell. No semantic rewrites.
+
+    _csv_cell both TRANSFORMS a value (SoapUI refs -> placeholders, stale
+    ids -> @Properties_x@, literal "null" -> empty) and quotes it, so it
+    must not be run twice over the same cell. Re-joining a parsed row
+    needs the quoting half alone.
+    """
+    s = "" if value is None else str(value)
+    if any(c in s for c in (",", '"', chr(10), chr(13))):
+        return '"' + s.replace('"', '""') + '"'
+    return s
+
+
 _ABSENT_OPS = ("not exists", "notexists", "not-exists", "absent", "null", "is null")
 
 # identity.id_hint_fields: a CSV column whose field tail contains one of these
@@ -15127,8 +15141,25 @@ public final class {support_name} {{
                                 val = v
                                 break
                     if val is not None:
+                        # raw here: the join below does the quoting, and
+                        # _csv_cell would quote a second time.
                         copy[i] = _csv_cell(val, col)
-                out.append(",".join(copy))
+                        if len(copy[i]) > 1 and copy[i][0] == '"' \
+                                and copy[i][-1] == '"':
+                            copy[i] = copy[i][1:-1].replace('""', '"')
+                # Re-QUOTE every cell, not just the ones replaced above.
+                #
+                # `cells` came back from _csv.reader, so its values are
+                # unquoted. Joining them with a bare "," silently split any
+                # cell that legitimately holds a comma or a newline -- and a
+                # DataSource workbook's description column holds both. The
+                # row then had more fields than the header, every later
+                # column shifted by one, and `test_case_id` came out holding
+                # a fragment of a sentence. Downstream that reads as
+                # "no phase table for case ` and meeting facilities ...`",
+                # which points at the phase registry rather than at the CSV
+                # that actually broke.
+                out.append(",".join(_csv_quote(c) for c in copy))
         return out
 
     def _chainable_verifies(self, case) -> str | None:
