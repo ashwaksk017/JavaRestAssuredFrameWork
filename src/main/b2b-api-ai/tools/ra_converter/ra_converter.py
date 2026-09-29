@@ -68,6 +68,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from urllib.parse import urlsplit as _urlsplit, unquote as _unquote
 import os
 import re
 import subprocess
@@ -4012,6 +4013,88 @@ def _classify_frozen_properties(cases: list["TestCase"]) -> dict:
     return migration
 
 
+def _case_authorization_refs(case) -> set:
+    """Property refs the case's Authorization headers actually read.
+
+    `<con:entry key="Authorization" value="${tokenId#GeneratedTokenID}"/>`
+    -> {"GeneratedTokenID"}. Empty when the case sends no Authorization
+    at all, which is the honest answer for a service that needs none.
+    """
+    refs: set = set()
+    for step in getattr(case, "steps", []) or []:
+        if not isinstance(step, RestStep):
+            continue
+        for hk, hv in (getattr(step, "headers", None) or {}).items():
+            if (hk or "").lower() != "authorization":
+                continue
+            val = hv or ""
+            if not val.strip():
+                continue
+            for m in _STEP_PROP_RX.finditer(val):
+                refs.add(m.group(2))
+            for m in _PROJ_PROP_RX.finditer(val):
+                refs.add(m.group(1))
+    return refs
+
+
+def _case_published_props(case) -> set:
+    """Property names some step in this case actually PRODUCES.
+
+    Mirrors the classifier's published_by_step, but name-only: the
+    question here is just "does anything in this case set the value the
+    Authorization header reads", not which step did it.
+
+    A PropertiesStep declaration deliberately does NOT count. SoapUI
+    stores a last-run value there -- the goal project's `tokenId` step
+    carries a stale `Bearer 6ed1...` literal -- and treating that as a
+    producer would let a case with no token source look satisfied and
+    then send a dead token. Only a Groovy setPropertyValue or a
+    Transfer target is a real producer.
+    """
+    pub: set = set()
+    for step in getattr(case, "steps", []) or []:
+        if isinstance(step, GroovyStep):
+            for m in _SET_PROP_INSIDE_GROOVY_RX.finditer(getattr(step, "script", "") or ""):
+                pub.add(m.group(1))
+        elif isinstance(step, TransferStep):
+            for t in (getattr(step, "transfers", None) or []):
+                tgt = t.get("target_path", "")
+                if tgt:
+                    pub.add(tgt)
+    return pub
+
+
+def _case_needs_auth_priming(case) -> bool:
+    """Does this case need @BeforeClass to fetch a token for it?
+
+    Replaces a name-based guess that got both answers wrong on the goal
+    suite. It required the path to END in a token-ish suffix, so:
+
+      - 4 cases against an unversioned internal service, which send
+        NO Authorization at all, were marked as needing priming.
+        Priming them transmits client_id/client_secret on behalf of
+        calls that need no credential -- the opposite of the rule that
+        a credential is supplied in one place and used nowhere it
+        isn't needed.
+      - 1 case authenticating through a `/.../login` route was marked
+        the same way, because the route does not say `token`.
+
+    Adding `/login` to the suffix list would be the third guess in a
+    row. The question is a dataflow one and the converter can answer it
+    exactly: a case needs priming only when it READS an authorization
+    value that nothing in the case PRODUCES.
+    """
+    refs = _case_authorization_refs(case)
+    if not refs:
+        return False                      # sends no Authorization
+    for step in getattr(case, "steps", []) or []:
+        if isinstance(step, RestStep) and _is_token_fetch_step(step):
+            return False                  # fetches its own, the classic way
+    if refs & _case_published_props(case):
+        return False                      # produced in-case (CORP login, transfer)
+    return True
+
+
 def _is_token_fetch_step(step: "RestStep") -> bool:
     """Heuristic: does this REST step look like an OAuth token fetch?
 
@@ -5122,6 +5205,91 @@ def _sanitize_path_for_col(json_path: str) -> str:
 # for the same reason _ALL_VERIFY_VOCABS is: the body rewrite happens
 # while templates are emitted, but TestSupport.CONFIG_KEYS is built from
 # the classifier, and the two do not share a call stack.
+# ---- which SERVICE a call belongs to, and which ENVIRONMENT it ran in
+#
+# A generated client holds ONE baseUrl and every method does
+# `baseUrl + path`, where path is only the ReadyAPI resourcePath. That
+# works while a project talks to one service and silently misroutes the
+# moment it talks to two -- which both converted projects do:
+#
+#   one converted project: 5 services over 7 hosts; the other:
+#   7 services, two of which had been riding the default base. Only
+#   one vendor's service ever worked, and only because it was
+#   special-cased BY NAME.
+#
+# Three groupings were tried against the real XMLs. ReadyAPI's own
+# `service` attribute is not it: one service name spanned 7 bases, and
+# five differently-named services shared a single base.
+# "path minus resourcePath segments" over-fragments to 9 and 16 keys
+# because recorded URIs do not line up with their templates. What holds:
+#
+#     a VERSIONED path prefix identifies the service,
+#     the host identifies the environment.
+#
+# So the converter names the service and NEVER picks the host --
+# a test host versus a stage host is an environment choice that
+# belongs in program_configuration.json. Guessing one would bake a
+# reviewer's environment into thousands of generated calls.
+_VERSIONED_PREFIX_RX = re.compile(
+    r"^((?:/[A-Za-z0-9._-]+)*?/v\d+(?:\.\d+)?)(?=/|$)")
+
+
+def _service_key_for_uri(original_uri: str) -> tuple:
+    """(service_key, observed_base) for a recorded request URI.
+
+    Returns ("", "") when there is no usable URI, so the caller keeps
+    today's single-baseUrl behaviour instead of inventing a key.
+    """
+    if not original_uri:
+        return ("", "")
+    try:
+        parts = _urlsplit(original_uri)
+    except Exception:
+        return ("", "")
+    if not parts.netloc:
+        return ("", "")
+    path = _unquote(parts.path or "")
+    m = _VERSIONED_PREFIX_RX.match(path)
+    if m:
+        prefix = m.group(1)
+        key = prefix.strip("/").replace("/", "_").replace("-", "_").replace(".", "_")
+        return (key.lower(), parts.scheme + "://" + parts.netloc + prefix)
+    # No version segment. The service does not version in its path, so
+    # the host IS its identity -- an unversioned internal service, a
+    # mock on localhost, or somebody's laptop hostname.
+    #
+    # Lowercased because a hostname is case-insensitive but a config key
+    # is not: a mixed-case hostname key is one nobody types the same
+    # way twice, and it already broke a regex that assumed keys are
+    # lowercase. The observed base keeps its original case.
+    key = parts.netloc.split(":")[0].split(".")[0]
+    key = key.replace("-", "_").replace(".", "_").lower()
+    return (key, parts.scheme + "://" + parts.netloc)
+
+
+def _collect_service_bases(cases) -> dict:
+    """service_key -> {observed base -> recorded call count}.
+
+    Computed from the cases handed in, NOT accumulated in a module
+    global. The multi-XML driver preps every suite before it emits any
+    of them, so a global here would hand suite A's services to suite
+    B's report -- which is exactly what it did: one suite's report
+    listed services that only the other suite calls.
+    """
+    out: dict = {}
+    for case in cases or []:
+        for step in getattr(case, "steps", []) or []:
+            if not isinstance(step, RestStep):
+                continue
+            key, base = _service_key_for_uri(
+                getattr(step, "original_uri", "") or "")
+            if not key:
+                continue
+            out.setdefault(key, {})
+            out[key][base] = out[key].get(base, 0) + 1
+    return out
+
+
 _CRED_KEYS_ROUTED: set = set()
 
 _SECRET_LEAF_KEY_HINTS = (
@@ -7024,6 +7192,14 @@ public interface ImportedRestClient {{
         path_expr = "com.hi.api.rest.ApiRoutes.fill(" + ", ".join(path_parts) + ")"
         base_expr = "baseUrl"
         force_urlenc = False
+        # Route the call to its own service base when the recording shows
+        # one. `baseUrl` stays the FALLBACK, so a project with a single
+        # service -- or a key nobody has filled in yet -- emits exactly
+        # what it emitted before.
+        _svc_key, _svc_base = _service_key_for_uri(
+            getattr(step, "original_uri", "") or "")
+        if _svc_key:
+            base_expr = f'Config.get("services.{_svc_key}", baseUrl)'
         if self._is_salesforce_step(step):
             base_expr, path_expr, force_urlenc = self._salesforce_base_and_path_java(
                 step, path, path_param_map)
@@ -12016,12 +12192,10 @@ public final class PlaceholderResolver {{
         # that instance, each class has its own ctx map, and TokenCache guards
         # its state with an AtomicReference. Worst case is one extra token
         # fetch per class; there is no race and no double-fetch per method.
-        has_inline_token_fetch = True
-        for case in cases:
-            if not any(isinstance(step, RestStep) and _is_token_fetch_step(step)
-                       for step in case.steps):
-                has_inline_token_fetch = False   # this case needs priming
-                break
+        # Prime only when some case in this class genuinely cannot get an
+        # authorization value for itself. See _case_needs_auth_priming.
+        has_inline_token_fetch = not any(
+            _case_needs_auth_priming(case) for case in cases)
 
         # Cluster cases by REST-step shape (verb + path + body-hash per step)
         # so N cases that share an intent collapse to ONE @Test method with
@@ -18061,6 +18235,13 @@ def _run_bootstrap(args) -> int:
 
 
 def _run_convert(args):
+    # Per-INVOCATION, not per-process. _run_convert is called once per
+    # suite (see the loops at the CLI entry points), so leaving this
+    # module-level set populated would hand suite A's routed credential
+    # keys to suite B's CONFIG_KEYS. Same cross-suite leak that
+    # ScenarioSteps hit with verify vocabularies; it is invisible today
+    # only because the two suites happen to share all four keys.
+    _CRED_KEYS_ROUTED.clear()
     suite_name = args.suite_name or _default_suite_name(args.input)
     print(f"[ra_converter] suite: {suite_name}  "
           f"(namespaces test packages / CSVs / templates / testng / audit / flows)")
@@ -18584,6 +18765,62 @@ def _emit_imported_tests(prep: _PreparedSuite) -> int:
         print(f"[ra_converter] name shortening: {len(emitter.name_mapping)} "
               f"names truncated -> {mapping_path}")
     print()
+    # ---- service endpoints: what to put in `services` for this suite
+    #
+    # The converter names each service and refuses to pick its host,
+    # because a host is an environment choice (test versus stage).
+    # This
+    # file is how that choice gets handed back to a human: one row per
+    # service, every host the recording actually used, and the call
+    # count so the dominant one is obvious. A row with >1 host is the
+    # one that needs a decision.
+    # Derived from EVERY recorded step of THIS suite. Not from the client
+    # methods emitted above: _render_client_method sees one canonical step
+    # per operation, so an operation recorded against three hosts would
+    # report only one -- and showing the host variants is the whole point.
+    _SERVICE_BASES = _collect_service_bases(cases_in_scope)
+    if _SERVICE_BASES:
+        # Module convention: csv is imported function-locally as _csv.
+        import csv as _csv
+        svc_dir = os.path.join(args.output, "_audit", suite_name)
+        os.makedirs(_fs_path(svc_dir), exist_ok=True)
+        svc_path = os.path.join(svc_dir, "service_endpoints.csv")
+        try:
+            with open(_fs_path(svc_path), "w", encoding="utf-8",
+                      newline="") as fh:
+                w = _csv.writer(fh)
+                w.writerow(["service_key", "config_key", "recorded_calls",
+                            "observed_base", "host_variants"])
+                for key in sorted(_SERVICE_BASES,
+                                  key=lambda k: -sum(_SERVICE_BASES[k].values())):
+                    bases = _SERVICE_BASES[key]
+                    for base, n in sorted(bases.items(), key=lambda kv: -kv[1]):
+                        w.writerow([key, "services." + key, n, base,
+                                    len(bases)])
+            print(f"[ra_converter] service endpoints -> "
+                  f"_audit/{suite_name}/service_endpoints.csv")
+        except PermissionError:
+            # Same failure mode as the other audit CSVs: the file is open
+            # in Excel. Never fail a convert over a report.
+            print("[ra_converter] service endpoints: SKIPPED "
+                  "(service_endpoints.csv is open in another program)")
+
+        multi = {k: v for k, v in _SERVICE_BASES.items() if len(v) > 1}
+        print(f"[ra_converter] services: {len(_SERVICE_BASES)} distinct "
+              f"service(s) across this suite")
+        for key in sorted(_SERVICE_BASES,
+                          key=lambda k: -sum(_SERVICE_BASES[k].values())):
+            bases = _SERVICE_BASES[key]
+            tot = sum(bases.values())
+            flag = "  <-- MULTIPLE HOSTS, pick one" if len(bases) > 1 else ""
+            print(f"[ra_converter]     {tot:5d} call(s)  services.{key}{flag}")
+        if multi:
+            print("[ra_converter]   NOTE: a service seen on several hosts is "
+                  "the same service in different ENVIRONMENTS. Put the host "
+                  "for the environment you run in under `services.<key>` in "
+                  "program_configuration.json; unset keys fall back to "
+                  "api_config (today's behaviour).")
+
     print(f"[ra_converter] audit ledger: {args.output}/_audit/{suite_name}/summary.md")
     # Same-call-different-data groups over the emitted tree -- the reuse
     # picture the user asked to see after every conversion.
