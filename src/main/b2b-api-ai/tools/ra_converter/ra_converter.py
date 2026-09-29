@@ -877,7 +877,19 @@ def _read_datasource_rows(ds, search_dirs: list[str]) -> tuple[list, str]:
                 if not name:
                     continue
                 v = raw[i] if i < len(raw) else None
-                row[name] = "" if v is None else str(v)
+                # Strip the edges, matching what the header line above
+                # already does. A spreadsheet cell picks up trailing
+                # spaces and stray line breaks from ordinary editing, and
+                # these values go straight into URL path segments, query
+                # strings and JSON bodies: a propCode of "ABCDE " becomes
+                # /props/ABCDE%20/groups and 404s as though the data were
+                # wrong. Nothing downstream wants the padding, and the
+                # asymmetry (headers stripped, values not) was the kind
+                # that only shows up on someone else's workbook.
+                #
+                # Edges only -- internal whitespace is content. A
+                # description keeps its spacing and its line breaks.
+                row[name] = "" if v is None else str(v).strip()
             if row:
                 rows.append(row)
         if not rows:
@@ -5265,6 +5277,58 @@ def _service_key_for_uri(original_uri: str) -> tuple:
     key = parts.netloc.split(":")[0].split(".")[0]
     key = key.replace("-", "_").replace(".", "_").lower()
     return (key, parts.scheme + "://" + parts.netloc)
+
+
+def _configured_service_keys(output_dir: str) -> dict:
+    """`services.*` keys already filled in, per environment block.
+
+    Returns {key: [env, ...]}; empty when the file is absent, which is
+    the normal state for a fresh clone -- program_configuration.json is
+    gitignored because it is the one file allowed to hold a credential.
+    A missing or unparseable file is NOT an error here: this only
+    decides how a report line is WORDED.
+    """
+    cfg = os.path.join(output_dir, "src/main/resources/program_configuration.json")
+    if not os.path.isfile(_fs_path(cfg)):
+        return {}
+    try:
+        with open(_fs_path(cfg), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return {}
+    out: dict = {}
+    if not isinstance(data, dict):
+        return {}
+    for env, block in data.items():
+        if not isinstance(block, dict):
+            continue
+        services = block.get("services")
+        if not isinstance(services, dict):
+            continue
+        for key, val in services.items():
+            if isinstance(val, str) and val.strip():
+                out.setdefault(key, []).append(env)
+    return out
+
+
+def _is_local_host(base: str) -> bool:
+    """A base that only resolves on the machine that recorded it.
+
+    localhost, a loopback literal, or a bare hostname with no dot -- a
+    developer's laptop name. These matter because an UNSET services key
+    falls back to baseUrl, and for every other service that fallback is
+    merely imprecise; for one of these it silently redirects calls that
+    were never meant to leave the machine INTO a real environment.
+    """
+    if not base:
+        return False
+    host = base.split("//", 1)[-1].split("/", 1)[0].split(":", 1)[0]
+    if not host:
+        return False
+    low = host.lower()
+    if low in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+        return True
+    return "." not in host          # a bare machine name
 
 
 def _collect_service_bases(cases) -> dict:
@@ -18846,21 +18910,49 @@ def _emit_imported_tests(prep: _PreparedSuite) -> int:
             print("[ra_converter] service endpoints: SKIPPED "
                   "(service_endpoints.csv is open in another program)")
 
-        multi = {k: v for k, v in _SERVICE_BASES.items() if len(v) > 1}
+        # Read the (gitignored, optional) config so a key that has
+        # ALREADY been filled in stops being reported as an open action.
+        # The previous wording said "pick one" on every run forever, which
+        # reads as an outstanding task long after the choice was made.
+        _configured = _configured_service_keys(args.output)
+        _undecided = [k for k, v in _SERVICE_BASES.items()
+                      if len(v) > 1 and k not in _configured]
+        _local_unset = [k for k, v in _SERVICE_BASES.items()
+                        if k not in _configured
+                        and all(_is_local_host(b) for b in v)]
         print(f"[ra_converter] services: {len(_SERVICE_BASES)} distinct "
               f"service(s) across this suite")
         for key in sorted(_SERVICE_BASES,
                           key=lambda k: -sum(_SERVICE_BASES[k].values())):
             bases = _SERVICE_BASES[key]
             tot = sum(bases.values())
-            flag = "  <-- MULTIPLE HOSTS, pick one" if len(bases) > 1 else ""
+            if key in _configured:
+                envs = ", ".join(sorted(_configured[key]))
+                flag = f"  [set in program_configuration.json: {envs}]"
+            elif key in _local_unset:
+                flag = ("  <-- RECORDED ON A LOCAL HOST and unset: these "
+                        "calls fall back to baseUrl, i.e. your REAL service")
+            elif len(bases) > 1:
+                flag = (f"  <-- {len(bases)} host variants, unset: pick the "
+                        f"one for your environment")
+            else:
+                flag = "  (unset: falls back to api_config)"
             print(f"[ra_converter]     {tot:5d} call(s)  services.{key}{flag}")
-        if multi:
+        if _undecided:
             print("[ra_converter]   NOTE: a service seen on several hosts is "
                   "the same service in different ENVIRONMENTS. Put the host "
                   "for the environment you run in under `services.<key>` in "
                   "program_configuration.json; unset keys fall back to "
-                  "api_config (today's behaviour).")
+                  "api_config.")
+        if _local_unset:
+            print("[ra_converter]   NOTE: " + ", ".join(
+                  "services." + k for k in sorted(_local_unset))
+                  + " was recorded against a host that only exists on the "
+                  "machine that captured it (a mock, or a developer laptop). "
+                  "Leaving it unset does NOT skip those calls -- they fall "
+                  "back to baseUrl and reach your real service. Point it at "
+                  "a stand-in, or expect those cases to behave differently "
+                  "than they did in ReadyAPI.")
 
     print(f"[ra_converter] audit ledger: {args.output}/_audit/{suite_name}/summary.md")
     # Same-call-different-data groups over the emitted tree -- the reuse

@@ -154,6 +154,72 @@ def test_collect_service_bases_is_per_suite_not_global():
     assert set(R._collect_service_bases([a, b])) == {"alpha_v1", "beta_v1"}
 
 
+# ----------------------------------------------- reporting, not routing
+
+def test_a_local_only_host_is_recognised():
+    """An UNSET key falls back to baseUrl.
+
+    For most services that is merely imprecise. For one recorded against
+    a host that exists only on the capturing machine it is a silent
+    REDIRECT: calls that never left that laptop now reach a real
+    environment. The report has to say so, which means recognising the
+    shape.
+    """
+    for base in ("http://localhost:9006", "http://127.0.0.1",
+                 "http://LOCALHOST", "http://a-dev-laptop"):
+        assert R._is_local_host(base) is True, base
+    for base in ("https://api.example.com", "https://a.b.c/x/v2",
+                 "https://host.internal:8443", ""):
+        assert R._is_local_host(base) is False, base
+
+
+def _write_cfg(tmpdir, text):
+    d = os.path.join(tmpdir, "src", "main", "resources")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "program_configuration.json"), "w",
+              encoding="utf-8") as fh:
+        fh.write(text)
+    return tmpdir
+
+
+def test_configured_keys_are_read_per_environment():
+    import json
+    import tempfile
+    cfg = {
+        "envA": {"services": {"alpha_v1": "https://a.example.com",
+                              "beta_v1": ""}},
+        "envB": {"services": {"alpha_v1": "https://a2.example.com"}},
+        "envC": {"api_config": {}},
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_cfg(tmp, json.dumps(cfg))
+        got = R._configured_service_keys(tmp)
+    # beta_v1 is present but EMPTY -- that is unset, not configured
+    assert sorted(got) == ["alpha_v1"], got
+    assert sorted(got["alpha_v1"]) == ["envA", "envB"], got
+
+
+def test_a_missing_config_is_not_an_error():
+    """The file is gitignored, so a clean clone has none.
+
+    It only decides how a line is worded; treating absence as a failure
+    would make the converter refuse to run on a fresh checkout.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        assert R._configured_service_keys(tmp) == {}
+
+
+def test_an_unparseable_config_is_not_an_error():
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_cfg(tmp, "{ this is not json")
+        assert R._configured_service_keys(tmp) == {}
+    with tempfile.TemporaryDirectory() as tmp:
+        _write_cfg(tmp, "[1, 2, 3]")
+        assert R._configured_service_keys(tmp) == {}
+
+
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
     failed = 0
