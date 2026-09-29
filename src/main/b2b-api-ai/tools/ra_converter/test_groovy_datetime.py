@@ -172,6 +172,56 @@ def test_instant_and_localdate_share_one_block():
     assert java.count("{") == java.count("}"), java
 
 
+def test_the_temporal_type_follows_the_pattern_not_the_branch():
+    """A time pattern on a LocalDate compiles and throws at RUN time.
+
+    `LocalDate.now().format(ofPattern("yyyy-MM-dd HH:mm:ss SSS"))` raises
+    UnsupportedTemporalTypeException: HourOfDay. It took out 6 goal cases,
+    each one AFTER the value had been published, so the failure surfaced a
+    long way from its cause and looked like a data problem.
+
+    Groovy's Date carries a time, so `currentDate.format("... HH:mm:ss")`
+    is ordinary in a ReadyAPI script. java.time splits date from date-time,
+    so the emitted type has to be chosen from the format string.
+    """
+    assert groovy_translator._java_time_type_for("yyyy-MM-dd") == "LocalDate"
+    assert groovy_translator._java_time_type_for(
+        "yyyy-MM-dd HH:mm:ss SSS") == "LocalDateTime"
+    assert groovy_translator._java_time_type_for("yyyyMMddHHmmssSSS") == "LocalDateTime"
+    assert groovy_translator._java_time_type_for("yyyy-MM-dd'T'HH:mm:ss") == "LocalDateTime"
+
+
+def test_a_time_letter_inside_a_quoted_literal_is_text_not_a_field():
+    """`'at' yyyy` has an `a`, but it is the word "at", not a meridiem.
+
+    Reading letters without honouring quotes would promote a date-only
+    pattern to LocalDateTime -- harmless here, but the same mistake in
+    reverse is what caused the crash, so the quoting rule is pinned.
+    """
+    assert groovy_translator._java_time_type_for("'at' yyyy-MM-dd") == "LocalDate"
+    assert groovy_translator._java_time_type_for("'Month' MMMM") == "LocalDate"
+    assert groovy_translator._java_time_type_for("") == "LocalDate"
+
+
+def test_a_groovy_date_with_a_time_pattern_emits_LocalDateTime():
+    """End to end through the translator, not just the helper.
+
+    Both idioms in ONE script, because the bug was that a single branch
+    hardcoded LocalDate for every pattern it saw: the date-only var was
+    fine and the timestamp beside it crashed the whole hook.
+    """
+    script = "\n".join([
+        "def currentDate = new Date()",
+        "def stamp = currentDate.format('yyyy-MM-dd HH:mm:ss SSS')",
+        "def day = currentDate.plus(2).format('yyyy-MM-dd')",
+    ])
+    lines, _meta = groovy_translator.translate(script, {}, "TimeStamp")
+    text = "\n".join(lines)
+    assert "LocalDateTime.now()" in text, text
+    # the date-only one must NOT have been promoted
+    assert "LocalDate.now().plusDays(2)" in text, text
+
+
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
     failed = 0

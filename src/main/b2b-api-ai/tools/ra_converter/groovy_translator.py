@@ -47,6 +47,40 @@ class Pattern:
 # Small emit helpers
 # ---------------------------------------------------------------------------
 
+def _java_time_type_for(pattern: str) -> str:
+    """`LocalDate` or `LocalDateTime`, decided by the PATTERN.
+
+    Groovy's `Date` carries a time; java.time splits that in two, and the
+    choice has to follow the format string rather than the branch that
+    happened to match. `LocalDate.now().format(ofPattern("yyyy-MM-dd
+    HH:mm:ss SSS"))` compiles and then throws
+    UnsupportedTemporalTypeException: HourOfDay at RUN time -- it took out
+    6 goal cases, each one after the value had already been published, so
+    the failure surfaced a long way from its cause.
+
+    Letters are read OUTSIDE quoted literals: `'at' yyyy` has an `a` that
+    is text, not a meridiem field.
+    """
+    if not pattern:
+        return "LocalDate"
+    unquoted = []
+    in_quote = False
+    i = 0
+    while i < len(pattern):
+        c = pattern[i]
+        if c == "'":
+            if i + 1 < len(pattern) and pattern[i + 1] == "'":
+                i += 2          # '' is an escaped literal quote
+                continue
+            in_quote = not in_quote
+        elif not in_quote:
+            unquoted.append(c)
+        i += 1
+    # java.time time-of-day field letters
+    return ("LocalDateTime" if any(c in "HhKkmsSAnNaB" for c in unquoted)
+            else "LocalDate")
+
+
 def _resp_var_for(step_name: str, ctx: dict) -> str:
     """Lookup the Response variable that holds a given step's response."""
     m = ctx.get("response_var_by_step", {})
@@ -3793,7 +3827,7 @@ def translate(script: str, response_var_by_step: dict[str, str],
             lines.append('{ // [groovy] Date arithmetic -> java.time')
         date_arith_vars.append(var)
         lines.append(
-            f'    String {var} = java.time.LocalDate.now(){chain}'
+            f'    String {var} = java.time.{_java_time_type_for(fmt_esc)}.now(){chain}'
             f'.format(java.time.format.DateTimeFormatter.ofPattern("{fmt_esc}"));')
         lines.append(
             f'    LOG.info(" .. [groovy date] {var}={{}} (fmt=\\"{fmt_esc}\\")", {var});')
@@ -3837,7 +3871,7 @@ def translate(script: str, response_var_by_step: dict[str, str],
             lines.append('{ // [groovy] LocalDate arithmetic -> java.time')
         date_arith_vars.append(var)
         lines.append(
-            f'    String {var} = java.time.LocalDate.now(){chain}'
+            f'    String {var} = java.time.{_java_time_type_for(fmt_esc)}.now(){chain}'
             f'.format(java.time.format.DateTimeFormatter.ofPattern("{fmt_esc}"));')
         lines.append(
             f'    LOG.info(" .. [groovy date] {var}={{}} (fmt=\\"{fmt_esc}\\")", {var});')

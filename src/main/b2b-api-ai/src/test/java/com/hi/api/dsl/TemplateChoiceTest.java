@@ -35,6 +35,7 @@ public class TemplateChoiceTest {
     @Story("an explicit Template wins over the CSV column")
     @Description("using(...) is the author stating intent; it must not be overridden by data.")
     public void explicitTemplateBeatsTheCsvColumn() {
+        ConvertedSuite.require("programaccountregression");
         System.setProperty("manual.suite", "programaccountregression");
         Map<String, String> row = new HashMap<>();
         row.put("template_" + PHASE, "templates/from/the/csv.json");
@@ -98,6 +99,7 @@ public class TemplateChoiceTest {
             stability code already gets from using(Template.of(...)).
             """)
     public void csvColumnAcceptsAnIndexHandle() {
+        ConvertedSuite.require("programaccountregression");
         System.setProperty("manual.suite", "programaccountregression");
         Map<String, String> row = new HashMap<>();
         row.put("template_" + PHASE,
@@ -120,6 +122,7 @@ public class TemplateChoiceTest {
             an author cannot tell a typo from a renamed case.
             """)
     public void anUnknownHandleThrowsRatherThanFallingBack() {
+        ConvertedSuite.require("programaccountregression");
         System.setProperty("manual.suite", "programaccountregression");
         Map<String, String> row = new HashMap<>();
         row.put("template_" + PHASE,

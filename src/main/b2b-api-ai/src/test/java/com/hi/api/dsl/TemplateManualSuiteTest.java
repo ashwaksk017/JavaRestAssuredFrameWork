@@ -54,6 +54,7 @@ public class TemplateManualSuiteTest {
             index.
             """)
     public void resolvesViaTheClientDerivationWhenNoSuiteIsSet() {
+        ConvertedSuite.require(CONVERTED_SUITE);
         System.clearProperty("manual.suite");
         System.setProperty("manual.client", CONVERTED_CLIENT);
 
@@ -69,6 +70,7 @@ public class TemplateManualSuiteTest {
     @Test(groups = {"unit"})
     @Story("an explicit manual.suite still wins")
     public void explicitSuitePropertyWins() {
+        ConvertedSuite.require(CONVERTED_SUITE);
         System.setProperty("manual.suite", CONVERTED_SUITE);
         System.setProperty("manual.client", "NoSuchThingClient");
 

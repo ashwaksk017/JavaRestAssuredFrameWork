@@ -164,6 +164,7 @@ public class SuiteNameTest {
             + "through to the bound name manual, there is no templates/manual/ "
             + "tree, and load() threw.")
     public void resolvesTemplatesFromTheBoundClientWithNoFlags() {
+        ConvertedSuite.require("programaccountregression");
         System.clearProperty("manual.suite");
         System.clearProperty("manual.client");
         bindClient(new ProgramaccountregressionClient());
@@ -200,6 +201,7 @@ public class SuiteNameTest {
     @Test(groups = {"unit"})
     @Story("an explicit manual.suite still beats the bound client")
     public void explicitSuitePropertyStillWins() {
+        ConvertedSuite.require("programaccountregression");
         bindClient(new TotallyUnconvertedClient());
         System.setProperty("manual.suite", "programaccountregression");
 

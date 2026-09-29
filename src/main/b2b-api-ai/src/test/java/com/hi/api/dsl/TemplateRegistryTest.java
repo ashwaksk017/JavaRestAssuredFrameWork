@@ -40,6 +40,7 @@ public class TemplateRegistryTest {
             hash would re-create the brittleness this registry removes.
             """)
     public void namedTemplateResolvesToARealClasspathBody() {
+        ConvertedSuite.require(SUITE);
         System.setProperty("manual.suite", SUITE);
         String path = Template.singleMemberOnboarding.resolve();
         Assert.assertTrue(path.startsWith("templates/" + SUITE + "/"),
@@ -53,6 +54,7 @@ public class TemplateRegistryTest {
     @Story("every curated name still resolves after a reconvert")
     @Description("Catches a ReadyAPI rename before a test sends a wrong body.")
     public void everyCuratedNameResolves() {
+        ConvertedSuite.require(SUITE);
         System.setProperty("manual.suite", SUITE);
         Template[] all = {
             Template.singleMemberOnboarding,
@@ -76,6 +78,7 @@ public class TemplateRegistryTest {
             also name the near misses so the fix is obvious.
             """)
     public void unknownPairThrowsWithNearMisses() {
+        ConvertedSuite.require(SUITE);
         System.setProperty("manual.suite", SUITE);
         Template bogus = Template.of(
                 "renamed in ReadyAPI", "NoSuchCase_999", "Reject_Account");
@@ -93,6 +96,7 @@ public class TemplateRegistryTest {
     @Test(groups = {"unit"})
     @Story("resolveOrNull is the non-throwing variant")
     public void resolveOrNullReturnsNullForAnUnknownPair() {
+        ConvertedSuite.require(SUITE);
         System.setProperty("manual.suite", SUITE);
         Assert.assertNull(
                 Template.of("nope", "NoSuchCase_999", "NoSuchStep").resolveOrNull());
