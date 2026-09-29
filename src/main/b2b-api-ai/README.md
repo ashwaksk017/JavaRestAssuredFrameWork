@@ -127,12 +127,25 @@ project, so it does not resolve here. Point the converter at the workbooks:
 
 ```powershell
 python tools/ra_converter/ra_converter.py --input tools/ra_converter/input/Project.xml `
-    --output . --package-root com.hi.api --data-dir C:\path	o\workbooks
+    --output . --package-root com.hi.api --data-dir C:\path\to\workbooks
 ```
 
-Only the file NAME is used. The converter looks in `--data-dir` first, then
-beside the input XML, then a `data/` folder next to it, and reports which
-workbook it read so "which copy of that workbook was it" is never a guess.
+Only the file NAME is used, and the search is **not recursive**. Point
+`--data-dir` at the folder that DIRECTLY contains the `.xlsx` files, not at
+the ReadyAPI project root: the XML path above says `${projectDir}/data/`, but
+only `shopSearch.xlsx` is matched, against these folders in order:
+
+| order | folder |
+| ----- | ------ |
+| 1 | `--data-dir` |
+| 2 | the folder holding the input XML |
+| 3 | `data/` next to the input XML |
+| 4 | `../data` next to the input XML |
+
+Passing a project root whose workbooks sit in a sub-folder finds nothing, and
+that is what `not found (looked in: ...)` means — the list in that message is
+exactly the four folders above. The converter reports which file it read, so
+"which copy of that workbook was it" is never a guess.
 
 Each workbook row becomes **one CSV row**, so the per-method data provider
 replays the test once per row — the same iteration ReadyAPI's loop performed.
