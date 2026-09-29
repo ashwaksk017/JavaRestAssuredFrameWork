@@ -15475,7 +15475,13 @@ public final class {support_name} {{
                            + pq_cols_order + migrated_cols_order)
         group_d_expected = ["expected_status_code", "expected"] + assert_cols_order
         cols = group_a_meta + group_b_control + group_c_request + group_d_expected
-        header_row = ",".join(cols)
+        # Quote the header too. Column names are not all converter-coined:
+        # a `DataSource_<col>` name carries a WORKBOOK column header
+        # through verbatim, and a spreadsheet heading may hold a comma.
+        # An unquoted one would add a field to the header alone, so every
+        # row would then be one column narrow than its header -- the same
+        # misalignment the row join produced, just from the other side.
+        header_row = ",".join(_csv_quote(c) for c in cols)
 
         # One row per case in the cluster. Reserved cells come from the
         # case; user-data cells start empty for author fill-in.

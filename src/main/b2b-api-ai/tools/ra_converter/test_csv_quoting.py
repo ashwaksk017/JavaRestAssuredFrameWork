@@ -130,6 +130,28 @@ def test_csv_quote_does_not_transform_only_quotes():
     assert R._csv_quote(None) == ""
 
 
+def test_a_column_NAME_with_a_comma_is_quoted_too():
+    """Header names are not all converter-coined.
+
+    A `DataSource_<col>` name carries a WORKBOOK column heading through
+    verbatim, and a spreadsheet heading may hold a comma. Unquoted, that
+    widens the header alone, so every data row is then one column narrow
+    -- the same misalignment the row join caused, from the other side.
+    """
+    assert R._csv_quote("DataSource_propCode") == "DataSource_propCode"
+    assert R._csv_quote("DataSource_peak,rooms") == '"DataSource_peak,rooms"'
+
+
+def test_header_and_rows_agree_when_a_name_holds_a_comma():
+    """Header and body must parse to the same width."""
+    cols = ["description", "test_case_id", "DataSource_peak,rooms"]
+    header = ",".join(R._csv_quote(c) for c in cols)
+    assert len(next(csv.reader([header]))) == len(cols), header
+
+    row = ",".join([R._csv_cell(DESC), "goal58_Post_confirm_200", "12"])
+    assert len(next(csv.reader([row]))) == len(cols)
+
+
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
     failed = 0
