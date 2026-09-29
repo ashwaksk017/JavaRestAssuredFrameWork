@@ -2865,6 +2865,60 @@ _BARE_PROP_RX = re.compile(r"\$\{(?!#|=)([A-Za-z_][A-Za-z0-9_.-]*)\}")
 # through as-is so the emitter can log a TODO for manual review.
 _GROOVY_EXPR_RX = re.compile(r"\$\{=([^}]+)\}")
 
+# ---- "the secret lives in an external per-environment properties file"
+#
+# A common ReadyAPI idiom, and the one shape that must NOT reach the
+# #groovy_expr# catch-all. The whole point of the expression is that the
+# value is NOT in the XML, so "preserve it verbatim for a human to read"
+# preserves nothing: it writes the converter's own marker into the CSV
+# cell, and every request then posts the literal text
+# `#groovy_expr#/*import java.util.Properties;def pr=context.testCas*/`
+# as its client_id. A 401 with a confusing body, not a translation.
+#
+#   ${=import java.util.Properties;
+#      def pr=context.testCase.testSuite.project;
+#      def env=pr.getActiveEnvironment().getName();
+#      def file=new File(new File(pr.path).parent+"/local-config/"
+#                        +env+".properties");
+#      def props=new Properties(); props.load(new FileInputStream(file));
+#      props.getProperty("client_id")}
+#
+# Net effect: "read key K for the active environment". That is precisely
+# what Config.get(K) does here, so the honest translation is the
+# placeholder #K# routed to config -- and it lands the credential in
+# program_configuration.json, the one file allowed to hold one.
+_GROOVY_GETPROPERTY_RX = re.compile(
+    r"""getProperty\(\s*['"]([A-Za-z_][A-Za-z_0-9.\-]*)['"]\s*\)""")
+
+# Evidence the read is against an external FILE, not System.getProperty()
+# or a SoapUI project property. Without this guard the rule would also
+# swallow expressions whose value really is computed at run time.
+_EXTERNAL_PROPS_HINTS = (
+    "new Properties", "FileInputStream", ".properties",
+    "getResourceAsStream", "new File",
+)
+
+
+def _external_config_key(expr: str) -> str:
+    """The config key an inline-Groovy expression is really just reading.
+
+    Returns "" when the expression does anything more than that, so the
+    caller falls through to the existing #groovy_expr# stub rather than
+    inventing a key. Deliberately conservative on both halves: it must
+    look like a properties-FILE read, and the key taken is the LAST
+    getProperty() in the expression -- any earlier ones belong to the
+    guard clauses that test for a missing file or a missing key.
+    """
+    if not expr:
+        return ""
+    if not any(h in expr for h in _EXTERNAL_PROPS_HINTS):
+        return ""
+    keys = _GROOVY_GETPROPERTY_RX.findall(expr)
+    if not keys:
+        return ""
+    return keys[-1]
+
+
 
 def _translate_soapui_jsonpath(path: str) -> str:
     """Convert a SoapUI JSON path (`$['x']`, `$.foo.bar`, `$[0].id`) to
@@ -3218,6 +3272,14 @@ def soapui_body_to_placeholders(body: str) -> tuple[str, list[str]]:
         placeholders.append(var)
         return f"#{var}#"
     def _groovy(m):
+        # An expression whose only job is to read a key out of an
+        # external per-environment properties file is not untranslatable
+        # -- it IS config. Emit the placeholder and let Config supply it.
+        _ext = _external_config_key(m.group(1))
+        if _ext:
+            var = _ext.replace(".", "_").replace("-", "_")
+            placeholders.append(var)
+            return f"#{var}#"
         # Inline Groovy evaluation -- can't safely translate. Preserve
         # verbatim so a human reader spots it, and emit a placeholder
         # column so tests can override at runtime.
@@ -3417,6 +3479,15 @@ def classify_placeholders_for_case(case: "TestCase") -> dict:
 
     for m in _PROJ_PROP_RX.finditer(corpus):
         config.add(m.group(1))
+
+    # Same rule as _external_config_key, applied to the classifier so the
+    # key reaches TestSupport.CONFIG_KEYS. Without this the placeholder
+    # resolves to nothing at run time: mergedRow only pulls keys that are
+    # listed there, so #client_id# would stay literal in the body.
+    for m in _GROOVY_EXPR_RX.finditer(corpus):
+        _ext = _external_config_key(m.group(1))
+        if _ext:
+            config.add(_ext.replace(".", "_").replace("-", "_"))
 
     # 2. For step#field refs, decide runtime vs csv by looking at whether the
     #    step is a Groovy step that publishes `field`, a Properties step whose
@@ -5047,6 +5118,12 @@ def _sanitize_path_for_col(json_path: str) -> str:
     return s or "root"
 
 
+# Credential leaf names routed to config during this run. Module-level
+# for the same reason _ALL_VERIFY_VOCABS is: the body rewrite happens
+# while templates are emitted, but TestSupport.CONFIG_KEYS is built from
+# the classifier, and the two do not share a call stack.
+_CRED_KEYS_ROUTED: set = set()
+
 _SECRET_LEAF_KEY_HINTS = (
     "password", "passwd", "secret", "apikey", "api_key",
     "authorization", "auth_token", "access_token", "refresh_token",
@@ -5069,6 +5146,90 @@ def _looks_like_bearer_token(value: str) -> bool:
     if re.match(r'^[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}$', v):
         return True
     return False
+
+
+# Leaf names that must never reach a generated file as a literal.
+# Exact match on the leaf name, not substring: `password` is a
+# credential, `passwordChangedDate` is test data, and a substring rule
+# would rewrite the second one into a token nobody asked for.
+_CRED_LEAF_NAMES = frozenset({
+    "client_id", "clientid", "c_id",
+    "client_secret", "clientsecret", "c_sec",
+    "username", "user_name",
+    "password", "passwd", "pwd",
+    "secret", "api_key", "apikey",
+    "access_token", "refresh_token",
+    "private_key", "privatekey",
+})
+
+# A body is an OAuth-style credential payload when it carries a client
+# identifier or a client secret. That pairing is what makes the rule
+# below safe to apply to `username` / `password` too: a test that
+# CREATES a user also posts a username, and rewriting that into
+# #username# would send the runner's own credential as test data. A
+# create-user body does not also carry client_id/client_secret.
+_CRED_PAYLOAD_MARKERS = frozenset({
+    "client_id", "clientid", "c_id",
+    "client_secret", "clientsecret", "c_sec",
+})
+
+
+def _cred_leaf_name(key: str) -> str:
+    """Normalised leaf name when `key` names a credential, else ""."""
+    k = (key or "").strip().lower()
+    return k if k in _CRED_LEAF_NAMES else ""
+
+
+def _is_credential_payload(tree) -> bool:
+    """True when this parsed body is an OAuth-style credential grant."""
+    if not isinstance(tree, dict):
+        return False
+    return any((k or "").strip().lower() in _CRED_PAYLOAD_MARKERS
+               for k in tree)
+
+
+def _route_credential_literals(text: str):
+    """Rewrite literal credentials in a credential payload to #key#.
+
+    The standing rule for this repo is that a credential is supplied in
+    exactly one place, program_configuration.json, and is readable
+    nowhere else. A ReadyAPI author who hardcoded client_id/secret in
+    one token step (while every other step reads them from an external
+    properties file) would otherwise have those four values copied
+    verbatim into a generated template on disk -- and from there into
+    the Allure attachment and the request log.
+
+    Returns (text, keys_routed). Non-JSON, unparseable or non-credential
+    bodies come back untouched with an empty set, so this can run over
+    every body unconditionally.
+    """
+    if not text or "{" not in text:
+        return text, set()
+    try:
+        tree = json.loads(text)
+    # Narrow on purpose. A bare `except Exception` here swallowed a
+    # NameError (`_json` is function-local elsewhere in this module,
+    # not global) and the rule silently did nothing on every body.
+    except (ValueError, TypeError):
+        return text, set()
+    if not _is_credential_payload(tree):
+        return text, set()
+    routed = set()
+    out = {}
+    for k, v in tree.items():
+        leaf = _cred_leaf_name(k)
+        # Only LITERALS are rewritten. A value already carrying a
+        # placeholder is doing the right thing and must survive
+        # untouched, or this would clobber #c_id# into #client_id#
+        # and defeat _fold_placeholder_aliases.
+        if leaf and isinstance(v, str) and v and "#" not in v:
+            out[k] = "#" + leaf + "#"
+            routed.add(leaf)
+        else:
+            out[k] = v
+    if not routed:
+        return text, set()
+    return json.dumps(out, indent=2, ensure_ascii=False), routed
 
 
 def _is_secret_path(path: str) -> bool:
@@ -15428,6 +15589,13 @@ public final class {support_name} {{
                 # two bodies are one file, and `#c_id#` / `#client_id#` make the
                 # same request.
                 translated = _fold_placeholder_aliases(translated)
+                # A hardcoded credential in the source XML must not be
+                # copied into a generated template. Runs before the hash
+                # so the routed form is what gets deduped and written.
+                translated, _routed_creds = _route_credential_literals(
+                    translated)
+                if _routed_creds:
+                    _CRED_KEYS_ROUTED.update(_routed_creds)
                 mt = (step.media_type or "application/json").split(";")[0].strip().lower()
                 is_json_mt = (mt in ("application/json", "application/vnd.api+json")
                               or mt.endswith("+json"))
@@ -18041,6 +18209,10 @@ def _run_convert(args):
         all_config_keys.update(cl["config"])
     # Always include base_url so #base_url# in path/url substitution works.
     all_config_keys.add("base_url")
+    # Credentials lifted out of hardcoded request bodies (see
+    # _route_credential_literals). Without this the template would carry
+    # #client_id# and nothing would ever resolve it.
+    all_config_keys.update(_CRED_KEYS_ROUTED)
 
     support_rel = emitter.emit_test_support(sorted(all_config_keys))
     print(f"[ra_converter] emitted test-support helper: {support_rel}  "
