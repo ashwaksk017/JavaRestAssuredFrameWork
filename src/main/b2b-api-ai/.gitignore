@@ -97,3 +97,8 @@ src/main/resources/templates/http_request_*.json
 src/main/resources/templates/post_activate.json
 src/main/resources/templates/tokenrequest.json
 src/main/resources/test_data.example.properties
+
+# Converter backups left by a REFRESH of an author-editable file.
+# Ignored wherever they land: support/ was already covered, data/ was not,
+# so a PlaceholderResolver refresh left an untracked file next to tracked ones.
+*.stale.orig

@@ -875,6 +875,37 @@ def _excel_cell_text(v) -> str:
 _WORKBOOK_CELLS_UNTRANSLATED: dict = {}
 
 
+def _translate_readyapi_refs(text: str) -> str:
+    """Render ReadyAPI reference syntax in the converter's own placeholders.
+
+    Wherever a `${{...}}` can reach the runtime as DATA rather than as code
+    -- a spreadsheet cell, an assertion's expected value -- it has to be
+    translated, because nothing downstream speaks that syntax. Both places
+    have now shipped the bug: a cell holding
+    `${{generatedDates#arrivalDate}}`, and a Simple Contains token holding
+    `${{groupId#roomTypeCode}}` which made the assertion ask whether the
+    response contained that literal text.
+
+    Uses the SAME translator as the XML body path, so a reference means one
+    thing wherever it is written.
+
+    Two limits, both deliberate:
+
+      * no `${{` in the text -> returned byte for byte. Ordinary data must
+        not round-trip through a translator.
+      * a translation containing the untranslatable-Groovy marker ->
+        returned RAW. `#groovy_expr#/*preview*/` is a note to a human
+        reading generated source; as data it would ship the converter's
+        own marker to the server.
+    """
+    if not text or "${" not in text:
+        return text
+    translated, _ = soapui_body_to_placeholders(text)
+    if "#groovy_expr#" in translated:
+        return text
+    return translated
+
+
 def _translate_workbook_cell(text: str) -> str:
     """Render one spreadsheet cell in the converter's own placeholder syntax.
 
@@ -910,12 +941,7 @@ def _translate_workbook_cell(text: str) -> str:
         converter's own marker to the server, which is the failure mode the
         external-secrets fix existed to stop.
     """
-    if not text or "${" not in text:
-        return text
-    translated, _ = soapui_body_to_placeholders(text)
-    if "#groovy_expr#" in translated:
-        return text
-    return translated
+    return _translate_readyapi_refs(text)
 
 
 def _read_datasource_rows(ds, search_dirs: list[str]) -> tuple[list, str]:
@@ -5996,7 +6022,12 @@ def _assert_default_value(a: "Assertion") -> str:
         raw = (cfg.get("expectedCount", "") or cfg.get("content", "") or "0").strip()
         return raw
     if t in ("Simple Equals", "Simple Contains", "Simple NotContains"):
-        return (cfg.get("token", "") or "").strip()
+        # The token is DATA -- the text the response must contain -- and it
+        # is as likely to be a reference as a literal. Untranslated,
+        # `${{groupId#roomTypeCode}}` asked whether the response contained
+        # those characters, which it never can, so the assertion could only
+        # fail and did so with a message that reads like a data problem.
+        return _translate_readyapi_refs((cfg.get("token", "") or "").strip())
     if t == "Response SLA Assertion":
         return str(cfg.get("SLA", cfg.get("sla", "1000")))
     return ""
@@ -12162,6 +12193,8 @@ public final class PlaceholderResolver {{
                 v = ctx.get(rawKey);
                 if (v == null || v.isEmpty()) v = ctx.get(rawKey.replace('_', '.'));
                 if (v == null || v.isEmpty()) v = ctx.get(rawKey.replace('.', '_'));
+                if (v == null || v.isEmpty()) v = ctxLookupLenient(ctx, rawKey);
+                if (v == null || v.isEmpty()) v = lookupByFieldSuffix(ctx, rawKey);
             }}
             if (v == null || v.isEmpty()) {{
                 m.appendReplacement(out, Matcher.quoteReplacement(m.group()));
@@ -12171,6 +12204,192 @@ public final class PlaceholderResolver {{
         }}
         m.appendTail(out);
         return out.toString();
+    }}
+
+    /**
+     * ctx lookup that also tries the spellings ReadyAPI accepts.
+     *
+     * <p>Exact first, then dot/underscore, then case-insensitively --
+     * because ReadyAPI resolves {{@code ${{Step#prop}}}} without regard to
+     * case and these projects rely on it. RestUtilities.substitute has
+     * had this for a while; this resolver, which assertion cells and URL
+     * substitution go through, had only the first two. One capital letter
+     * in {{@code ${{groupId#roomTypeCode}}}} against a step publishing
+     * {{@code groupid.}} was enough to leave the literal on the wire.</p>
+     *
+     * <p>Ambiguity resolves to NOTHING, not to a guess: two keys
+     * differing only by case with different values mean the author meant
+     * something this cannot know.</p>
+     */
+    // ---- field-suffix resolution ------------------------------------
+    //
+    // These five methods shipped in every tree's PlaceholderResolver.java
+    // but had NEVER been in this emitter. They survived only because the
+    // file is SKIP-IF-EXISTS, so no existing tree was ever handed the
+    // emitter's poorer copy -- and a fresh clone, which has no file to
+    // skip, got a PlaceholderResolver missing suffixRank while the bundled
+    // ImportedScenario calls it. That tree cannot compile.
+    //
+    // Found when a rev bump refreshed the file for real and the build
+    // broke with `cannot find symbol: suffixRank`. Ported verbatim so the
+    // emitted file matches the one that has actually been running.
+    /**
+     * Match {{@code Properties_hilton-member-id}} to a ctx key whose trailing
+     * field is {{@code hilton-member-id}} (hyphen / underscore / concatenated).
+     * {{@code Properties.<field>}} wins before any suffix walk so owner
+     * {{@code Email}} cannot pick {{@code EmailMember}} or another step's
+     * {{@code Email}} from HashMap iteration order.
+     */
+    static String lookupByFieldSuffix(Map<String, String> ctx, String rawKey) {{
+        if (ctx == null || rawKey == null || rawKey.isEmpty()) {{
+            return null;
+        }}
+        String field = fieldOf(rawKey);
+        if (field.isEmpty()) {{
+            return null;
+        }}
+        String exact = lookupExactPropertiesField(ctx, field);
+        if (exact != null) {{
+            return exact;
+        }}
+        String fieldNorm = normalizeField(field);
+        String best = null;
+        int bestRank = Integer.MAX_VALUE;
+        String bestKey = null;
+        for (Map.Entry<String, String> e : ctx.entrySet()) {{
+            String k = e.getKey();
+            String val = e.getValue();
+            if (k == null || val == null || val.isEmpty()) {{
+                continue;
+            }}
+            String kField = fieldOf(k);
+            if (!(kField.equals(field) || normalizeField(kField).equals(fieldNorm))) {{
+                continue;
+            }}
+            int rank = suffixRank(k);
+            if (rank < bestRank
+                    || (rank == bestRank && (bestKey == null || k.compareTo(bestKey) < 0))) {{
+                bestRank = rank;
+                bestKey = k;
+                best = val;
+            }}
+        }}
+        return best;
+    }}
+
+    /** ReadyAPI {{@code Properties#field}} before other namespaced bags. */
+    static String lookupExactPropertiesField(Map<String, String> ctx, String field) {{
+        if (ctx == null || field == null || field.isEmpty()) {{
+            return null;
+        }}
+        String hyphen = field.replace('_', '-');
+        String under = field.replace('-', '_');
+        String[] keys = {{
+            "Properties." + field,
+            "Properties." + hyphen,
+            "Properties." + under,
+            "Properties_" + field,
+            "Properties_" + hyphen,
+            "Properties_" + under,
+        }};
+        for (String k : keys) {{
+            String v = ctx.get(k);
+            if (v != null && !v.isEmpty()) {{
+                return v;
+            }}
+        }}
+        return null;
+    }}
+
+    /**
+     * 0 = {{@code Properties.}} bag, 1 = other Properties* extract steps
+     * ({{@code PropertiesaccountID}}), 2 = any other namespace, 3 = bare.
+     */
+    public static int suffixRank(String key) {{
+        if (key == null) {{
+            return 3;
+        }}
+        int dot = key.indexOf('.');
+        if (dot < 0) {{
+            return 3;
+        }}
+        String ns = key.substring(0, dot);
+        if ("Properties".equals(ns)) {{
+            return 0;
+        }}
+        if (ns.startsWith("Properties")) {{
+            return 1;
+        }}
+        return 2;
+    }}
+
+    private static String fieldOf(String key) {{
+        int dot = key.lastIndexOf('.');
+        if (dot >= 0) {{
+            return key.substring(dot + 1);
+        }}
+        int under = key.indexOf('_');
+        if (under > 0) {{
+            return key.substring(under + 1);
+        }}
+        return key;
+    }}
+
+    private static String normalizeField(String field) {{
+        if (field == null) {{
+            return "";
+        }}
+        StringBuilder sb = new StringBuilder(field.length());
+        for (int i = 0; i < field.length(); i++) {{
+            char c = field.charAt(i);
+            if (c != '-' && c != '_') {{
+                sb.append(Character.toLowerCase(c));
+            }}
+        }}
+        return sb.toString();
+    }}
+
+    private static String ctxLookupLenient(Map<String, String> ctx, String key) {{
+        if (ctx == null || key == null || key.isEmpty()) {{
+            return null;
+        }}
+        String v = ctx.get(key);
+        if (v != null && !v.isEmpty()) {{
+            return v;
+        }}
+        for (String alt : new String[] {{
+                key.replace('#', '.'), key.replace('#', '_'),
+                key.replace('_', '.'), key.replace('.', '_')}}) {{
+            if (!alt.equals(key)) {{
+                v = ctx.get(alt);
+                if (v != null && !v.isEmpty()) {{
+                    return v;
+                }}
+            }}
+        }}
+        String found = null;
+        for (String form : new String[] {{key, key.replace('#', '.'),
+                key.replace('#', '_'), key.replace('_', '.'),
+                key.replace('.', '_')}}) {{
+            String lower = form.toLowerCase(java.util.Locale.ROOT);
+            for (Map.Entry<String, String> e : ctx.entrySet()) {{
+                if (e.getKey() == null || e.getValue() == null
+                        || e.getValue().isEmpty()) {{
+                    continue;
+                }}
+                if (!e.getKey().toLowerCase(java.util.Locale.ROOT).equals(lower)) {{
+                    continue;
+                }}
+                if (found != null && !found.equals(e.getValue())) {{
+                    return null;      // ambiguous -- do not guess
+                }}
+                found = e.getValue();
+            }}
+            if (found != null) {{
+                return found;
+            }}
+        }}
+        return null;
     }}
 
     private static final Pattern HASH_REF =
@@ -12239,6 +12458,9 @@ public final class PlaceholderResolver {{
                 }}
                 if ((value == null || value.isEmpty()) && rawKey.indexOf('#') >= 0) {{
                     value = ctx.get(rawKey.replace('#', '_'));
+                }}
+                if (value == null || value.isEmpty()) {{
+                    value = ctxLookupLenient(ctx, rawKey);
                 }}
             }}
             if (value == null || value.isEmpty()) value = autoGenerate(rawKey, ctx);

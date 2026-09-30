@@ -779,7 +779,23 @@ public class RestUtilities {
     }
 
     private static boolean jsonPathMiss(String v) {
-        return v == null || v.isEmpty() || "null".equals(v);
+        // An EMPTY COLLECTION is a miss, not a value.
+        //
+        // `jp.getString(path)` renders a path that resolved to an empty
+        // list as the two characters `[]`, which is neither null nor
+        // empty -- so it read as a successful extract and went to the
+        // wire. A real run sent
+        //     "roomTypeCode": "[]"
+        // and the server answered "String must match the specified
+        // regular expression", which sends the reader looking for a bad
+        // room type rather than for an upstream extract that found
+        // nothing.
+        //
+        // Treating it as a miss lets the alias lookup run and, failing
+        // that, yields "" -- which the broken-path and unresolved-
+        // placeholder guards already report in terms of the real cause.
+        return v == null || v.isEmpty() || "null".equals(v)
+                || "[]".equals(v) || "{}".equals(v);
     }
 
     /**

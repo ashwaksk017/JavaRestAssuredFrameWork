@@ -124,41 +124,8 @@ public final class PlaceholderResolver {
                 v = ctx.get(rawKey);
                 if (v == null || v.isEmpty()) v = ctx.get(rawKey.replace('_', '.'));
                 if (v == null || v.isEmpty()) v = ctx.get(rawKey.replace('.', '_'));
-                // P2 fix: SoapUI keys that contain hyphens (like
-                // `PropertiesDetails.hilton-member-id`) get flattened to
-                // underscores when the SoapUI ref is translated to a
-                // #Key# placeholder (`#PropertiesDetails_hilton_member_id#`).
-                // The alias walk above only tries `_->.`; the trailing
-                // segment `hilton_member_id` after splitting on the
-                // FIRST dot needs `_` reverted to `-` because that's how
-                // the extract wrote it (`ctx.put("PropertiesDetails.
-                // hilton-member-id", ...)`).
-                //
-                // Try: split on first `_` -> namespace prefix + trailing;
-                // replace `_` in trailing with `-` and re-join with `.`.
-                //   PropertiesDetails_hilton_member_id
-                //     -> PropertiesDetails.hilton-member-id
-                if (v == null || v.isEmpty()) {
-                    int firstUnderscore = rawKey.indexOf('_');
-                    if (firstUnderscore > 0) {
-                        String namespace = rawKey.substring(0, firstUnderscore);
-                        String tail = rawKey.substring(firstUnderscore + 1)
-                                .replace('_', '-');
-                        v = ctx.get(namespace + "." + tail);
-                    }
-                }
-                // Also try the reverse: hyphen-separated key stored as
-                // dotted trailing (rare, but observed with some
-                // response-extract paths).
-                if (v == null || v.isEmpty()) {
-                    v = ctx.get(rawKey.replace('_', '-'));
-                }
-                // Namespace-stripped field match: URL
-                // `@Properties_hilton-member-id@` vs extract
-                // `PropertiesaccountID.hilton-member-id`.
-                if (v == null || v.isEmpty()) {
-                    v = lookupByFieldSuffix(ctx, rawKey);
-                }
+                if (v == null || v.isEmpty()) v = ctxLookupLenient(ctx, rawKey);
+                if (v == null || v.isEmpty()) v = lookupByFieldSuffix(ctx, rawKey);
             }
             if (v == null || v.isEmpty()) {
                 m.appendReplacement(out, Matcher.quoteReplacement(m.group()));
@@ -170,6 +137,33 @@ public final class PlaceholderResolver {
         return out.toString();
     }
 
+    /**
+     * ctx lookup that also tries the spellings ReadyAPI accepts.
+     *
+     * <p>Exact first, then dot/underscore, then case-insensitively --
+     * because ReadyAPI resolves {@code ${Step#prop}} without regard to
+     * case and these projects rely on it. RestUtilities.substitute has
+     * had this for a while; this resolver, which assertion cells and URL
+     * substitution go through, had only the first two. One capital letter
+     * in {@code ${groupId#roomTypeCode}} against a step publishing
+     * {@code groupid.} was enough to leave the literal on the wire.</p>
+     *
+     * <p>Ambiguity resolves to NOTHING, not to a guess: two keys
+     * differing only by case with different values mean the author meant
+     * something this cannot know.</p>
+     */
+    // ---- field-suffix resolution ------------------------------------
+    //
+    // These five methods shipped in every tree's PlaceholderResolver.java
+    // but had NEVER been in this emitter. They survived only because the
+    // file is SKIP-IF-EXISTS, so no existing tree was ever handed the
+    // emitter's poorer copy -- and a fresh clone, which has no file to
+    // skip, got a PlaceholderResolver missing suffixRank while the bundled
+    // ImportedScenario calls it. That tree cannot compile.
+    //
+    // Found when a rev bump refreshed the file for real and the build
+    // broke with `cannot find symbol: suffixRank`. Ported verbatim so the
+    // emitted file matches the one that has actually been running.
     /**
      * Match {@code Properties_hilton-member-id} to a ctx key whose trailing
      * field is {@code hilton-member-id} (hyphen / underscore / concatenated).
@@ -286,6 +280,49 @@ public final class PlaceholderResolver {
         return sb.toString();
     }
 
+    private static String ctxLookupLenient(Map<String, String> ctx, String key) {
+        if (ctx == null || key == null || key.isEmpty()) {
+            return null;
+        }
+        String v = ctx.get(key);
+        if (v != null && !v.isEmpty()) {
+            return v;
+        }
+        for (String alt : new String[] {
+                key.replace('#', '.'), key.replace('#', '_'),
+                key.replace('_', '.'), key.replace('.', '_')}) {
+            if (!alt.equals(key)) {
+                v = ctx.get(alt);
+                if (v != null && !v.isEmpty()) {
+                    return v;
+                }
+            }
+        }
+        String found = null;
+        for (String form : new String[] {key, key.replace('#', '.'),
+                key.replace('#', '_'), key.replace('_', '.'),
+                key.replace('.', '_')}) {
+            String lower = form.toLowerCase(java.util.Locale.ROOT);
+            for (Map.Entry<String, String> e : ctx.entrySet()) {
+                if (e.getKey() == null || e.getValue() == null
+                        || e.getValue().isEmpty()) {
+                    continue;
+                }
+                if (!e.getKey().toLowerCase(java.util.Locale.ROOT).equals(lower)) {
+                    continue;
+                }
+                if (found != null && !found.equals(e.getValue())) {
+                    return null;      // ambiguous -- do not guess
+                }
+                found = e.getValue();
+            }
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
     private static final Pattern HASH_REF =
             Pattern.compile("#([A-Za-z0-9_.-]+)#");
     private static final Pattern AT_REF =
@@ -352,6 +389,9 @@ public final class PlaceholderResolver {
                 }
                 if ((value == null || value.isEmpty()) && rawKey.indexOf('#') >= 0) {
                     value = ctx.get(rawKey.replace('#', '_'));
+                }
+                if (value == null || value.isEmpty()) {
+                    value = ctxLookupLenient(ctx, rawKey);
                 }
             }
             if (value == null || value.isEmpty()) value = autoGenerate(rawKey, ctx);
