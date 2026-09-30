@@ -181,4 +181,47 @@ public class FailureDigestFieldPairingTest {
 
         Assert.assertTrue(got.contains("peakRooms=") && got.contains("12"), got);
     }
+
+    @Test(groups = {"unit", "framework"})
+    @Story("`null` is named as a failed substitution, not reported as data")
+    @Description("""
+            The costliest reading of a digest so far. `startDate="null"`
+            looks like a data problem, so the date gets investigated --
+            but `null` is the literal RestUtilities substitutes when
+            nothing resolved the placeholder, and the real fault is
+            upstream of the request entirely.
+            """)
+    public void aNullValueIsNamedAsAnUnresolvedPlaceholder() throws Exception {
+        String server = "{\"notifications\":[{\"code\":\"31\",\"fields\":"
+                + "[\"startDate\"],\"message\":\"Invalid JSON Parameter\"}]}";
+
+        String got = pair(server, "{\"startDate\":\"null\"}", "");
+
+        Assert.assertTrue(got.contains("unresolved placeholder"), got);
+    }
+
+    @Test(groups = {"unit", "framework"})
+    @Story("a reference that survived to the wire says so")
+    public void anUnexpandedReferenceIsNamed() throws Exception {
+        String server = "{\"notifications\":[{\"fields\":[\"arrivalDate\"]}]}";
+
+        String got = pair(server,
+                "{\"arrivalDate\":\"#generatedDates_arrivalDate#\"}", "");
+
+        Assert.assertTrue(got.contains("unexpanded reference"), got);
+    }
+
+    @Test(groups = {"unit", "framework"})
+    @Story("a real value carries no explanation after it")
+    @Description("""
+            The annotations have to stay rare to stay meaningful; a date
+            that is simply wrong gets no commentary.
+            """)
+    public void aGenuineValueIsNotAnnotated() throws Exception {
+        String server = "{\"notifications\":[{\"fields\":[\"startDate\"]}]}";
+
+        String got = pair(server, "{\"startDate\":\"2026-12-17 00:00:00\"}", "");
+
+        Assert.assertFalse(got.contains("<--"), got);
+    }
 }

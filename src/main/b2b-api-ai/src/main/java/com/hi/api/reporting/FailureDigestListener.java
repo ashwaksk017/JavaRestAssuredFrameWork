@@ -193,7 +193,38 @@ public class FailureDigestListener implements ITestListener {
             }
         }
         String v = value.replace(chr10(), ' ').replace(chr13(), ' ');
-        return v.length() > 80 ? v.substring(0, 80) + " ...(capped)" : v;
+        if (v.length() > 80) {
+            v = v.substring(0, 80) + " ...(capped)";
+        }
+        return v + whyNotAValue(v);
+    }
+
+    /**
+     * Say when a value is not data at all but a substitution that failed.
+     *
+     * <p>{@code startDate="null"} reads like data, and the server's
+     * complaint about it reads like a data problem. It is neither: `null`
+     * is the literal RestUtilities substitutes when nothing resolved the
+     * placeholder, so the fault is upstream of the request and no amount
+     * of staring at the date will show it. A `#key#` that survived to the
+     * wire is the same story one step earlier.</p>
+     *
+     * <p>Worth a few characters because the alternative was a whole run:
+     * the digest named the field, the field looked plausible, and the
+     * real question -- why did nothing fill it -- was never asked.</p>
+     */
+    private static String whyNotAValue(String v) {
+        if ("null".equals(v)) {
+            return "   <-- unresolved placeholder: nothing supplied this"
+                    + " field, `null` is the substitution fallback";
+        }
+        if (v.indexOf('#') >= 0 || v.startsWith("${")) {
+            return "   <-- unexpanded reference reached the wire";
+        }
+        if (v.isEmpty()) {
+            return "   <-- empty: resolved to nothing";
+        }
+        return "";
     }
 
     private static char chr10() {

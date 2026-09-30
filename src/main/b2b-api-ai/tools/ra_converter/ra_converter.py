@@ -866,6 +866,58 @@ def _excel_cell_text(v) -> str:
     return str(v)
 
 
+# Cells the translator handed back untranslated, as
+# {"<workbook>!<sheet>": {"<column>": "<cell text>"}}. Reported at the end
+# of the convert and cleared per run, the same way _CRED_KEYS_ROUTED is:
+# a module global that survives between suites reports the first suite's
+# findings against the second, which is a bug this converter has already
+# shipped once.
+_WORKBOOK_CELLS_UNTRANSLATED: dict = {}
+
+
+def _translate_workbook_cell(text: str) -> str:
+    """Render one spreadsheet cell in the converter's own placeholder syntax.
+
+    A cell in these workbooks is as likely to hold `${generatedDates#arrivalDate}`
+    as it is to hold `2026-10-31`: the author parameterises the sheet exactly
+    the way they parameterise a request body, and ReadyAPI expands the
+    reference recursively when the DataSource is read. `expandProperties` does
+    not switch that off -- it governs the DataSource CONFIGURATION; the value
+    is expanded later, when the step that consumes `${DataSource#arrivalDate}`
+    resolves it and finds another reference inside.
+
+    Nothing downstream of the importer spoke that syntax, so such a cell
+    reached the runtime as its own literal text and then died three different
+    ways depending on who touched it first: as `arrivalDate=${...}` on the
+    wire, as an empty query parameter (Ref.resolveArg blanks any value still
+    carrying a `#`), or -- when RestUtilities read the blank as unresolved and
+    applied its fallback -- as the four characters `null` inside a JSON body.
+    That last one is what the server kept rejecting as "Invalid JSON Parameter
+    Value", naming the field and never the value.
+
+    The translation is the SAME one the XML path already uses, so a reference
+    means the same thing wherever it is written, and the recursive resolution
+    both `RestUtilities.mapJsonValues` and `Ref.expandCell` already perform is
+    what finally reads it.
+
+    Two deliberate limits:
+
+      * A cell with no `${` is returned unchanged, byte for byte. Ordinary
+        data must not round-trip through a translator.
+      * A cell whose translation contains the untranslatable-Groovy marker is
+        returned RAW. `#groovy_expr#/*preview*/` is a note to a human reading
+        generated source; writing it into a data cell would ship the
+        converter's own marker to the server, which is the failure mode the
+        external-secrets fix existed to stop.
+    """
+    if not text or "${" not in text:
+        return text
+    translated, _ = soapui_body_to_placeholders(text)
+    if "#groovy_expr#" in translated:
+        return text
+    return translated
+
+
 def _read_datasource_rows(ds, search_dirs: list[str]) -> tuple[list, str]:
     """(rows, gap). rows is one dict per workbook row; gap says why not.
 
@@ -938,7 +990,11 @@ def _read_datasource_rows(ds, search_dirs: list[str]) -> tuple[list, str]:
                 #
                 # Edges only -- internal whitespace is content. A
                 # description keeps its spacing and its line breaks.
-                row[name] = _excel_cell_text(v).strip()
+                row[name] = _translate_workbook_cell(
+                    _excel_cell_text(v).strip())
+                if "${" in row[name]:
+                    _WORKBOOK_CELLS_UNTRANSLATED.setdefault(
+                        "%s!%s" % (want, sheet), {})[name] = row[name][:80]
             if row:
                 rows.append(row)
         if not rows:
@@ -16580,7 +16636,38 @@ public class FailureDigestListener implements ITestListener {{
             }}
         }}
         String v = value.replace(chr10(), ' ').replace(chr13(), ' ');
-        return v.length() > 80 ? v.substring(0, 80) + " ...(capped)" : v;
+        if (v.length() > 80) {{
+            v = v.substring(0, 80) + " ...(capped)";
+        }}
+        return v + whyNotAValue(v);
+    }}
+
+    /**
+     * Say when a value is not data at all but a substitution that failed.
+     *
+     * <p>{{@code startDate="null"}} reads like data, and the server's
+     * complaint about it reads like a data problem. It is neither: `null`
+     * is the literal RestUtilities substitutes when nothing resolved the
+     * placeholder, so the fault is upstream of the request and no amount
+     * of staring at the date will show it. A `#key#` that survived to the
+     * wire is the same story one step earlier.</p>
+     *
+     * <p>Worth a few characters because the alternative was a whole run:
+     * the digest named the field, the field looked plausible, and the
+     * real question -- why did nothing fill it -- was never asked.</p>
+     */
+    private static String whyNotAValue(String v) {{
+        if ("null".equals(v)) {{
+            return "   <-- unresolved placeholder: nothing supplied this"
+                    + " field, `null` is the substitution fallback";
+        }}
+        if (v.indexOf('#') >= 0 || v.startsWith("${{")) {{
+            return "   <-- unexpanded reference reached the wire";
+        }}
+        if (v.isEmpty()) {{
+            return "   <-- empty: resolved to nothing";
+        }}
+        return "";
     }}
 
     private static char chr10() {{
@@ -18569,6 +18656,7 @@ def _run_convert(args):
     # ScenarioSteps hit with verify vocabularies; it is invisible today
     # only because the two suites happen to share all four keys.
     _CRED_KEYS_ROUTED.clear()
+    _WORKBOOK_CELLS_UNTRANSLATED.clear()
     suite_name = args.suite_name or _default_suite_name(args.input)
     print(f"[ra_converter] suite: {suite_name}  "
           f"(namespaces test packages / CSVs / templates / testng / audit / flows)")
@@ -18608,6 +18696,19 @@ def _run_convert(args):
                 continue
             _seen_gap.add(_key)
             print("    [no data] %s" % _c.ds_gap[:150])
+    if _WORKBOOK_CELLS_UNTRANSLATED:
+        # A cell still holding `${...}` is data the runtime cannot read.
+        # It goes to the server as its own text, or gets blanked and then
+        # reported as the string `null` -- both of which cost a full run
+        # to diagnose, which is exactly what this line is here to save.
+        _n = sum(len(v) for v in _WORKBOOK_CELLS_UNTRANSLATED.values())
+        print("[ra_converter] WARNING: %d workbook cell(s) still hold a "
+              "ReadyAPI expression this converter could not translate. "
+              "They will reach the runtime as literal text:" % _n)
+        for _where in sorted(_WORKBOOK_CELLS_UNTRANSLATED):
+            for _col, _val in sorted(
+                    _WORKBOOK_CELLS_UNTRANSLATED[_where].items()):
+                print("    %s [%s] = %s" % (_where, _col, _val))
     cases_all: list[TestCase] = [c for _sn, cs in parsed_suites for c in cs]
     print(f"[ra_converter] found {len(cases_all)} test cases across "
           f"{len(parsed_suites)} SoapUI test suite(s)")
