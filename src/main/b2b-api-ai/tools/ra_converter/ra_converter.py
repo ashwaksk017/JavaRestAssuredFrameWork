@@ -10422,21 +10422,47 @@ public final class TestSupport {{
     public static Map<String, String> mergedRow(Map<String, String> row,
                                                 Map<String, String> ctx) {{
         Map<String, String> merged = new HashMap<>();
-        // 1. Load config values FIRST (lowest priority; overwritten below)
+        // 1. Load config values FIRST. An EXACT row/ctx key still
+        //    overrides them; a DERIVED alias no longer does.
+        //
+        //    `${{#Project#username}}` is the API credential and translates to
+        //    `#username#`. The CSV column `Properties.Username` derives a
+        //    bare `username` alias through the snake-case rule below, and
+        //    because the row layer used put() it replaced the configured
+        //    credential with a per-test enrollment name -- so the token
+        //    request carried a test username and the server answered
+        //    `invalid request`.
+        //
+        //    This does not invert the documented precedence: an author who
+        //    writes a `username` COLUMN still overrides config. A name the
+        //    author never wrote is not an override, it is a collision.
+        //    Kept in step with ImportedScenario.mergedRow -- two
+        //    implementations of one function behaving differently is how
+        //    "works through one path, not the other" happens.
+        java.util.Set<String> fromConfig = new java.util.HashSet<>();
         for (String k : CONFIG_KEYS) {{
             String v = Config.get(k, null);
-            if (v != null) putWithAliases(merged, k, v);
+            if (v != null) {{
+                putWithAliases(merged, k, v, null);
+                fromConfig.add(k);
+                fromConfig.add(k.replace('.', '_').replace('-', '_'));
+                int __d = k.lastIndexOf('.');
+                String __leaf = (__d >= 0) ? k.substring(__d + 1) : k;
+                fromConfig.add(__leaf);
+                String __sn = camelToSnakeLower(__leaf);
+                if (__sn != null) fromConfig.add(__sn);
+            }}
         }}
         // 2. Layer CSV row over config
         if (row != null) {{
             for (Map.Entry<String, String> e : row.entrySet()) {{
-                putWithAliases(merged, e.getKey(), e.getValue());
+                putWithAliases(merged, e.getKey(), e.getValue(), fromConfig);
             }}
         }}
         // 3. ctx wins (runtime-generated values)
         if (ctx != null) {{
             for (Map.Entry<String, String> e : ctx.entrySet()) {{
-                putWithAliases(merged, e.getKey(), e.getValue());
+                putWithAliases(merged, e.getKey(), e.getValue(), fromConfig);
             }}
         }}
         return merged;
@@ -10463,12 +10489,21 @@ public final class TestSupport {{
      * (per-lookup, walk alternatives at read time) instead.</p>
      */
     private static void putWithAliases(Map<String, String> merged, String key, String value) {{
+        putWithAliases(merged, key, value, null);
+    }}
+
+    /** @param configOwned keys sourced from config; a DERIVED alias never
+     *  overwrites one, an EXACT key always may. Null protects nothing. */
+    private static void putWithAliases(Map<String, String> merged, String key, String value,
+                                       java.util.Set<String> configOwned) {{
         if (key == null) return;
         merged.put(key, value);
         String underscoreForm = key.replace('.', '_').replace('-', '_');
-        if (!underscoreForm.equals(key)) merged.put(underscoreForm, value);
+        if (!underscoreForm.equals(key) && !isConfigOwned(configOwned, underscoreForm))
+            merged.put(underscoreForm, value);
         String dotForm = key.replace('-', '_');
-        if (!dotForm.equals(key) && !dotForm.equals(underscoreForm)) merged.put(dotForm, value);
+        if (!dotForm.equals(key) && !dotForm.equals(underscoreForm)
+                && !isConfigOwned(configOwned, dotForm)) merged.put(dotForm, value);
         // Snake-case bare alias of the trailing FIELD, so a SQL
         // placeholder like `#account_id#` (SoapUI script uses the DB
         // column name) resolves against a ctx key like
@@ -10485,7 +10520,8 @@ public final class TestSupport {{
         String field = (lastDot >= 0) ? key.substring(lastDot + 1) : key;
         String snake = camelToSnakeLower(field);
         if (snake != null && !snake.equals(field)
-                && !snake.equals(key) && !snake.equals(underscoreForm)) {{
+                && !snake.equals(key) && !snake.equals(underscoreForm)
+                && !isConfigOwned(configOwned, snake)) {{
             merged.put(snake, value);
         }}
         // A REST step's PARAMETERS are properties of that step, so
@@ -10513,6 +10549,10 @@ public final class TestSupport {{
                 merged.putIfAbsent(key.substring(prefix.length()), value);
             }}
         }}
+    }}
+
+    private static boolean isConfigOwned(java.util.Set<String> configOwned, String key) {{
+        return configOwned != null && configOwned.contains(key);
     }}
 
     /** camelCase / PascalCase / camelID -> snake_case_lower. Inserts an
@@ -16667,8 +16707,16 @@ public class FailureDigestListener implements ITestListener {{
                 out.append("   ");
             }}
             out.append(n).append('=');
-            out.append(v == null ? "<not in the request>"
-                                 : QUOTE + fieldValue(n, v) + QUOTE);
+            if (v == null) {{
+                out.append("<not in the request>");
+            }} else {{
+                // The note goes AFTER the closing quote. Inside it, the
+                // first real digest to carry one read
+                //   arrivalDate="   <-- empty: resolved to nothing"
+                // which reads as though the sentence were the value.
+                out.append(QUOTE).append(fieldValue(n, v)).append(QUOTE);
+                out.append(whyNotAValue(v));
+            }}
         }}
         return out.toString();
     }}
@@ -16701,7 +16749,7 @@ public class FailureDigestListener implements ITestListener {{
         if (v.length() > 80) {{
             v = v.substring(0, 80) + " ...(capped)";
         }}
-        return v + whyNotAValue(v);
+        return v;
     }}
 
     /**
@@ -16764,12 +16812,63 @@ public class FailureDigestListener implements ITestListener {{
             int end = json.indexOf(QUOTE_CHAR, i + 1);
             return end < 0 ? null : json.substring(i + 1, end);
         }}
+        char open = json.charAt(i);
+        if (open == '[' || open == '{{') {{
+            // An ARRAY or OBJECT. Scanning for the next delimiter returns
+            // the single character "[", which is how a real digest came to
+            // say  inventoryPeriods="["  about a field the server had
+            // rejected. What the reader needs is the extent: whether we
+            // sent nothing, one entry, or ten.
+            return spanOf(json, i, open);
+        }}
         int end = i;
         while (end < json.length()
                 && ",}}] ".indexOf(json.charAt(end)) < 0) {{
             end++;
         }}
         return json.substring(i, end);
+    }}
+
+    /**
+     * The bracketed value starting at {{@code i}}, summarised.
+     *
+     * <p>Balanced scan, ignoring brackets inside strings, so a nested
+     * array does not end the span early. An empty one says so plainly --
+     * "the field was present and empty" is a different diagnosis from
+     * "the field was absent", and the server's complaint rarely
+     * distinguishes them.</p>
+     */
+    private static String spanOf(String json, int i, char open) {{
+        char close = (open == '[') ? ']' : '}}';
+        int depth = 0;
+        boolean inStr = false;
+        for (int k = i; k < json.length(); k++) {{
+            char c = json.charAt(k);
+            if (inStr) {{
+                if (c == QUOTE_CHAR) {{
+                    inStr = false;
+                }}
+                continue;
+            }}
+            if (c == QUOTE_CHAR) {{
+                inStr = true;
+            }} else if (c == open) {{
+                depth++;
+            }} else if (c == close) {{
+                depth--;
+                if (depth == 0) {{
+                    String body = json.substring(i, k + 1);
+                    String inner = body.substring(1, body.length() - 1).trim();
+                    if (inner.isEmpty()) {{
+                        return open == '[' ? "[] (empty array)"
+                                           : "{{}} (empty object)";
+                    }}
+                    return body.length() <= 80 ? body
+                            : body.substring(0, 80) + " ...(capped)";
+                }}
+            }}
+        }}
+        return String.valueOf(open) + "...(unterminated)";
     }}
 
     /** Value of query parameter {{@code name}} in {{@code url}}, or null. */

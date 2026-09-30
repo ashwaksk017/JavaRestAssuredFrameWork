@@ -212,6 +212,69 @@ public class FailureDigestFieldPairingTest {
     }
 
     @Test(groups = {"unit", "framework"})
+    @Story("the explanation sits outside the quotes, not inside them")
+    @Description("""
+            The first real digest to carry an annotation read
+              arrivalDate="   <-- empty: resolved to nothing"
+            which reads as though the sentence were the value we sent.
+            """)
+    public void theAnnotationIsNotInsideTheQuotedValue() throws Exception {
+        String server = "{\"notifications\":[{\"fields\":[\"arrivalDate\"]}]}";
+
+        String got = pair(server, "{\"arrivalDate\":\"\"}", "");
+
+        Assert.assertTrue(got.contains("arrivalDate=\"\""), got);
+        // the note follows the closing quote
+        Assert.assertTrue(got.indexOf("<--") > got.lastIndexOf('"'), got);
+    }
+
+    @Test(groups = {"unit", "framework"})
+    @Story("a rejected ARRAY reports its extent, not its opening bracket")
+    @Description("""
+            A real digest said  inventoryPeriods="["  about a field the
+            server had rejected: the scalar reader returned the one
+            character it stopped on. The reader needs to know whether we
+            sent nothing, one entry, or ten.
+            """)
+    public void aRejectedArrayIsSummarisedNotTruncatedToABracket()
+            throws Exception {
+        String server = "{\"notifications\":[{\"fields\":[\"inventoryPeriods\"]}]}";
+        String request = "{\"inventoryPeriods\":[{\"startDate\":\"2026-10-29\","
+                + "\"inventoryCount\":10}],\"other\":1}";
+
+        String got = pair(server, request, "");
+
+        Assert.assertFalse(got.contains("inventoryPeriods=\"[\""), got);
+        Assert.assertTrue(got.contains("startDate") || got.contains("..."), got);
+    }
+
+    @Test(groups = {"unit", "framework"})
+    @Story("an empty array says so, rather than looking like a missing field")
+    @Description("""
+            "present and empty" and "absent" are different diagnoses, and
+            the server's complaint rarely tells them apart.
+            """)
+    public void anEmptyArrayIsNamedAsEmpty() throws Exception {
+        String server = "{\"notifications\":[{\"fields\":[\"roomTypes\"]}]}";
+
+        String got = pair(server, "{\"roomTypes\":[]}", "");
+
+        Assert.assertTrue(got.contains("empty array"), got);
+        Assert.assertFalse(got.contains("not in the request"), got);
+    }
+
+    @Test(groups = {"unit", "framework"})
+    @Story("a nested array does not end the span early")
+    public void aNestedArrayIsScannedBalanced() throws Exception {
+        String server = "{\"notifications\":[{\"fields\":[\"a\"]}]}";
+
+        String got = pair(server, "{\"a\":[[1,2],[3]],\"b\":9}", "");
+
+        Assert.assertFalse(got.contains("unterminated"), got);
+        Assert.assertFalse(got.contains("a=\"[\""), got);
+    }
+
+    @Test(groups = {"unit", "framework"})
     @Story("a real value carries no explanation after it")
     @Description("""
             The annotations have to stay rare to stay meaningful; a date

@@ -1,6 +1,6 @@
 package com.hi.api.support;
 
-// ra_converter-framework-rev: 26
+// ra_converter-framework-rev: 27
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -631,43 +631,86 @@ public final class ImportedScenario {
     public static Map<String, String> mergedRow(Map<String, String> row,
                                                 Map<String, String> ctx) {
         Map<String, String> merged = new HashMap<>();
+        // Keys whose value came from configuration. A DERIVED alias must
+        // not overwrite one of these; an EXACT key still may.
+        //
+        // `${#Project#username}` is a ReadyAPI project property -- the API
+        // credential -- and translates to `#username#`. The CSV column
+        // `Properties.Username` derives a bare `username` alias through the
+        // snake-case rule below, and because the row layer is applied after
+        // config with put(), that alias replaced the configured credential
+        // with a per-test enrollment name. The token request then carried a
+        // test username and the server answered `invalid request`.
+        //
+        // Measured before changing it: across both imported suites exactly
+        // two CSV columns derive an alias that shadows a config key, both
+        // spellings of Properties.Username shadowing `username`. Nothing
+        // else moves.
+        java.util.Set<String> fromConfig = new java.util.HashSet<>();
         for (String k : suiteConfigKeys()) {
             String v = Config.get(k, null);
             if (v != null) {
-                putWithAliases(merged, k, v);
+                putWithAliases(merged, k, v, null);
+                fromConfig.add(k);
+                fromConfig.add(k.replace('.', '_').replace('-', '_'));
+                int d = k.lastIndexOf('.');
+                String leaf = (d >= 0) ? k.substring(d + 1) : k;
+                String sn = camelToSnakeLower(leaf);
+                if (sn != null) {
+                    fromConfig.add(sn);
+                }
+                fromConfig.add(leaf);
             }
         }
         if (row != null) {
             for (Map.Entry<String, String> e : row.entrySet()) {
-                putWithAliases(merged, e.getKey(), e.getValue());
+                putWithAliases(merged, e.getKey(), e.getValue(), fromConfig);
             }
         }
         if (ctx != null) {
             for (Map.Entry<String, String> e : ctx.entrySet()) {
-                putWithAliases(merged, e.getKey(), e.getValue());
+                putWithAliases(merged, e.getKey(), e.getValue(), fromConfig);
             }
         }
         return merged;
     }
 
-    private static void putWithAliases(Map<String, String> merged, String key, String value) {
+    private static void putWithAliases(Map<String, String> merged, String key,
+                                       String value) {
+        putWithAliases(merged, key, value, null);
+    }
+
+    /**
+     * @param configOwned keys whose value came from configuration. A DERIVED
+     *                    alias never overwrites one of these; the EXACT key
+     *                    always may, because an exact same-named column or
+     *                    ctx entry is a deliberate override and a derived
+     *                    spelling is a guess. Null means "nothing is
+     *                    protected", which is how the config layer itself
+     *                    and every direct caller behave.
+     */
+    private static void putWithAliases(Map<String, String> merged, String key,
+                                       String value,
+                                       java.util.Set<String> configOwned) {
         if (key == null) {
             return;
         }
         merged.put(key, value);
         String underscoreForm = key.replace('.', '_').replace('-', '_');
-        if (!underscoreForm.equals(key)) {
+        if (!underscoreForm.equals(key) && !isConfigOwned(configOwned, underscoreForm)) {
             merged.put(underscoreForm, value);
         }
         String dotForm = key.replace('-', '_');
-        if (!dotForm.equals(key) && !dotForm.equals(underscoreForm)) {
+        if (!dotForm.equals(key) && !dotForm.equals(underscoreForm)
+                && !isConfigOwned(configOwned, dotForm)) {
             merged.put(dotForm, value);
         }
         int lastDot = key.lastIndexOf('.');
         String field = (lastDot >= 0) ? key.substring(lastDot + 1) : key;
         String snake = camelToSnakeLower(field);
         if (snake != null && !snake.equals(field)
-                && !snake.equals(key) && !snake.equals(underscoreForm)) {
+                && !snake.equals(key) && !snake.equals(underscoreForm)
+                && !isConfigOwned(configOwned, snake)) {
             merged.put(snake, value);
         }
         // A REST step's PARAMETERS are properties of that step, so
@@ -763,6 +806,11 @@ public final class ImportedScenario {
         if (existing == null || existing.isEmpty()) {
             ctx.put(key, value);
         }
+    }
+
+    private static boolean isConfigOwned(java.util.Set<String> configOwned,
+                                        String key) {
+        return configOwned != null && configOwned.contains(key);
     }
 
     private static String camelToSnakeLower(String s) {

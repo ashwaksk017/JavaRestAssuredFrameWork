@@ -162,8 +162,16 @@ public class FailureDigestListener implements ITestListener {
                 out.append("   ");
             }
             out.append(n).append('=');
-            out.append(v == null ? "<not in the request>"
-                                 : QUOTE + fieldValue(n, v) + QUOTE);
+            if (v == null) {
+                out.append("<not in the request>");
+            } else {
+                // The note goes AFTER the closing quote. Inside it, the
+                // first real digest to carry one read
+                //   arrivalDate="   <-- empty: resolved to nothing"
+                // which reads as though the sentence were the value.
+                out.append(QUOTE).append(fieldValue(n, v)).append(QUOTE);
+                out.append(whyNotAValue(v));
+            }
         }
         return out.toString();
     }
@@ -196,7 +204,7 @@ public class FailureDigestListener implements ITestListener {
         if (v.length() > 80) {
             v = v.substring(0, 80) + " ...(capped)";
         }
-        return v + whyNotAValue(v);
+        return v;
     }
 
     /**
@@ -259,12 +267,63 @@ public class FailureDigestListener implements ITestListener {
             int end = json.indexOf(QUOTE_CHAR, i + 1);
             return end < 0 ? null : json.substring(i + 1, end);
         }
+        char open = json.charAt(i);
+        if (open == '[' || open == '{') {
+            // An ARRAY or OBJECT. Scanning for the next delimiter returns
+            // the single character "[", which is how a real digest came to
+            // say  inventoryPeriods="["  about a field the server had
+            // rejected. What the reader needs is the extent: whether we
+            // sent nothing, one entry, or ten.
+            return spanOf(json, i, open);
+        }
         int end = i;
         while (end < json.length()
                 && ",}] ".indexOf(json.charAt(end)) < 0) {
             end++;
         }
         return json.substring(i, end);
+    }
+
+    /**
+     * The bracketed value starting at {@code i}, summarised.
+     *
+     * <p>Balanced scan, ignoring brackets inside strings, so a nested
+     * array does not end the span early. An empty one says so plainly --
+     * "the field was present and empty" is a different diagnosis from
+     * "the field was absent", and the server's complaint rarely
+     * distinguishes them.</p>
+     */
+    private static String spanOf(String json, int i, char open) {
+        char close = (open == '[') ? ']' : '}';
+        int depth = 0;
+        boolean inStr = false;
+        for (int k = i; k < json.length(); k++) {
+            char c = json.charAt(k);
+            if (inStr) {
+                if (c == QUOTE_CHAR) {
+                    inStr = false;
+                }
+                continue;
+            }
+            if (c == QUOTE_CHAR) {
+                inStr = true;
+            } else if (c == open) {
+                depth++;
+            } else if (c == close) {
+                depth--;
+                if (depth == 0) {
+                    String body = json.substring(i, k + 1);
+                    String inner = body.substring(1, body.length() - 1).trim();
+                    if (inner.isEmpty()) {
+                        return open == '[' ? "[] (empty array)"
+                                           : "{} (empty object)";
+                    }
+                    return body.length() <= 80 ? body
+                            : body.substring(0, 80) + " ...(capped)";
+                }
+            }
+        }
+        return String.valueOf(open) + "...(unterminated)";
     }
 
     /** Value of query parameter {@code name} in {@code url}, or null. */
