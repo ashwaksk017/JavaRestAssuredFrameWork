@@ -31,7 +31,7 @@ T = ra_converter._translate_workbook_cell
 
 def test_a_plain_value_is_returned_untouched():
     """Ordinary data must not round-trip through a translator."""
-    for plain in ("2026-10-31", "HNLES", "12", "", "  ", "SMRF",
+    for plain in ("2026-10-31", "AAAAA", "12", "", "  ", "SMRF",
                   "a description, with a comma", "1.5", "true"):
         assert T(plain) == plain
 
@@ -125,7 +125,7 @@ def test_end_to_end_a_sheet_of_mixed_cells(tmp_path):
         ["propCode", "arrivalDate", "peakRooms"],
         ["${generatedDatesAndProps#hcrs}",
          "${generatedDatesAndProps#arrivalDate}", 12],
-        ["NYCNH", "2026-10-31", 11],
+        ["BBBBB", "2026-10-31", 11],
     ])
     import os
     ds = ra_converter.DataSourceStep(
@@ -141,7 +141,7 @@ def test_end_to_end_a_sheet_of_mixed_cells(tmp_path):
     assert rows[0]["arrivalDate"] == "#generatedDatesAndProps_arrivalDate#"
     assert rows[0]["peakRooms"] == "12"          # literal, untouched
     # the row of plain values is not disturbed at all
-    assert rows[1] == {"propCode": "NYCNH", "arrivalDate": "2026-10-31",
+    assert rows[1] == {"propCode": "BBBBB", "arrivalDate": "2026-10-31",
                        "peakRooms": "11"}
 
 
@@ -170,7 +170,7 @@ def test_an_untranslatable_cell_is_recorded_for_the_convert_report(tmp_path):
 def test_a_sheet_of_literals_records_nothing(tmp_path):
     import os
     ra_converter._WORKBOOK_CELLS_UNTRANSLATED.clear()
-    path = _workbook(tmp_path, [["propCode"], ["NYCNH"], ["HNLES"]])
+    path = _workbook(tmp_path, [["propCode"], ["BBBBB"], ["AAAAA"]])
     ds = ra_converter.DataSourceStep(
         step_name="DataSource", ds_type="Excel", columns=["propCode"],
         file_path=os.path.basename(path), worksheet="sheet1",

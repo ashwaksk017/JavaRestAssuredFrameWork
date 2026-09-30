@@ -63,9 +63,9 @@ public class RestParamAliasTest {
     @Story("a path parameter resolves the same way")
     public void aPathParamIsReadableAsAStepProperty() {
         Map<String, String> merged = ImportedScenario.mergedRow(
-                row("path_GET_Shop_propCode", "HNLES"), null);
+                row("path_GET_Shop_propCode", "AAAAA"), null);
 
-        Assert.assertEquals(merged.get("GET_Shop_propCode"), "HNLES");
+        Assert.assertEquals(merged.get("GET_Shop_propCode"), "AAAAA");
     }
 
     @Test(groups = {"unit", "framework"})
@@ -111,7 +111,7 @@ public class RestParamAliasTest {
     public void onlyTheTwoRestPrefixesAreBridged() {
         Map<String, String> merged = ImportedScenario.mergedRow(
                 row("expected_status_code", "200",
-                    "DataSource_propCode", "HNLES"), null);
+                    "DataSource_propCode", "AAAAA"), null);
 
         Assert.assertFalse(merged.containsKey("status_code"),
                 merged.toString());

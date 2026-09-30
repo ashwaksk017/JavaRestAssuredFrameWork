@@ -65,11 +65,11 @@ public class NearMissKeyReportTest {
     public void theSpellingGapIsNamed() throws Exception {
         Assert.assertTrue(
                 report(Arrays.asList("#DataSource_propCode#"),
-                        map("DataSource.propCode", "HNLES"))
+                        map("DataSource.propCode", "AAAAA"))
                         .contains("DataSource.propCode"));
         Assert.assertTrue(
                 report(Arrays.asList("#DataSource.propCode#"),
-                        map("DataSource_propCode", "HNLES"))
+                        map("DataSource_propCode", "AAAAA"))
                         .contains("DataSource_propCode"));
     }
 
