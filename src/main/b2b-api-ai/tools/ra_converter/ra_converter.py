@@ -194,6 +194,12 @@ class TestCase:
     # Why ds_rows is empty, for the audit. "" when rows were imported or
     # when the case never had a DataSource to import from.
     ds_gap: str = ""
+    # First row of every DataSource the loop does NOT drive, as
+    # {step_name: {column: value}}. ReadyAPI runs such a step once and its
+    # properties then hold that single row, so these are CONSTANTS for the
+    # case rather than iterations -- reading them as rows would multiply
+    # the suite by the lookup sheet's length.
+    ds_lookup: dict = field(default_factory=dict)
     steps: list = field(default_factory=list)  # ordered list of RestStep / GroovyStep / PropertiesStep / DataSourceStep / TransferStep
     # Test-management annotations mined from `<con:testCase>` attributes.
     # Populated by parse_test_suites when present in the source XML.
@@ -1058,6 +1064,19 @@ def _import_datasource_rows(cases: list, xml_path: str, extra_dir: str | None) -
                 case.ds_gap = ("loop names DataSource `%s`, which this case "
                                "does not have" % (case.ds_loops[0].get("source") or "?"))
             continue
+        # Every OTHER DataSource in the case is a lookup: ReadyAPI runs it
+        # once, not per iteration, and its properties then hold row 1. Read
+        # that row so `${{Step#col}}` has a producer. Ignoring them is why
+        # `${{PropertiesAndDates#arrDateValue}}` resolved to nothing and a
+        # shop query went out with `arrivalDate=` empty.
+        for _name, _src in sources.items():
+            if _src is driver:
+                continue
+            _rows, _gap = _read_datasource_rows(_src, dirs)
+            if _rows:
+                case.ds_lookup[_name] = dict(_rows[0])
+                _src.imported_rows = len(_rows)
+
         rows, gap = _read_datasource_rows(driver, dirs)
         case.ds_rows = rows
         case.ds_gap = gap
@@ -15587,6 +15606,53 @@ public final class {support_name} {{
         "zip":          "<<zip>>",
     }
 
+    def _fill_lookup_datasource_cells(self, cols: list, rows: list,
+                                      cluster: list) -> list:
+        """Put a lookup DataSource's single row into the columns that read it.
+
+        A case can hold a DataSource no loop drives -- a shared sheet of
+        properties and dates. ReadyAPI runs it once and `${{Step#col}}`
+        then reads that row. The converter translates the reference to
+        `#Step_col#` and emits a CSV column for it, but nothing ever
+        filled the column, so the value reached the wire empty.
+
+        Runs BEFORE the driver expansion on purpose: that pass copies each
+        row once per workbook row and only rewrites the driver's own
+        cells, so a constant written here rides along into every copy.
+
+        Only ever fills an EMPTY cell. Anything already carrying a value
+        was put there by a more specific rule and outranks a lookup.
+        """
+        if len(rows) != len(cluster):
+            return rows
+        if not any(getattr(c, "ds_lookup", None) for c in cluster):
+            return rows
+        import csv as _csv
+        idx_by_col = {}
+        for i, name in enumerate(cols):
+            idx_by_col[name.strip().strip('"')] = i
+        out = []
+        for row_text, case in zip(rows, cluster):
+            lookup = getattr(case, "ds_lookup", None)
+            if not lookup:
+                out.append(row_text)
+                continue
+            cells = next(_csv.reader([row_text]))
+            touched = False
+            for step_name, values in lookup.items():
+                step_id = re.sub(r"[^A-Za-z0-9_]", "_", step_name.strip())
+                for col, val in values.items():
+                    if not val:
+                        continue
+                    key = ("%s_%s" % (step_id, col)).replace(".", "_").replace("-", "_")
+                    i = idx_by_col.get(key)
+                    if i is None or i >= len(cells) or cells[i]:
+                        continue
+                    cells[i] = val
+                    touched = True
+            out.append(",".join(_csv_quote(c) for c in cells) if touched else row_text)
+        return out
+
     def _expand_rows_for_datasource(self, cols: list, rows: list,
                                     cluster: list) -> list:
         """One row per case -> one per imported workbook row.
@@ -16074,6 +16140,7 @@ public final class {support_name} {{
         # through the assembly above: that code composes a row from six
         # groups of cells, and the only thing that varies per workbook row
         # is the handful of DataSource_ columns.
+        rows = self._fill_lookup_datasource_cells(cols, rows, cluster)
         rows = self._expand_rows_for_datasource(cols, rows, cluster)
 
         content = header_row + "\n" + "\n".join(rows) + "\n"
