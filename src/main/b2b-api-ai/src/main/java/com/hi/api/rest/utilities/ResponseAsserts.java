@@ -512,6 +512,131 @@ public final class ResponseAsserts {
      * that is ReadyAPI Existence Match {@code content=false} and maps to
      * {@link #jsonAbsent}.
      */
+    /**
+     * Groovy truthiness on a JSON path: present, and not empty.
+     *
+     * <p>`assert json.groupId : "groupId is required"` is the commonest
+     * shape in these projects' script assertions, and it does NOT mean
+     * "not null" -- Groovy treats "" and [] as false too. jsonExists
+     * asserts non-null only, so translating truthiness to it would pass
+     * on an empty string, which is exactly the value these assertions
+     * exist to catch.</p>
+     */
+    public static void jsonTruthy(SoftAssert softAssert, Response res,
+                                  String jsonPath, String message) {
+        if (softAssert == null || res == null) {
+            return;
+        }
+        Object v = RestUtilities.safeJsonGet(res, jsonPath);
+        boolean truthy = v != null;
+        if (truthy && v instanceof CharSequence) {
+            truthy = ((CharSequence) v).toString().trim().length() > 0;
+        }
+        if (truthy && v instanceof java.util.Collection) {
+            truthy = !((java.util.Collection<?>) v).isEmpty();
+        }
+        if (truthy && v instanceof java.util.Map) {
+            truthy = !((java.util.Map<?, ?>) v).isEmpty();
+        }
+        softAssert.assertTrue(truthy,
+                (message == null || message.isEmpty())
+                        ? "JsonPath truthy: " + jsonPath : message);
+    }
+
+    /** The response body is present and not blank. */
+    public static void bodyNotEmpty(SoftAssert softAssert, Response res,
+                                    String message) {
+        if (softAssert == null || res == null) {
+            return;
+        }
+        String body = res.getBody() == null ? null : res.getBody().asString();
+        softAssert.assertTrue(body != null && !body.trim().isEmpty(),
+                (message == null || message.isEmpty())
+                        ? "response body is not empty" : message);
+    }
+
+    /**
+     * An ISO-8601 instant on the response is no further than
+     * {@code maxMinutes} from now.
+     *
+     * <p>The `CacheExpiryTimeLimit45min` shape: parse the field as an
+     * Instant and assert the gap to now is within a limit. Reported as a
+     * miss rather than an error when the field is absent or unparseable,
+     * because "the timestamp is missing" and "the timestamp is too far
+     * out" are different findings and the message should say which.</p>
+     */
+    public static void instantWithinMinutes(SoftAssert softAssert, Response res,
+                                            String jsonPath, long maxMinutes,
+                                            String message) {
+        if (softAssert == null || res == null) {
+            return;
+        }
+        Object raw = RestUtilities.safeJsonGet(res, jsonPath);
+        String text = raw == null ? "" : String.valueOf(raw).trim();
+        if (text.isEmpty()) {
+            softAssert.fail(jsonPath + " is absent, so it cannot be within "
+                    + maxMinutes + " minutes of now");
+            return;
+        }
+        try {
+            java.time.Instant at = java.time.Instant.parse(text);
+            long mins = java.time.Duration.between(java.time.Instant.now(), at)
+                    .toMinutes();
+            softAssert.assertTrue(mins <= maxMinutes,
+                    (message == null || message.isEmpty())
+                            ? jsonPath + "=" + text + " is " + mins
+                              + " minutes out, limit " + maxMinutes
+                            : message);
+        } catch (java.time.format.DateTimeParseException e) {
+            softAssert.fail(jsonPath + "=" + text
+                    + " is not an ISO-8601 instant");
+        }
+    }
+
+    /**
+     * A JSON value starts with the prefix this ENVIRONMENT requires.
+     *
+     * <p>The ReadyAPI original reads
+     * {@code context.testCase.testSuite.project.activeEnvironment.name}
+     * and branches: Corporate_500 wants a ratePlanCode starting "5",
+     * Partner_600 "6", Partner_700 "7". The equivalent here is
+     * {@code com.hi.api.config.Config.env()}, matched the same way the script does -- by
+     * CONTAINS, not equals, because the ReadyAPI names carry a prefix.</p>
+     *
+     * <p>An environment none of the branches name is not a failure: the
+     * Groovy falls through every `if` and asserts nothing, so this does
+     * the same rather than inventing a rule the original never had.</p>
+     */
+    public static void prefixForEnvironment(SoftAssert softAssert, Response res,
+                                            String jsonPath,
+                                            Map<String, String> prefixByEnv,
+                                            String message) {
+        if (softAssert == null || res == null || prefixByEnv == null) {
+            return;
+        }
+        String env = com.hi.api.config.Config.env();
+        if (env == null) {
+            return;
+        }
+        String want = null;
+        for (Map.Entry<String, String> e : prefixByEnv.entrySet()) {
+            if (e.getKey() != null && env.contains(e.getKey())) {
+                want = e.getValue();
+                break;
+            }
+        }
+        if (want == null) {
+            return;                 // no branch matched, as in the original
+        }
+        Object raw = RestUtilities.safeJsonGet(res, jsonPath);
+        String got = raw == null ? "" : String.valueOf(raw).trim();
+        softAssert.assertTrue(got.startsWith(want),
+                (message == null || message.isEmpty())
+                        ? "expected " + jsonPath + " to start with " + want
+                          + " for " + env + ". Actual value: " + got
+                        : message);
+    }
+
     public static void jsonExists(SoftAssert softAssert, Response res,
                                   Map<String, String> row, String step,
                                   String jsonPath) {

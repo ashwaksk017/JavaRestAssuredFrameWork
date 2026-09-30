@@ -6197,7 +6197,12 @@ def _translate_gsa_json_asserts(script: str, response_var: str,
 
     def _resolve_gpath(expr: str) -> Optional[str]:
         expr = (expr or "").strip()
-        expr = re.sub(r'\.toString\(\)\s*$', "", expr)
+        # Groovy safe-navigation and the usual text tidy-ups are not part
+        # of the PATH. `json.ratePlanCode?.toString()?.trim()` names the
+        # field ratePlanCode; keeping the chain produced a JsonPath of
+        # `ratePlanCode.toString().trim()`, which resolves to nothing.
+        expr = re.sub(r'\?\.', '.', expr)
+        expr = re.sub(r'(?:\.(?:toString|trim|toUpperCase|toLowerCase)\(\))+\s*$', "", expr)
         expr = expr.replace("?.", ".")
         for jv in sorted(json_vars, key=len, reverse=True):
             if expr == jv:
@@ -6278,6 +6283,39 @@ def _translate_gsa_json_asserts(script: str, response_var: str,
         lines.append(
             f'ResponseAsserts.jsonAbsent(softAssert, {response_var}, '
             f'"{_jlit(gp)}");')
+
+    # assert <jsonpath> : "msg"   -- Groovy TRUTHINESS, the commonest form
+    #
+    # Not the same as `!= null`: Groovy counts "" and [] as false, and an
+    # empty string is precisely what `assert json.groupId` is written to
+    # catch. Runs BEFORE the != null rule so that keeps its weaker meaning.
+    for m in re.finditer(
+            r'assert\s+([A-Za-z_][A-Za-z_0-9\.\?\[\]]*)\s*'
+            r'(?::\s*["\'](?P<msg>[^"\']*)["\'])?\s*(?:$|\n)',
+            script, re.M):
+        expr = m.group(1)
+        # a bare local that is not a json path is not ours
+        if expr.endswith((".size()", ")", "]")) or "(" in expr:
+            continue
+        g = _resolve_gpath(expr.replace("?", ""))
+        if g is None:
+            continue
+        msg = _jlit(m.group("msg") or ("%s is required" % g))
+        lines.append(
+            f'com.hi.api.rest.utilities.ResponseAsserts.jsonTruthy('
+            f'softAssert, {response_var}, "{_jlit(g)}", "{msg}");')
+
+    # assert response?.trim() : "..."  -- the body-not-empty guard almost
+    # every one of these scripts opens with. Unrecognised, it sank the
+    # whole script including the asserts that WERE understood.
+    for m in re.finditer(
+            r'assert\s+(?P<v>[A-Za-z_][A-Za-z_0-9]*)\s*\?\?*\.\s*trim\(\)\s*'
+            r'(?::\s*["\'](?P<msg>[^"\']*)["\'])?',
+            script):
+        msg = _jlit(m.group("msg") or "response is empty")
+        lines.append(
+            f'com.hi.api.rest.utilities.ResponseAsserts.bodyNotEmpty('
+            f'softAssert, {response_var}, "{msg}");')
 
     # assert json.field != null
     for m in re.finditer(
@@ -9788,6 +9826,82 @@ public interface ImportedRestClient {{
         # Sanitize before comment-sensitive patterns so a commented-out
         # `// assert response.status == 500` doesn't fire a real assert.
         sanitized = self._strip_groovy_comments_and_strings(script)
+
+        # Shape: an ISO instant on the response is within N minutes of now.
+        #
+        #   Instant expiry = Instant.parse(parsed.cacheExpiryTime)
+        #   long mins = Duration.between(now, expiry).toMinutes()
+        #   assert(mins <= 45)
+        #
+        # 22 of the goal suite's stubbed assertions are this one shape.
+        m_win = re.search(
+            r'assert\s*\(?\s*[A-Za-z_][A-Za-z_0-9]*\s*<=\s*(?P<mins>\d+)\s*\)?',
+            sanitized)
+        if m_win and "toMinutes(" in script and "Instant.parse" in script:
+            m_fld = re.search(
+                r'Instant\.parse\(\s*([A-Za-z_][A-Za-z_0-9]*)\s*\)', script)
+            field = None
+            if m_fld:
+                # the local that Instant.parse reads, bound earlier from a
+                # response path: `def expiryTimeStr = parsed.cacheExpiryTime`
+                m_bind = re.search(
+                    r'(?:def\s+)?' + re.escape(m_fld.group(1))
+                    + r'\s*=\s*[A-Za-z_][A-Za-z_0-9]*\.([A-Za-z_][A-Za-z_0-9\.]*)',
+                    script)
+                if m_bind:
+                    field = m_bind.group(1)
+            if not field:
+                m_direct = re.search(
+                    r'Instant\.parse\(\s*[A-Za-z_][A-Za-z_0-9]*'
+                    r'\.([A-Za-z_][A-Za-z_0-9\.]*)\s*\)', script)
+                field = m_direct.group(1) if m_direct else None
+            if field:
+                return ([
+                    f'// [GroovyScriptAssertion] "{_jlit(a.name)}" -- '
+                    f'{field} within {m_win.group("mins")} minutes of now',
+                    f'com.hi.api.rest.utilities.ResponseAsserts'
+                    f'.instantWithinMinutes(softAssert, {response_var}, '
+                    f'"{_jlit(field)}", {m_win.group("mins")}L, "");',
+                ], "FULL")
+
+        # Shape: the prefix a field must carry depends on the ACTIVE
+        # ENVIRONMENT.
+        #
+        #   if (envName.contains("Corporate_500"))
+        #       assert ratePlanCode.startsWith("5")
+        #
+        # The ReadyAPI original reads activeEnvironment.name; Config.env()
+        # is the equivalent, matched by CONTAINS exactly as the script does.
+        if "activeEnvironment" in script and ".startsWith(" in script:
+            pairs = re.findall(
+                r'contains\(\s*["\']([^"\']+)["\']\s*\)[\s\S]{0,200}?'
+                r'startsWith\(\s*["\']([^"\']+)["\']\s*\)',
+                script)
+            m_fld = re.search(
+                r'(?:def\s+)?([A-Za-z_][A-Za-z_0-9]*)\s*=\s*'
+                r'[A-Za-z_][A-Za-z_0-9]*\.([A-Za-z_][A-Za-z_0-9]*)\s*\??\.'
+                r'\s*toString\(\)', script)
+            field = m_fld.group(2) if m_fld else None
+            if not field:
+                m2 = re.search(r'startsWith[\s\S]{0,4}?', script)
+                m3 = re.search(
+                    r'assert\s+([A-Za-z_][A-Za-z_0-9]*)\.startsWith', script)
+                if m3:
+                    m4 = re.search(
+                        r'(?:def\s+)?' + re.escape(m3.group(1))
+                        + r'\s*=\s*[A-Za-z_][A-Za-z_0-9]*'
+                          r'\.([A-Za-z_][A-Za-z_0-9]*)', script)
+                    field = m4.group(1) if m4 else None
+            if pairs and field:
+                entries = ", ".join(
+                    '"%s", "%s"' % (_jlit(k), _jlit(v)) for k, v in pairs)
+                return ([
+                    f'// [GroovyScriptAssertion] "{_jlit(a.name)}" -- '
+                    f'{field} prefix per environment',
+                    f'com.hi.api.rest.utilities.ResponseAsserts'
+                    f'.prefixForEnvironment(softAssert, {response_var}, '
+                    f'"{_jlit(field)}", java.util.Map.of({entries}), "");',
+                ], "FULL")
 
         gsa_lines = _translate_gsa_json_asserts(
             script, response_var, vsid, step_name)
