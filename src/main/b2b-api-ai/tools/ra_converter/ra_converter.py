@@ -4687,6 +4687,31 @@ def _skip_salesforce_oauth_csv_query(step, param: str) -> bool:
     return (param or "").lower() in ("grant_type", "assertion")
 
 
+_JDBC_FROM_RX = re.compile(
+    r"\bFROM\s+(?:[A-Za-z0-9_]+\.)?([A-Za-z0-9_]+)", re.IGNORECASE)
+
+
+def _jdbc_result_table(query: str) -> str:
+    """UPPERCASE unqualified table a JDBC result's nodes are named after.
+
+    ReadyAPI renders a JDBC result as XML whose leaf per column is
+    `<TABLE>.<COLUMN>`, both uppercased and the table unqualified -- so
+    `From goal.goalrateplans` is read back as `GOALRATEPLANS.SRP_CODE`,
+    and `FROM segment.account_member_internal_security` as
+    `ACCOUNT_MEMBER_INTERNAL_SECURITY.EMAIL_OTP`. Verified against both
+    imported suites; those are the two spellings that have to work.
+
+    Returns "" when the query has no readable FROM -- one bundled step
+    has an empty query, and a join has several tables and no single
+    right answer. The caller still publishes the bare column name, so a
+    miss here costs an alias, not the value.
+    """
+    if not query:
+        return ""
+    m = _JDBC_FROM_RX.search(query)
+    return m.group(1).upper() if m else ""
+
+
 def _rest_param_csv_col(kind: str, step_name: str, param: str) -> str:
     return (f"{kind}_{sanitize_identifier(step_name)}_"
             f"{sanitize_identifier(param)}")
@@ -7970,6 +7995,18 @@ public interface ImportedRestClient {{
                 lines.append(
                     f'            LOG.info(" .. jdbc rows returned: {{}}", '
                     f'__jdbcRows_{sid} == null ? 0 : __jdbcRows_{sid}.size());')
+                # Publish row 0 so `${STEP#ResponseAsXml#//...TABLE.COL}`
+                # -- translated to `#STEP_Response_TABLE_COL#` -- has a
+                # producer. Without this the query ran, the row count was
+                # logged, and the columns were dropped, so the body went
+                # out with the literal `null` and the server complained
+                # about a field whose value had been fetched and thrown
+                # away one line earlier.
+                _jdbc_table = _jdbc_result_table(step.query)
+                lines.append(
+                    f'            com.hi.api.support.ImportedScenario'
+                    f'.publishJdbcRow(ctx, "{_jlit(sid)}", '
+                    f'"{_jlit(_jdbc_table)}", __jdbcRows_{sid});')
             else:
                 lines.append(
                     f'            Db.execute(__jdbcSql_{sid});')

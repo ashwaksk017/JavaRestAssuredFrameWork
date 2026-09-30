@@ -1,6 +1,6 @@
 package com.hi.api.support;
 
-// ra_converter-framework-rev: 25
+// ra_converter-framework-rev: 26
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -697,6 +697,71 @@ public final class ImportedScenario {
             if (key.startsWith(prefix) && key.length() > prefix.length()) {
                 merged.putIfAbsent(key.substring(prefix.length()), value);
             }
+        }
+    }
+
+    /**
+     * Make a JDBC step's result columns readable the way ReadyAPI reads
+     * them.
+     *
+     * <p>{@code ${STEP#ResponseAsXml#//Results[1]/ResultSet[1]/Row[1]/TABLE.COLUMN[1]}}
+     * is how these projects pull a value out of a query. The converter
+     * translates that to {@code #STEP_Response_TABLE_COLUMN#} correctly;
+     * what was missing is the other end. The emitted step ran the query,
+     * logged the row count and dropped the rows, so the placeholder had
+     * no producer and the request body carried the literal {@code null} --
+     * a value fetched and thrown away one line earlier.</p>
+     *
+     * <p>Publishes row 0 under both {@code STEP_Response_TABLE_COLUMN}
+     * and {@code STEP_Response_COLUMN}, uppercased, because ReadyAPI
+     * names the node after the table and a reader may reasonably write
+     * either.</p>
+     *
+     * <p><b>Strictly additive.</b> It writes a key only when ctx has no
+     * non-empty value for it, so nothing that resolves today resolves
+     * differently; the only behaviour that changes is a placeholder that
+     * was becoming {@code null}. It also never throws: a reporting or
+     * plumbing aid must not be the reason a suite fails, and a driver
+     * that returns an odd column label should cost one alias, not a run.
+     * </p>
+     */
+    public static void publishJdbcRow(Map<String, String> ctx, String step,
+                                      String table,
+                                      java.util.List<java.util.Map<String, Object>> rows) {
+        if (ctx == null || step == null || rows == null || rows.isEmpty()) {
+            return;
+        }
+        try {
+            java.util.Map<String, Object> first = rows.get(0);
+            if (first == null) {
+                return;
+            }
+            for (Map.Entry<String, Object> e : first.entrySet()) {
+                if (e.getKey() == null || e.getValue() == null) {
+                    continue;
+                }
+                String col = e.getKey().toUpperCase(Locale.ROOT);
+                String val = String.valueOf(e.getValue());
+                if (val.isEmpty()) {
+                    continue;
+                }
+                putJdbcIfAbsent(ctx, step + "_Response_" + col, val);
+                if (table != null && !table.isEmpty()) {
+                    putJdbcIfAbsent(ctx,
+                            step + "_Response_" + table + "_" + col, val);
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // Never let a value-publishing aid break a run.
+        }
+    }
+
+    /** Write only into a key that holds nothing. */
+    private static void putJdbcIfAbsent(Map<String, String> ctx, String key,
+                                        String value) {
+        String existing = ctx.get(key);
+        if (existing == null || existing.isEmpty()) {
+            ctx.put(key, value);
         }
     }
 

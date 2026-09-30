@@ -99,6 +99,10 @@ def spec_producers(root: str) -> tuple:
     return exact, wild
 
 
+_PUBLISH_JDBC_RX = re.compile(
+    r'publishJdbcRow\(\s*ctx\s*,\s*"([^"]+)"\s*,\s*"([^"]*)"')
+
+
 def collect_producers(root: str) -> tuple:
     """(exact keys, wildcard prefixes) written anywhere in the tree."""
     exact, wild = spec_producers(root)
@@ -106,6 +110,22 @@ def collect_producers(root: str) -> tuple:
     wild = set(wild)
     for path in _walk_java(os.path.join(root, "src/main/java")):
         text = _read(path)
+        # A JDBC step publishes its result columns under
+        # `<step>_Response_<COL>` and `<step>_Response_<TABLE>_<COL>`.
+        # WHICH columns is a property of the result set, not of the
+        # source, so a prefix wildcard is the honest description -- the
+        # same shape seedFromRow gets, and for the same reason.
+        #
+        # Registered here because the resolver and this checker have to
+        # agree: teach one a producer and not the other, and placeholders
+        # that resolve perfectly get reported as broken until somebody
+        # silences them in the baseline. That is how the qry_/path_ bug
+        # stayed hidden.
+        for m in _PUBLISH_JDBC_RX.finditer(text):
+            step, table = m.group(1), m.group(2)
+            wild.add(step + "_Response_")
+            if table:
+                wild.add(step + "_Response_" + table + "_")
         if "putExtracted" not in text and "seedFromRow" not in text:
             continue
         for head in (_METHOD_HEAD_RX, _BOOTSTRAP_HEAD_RX, _SETUP_HEAD_RX):
