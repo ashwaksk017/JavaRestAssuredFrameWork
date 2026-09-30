@@ -10451,6 +10451,31 @@ public final class TestSupport {{
                 && !snake.equals(key) && !snake.equals(underscoreForm)) {{
             merged.put(snake, value);
         }}
+        // A REST step's PARAMETERS are properties of that step, so
+        // `${{GET_Groups_SingleProp#arrivalDate}}` reads the arrivalDate
+        // parameter declared on that request -- ReadyAPI's own rule, not
+        // a guess about what the author meant.
+        //
+        // The converter honours both halves of that and spells them
+        // differently: the value is captured as the CSV column
+        // `qry_<step>_<param>` (or `path_<step>_<param>`), while the
+        // reference translates to `#<step>_<param>#`. Nothing joined the
+        // two, so mapJsonValues found no key, applied its `null`
+        // fallback, and the request went out with
+        //   "startDate": "null"
+        // against a column three cells away holding the date. The server
+        // could only answer that startDate was invalid, which sent the
+        // search to the data and not to the spelling.
+        //
+        // putIfAbsent, never put: this ADDS a reading for a key that
+        // resolved to nothing, and a genuine `<step>_<param>` -- from the
+        // row or from ctx, arriving before or after -- keeps its own
+        // value. Nothing that resolves today starts resolving differently.
+        for (String prefix : new String[] {{"qry_", "path_"}}) {{
+            if (key.startsWith(prefix) && key.length() > prefix.length()) {{
+                merged.putIfAbsent(key.substring(prefix.length()), value);
+            }}
+        }}
     }}
 
     /** camelCase / PascalCase / camelID -> snake_case_lower. Inserts an

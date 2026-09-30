@@ -1,6 +1,6 @@
 package com.hi.api.support;
 
-// ra_converter-framework-rev: 24
+// ra_converter-framework-rev: 25
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -669,6 +669,34 @@ public final class ImportedScenario {
         if (snake != null && !snake.equals(field)
                 && !snake.equals(key) && !snake.equals(underscoreForm)) {
             merged.put(snake, value);
+        }
+        // A REST step's PARAMETERS are properties of that step, so
+        // `${GET_Groups_SingleProp#arrivalDate}` reads the arrivalDate
+        // parameter declared on that request. That is ReadyAPI's own
+        // rule, not a guess about what the author meant.
+        //
+        // The converter honours both halves of it and spells them
+        // differently: the value is captured as the CSV column
+        // `qry_<step>_<param>` (or `path_<step>_<param>`), while the
+        // reference translates to `#<step>_<param>#`. Nothing joined the
+        // two, so mapJsonValues found no key, applied its `null`
+        // fallback, and the request went out with
+        //   "startDate": "null"
+        // against a column three cells away holding the date. The server
+        // could only answer that startDate was invalid, which sends the
+        // search to the data and not to the spelling -- the reason this
+        // survived several runs.
+        //
+        // putIfAbsent, never put: this only ADDS a reading for a key that
+        // resolved to nothing. A genuine `<step>_<param>` -- from the row
+        // or from ctx, arriving before or after -- keeps its own value,
+        // so nothing that resolves today starts resolving differently.
+        // Measured on the two imported suites: 0 placeholders change in
+        // the larger one, 2 in the other, and those 2 are the bug.
+        for (String prefix : new String[] {"qry_", "path_"}) {
+            if (key.startsWith(prefix) && key.length() > prefix.length()) {
+                merged.putIfAbsent(key.substring(prefix.length()), value);
+            }
         }
     }
 

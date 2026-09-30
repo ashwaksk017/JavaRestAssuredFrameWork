@@ -505,8 +505,64 @@ public class RestUtilities {
             LOG.warn("mapJsonValues: {} unresolved placeholder(s) after {} iteration(s), substituted fallback: {}",
                     unresolvedSnapshot.size(), (iter + 1),
                     new java.util.TreeSet<>(unresolvedSnapshot));
+            String nearby = nearMissKeys(unresolvedSnapshot, dataMap);
+            if (!nearby.isEmpty()) {
+                LOG.warn("mapJsonValues: ...but a value IS present under a "
+                        + "near-miss name -- this is a converter naming gap, "
+                        + "not missing data: {}", nearby);
+            }
         }
         return schema;
+    }
+
+    /**
+     * Name the key that holds the value, when the placeholder asked for
+     * another spelling of it.
+     *
+     * <p>Three shipped bugs were this: a REST parameter captured as
+     * {@code qry_<step>_<param>} and referenced as {@code <step>_<param>};
+     * a ctx key written {@code DataSource.propCode} and read
+     * {@code DataSource_propCode}; a workbook cell holding ReadyAPI
+     * syntax nothing translated. Each reached the server as the literal
+     * {@code null}, so the response blamed the field and the search went
+     * to the data -- which was fine, and sitting in the same map under a
+     * neighbouring name.</p>
+     *
+     * <p>The convert-time check catches this statically. This is the same
+     * question asked where the answer is certain: with the real map, on
+     * the machine that actually runs the suite, for values a static scan
+     * cannot see. Log-only; it never changes what is sent.</p>
+     */
+    private static String nearMissKeys(List<String> unresolved,
+                                       Map<String, String> dataMap) {
+        if (unresolved == null || dataMap == null || dataMap.isEmpty()) {
+            return "";
+        }
+        java.util.TreeSet<String> out = new java.util.TreeSet<>();
+        for (String raw : unresolved) {
+            String key = raw;
+            // strip the #..# / %..% / @..@ delimiters
+            if (key.length() > 2) {
+                char c0 = key.charAt(0);
+                if (c0 == '#' || c0 == '%' || c0 == '@') {
+                    key = key.substring(1, key.length() - 1);
+                }
+            }
+            for (String cand : new String[] {
+                    "qry_" + key, "path_" + key, "tpl_" + key,
+                    "Properties." + key, "datasource_" + key,
+                    key.replace('_', '.'), key.replace('.', '_')}) {
+                if (cand.equals(key)) {
+                    continue;
+                }
+                String v = dataMap.get(cand);
+                if (v != null && !v.isEmpty()) {
+                    out.add(key + " <- " + cand);
+                    break;
+                }
+            }
+        }
+        return out.isEmpty() ? "" : out.toString();
     }
 
     public static String mapJsonValues(Reader reader, Map<String, String> dataMap) throws Exception {

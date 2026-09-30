@@ -175,6 +175,17 @@ def satisfiable(raw: str, exact: set, wild: set, cols: set) -> bool:
         tail = k.split(".")[-1]
         if tail in cols or k in cols:
             return True
+        # A REST step's parameters are properties of that step, so
+        # `${STEP#param}` -> `#STEP_param#` resolves from the
+        # `qry_STEP_param` / `path_STEP_param` column that carries the
+        # value. ImportedScenario.putWithAliases publishes that reading;
+        # this mirrors it. The two MUST agree -- a checker that does not
+        # know a resolver spelling reports working placeholders as broken,
+        # and one that invents a spelling the resolver lacks waves real
+        # breakage through.
+        for _pre in ("qry_", "path_"):
+            if _pre + k in cols:
+                return True
     # Last resort, and deliberately NOT wildcard-matched -- see the docstring
     # on properties_fallback_keys.
     for k in properties_fallback_keys(raw):
