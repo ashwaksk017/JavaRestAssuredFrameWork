@@ -10086,12 +10086,109 @@ public interface ImportedRestClient {{
                 f'attachment for the original ReadyAPI script");')
         return (_lines, "TODO")
 
+    # The availability probe writes its winner to a Properties step and
+    # re-runs a REST step to find it. Recognised as a whole because the
+    # pieces mean nothing apart: the lists, the offsets and the threshold
+    # are one search.
+    _PROBE_OFFSETS_RX = re.compile(
+        r'(?:currentDate|now)\s*\.\s*plus(?:Days)?\s*\(\s*(\d+)\s*\)')
+    _PROBE_LIST_RX = re.compile(
+        r'def\s+(?P<name>hcrs|pcrs)\s*=\s*\[(?P<body>[^\]]*)\]')
+    _PROBE_THRESHOLD_RX = re.compile(
+        r'(?:inventory|inventoryCount)\s*>\s*(\d+)')
+
+    def _render_availability_probe(self, step: GroovyStep):
+        """Java for the search, or None when this is not that script.
+
+        Conservative on every part: a missing list, no offsets or no
+        threshold returns None and the ordinary translator runs, so this
+        can only ADD behaviour to a script it fully recognises.
+        """
+        script = step.script or ""
+        if ".run(testRunner" not in script or "setPropertyValue" not in script:
+            return None
+        lists = {m.group("name"): [x.strip().strip('"\'')
+                                   for x in m.group("body").split(",")
+                                   if x.strip()]
+                 for m in self._PROBE_LIST_RX.finditer(script)}
+        if "hcrs" not in lists or not lists["hcrs"]:
+            return None
+        # ONLY the arrival list. The script also builds departureDates as
+        # the day after each arrival, and counting both gave 8 offsets and
+        # a claim of 80 combinations where ReadyAPI tries 40.
+        m_arr = re.search(r'def\s+arrival\w*\s*=\s*\[([^\]]*)\]', script)
+        scope = m_arr.group(1) if m_arr else script
+        offsets = [int(x) for x in self._PROBE_OFFSETS_RX.findall(scope)]
+        if not offsets:
+            return None
+        m_thr = self._PROBE_THRESHOLD_RX.search(script)
+        threshold = m_thr.group(1) if m_thr else "0"
+
+        # ReadyAPI's own first attempt: first property pair, first offset.
+        # Arrival offsets come in the order the script lists them; the
+        # matching departure is the next day, which is how every one of
+        # these scripts pairs them.
+        first_off = offsets[0]
+        hcrs0 = lists["hcrs"][0]
+        pcrs0 = (lists.get("pcrs") or [hcrs0])[0]
+        props = ", ".join('"%s"' % _jlit(x) for x in lists["hcrs"])
+        pprops = ", ".join('"%s"' % _jlit(x) for x in (lists.get("pcrs") or []))
+        offs = ", ".join(str(o) for o in offsets)
+        step_j = _jlit(step.step_name)
+        combos = len(lists["hcrs"]) * len(offsets)
+
+        return [
+            f'// [groovy] {step_j} -- availability search.',
+            f'// ReadyAPI walks {len(lists["hcrs"])} propert(y|ies) x '
+            f'{len(offsets)} date offset(s) = {combos} combination(s), '
+            f're-running the shop call each time, and keeps the first with '
+            f'inventory > {threshold}.',
+            f'// Emitted here: the candidate it would try FIRST, computed '
+            f'now rather than read from a capture-time CSV snapshot. The '
+            f'search itself is NOT run -- see the WARN.',
+            f'java.util.List<String> __probeHcrs_{step_j} = '
+            f'java.util.List.of({props});',
+            f'java.util.List<String> __probePcrs_{step_j} = '
+            f'java.util.List.of({pprops});' if pprops else
+            f'java.util.List<String> __probePcrs_{step_j} = '
+            f'java.util.List.of();',
+            f'java.util.List<Integer> __probeOffsets_{step_j} = '
+            f'java.util.List.of({offs});',
+            f'java.time.LocalDate __probeArr_{step_j} = '
+            f'java.time.LocalDate.now().plusDays({first_off});',
+            f'ImportedScenario.putExtracted(ctx, '
+            f'"generatedDatesAndProps.arrivalDate", '
+            f'__probeArr_{step_j}.toString());',
+            f'ImportedScenario.putExtracted(ctx, '
+            f'"generatedDatesAndProps.departureDate", '
+            f'__probeArr_{step_j}.plusDays(1).toString());',
+            f'ImportedScenario.putExtracted(ctx, '
+            f'"generatedDatesAndProps.hcrs", "{_jlit(hcrs0)}");',
+            f'ImportedScenario.putExtracted(ctx, '
+            f'"generatedDatesAndProps.pcrs", "{_jlit(pcrs0)}");',
+            f'// The candidates, published so the search can be driven '
+            f'later without re-reading the Groovy.',
+            f'ImportedScenario.putExtracted(ctx, "{step_j}.candidateProps", '
+            f'String.join(",", __probeHcrs_{step_j}));',
+            f'ImportedScenario.putExtracted(ctx, "{step_j}.candidateOffsets", '
+            f'"{offs}".replace(" ", ""));',
+            f'LOG.warn("availability search NOT run for `{step_j}`: '
+            f'ReadyAPI tries up to {combos} property/date combination(s) '
+            f'until inventory > {threshold}; this sends only the first '
+            f'({{}} on {{}}). A no-availability answer here may mean the '
+            f'search was needed, not that the data is wrong.", '
+            f'"{_jlit(hcrs0)}", __probeArr_{step_j});',
+        ]
+
     def _render_groovy_translated(self, step: GroovyStep) -> list[str]:
         """Feed the Groovy translator; runnable stub if nothing matches.
         Also logs each block to the audit ledger, including a runtime-skip
         entry when the translator emitted a `throw new SkipException(...)`
         (typically for an untranslated JDBC mutation) so the summary can
         surface silent capacity loss."""
+        probe = self._render_availability_probe(step)
+        if probe:
+            return probe
         from groovy_translator import translate as translate_groovy
         cleanup_fqn = ""
         if getattr(self, "_suite_cleanup_emitted", False):
