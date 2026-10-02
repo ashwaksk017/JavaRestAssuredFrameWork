@@ -43,6 +43,35 @@
             <AppenderRef ref="ConsoleRaw"/>
             <SecretRedactingRewritePolicy/>
         </Rewrite>
+
+        <!-- The full run log as a FILE, so a run is explainable after the
+             fact without anyone having to remember to redirect stdout.
+             target/ because it is build output: mvn clean removes it, and
+             it is already gitignored, which matters because these lines
+             include request payloads.
+
+             append="false" gives one file per run rather than an
+             ever-growing one; the previous run is what a rerun is being
+             compared against, so it is kept as .prev by the strategy
+             below having a single rollover on startup. -->
+        <RollingFile name="FileRaw"
+                     fileName="target/b2b-full-run.log"
+                     filePattern="target/b2b-full-run-%i.log"
+                     append="false">
+            <PatternLayout pattern="%d{HH:mm:ss.SSS} [%t] %-5level %logger{36} - %msg%n"
+                           charset="UTF-8"/>
+            <Policies>
+                <OnStartupTriggeringPolicy/>
+                <SizeBasedTriggeringPolicy size="200 MB"/>
+            </Policies>
+            <DefaultRolloverStrategy max="3"/>
+        </RollingFile>
+        <!-- Same redaction as the console. A file is MORE durable than a
+             console, so bypassing the redactor here would be worse. -->
+        <Rewrite name="File">
+            <AppenderRef ref="FileRaw"/>
+            <SecretRedactingRewritePolicy/>
+        </Rewrite>
     </Appenders>
     <Loggers>
         <!-- Framework code. INFO by default: at DEBUG, ImportedScenario
@@ -73,6 +102,7 @@
         <Logger name="org.apache.hc" level="warn"/>
         <Root level="info">
             <AppenderRef ref="Console"/>
+            <AppenderRef ref="File"/>
         </Root>
     </Loggers>
 </Configuration>

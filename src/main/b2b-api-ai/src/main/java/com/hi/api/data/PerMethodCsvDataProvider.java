@@ -145,6 +145,11 @@ public final class PerMethodCsvDataProvider {
                 for (int i = 0; i < header.length; i++) {
                     row.put(header[i], i < cells.length ? cells[i] : "");
                 }
+                // Carry the origin with the data. Every substitution into a
+                // request payload logs this back, so the run log can say
+                // which file, which row and which column produced a value
+                // instead of leaving that to be reconstructed by hand.
+                row.put(PayloadProvenance.SOURCE_KEY, resourcePath + "#row" + rowIndex);
                 // Warn -- do NOT throw -- when the row has MORE cells
                 // than the header. Silent drop was the previous
                 // behaviour, and it hid the common authoring mistake

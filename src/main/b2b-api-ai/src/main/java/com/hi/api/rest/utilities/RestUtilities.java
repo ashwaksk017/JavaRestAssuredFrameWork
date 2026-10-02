@@ -638,6 +638,33 @@ public class RestUtilities {
         return folded;
     }
 
+    /**
+     * One line per value that lands in a payload, naming where it came from.
+     *
+     * <p>Answers "which CSV column fed this?" at the moment of
+     * substitution, which is the only place that knows. The row carries
+     * its own origin (see {@link com.hi.api.data.PayloadProvenance}), so
+     * the line names the file, the row number and the column.</p>
+     *
+     * <p>Logged at INFO deliberately. These lines are the record of what
+     * was actually sent, and the console is routinely redirected to a
+     * file; at DEBUG they would be absent from exactly the run someone
+     * needs to explain. Values pass through
+     * SecretRedactingRewritePolicy like every other log event, so a
+     * credential column is masked rather than printed.</p>
+     *
+     * @param origin "csv", "csv(case-folded)", "FALLBACK" or "UNRESOLVED"
+     */
+    private static void logSubstitution(Map<String, String> dataMap, String key,
+                                        String value, String origin) {
+        if (!LOG.isInfoEnabled()) {
+            return;
+        }
+        LOG.info("[subst] {} | column={} | origin={} | value={}",
+                com.hi.api.data.PayloadProvenance.shortOf(dataMap),
+                key, origin, value);
+    }
+
     private static String substitute(String schema, Pattern pattern, Map<String, String> dataMap,
                                      String fallback, List<String> unresolvedSink,
                                      boolean jsonEscape) {
@@ -647,6 +674,7 @@ public class RestUtilities {
         while (m.find()) {
             String key = m.group(1);
             String value = dataMap.get(key);
+            final boolean exact = (value != null && !value.isEmpty());
             // ReadyAPI resolves ${Step#prop} case-insensitively, and its
             // templates rely on it: #Properties_firstName# is read while the
             // Groovy writes Firstname, and #Properties_2_websiteDomain2#
@@ -678,12 +706,15 @@ public class RestUtilities {
                 if (fallback == null) {
                     unresolvedSink.add(m.group());
                     m.appendReplacement(out, Matcher.quoteReplacement(m.group()));
+                    logSubstitution(dataMap, key, m.group(), "UNRESOLVED");
                 } else {
                     m.appendReplacement(out, Matcher.quoteReplacement(fallback));
+                    logSubstitution(dataMap, key, fallback, "FALLBACK");
                 }
             } else {
                 String toInsert = jsonEscape ? jsonEscapeInner(value) : value;
                 m.appendReplacement(out, Matcher.quoteReplacement(toInsert));
+                logSubstitution(dataMap, key, value, exact ? "csv" : "csv(case-folded)");
             }
         }
         m.appendTail(out);
