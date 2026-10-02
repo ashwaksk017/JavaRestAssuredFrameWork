@@ -15986,6 +15986,13 @@ public final class {support_name} {{
         runVerify(vocab, null) resolves through only(vocab), which throws on
         an ambiguous match rather than picking one.
         """
+        # Imported HERE because that is how every other user of this
+        # module in this file does it; there is no module-level import.
+        # Without it this function raised NameError the first time a
+        # case reached the duplicate-vocabulary branch below -- which
+        # took until TransliteratedDataEvents.xml to happen.
+        import phase_emit
+
         if not getattr(self, "phase_specs_enabled", False):
             return None
         entries = getattr(self, "_case_phase_specs", {}).get(case.name)

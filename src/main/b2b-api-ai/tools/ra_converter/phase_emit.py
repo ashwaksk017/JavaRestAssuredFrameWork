@@ -327,8 +327,26 @@ def hook_java(name: str, leftover: list[str], res_var: str, var_to_step: dict[st
     if res_var in used:
         decls.append(f"        io.restassured.response.Response {res_var} = res;")
     for v in sorted(used):
-        if v != res_var and v in var_to_step:
+        if v == res_var:
+            continue
+        if v in var_to_step:
             decls.append(f"        io.restassured.response.Response {v} = c.response({jstr(var_to_step[v])});")
+            continue
+        # A used response variable with no mapping used to be dropped in
+        # SILENCE, and the hook then referenced an undeclared local --
+        # accountdashboardregression stopped compiling on
+        # `http_request_shop_get_200_success_2Res`, the response of a
+        # REPEATED step (`... success 2`), which never reached
+        # var_to_step. Fall back to the documented inverse convention
+        # (`<step>Res` -> c.response("<step>")) so the tree still
+        # compiles, and say so. c.response() returns null for an
+        # unrecorded step and the extract helpers are null-safe, so the
+        # worst case is an empty value rather than a build that cannot
+        # run at all.
+        step = v[:-3] if v.endswith("Res") else v
+        print(f"[ra_converter] hook `{name}`: response var `{v}` has no step "
+              f"mapping; assuming step `{step}`")
+        decls.append(f"        io.restassured.response.Response {v} = c.response({jstr(step)});")
     body = "\n".join(("        " + ln) if ln else "" for ln in leftover)
     return (f"    @SuppressWarnings(\"unused\")\n"
             f"    static void {name}(io.restassured.response.Response res, PhaseContext c) throws Exception {{\n"
