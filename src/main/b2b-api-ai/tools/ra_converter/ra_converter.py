@@ -3062,6 +3062,33 @@ _EXTERNAL_PROPS_HINTS = (
 )
 
 
+# ReadyAPI inline Groovy that is only a bounded random integer. The
+# framework has an exact equivalent, so stubbing it is a loss for no
+# reason: `nextInt(N)` yields 0..N-1 and PlaceholderResolver's
+# `<<int(min,max)>>` is inclusive, which makes the bound N-1.
+_INLINE_RANDOM_INT_RX = re.compile(
+    r"^\s*new\s+(?:java\.util\.)?Random\s*\(\s*\)\s*\.\s*nextInt\s*\(\s*(\d+)\s*\)\s*$")
+
+
+def _inline_random_int(expr: str) -> str:
+    """`new Random().nextInt(N)` -> `<<int(0,N-1)>>`, or "" to fall through.
+
+    Deliberately exact rather than clever: the expression must be that
+    call and nothing else. A `${=...}` that merely CONTAINS a nextInt --
+    arithmetic around it, a seed, a second statement -- is a different
+    value, and half-translating it would send a wrong number quietly.
+    Those keep falling through to the #groovy_expr# stub, which is at
+    least visible.
+    """
+    m = _INLINE_RANDOM_INT_RX.match(expr or "")
+    if not m:
+        return ""
+    bound = int(m.group(1))
+    if bound <= 0:
+        return ""               # nextInt(0) throws in Groovy; not ours to fix
+    return "<<int(0,%d)>>" % (bound - 1)
+
+
 def _external_config_key(expr: str) -> str:
     """The config key an inline-Groovy expression is really just reading.
 
@@ -3435,6 +3462,14 @@ def soapui_body_to_placeholders(body: str) -> tuple[str, list[str]]:
         placeholders.append(var)
         return f"#{var}#"
     def _groovy(m):
+        # A bounded random integer has an exact equivalent in the
+        # framework, so it is translated rather than stubbed. Checked
+        # first because it is the narrowest rule here.
+        _rand = _inline_random_int(m.group(1))
+        if _rand:
+            # no placeholder recorded: PlaceholderResolver generates this
+            # at request time, it is not a CSV column anyone fills in
+            return _rand
         # An expression whose only job is to read a key out of an
         # external per-environment properties file is not untranslatable
         # -- it IS config. Emit the placeholder and let Config supply it.

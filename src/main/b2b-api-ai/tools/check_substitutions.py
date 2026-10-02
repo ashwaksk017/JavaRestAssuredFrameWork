@@ -27,6 +27,11 @@ import os
 import re
 import sys
 
+# `Allure.addAttachment("STUBBED Groovy assertion: ...",
+#                       "text/x-groovy", "<original script>")`
+# -- the last argument is the ReadyAPI Groovy, quoted for a reader.
+_STUB_ATTACHMENT_RX = re.compile(r'addAttachment\(\s*"STUBBED')
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
@@ -257,6 +262,14 @@ def scan(root: str) -> tuple:
         stats["java_files"] += 1
         for line in text.split("\n"):
             if _COMMENT_RX.match(line):
+                continue
+            if _STUB_ATTACHMENT_RX.search(line):
+                # The attachment for an un-translated Groovy assertion
+                # carries the ORIGINAL SCRIPT as a string, for a human to
+                # read. ReadyAPI syntax inside it is quoted documentation,
+                # not a placeholder in anything that gets sent -- scanning
+                # it reported near-misses against a payload that does not
+                # exist.
                 continue
             for lit in re.findall(r'"((?:[^"\\]|\\.)*)"', line):
                 for m in HASH_RX.finditer(lit):

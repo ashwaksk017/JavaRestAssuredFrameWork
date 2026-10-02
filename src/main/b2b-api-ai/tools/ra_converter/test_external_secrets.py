@@ -166,6 +166,35 @@ def test_a_malformed_body_does_not_raise():
     assert (out, routed) == ('{"client_id": ', set())
 
 
+def test_a_bounded_random_becomes_the_frameworks_own_token():
+    """`${=new Random().nextInt(N)}` has an exact equivalent, so stubbing
+    it was a loss for no reason.
+
+    GroupsDataSTAGE emitted
+        "ratePlanCode": "#..._SRP_CODE##groovy_expr#/*new Random().nextInt(10)*/"
+    which sends the converter's marker AND a Groovy comment inside a JSON
+    string value. nextInt(N) is 0..N-1 and PlaceholderResolver's
+    <<int(min,max)>> is inclusive, hence N-1.
+    """
+    assert R._inline_random_int("new Random().nextInt(10)") == "<<int(0,9)>>"
+    assert R._inline_random_int("new java.util.Random().nextInt(5)") == "<<int(0,4)>>"
+    assert R._inline_random_int(" new Random() . nextInt( 3 ) ") == "<<int(0,2)>>"
+
+
+def test_anything_more_than_that_call_still_stubs():
+    # Half-translating a computed value sends a wrong number quietly,
+    # which is worse than a stub someone can see.
+    for expr in (
+        "new Random().nextInt(10) + 5",
+        "new Random(42).nextInt(10)",
+        "new Random().nextInt(0)",
+        "def x = 1; new Random().nextInt(10)",
+        "new Random().nextInt()",
+        "",
+    ):
+        assert R._inline_random_int(expr) == "", expr
+
+
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
     failed = 0
