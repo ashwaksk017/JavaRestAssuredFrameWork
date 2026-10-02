@@ -76,18 +76,38 @@ def setup_flow_steps(root: str) -> set:
     return steps
 
 
+def suite_of(path: str) -> str:
+    """The suite a generated file belongs to: .../support/<suite>/cases/X.java"""
+    parts = os.path.normpath(path).split(os.sep)
+    try:
+        return parts[parts.index("support") + 1]
+    except (ValueError, IndexError):
+        return ""
+
+
 def spec_step_names(root: str) -> dict:
-    """{specNN: the step name that spec performs}."""
+    """{suite: {specNN: the step name that spec performs}}.
+
+    Keyed BY SUITE, and that is the whole point. Every suite numbers its
+    specs from 1, so once more than one suite is converted the ids
+    collide: with 15 suites in the tree `spec67` is POST_Confirm_2 in
+    group360createstage, GET_Groups_SingleProp in partialgoalregression
+    and sf_token_Request in programaccountregression. A single flat map
+    kept whichever file was globbed last, so coverage for one suite was
+    judged against another suite's step names and real calls were
+    reported unreachable.
+    """
     out = {}
     for f in glob.glob(os.path.join(root, "src/main/java/**/cases/Specs*.java"),
                        recursive=True):
         src = read(f)
+        per = out.setdefault(suite_of(f), {})
         for m in re.finditer(
                 r"static PhaseSpec (spec\d+)\(\)\s*\{(.*?)\n    \}", src, re.S):
             nm = re.search(r'PhaseSpec\.(?:phase|hookOnly)\("([^"]+)"',
                            m.group(2))
             if nm:
-                out[m.group(1)] = norm(nm.group(1))
+                per[m.group(1)] = norm(nm.group(1))
     return out
 
 
@@ -97,6 +117,8 @@ def covered_by_case(root: str, specs: dict, setup: set) -> dict:
     for f in glob.glob(os.path.join(root, "src/main/java/**/cases/*Phases.java"),
                        recursive=True):
         src = read(f)
+        # resolve Specs ids against THIS file's suite, never the whole tree
+        suite_specs = specs.get(suite_of(f), {})
         for m in re.finditer(r"CaseRegistry\.register\((.*?)\)\n(.*?);\n",
                              src, re.S):
             target, body = m.group(1), m.group(2)
@@ -109,8 +131,8 @@ def covered_by_case(root: str, specs: dict, setup: set) -> dict:
             for p in re.finditer(r'\.(?:phase|verify)\("[^"]+",\s*"([^"]+)"', body):
                 hit.add(norm(p.group(1)))
             for sid in re.findall(r"Specs\d+::(spec\d+)", body):
-                if sid in specs:
-                    hit.add(specs[sid])
+                if sid in suite_specs:
+                    hit.add(suite_specs[sid])
             if ".bootstrap(" in body:
                 hit |= setup
             for cid in ids:
