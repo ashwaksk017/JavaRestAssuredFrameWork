@@ -19307,7 +19307,75 @@ def _run_bootstrap(args) -> int:
     return 0
 
 
+def _module_dir_under(output_dir: str):
+    """An immediate-ish subdirectory of output_dir that IS a converter module.
+
+    A module is identified by having both a pom.xml and a copy of this
+    script -- narrow on purpose, so a fresh scaffold directory or a
+    deliberate scratch tree is never mistaken for the real thing.
+    Searches output_dir's children and `<child>/main/*`, which is how
+    this repository nests the module (src/main/<module>).
+    """
+    try:
+        children = sorted(os.listdir(_fs_path(output_dir)))
+    except OSError:
+        return None
+    candidates = []
+    for name in children:
+        child = os.path.join(output_dir, name)
+        if not os.path.isdir(_fs_path(child)):
+            continue
+        candidates.append(child)
+        inner = os.path.join(child, "main")
+        try:
+            if os.path.isdir(_fs_path(inner)):
+                for sub in sorted(os.listdir(_fs_path(inner))):
+                    candidates.append(os.path.join(inner, sub))
+        except OSError:
+            pass
+    for cand in candidates:
+        if (os.path.isfile(_fs_path(os.path.join(cand, "pom.xml")))
+                and os.path.isfile(_fs_path(os.path.join(
+                    cand, "tools", "ra_converter", "ra_converter.py")))):
+            return cand
+    return None
+
+
+def _assert_output_is_the_module(output_dir: str) -> None:
+    """Stop a convert that would write its tree beside the module.
+
+    `--output .` is correct only when the shell is in the module. From
+    the repository root it silently targets the wrong root: the convert
+    reports success, because every emitted path is printed relative to
+    --output and therefore looks right, and the mistake surfaces much
+    later as verify_all reporting a missing generated tree. Checked
+    before anything is emitted, because this is the one failure mode
+    that looks like a success.
+    """
+    # The module marker is THIS SCRIPT, not a pom.xml: the repository root
+    # is itself a Maven parent project and has a pom.xml of its own, so
+    # keying on that let the exact mistake through.
+    if os.path.isfile(_fs_path(os.path.join(
+            output_dir, "tools", "ra_converter", "ra_converter.py"))):
+        return
+    meant = _module_dir_under(output_dir)
+    if meant is None:
+        return
+    raise SystemExit(
+        "[ra_converter] --output points one directory ABOVE the module." + NL
+        + "  you gave  : " + os.path.abspath(output_dir) + NL
+        + "  you meant : " + os.path.abspath(meant) + NL
+        + "  Writing here puts the generated tree BESIDE the module. The" + NL
+        + "  convert still reports success, and verify_all later reports" + NL
+        + "  'generated tree does not exist', which reads as 'convert again'." + NL
+        + "  cd into the module and re-run with --output . (or pass that path)."
+    )
+
+
 def _run_convert(args):
+    # Writing to the wrong root is the one failure that looks like
+    # a success, so it is checked before anything is emitted.
+    _assert_output_is_the_module(args.output)
     # Per-INVOCATION, not per-process. _run_convert is called once per
     # suite (see the loops at the CLI entry points), so leaving this
     # module-level set populated would hand suite A's routed credential
