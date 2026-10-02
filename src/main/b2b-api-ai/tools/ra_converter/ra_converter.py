@@ -7495,7 +7495,16 @@ public interface ImportedRestClient {{
         _svc_key, _svc_base = _service_key_for_uri(
             getattr(step, "original_uri", "") or "")
         if _svc_key:
-            base_expr = f'Config.get("services.{_svc_key}", baseUrl)'
+            # Pass the RECORDED base through. Dropping it (which is what
+            # `Config.get("services.<key>", baseUrl)` did) silently removes
+            # any path prefix the service was recorded under -- the partner
+            # API lives at <host>/hospitality-partner/v2, so with the key
+            # unset the token POST lost the prefix and every suite 404'd on
+            # its first call. Config.serviceBase keeps an explicit
+            # -DbaseUrl above the recorded value, so pointing a whole run
+            # at a stand-in still works.
+            base_expr = (f'Config.serviceBase("{_svc_key}", '
+                         f'"{_jlit(_svc_base or "")}", baseUrl)')
         if self._is_salesforce_step(step):
             base_expr, path_expr, force_urlenc = self._salesforce_base_and_path_java(
                 step, path, path_param_map)

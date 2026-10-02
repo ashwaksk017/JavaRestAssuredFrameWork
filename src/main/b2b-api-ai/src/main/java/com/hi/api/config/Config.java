@@ -256,6 +256,58 @@ public final class Config {
         return detectEnv();
     }
 
+    /**
+     * The base URL for one recorded service, in precedence order.
+     *
+     * <p>Generated client methods used to emit
+     * {@code Config.get("services.<key>", baseUrl)}, which threw away the
+     * base the ReadyAPI recording actually used. For a service whose base
+     * carries a path prefix that is fatal: the partner API was recorded at
+     * {@code <host>/hospitality-partner/v2}, so with the key unset the
+     * token POST went to {@code <baseUrl>/realms/applications/token},
+     * missing the prefix entirely, and every suite died on a 404 at the
+     * first call. The prefix was in the audit the whole time -- it was
+     * never put in the emitted code.</p>
+     *
+     * <p>Order, and why:</p>
+     * <ol>
+     *   <li>{@code services.<key>} -- the per-environment answer, so test
+     *       and stage can differ.</li>
+     *   <li>an EXPLICIT {@code -DbaseUrl} or {@code BASEURL} -- an operator
+     *       redirecting everything somewhere, which must keep working or
+     *       there is no way to point a run at a stand-in. This is above the
+     *       recorded base deliberately: "send everything here" has to beat
+     *       a value baked in at convert time.</li>
+     *   <li>the recorded base -- so an unconfigured run reproduces what
+     *       ReadyAPI did instead of 404ing.</li>
+     *   <li>the caller's baseUrl, for a service with no recorded base.</li>
+     * </ol>
+     *
+     * @param serviceKey   key under {@code services.} in program_configuration
+     * @param recordedBase base observed in the source project; may be empty
+     * @param callerBase   the client's own baseUrl
+     */
+    public static String serviceBase(String serviceKey, String recordedBase,
+                                     String callerBase) {
+        if (serviceKey != null && !serviceKey.isBlank()) {
+            String configured = get("services." + serviceKey, "");
+            if (configured != null && !configured.isBlank()) {
+                return configured;
+            }
+        }
+        String explicit = System.getProperty("baseUrl");
+        if (explicit == null || explicit.isBlank()) {
+            explicit = System.getenv("BASEURL");
+        }
+        if (explicit != null && !explicit.isBlank()) {
+            return explicit;
+        }
+        if (recordedBase != null && !recordedBase.isBlank()) {
+            return recordedBase;
+        }
+        return (callerBase == null || callerBase.isBlank()) ? baseUrl() : callerBase;
+    }
+
     public static String baseUrl() {
         // Corrected precedence (was regressed in the previous audit
         // sweep -- see hotfix commit):

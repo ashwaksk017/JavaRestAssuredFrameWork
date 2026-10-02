@@ -99,12 +99,21 @@ def test_different_versions_of_one_service_are_different_keys():
 
 # ------------------------------------------------- the safety guarantee
 
-def test_every_emitted_service_base_falls_back_to_baseUrl():
-    """The compatibility rule, read off the generated clients.
+def test_every_emitted_service_base_carries_its_recorded_base():
+    """Read off the generated clients: no service loses its recorded base.
 
-    If any emitted base lacked the `, baseUrl` fallback, a suite with an
-    unfilled config would send calls to the empty string instead of
-    behaving exactly as it did before this change.
+    This test used to assert the opposite -- that every emitted base
+    ended in `, baseUrl`. That WAS the bug. For a service recorded under
+    a path prefix, falling back to a bare baseUrl silently drops the
+    prefix: the partner API lives at `<host>/hospitality-partner/v2`, so
+    with `services.hospitality_partner_v2` unset the token POST went to
+    `<baseUrl>/realms/applications/token` and every suite died on a 404
+    at its first call. The prefix sat in the audit the whole time; it was
+    never put into the emitted code.
+
+    The contract now is Config.serviceBase(key, recordedBase, baseUrl),
+    which keeps an explicit -DbaseUrl ABOVE the recorded value so a run
+    can still be pointed at a stand-in.
     """
     root = os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))))
@@ -117,13 +126,52 @@ def test_every_emitted_service_base_falls_back_to_baseUrl():
             continue
         with open(os.path.join(clients, name), encoding="utf-8") as fh:
             src = fh.read()
-        for m in re.finditer(r'Config\.get\("services\.([A-Za-z0-9_]+)"([^)]*)\)',
-                             src):
+        # the old shape must be gone: it is what caused the 404
+        assert 'Config.get("services.' not in src, (
+            f"{name}: still uses Config.get(\"services.…\", baseUrl), which "
+            f"drops any recorded path prefix")
+        for m in re.finditer(
+                r'Config\.serviceBase\("([A-Za-z0-9_]+)",\s*"([^"]*)",\s*baseUrl\)',
+                src):
             checked += 1
-            assert m.group(2).strip() == ", baseUrl", (
-                f"{name}: services.{m.group(1)} has no baseUrl fallback: "
-                f"{m.group(0)}")
+            key, recorded = m.group(1), m.group(2)
+            # A recorded base that carries a path prefix is exactly the
+            # case the old code broke, so it must be present and absolute.
+            if recorded:
+                assert recorded.startswith("http"), (
+                    f"{name}: services.{key} recorded base is not absolute: "
+                    f"{recorded!r}")
     assert checked > 0, "expected at least one service-routed call"
+
+
+def test_a_recorded_path_prefix_survives_into_the_emitted_call():
+    """The specific regression: /vN prefixes reach the generated Java.
+
+    Guards the 404. A versioned service key is derived FROM a path
+    prefix, so if the emitted call cannot show that prefix the prefix has
+    been lost between the audit and the code.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    clients = os.path.join(root, "src/main/java/com/hi/api/rest/clients")
+    if not os.path.isdir(clients):
+        return
+    versioned = []
+    for name in os.listdir(clients):
+        if not name.endswith(".java"):
+            continue
+        with open(os.path.join(clients, name), encoding="utf-8") as fh:
+            src = fh.read()
+        for m in re.finditer(
+                r'Config\.serviceBase\("([A-Za-z0-9_]+_v\d+)",\s*"([^"]*)"',
+                src):
+            versioned.append((name, m.group(1), m.group(2)))
+    for name, key, recorded in versioned:
+        assert recorded, f"{name}: versioned services.{key} lost its recorded base"
+        tail = recorded.split("://", 1)[-1]
+        assert "/" in tail, (
+            f"{name}: versioned services.{key} recorded base has no path "
+            f"prefix, which is what the key was derived from: {recorded!r}")
 
 
 def test_collect_service_bases_is_per_suite_not_global():
