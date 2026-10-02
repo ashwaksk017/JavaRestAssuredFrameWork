@@ -125,6 +125,63 @@ def test_suite_is_read_from_the_path():
     assert sp.suite_of("nothing/useful/here.java") == ""
 
 
+SPECS_SRC = 'class Specs1 {\n    static PhaseSpec spec12() {\n        return PhaseSpec.hookOnly("bootstrap", Hooks1::hook9_bootstrap);\n    }\n}'
+HOOKS_SRC = 'class Hooks1 {\n    static void hook9_bootstrap(Response res, PhaseContext c) {\n        // ==== REST step: token_request  (POST /realms/applications/token) ====\n    }\n    static void hook1_other(Response res, PhaseContext c) {\n        // ==== REST step: some_other_call  (GET /x) ====\n    }\n}'
+PHASES_SRC = 'class P {\n    static void register() {\n        CaseRegistry.register("honors_case")\n            .bootstrap(Specs1::spec12);\n    }\n}'
+
+
+def test_a_bootstrap_hook_is_credited_with_the_calls_it_makes():
+    """A bootstrap emitted as hookOnly(...) puts its REST calls in the HOOK.
+
+    setup_flow_steps read only SetupHelper.java, so those calls were
+    invisible and three programaccounthonorssuite cases were reported as
+    never authenticating -- while the token request sat in the hook, with
+    its own `==== REST step: token_request` marker.
+    """
+    root = tempfile.mkdtemp(prefix="stepparity_hook_")
+    d = os.path.join(root, "src", "main", "java", "com", "hi", "api",
+                     "support", "honors", "cases")
+    os.makedirs(d, exist_ok=True)
+    for fname, src in (("Specs1.java", SPECS_SRC),
+                       ("Hooks1.java", HOOKS_SRC),
+                       ("XPhases.java", PHASES_SRC)):
+        with open(os.path.join(d, fname), "w", encoding="utf-8") as fh:
+            fh.write(src)
+
+    specs = sp.spec_step_names(root)
+    sp.HOOK_STEPS.clear()
+    sp.HOOK_STEPS.update(sp.hook_steps(root))
+    sp.SPEC_HOOKS.clear()
+    sp.SPEC_HOOKS.update(sp.spec_hooks(root))
+    covered = sp.covered_by_case(root, specs, sp.setup_flow_steps(root))
+
+    assert "token_request" in covered["honors_case"], covered["honors_case"]
+    # Precision: a spec is credited with ITS OWN hooks, not with every
+    # hook in the suite. Crediting the suite would hide a real miss.
+    assert "some_other_call" not in covered["honors_case"], covered["honors_case"]
+
+
+def test_setup_steps_do_not_leak_between_suites():
+    """One suite's SetupHelper must not cover another suite's case.
+
+    The union credited programaccounthonorssuite -- whose SetupHelper
+    performs no REST step at all -- with programaccountregression's
+    `tokenRequest`, which does not even match its own `token_request`.
+    """
+    root = tempfile.mkdtemp(prefix="stepparity_setup_")
+    for suite, step in (("has_setup", "tokenRequest"), ("no_setup", None)):
+        d = os.path.join(root, "src", "main", "java", "com", "hi", "api",
+                         "support", suite)
+        os.makedirs(d, exist_ok=True)
+        body = ("// ==== REST step: " + step + " ====" + chr(10)) if step else ""
+        with open(os.path.join(d, "SetupHelper.java"), "w", encoding="utf-8") as fh:
+            fh.write("class SetupHelper {" + chr(10) + body + "}" + chr(10))
+
+    setup = sp.setup_flow_steps(root)
+    assert setup.get("has_setup") == {"tokenrequest"}, setup
+    assert not setup.get("no_setup"), setup
+
+
 for _name, _fn in sorted(
         (n, f) for n, f in list(globals().items())
         if n.startswith("test_") and callable(f)):

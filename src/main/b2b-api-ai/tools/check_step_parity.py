@@ -66,14 +66,60 @@ def rest_steps_by_case(xml_path: str) -> dict:
     return out
 
 
-def setup_flow_steps(root: str) -> set:
-    """REST step names any bootstrap setup flow performs."""
-    steps = set()
+def setup_flow_steps(root: str) -> dict:
+    """{suite: REST step names that suite's SetupHelper performs}.
+
+    Per suite, not one global set. The union credited
+    programaccounthonorssuite -- whose SetupHelper performs no REST step
+    at all -- with programaccountregression's `tokenRequest`.
+    """
+    out = {}
     for f in glob.glob(os.path.join(root, "src/main/java/**/SetupHelper.java"),
                        recursive=True):
+        per = out.setdefault(suite_of(f), set())
         for s in re.findall(r"==== REST step: (\S+)", read(f)):
-            steps.add(norm(s))
-    return steps
+            per.add(norm(s))
+    return out
+
+
+def hook_steps(root: str) -> dict:
+    """{suite: {hook method: REST step names that hook performs}}.
+
+    A bootstrap is often emitted as
+    `hookOnly("bootstrap", Hooks1::hook9_bootstrap)`, which puts its REST
+    calls in Hooks1.java. Reading only SetupHelper.java misses them
+    entirely and the case looks like it never authenticates.
+    """
+    out = {}
+    for f in glob.glob(os.path.join(root, "src/main/java/**/cases/Hooks*.java"),
+                       recursive=True):
+        src = read(f)
+        per = out.setdefault(suite_of(f), {})
+        # split on method headers so a step is attributed to ITS hook
+        bounds = [(m.group(1), m.start()) for m in
+                  re.finditer(r"static void (\w+)\(", src)]
+        for i, (name, start) in enumerate(bounds):
+            end = bounds[i + 1][1] if i + 1 < len(bounds) else len(src)
+            steps = {norm(x) for x in
+                     re.findall(r"==== REST step: (\S+)", src[start:end])}
+            if steps:
+                per.setdefault(name, set()).update(steps)
+    return out
+
+
+def spec_hooks(root: str) -> dict:
+    """{suite: {specNN: [hook methods that spec references]}}."""
+    out = {}
+    for f in glob.glob(os.path.join(root, "src/main/java/**/cases/Specs*.java"),
+                       recursive=True):
+        src = read(f)
+        per = out.setdefault(suite_of(f), {})
+        for m in re.finditer(
+                r"static PhaseSpec (spec\d+)\(\)\s*\{(.*?)\n    \}", src, re.S):
+            hooks = re.findall(r"Hooks\d+::(\w+)", m.group(2))
+            if hooks:
+                per.setdefault(m.group(1), []).extend(hooks)
+    return out
 
 
 def suite_of(path: str) -> str:
@@ -111,14 +157,21 @@ def spec_step_names(root: str) -> dict:
     return out
 
 
-def covered_by_case(root: str, specs: dict, setup: set) -> dict:
+HOOK_STEPS: dict = {}
+SPEC_HOOKS: dict = {}
+
+
+def covered_by_case(root: str, specs: dict, setup: dict) -> dict:
     """{case id: {normalised step names the generated code will execute}}."""
     out = {}
     for f in glob.glob(os.path.join(root, "src/main/java/**/cases/*Phases.java"),
                        recursive=True):
         src = read(f)
         # resolve Specs ids against THIS file's suite, never the whole tree
-        suite_specs = specs.get(suite_of(f), {})
+        suite = suite_of(f)
+        suite_specs = specs.get(suite, {})
+        suite_hooks = HOOK_STEPS.get(suite, {})
+        suite_spec_hooks = SPEC_HOOKS.get(suite, {})
         for m in re.finditer(r"CaseRegistry\.register\((.*?)\)\n(.*?);\n",
                              src, re.S):
             target, body = m.group(1), m.group(2)
@@ -133,8 +186,13 @@ def covered_by_case(root: str, specs: dict, setup: set) -> dict:
             for sid in re.findall(r"Specs\d+::(spec\d+)", body):
                 if sid in suite_specs:
                     hit.add(suite_specs[sid])
+                # ...and whatever REST calls that spec's own hooks make.
+                # A bootstrap is usually hookOnly(...), so its token
+                # request lives in a hook, not in the spec.
+                for hk in suite_spec_hooks.get(sid, ()):
+                    hit |= suite_hooks.get(hk, set())
             if ".bootstrap(" in body:
-                hit |= setup
+                hit |= setup.get(suite, set())
             for cid in ids:
                 out.setdefault(cid, set()).update(hit)
     return out
@@ -163,6 +221,10 @@ def main() -> int:
 
     specs = spec_step_names(root)
     setup = setup_flow_steps(root)
+    # module-level so covered_by_case can reach them without
+    # threading two more arguments through every caller
+    globals()['HOOK_STEPS'] = hook_steps(root)
+    globals()['SPEC_HOOKS'] = spec_hooks(root)
     covered = covered_by_case(root, specs, setup)
     if not covered:
         print("[step-parity] no generated *Phases.java -- convert first (ok)")
