@@ -73,6 +73,13 @@ def variations(raw: str) -> dict:
         if raw.startswith(p):
             add(raw[len(p):], "stored without the `%s` prefix" % p)
     add(raw.replace("_", "."), "dot spelling")
+    # ctx keys are `<step>.<property>`, so only the LAST underscore is
+    # the split. Replacing every underscore turned
+    # InviteKey_Properties_inviteKey into InviteKey.Properties.inviteKey
+    # and missed the real producer, InviteKey_Properties.inviteKey.
+    if "_" in raw:
+        head, tail = raw.rsplit("_", 1)
+        add(head + "." + tail, "last underscore splits step from property")
     add(raw.replace(".", "_"), "underscore spelling")
     add(raw.replace("-", "_"), "dash written as underscore")
     add(_snake(raw), "snake_case spelling")

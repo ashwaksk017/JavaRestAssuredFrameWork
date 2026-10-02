@@ -292,7 +292,12 @@ def main() -> int:
                            "com", "hi", "api", "support")
     xmls = [x for x in glob.glob(os.path.join(in_dir, "*.xml"))]
     for xml in xmls:
-        suite = os.path.splitext(os.path.basename(xml))[0].lower()
+        # Sanitise the SAME way the emitter does. A hyphen is illegal in
+        # a Java package, so topicsprogramaccountsstgkafka-Events.xml
+        # emits as ...kafka_events; lowercasing alone looked for
+        # ...kafka-events and reported a healthy suite as never emitted.
+        suite = re.sub(r"[^A-Za-z0-9]+", "_",
+                       os.path.splitext(os.path.basename(xml))[0]).strip("_").lower()
         if not os.path.isdir(_openable(os.path.join(support, suite))):
             findings.append(Finding(
                 "SUITE-NOT-EMITTED", os.path.basename(xml),
