@@ -9272,15 +9272,12 @@ public interface ImportedRestClient {{
                     f' + TestSupport.ctxGet(ctx, "Properties.X") + ")]";`',
                 ], "TODO")
 
-        def _jlit(s: str) -> str:
-            """Escape an arbitrary string for use inside a Java "" literal."""
-            if s is None:
-                return ""
-            return (s.replace("\\", "\\\\")
-                     .replace('"', '\\"')
-                     .replace("\r", "\\r")
-                     .replace("\n", "\\n")
-                     .replace("\t", "\\t"))
+        # NOTE: _jlit is the MODULE-level helper. A nested copy used to sit
+        # here, which made the name local for the whole of _render_assertion
+        # -- so the use ~25 lines above raised UnboundLocalError. It only
+        # fires on assertion shapes that reach that branch, which is why the
+        # older project XML never tripped it and GroupsDataSTAGE did. The
+        # module function is identical and additionally coerces non-strings.
 
         def _row_expr(fallback_literal: str) -> str:
             """Java expression that reads the expected value from CSV row
@@ -11343,6 +11340,7 @@ import com.hi.api.rest.utilities.RestLoggerUtilityDataHolder;
 import com.hi.api.rest.utilities.RestStep;
 import com.hi.api.rest.utilities.RestUtilities;
 import com.hi.api.support.CtxFields;
+import com.hi.api.support.ImportedScenario;
 import {self.package_root}.templates.{self.suite_name}.Templates;
 
 import io.restassured.response.Response;
