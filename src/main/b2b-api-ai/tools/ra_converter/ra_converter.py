@@ -18684,6 +18684,11 @@ def _main_dispatch(args):
             and not getattr(args, "bootstrap", False)
             and not getattr(args, "keep_dead_props", False)):
         _run_prune_dead_props(args)
+    # The last word: where the tree is, and whether it is there. Compare
+    # this against the path in any "required files are missing" build
+    # error -- if they differ, the convert wrote somewhere else.
+    if rc == 0 and not getattr(args, "diagrams_only", False):
+        _report_generated_tree(args)
     return rc
 
 
@@ -19372,10 +19377,54 @@ def _assert_output_is_the_module(output_dir: str) -> None:
     )
 
 
+def _report_output_root(args) -> None:
+    """Name the output root in absolute terms, once, before emitting.
+
+    Without this the run output never says where it is writing, so a
+    convert that lands in the wrong place is indistinguishable from one
+    that does not -- which is how "the convert passes but verify_all
+    says the tree is missing" becomes possible. --output defaults to
+    "output", so the wrong place does not even require a typo.
+    """
+    root = os.path.abspath(args.output)
+    print(f"[ra_converter] output root: {root}")
+    if os.path.basename(root) == "output" and args.output == "output":
+        print("[ra_converter]   NOTE: that is the DEFAULT --output. If you meant "
+              "this module, pass --output .")
+
+
+def _report_generated_tree(args) -> None:
+    """State where the generated tree is and whether it is really there.
+
+    The last word of a convert should be a fact a build can be checked
+    against, not just "done". Prints the absolute support directory, the
+    file count, and the one file the Maven precondition names when it
+    fails -- so a mismatch with the build error is visible immediately
+    instead of after a round trip.
+    """
+    pkg = args.package_root.replace(".", os.sep)
+    support = os.path.abspath(os.path.join(
+        args.output, "src", "main", "java", pkg, "support"))
+    tests = os.path.abspath(os.path.join(
+        args.output, "src", "test", "java", pkg, "tests", "imported"))
+    n = 0
+    for base, _dirs, files in os.walk(_fs_path(support)):
+        n += sum(1 for f in files if f.endswith(".java"))
+    key = os.path.join(support, "ImportedScenario.java")
+    print("[ra_converter] generated tree:")
+    print(f"[ra_converter]   {support}")
+    print(f"[ra_converter]     exists={os.path.isdir(_fs_path(support))}  java files={n}")
+    print(f"[ra_converter]   {tests}")
+    print(f"[ra_converter]     exists={os.path.isdir(_fs_path(tests))}")
+    print(f"[ra_converter]   ImportedScenario.java present={os.path.isfile(_fs_path(key))}"
+          "   <- the file the Maven precondition names")
+
+
 def _run_convert(args):
     # Writing to the wrong root is the one failure that looks like
     # a success, so it is checked before anything is emitted.
     _assert_output_is_the_module(args.output)
+    _report_output_root(args)
     # Per-INVOCATION, not per-process. _run_convert is called once per
     # suite (see the loops at the CLI entry points), so leaving this
     # module-level set populated would hand suite A's routed credential
