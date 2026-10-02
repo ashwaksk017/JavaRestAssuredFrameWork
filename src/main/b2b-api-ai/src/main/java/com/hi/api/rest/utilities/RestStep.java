@@ -71,7 +71,28 @@ public final class RestStep {
 
     private static final Logger LOG = LoggerFactory.getLogger(RestStep.class);
     private static final long DEFAULT_RETRY_DEADLINE_MS = 15_000L;
-    private static final int BODY_LOG_LIMIT = 800;
+    /**
+     * Characters of a request/response body to LOG. 0 (the default) means
+     * the whole thing.
+     *
+     * <p>It was 800, which is too short to confirm a payload is correct:
+     * a group-shop response runs to several KB of roomRates, so the one
+     * part worth reading was always the part cut off. The log is build
+     * output under target/ and mvn clean removes it, so size is the
+     * cheaper problem.</p>
+     *
+     * <p>Override with {@code -Dbody.log.limit=800} to get the old
+     * behaviour back on a noisy run.</p>
+     */
+    private static final int BODY_LOG_LIMIT =
+            Integer.getInteger("body.log.limit", 0);
+
+    /**
+     * Cap for the FAILURE DIGEST, which is a different job from the log.
+     * The digest is read as a compact summary of what went wrong across a
+     * whole run; a full body in each entry would bury it. Stays fixed.
+     */
+    private static final int DIGEST_BODY_LIMIT = 800;
 
     private static final ThreadLocal<String> LAST_RESOLVED_BODY =
             ThreadLocal.withInitial(() -> "");
@@ -119,8 +140,19 @@ public final class RestStep {
         if (s == null) {
             return "<null>";
         }
-        return s.length() > BODY_LOG_LIMIT
-                ? s.substring(0, BODY_LOG_LIMIT) + "... (truncated)"
+        if (BODY_LOG_LIMIT <= 0 || s.length() <= BODY_LOG_LIMIT) {
+            return s;
+        }
+        return s.substring(0, BODY_LOG_LIMIT) + "... (truncated)";
+    }
+
+    /** Short form for the failure digest; see {@link #DIGEST_BODY_LIMIT}. */
+    static String capForDigest(String s) {
+        if (s == null) {
+            return "<null>";
+        }
+        return s.length() > DIGEST_BODY_LIMIT
+                ? s.substring(0, DIGEST_BODY_LIMIT) + "... (truncated)"
                 : s;
     }
     public static RestStep exec(Map<String, String> ctx, Map<String, String> row,
@@ -480,8 +512,9 @@ public final class RestStep {
                 // pasted into issues and this repo is public.
                 String failBody = null;
                 if (res.getStatusCode() >= 400) {
+                    // digest, not log: stays short on purpose
                     failBody = ResponseMasking.mask(
-                            capForLog(RestUtilities.getResponseAsString(res)));
+                            capForDigest(RestUtilities.getResponseAsString(res)));
                 }
                 StepOutcomes.record(stepName, res.getStatusCode(), assertedStatus,
                         failBody);
