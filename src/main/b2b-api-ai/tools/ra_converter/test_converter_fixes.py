@@ -200,6 +200,106 @@ def test_4xx_hardcoded_path_id_is_not_rewritten_to_live_guest():
         "guestId", "888888888", repeating)
 
 
+def _dash_step(guest: str, account: str, codes: str) -> "ra_converter.RestStep":
+    """One GET /guests/{guestId}/businesses/{accountId}/dashboardSummary."""
+    return ra_converter.RestStep(
+        step_name="get_dashboardSummary",
+        service="",
+        method_name="ReadAccountDashboardSummary",
+        resource_path="/guests/{guestId}/businesses/{accountId}/dashboardSummary",
+        http_method="GET",
+        endpoint="",
+        original_uri="",
+        media_type="application/json",
+        request_body="",
+        headers={},
+        path_params={"guestId": guest, "accountId": account},
+        query_params={},
+        assertions=[ra_converter.Assertion(
+            type="Valid HTTP Status Codes",
+            name="Valid HTTP Status Codes",
+            config={"codes": codes},
+        )],
+    )
+
+
+def test_an_empty_path_param_does_not_share_a_shape_with_a_ctx_ref():
+    """accountdashboardregression B2B-420: three cases, one spec.
+
+    _rest_shape_sig leaves path VALUES out of the key on the premise
+    that a difference becomes a CSV cell. That holds only for a literal,
+    which emits `row.getOrDefault(col, lit)`. A `${...}` ref emits
+    `Ref.ctx(...)` with NO column, so there is no cell to differ in and
+    cluster[0]'s binding wins for every member.
+
+    ReadyAPI sends:
+        _403_admin_pending   guestId=${Properties#guestID}  accountId=${...}
+        _404_emptyGuestID    guestId=''                     accountId=${...}
+        _404_emptyaccountID  guestId=${Properties#guestID}  accountId=''
+
+    cluster[0] was the admin case, so all three registered
+    `.args(Ref.ctx(...), Ref.ctx(...))` and all three sent both ids
+    live. The two cases whose whole subject is a missing id never sent
+    one.
+    """
+    GUEST, ACCT = "${Properties#guestID}", "${PropertiesDetails#accountID}"
+    admin = SimpleNamespace(steps=[_dash_step(GUEST, ACCT, "403")])
+    no_guest = SimpleNamespace(steps=[_dash_step("", ACCT, "404")])
+    no_acct = SimpleNamespace(steps=[_dash_step(GUEST, "", "404")])
+
+    sig = ra_converter._rest_shape_sig
+    assert sig(admin) != sig(no_guest), (
+        "an empty guestId and a ctx guestId clustered into one spec")
+    assert sig(admin) != sig(no_acct), (
+        "an empty accountId and a ctx accountId clustered into one spec")
+    assert sig(no_guest) != sig(no_acct), (
+        "empty-guest and empty-account are not the same request")
+
+    # ...and two row-carryable literals DO still cluster: that is the
+    # case clustering exists for, and the row carries the difference.
+    lit_a = SimpleNamespace(steps=[_dash_step("111", "222", "200")])
+    lit_b = SimpleNamespace(steps=[_dash_step("333", "444", "200")])
+    assert sig(lit_a) == sig(lit_b), (
+        "two literal ids must still share one spec and differ by row")
+
+
+def test_prefix_merge_keeps_a_negative_case_off_its_positive_sibling():
+    """accountdashboardregression B2B-8925 brandSpend_queryParams.
+
+    The _400 case shares a long prefix with its _200 sibling and then
+    BRANCHES: both continue with the same call carrying the same query
+    param names, so the shape-only prefix test matched and the _400
+    case was handed the _200 case's remaining steps. Its negative
+    checks collapsed and the test named _400 did no 400 checking.
+
+    Status belongs in the MERGE key only. Shape clustering should still
+    group a 200 and a 400 of the same call, because there the
+    expectation travels per row in expected_<step>_status_code; a merge
+    substitutes one case's steps for another's, where no row can carry
+    the divergence.
+    """
+    ok = SimpleNamespace(steps=[_dash_step("1", "2", "200")])
+    bad = SimpleNamespace(steps=[_dash_step("1", "2", "400")])
+
+    assert ra_converter._rest_shape_sig(ok) == ra_converter._rest_shape_sig(bad), (
+        "clustering must still group a 200 and a 400 of the same call")
+    assert (ra_converter._rest_shape_sig_for_merge(ok)
+            != ra_converter._rest_shape_sig_for_merge(bad)), (
+        "prefix-merge folded a 400 step onto a 200 step")
+
+
+def test_param_binding_sig_reports_row_vs_ref():
+    sig = ra_converter._param_binding_sig
+    assert sig({"guestId": "${Properties#guestID}"}) == (("guestId", "ref"),)
+    assert sig({"guestId": ""}) == (("guestId", "row"),)
+    assert sig({"guestId": "123456"}) == (("guestId", "row"),)
+    assert sig(None) == ()
+    # order is by name, so dict insertion order cannot change the key
+    assert (sig({"b": "", "a": ""})
+            == sig({"a": "", "b": ""})
+            == (("a", "row"), ("b", "row")))
+
+
 def test_csv_cell_keeps_path_param_fake_ids():
     assert ra_converter._csv_cell(
         "123456789", "path_REST_Request_2_guestId") == "123456789"

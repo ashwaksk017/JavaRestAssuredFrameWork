@@ -4702,6 +4702,26 @@ def _param_names(params: dict | None) -> tuple[str, ...]:
     return tuple(sorted(str(k) for k in params.keys()))
 
 
+def _param_binding_sig(params: dict | None) -> tuple:
+    """Sorted (name, binding) where binding is "row" or "ref".
+
+    "row" means the emitter will write `row.getOrDefault(col, literal)`
+    and a CSV cell can carry a per-case difference. "ref" means
+    `Ref.ctx(...)`, where no column exists and no row can differ.
+
+    Clustering may only merge steps that agree on this, because the
+    cluster emits ONE spec and cluster[0]'s binding wins. Values
+    themselves stay out of the key: two row-bound literals are exactly
+    the case clustering exists to serve.
+    """
+    if not params:
+        return ()
+    return tuple(
+        (str(k), "row" if _is_literal_param_value(str(v or "")) else "ref")
+        for k, v in sorted(params.items(), key=lambda kv: str(kv[0]))
+    )
+
+
 def _is_literal_param_value(text: str) -> bool:
     """True when a path/query value is per-row test data, not a live ref."""
     t = text or ""
@@ -4978,9 +4998,35 @@ def _rest_shape_sig(case: "TestCase") -> tuple:
         (s.http_method, s.resource_path,
          (s.media_type or "application/json").split(";")[0].strip().lower(),
          _body_shape_key(s),
-         _param_names(getattr(s, "path_params", None)),
+         # binding, not just name: a path param that is a ctx ref and
+         # one that is an empty/literal row cell cannot share a spec,
+         # because only the literal gets a CSV column to differ in.
+         _param_binding_sig(getattr(s, "path_params", None)),
          _param_names(getattr(s, "query_params", None)))
         for s in case.steps if isinstance(s, RestStep)
+    )
+
+
+def _rest_shape_sig_for_merge(case: "TestCase") -> tuple:
+    """`_rest_shape_sig` plus each step's expected HTTP status.
+
+    Used ONLY by prefix-merge. Two steps may be folded together only
+    when they are the same request in every sense a reader would check,
+    and "what the server should answer" is one of those senses: a step
+    expecting 400 is not a truncation of a step expecting 200, it is a
+    different test.
+
+    Deliberately NOT part of _rest_shape_sig, which shape clustering
+    also uses -- there a 200 and a 400 of the same call SHOULD share one
+    method, with the expectation carried per row in
+    expected_<step>_status_code. The difference is that a merge
+    substitutes one case's steps for another's, where no row can express
+    the divergence.
+    """
+    rest = [s for s in case.steps if isinstance(s, RestStep)]
+    return tuple(
+        shape + (tuple(sorted(_valid_http_status_codes(step))),)
+        for shape, step in zip(_rest_shape_sig(case), rest)
     )
 
 
@@ -5007,7 +5053,9 @@ def _merge_prefix_clusters(
     the case IS the longest one).
     """
     # Compute sig once per cluster.
-    sigs = [_rest_shape_sig(cl[0]) for cl in clusters]
+    # merge-only signature: shape AND expected status, so a negative
+    # case is never folded onto its positive sibling's steps
+    sigs = [_rest_shape_sig_for_merge(cl[0]) for cl in clusters]
 
     # Sort by (sig length desc, case-count desc, first-case-index asc) so:
     #   - Longer clusters process first (they absorb shorter prefixes).
