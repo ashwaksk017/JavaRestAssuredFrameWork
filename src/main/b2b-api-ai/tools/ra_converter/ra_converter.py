@@ -9444,13 +9444,13 @@ public interface ImportedRestClient {{
             ], "FULL")
         if t == "Invalid HTTP Status Codes":
             codes = (cfg.get("codes", "") or "").strip()
-            code_list = [c for c in re.split(r"[,\s]+", codes) if c]
-            checks = " && ".join(
-                f'{response_var}.statusCode() != {c}' for c in code_list) or "true"
+            # The recorded codes are the DEFAULT; the row may override
+            # them. The column name is passed as a literal so the
+            # contract check sees it inlined and the runtime never has
+            # to rebuild a name in step with the emitter.
             return ([
-                f'// invalid-status assertion values are fixed at converter time;'
-                f' override via CSV column `{col_name}` (comma-separated) if needed.',
-                f'softAssert.assertTrue({checks}, "invalid status codes: {codes}");',
+                f'ResponseAsserts.invalidStatus(softAssert, {response_var}, row,'
+                f' "{_jlit(col_name)}", "{_jlit(codes)}");',
             ], "FULL")
         if t == "JsonPath Match":
             path = _jlit(_jsonpath_to_gpath(cfg.get("path", "")))
@@ -12518,6 +12518,10 @@ public final class PlaceholderResolver {{
                 v = ctx.get(rawKey);
                 if (v == null || v.isEmpty()) v = ctx.get(rawKey.replace('_', '.'));
                 if (v == null || v.isEmpty()) v = ctx.get(rawKey.replace('.', '_'));
+                // <step>.<property>: only the LAST underscore is the split,
+                // so a step name containing one (InviteKey_Properties)
+                // survives replace-every-underscore.
+                if (v == null || v.isEmpty()) v = ctx.get(lastUnderscoreToDot(rawKey));
                 if (v == null || v.isEmpty()) v = ctxLookupLenient(ctx, rawKey);
                 if (v == null || v.isEmpty()) v = lookupByFieldSuffix(ctx, rawKey);
             }}
@@ -12674,6 +12678,19 @@ public final class PlaceholderResolver {{
         return sb.toString();
     }}
 
+    /**
+     * {{@code A_B_c}} -> {{@code A_B.c}}.
+     *
+     * <p>A ctx key is {{@code <step>.<property>}}, so only the LAST
+     * underscore is the split. Replacing every underscore turns the
+     * ReadyAPI step {{@code InviteKey_Properties}} into
+     * {{@code InviteKey.Properties}}, which nothing publishes.</p>
+     */
+    private static String lastUnderscoreToDot(String key) {{
+        int i = (key == null) ? -1 : key.lastIndexOf('_');
+        return (i <= 0) ? key : key.substring(0, i) + "." + key.substring(i + 1);
+    }}
+
     private static String ctxLookupLenient(Map<String, String> ctx, String key) {{
         if (ctx == null || key == null || key.isEmpty()) {{
             return null;
@@ -12684,7 +12701,8 @@ public final class PlaceholderResolver {{
         }}
         for (String alt : new String[] {{
                 key.replace('#', '.'), key.replace('#', '_'),
-                key.replace('_', '.'), key.replace('.', '_')}}) {{
+                key.replace('_', '.'), key.replace('.', '_'),
+                lastUnderscoreToDot(key)}}) {{
             if (!alt.equals(key)) {{
                 v = ctx.get(alt);
                 if (v != null && !v.isEmpty()) {{
@@ -12695,7 +12713,7 @@ public final class PlaceholderResolver {{
         String found = null;
         for (String form : new String[] {{key, key.replace('#', '.'),
                 key.replace('#', '_'), key.replace('_', '.'),
-                key.replace('.', '_')}}) {{
+                key.replace('.', '_'), lastUnderscoreToDot(key)}}) {{
             String lower = form.toLowerCase(java.util.Locale.ROOT);
             for (Map.Entry<String, String> e : ctx.entrySet()) {{
                 if (e.getKey() == null || e.getValue() == null

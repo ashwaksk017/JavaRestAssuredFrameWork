@@ -383,4 +383,67 @@ public class ResponseAssertsTest {
         ResponseAsserts.statusFromStepColumn(sa, json(200, "{}"), row, "tokenRequest", 200);
         assertSoftPass(sa);
     }
+
+    private static final String INVALID_COL =
+            "expected_get_using_invalid_query_parameters_400_invalid_status_codes";
+
+    @Test
+    @Story("the recorded invalid codes are used when the row says nothing")
+    @Description("ReadyAPI's Invalid HTTP Status Codes assertion. The "
+            + "converter bakes what it recorded; the row may override.")
+    public void recordedInvalidCodesFailAMatchingStatus() {
+        SoftAssert sa = new SoftAssert();
+        ResponseAsserts.invalidStatus(sa, json(200, "{}"), new HashMap<>(),
+                INVALID_COL, "200, 204, 206");
+        Assert.assertThrows(AssertionError.class, sa::assertAll);
+    }
+
+    @Test
+    @Story("a status outside the recorded list passes")
+    public void recordedInvalidCodesAllowOtherStatuses() {
+        SoftAssert sa = new SoftAssert();
+        ResponseAsserts.invalidStatus(sa, json(400, "{}"), new HashMap<>(),
+                INVALID_COL, "200, 204, 206");
+        sa.assertAll();
+    }
+
+    @Test
+    @Story("the CSV column overrides the recorded list")
+    @Description("The generated comment promised this override for a long "
+            + "time while nothing read the column.")
+    public void theRowOverridesTheRecordedCodes() {
+        Map<String, String> row = new HashMap<>();
+        row.put(INVALID_COL, "400 404");
+
+        SoftAssert forbidden = new SoftAssert();
+        ResponseAsserts.invalidStatus(forbidden, json(404, "{}"), row,
+                INVALID_COL, "200, 204, 206");
+        Assert.assertThrows(AssertionError.class, forbidden::assertAll);
+
+        // 200 is in the RECORDED list but not in the row's -- the row wins
+        SoftAssert allowed = new SoftAssert();
+        ResponseAsserts.invalidStatus(allowed, json(200, "{}"), row,
+                INVALID_COL, "200, 204, 206");
+        allowed.assertAll();
+    }
+
+    @Test
+    @Story("an empty list forbids nothing and is skipped, not passed")
+    public void anEmptyListIsASkip() {
+        SoftAssert sa = new SoftAssert();
+        ResponseAsserts.invalidStatus(sa, json(200, "{}"), new HashMap<>(),
+                INVALID_COL, "");
+        sa.assertAll();     // nothing forbidden -> nothing asserted
+    }
+
+    @Test
+    @Story("a blank cell falls back to the recorded list")
+    public void aBlankCellDoesNotMeanNoCodes() {
+        Map<String, String> row = new HashMap<>();
+        row.put(INVALID_COL, "   ");
+        SoftAssert sa = new SoftAssert();
+        ResponseAsserts.invalidStatus(sa, json(200, "{}"), row,
+                INVALID_COL, "200");
+        Assert.assertThrows(AssertionError.class, sa::assertAll);
+    }
 }

@@ -124,6 +124,10 @@ public final class PlaceholderResolver {
                 v = ctx.get(rawKey);
                 if (v == null || v.isEmpty()) v = ctx.get(rawKey.replace('_', '.'));
                 if (v == null || v.isEmpty()) v = ctx.get(rawKey.replace('.', '_'));
+                // <step>.<property>: only the LAST underscore is the split,
+                // so a step name containing one (InviteKey_Properties)
+                // survives replace-every-underscore.
+                if (v == null || v.isEmpty()) v = ctx.get(lastUnderscoreToDot(rawKey));
                 if (v == null || v.isEmpty()) v = ctxLookupLenient(ctx, rawKey);
                 if (v == null || v.isEmpty()) v = lookupByFieldSuffix(ctx, rawKey);
             }
@@ -280,6 +284,19 @@ public final class PlaceholderResolver {
         return sb.toString();
     }
 
+    /**
+     * {@code A_B_c} -> {@code A_B.c}.
+     *
+     * <p>A ctx key is {@code <step>.<property>}, so only the LAST
+     * underscore is the split. Replacing every underscore turns the
+     * ReadyAPI step {@code InviteKey_Properties} into
+     * {@code InviteKey.Properties}, which nothing publishes.</p>
+     */
+    private static String lastUnderscoreToDot(String key) {
+        int i = (key == null) ? -1 : key.lastIndexOf('_');
+        return (i <= 0) ? key : key.substring(0, i) + "." + key.substring(i + 1);
+    }
+
     private static String ctxLookupLenient(Map<String, String> ctx, String key) {
         if (ctx == null || key == null || key.isEmpty()) {
             return null;
@@ -290,7 +307,8 @@ public final class PlaceholderResolver {
         }
         for (String alt : new String[] {
                 key.replace('#', '.'), key.replace('#', '_'),
-                key.replace('_', '.'), key.replace('.', '_')}) {
+                key.replace('_', '.'), key.replace('.', '_'),
+                lastUnderscoreToDot(key)}) {
             if (!alt.equals(key)) {
                 v = ctx.get(alt);
                 if (v != null && !v.isEmpty()) {
@@ -301,7 +319,7 @@ public final class PlaceholderResolver {
         String found = null;
         for (String form : new String[] {key, key.replace('#', '.'),
                 key.replace('#', '_'), key.replace('_', '.'),
-                key.replace('.', '_')}) {
+                key.replace('.', '_'), lastUnderscoreToDot(key)}) {
             String lower = form.toLowerCase(java.util.Locale.ROOT);
             for (Map.Entry<String, String> e : ctx.entrySet()) {
                 if (e.getKey() == null || e.getValue() == null

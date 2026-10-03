@@ -128,4 +128,43 @@ public class ResolverSpellingTest {
                     "should be a value: " + hit);
         }
     }
+
+    @Test(groups = {"unit", "framework"})
+    @Story("a step name containing an underscore still resolves")
+    @Description("A ctx key is <step>.<property>, so only the LAST "
+            + "underscore is the split. ReadyAPI names the step "
+            + "InviteKey_Properties, so the published key is "
+            + "InviteKey_Properties.inviteKey while the template consumes "
+            + "#InviteKey_Properties_inviteKey#. Replacing EVERY underscore "
+            + "-- all the resolver used to try -- asks for "
+            + "InviteKey.Properties.inviteKey, which nothing publishes, and "
+            + "the invite key went into the body as its own placeholder.")
+    public void lastUnderscoreSplitsStepFromProperty() {
+        String got = PlaceholderResolver.resolveAll(
+                "#InviteKey_Properties_inviteKey#",
+                ctx("InviteKey_Properties.inviteKey", "KEY-123"));
+
+        Assert.assertEquals(got, "KEY-123");
+    }
+
+    @Test(groups = {"unit", "framework"})
+    @Story("replacing every underscore still works where that IS the key")
+    public void everyUnderscoreFormStillResolves() {
+        String got = PlaceholderResolver.resolveAll(
+                "#Properties_propcode#", ctx("Properties.propcode", "ABC"));
+
+        Assert.assertEquals(got, "ABC");
+    }
+
+    @Test(groups = {"unit", "framework"})
+    @Story("a key with no underscore, or a leading one, is left alone")
+    public void nothingElseChangesSpelling() {
+        Assert.assertEquals(
+                PlaceholderResolver.resolveAll("#plain#", ctx("plain", "v1")),
+                "v1");
+        Assert.assertEquals(
+                PlaceholderResolver.resolveAll("#_leading#",
+                        ctx("_leading", "v2")),
+                "v2");
+    }
 }

@@ -67,12 +67,19 @@ def inlined_columns(root):
     """
     found = set()
     rx = re.compile(r'row\.get\("(expected_[^"]+)"\)')
+    # Passed to a reader that does the row.get itself. Named explicitly:
+    # accepting any quoted expected_* literal would make this a rubber
+    # stamp, which an earlier draft of this guard already was once.
+    via_reader = re.compile(
+        r'ResponseAsserts\.invalidStatus\([^;]*?"(expected_[^"]+)"')
     for sub in ("support", "data", "rest"):
         base = os.path.join(root, "src", "main", "java", "com", "hi", "api", sub)
         for dirpath, _d, files in os.walk(base):
             for fn in files:
                 if fn.endswith(".java"):
-                    found.update(rx.findall(read(os.path.join(dirpath, fn))))
+                    src = read(os.path.join(dirpath, fn))
+                    found.update(rx.findall(src))
+                    found.update(via_reader.findall(src))
     return found
 
 
@@ -81,6 +88,13 @@ def inlined_columns(root):
 # "msgContentColumn" is still a substring of "msgContentColumnX", so renaming
 # the method away would NOT have tripped this guard.
 JAVA_GUARDS = (
+    # The invalid-status column is advertised in generated code as an
+    # override. It was advertised for a long time while nothing read it;
+    # losing the reader again would restore that quietly.
+    ("ResponseAsserts.java",
+     "public static void invalidStatus(SoftAssert softAssert, Response res",
+     "the recorded invalid-status codes must stay row-overridable, which "
+     "the generated comment has always promised"),
     ("ResponseAsserts.java", "static String msgContentColumn(Map<String, String> row",
      "msgcontent columns carry an element ordinal; the lookup must scan for it"),
     ("ResponseAsserts.java", "colMsg = msgContentColumn(row, step, lastSegment(jsonPath))",

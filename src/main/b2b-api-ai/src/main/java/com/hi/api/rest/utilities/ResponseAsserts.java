@@ -113,6 +113,54 @@ public final class ResponseAsserts {
     }
 
     /**
+     * Soft-assert the response status is NOT one of the forbidden codes.
+     *
+     * <p>ReadyAPI's "Invalid HTTP Status Codes" assertion. The converter
+     * bakes the codes it recorded; a row overrides them through
+     * {@code column} (comma- or space-separated) -- which the generated
+     * comment has always promised and nothing read.</p>
+     *
+     * <p>An empty list forbids nothing. That is a skip, and it says so:
+     * a check that quietly passes when it was asked to check nothing is
+     * the failure mode this whole contract exists to prevent.</p>
+     */
+    public static void invalidStatus(SoftAssert softAssert, Response res,
+                                     Map<String, String> row, String column,
+                                     String defaultCodes) {
+        if (softAssert == null || res == null) {
+            return;
+        }
+        String raw = (row == null) ? null : row.get(column);
+        String codes = (raw == null || raw.trim().isEmpty()) ? defaultCodes : raw;
+        java.util.List<Integer> forbidden = new java.util.ArrayList<>();
+        for (String part : ((codes == null) ? "" : codes).split("[,\\s]+")) {
+            String t = part.trim();
+            if (t.isEmpty()) {
+                continue;
+            }
+            try {
+                forbidden.add(Integer.valueOf(t));
+            } catch (NumberFormatException ignored) {
+                org.slf4j.LoggerFactory.getLogger(ResponseAsserts.class)
+                        .warn(" .. [invalid-status] column `{}` holds a "
+                                + "non-numeric code `{}` -- ignored.", column, t);
+            }
+        }
+        if (forbidden.isEmpty()) {
+            org.slf4j.LoggerFactory.getLogger(ResponseAsserts.class)
+                    .warn(" .. [invalid-status assert SKIPPED] column `{}` "
+                            + "and the recorded default are both empty -- "
+                            + "nothing is forbidden. Actual status was {}.",
+                            column, res.statusCode());
+            return;
+        }
+        int actual = res.statusCode();
+        softAssert.assertFalse(forbidden.contains(actual),
+                "status " + actual + " is one of the invalid codes "
+                        + forbidden + " (override column `" + column + "`)");
+    }
+
+    /**
      * Soft-assert the resolved expected value appears in the response.
      *
      * <p>ReadyAPI JsonPath Match is path-specific. Hilton payloads wrap

@@ -60,6 +60,14 @@ def candidate_keys(raw: str) -> set:
         ns, tail = raw.split("_", 1)
         keys.add(f"{ns}.{tail}")
         keys.add(f"{ns}.{tail.replace('_', '.')}")
+        # A ctx key is <step>.<property> and a ReadyAPI STEP NAME may
+        # contain underscores, so the split that matters is the LAST one:
+        # `InviteKey_Properties_inviteKey` is published as
+        # `InviteKey_Properties.inviteKey`, which splitting at the first
+        # underscore never reaches.
+        head, last = raw.rsplit("_", 1)
+        if head:
+            keys.add(f"{head}.{last}")
     return keys
 
 

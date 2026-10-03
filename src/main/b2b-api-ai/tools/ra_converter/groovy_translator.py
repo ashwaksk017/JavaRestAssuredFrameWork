@@ -1266,7 +1266,42 @@ _SQL_EXECUTE_RX = re.compile(
     r"sql\.execute\(\s*(?P<query>[^)]+)\)", re.IGNORECASE)
 
 
-def _normalize_jdbc_query(raw_q: str) -> tuple[str, list]:
+_LITERAL_DEF_RX = re.compile(
+    r"^[^\S\n]*def\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+    r"(?:(-?\d+(?:\.\d+)?)|'([^'$\\]*)'|\"([^\"$\\]*)\")\s*$",
+    re.MULTILINE)
+
+
+def _literal_groovy_locals(script: str) -> dict:
+    """{name: literal text} for `def X = 1782302556` / `def X = 'abc'`.
+
+    A local bound to a plain literal is a VALUE. Interpolating it in the
+    same script is not a cross-step reference and must not become a
+    `#name#` placeholder -- nothing publishes a local, so the
+    placeholder reaches the server as its own text.
+
+    Fail-closed: a name assigned anywhere else is dropped, because its
+    value at the point of use is not knowable from the binding alone.
+    Rejecting leaves today's behaviour untouched.
+    """
+    if not script:
+        return {}
+    out = {}
+    for m in _LITERAL_DEF_RX.finditer(script):
+        name = m.group(1)
+        value = next(g for g in m.groups()[1:] if g is not None)
+        out[name] = value
+    for name in list(out):
+        # `def X = 1` once, then `X = 2` later -- or two defs. Either way
+        # the binding no longer tells us what the value is here.
+        assigns = re.findall(
+            r"(?<![A-Za-z0-9_.])" + re.escape(name) + r"\s*=(?!=)", script)
+        if len(assigns) > 1:
+            del out[name]
+    return out
+
+
+def _normalize_jdbc_query(raw_q: str, literal_locals: dict | None = None) -> tuple[str, list]:
     """Rewrite a raw SQL string to a `#placeholder#`-friendly form so
     downstream mapJsonValues resolves references at runtime. Returns
     (transformed_query, substituted_id_columns).
@@ -1312,6 +1347,15 @@ def _normalize_jdbc_query(raw_q: str) -> tuple[str, list]:
         r'\$\{([A-Za-z_][A-Za-z0-9_]*)#([A-Za-z0-9_.-]+)\}',
         lambda m: '#' + m.group(1) + '_' + m.group(2).replace('.', '_') + '#',
         transformed)
+    # A local bound to a literal is a value, not a cross-step ref --
+    # inline it before the catch-all below turns it into `#name#`,
+    # which nothing publishes because nothing can publish a local.
+    if literal_locals:
+        transformed = re.sub(
+            r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}',
+            lambda m: (literal_locals[m.group(1)]
+                       if m.group(1) in literal_locals else m.group(0)),
+            transformed)
     transformed = re.sub(
         r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}',
         lambda m: '#' + m.group(1) + '#',
@@ -2890,62 +2934,14 @@ def translate(script: str, response_var_by_step: dict[str, str],
                         return "?"  # non-identifier slot; can't refify
                     return f"'#{name}#'"
                 raw_q = re.sub(r"\?", _sub_qmark, raw_q)
-            hard_lits = re.findall(
-                r"\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:'([^']+)'|(\d[\d.]*))",
-                raw_q)
-            substituted_cols: list[str] = []
-            transformed = raw_q
-            # Only parameterize STALE-ID-SHAPED literals -- 6+ digit
-            # numbers, typically Hilton internal ids that expired years
-            # ago. Enum values (status='active', web_site='foo.com',
-            # code='XYZ') MUST stay as-is: the SoapUI author intended
-            # those literals, and no upstream step populates them in
-            # ctx, so parameterizing them creates `null` fallbacks that
-            # Db.execute then refuses.
-            ID_COL_HINTS = ("id", "guest", "account", "member", "hhonors",
-                            "hilton", "partner", "customer", "user")
-            for col, val, num in hard_lits:
-                col_l = col.lower()
-                if col_l in ("null", "true", "false"):
-                    continue
-                if col in substituted_cols:
-                    continue
-                literal = num or val
-                looks_like_id = len(literal) >= 6 and literal.isdigit()
-                col_hints_id = any(h in col_l for h in ID_COL_HINTS)
-                if not (looks_like_id and col_hints_id):
-                    continue  # keep the literal, don't parameterize
-                pattern = re.compile(
-                    rf"\b{re.escape(col)}\s*=\s*(?:'[^']+'|\d[\d.]*)")
-                transformed = pattern.sub(f"{col}='#{col}#'", transformed, count=1)
-                substituted_cols.append(col)
-            # Translate SoapUI-style refs left in the SQL to framework
-            # placeholders so `mapJsonValues` resolves them at runtime.
-            # Common patterns seen in imported suites:
-            #   ${Properties#guestID}    -> #Properties_guestID#
-            #   ${#TestCase#Properties#X} -> #Properties_X#
-            #   ${#Project#Y}             -> #Y#
-            # Without this, Db.unsafeSqlReason (correctly) refuses the
-            # SQL for containing `${...}` even though the intent is a
-            # runtime substitution the framework CAN handle.
-            transformed = re.sub(
-                r'\$\{#(?:TestCase|TestSuite|Global|Env|MockService)#'
-                r'([A-Za-z0-9_.-]+)\}',
-                lambda m: '#' + m.group(1).replace('.', '_') + '#',
-                transformed)
-            transformed = re.sub(
-                r'\$\{#Project#([A-Za-z0-9_.-]+)\}',
-                lambda m: '#' + m.group(1).replace('.', '_') + '#',
-                transformed)
-            transformed = re.sub(
-                r'\$\{([A-Za-z_][A-Za-z0-9_]*)#([A-Za-z0-9_.-]+)\}',
-                lambda m: '#' + m.group(1) + '_' + m.group(2).replace('.', '_') + '#',
-                transformed)
-            # Bare ${var}
-            transformed = re.sub(
-                r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}',
-                lambda m: '#' + m.group(1) + '#',
-                transformed)
+            # Same rewrite as every other JDBC path. This used to be
+            # an inline copy of _normalize_jdbc_query -- identical
+            # ID_COL_HINTS, identical substitutions -- which is why
+            # teaching the helper to inline literal Groovy locals
+            # fixed the other paths and left this one emitting
+            # `#newHonorsNumber#`.
+            transformed, substituted_cols = _normalize_jdbc_query(
+                raw_q, _literal_groovy_locals(script))
             # Java literal form of the (potentially rewritten) query.
             trans_inner = transformed.replace("\\", "\\\\").replace('"', '\\"')
             java_query = f'"{trans_inner}"'
@@ -3163,7 +3159,8 @@ def translate(script: str, response_var_by_step: dict[str, str],
                     f'Db.{java_helper}(...) with the concrete SQL.')
                 continue
             raw_q = query_expr[1:-1]
-            transformed, subs = _normalize_jdbc_query(raw_q)
+            transformed, subs = _normalize_jdbc_query(
+                raw_q, _literal_groovy_locals(script))
             java_query = _java_string_literal(transformed)
             _row_var_counter += 1
             # Namespace the local by step_name_hint -- translate() runs
@@ -3398,7 +3395,8 @@ def translate(script: str, response_var_by_step: dict[str, str],
             script)
         if eachrow_hit:
             row_var, closure_body = eachrow_hit.group(1), eachrow_hit.group(2)
-        transformed, subs = _normalize_jdbc_query(raw_sql)
+        transformed, subs = _normalize_jdbc_query(
+            raw_sql, _literal_groovy_locals(script))
         java_query = _java_string_literal(transformed)
         _row_var_counter += 1
         step_tag = re.sub(r"[^A-Za-z0-9_]", "_", step_name_hint or "s")
