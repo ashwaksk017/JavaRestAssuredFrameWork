@@ -80,6 +80,25 @@ _STRARR_RX = re.compile(r"new String\[\]\s*\{([^}]*)\}")
 _LIT_RX = re.compile(r'"((?:[^"\\]|\\.)*)"')
 _MARK = "CaseRegistry.register("
 
+# register("<suite>", ...) -- the suite argument the emitter now writes.
+_SUITE_ARG_RX = re.compile(r'^"((?:[^"\\]|\\.)*)"\s*,\s*(.*)$', re.S)
+
+
+def _suite_of(path: str) -> str:
+    """The suite a generated file belongs to.
+
+    `.../support/<suite>/cases/XPhases.java` and
+    `.../tests/imported/<suite>/...` both carry it. Empty for anything
+    else, which keys on the bare id exactly as a hand-written flow does.
+    """
+    parts = path.replace(chr(92), "/").split("/")
+    for marker in ("support", "imported"):
+        if marker in parts:
+            i = parts.index(marker)
+            if i + 1 < len(parts) and parts[i + 1] not in ("scenario", "cases"):
+                return parts[i + 1]
+    return ""
+
 
 def _register_arg(text: str, open_paren: int):
     """The register( argument, and the index just past its closing paren."""
@@ -117,6 +136,12 @@ def build_registry(root: str):
             arg, after = _register_arg(text, op)
             end = text.find(";", after)
             block = text[after:end if end > 0 else len(text)]
+            # register("<suite>", X) -- strip the suite and keep X, which
+            # is still either a literal or the loop variable.
+            suite = _suite_of(path)
+            m_suite = _SUITE_ARG_RX.match(arg)
+            if m_suite:
+                suite, arg = m_suite.group(1), m_suite.group(2).strip()
             if arg.startswith('"'):
                 ids = [_LIT_RX.match(arg).group(1)]
             else:
@@ -130,10 +155,14 @@ def build_registry(root: str):
                 ids = _LIT_RX.findall(last.group(1))
             entries = [(k, v, s) for k, v, s in _ENTRY_RX.findall(block)]
             for cid in ids:
-                if cid in registry:
-                    unparsed.append((path, "duplicate registration of " + cid))
-                registry[cid] = entries
-                reg_file[cid] = path
+                key = (suite, cid)
+                # Keyed by suite, so the same id in another project is a
+                # different case, not a duplicate.
+                if key in registry:
+                    unparsed.append(
+                        (path, "duplicate registration of " + cid))
+                registry[key] = entries
+                reg_file[key] = path
             pos = end if end > 0 else after
     return registry, reg_file, unparsed
 
@@ -171,8 +200,9 @@ def analyse(root: str):
     findings = collections.defaultdict(list)
     reached = collections.defaultdict(set)
 
-    def grade(cid, calls, path, tname, record):
-        entries = registry.get(cid)
+    def grade(key, calls, path, tname, record):
+        cid = key[1]
+        entries = registry.get(key)
         if entries is None:
             return
         seq = []
@@ -205,14 +235,24 @@ def analyse(root: str):
                          "%s %s() matches %d: %s" % (kind, name, len(hits), alts)))
                 continue
             seq.append(hits[0])
-            reached[cid].add(hits[0])
+            reached[key].add(hits[0])
         if record and seq != sorted(seq):
             findings["INVERTED"].append(
                 (cid, path, tname, "visits registered indexes %s" % seq))
 
     for path, tname, cid, calls in chains:
-        if cid and cid in registry:
-            grade(cid, calls, path, tname, record=True)
+        # Resolve inside the test's own suite first; fall back to a bare
+        # registration (a hand-written flow), then to a unique match
+        # elsewhere so a test living outside the suite tree still grades.
+        key = (_suite_of(path), cid)
+        if cid and key not in registry:
+            if ("", cid) in registry:
+                key = ("", cid)
+            else:
+                same = [k for k in registry if k[1] == cid]
+                key = same[0] if len(same) == 1 else key
+        if cid and key in registry:
+            grade(key, calls, path, tname, record=True)
         elif cid:
             findings["NO_REGISTRATION"].append((cid, path, tname, ""))
             continue
@@ -221,17 +261,18 @@ def analyse(root: str):
         # truncates it. Those siblings live in the same Phases file, so
         # credit what this chain can reach in them too -- otherwise every
         # cluster member's phases look unreached.
-        home = reg_file.get(cid)
+        home = reg_file.get(key)
         if home:
             for other, other_home in reg_file.items():
-                if other_home == home and other != cid:
+                if other_home == home and other != key:
                     grade(other, calls, path, tname, record=False)
 
-    for cid, entries in registry.items():
+    for key, entries in registry.items():
         for i, (k, v, s) in enumerate(entries):
-            if i not in reached.get(cid, ()):
+            if i not in reached.get(key, ()):
                 findings["ORPHAN"].append(
-                    (cid, reg_file[cid], "", '%s %s("%s") at #%d' % (k, v, s, i)))
+                    (key[1], reg_file[key], "",
+                     '%s %s("%s") at #%d' % (k, v, s, i)))
     return findings, registry, chains, unparsed
 
 

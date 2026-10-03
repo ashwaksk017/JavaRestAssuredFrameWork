@@ -1,13 +1,14 @@
 """Guards for the project / identity / heuristics configuration.
 
 The contract that keeps the default tree byte-identical: the committed
-converter.config.json, converter_config.DEFAULTS, the emitter's built-in
+converter.config.json, cc.DEFAULTS, the emitter's built-in
 tables and the Java IdentityVocabulary defaults all say the same thing.
 """
 from __future__ import annotations
 
 import json
 import os
+import types
 import re
 import sys
 import tempfile
@@ -153,6 +154,98 @@ def test_identity_resource_carries_identity_and_heuristics():
     assert res["heuristics"] == cfg["heuristics"]
     assert "diagrams" not in res
     json.dumps(res)  # serialisable
+
+
+
+def test_entry_class_defaults_to_onboarding_and_is_overridable():
+    """`Onboarding.start(row, "<case>")` is what a hand-written test types.
+
+    Right word for the B2B projects it was named after, wrong one for
+    GOAL. Default must stay Onboarding so every existing project
+    converts unchanged.
+    """
+    before = rc._ENTRY_CLASS_NAME
+    try:
+        cfg = cc.load_config()
+        assert (cfg.get("scenario") or {}).get("entry_class") == "Onboarding", (
+            "the committed default must stay Onboarding")
+
+        cc.apply_to_modules(cfg)
+        assert rc._ENTRY_CLASS_NAME == "Onboarding", rc._ENTRY_CLASS_NAME
+
+        goal = cc.deep_merge(
+            cfg, {"scenario": {"entry_class": "GoalJourney"}})
+        cc.apply_to_modules(goal)
+        assert rc._ENTRY_CLASS_NAME == "GoalJourney", rc._ENTRY_CLASS_NAME
+
+        # the name must reach the emitter, not just the module global
+        stub = types.SimpleNamespace(phase_specs_enabled=True,
+                                     _entry_class_names=[])
+        got = rc.Emitter.shared_entry_class(stub, 0)
+        assert got == "GoalJourney", got
+    finally:
+        rc._ENTRY_CLASS_NAME = before
+
+
+def test_entry_class_must_be_a_java_identifier():
+    """A bad value does not fail the convert -- it emits a class that
+    will not compile, minutes later and far from the cause."""
+    cfg = cc.load_config()
+    for bad in ("Goal Journey", "9Goal", "", "class", "goal-journey"):
+        merged = cc.deep_merge(
+            cfg, {"scenario": {"entry_class": bad}})
+        problems = [p for p in cc.validate(merged)
+                    if "entry_class" in p]
+        assert problems, "%r was accepted" % (bad,)
+    ok = cc.deep_merge(
+        cfg, {"scenario": {"entry_class": "GoalJourney"}})
+    assert not [p for p in cc.validate(ok) if "entry_class" in p]
+
+
+
+def test_config_reaches_the_module_even_when_it_is_main():
+    """Run as a script, ra_converter IS __main__.
+
+    apply_to_modules rebinds the tables through `import ra_converter as
+    rc`. Without an alias that import loads a SECOND copy from disk,
+    sets the tables on it and discards it, so the running module keeps
+    its literals and every converter.config.json override silently does
+    nothing. Invisible for as long as the committed defaults equalled
+    the literals.
+
+    This is a property of being __main__, so it is simulated here
+    rather than caught by the ordinary-import tests above.
+    """
+    saved_main = sys.modules.get("__main__")
+    saved_rc = sys.modules.get("ra_converter")
+    try:
+        # __main__ IS this file -> the running module must be aliased
+        fake_main = types.ModuleType("__main__")
+        fake_main.__file__ = rc.__file__
+        sys.modules["__main__"] = fake_main
+        sys.modules.pop("ra_converter", None)
+        rc._alias_self_for_config()
+        assert sys.modules.get("ra_converter") is fake_main, (
+            "the running module was not aliased, so apply_to_modules would "
+            "rebind a throwaway second copy")
+
+        # __main__ is some OTHER script -> aliasing it would point the
+        # config at the wrong module, so it must not happen
+        other = types.ModuleType("__main__")
+        other.__file__ = os.path.join(os.path.dirname(rc.__file__),
+                                      "converter_config.py")
+        sys.modules["__main__"] = other
+        sys.modules.pop("ra_converter", None)
+        rc._alias_self_for_config()
+        assert sys.modules.get("ra_converter") is not other, (
+            "aliased an unrelated __main__")
+    finally:
+        if saved_main is not None:
+            sys.modules["__main__"] = saved_main
+        if saved_rc is not None:
+            sys.modules["ra_converter"] = saved_rc
+        else:
+            sys.modules.pop("ra_converter", None)
 
 
 def test_validate_reports_bad_identity_values():

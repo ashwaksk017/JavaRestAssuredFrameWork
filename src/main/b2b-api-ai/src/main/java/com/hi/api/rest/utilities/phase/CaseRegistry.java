@@ -202,11 +202,44 @@ public final class CaseRegistry {
     private CaseRegistry() {
     }
 
-    /** Called by generated {@code <TestClass>Phases} classes. Idempotent per case id. */
-    public static Case register(String caseId) {
+    /**
+     * The map key. Two ReadyAPI projects may legitimately contain the same
+     * case id -- five attestation cases live in both the leadspace and the
+     * program-account suites -- and a plain put() let whichever suite
+     * registered LAST replace the other's chain, silently and with every
+     * test still passing.
+     *
+     * <p>A blank suite keys on the bare id, which is what a hand-written
+     * flow registers under.</p>
+     */
+    private static String key(String suite, String caseId) {
+        return (suite == null || suite.isEmpty()) ? caseId : suite + "::" + caseId;
+    }
+
+    /** Called by generated {@code <TestClass>Phases} classes. Idempotent per (suite, case id). */
+    public static Case register(String suite, String caseId) {
         Case c = new Case(caseId);
-        CASES.put(caseId, c);
+        CASES.put(key(suite, caseId), c);
         return c;
+    }
+
+    /** Hand-written flows, which belong to no converted suite. */
+    public static Case register(String caseId) {
+        return register("", caseId);
+    }
+
+    /**
+     * The case this suite registered, or null when nothing did.
+     *
+     * <p>Falls back to a bare registration so a hand-written flow stays
+     * reachable from a generated entry class.</p>
+     */
+    public static Case forCase(String suite, String caseId) {
+        if (caseId == null) {
+            return null;
+        }
+        Case own = CASES.get(key(suite, caseId));
+        return own != null ? own : CASES.get(caseId);
     }
 
     /** The case, or null when nothing registered it (a hand-written flow). */

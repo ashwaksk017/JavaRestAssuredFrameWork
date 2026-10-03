@@ -6215,6 +6215,11 @@ _ABSENT_OPS = ("not exists", "notexists", "not-exists", "absent", "null", "is nu
 
 # identity.id_hint_fields: a CSV column whose field tail contains one of these
 # is a live id and is rewritten to an @Properties_<field>@ placeholder.
+# The class a hand-written test calls to start a chain. Overridden from
+# scenario.entry_class by converter_config.apply_to_modules; the literal
+# here is the committed default so a run with no config is unchanged.
+_ENTRY_CLASS_NAME = "Onboarding"
+
 _ID_HINTS = ("guestid", "accountid", "memberid", "hhonorsnumber",
              "hhonors_number", "partneraccountid", "customerid",
              "userid", "hilton_member_id", "hiltonmemberid")
@@ -14205,7 +14210,7 @@ public class {class_name} extends BaseApiTest {{
 
         def descriptor(boot) -> str:
             text = NL.join(boot.get("body") or [])
-            parts = ["Onboarding"]
+            parts = [_ENTRY_CLASS_NAME]
             m = self._ENTRY_FLOW_RX.search(text)
             if m:
                 flow = m.group(1) or m.group(2) or ""
@@ -14224,7 +14229,8 @@ public class {class_name} extends BaseApiTest {{
             # field names onto one truncated prefix.
             while len("".join(parts)) > 40 and len(parts) > 1:
                 parts.pop()
-            return java_ident("".join(parts) or "Onboarding", "Onboarding")
+            return java_ident("".join(parts) or _ENTRY_CLASS_NAME,
+                              _ENTRY_CLASS_NAME)
 
         groups: dict = {}
         for i, boot in enumerate(self._shared_bootstraps):
@@ -14240,13 +14246,13 @@ public class {class_name} extends BaseApiTest {{
         if getattr(self, "phase_specs_enabled", False):
             # one entry per suite: the bootstrap is registered data, so the
             # vote-allocated names (OnboardingFlowAGuestidmember8) mean nothing
-            return "Onboarding"
+            return _ENTRY_CLASS_NAME
         """Entry type for a shared bootstrap, named after its setup."""
         if not self._entry_class_names:
             self._derive_entry_class_names()
         if 0 <= index < len(self._entry_class_names):
             return self._entry_class_names[index]
-        return "Onboarding"
+        return _ENTRY_CLASS_NAME
 
     def _shared_bootstrap_matches(self, body: list[str]) -> bool:
         return self._shared_bootstrap_index(body) is not None
@@ -15092,11 +15098,17 @@ public abstract class {cls}<S extends {cls}<S>> extends ScenarioSteps<S> {{
                 + "    }" + NL)
         phase_bind = ""
         if self.phase_specs_enabled:
+            # Resolve inside THIS suite: two projects can hold the same
+            # ReadyAPI case id, and a bare lookup returned whichever
+            # registered last.
+            _sq = _jlit(self.suite_name)
             phase_bind = (
-                f"        flow.phases = com.hi.api.rest.utilities.phase.CaseRegistry.forCase(flow.testCaseId);{NL}"
+                f'        flow.phases = com.hi.api.rest.utilities.phase.'
+                f'CaseRegistry.forCase("{_sq}", flow.testCaseId);{NL}'
                 f"        if (flow.phases == null) {{{NL}"
                 f"            {self._suite_cases_pkg()}.CaseIndex.ensureLoaded();{NL}"
-                f"            flow.phases = com.hi.api.rest.utilities.phase.CaseRegistry.forCase(flow.testCaseId);{NL}"
+                f'            flow.phases = com.hi.api.rest.utilities.phase.'
+                f'CaseRegistry.forCase("{_sq}", flow.testCaseId);{NL}'
                 f"        }}{NL}")
         # An overridden bootstrap() is arbitrary translated Groovy for THIS
         # suite -- SetupHelper, Config, TestSupport, CtxFields. Same import
@@ -18833,10 +18845,41 @@ def _run_prune_dead_props(args) -> None:
 _PHASE_SPECS = True
 
 
+def _alias_self_for_config() -> None:
+    """Make `import ra_converter` find the RUNNING module.
+
+    apply_to_modules rebinds this module's tables through
+    `import ra_converter as rc`. Run as a script, this file is
+    `__main__`, so that import loads a second copy from disk, sets the
+    tables on it and throws it away -- the running module keeps its
+    literals and every converter.config.json override silently does
+    nothing.
+
+    Invisible until now because the committed defaults equal the
+    literals, so no override had ever differed from what was already
+    there.
+
+    Guarded on identity rather than just absence: when ra_converter is
+    imported normally, __main__ is some other script and aliasing it
+    would point the config at the wrong module.
+    """
+    main_mod = sys.modules.get("__main__")
+    main_file = getattr(main_mod, "__file__", None)
+    if not main_file:
+        return
+    try:
+        same = os.path.samefile(main_file, __file__)
+    except OSError:
+        same = os.path.abspath(main_file) == os.path.abspath(__file__)
+    if same:
+        sys.modules.setdefault("ra_converter", main_mod)
+
+
 def _main_dispatch_inner(args):
     global _PHASE_SPECS
     global _CONVERTER_CONFIG
     import converter_config as _cc
+    _alias_self_for_config()
     _CONVERTER_CONFIG = _cc.load_config(getattr(args, "config", None))
     if getattr(args, "diagram_png", False):
         _CONVERTER_CONFIG.setdefault("diagrams", {}).setdefault("png", {})["enabled"] = True

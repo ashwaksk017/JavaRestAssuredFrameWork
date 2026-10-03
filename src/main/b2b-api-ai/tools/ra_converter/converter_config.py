@@ -34,6 +34,17 @@ from typing import Any
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_PATH = os.path.join(HERE, "converter.config.json")
+
+# Reserved words a generated class may not be named. Not exhaustive for
+# the language -- exhaustive for what someone would plausibly type into
+# scenario.entry_class.
+_JAVA_KEYWORDS = frozenset("""
+abstract assert boolean break byte case catch char class const continue
+default do double else enum extends final finally float for goto if
+implements import instanceof int interface long native new package private
+protected public return short static strictfp super switch synchronized
+this throw throws transient try void volatile while var record sealed
+""".split())
 LOCAL_PATH = os.path.join(HERE, "converter.config.local.json")
 
 DEFAULTS: dict[str, Any] = {
@@ -69,6 +80,14 @@ DEFAULTS: dict[str, Any] = {
             {"token": "_ta_", "partner": "lta"},
             {"token": "smb", "partner": "smb"},
         ],
+    },
+    "scenario": {
+        # The class a hand-written test calls to start a chain:
+        # `<entry_class>.start(row, "<case id>")`. Named for the B2B
+        # projects this converter was built on; a project whose cases are
+        # not onboarding anything should say so here rather than read
+        # `Onboarding.start` on every goal test.
+        "entry_class": "Onboarding",
     },
     "identity": {
         "namespace": "Properties",
@@ -199,6 +218,17 @@ def validate(cfg: dict) -> list[str]:
     if not isinstance(cases, (str, list)):
         problems.append("diagrams.png.cases must be a string pattern or a list of case names")
 
+    scen = cfg.get("scenario") or {}
+    entry = scen.get("entry_class", "Onboarding")
+    # A bad value does not fail the convert -- it emits a class that will
+    # not compile, minutes later and far from the cause.
+    if not isinstance(entry, str) or not re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", entry or ""):
+        problems.append(
+            "scenario.entry_class must be a Java identifier, got %r" % (entry,))
+    elif entry in _JAVA_KEYWORDS:
+        problems.append(
+            "scenario.entry_class %r is a Java keyword" % (entry,))
+
     proj = cfg.get("project") or {}
     try:
         rx = re.compile(proj.get("ticket_regex", ""))
@@ -277,6 +307,8 @@ def apply_to_modules(cfg: dict) -> None:
     except ImportError:
         gt = None
     if rc is not None:
+        rc._ENTRY_CLASS_NAME = (
+            (cfg.get("scenario") or {}).get("entry_class") or "Onboarding")
         rc._REGEN_TRIGGER_KEYS = frozenset(s.lower() for s in ident.get("regen_trigger_keys", []))
         rc._ID_HINTS = tuple(s.lower() for s in ident.get("id_hint_fields", []))
         rc._PATH_ID_PARAM_NAMES = frozenset(ident.get("id_param_names", []))

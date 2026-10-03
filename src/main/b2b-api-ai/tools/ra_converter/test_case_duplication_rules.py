@@ -42,7 +42,7 @@ def _tree(suites):
     return root
 
 
-def _collect(suites):
+def _collect_all(suites):
     root = _tree(suites)
     original = dup.SUPPORT
     dup.SUPPORT = root
@@ -50,6 +50,12 @@ def _collect(suites):
         return dup.collect()
     finally:
         dup.SUPPORT = original
+
+
+def _collect(suites):
+    """The three values the duplication tests care about."""
+    found, total, unparsed, _unqualified = _collect_all(suites)
+    return found, total, unparsed
 
 
 def _literal(case_id):
@@ -141,6 +147,66 @@ def test_an_array_not_feeding_register_is_not_counted():
     assert not unparsed, unparsed
     assert total == 1, "only the literal registration: %s" % total
     assert "real_case" in found and "a" not in found, list(found)
+
+
+def test_a_suite_qualified_registration_is_read():
+    """`register("<suite>", "<id>")` is the form the emitter writes now.
+
+    A parser that only knew the one-argument form would read NO
+    registrations at all and report a clean tree -- the worst possible
+    answer from a check whose job is to find silent overwrites.
+    """
+    src = ('class P { static void register() {\n'
+           '    CaseRegistry.register("suite_a", "B2B-317_attest")\n'
+           '        .bootstrap(Specs1::spec1);\n} }\n')
+    found, total, unparsed, unqualified = _collect_all(
+        {"suite_a": {"A.java": src}})
+    assert total == 1, total
+    assert "B2B-317_attest" in found, dict(found)
+    assert not unparsed, unparsed
+    assert not unqualified, dict(unqualified)
+
+
+def test_a_suite_qualified_shared_spec_loop_is_read():
+    """The cluster form carries the suite too:
+    `for (String id : ...) { CaseRegistry.register("<suite>", id)`."""
+    src = ('class P { static void register() {\n'
+           '    for (String id : new String[] {"c1", "c2"}) {\n'
+           '        CaseRegistry.register("suite_a", id)\n'
+           '            .bootstrap(Specs1::spec1);\n    }\n} }\n')
+    found, total, unparsed, unqualified = _collect_all(
+        {"suite_a": {"A.java": src}})
+    assert total == 2, total
+    assert set(found) == {"c1", "c2"}, dict(found)
+    assert not unparsed, unparsed
+    assert not unqualified, dict(unqualified)
+
+
+def test_an_unqualified_registration_is_flagged():
+    """Without a suite the key is the bare id again, and two projects
+    holding it overwrite each other silently. That regression is the
+    thing this check now fails on."""
+    src = ('class P { static void register() {\n'
+           '    CaseRegistry.register("B2B-317_attest")\n'
+           '        .bootstrap(Specs1::spec1);\n} }\n')
+    _found, _total, _unparsed, unqualified = _collect_all(
+        {"suite_a": {"A.java": src}})
+    assert unqualified, "a bare register() was not flagged"
+    assert any("A.java" in k for k in unqualified), dict(unqualified)
+
+
+def test_the_same_id_in_two_suites_stays_separate():
+    """Allowed now -- each suite keeps its own chain -- but the checker
+    must still show BOTH owners rather than collapsing them."""
+    src_a = ('class P { static void register() {\n'
+             '    CaseRegistry.register("suite_a", "shared_id")\n'
+             '        .bootstrap(Specs1::spec1);\n} }\n')
+    src_b = src_a.replace("suite_a", "suite_b")
+    found, total, _unparsed, unqualified = _collect_all(
+        {"suite_a": {"A.java": src_a}, "suite_b": {"B.java": src_b}})
+    assert total == 2, total
+    assert set(found["shared_id"]) == {"suite_a", "suite_b"}, dict(found)
+    assert not unqualified, dict(unqualified)
 
 
 for _name, _fn in sorted(

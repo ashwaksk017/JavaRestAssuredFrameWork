@@ -372,6 +372,21 @@ def chain_calls(entries: list[tuple[str, str]], force_step=()) -> list[str]:
     return out
 
 
+def _suite_of_pkg(pkg: str) -> str:
+    """The suite segment of a generated package.
+
+    `com.hi.api.support.amexbackbook.cases` -> `amexbackbook`. Taken from
+    the package rather than threaded through every caller, because the
+    package IS the suite -- the emitter builds both from the same name.
+    Empty for a package with no support segment, which keys on the bare
+    id exactly as before.
+    """
+    marker = ".support."
+    if marker not in (pkg or ""):
+        return ""
+    return pkg.split(marker, 1)[1].split(".")[0]
+
+
 def phases_class_java(pkg: str, cls: str, imports: list[str], cases: list[dict], hooks: list[str]) -> str:
     """One `<TestClass>Phases` file: registration only, no builders.
 
@@ -412,6 +427,10 @@ def phases_class_java(pkg: str, cls: str, imports: list[str], cases: list[dict],
             groups[key] = []
             order.append(key)
         groups[key].append(c["case"])
+    # Suite-qualified so two projects holding the same ReadyAPI case id
+    # do not overwrite each other's chain.
+    _suite = _suite_of_pkg(pkg)
+    _sfx = (jstr(_suite) + ", ") if _suite else ""
     body = ["    public static synchronized void register() {",
             "        if (registered) {",
             "            return;",
@@ -420,12 +439,12 @@ def phases_class_java(pkg: str, cls: str, imports: list[str], cases: list[dict],
     for key in order:
         ids = groups[key]
         if len(ids) == 1:
-            body.append(f"        CaseRegistry.register({jstr(ids[0])})")
+            body.append(f"        CaseRegistry.register({_sfx}{jstr(ids[0])})")
             pad = "            "
         else:
             body.append("        for (String id : new String[] {"
                         + ", ".join(jstr(i) for i in ids) + "}) {")
-            body.append("            CaseRegistry.register(id)")
+            body.append(f"            CaseRegistry.register({_sfx}id)")
             pad = "                "
         for idx, (vocab, step, verify, refs_t) in enumerate(key):
             end = ";" if idx == len(key) - 1 else ""

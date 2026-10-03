@@ -31,8 +31,17 @@ from collections import defaultdict
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SUPPORT = os.path.join(ROOT, "src", "main", "java", "com", "hi", "api", "support")
 
-# register("literal")
-REGISTER_RX = re.compile(r'CaseRegistry\.register\(\s*"((?:[^"\\]|\\.)*)"\s*\)')
+# register("literal") or the suite-qualified register("suite", "literal")
+REGISTER_RX = re.compile(
+    r'CaseRegistry\.register\(\s*(?:"(?:[^"\\]|\\.)*"\s*,\s*)?'
+    r'"((?:[^"\\]|\\.)*)"\s*\)')
+
+# A generated registration with NO suite argument. Cross-suite duplicates
+# are legal now that the key is namespaced -- this is what makes that
+# true, so it is the thing worth failing on. Without it the namespacing
+# could regress and the silent overwrite would simply come back.
+UNQUALIFIED_RX = re.compile(
+    r'CaseRegistry\.register\(\s*(?!"[^"]*"\s*,)')
 
 # Cases that share one spec are emitted as a loop over an array, so the id
 # reaching register() is a VARIABLE:
@@ -55,12 +64,13 @@ def _unescape(java_literal):
 
 
 def collect():
-    """({case id: {suite: [file, ...]}}, registrations, unreadable forms)."""
+    """({case id: {suite: [file]}}, count, unreadable, {file: [unqualified]})."""
     found = defaultdict(lambda: defaultdict(list))
     total = 0
     unparsed = []
+    unqualified = defaultdict(list)
     if not os.path.isdir(SUPPORT):
-        return found, total, unparsed
+        return found, total, unparsed, unqualified
 
     for suite in sorted(os.listdir(SUPPORT)):
         cases_dir = os.path.join(SUPPORT, suite, "cases")
@@ -89,14 +99,21 @@ def collect():
                 for m in LOOP_RX.finditer(src):
                     var, array = m.group(1), m.group(2)
                     if not re.search(
-                            r"CaseRegistry\.register\(\s*" + re.escape(var)
-                            + r"\s*\)", src):
+                            r'CaseRegistry\.register\(\s*'
+                            r'(?:"(?:[^"\\]|\\.)*"\s*,\s*)?'
+                            + re.escape(var) + r"\s*\)", src):
                         continue        # array is for something else
                     call_sites_explained += 1   # the one register(var) site
                     for lit in STRING_LITERAL_RX.finditer(array):
                         total += 1
                         found[_unescape(lit.group(1))][suite].append(
                             rel + " (shared spec)")
+
+                # A generated registration with no suite argument is the
+                # one way the silent cross-suite overwrite comes back.
+                for m in UNQUALIFIED_RX.finditer(src):
+                    unqualified["%s/%s" % (suite, rel)].append(
+                        src[m.start():m.start() + 60].split(chr(10))[0])
 
                 sites = len(ANY_REGISTER_RX.findall(src))
                 if sites > call_sites_explained:
@@ -105,7 +122,7 @@ def collect():
                     unparsed.append(
                         "%s/%s: %d register() call(s) in a form this check "
                         "cannot read" % (suite, rel, sites - call_sites_explained))
-    return found, total, unparsed
+    return found, total, unparsed, unqualified
 
 
 def source_project(suite):
@@ -123,7 +140,7 @@ def source_project(suite):
 
 
 def main():
-    found, total, unparsed = collect()
+    found, total, unparsed, unqualified = collect()
     if not found and not unparsed:
         print("case duplication: nothing converted in this tree yet -- "
               "run the converter first.")
@@ -159,10 +176,12 @@ def main():
                     print("       %-28s %s" % (suite, f))
 
     if cross:
-        print("\n!! %d case id(s) registered by MORE THAN ONE suite" % len(cross))
-        print("   register() does a plain put(), so the suite whose static")
-        print("   initializer runs LAST wins and the other suite's chain is")
-        print("   silently replaced. Compilation and the test run both pass.")
+        # Not a failure: the registry key is (suite, case id), so each
+        # project keeps its own chain. Printed because it is worth
+        # knowing which cases two projects both own.
+        print("\n-- %d case id(s) owned by MORE THAN ONE suite (allowed: the"
+              % len(cross))
+        print("   registry key is (suite, case id), so each keeps its chain)")
         for cid in sorted(cross, key=lambda c: (-len(found[c]), c)):
             owners = sorted(found[cid])
             print("\n   %s   (%d suites)" % (cid, len(owners)))
@@ -170,19 +189,21 @@ def main():
                 for f in found[cid][suite]:
                     print("       %-28s %s" % (suite, f))
 
-    if not cross and not within:
+    if unqualified:
+        print("\n!! %d generated registration(s) carry NO suite argument"
+              % sum(len(v) for v in unqualified.values()))
+        print("   `CaseRegistry.register(id)` keys on the bare id, so two")
+        print("   projects holding that id overwrite each other again --")
+        print("   silently, with compilation and the whole run still green.")
+        print("   The emitter must write register(\"<suite>\", id).")
+        for f in sorted(unqualified):
+            print("       %-60s x%d" % (f, len(unqualified[f])))
+
+    if not within and not unqualified:
         if unparsed:
             return 1
-        print("\nevery case id is registered exactly once. Nothing collides.")
+        print("\nevery case id is registered under its own suite.")
         return 0
-
-    print("\nTwo ways out, and they are not equivalent:")
-    print("  - namespace the registry key by suite, so overlapping projects")
-    print("    can coexist (chained-by-name lookups must then resolve within")
-    print("    a suite); or")
-    print("  - make register() refuse a duplicate loudly, which turns a")
-    print("    silent wrong-chain into a fast failure but means two")
-    print("    overlapping projects cannot share one tree.")
     return 1
 
 
