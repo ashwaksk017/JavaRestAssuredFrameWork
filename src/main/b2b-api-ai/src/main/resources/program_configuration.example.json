@@ -46,6 +46,20 @@
       "token": "",
       "testExecutionKey": ""
     },
+    "_jira_comment": "Read-only Jira access for the story-to-test tooling (tools/jira/). `base_urls` is an ALLOWLIST: a story URL whose host is not listed is refused rather than fetched, so a pasted link cannot redirect the fetcher at an arbitrary target. `pat` is a personal access token -- it is sent as a header, never placed in a URL or a log line. Leave the whole block empty to disable the tooling.",
+    "jira_config": {
+      "base_urls": [],
+      "pat": "",
+      "acceptance_criteria_fields": [],
+      "timeout_seconds": ""
+    },
+    "_zephyr_comment": "Zephyr test management. `pat` is the Zephyr personal access token: it belongs HERE and nowhere else -- not in a committed properties file, not in a CI script, not on a command line where it would reach the shell history. Code reads it through Config/the tooling's config loader so no generated artifact or log ever shows the value.",
+    "zephyr_config": {
+      "api_end_point": "",
+      "pat": "",
+      "project_key": "",
+      "folder_id": ""
+    },
     "poll_interval": "",
     "timeout": ""
   }

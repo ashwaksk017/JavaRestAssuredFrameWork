@@ -3,6 +3,7 @@ package com.hi.api.tests.data;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -13,6 +14,7 @@ import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.testng.Assert;
 import org.testng.annotations.AfterMethod;
+import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
 import com.hi.api.data.DataFiles;
@@ -37,6 +39,43 @@ public class MultiSourceDataProviderTest {
         System.clearProperty("dataFormat");
         System.clearProperty("dataSheet");
         System.clearProperty("dataArrayKey");
+    }
+
+    /**
+     * Write the per-method probe fixtures the resolution tests read.
+     *
+     * <p>Four of these tests were failing because they expected static
+     * files under {@code src/test/resources/csv/Probe*} that are not in
+     * the repository. They are generated here instead, which is what
+     * {@code perMethod_excel} already did and the only reason it passed.
+     *
+     * <p>Generated rather than committed on purpose:
+     * {@code src/test/resources/csv/} is gitignored -- it holds the
+     * converter's row files, which carry customer emails, account ids and
+     * internal hostnames, and this repository is public. The one tracked
+     * exception is {@code csv/manual/}, for author row files. A probe
+     * fixture is neither, so it belongs in the build output where it
+     * cannot be committed by accident and cannot go stale.
+     */
+    @BeforeClass(alwaysRun = true)
+    public void writeProbeFixtures() throws Exception {
+        writeFixture("ProbeCsv", "fromCsv.csv",
+                "title\nCSV from per-method\n");
+        writeFixture("ProbeJson", "fromJson.json",
+                "[{\"title\": \"JSON from per-method\", \"userId\": 22}]\n");
+        // Both siblings exist so the default search order (csv before
+        // json) and the -DdataFormat=json override are each observable.
+        writeFixture("ProbePref", "fromPref.csv",
+                "title\ncsv-wins\n");
+        writeFixture("ProbePref", "fromPref.json",
+                "[{\"title\": \"json-should-not-win\"}]\n");
+    }
+
+    private static void writeFixture(String probe, String file, String body)
+            throws Exception {
+        Path dir = Path.of("target", "test-classes", "csv", probe);
+        Files.createDirectories(dir);
+        Files.write(dir.resolve(file), body.getBytes(StandardCharsets.UTF_8));
     }
 
     @Test(groups = {"unit"})

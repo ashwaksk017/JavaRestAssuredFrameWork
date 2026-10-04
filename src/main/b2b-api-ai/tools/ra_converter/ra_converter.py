@@ -12182,10 +12182,26 @@ public final class PerMethodCsvDataProvider {{
                 : method.getDeclaringClass().getSimpleName())
                 .replace('.', '/');
         String meth = method.getName();
+        // An AUTHOR test (no `.tests.imported.` in its FQN) looks under
+        // csv/manual/ first: `src/test/resources/csv/` is gitignored in
+        // full because it holds the generated CSVs, which carry customer
+        // emails, account ids and internal hostnames. csv/manual/ is the
+        // one tracked exception, so it is the only place an author's row
+        // file can be committed. The old location is still tried.
         String resourcePath = "csv/" + subPath + "/" + meth + ".csv";
-
-        InputStream in = Thread.currentThread().getContextClassLoader()
-                .getResourceAsStream(resourcePath);
+        InputStream in = null;
+        if (idx < 0) {{
+            String manual = "csv/manual/" + subPath + "/" + meth + ".csv";
+            in = Thread.currentThread().getContextClassLoader()
+                    .getResourceAsStream(manual);
+            if (in != null) {{
+                resourcePath = manual;
+            }}
+        }}
+        if (in == null) {{
+            in = Thread.currentThread().getContextClassLoader()
+                    .getResourceAsStream(resourcePath);
+        }}
         if (in == null) {{
             throw new IllegalStateException(
                     "PerMethodCsvDataProvider: no CSV on classpath at " + resourcePath

@@ -88,7 +88,21 @@ src/main/resources/test_data_defaults/
 src/main/resources/converter_identity.json
 src/main/resources/config/
 src/test/java/com/hi/api/tests/imported/
-src/test/resources/csv/
+# Generated row files for the imported suites. These are NOT just build
+# output: they carry customer-internal data -- measured over 1,064 files,
+# 3,721 email addresses, 2,571 account/guest/confirmation ids, 685 vendor
+# hostnames and 416 internal Jira URLs. This repository is public, so
+# tracking them would publish all of it permanently.
+#
+# Contents, NOT the directory itself, for the reason given above the
+# openapi/ block: git never descends into an excluded directory, so
+# `csv/` followed by a negation would not re-include anything.
+src/test/resources/csv/*
+# The one tracked exception: author-written row files. An author test is
+# any class without `.tests.imported.` in its FQN, and
+# PerMethodCsvDataProvider looks here FIRST for one, so a hand-written
+# row file can actually be committed. Nothing generated is written here.
+!src/test/resources/csv/manual/
 src/test/resources/testng-b2b-*.xml
 # Loose top-level request-body templates left over from earlier runs
 # (before the suite-scoped `templates/<suite>/` layout).

@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">
+
+<!--
+  Tests written from a Jira / Zephyr story.
+
+  These are plain REST Assured + TestNG tests under
+  com.hi.api.tests.jira, authored by following
+  .cursor/skills/jira-to-restassured/SKILL.md. They do NOT use
+  CaseRegistry / PhaseSpec / Specs / Hooks / ImportedScenario: that
+  architecture exists to mirror a ReadyAPI recording step by step, and a
+  story has no recording to mirror.
+
+  This suite reaches real endpoints and needs credentials from
+  program_configuration.json, so it is deliberately NOT part of
+  testng-guards.xml, which verify_all runs and which must stay runnable
+  with no HTTP, no database and no credentials.
+
+  Run it on its own:
+    mvn -o test -DsuiteXmlFile=src/test/resources/testng-jira.xml
+
+  Or one test while writing it:
+    mvn -o test -Dtest=YourStoryTest -DfailIfNoTests=false
+
+  Until the first story test exists this reports
+  "Tests run: 0 ... BUILD SUCCESS", which is honest but reads like a pass.
+  Zero tests collected is not a green suite. Check the count, not the
+  build result.
+-->
+<suite name="jira-stories" verbose="1">
+    <listeners>
+        <listener class-name="io.qameta.allure.testng.AllureTestNg"/>
+    </listeners>
+
+    <test name="jira-stories">
+        <groups>
+            <run>
+                <include name="jira"/>
+            </run>
+        </groups>
+        <packages>
+            <package name="com.hi.api.tests.jira"/>
+        </packages>
+    </test>
+</suite>

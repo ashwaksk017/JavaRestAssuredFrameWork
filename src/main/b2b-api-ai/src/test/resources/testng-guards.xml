@@ -31,6 +31,35 @@
             <class name="com.hi.api.dsl.ManualPayloadGapsTest"/>
             <class name="com.hi.api.dsl.PhaseExpectationTest"/>
             <class name="com.hi.api.dsl.PhaseCaptureTest"/>
+
+            <!-- Framework guards that were outside this suite, so a full
+                 verify_all run never executed them. 26 classes were
+                 outside it; these 16 need no HTTP, no database and no
+                 credentials, which is this suite's contract, and they
+                 add 171 tests in roughly 11 seconds. The rest stay out
+                 on purpose: the db classes need a real Postgres, and the
+                 data-driven ones reach jsonplaceholder over the network.
+
+                 Two of these were quietly broken while unwatched.
+                 MultiSourceDataProviderTest was missing four fixtures,
+                 and RestStepTest pinned a generated template by content
+                 hash. A guard nobody runs is not a guard. -->
+            <class name="com.hi.api.tests.data.MultiSourceDataProviderTest"/>
+            <class name="com.hi.api.tests.framework.ConfigBeatsDerivedAliasTest"/>
+            <class name="com.hi.api.tests.framework.CtxFieldsTest"/>
+            <class name="com.hi.api.tests.framework.FailureDigestFieldPairingTest"/>
+            <class name="com.hi.api.tests.framework.FrameworkPartialGapsTest"/>
+            <class name="com.hi.api.tests.framework.IdentityPackCrossCaseTest"/>
+            <class name="com.hi.api.tests.framework.IdentityVocabularyTest"/>
+            <class name="com.hi.api.tests.framework.JdbcRowPublishTest"/>
+            <class name="com.hi.api.tests.framework.MemberEmailAndPollStopTest"/>
+            <class name="com.hi.api.tests.framework.NearMissKeyReportTest"/>
+            <class name="com.hi.api.tests.framework.PhaseArgRowFallbackTest"/>
+            <class name="com.hi.api.tests.framework.ResolverSpellingTest"/>
+            <class name="com.hi.api.tests.framework.ResponseAssertsTest"/>
+            <class name="com.hi.api.tests.framework.RestParamAliasTest"/>
+            <class name="com.hi.api.tests.framework.RestStepTest"/>
+            <class name="com.hi.api.tests.framework.RetryAnalyzerTest"/>
         </classes>
     </test>
 </suite>

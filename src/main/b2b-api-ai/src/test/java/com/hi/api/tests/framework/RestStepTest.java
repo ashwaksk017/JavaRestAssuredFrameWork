@@ -302,9 +302,33 @@ public class RestStepTest {
                 .setContentType(ContentType.JSON)
                 .setBody("{\"accountId\":\"2000001\"}")
                 .build();
+        // Own fixture, not a generated template.
+        //
+        // This pointed at
+        // templates/programaccountregression/businesses/createaccount_200_040e3c43f9.json
+        // -- a GENERATED file named by a hash of its own content. Any edit
+        // to that body rehashes the filename, and the hash had in fact
+        // moved to a different suite entirely (it is under
+        // memberregistrationregression now; programaccountregression has
+        // four other hashes). So the test failed for a reason that has
+        // nothing to do with what it verifies, which is that
+        // `contactInfo.address.city` from the resolved body reaches ctx as
+        // #..._RawRequest_contactInfo_address_city#.
+        //
+        // Any template with that field proves the same thing, so it writes
+        // one. Same reasoning as the probe fixtures in
+        // MultiSourceDataProviderTest: a test that pins generated output
+        // by content hash is a test with an expiry date.
+        String tpl = writeTemplate("resteptest/createaccount_rawrequest.json",
+                "{\"contactInfo\":{\"address\":{"
+                + "\"addressLine1\":\"1 Main St\","
+                + "\"city\":\"Houston\","
+                + "\"state\":\"TX\","
+                + "\"country\":\"US\","
+                + "\"postalCode\":\"77001\"}}}");
         RestStep.exec(ctx, row, sa, null, "B2B-450")
                 .name("http_request_200_createAccount")
-                .template("templates/programaccountregression/businesses/createaccount_200_040e3c43f9.json")
+                .template(tpl)
                 .expectedStatus(200)
                 .post("/guests/1/businesses", (body, q, h) -> fake);
         Assert.assertEquals(
@@ -358,5 +382,15 @@ public class RestStepTest {
                 });
         Assert.assertEquals(seen[0], "called");
         sa.assertAll();
+    }
+
+    /** Write a template into the build output and return its classpath path. */
+    private static String writeTemplate(String rel, String json) throws Exception {
+        java.nio.file.Path out = java.nio.file.Path.of("target", "test-classes",
+                "templates").resolve(rel.replace('/', java.io.File.separatorChar));
+        java.nio.file.Files.createDirectories(out.getParent());
+        java.nio.file.Files.write(out, json.getBytes(
+                java.nio.charset.StandardCharsets.UTF_8));
+        return "templates/" + rel;
     }
 }

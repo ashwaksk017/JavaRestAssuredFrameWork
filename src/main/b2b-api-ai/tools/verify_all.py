@@ -209,6 +209,18 @@ CHECKS = [
     Check("generic",
           [PY, "tools/check_generic.py"],
           "committed code compiles after converting ANY single XML"),
+    Check("skill-api",
+          [PY, "tools/check_skill_api.py"],
+          "a Cursor skill never names a helper, class or path that does "
+          "not exist -- an agent follows it literally"),
+    Check("shape-index",
+          [PY, "tools/jira/test_shapes.py"],
+          "two different requests never share a signature; a placeholder "
+          "and a literal do"),
+    Check("tracked-csv",
+          [PY, "tools/check_tracked_csv.py"],
+          "no generated row file is tracked -- they carry customer emails, "
+          "account ids and internal hostnames, and this repo is public"),
     Check("xml-wellformed",
           [PY, "tools/check_xml_wellformed.py"],
           "every committed XML parses (a broken suite once passed 15/15)"),

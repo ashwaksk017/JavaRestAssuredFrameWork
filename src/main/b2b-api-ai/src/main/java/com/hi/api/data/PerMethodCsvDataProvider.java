@@ -60,7 +60,31 @@ public final class PerMethodCsvDataProvider {
                 : method.getDeclaringClass().getSimpleName())
                 .replace('.', '/');
         String meth = method.getName();
-        String dir = "csv/" + subPath + "/" + meth;
+
+        // Candidate directories, in order.
+        //
+        // An IMPORTED test keeps exactly one location: csv/<suite>/... is
+        // generated, and the next convert rewrites it.
+        //
+        // An AUTHOR test gets csv/manual/<Class>/<method> tried FIRST,
+        // because that is the only place a data file can be committed.
+        // `src/test/resources/csv/` is gitignored in full -- it holds the
+        // generated CSVs for every suite, and those carry customer emails,
+        // account ids and internal hostnames that must not reach a public
+        // repository. So a row added under csv/<Class>/ survives on one
+        // machine and is lost on a fresh clone. csv/manual/ is the single
+        // tracked exception.
+        //
+        // The old location is still tried, so the author tests that
+        // already live there keep working.
+        java.util.List<String> dirs = new java.util.ArrayList<>(2);
+        if (idx >= 0) {
+            dirs.add("csv/" + subPath + "/" + meth);
+        } else {
+            dirs.add("csv/manual/" + subPath + "/" + meth);
+            dirs.add("csv/" + subPath + "/" + meth);
+        }
+
         DataFiles.Format forced = DataFiles.formatFromName(System.getProperty("dataFormat"));
         if (forced != null) {
             String[] exts = switch (forced) {
@@ -68,26 +92,32 @@ public final class PerMethodCsvDataProvider {
                 case EXCEL -> new String[] { "xlsx", "xls" };
                 case JSON -> new String[] { "json" };
             };
-            for (String ext : exts) {
-                String path = dir + "." + ext;
-                if (classpathExists(path)) {
-                    return path;
+            for (String dir : dirs) {
+                for (String ext : exts) {
+                    String path = dir + "." + ext;
+                    if (classpathExists(path)) {
+                        return path;
+                    }
                 }
             }
             throw new IllegalStateException(
                     "PerMethodCsvDataProvider: dataFormat=" + System.getProperty("dataFormat")
                     + " but no matching file on classpath for @Test "
                     + method.getDeclaringClass().getSimpleName() + "#" + meth
-                    + " (tried " + dir + ".{" + String.join(",", exts) + "})");
+                    + " (tried " + String.join(".{" + String.join(",", exts) + "}, ", dirs)
+                    + ".{" + String.join(",", exts) + "})");
         }
-        for (String ext : DEFAULT_EXTENSIONS) {
-            String path = dir + "." + ext;
-            if (classpathExists(path)) {
-                return path;
+        for (String dir : dirs) {
+            for (String ext : DEFAULT_EXTENSIONS) {
+                String path = dir + "." + ext;
+                if (classpathExists(path)) {
+                    return path;
+                }
             }
         }
         throw new IllegalStateException(
-                "PerMethodCsvDataProvider: no CSV/Excel/JSON on classpath at " + dir
+                "PerMethodCsvDataProvider: no CSV/Excel/JSON on classpath at "
+                + String.join(".{csv,xlsx,xls,json}, ", dirs)
                 + ".{csv,xlsx,xls,json} (expected one row-file per data-driven "
                 + "scenario for @Test "
                 + method.getDeclaringClass().getSimpleName() + "#" + meth + ")");
