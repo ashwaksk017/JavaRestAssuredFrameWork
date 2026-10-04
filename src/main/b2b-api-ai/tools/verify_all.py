@@ -227,6 +227,11 @@ CHECKS = [
     Check("generated",
           [PY, "tools/check_generated_output.py"],
           "emitted tree is structurally sound"),
+    Check("emitted-java",
+          [PY, "tools/check_emitted_java.py"],
+          "the author-editable Java the emitter carries compiles -- "
+          "skip-if-exists means nothing else ever compiles it",
+          full_only=True),
     Check("java-compile",
           ["mvn", "-q", "-DskipTests", "test-compile"],
           "all generated Java still compiles", full_only=True),
