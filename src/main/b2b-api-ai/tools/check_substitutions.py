@@ -261,6 +261,22 @@ def scan(root: str) -> tuple:
                 stats["placeholders"] += 1
                 if not satisfiable(m.group(1), exact, wild, cols):
                     note(m.group(1), "template " + fn)
+            # Surviving ${...} refs, same classification as the Java scan
+            # below: PlaceholderResolver handles templates as well as CSV
+            # cells, so a well-shaped `${Name#Field}` here is deferred,
+            # not broken. What this catches is a ref whose SHAPE the
+            # resolver's key pattern cannot match -- the
+            # `${step#Respons['accountID']}` class, a typo in the source
+            # XML -- which reaches the server as literal text. Those were
+            # invisible in templates until now, because this scan ran
+            # over generated Java only.
+            #
+            # Safe to add: measured 0 occurrences across all 911
+            # templates, so the current verdict is unchanged and only a
+            # new one trips it.
+            for m in DOLLAR_RX.finditer(text):
+                dollars[m.group(1)] += 1
+                where.setdefault("${%s}" % m.group(1), "template " + fn)
 
     # ---- generated Java: string literals only
     for path in _walk_java(os.path.join(root, "src/main/java")):

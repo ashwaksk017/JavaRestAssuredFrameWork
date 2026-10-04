@@ -30,9 +30,50 @@ def test_committed_file_equals_code_defaults():
     assert cc.validate(cc.load_config(None)) == []
 
 
+def test_every_rebound_name_is_checked_for_drift():
+    """The drift test has to cover everything apply_to_modules rebinds.
+
+    It did not. `apply_to_modules` rebinds ten names and the test below
+    asserted nine: `_ENTRY_CLASS_NAME` was missing, so changing the
+    emitter's built-in literal to something other than
+    DEFAULTS["scenario"]["entry_class"] passed. That matters more than one
+    value, because "a run with no config changes is byte-identical" rests
+    entirely on defaults equalling literals -- and entry_class was the
+    first override that ever DIFFERED from its default, which is how the
+    __main__ double-import bug stayed hidden.
+
+    Checking the list against the source rather than maintaining it by
+    hand means the next rebind cannot be added without a drift assertion.
+    """
+    import ast
+    import re as _re
+
+    with open(os.path.join(HERE, "converter_config.py"),
+              encoding="utf-8") as fh:
+        cfg_src = fh.read()
+    apply_src = cfg_src[cfg_src.index("def apply_to_modules"):]
+    rebound = set(_re.findall(r"\b(?:rc|gt)\.(?:Emitter\.)?(_[A-Za-z0-9_]+)\s*=",
+                              apply_src))
+
+    with open(os.path.abspath(__file__), encoding="utf-8") as fh:
+        this_src = fh.read()
+    tree = ast.parse(this_src)
+    drift = next(n for n in tree.body
+                 if isinstance(n, ast.FunctionDef)
+                 and n.name == "test_emitter_tables_equal_defaults_before_apply")
+    drift_src = ast.get_source_segment(this_src, drift) or ""
+
+    missing = sorted(n for n in rebound if n not in drift_src)
+    assert not missing, (
+        "apply_to_modules rebinds these with no drift assertion: %s. A "
+        "rebound value whose default differs from the built-in literal "
+        "makes a no-config run change output." % ", ".join(missing))
+
+
 def test_emitter_tables_equal_defaults_before_apply():
     ident = cc.DEFAULTS["identity"]
     proj = cc.DEFAULTS["project"]
+    assert rc._ENTRY_CLASS_NAME == cc.DEFAULTS["scenario"]["entry_class"]
     assert rc._REGEN_TRIGGER_KEYS == frozenset(ident["regen_trigger_keys"])
     assert tuple(rc._ID_HINTS) == tuple(ident["id_hint_fields"])
     assert rc._PATH_ID_PARAM_NAMES == frozenset(ident["id_param_names"])
