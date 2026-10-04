@@ -169,13 +169,31 @@ loop shows `PARTIAL`. Both read `FULL` once the rows are imported.
 ### 2. Verify
 
 ```powershell
-python tools/verify_all.py            # 7 checks, ~12s
-python tools/verify_all.py --full     # + Java compile + TestNG guards, ~5min
+python tools/verify_all.py            # 52 checks, ~30s
+python tools/verify_all.py --full     # + Java compile + TestNG guards, ~70s
 ```
 
 One command instead of nine. Run `--full` **before any reconvert or commit**.
 Exit code is 0 only when every check passes; a failing check prints the last
 25 lines of its output.
+
+Two flags exist for tooling rather than for reading:
+
+```powershell
+# machine-readable failure records: fingerprint, implicated files, the
+# suites and case ids involved, a pasteable repro, and whether a failure
+# there may be fixed automatically at all
+python tools/verify_all.py --json target/verify.json
+
+# treat failures recorded in tools/autofix/baseline.json as known
+# artifacts and exit 0 for them. OFF by default, so the exit code keeps
+# meaning exactly what it always has
+python tools/verify_all.py --baseline
+```
+
+A check that exits 0 having checked nothing now reports `SKIP` rather than
+`PASS` — `request-schemas` does this when no OpenAPI spec is present — so a
+pass is never mistaken for evidence.
 
 | Check | Guards against |
 |---|---|
@@ -201,6 +219,34 @@ python tools/ra_converter/phase_vocabulary.py
 python tools/check_generated_output.py
 python tools/check_generated_output.py --update-baseline   # after a deliberate change
 ```
+
+### Fixing a failure with an agent (`tools/autofix/`)
+
+When `verify_all` fails, an agent can propose the fix and the tooling
+refuses to believe it until the evidence holds. **Propose-only by
+default**: it writes a patch, a report and optionally a branch, and never
+commits to your branch or pushes.
+
+```powershell
+python tools/verify_all.py --full --baseline --json target/verify.json
+python tools/autofix/propose.py --records target/verify.json --agent dry-run
+python tools/autofix/propose.py --records target/verify.json --agent cursor
+```
+
+The design assumption is that when a gate fails there are always two ways
+to make it pass — fix the converter, or weaken what measures it — and the
+second is faster. So a candidate diff is rejected before anything runs it
+if it edits generated output, deletes a test or an assertion, adds a
+credential or a new hostname, or touches the loop's own guards; and a
+change confined to `tools/check_*.py` is held until a negative fixture
+proves the check still fails on a tree it was built to catch.
+
+`step-parity`, `dataflow`, `request-schemas` and `java-tests` are never
+sent to an agent by default: a fix there needs the ReadyAPI XML
+cross-checked first, which is a judgement call. `verify_all` prints the
+options and waits for yours.
+
+**Full guide, including the traps: [`tools/autofix/README.md`](tools/autofix/README.md).**
 
 ### 3. Run the tests
 

@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "_comment": [
+    "Failures that are KNOWN and accepted, so the autofix loop does not",
+    "re-investigate them every run. Only consulted when verify_all is run",
+    "with --baseline; a plain run still reports them as failures, so the",
+    "exit code keeps meaning what it always has.",
+    "",
+    "Rules, because an accepted failure is a hole in the gate:",
+    "  - salient_fingerprint comes from a real run:",
+    "      python tools/verify_all.py --json target/verify.json",
+    "    then read .checks[] | select(.name==<check>) | .salient_fingerprint",
+    "  - `reason` says what the failure IS and why it is tolerable. Not",
+    "    'known issue'. Someone reading it in three months has to be able",
+    "    to decide whether it still applies.",
+    "  - `expires` is required. An acceptance that cannot age out becomes",
+    "    permanent by neglect, so verify_all reports an expired entry as a",
+    "    failure and exits non-zero even when nothing else is wrong.",
+    "  - If the failure CHANGES, the fingerprint stops matching and the",
+    "    entry reads 'stale': the recorded reason no longer describes what",
+    "    is happening, which is reported rather than silently re-accepted."
+  ],
+  "accepted": [
+    {
+      "check": "step-parity",
+      "salient_fingerprint": "e6f2d42d7c8b9efe1bf3f64b6f1bb34a00d60bf3",
+      "reason": "B2B-422_get_spendSummary_usermembernotactive_403_suspended loses 1 of 17 steps: `tokenRequest 2`. The case registers no bootstrap, so later calls in it go out unauthenticated. Long-standing and still untraced -- it predates the Round-4 clustering fixes and survived them unchanged. Accepted so the loop works on new failures instead of re-deriving this one; it is NOT fixed, and step-parity is policy `prompt`, so any attempt at it is a deliberate choice at the command line.",
+      "recorded": "2026-10-03",
+      "expires": "2027-01-15",
+      "owner": "ashwa",
+      "scope": "b2b family, 15 suites, 1002 registered cases / 9023 enabled REST steps at time of recording"
+    }
+  ]
+}

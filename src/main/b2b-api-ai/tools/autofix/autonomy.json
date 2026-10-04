@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "_comment": [
+    "Thresholds that let the loop apply a fix without a person reading",
+    "it first. Conservative on purpose: the cost of a wrong auto-apply",
+    "is a bad commit on a branch plus the time to find it, while the",
+    "cost of staying propose-only is one review.",
+    "",
+    "`min_proposals` is per CHECK KIND, counted from",
+    "target/autofix-ledger.jsonl. `min_accept_rate` is good / (good +",
+    "failed), ignoring runs the guards stopped -- a rejection is the",
+    "system working, not the agent failing.",
+    "",
+    "`max_blast_radius` is generated files changed. A fix to the",
+    "emitter that rewrites thousands of files may be right, but it is",
+    "never the kind of thing to land unread."
+  ],
+  "enabled": false,
+  "min_proposals": 10,
+  "min_accept_rate": 0.8,
+  "max_invariant_rejections": 0,
+  "max_blast_radius": 50,
+  "auto_kinds": [
+    "unit",
+    "compile"
+  ]
+}
