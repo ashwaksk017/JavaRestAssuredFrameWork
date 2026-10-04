@@ -355,6 +355,27 @@ def main() -> int:
                       f"this failure -- the failure CHANGED, so the recorded "
                       f"reason does not describe it.")
 
+    # What a fast run did NOT check, named from the list itself.
+    #
+    # This used to say "Java compile + TestNG suite were skipped", which
+    # was true when there were two full_only checks and wrong once there
+    # were three: `emitted-java` went unmentioned, and that is the one
+    # check for a failure which surfaces only on a clean-tree convert --
+    # exactly what a reader of a green fast run needs told. Derived now,
+    # so adding a full_only check cannot leave this sentence behind.
+    #
+    # Printed whether or not something failed: a fast run that fails also
+    # skipped these, and the reader is owed both facts.
+    def _skip_notice() -> None:
+        if args.full:
+            return
+        names = [c.name for c in CHECKS if c.full_only]
+        print(f"\n{len(names)} check(s) need --full and did not run: "
+              f"{', '.join(names)}.")
+        print("Run --full before a reconvert or a commit. `emitted-java` in "
+              "particular catches a fault that otherwise appears only when "
+              "someone converts into a clean tree.")
+
     if not failed:
         extra = []
         if accepted:
@@ -363,9 +384,7 @@ def main() -> int:
             extra.append(f"{len(skipped)} checked nothing")
         print("\nAll checks passed."
               + (f" ({'; '.join(extra)})" if extra else ""))
-        if not args.full:
-            print("Java compile + TestNG suite were skipped -- run with --full "
-                  "before a reconvert or a commit.")
+        _skip_notice()
         return 1 if odd else 0
 
     print(f"\n{len(failed)} check(s) FAILED\n")
@@ -400,6 +419,7 @@ def main() -> int:
                 print(f"    {i}) {o['label']}"
                       + ("   (default)" if o.get("default") else ""))
             print(f"    repro: {rec['repro']}\n")
+    _skip_notice()
     return 1
 
 
