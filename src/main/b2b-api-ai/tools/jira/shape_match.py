@@ -54,6 +54,10 @@ EXACT_MANY = "EXACT_MANY"
 LOOSE_ONLY = "LOOSE_ONLY"
 DUPLICATE_SUSPECT = "DUPLICATE_SUSPECT"
 
+# Above this many distinct methods, a per-call match is reported as a
+# shared building block rather than as a list to choose from.
+SHARED_BLOCK_METHODS = 10
+
 ACTION = {
     NEW: "create a new test -- nothing automated covers this call",
     EXACT_ONE: "add a data row to the existing test",
@@ -98,6 +102,33 @@ def destination(entry: dict) -> str:
     return "this repository (hand-written test)"
 
 
+def _intersect(per_step: list) -> list:
+    """Cases that contain EVERY call the story describes.
+
+    A union would be wrong: one of three calls matching is not coverage,
+    and listing that case as a target sends an author to add a row to a
+    test that does not make the other two calls at all.
+    """
+    def ident(e):
+        return (e.get("suite", ""), e.get("case_id", ""),
+                e.get("java_class_fqn", ""), e.get("java_method", ""))
+
+    keep = None
+    for hits in per_step:
+        ids = {ident(h) for h in hits}
+        keep = ids if keep is None else (keep & ids)
+        if not keep:
+            return []
+    out, seen = [], set()
+    for hits in per_step:
+        for h in hits:
+            i = ident(h)
+            if i in keep and i not in seen:
+                seen.add(i)
+                out.append(h)
+    return out
+
+
 def match(candidate: dict, index: dict) -> dict:
     steps = candidate["steps"]
     case = shapes.candidate_case(steps, candidate.get("issue_key", "CANDIDATE"))
@@ -105,6 +136,31 @@ def match(candidate: dict, index: dict) -> dict:
 
     exact_hits = index.get("exact", {}).get(ex, [])
     loose_hits = index.get("loose", {}).get(lo, [])
+    level = "case"
+
+    # A story describes ONE call; a recording is a whole flow -- token,
+    # enroll, create, activate, verify. A one-step candidate can never
+    # equal a twelve-step case signature, so case-level matching alone
+    # answered NEW for calls that are demonstrably automated. That is the
+    # worst answer available: it reads as permission to write a duplicate.
+    #
+    # So when the flow does not match, each call is looked up on its own.
+    # The level is reported, because "this is step 4 of an existing case"
+    # is a different instruction from "this whole flow exists".
+    if not exact_hits and not loose_hits:
+        per_step_exact = [index.get("step_exact", {}).get(sig, [])
+                          for _, _, sig in shapes.step_sigs(case)]
+        per_step_loose = [index.get("step_loose", {}).get(sig, [])
+                          for _, _, sig in shapes.step_sigs(case, loose=True)]
+        # Every call in the story has to be covered before "already
+        # automated" is true of the story. One of three calls matching is
+        # not coverage, and reporting it as a hit would be worse than NEW.
+        if per_step_exact and all(per_step_exact):
+            exact_hits = _intersect(per_step_exact)
+            level = "step"
+        if not exact_hits and per_step_loose and all(per_step_loose):
+            loose_hits = _intersect(per_step_loose)
+            level = "step"
 
     # Expected status is not in either signature -- a 200 and a 400 of the
     # same call share one method and differ per row. It is used only to
@@ -114,6 +170,7 @@ def match(candidate: dict, index: dict) -> dict:
 
     result = {
         "issue_key": candidate.get("issue_key", ""),
+        "match_level": level,
         "exact_fingerprint": ex,
         "expected_status": want_status,
         "exact_matches": exact_hits,
@@ -125,8 +182,15 @@ def match(candidate: dict, index: dict) -> dict:
     elif not exact_hits:
         result["verdict"] = LOOSE_ONLY
     else:
+        # Only at case level. The index records expected status per CASE,
+        # so at step level "the statuses agree" says the recorded flow
+        # ends in 204, not that this call does -- and claiming a
+        # duplicate on that prompted the operator about 42 cases that
+        # merely happen to contain the call. EXACT_MANY is the honest
+        # answer there: it is automated in several places, choose one.
         same_status = [h for h in exact_hits
-                       if want_status and h.get("expected_status") == want_status]
+                       if level == "case" and want_status
+                       and h.get("expected_status") == want_status]
         if same_status:
             result["verdict"] = DUPLICATE_SUSPECT
             result["duplicate_candidates"] = same_status
@@ -145,8 +209,36 @@ def match(candidate: dict, index: dict) -> dict:
         "csv_path": t.get("csv_path", ""),
         "expected_status": t.get("expected_status", ""),
         "destination": destination(t),
+        "step_index": t.get("step_index", 0),
+        "step_name": t.get("step_name", ""),
+        "rest_steps": t.get("rest_steps", 0),
     } for t in targets[:25]]
     result["target_count"] = len(targets)
+    # A per-call match can hit hundreds of cases -- 483 for one real
+    # story. All true, and none of it actionable: what a person decides
+    # between is METHODS, not cases, because a case is a row in one. So
+    # the same targets are rolled up, counted, and ordered by how much of
+    # the picture each accounts for. Still no choosing.
+    rollup: dict = {}
+    for t in targets:
+        k = (t.get("java_class_fqn", ""), t.get("java_method", ""))
+        r = rollup.setdefault(k, {"java_class_fqn": k[0], "java_method": k[1],
+                                  "cases": 0, "suites": set(),
+                                  "csv_path": t.get("csv_path", ""),
+                                  "destination": destination(t)})
+        r["cases"] += 1
+        r["suites"].add(t.get("suite", ""))
+    result["target_methods"] = sorted(
+        ({**r, "suites": sorted(r["suites"])} for r in rollup.values()),
+        key=lambda r: (-r["cases"], r["java_class_fqn"], r["java_method"]))
+    result["target_method_count"] = len(rollup)
+    # A call that turns up as a step in dozens of unrelated methods is a
+    # BUILDING BLOCK -- activate, enrol, fetch a token -- not a test of
+    # its own. Saying "add a row to one of 442 methods" would be
+    # technically true and useless. The threshold is a reporting
+    # threshold only: it changes the wording, never the verdict.
+    result["shared_building_block"] = bool(
+        level == "step" and len(rollup) >= SHARED_BLOCK_METHODS)
     return result
 
 
@@ -158,9 +250,25 @@ def report(result: dict) -> str:
     if result.get("expected_status"):
         out.append(f"  expected status in the story: {result['expected_status']}")
     out.append(f"  shape fingerprint: {result['exact_fingerprint'][:60]}...")
+    if result.get("match_level") == "step":
+        out.append("  matched PER CALL, not as a whole flow: the story's "
+                   "request(s) appear inside a longer recorded case.")
     if not result["targets"]:
         out.append("\n  no existing test matches this call.")
         return "\n".join(out)
+
+    methods = result.get("target_methods") or []
+    if len(methods) > 1 or result.get("target_count", 0) > len(result["targets"]):
+        out.append(f"\n  {result['target_count']} matching case(s) across "
+                   f"{result.get('target_method_count', len(methods))} test "
+                   f"method(s). Choose a METHOD -- a case is one row in one:")
+        for m in methods[:12]:
+            out.append(f"    {m['cases']:>4} case(s)  "
+                       f"{m['java_class_fqn']}#{m['java_method']}")
+            out.append(f"               suite(s): {', '.join(m['suites'][:4])}"
+                       + (", ..." if len(m["suites"]) > 4 else ""))
+        if len(methods) > 12:
+            out.append(f"    ... and {len(methods) - 12} more method(s)")
 
     shown = result["targets"]
     out.append(f"\n  {result['target_count']} existing target(s)"
@@ -172,11 +280,33 @@ def report(result: dict) -> str:
         out.append(f"      csv    : {t['csv_path'] or '(none)'}")
         out.append(f"      status : {t['expected_status'] or '(not recorded)'}")
         out.append(f"      lands  : {t['destination']}")
+        if t.get("step_index"):
+            out.append(f"      call   : step {t['step_index']} of "
+                       f"{t['rest_steps']} in that case"
+                       + (f"  (`{t['step_name']}`)" if t.get("step_name") else ""))
     if result["verdict"] == EXACT_MANY:
         out.append("\n  The same call is automated in more than one place. That "
                    "is legitimate -- the converter groups by business area as "
                    "well as by call shape -- so choose, rather than letting a "
                    "tool guess.")
+    if result.get("match_level") == "step" and result["targets"]:
+        out.append("\n  The call is one step of a longer case. A data row "
+                   "there drives the WHOLE flow, not just this call -- so "
+                   "check the other steps can run with the story's data "
+                   "before adding one.")
+        out.append("  Duplicate detection is NOT applied at this level: the "
+                   "index records expected status per case, so matching it "
+                   "would only say the recorded flow ends in that status, "
+                   "not that this call does.")
+    if result.get("shared_building_block"):
+        out.append(
+            "  This call is a shared BUILDING BLOCK: it appears as a step in "
+            + str(result.get("target_method_count", 0))
+            + " unrelated methods (activate, enrol, fetch a token and the "
+            "like). \"Add a row to one of them\" would be true and useless. "
+            "A story about a specific scenario almost certainly needs its own "
+            "test that reuses this call -- so treat the list above as proof "
+            "the call is covered, not as a destination.")
     if result["verdict"] == LOOSE_ONLY:
         out.append("\n  Loose only: these agree once literal TYPES and array "
                    "LENGTHS are ignored. A recording holds \"${Inputs#n}\" (a "

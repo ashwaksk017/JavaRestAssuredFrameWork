@@ -24,6 +24,8 @@ The utility layer (`RestUtilities`, `RestLoggerUtilityDataHolder`, `RestLogAppen
 | tune retries | [Configuration hierarchy](#configuration-hierarchy) — `wholeTestRetry`, `tokenRetry` |
 | see the response at a breakpoint, mid-chain | [Reading the response](#reading-the-response--lastresponse) — `lastResponse()` |
 | run only the framework guards (no HTTP, no DB) | [Quick start §3](#3-run-the-tests) — `testng-guards.xml` |
+| turn a Jira story into a test | [From a Jira story](#from-a-jira-story-no-readyapi-xml) — `python tools/jira/run.py --url ...` |
+| find out whether a story's request is already automated | [Is it already covered?](#3-is-it-already-covered) — `tools/jira/shape_match.py` |
 
 The companion docs: **[CreateTestCase.md](CreateTestCase.md)** (writing a test
 by hand), **[ARCHITECTURE.md](ARCHITECTURE.md)** (convert-time vs run-time,
@@ -1343,6 +1345,42 @@ everything — that is the safe reading of "nothing is approved yet".
 `acceptance_criteria_fields` names the custom field your project puts AC in.
 Leave it empty and the description is searched instead.
 
+### The whole thing, in one command
+
+```bash
+python tools/jira/run.py --url https://jira.yourorg.com/browse/B2B-1234
+python tools/jira/run.py --key B2B-1234 --on-duplicate skip
+python tools/jira/run.py --key B2B-1234 --rebuild-index      # after a convert
+```
+
+It chains **fetch → extract → match → packet** and stops at the first
+gate that says stop. Everything lands in `target/jira/<KEY>/`:
+
+| file | what it is |
+|---|---|
+| `story.json` | the story, its parents, every comment, the AC verdict |
+| `candidate.json` | the request, as read out of the story |
+| `verdict.json` | is it already automated, and where |
+| `packet.md` | the brief you hand to Cursor |
+
+Each stage also runs on its own, which is the point: a tester who
+disagrees with the verdict can see the fingerprint it came from, and one
+who disagrees with the request can see the `curl` it was read out of. A
+story whose candidate has to be written by hand rejoins the chain at
+`shape_match.py`.
+
+The gates, in order:
+
+| stage | stops when |
+|---|---|
+| fetch | no clear acceptance criteria |
+| extract | no request could be **read** (nothing is inferred from prose) |
+| match | a suspected duplicate, and nothing can be asked |
+| packet | any of the above — the packet says so on its first line |
+
+A stop is never a complaint about the story's author. It is the tool
+refusing to invent the part that is missing.
+
 ### 1. Read the story
 
 ```bash
@@ -1386,7 +1424,41 @@ reader can tell whose rule a test encodes. The detection is a text
 heuristic and prints what it matched, so you can disagree with it in one
 glance.
 
-### 2. Is it already covered?
+### 2. Read the request out of the story
+
+```bash
+python tools/jira/extract.py --story target/jira/B2B-1234/story.json
+python tools/jira/extract.py --story ... --json target/jira/B2B-1234/candidate.json
+```
+
+Sources, in order of trust: an attached **HAR** (a recording, so nothing
+needs reading), a **`curl`** command (carries verb, headers and body), an
+explicit **`VERB /path`** line plus the fenced JSON after it. Expected
+status is read from phrasing the story actually used — "returns 204",
+"responds with 400", "→ 201" — and the sentence it came from is kept as
+evidence.
+
+**Nothing is inferred.** No verb, path or status ever comes from the tool.
+If a request cannot be read, it writes nothing and exits 1, because a
+guessed endpoint is the one mistake that survives review — it reads like a
+decision someone made.
+
+Two corrections it applies, both measured against the real index:
+
+- **a concrete path is matched back to the recorded template.** The story
+  says `/v1/businesses/12345/activate`; the converter recorded
+  `/businesses/{accountId}/activate`, and the signature holds the path
+  literally. Compared as written, every story came back `NEW`. Literal
+  segments must agree, a `{name}` segment takes anything and names the
+  parameter it took, and a leading `/v1` or gateway prefix is dropped and
+  reported. Where several templates fit, all are listed and **none is
+  chosen**.
+- **path parameters are emitted as refs.** A literal keys as `row`; 8,748
+  of 9,073 recorded path params are `ref`. The story's id is test data — a
+  CSV cell — not structure, so the ref is emitted and the literal kept
+  beside it as `example`.
+
+### 3. Is it already covered?
 
 ```bash
 # build the index of every converted case's request shape (once per convert)
@@ -1394,7 +1466,7 @@ python tools/jira/shapes.py --dump target/shape-index.json
 python tools/jira/shapes.py --selfcheck      # 1161/1161: no two requests share a signature
 
 # score the story's request against it
-python tools/jira/shape_match.py --candidate target/jira/B2B-1234/request.json
+python tools/jira/shape_match.py --candidate target/jira/B2B-1234/candidate.json
 python tools/jira/shape_match.py --candidate ... --json target/jira/B2B-1234/verdict.json
 python tools/jira/shape_match.py --candidate ... --on-duplicate skip   # or create / prompt / fail
 ```
@@ -1403,6 +1475,32 @@ The signature is the converter's own: verb, resource path, media type, body
 shape, path-param binding and query-param names — **values excluded**,
 because values become CSV cells. That is exactly what makes "this is a new
 row on an existing test" a correct answer rather than a guess.
+
+**Matching happens at two levels.** A recorded case is a whole flow —
+token, enrol, create, activate, verify — and a story almost never
+describes a flow. It describes one call. So when the whole flow does not
+match, each call is looked up on its own, and the report says which:
+
+```
+matched PER CALL, not as a whole flow: the story's request(s) appear
+inside a longer recorded case.
+  call   : step 4 of 9 in that case  (`activate_account`)
+```
+
+Two consequences, both deliberate:
+
+- a per-call match lists only cases that contain **every** call the story
+  describes. Two of three matching is not coverage, and listing such a
+  case would send an author to add a row to a test that never makes the
+  third call.
+- **duplicate detection does not apply at call level.** The index records
+  expected status per *case*, so matching it there would only say the
+  recorded flow ends in that status, not that this call does.
+
+A call that turns up as a step in dozens of unrelated methods is reported
+as a **shared building block** — activate, enrol, fetch a token. "Add a
+row to one of 442 methods" is true and useless; the right reading is that
+the call is covered and the story still needs its own test.
 
 | verdict | what it means |
 |---|---|
@@ -1416,7 +1514,31 @@ A shape match does not identify a unique target — measured, only 25 of 153
 shared shapes map to one method — so where it cannot narrow to one, it says
 so instead of picking.
 
-### 3. Hand it to Cursor
+### 4. Build the packet, then hand it to Cursor
+
+```bash
+python tools/jira/packet.py --story target/jira/B2B-1234/story.json \
+    --candidate target/jira/B2B-1234/candidate.json \
+    --verdict target/jira/B2B-1234/verdict.json
+```
+
+Writes `packet.md` (what the agent reads) and `packet.json` (the same
+content, parsed). The packet carries three things an agent must not
+re-derive:
+
+1. **the stop conditions, already evaluated** — AC absent, extraction
+   failed, duplicate skipped — resolved where the evidence is, rather
+   than in prose by something that cannot see it;
+2. **the path**, with the destination spelled out (`ADD_DATA_ROW` names
+   the method and the row file; `CREATE_NEW_TEST` names the package and
+   the suite);
+3. **the story as data** — fenced, labelled, and never phrased as
+   instruction. A fence inside the story text is defused so it cannot
+   close the block early and read as packet prose.
+
+It deliberately does **not** contain: which method to pick when several
+match, a value the story did not state, or an expected status nobody
+wrote down.
 
 The packet goes to the **`jira-to-restassured`** skill
 (`.cursor/skills/jira-to-restassured/SKILL.md`), which writes a **plain
@@ -1436,8 +1558,8 @@ instruction — "run this", "disable that check" — it is still data.
 python -m unittest discover -s tools/jira -p "test_*.py"
 ```
 
-Also run by the gate as the `jira-fetch`, `shape-index` and `shape-match`
-checks.
+179 tests. Also run by the gate as the `jira-fetch`, `jira-extract`,
+`shape-index`, `shape-match` and `jira-packet` checks.
 
 ## Running
 

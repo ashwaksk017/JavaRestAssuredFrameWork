@@ -127,6 +127,41 @@ def loose_body_key(step) -> str:
         return "raw:" + re.sub(r"\s+", "", translated)[:120]
 
 
+def _step_tuple(s, loose: bool) -> tuple:
+    return (
+        s.http_method,
+        s.resource_path,
+        (s.media_type or "application/json").split(";")[0].strip().lower(),
+        loose_body_key(s) if loose else rc._body_shape_key(s),
+        rc._param_binding_sig(getattr(s, "path_params", None)),
+        rc._param_names(getattr(s, "query_params", None)),
+    )
+
+
+def step_sigs(case, loose: bool = False) -> list[tuple[int, str, str]]:
+    """[(step index, step name, signature)] -- ONE CALL AT A TIME.
+
+    The case-level signature covers a whole recorded flow: token, enroll,
+    create, activate, verify. A story almost never describes a flow. It
+    describes one call, and a one-step candidate can never equal a
+    twelve-step signature -- so matching only at case level answered
+    `NEW` for a call that is demonstrably automated, which is the worst
+    answer available: it reads as permission to write a duplicate.
+
+    Measured on the current index: 5,564 of 7,756 recorded steps sit in a
+    multi-step case, so this is the normal shape of the data.
+    """
+    out = []
+    i = 0
+    for s in case.steps:
+        if not isinstance(s, rc.RestStep):
+            continue
+        i += 1
+        out.append((i, s.step_name or f"step{i}",
+                    json.dumps((_step_tuple(s, loose),), default=list)))
+    return out
+
+
 def loose_sig(case) -> str:
     """Per-step signature with the body loosened and nothing else.
 
@@ -236,6 +271,8 @@ def build(verbose: bool = False) -> dict:
     mmap = method_map()
     exact: dict = {}
     loose: dict = {}
+    step_exact: dict = {}
+    step_loose: dict = {}
     cases = 0
     rest_cases = 0
     no_rest = 0
@@ -275,6 +312,15 @@ def build(verbose: bool = False) -> dict:
                 }
                 exact.setdefault(exact_sig(case), []).append(entry)
                 loose.setdefault(loose_sig(case), []).append(entry)
+                # Per-call, so a story that describes ONE request can be
+                # found inside a recorded flow. `step_index` is what tells
+                # a reader the call is step 4 of 12 rather than the whole
+                # case: the row they add drives every step, not just this
+                # one.
+                for which, target in ((False, step_exact), (True, step_loose)):
+                    for idx, name, sig in step_sigs(case, loose=which):
+                        target.setdefault(sig, []).append(
+                            dict(entry, step_index=idx, step_name=name))
         if verbose:
             print(f"  {suite:<40} {n} case(s)")
 
@@ -282,9 +328,13 @@ def build(verbose: bool = False) -> dict:
         "schema": 1,
         "counts": {"cases": cases, "with_rest_steps": rest_cases,
                    "no_rest_steps": no_rest, "unmapped_to_method": unmapped,
-                   "exact_shapes": len(exact), "loose_shapes": len(loose)},
+                   "exact_shapes": len(exact), "loose_shapes": len(loose),
+                   "step_exact_shapes": len(step_exact),
+                   "step_loose_shapes": len(step_loose)},
         "exact": exact,
         "loose": loose,
+        "step_exact": step_exact,
+        "step_loose": step_loose,
     }
 
 

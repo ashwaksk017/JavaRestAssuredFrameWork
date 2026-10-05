@@ -217,10 +217,20 @@ CHECKS = [
           [PY, "tools/jira/test_fetch.py"],
           "a story URL is untrusted input: an unapproved host is refused "
           "and the token never leaves a header; no clear AC stops the run"),
+    Check("jira-extract",
+          [PY, "tools/jira/test_extract.py"],
+          "a request is READ from a story or not produced at all; a concrete "
+          "path is matched back to the recorded template, so an already "
+          "automated call is never reported as new"),
     Check("shape-match",
           [PY, "tools/jira/test_shape_match.py"],
           "a story's request resolves to a verdict and a concrete target; "
-          "several targets are reported, never guessed between"),
+          "a single call is found inside a recorded flow; several targets "
+          "are reported, never guessed between"),
+    Check("jira-packet",
+          [PY, "tools/jira/test_packet.py"],
+          "the agent's brief evaluates every stop condition itself and "
+          "leaves nothing to re-decide; story text is fenced as data"),
     Check("shape-index",
           [PY, "tools/jira/test_shapes.py"],
           "two different requests never share a signature; a placeholder "
@@ -253,9 +263,18 @@ CHECKS = [
 def run(check: Check) -> tuple[bool, float, str]:
     t0 = time.time()
     try:
+        # PYTHONDONTWRITEBYTECODE, because a stale __pycache__ entry makes
+        # this gate lie in both directions. CPython validates a cached
+        # .pyc on (mtime, size), so an edit that changes neither -- `&`
+        # to `|`, a one-character revert, two writes inside the same
+        # second -- leaves the OLD bytecode running. That reported a
+        # failure for code that was already correct; the same mechanism
+        # could as easily report a pass for code that is not.
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
         p = subprocess.run(check.cmd, cwd=ROOT, capture_output=True,
-                           text=True, shell=(os.name == "nt"
-                                             and check.cmd[0] == "mvn"))
+                           text=True, env=env,
+                           shell=(os.name == "nt"
+                                  and check.cmd[0] == "mvn"))
         out = (p.stdout or "") + (p.stderr or "")
         return p.returncode == 0, time.time() - t0, out
     except FileNotFoundError as e:

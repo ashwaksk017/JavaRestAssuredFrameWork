@@ -184,8 +184,11 @@ def acceptance_criteria(issue: dict, ac_fields: list | None = None) -> dict:
             confidence = "absent"
             reasons = ["no acceptance-criteria heading, no Given/When/Then, "
                        "and no list of statements"]
+        # strip("\n"), not strip(): the list evidence prefixes every line
+        # with "  - ", and a bare strip() removed it from the first line
+        # only, so the quoted criteria rendered ragged.
         row = {"present": confidence == "explicit", "confidence": confidence,
-               "source": source, "evidence": evidence.strip(),
+               "source": source, "evidence": evidence.strip("\n").rstrip(),
                "reasons": reasons}
         if best is None or (row["present"] and not best["present"]):
             best = row
