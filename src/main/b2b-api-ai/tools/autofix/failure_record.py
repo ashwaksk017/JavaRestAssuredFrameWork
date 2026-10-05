@@ -506,6 +506,10 @@ def locate(out: str, files: dict[str, list[str]] | None = None) -> dict:
 # was tried, which is how a guard becomes a rubber stamp.
 _SKIP_PATTERNS = {
     "request-schemas": re.compile(r"no OpenAPI spec in .* nothing to check", re.I),
+    # An unzipped copy has no git, so there is nothing tracked to inspect.
+    # Exit 0 is right (a copy cannot commit anything) but PASS would be a
+    # lie: the protection is absent, not satisfied.
+    "tracked-csv": re.compile(r"not a git repository -- nothing to check", re.I),
 }
 
 
@@ -624,6 +628,33 @@ def build_record(name: str, why: str, cmd: list[str], ok: bool, secs: float,
     if rec["policy"] == "prompt":
         rec["prompt_options"] = [dict(o) for o in PROMPT_OPTIONS]
     return rec
+
+
+_in_repo_cache: bool | None = None
+
+
+def in_git_repo() -> bool:
+    """Whether ROOT is inside a git working tree.
+
+    Three checks assumed it was, because every machine they were written
+    on had one. A copy unzipped from a release is not a repository, and
+    there `git check-ignore` and `git checkout --` fail for a reason that
+    has nothing to do with what is being guarded -- so the guards reported
+    findings that were really just "no git here". Asking once, plainly,
+    lets each of them say that instead.
+    """
+    global _in_repo_cache
+    if _in_repo_cache is None:
+        import subprocess
+        try:
+            p = subprocess.run(
+                ("git", "rev-parse", "--is-inside-work-tree"), cwd=ROOT,
+                capture_output=True, text=True, timeout=10)
+            _in_repo_cache = (p.returncode == 0
+                              and p.stdout.strip().lower() == "true")
+        except Exception:
+            _in_repo_cache = False
+    return _in_repo_cache
 
 
 def git_info() -> dict:

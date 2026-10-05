@@ -206,13 +206,27 @@ def main() -> int:
               "than a pass: the point of this check is that nothing else "
               "compiles these files.")
         return 1
+    # Resolve the project's own classes FROM SOURCE, not from a previous
+    # build. These files import com.hi.api.config.Config,
+    # com.hi.api.data.FakeData, RestLoggerUtilityDataHolder and friends.
+    # Relying on target/classes passed on a machine that had already built
+    # and failed on a fresh tree with "package com.hi.api.config does not
+    # exist" -- an artifact of build order (this check runs BEFORE
+    # java-compile), reported as the emitter's Java being broken.
+    #
+    # -sourcepath lets javac compile what it needs on demand, so the check
+    # answers its own question without depending on anything else having
+    # run first. target/classes is still offered when present, which makes
+    # the common case faster.
     classes = os.path.join(ROOT, "target", "classes")
-    full = cp + os.pathsep + classes
+    full = cp + (os.pathsep + classes if os.path.isdir(classes) else "")
+    sourcepath = os.path.join(ROOT, "src", "main", "java")
 
     out_dir = os.path.join(ROOT, "target", "emitted-java-classes")
     shutil.rmtree(out_dir, ignore_errors=True)
     os.makedirs(out_dir, exist_ok=True)
     javac = [os.environ.get("JAVAC", "javac"), "-nowarn", "-cp", full,
+             "-sourcepath", sourcepath + os.pathsep + WORK,
              "-d", out_dir] + srcs
     p = subprocess.run(javac, cwd=ROOT, capture_output=True, text=True)
     text = ((p.stdout or "") + (p.stderr or "")).strip()

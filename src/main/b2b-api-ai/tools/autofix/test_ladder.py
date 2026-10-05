@@ -53,10 +53,24 @@ class SuiteResolution(unittest.TestCase):
             self.assertIn(s, xmls, s)
 
     def test_unknown_suites_are_reported_not_silently_dropped(self):
-        ok, missing = L.resolve_suites(["amexbackbook", "no_such_suite"])
+        """The real suite is taken from the inputs that are PRESENT.
+
+        This named `amexbackbook`, which made the test a statement about
+        one machine's input directory rather than about resolve_suites. On
+        a tree holding a single XML it failed with
+        ['amexbackbook', 'no_such_suite'] != ['no_such_suite'] -- a true
+        report of a missing input, read as a bug in the code under test.
+        """
+        xmls = L.input_xmls()
+        if not xmls:
+            ok, missing = L.resolve_suites(["no_such_suite"])
+            self.assertEqual(missing, ["no_such_suite"])
+            self.assertEqual(ok, [])
+            return
+        real = sorted(xmls)[0]
+        ok, missing = L.resolve_suites([real, "no_such_suite"])
         self.assertEqual(missing, ["no_such_suite"])
-        if L.input_xmls():
-            self.assertEqual(ok, ["amexbackbook"])
+        self.assertEqual(ok, [real])
 
 
 class Sharding(unittest.TestCase):

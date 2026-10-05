@@ -343,25 +343,39 @@ class Baseline(unittest.TestCase):
 class Locate(unittest.TestCase):
     """Phase 2 needs the smallest reproducing suite, not just file paths."""
 
+    # These name suites and case ids that are PRESENT, rather than the
+    # ones this tree happened to hold when they were written. Naming
+    # `amexbackbook` and `leadspaceattestationsuite` turned them into
+    # statements about one machine's converted output: on a tree with a
+    # single suite they failed with "'amexbackbook' not found in []",
+    # which is a true report of an absent suite read as a bug in locate().
     def test_suite_names_printed_outright_are_found(self):
-        got = fr.locate("leadspaceattestationsuite: 2 collisions with "
-                        "programaccountregression")
-        self.assertIn("leadspaceattestationsuite", got["suites"])
-        self.assertIn("programaccountregression", got["suites"])
+        suites = fr.known_suites()
+        if len(suites) < 2:
+            self.skipTest("fewer than two suites converted in this tree")
+        a, b = suites[0], suites[1]
+        got = fr.locate(f"{a}: 2 collisions with {b}")
+        self.assertIn(a, got["suites"])
+        self.assertIn(b, got["suites"])
 
     def test_a_case_id_resolves_to_its_suite_through_the_registry(self):
         """step-parity names case ids and no files at all."""
-        if not fr.case_index():
+        idx = fr.case_index()
+        if not idx:
             self.skipTest("no generated tree present")
-        got = fr.locate(Fingerprints.PARITY)
-        self.assertIn("B2B-422_get_spendSummary_usermembernotactive_403_suspended",
-                      got["cases"])
+        cid = sorted(idx)[0]
+        got = fr.locate(f"[step-parity] {cid} 1/17 step(s) unreachable")
+        self.assertIn(cid, got["cases"])
         self.assertTrue(got["suites"], "a known case id must name its suite")
 
     def test_support_paths_contribute_their_suite(self):
-        files = {"generated": ["src/main/java/com/hi/api/support/amexbackbook/cases/Specs3.java"],
+        suites = fr.known_suites()
+        if not suites:
+            self.skipTest("no generated tree present")
+        s = suites[0]
+        files = {"generated": [f"src/main/java/com/hi/api/support/{s}/cases/Specs3.java"],
                  "source": [], "never_touch": []}
-        self.assertIn("amexbackbook", fr.locate("", files)["suites"])
+        self.assertIn(s, fr.locate("", files)["suites"])
 
     def test_unknown_directory_names_are_not_invented_as_suites(self):
         got = fr.locate("tools/check_phase_order.py and src/main/resources")
@@ -438,6 +452,27 @@ class SkippedChecks(unittest.TestCase):
         rec = fr.build_record("request-schemas", "", ["py", "tools/check_request_schemas.py"],
                               True, 0.1, "412 bodies checked against the spec; 0 findings")
         self.assertEqual(rec["status"], "pass")
+
+    def test_a_non_git_tree_makes_tracked_csv_a_skip_not_a_pass(self):
+        """An unzipped copy cannot commit, so the guard exits 0 -- but
+        the protection is absent, not satisfied, and PASS would say the
+        wrong thing."""
+        out = ("not a git repository -- nothing to check.\n"
+               "This protection is ABSENT here: it works by asking git "
+               "what is tracked.")
+        rec = fr.build_record("tracked-csv", "no generated row file is tracked",
+                              ["py", "tools/check_tracked_csv.py"], True, 0.1, out)
+        self.assertEqual(rec["status"], "skipped")
+
+    def test_tracked_csv_passing_for_real_is_a_pass(self):
+        rec = fr.build_record("tracked-csv", "", ["py", "tools/check_tracked_csv.py"],
+                              True, 0.1,
+                              "tracked under src/test/resources/csv/: 0 file(s)\n"
+                              "No generated row file is tracked.")
+        self.assertEqual(rec["status"], "pass")
+
+    def test_in_git_repo_answers_for_this_tree(self):
+        self.assertIsInstance(fr.in_git_repo(), bool)
 
     def test_other_checks_are_not_swept_up_by_a_generic_skip_guess(self):
         """A generic 'looks like a skip' regex matched unit-test NAMES

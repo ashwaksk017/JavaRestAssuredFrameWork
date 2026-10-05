@@ -180,6 +180,14 @@ class Workspace(unittest.TestCase):
                 self.assertTrue(fr.is_editable(fr.classify_path(rel)), rel)
 
     def test_changed_since_sees_an_edit_and_restore_undoes_it(self):
+        # Restoring a CLEAN TRACKED file is `git checkout --`, so this
+        # test is about git as much as about the snapshot. Outside a
+        # repository it failed with "unrestored: ['tools/autofix/
+        # __init__.py']" -- a true statement that git could not restore
+        # the file, read as a bug in restore_source. propose.run() now
+        # refuses to start there at all.
+        if not fr.in_git_repo():
+            self.skipTest("not a git repository; propose.run() refuses here")
         target = "tools/autofix/__init__.py"
         p = os.path.join(pr.ROOT, target.replace("/", os.sep))
         original = io.open(p, "rb").read()

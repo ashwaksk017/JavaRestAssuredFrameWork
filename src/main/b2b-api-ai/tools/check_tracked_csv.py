@@ -53,12 +53,37 @@ def tracked_csv() -> tuple[list[str], str]:
     return out, ""
 
 
+def in_git_repo() -> bool:
+    p = subprocess.run(("git", "rev-parse", "--is-inside-work-tree"), cwd=ROOT,
+                       capture_output=True, text=True)
+    return p.returncode == 0 and p.stdout.strip().lower() == "true"
+
+
 def main() -> int:
+    # "git is broken" and "there is no repository here" are different
+    # facts and deserve different answers. This used to fail closed on
+    # both, so an unzipped copy of the framework -- which cannot commit
+    # anything, and therefore cannot commit a generated row file -- failed
+    # a guard about committing generated row files, every single run.
+    #
+    # Nothing to guard is not the same as guarded, so it does not pass
+    # quietly either: it reports that the protection is ABSENT, which
+    # verify_all surfaces as SKIP rather than PASS.
+    if not in_git_repo():
+        print("not a git repository -- nothing to check.\n"
+              "This protection is ABSENT here: it works by asking git what "
+              "is tracked, and an unzipped copy has no answer. The risk it "
+              "guards (publishing 1,064 generated row files carrying "
+              "customer emails, account ids and internal hostnames) only "
+              "exists where a commit is possible, so a copy is safe for a "
+              "different reason -- not because this check passed.")
+        return 0
+
     tracked, err = tracked_csv()
     if err:
-        print(f"check_tracked_csv: could not ask git ({err}); treating as a "
-              f"failure rather than a pass, because the thing being guarded "
-              f"is unrecoverable.")
+        print(f"check_tracked_csv: git is present but the query failed "
+              f"({err}); treating as a failure rather than a pass, because "
+              f"the thing being guarded is unrecoverable.")
         return 1
 
     offenders = sorted(p for p in tracked if not p.startswith(ALLOWED_PREFIX))

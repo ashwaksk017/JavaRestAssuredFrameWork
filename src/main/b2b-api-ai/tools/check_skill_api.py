@@ -81,8 +81,34 @@ def declares(path: str, method: str) -> bool:
 _ignored_cache: dict = {}
 
 
-def _gitignored(rel: str) -> bool:
+def _in_git_repo() -> bool:
     import subprocess
+    if "__repo__" not in _ignored_cache:
+        try:
+            p = subprocess.run(("git", "rev-parse", "--is-inside-work-tree"),
+                               cwd=ROOT, capture_output=True, text=True,
+                               timeout=10)
+            _ignored_cache["__repo__"] = (p.returncode == 0
+                                          and p.stdout.strip().lower() == "true")
+        except Exception:
+            _ignored_cache["__repo__"] = False
+    return _ignored_cache["__repo__"]
+
+
+def _gitignored(rel: str) -> bool:
+    """Whether git ignores this path -- i.e. the reader is told to CREATE it.
+
+    Outside a repository git cannot answer, and answering False there
+    reported `tools/ra_converter/cursor_agent.json` as a missing path on
+    every run of an unzipped copy. The file is gitignored BY DESIGN
+    because it holds an API key; absent is its correct state. Unknown is
+    treated as "do not claim it is missing", because this check exists to
+    catch a skill naming something that was never there -- not to flag a
+    file the skill correctly tells you to create.
+    """
+    import subprocess
+    if not _in_git_repo():
+        return True
     if rel in _ignored_cache:
         return _ignored_cache[rel]
     try:
@@ -90,7 +116,7 @@ def _gitignored(rel: str) -> bool:
                             capture_output=True, timeout=10).returncode
         out = rc == 0
     except Exception:
-        out = False
+        out = True
     _ignored_cache[rel] = out
     return out
 

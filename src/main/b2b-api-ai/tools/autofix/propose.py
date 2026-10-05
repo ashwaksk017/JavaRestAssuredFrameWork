@@ -179,6 +179,10 @@ def restore_source(snap: dict) -> tuple[bool, list[str]]:
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 shutil.copy2(src, dst)
         else:
+            # A clean tracked file is restored by git. Outside a
+            # repository there is nothing to restore it FROM -- which is
+            # why run() refuses to start there rather than discovering it
+            # at the point of no return, with a patch already applied.
             _git("checkout", "--", rel)
     bad = [rel for rel, h in snap["hashes"].items() if _hash(rel) != h]
     return (not bad), bad
@@ -361,6 +365,16 @@ def run(records: str, agent: str, patch_path: str, upto: str,
         include_prompt_policy: bool, check: str | None,
         branch: str, verbose: bool, mode: str = "propose",
         attempts: int = 1) -> dict:
+    if not fr.in_git_repo():
+        return {"outcome": "blocked", "check": check or "?",
+                "why": "this tree is not a git repository, and the loop "
+                       "cannot work without one: it validates a unified "
+                       "diff, applies it with `git apply`, and restores a "
+                       "rejected proposal with `git checkout --`. Refusing "
+                       "up front rather than discovering it after a patch "
+                       "is already applied and cannot be undone. Clone the "
+                       "repository instead of unzipping a copy."}
+
     workdir = os.path.join(ROOT, WORK.replace("/", os.sep))
     os.makedirs(workdir, exist_ok=True)
 
