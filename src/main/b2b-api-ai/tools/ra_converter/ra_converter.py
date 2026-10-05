@@ -18714,13 +18714,12 @@ def _record_convert_scope(output_dir: str, converted: list) -> None:
                       + PARTIAL_MARKER_REL)
             return
         os.makedirs(_fs_path(os.path.dirname(marker)), exist_ok=True)
-        import json as _json
+        import datetime as _datetime
         payload = {
             "schema": 1,
             "converted": sorted(done),
             "not_converted": sorted(full - done),
-            "at": __import__("datetime").datetime.now().strftime(
-                "%Y-%m-%dT%H:%M:%S"),
+            "at": _datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
             "why_it_matters": (
                 "Shared phase state (fluent_catalog.json, the framework "
                 "fluent finalisation) was recomputed from these suites "
@@ -18730,9 +18729,14 @@ def _record_convert_scope(output_dir: str, converted: list) -> None:
                 "before trusting phase-order, step-parity, substitution or "
                 "shape-index."),
         }
-        with io.open(_fs_path(marker), "w", encoding="utf-8",
-                     newline="\n") as fh:
-            fh.write(_json.dumps(payload, indent=1) + "\n")
+        # Plain `open`, and the module-level `json`: this file imports
+        # neither `io` nor a `_json` alias. `io.open` here raised
+        # NameError AFTER 40 files had been written and the inventory had
+        # printed clean -- a convert that had done its work and then fell
+        # over on the bookkeeping.
+        with open(_fs_path(marker), "w", encoding="utf-8",
+                  newline="\n") as fh:
+            fh.write(json.dumps(payload, indent=1) + "\n")
         print(f"[ra_converter] PARTIAL convert recorded in "
               f"{PARTIAL_MARKER_REL}: {len(done)} of {len(full)} suite(s). "
               f"Tree-wide gate checks are not meaningful until a full "

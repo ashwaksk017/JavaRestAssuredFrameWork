@@ -30,8 +30,14 @@ public final class AuthUtilities {
     private static final org.slf4j.Logger LOG =
             org.slf4j.LoggerFactory.getLogger(AuthUtilities.class);
 
-    /** Last 4 characters only -- enough to tell two client ids apart. */
-    private static String maskTail(String s) {
+    /**
+     * Last 4 characters only -- enough to tell two client ids apart.
+     *
+     * <p>Package-private rather than private so it can be tested: this
+     * decides what a credential looks like in a log file, which is not
+     * something to find out about from a log file.</p>
+     */
+    static String maskTail(String s) {
         if (s == null || s.isBlank()) {
             return "(unset)";
         }
@@ -39,7 +45,7 @@ public final class AuthUtilities {
         return t.length() <= 4 ? "****" : "****" + t.substring(t.length() - 4);
     }
 
-    private static String blankToNone(String s) {
+    static String blankToNone(String s) {
         return (s == null || s.isBlank()) ? "(none)" : s;
     }
 

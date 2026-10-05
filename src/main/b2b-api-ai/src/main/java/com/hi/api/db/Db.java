@@ -1023,7 +1023,7 @@ public final class Db {
      * <p>`jdbc:postgresql://host/db?user=x&password=y` is legal, and this
      * line goes to a log file that gets pasted into tickets.</p>
      */
-    static String redactUrlCredentials(String jdbcUrl) {
+    public static String redactUrlCredentials(String jdbcUrl) {
         if (jdbcUrl == null) {
             return "";
         }

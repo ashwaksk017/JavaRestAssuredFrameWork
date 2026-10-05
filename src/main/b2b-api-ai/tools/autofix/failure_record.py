@@ -517,6 +517,9 @@ _SKIP_PATTERNS = {
     # both cases the guard is absent rather than satisfied.
     "phase-order": re.compile(r"nothing to check", re.I),
     "skill-api": re.compile(r"nothing to check", re.I),
+    # pyflakes is not a hard dependency: without it this check verifies
+    # nothing, and PASS would say the opposite.
+    "python-defs": re.compile(r"nothing to check", re.I),
 }
 
 

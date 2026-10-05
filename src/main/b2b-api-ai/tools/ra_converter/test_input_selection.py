@@ -26,6 +26,7 @@ equivalent.
 from __future__ import annotations
 
 import io
+import json
 import os
 import sys
 import tempfile
@@ -218,6 +219,69 @@ class EmittedTestsAreVerified(unittest.TestCase):
                           "support files alone are not a converted suite")
             self.assertIn("tests=NONE", q.text,
                           "the inventory line must say so, not just the exit code")
+
+
+class ConvertScopeMarker(unittest.TestCase):
+    """The marker is WRITTEN, not just read.
+
+    This existed and shipped with `io.open` in a module that imports no
+    `io`. Nothing caught it because the only coverage was of the READING
+    side -- the marker was hand-written in a test and the gate parsed it.
+    The write path first ran on a real convert, which had already emitted
+    40 files and printed a clean inventory before falling over on the
+    bookkeeping.
+
+    So these call the function. A path no test executes is a path that
+    ships broken.
+    """
+
+    def _suites(self):
+        return [rc._default_suite_name(x)
+                for x in rc._xmls_in_dir(INPUT_DIR)]
+
+    def test_a_subset_convert_writes_the_marker(self):
+        if not os.path.isdir(INPUT_DIR):
+            self.skipTest("no input/ directory")
+        with tempfile.TemporaryDirectory() as td:
+            with _Quiet():
+                rc._record_convert_scope(td, ["partialgoalregression"])
+            m = os.path.join(td, "_audit", "partial_convert.json")
+            self.assertTrue(os.path.isfile(m), "subset convert must record")
+            with io.open(m, encoding="utf-8") as fh:
+                d = json.load(fh)
+            self.assertEqual(d["converted"], ["partialgoalregression"])
+            self.assertNotIn("partialgoalregression", d["not_converted"])
+            self.assertTrue(d["not_converted"], "others were not converted")
+            self.assertIn("phase", d["why_it_matters"].lower())
+
+    def test_a_full_convert_removes_it(self):
+        """A marker that outlived its condition would make every later
+        green run look suspect."""
+        if not os.path.isdir(INPUT_DIR):
+            self.skipTest("no input/ directory")
+        with tempfile.TemporaryDirectory() as td:
+            with _Quiet():
+                rc._record_convert_scope(td, ["partialgoalregression"])
+                rc._record_convert_scope(td, self._suites())
+            self.assertFalse(
+                os.path.isfile(os.path.join(td, "_audit",
+                                            "partial_convert.json")))
+
+    def test_it_says_so_on_the_console_too(self):
+        if not os.path.isdir(INPUT_DIR):
+            self.skipTest("no input/ directory")
+        with tempfile.TemporaryDirectory() as td:
+            with _Quiet() as q:
+                rc._record_convert_scope(td, ["partialgoalregression"])
+            self.assertIn("PARTIAL convert recorded", q.text)
+
+    def test_an_unwritable_target_is_reported_not_raised(self):
+        """A convert that did its work must not die on bookkeeping."""
+        with _Quiet() as q:
+            rc._record_convert_scope(
+                os.path.join(os.sep, "no", "such", "root", "x"),
+                ["partialgoalregression"])
+        self.assertNotIn("Traceback", q.text)
 
 
 if __name__ == "__main__":

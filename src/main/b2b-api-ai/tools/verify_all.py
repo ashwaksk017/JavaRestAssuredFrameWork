@@ -59,6 +59,11 @@ CHECKS = [
     Check("contracts",
           [PY, "tools/ra_converter/test_converter_fixes.py"],
           "converter behaviours previously regressed"),
+    Check("python-defs",
+          [PY, "tools/check_python_defs.py"],
+          "no tool module uses a name it never imports -- a NameError "
+          "fires only when that line runs, which was on a user's machine, "
+          "mid-convert, after 40 files had been written"),
     Check("input-selection",
           [PY, "tools/ra_converter/test_input_selection.py"],
           "--input converts the suite it was given, not every sibling -- "

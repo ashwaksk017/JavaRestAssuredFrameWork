@@ -246,6 +246,123 @@ class ProgressReporting(unittest.TestCase):
         self.assertIn("MB", fetch._human(5 * 1024 * 1024))
 
 
+class TheRealTransport(unittest.TestCase):
+    """The urllib path itself, which every other test stubs out.
+
+    Every test here injects a transport, so `_urllib_transport` -- the
+    code that actually talks to Jira, and the code the progress lines
+    live in -- was never executed by anything. That is exactly how a
+    NameError shipped in the converter earlier today.
+
+    urlopen is stubbed, so this still touches no network.
+    """
+
+    class _Resp:
+        status, reason = 200, "OK"
+
+        def __init__(self, payload):
+            self._p = payload
+
+        def read(self):
+            return self._p
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def _run(self, fake_urlopen, verbose=True):
+        import urllib.request
+        real_open, real_verbose = urllib.request.urlopen, fetch.VERBOSE
+        buf = io.StringIO()
+        real_stdout, sys.stdout = sys.stdout, buf
+        try:
+            urllib.request.urlopen = fake_urlopen
+            fetch.VERBOSE = verbose
+            try:
+                out = fetch._urllib_transport(
+                    "https://jira.example.com/rest/api/2/issue/A-1", "tok", 30)
+                err = None
+            except RuntimeError as e:
+                out, err = None, str(e)
+        finally:
+            sys.stdout = real_stdout
+            urllib.request.urlopen = real_open
+            fetch.VERBOSE = real_verbose
+        return out, err, buf.getvalue()
+
+    def test_a_good_response_is_parsed_and_reported(self):
+        out, err, log = self._run(
+            lambda req, timeout=None: self._Resp(b'{"key":"A-1"}'))
+        self.assertIsNone(err)
+        self.assertEqual(out["key"], "A-1")
+        self.assertIn("GET  https://jira.example.com", log)
+        self.assertIn("200 OK", log)
+
+    def test_the_token_is_sent_as_a_header_and_never_printed(self):
+        # A distinctive value: an earlier version of this test used "tok"
+        # and matched the fixed phrase "Bearer token (header)", reporting
+        # a leak that was not there.
+        secret = "s3cr3t-pat-9f2a"
+        seen = {}
+
+        def fake(req, timeout=None):
+            seen["auth"] = req.get_header("Authorization")
+            seen["url"] = req.full_url
+            return self._Resp(b"{}")
+
+        import urllib.request
+        real_open, real_verbose = urllib.request.urlopen, fetch.VERBOSE
+        buf = io.StringIO()
+        real_stdout, sys.stdout = sys.stdout, buf
+        try:
+            urllib.request.urlopen = fake
+            fetch.VERBOSE = True
+            fetch._urllib_transport(
+                "https://jira.example.com/rest/api/2/issue/A-1", secret, 30)
+        finally:
+            sys.stdout = real_stdout
+            urllib.request.urlopen = real_open
+            fetch.VERBOSE = real_verbose
+        log = buf.getvalue()
+
+        self.assertEqual(seen["auth"], "Bearer " + secret)
+        self.assertNotIn(secret, seen["url"],
+                         "a token in a URL reaches proxies, logs and history")
+        self.assertNotIn(secret, log,
+                         "the progress line must not echo the token")
+
+    def test_an_http_error_is_turned_into_a_readable_failure(self):
+        import urllib.error
+
+        def fake(req, timeout=None):
+            raise urllib.error.HTTPError(
+                req.full_url, 401, "Unauthorized", {}, None)
+
+        out, err, log = self._run(fake)
+        self.assertIsNone(out)
+        self.assertIn("401", err)
+        self.assertIn("401 Unauthorized after", log)
+
+    def test_an_unreachable_host_says_so(self):
+        import urllib.error
+
+        def fake(req, timeout=None):
+            raise urllib.error.URLError("getaddrinfo failed")
+
+        out, err, log = self._run(fake)
+        self.assertIsNone(out)
+        self.assertIn("could not reach Jira", err)
+        self.assertIn("unreachable after", log)
+
+    def test_quiet_mode_still_works_and_prints_nothing(self):
+        out, err, log = self._run(
+            lambda req, timeout=None: self._Resp(b"{}"), verbose=False)
+        self.assertIsNone(err)
+        self.assertEqual(log, "")
+
+
 class ParentChain(unittest.TestCase):
     """AC often live on the parent, and a sub-task often carries none."""
 
