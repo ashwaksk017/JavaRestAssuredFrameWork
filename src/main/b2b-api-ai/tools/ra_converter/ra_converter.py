@@ -2934,6 +2934,13 @@ def _needed_response_extracts(current_step_name: str, case: "TestCase") -> dict[
                 field_key = field
             ph_key = (f"{src_sanitized}_Response_{field_key}"
                       if field_key else f"{src_sanitized}_Response")
+            # Leaf-only, deliberately: of the 29 nested ResponseAsXml refs
+            # in this input set, nearly all are JDBC
+            # (`${Postgres#ResponseAsXml#//Results[1]/ResultSet[1]/Row[1]/
+            # TABLE.COL[1]}`), and those are PUBLISHED under the leaf key
+            # from a result-row map rather than extracted from a JSON body.
+            # Deriving a full dotted path here would break every one of
+            # them.
             if variant in ("AsXml", "AsHtml", "Headers"):
                 extract_field = field_key.replace("Header_", "")
             else:
@@ -16376,6 +16383,13 @@ public final class {support_name} {{
         group_a_meta = [
             "description",        # SoapUI <con:description> text
             "test_case_id",       # original SoapUI case name (per row)
+            # Per-row on/off switch. Blank means RUN -- see ExecutionFlag.
+            # Third rather than tucked in with the control columns: it is
+            # the one column here an author is expected to EDIT, and a
+            # switch nobody can find is a switch nobody uses. Values
+            # already in the file are carried forward on a reconvert, by
+            # `test_case_id` -- see `_existing_execute_flags`.
+            "execute",
             "jira_xray_id",       # e.g. B2B-172 (per row)
             "jira_issue",         # B2B-9300 style ticket, derived from the name
             "partner",            # h4b / h4l / lta / amex / silhouette / smb
@@ -16395,6 +16409,14 @@ public final class {support_name} {{
         # row would then be one column narrow than its header -- the same
         # misalignment the row join produced, just from the other side.
         header_row = ",".join(_csv_quote(c) for c in cols)
+
+        # Where this file lands. Computed HERE rather than only at the
+        # write below, because the `execute` flags already in that file
+        # have to be read before the rows that replace them are built.
+        _sub = f"/{csv_subpackage}" if csv_subpackage else ""
+        rel = (f"src/test/resources/csv/{self.suite_name}{_sub}/"
+               f"{class_name}/{method_name}.csv")
+        prior_execute = self._existing_execute_flags(rel)
 
         # One row per case in the cluster. Reserved cells come from the
         # case; user-data cells start empty for author fill-in.
@@ -16453,13 +16475,17 @@ public final class {support_name} {{
             # stays a single CSV cell without breaking row boundaries.
             desc_flat = " ".join((c.description or "").split())
             # Match header column groups exactly:
-            #   Group A: meta / traceability (8 cells)
+            #   Group A: meta / traceability + the `execute` switch (9 cells)
             #   Group B: control (0 or 1 cells)
             #   Group C: request data (csv_columns + hint_col_names +
             #            merged_tpl_cols + path/query literal cols)
             #   Group D: expected values (status_code + expected + assert_cols_order)
             group_a_cells = [
                 _csv_cell(desc_flat), _csv_cell(c.name),
+                # Whatever the author last put there, keyed by the row's
+                # own `test_case_id`. Blank for a row this tree has not
+                # seen before, which means RUN.
+                _csv_cell(prior_execute.get(c.name, "")),
                 _csv_cell(c.prefix), _csv_cell(_jira_issue_from_case(c.name)),
                 _csv_cell(_infer_partner(c.name)),
                 _csv_cell(_infer_partner(c.name)),
@@ -16498,15 +16524,69 @@ public final class {support_name} {{
         rows = self._expand_rows_for_datasource(cols, rows, cluster)
 
         content = header_row + "\n" + "\n".join(rows) + "\n"
-        # CSV lives under the same package tail its Java class does, so
-        # two `CreateMembersTest.java` files in different sub-packages don't
+        # `rel` was computed above, before the rows, so the `execute`
+        # flags in the file being replaced could be read first. CSV lives
+        # under the same package tail its Java class does, so two
+        # `CreateMembersTest.java` files in different sub-packages don't
         # collide in `csv/`. Loader is `PerMethodCsvDataProvider` and it
         # derives the SAME layout from the calling class's FQN.
-        _sub = f"/{csv_subpackage}" if csv_subpackage else ""
-        rel = (f"src/test/resources/csv/{self.suite_name}{_sub}/"
-               f"{class_name}/{method_name}.csv")
         self._write(rel, content)
         return rel
+
+    def _existing_execute_flags(self, rel_path: str) -> dict:
+        """{test_case_id: execute} from the CSV this run is about to replace.
+
+        THE GENERATED ROW FILES ARE OVERWRITTEN BY EVERY CONVERT. Without
+        this, a tester who switched twenty rows off would find them all
+        running again after the next convert, with nothing in the output
+        saying the flags had been dropped -- which is the failure mode the
+        flag exists to prevent.
+
+        Keyed by `test_case_id`, not by row position: measured across the
+        1,064 generated files, every one of the 1,165 rows carries a
+        non-blank id and no file contains a duplicate, while positions
+        move whenever a case is added to or removed from a cluster.
+
+        A row whose case has gone keeps no flag -- there is nothing left
+        to switch off. A missing, unreadable or column-less file yields
+        {}, i.e. everything runs: a carry-forward that guessed would be
+        worse than one that forgets, because it would silently disable
+        rows nobody chose.
+        """
+        import csv as _csv
+        # `_fs_path` at each call site, not hoisted into the variable:
+        # the guard that enforces this counts call sites rather than
+        # reasoning about them, deliberately, because deciding which
+        # path can exceed 260 characters case by case is how three
+        # unrelated-looking convert failures happened.
+        abs_path = os.path.join(self.output_dir, rel_path)
+        if not os.path.exists(_fs_path(abs_path)):
+            return {}
+        try:
+            with open(_fs_path(abs_path), encoding="utf-8-sig",
+                      newline="") as fh:
+                reader = _csv.DictReader(fh)
+                if not reader.fieldnames:
+                    return {}
+                names = {(n or "").strip().lower(): n
+                         for n in reader.fieldnames}
+                id_col = names.get("test_case_id")
+                flag_col = names.get("execute")
+                if not id_col or not flag_col:
+                    return {}
+                out = {}
+                for row in reader:
+                    case_id = (row.get(id_col) or "").strip()
+                    flag = (row.get(flag_col) or "").strip()
+                    if case_id and flag:
+                        out[case_id] = flag
+                return out
+        except (OSError, UnicodeDecodeError, _csv.Error):
+            # Reported, not raised: a corrupt row file must not stop a
+            # convert, but it must not pass for "no flags were set".
+            print(f"  !! could not read `execute` flags from {rel_path} "
+                  f"-- every row in it will RUN after this convert")
+            return {}
 
     _HARDCODED_ID_FIELDS = (
         # Field-name patterns where a bare 6+ digit value in the SoapUI

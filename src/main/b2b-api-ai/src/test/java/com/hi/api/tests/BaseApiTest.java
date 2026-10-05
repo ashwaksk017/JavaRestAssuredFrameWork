@@ -244,8 +244,21 @@ public abstract class BaseApiTest {
     private final java.util.concurrent.atomic.AtomicBoolean firstTestOnThisInstance =
             new java.util.concurrent.atomic.AtomicBoolean(true);
 
+    /**
+     * @param testMethod the @Test about to run -- TestNG injects it
+     * @param params     its parameters, which for a data-driven test is the
+     *                   one {@code Map<String,String>} row. Injected by
+     *                   TestNG so the per-row {@code execute} flag can be
+     *                   honoured in ONE place rather than in each of the
+     *                   1,002 generated @Test methods.
+     */
     @BeforeMethod(alwaysRun = true)
-    public void newTestHolder() {
+    public void newTestHolder(java.lang.reflect.Method testMethod, Object[] params) {
+        // Read the per-row `execute` flag BEFORE the cool-down below, so a
+        // switched-off row does not pay a 3s sleep it will never use. The
+        // throw itself waits until the holder exists -- see below.
+        boolean rowSwitchedOff = com.hi.api.data.ExecutionFlag
+                .skipReason(com.hi.api.data.ExecutionFlag.rowOf(params)) != null;
         // Deferred ReadyAPI Delay budget is per-scenario; a leftover
         // budget would let one test spend another test's wait.
         com.hi.api.retry.AsyncBudget.reset();
@@ -273,11 +286,19 @@ public abstract class BaseApiTest {
         // concurrent @BeforeMethod calls on the same instance -- so the
         // "first" test skips the cool-down and all subsequent tests
         // (including retries + parallel="methods" siblings) sleep.
-        boolean wasFirst = firstTestOnThisInstance.compareAndSet(true, false);
-        if (!wasFirst) {
-            int coolDownMs = Config.getInt("test.interMethodCoolDownMs", 3000);
-            if (coolDownMs > 0) {
-                com.hi.api.retry.Poller.delay(coolDownMs, "inter-method cool-down");
+        // Guarded by the flag so a sheet with 200 disabled rows does not
+        // spend ten minutes sleeping between tests it is not going to run.
+        // `compareAndSet` stays inside the guard on purpose: the cool-down
+        // exists to pace tests against a shared environment, and a skipped
+        // row never touches it, so the first row that actually RUNS is the
+        // one that should be treated as first.
+        if (!rowSwitchedOff) {
+            boolean wasFirst = firstTestOnThisInstance.compareAndSet(true, false);
+            if (!wasFirst) {
+                int coolDownMs = Config.getInt("test.interMethodCoolDownMs", 3000);
+                if (coolDownMs > 0) {
+                    com.hi.api.retry.Poller.delay(coolDownMs, "inter-method cool-down");
+                }
             }
         }
 
@@ -298,6 +319,17 @@ public abstract class BaseApiTest {
         // for tests that hit Db directly without going through
         // mapSqlValues (rare but real: fixture-setup queries).
         com.hi.api.db.Db.clearNullFallbackFlag();
+
+        // LAST, and only now. @AfterMethod runs even for a skip, and it
+        // falls back to the `softAssert` FIELD when the thread-local is
+        // clear. Throwing before the lines above replaced that field would
+        // have called assertAll() on the PREVIOUS test's SoftAssert, whose
+        // errors are not cleared by a prior assertAll -- so a row disabled
+        // in the data sheet would have been reported as a FAILURE carrying
+        // another test's assertion errors.
+        if (rowSwitchedOff) {
+            com.hi.api.data.ExecutionFlag.skipIfOff(testMethod, params);
+        }
     }
 
     /**

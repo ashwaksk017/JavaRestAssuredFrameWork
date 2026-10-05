@@ -124,6 +124,31 @@ JAVA_GUARDS = (
 )
 
 
+# The per-row `execute` switch needs THREE things to agree, and if any one
+# of them drifts the flag does nothing at all -- silently, and in the
+# dangerous direction: every row runs, including the ones someone switched
+# off, and no output says the switch was ignored. That is the same shape of
+# fault as the msgcontent columns above, so it is guarded the same way.
+EXECUTE_CHAIN = (
+    ("tools/ra_converter/ra_converter.py", '            "execute",',
+     "the converter must EMIT the column, or no sheet ever has one to edit"),
+    ("tools/ra_converter/ra_converter.py", "prior_execute = self._existing_execute_flags(rel)",
+     "flags must be carried forward: generated row files are overwritten by "
+     "every convert, so without this every switched-off row silently runs again"),
+    ("src/main/java/com/hi/api/data/ExecutionFlag.java",
+     'public static final String COLUMN = "execute"',
+     "the Java must read the SAME column name the converter writes"),
+    ("src/test/java/com/hi/api/tests/BaseApiTest.java",
+     "com.hi.api.data.ExecutionFlag.skipIfOff(testMethod, params)",
+     "BaseApiTest is the ONE place the flag is honoured; without this call "
+     "the column is decoration"),
+    ("src/test/java/com/hi/api/tests/BaseApiTest.java",
+     "public void newTestHolder(java.lang.reflect.Method testMethod, Object[] params)",
+     "TestNG only injects the data-provider row when the @BeforeMethod "
+     "declares Object[]; without it there is no row to read the flag from"),
+)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--root", default=".")
@@ -142,6 +167,17 @@ def main():
                 break
         if not hit:
             problems.append("MISSING in %s: %r -- %s" % (fname, needle, why))
+
+    # 1b. The `execute` switch: converter, carry-forward, Java, and the
+    #     one call site that honours it. Exact paths, because these are
+    #     four specific files and a walk could match a same-named copy.
+    for rel, needle, why in EXECUTE_CHAIN:
+        src = read(os.path.join(root, rel.replace("/", os.sep)))
+        if not src:
+            problems.append("UNREADABLE %s -- cannot verify the `execute` "
+                            "switch is wired: %s" % (rel, why))
+        elif needle not in src:
+            problems.append("MISSING in %s: %r -- %s" % (rel, needle, why))
 
     # 2. Every emitted expected_* column must be READ by something: either
     #    rebuilt by the framework, or inlined verbatim in the emitted Java.

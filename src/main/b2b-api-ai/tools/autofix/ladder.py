@@ -173,11 +173,32 @@ def _full_convert_cmds(ctx) -> list[list[str]]:
                     "--input", INPUT_DIR, *CONVERT_FLAGS])]
 
 
-FULL_CONVERT_TIMEOUT_S = 4200      # ~70 min; the work is ~40
+# Floor, for a tree whose inputs cannot be counted (none present).
+FULL_CONVERT_TIMEOUT_FLOOR_S = 4200
+# Headroom over the estimate. A full convert that is killed at the cap
+# leaves a HALF-WRITTEN tree, which is worse than one that never ran:
+# the next rung compiles something that is neither the old output nor
+# the new one.
+FULL_CONVERT_HEADROOM = 1.6
+
+
+def full_convert_timeout_s() -> int:
+    """Derived from the suites actually present, not a constant.
+
+    It WAS a constant -- 4200s, "~70 min; the work is ~40", measured when
+    this tree had 15 suites. Adding the 14 GOAL suites took the estimate
+    to 29 x 150 = 4350s and the constant silently became shorter than the
+    work it was sizing. Nothing about that is specific to GOAL: any
+    growth would have done it, and the symptom would have been a full
+    convert killed at the cap rather than an obviously wrong number.
+    """
+    n = len(input_xmls()) or 15
+    return max(FULL_CONVERT_TIMEOUT_FLOOR_S,
+               int(n * SECONDS_PER_SUITE * FULL_CONVERT_HEADROOM))
 
 
 def timeout_for(rung: str, default: int) -> int:
-    return FULL_CONVERT_TIMEOUT_S if rung == "full-convert" else default
+    return full_convert_timeout_s() if rung == "full-convert" else default
 
 
 def _full_verify_cmds(ctx):

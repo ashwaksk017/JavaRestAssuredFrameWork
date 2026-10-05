@@ -24,6 +24,7 @@ The utility layer (`RestUtilities`, `RestLoggerUtilityDataHolder`, `RestLogAppen
 | tune retries | [Configuration hierarchy](#configuration-hierarchy) — `wholeTestRetry`, `tokenRetry` |
 | see the response at a breakpoint, mid-chain | [Reading the response](#reading-the-response--lastresponse) — `lastResponse()` |
 | run only the framework guards (no HTTP, no DB) | [Quick start §3](#3-run-the-tests) — `testng-guards.xml` |
+| switch one data row off without deleting it | [The `execute` column](#switching-one-data-row-off--the-execute-column) — put `N` in the row |
 | turn a Jira story into a test | [From a Jira story](#from-a-jira-story-no-readyapi-xml) — `python tools/jira/run.py --url ...` |
 | find out whether a story's request is already automated | [Is it already covered?](#3-is-it-already-covered) — `tools/jira/shape_match.py` |
 
@@ -1718,6 +1719,44 @@ gets in your way:
 ```powershell
 mvn test "-DsuiteXmlFile=src/test/resources/testng-tags.xml" "-Dgroups=jsonpath"
 ```
+
+### Switching one data row off — the `execute` column
+
+Tags and groups select whole tests. To stop ONE data row from running,
+put `N` in the reserved **`execute`** column of its row file:
+
+```
+description,test_case_id,execute,partner,...
+"happy path",B2B-1234_activate_204,,h4b,...        # blank: runs
+"known broken",B2B-1235_activate_409,N,h4b,...     # skipped
+```
+
+```
+[execute] SKIPPED  AccountActivationTest#activateTest  execute=N
+          [test_case_id=B2B-1235_activate_409] -- switched off in the data
+          sheet, not a failure
+```
+
+Works for imported suites and hand-written tests, and for CSV, Excel and
+JSON — the check lives in `BaseApiTest`, so no generated code is involved.
+`N n No false 0 off skip` skip; `Y y Yes true 1 on run` run.
+
+**It fails open.** A missing column, a blank cell, or a value it does not
+recognise means **run**, and an unrecognised value warns on the console.
+Running a row you meant to disable costs one execution; skipping a row you
+meant to run costs coverage with nothing in the report to say a check
+stopped happening. 1,064 generated row files predate this column, so
+"no value" had to mean "run".
+
+A disabled row is **reported as SKIPPED, not filtered out** — otherwise
+"what are we not running?" would have no answer anywhere in the output.
+
+**Flags survive a reconvert.** Generated row files are overwritten every
+time, so the converter reads the file it is about to replace and carries
+the column forward, keyed by `test_case_id` (measured: all 1,165 rows
+carry one, and no file repeats one — unlike row position, which moves
+whenever a case joins or leaves a cluster). Full detail in
+[CreateTestCase.md](CreateTestCase.md) §3.
 
 ## Multiple TestNG suites
 

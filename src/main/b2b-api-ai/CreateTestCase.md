@@ -143,6 +143,47 @@ Search order under the method path: **`.csv`**, then **`.xlsx`**, **`.xls`**, **
 
 Force a format: `-DdataFormat=xlsx` (or `csv` / `json` / `xls`). Excel sheet: `-DdataSheet=SheetName`. JSON array key: `-DdataArrayKey=rows`.
 
+### Switching one row off — the `execute` column
+
+Put `N` in the reserved **`execute`** column and that row is reported as
+SKIPPED with its reason instead of running. Blank means run. It works for
+imported suites and hand-written tests alike, and for CSV, Excel and JSON
+— the check lives in `BaseApiTest`, not in the generated code.
+
+```
+description,test_case_id,execute,partner,...
+"happy path",B2B-1234_activate_204,,h4b,...        <- blank: runs
+"known broken",B2B-1235_activate_409,N,h4b,...     <- skipped
+```
+
+| cell | effect |
+|---|---|
+| blank, whitespace, or no column at all | **runs** |
+| `N` `n` `No` `false` `0` `off` `skip` | **skipped**, reported with the row's `test_case_id` |
+| `Y` `y` `Yes` `true` `1` `on` `run` | runs |
+| anything else | **runs**, and warns on the console |
+
+Three things worth knowing:
+
+- **It fails open, on purpose.** A missing column, a blank cell or a value
+  it does not recognise means *run*. Running a row you meant to disable
+  costs one execution; skipping a row you meant to run costs coverage and
+  nothing in the report says a check stopped happening. So a typo never
+  skips — it warns and runs.
+- **A skipped row is reported, not filtered.** It appears as SKIPPED with
+  `execute=N [test_case_id=…]`, so "what are we not running?" is
+  answerable from the run output. A filtered row would simply be absent.
+  It also prints its own `[execute] SKIPPED` line, because
+  `ProgressLogListener` suppresses sub-5ms skips to hide retry noise and a
+  flag skip takes about 0ms.
+- **Flags survive a reconvert.** Generated row files are overwritten every
+  time, so the converter reads the existing file first and carries the
+  column forward, keyed by `test_case_id`. A row whose ReadyAPI case has
+  gone keeps no flag — there is nothing left to switch off.
+
+The flag skips the row, not the test method. A method with four rows and
+one `N` still runs three times.
+
 Hand-written tests can also use TestNG XML / `-DdataFile=`:
 
 ```

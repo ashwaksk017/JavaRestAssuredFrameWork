@@ -59,6 +59,11 @@ CHECKS = [
     Check("contracts",
           [PY, "tools/ra_converter/test_converter_fixes.py"],
           "converter behaviours previously regressed"),
+    Check("execute-flag",
+          [PY, "tools/ra_converter/test_execute_flag_carryforward.py"],
+          "a row switched off with execute=N survives the next convert -- "
+          "generated row files are overwritten, so a lost flag silently "
+          "runs a test someone chose to stop running"),
     Check("phase-model",
           [PY, "tools/ra_converter/test_phase_model.py"],
           "call shapes key on the call only; specs match the emitted Java"),

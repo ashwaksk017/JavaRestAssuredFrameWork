@@ -23,12 +23,12 @@
   "accepted": [
     {
       "check": "step-parity",
-      "salient_fingerprint": "e6f2d42d7c8b9efe1bf3f64b6f1bb34a00d60bf3",
-      "reason": "B2B-422_get_spendSummary_usermembernotactive_403_suspended loses 1 of 17 steps: `tokenRequest 2`. The case registers no bootstrap, so later calls in it go out unauthenticated. Long-standing and still untraced -- it predates the Round-4 clustering fixes and survived them unchanged. Accepted so the loop works on new failures instead of re-deriving this one; it is NOT fixed, and step-parity is policy `prompt`, so any attempt at it is a deliberate choice at the command line.",
-      "recorded": "2026-10-03",
+      "salient_fingerprint": "4c436bcb01eae5392cb40dd768e766755e3d2231",
+      "reason": "B2B-422_get_spendSummary_usermembernotactive_403_suspended loses 1 of 17 steps: `tokenRequest 2`. The case registers no bootstrap, so later calls in it go out unauthenticated. Long-standing and still untraced -- it predates the Round-4 clustering fixes and survived them unchanged. Accepted so the loop works on new failures instead of re-deriving this one. Re-fingerprinted 2026-10-05 after the 14 GOAL suites were converted: the failing case and its unreachable step are byte-identical, and only the inventory line moved (9023 steps/1002 cases -> 9468/1116). The fingerprint covers that line, so ANY growth of the tree invalidates every accepted failure even when nothing about the failure changed -- a weakness in the mechanism, not in this entry. it is NOT fixed, and step-parity is policy `prompt`, so any attempt at it is a deliberate choice at the command line.",
+      "recorded": "2026-10-03, re-fingerprinted 2026-10-05",
       "expires": "2027-01-15",
       "owner": "ashwa",
-      "scope": "b2b family, 15 suites, 1002 registered cases / 9023 enabled REST steps at time of recording"
+      "scope": "b2b + goal families, 29 suites, 1116 registered cases / 9468 enabled REST steps at time of recording"
     }
   ]
 }
