@@ -213,6 +213,10 @@ CHECKS = [
           [PY, "tools/check_skill_api.py"],
           "a Cursor skill never names a helper, class or path that does "
           "not exist -- an agent follows it literally"),
+    Check("jira-fetch",
+          [PY, "tools/jira/test_fetch.py"],
+          "a story URL is untrusted input: an unapproved host is refused "
+          "and the token never leaves a header; no clear AC stops the run"),
     Check("shape-match",
           [PY, "tools/jira/test_shape_match.py"],
           "a story's request resolves to a verdict and a concrete target; "
