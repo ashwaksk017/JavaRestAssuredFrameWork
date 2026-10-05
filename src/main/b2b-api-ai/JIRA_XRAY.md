@@ -76,7 +76,42 @@ pair** (Xray → Settings → API Keys), not a personal access token.
 > **If your Xray is Server / Data Center, this does not work yet.** Server
 > authenticates with a Jira PAT as a bearer token against a different
 > route, and there is no code path for it. `xray.token` is aliased in
-> `Config` but nothing reads it. Tell someone before planning around it.
+> `Config` but nothing reads it.
+
+#### Which one do you have?
+
+Four ways, cheapest first. Any one is conclusive.
+
+**1. The Jira hostname.** Cloud is always `https://<org>.atlassian.net`.
+Anything self-hosted (`https://jira.yourorg.com`) is Server / Data
+Center.
+
+**2. What is already in `xray_api_config`**, if someone filled it in:
+
+```bash
+python -c "import sys; sys.path.insert(0,'tools/jira'); import projectconfig as c; x,_ = c.section('xray_api_config'); u = str(x.get('api_end_point','')) + str(x.get('route','')); print('SERVER/DC' if 'rest/raven' in u.lower() else       'CLOUD' if 'getxray.app' in u.lower() or 'api/v2/import' in u.lower()       else 'inconclusive -- block is empty')"
+```
+
+| marker | means |
+|---|---|
+| route contains `/rest/raven/` | **Server / Data Center** |
+| host is `xray.cloud.getxray.app`, or route has `/api/v2/import` | **Cloud** |
+
+**3. Ask Jira itself.** The canonical answer, straight from the instance:
+
+```bash
+curl -s -H "Authorization: Bearer $JIRA_PAT"      https://<your-jira-host>/rest/api/2/serverInfo | grep -o '"deploymentType":"[^"]*"'
+```
+
+`"deploymentType":"Cloud"` or `"deploymentType":"Server"`. (Data Center
+also reports `Server`.) If `/rest/api/3/...` works at all, it is Cloud —
+Server/DC stops at API v2, which is why `--api-path` defaults to
+`/rest/api/2` here.
+
+**4. Where the API keys live.** Cloud has **Xray → Settings → API Keys**
+issuing a client id + secret pair. Server/DC has no such page; you
+authenticate with a Jira **personal access token** instead. If you were
+issued a PAT rather than a pair, you are on Server/DC.
 
 Put the pair in the **same gitignored file as the Jira PAT**, as a nested
 `xray` block. `Config` flattens `stg.xray.clientId` to `xray.clientId`,
@@ -389,6 +424,20 @@ It reports as SKIPPED, which is also what Xray receives.
 ## 7. What this will not do
 
 Stated so nobody waits for it:
+
+- **Publishing results to an Xray SERVER / DATA CENTER instance.**
+  Checked against this repo's own `xray_api_config`: the endpoint is a
+  self-hosted Jira host and the route is
+  `/rest/raven/1.0/import/execution`, which is the Server/DC API.
+  `XrayClient` implements Cloud OAuth against `xray.cloud.getxray.app`
+  and nothing else, so **result publishing has never worked here.**
+  Whoever filled in that block configured Server/DC correctly; the client
+  was written for Cloud. Making it work needs a second code path: send
+  the Jira PAT as `Authorization: Bearer`, POST to
+  `<jira-base>/rest/raven/1.0/import/execution`, and skip the
+  `/api/v2/authenticate` exchange entirely. `Config` already aliases
+  `xray.token` to `xray_api_config.token` for exactly this, and nothing
+  reads it yet.
 
 - **Nothing is written back to Jira or Xray except results.**
   `XrayClient` is push-results-only: it does not create or update a test
