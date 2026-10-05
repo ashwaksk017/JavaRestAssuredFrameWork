@@ -59,6 +59,11 @@ CHECKS = [
     Check("contracts",
           [PY, "tools/ra_converter/test_converter_fixes.py"],
           "converter behaviours previously regressed"),
+    Check("input-selection",
+          [PY, "tools/ra_converter/test_input_selection.py"],
+          "--input converts the suite it was given, not every sibling -- "
+          "naming one XML in input/ used to convert all 29, which also made "
+          "the ladder's cheap repro rung secretly run the whole tree"),
     Check("execute-flag",
           [PY, "tools/ra_converter/test_execute_flag_carryforward.py"],
           "a row switched off with execute=N survives the next convert -- "
@@ -286,6 +291,71 @@ def run(check: Check) -> tuple[bool, float, str]:
         return False, time.time() - t0, f"could not run {check.cmd[0]}: {e}"
 
 
+# --- what family a check belongs to -----------------------------------
+#
+# Derived from the COMMAND, not from a hand-kept list of 64 names: a list
+# goes stale the moment someone adds a check, and an ungrouped check is
+# exactly the one nobody can place. The group is only ever presentation.
+GROUPS = (
+    ("CONVERTER", "the converter's own unit tests -- run before any tree is "
+                  "read, so a broken emitter is caught before its output is "
+                  "graded"),
+    ("EMITTED TREE", "read the generated Java / CSV / XML a convert produced. "
+                     "These are the checks a PARTIAL convert makes unreliable"),
+    ("JIRA / XRAY", "the story-to-test tooling: fetching a story, extracting "
+                    "its request, matching it, and the brief handed to Cursor"),
+    ("AUTOFIX LOOP", "the machinery that lets an agent propose a fix -- what "
+                     "it may touch, what it may accept, what it must "
+                     "re-verify"),
+    ("REPO HYGIENE", "what may be committed. This repository is public"),
+    ("JAVA (--full)", "compile the emitted tree and run the framework's own "
+                      "tests. Slow, so they need --full"),
+)
+
+
+def group_of(check) -> str:
+    cmd = " ".join(str(x) for x in check.cmd).replace("\\", "/")
+    if check.cmd and str(check.cmd[0]) == "mvn":
+        return "JAVA (--full)"
+    if "tools/autofix/" in cmd:
+        return "AUTOFIX LOOP"
+    if "tools/jira/" in cmd or "check_skill_api" in cmd:
+        return "JIRA / XRAY"
+    if "check_tracked_csv" in cmd:
+        return "REPO HYGIENE"
+    if "tools/ra_converter/test_" in cmd:
+        return "CONVERTER"
+    return "EMITTED TREE"
+
+
+def print_catalogue(checks) -> None:
+    """Every check, grouped, with what it runs and why it exists.
+
+    `--list` prints this and runs nothing. The per-result line during a
+    run is one terse sentence by necessity; someone asking "what is this
+    actually checking?" needs the command too, and needs to see that the
+    64 fall into six families rather than one undifferentiated list.
+    """
+    print("verify_all -- what each check is for\n")
+    print(f"{len(checks)} check(s). Each runs a script and passes only if "
+          f"that script exits 0.\n")
+    for title, why_group in GROUPS:
+        mine = [c for c in checks if group_of(c) == title]
+        if not mine:
+            continue
+        print(f"{title}  ({len(mine)})")
+        print(f"  {why_group}.")
+        for c in mine:
+            runs = " ".join(str(x) for x in c.cmd[1:]) or " ".join(
+                str(x) for x in c.cmd)
+            print(f"\n  {c.name}")
+            print(f"    checks : {c.why}")
+            print(f"    runs   : {runs}")
+            if c.full_only:
+                print("    note   : only with --full")
+        print()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--full", action="store_true",
@@ -297,6 +367,10 @@ def main() -> int:
                          "(fingerprint, implicated files, repro command, "
                          "autofix policy). Reading only -- it changes nothing "
                          "about what passes.")
+    ap.add_argument("--list", "--explain", dest="list_only",
+                    action="store_true",
+                    help="print every check -- grouped, with what it runs and "
+                         "why it exists -- and run nothing")
     ap.add_argument("--baseline", action="store_true",
                     help="treat failures recorded in tools/autofix/baseline.json "
                          "as known artifacts and exit 0 for them. OFF by default, "
@@ -314,11 +388,21 @@ def main() -> int:
                 if (_fr and (args.baseline or args.json)) else None)
 
     selected = [c for c in CHECKS if args.full or not c.full_only]
+    if args.list_only:
+        print_catalogue(CHECKS)
+        return 0
     print(f"verify_all: {len(selected)} check(s)"
-          f"{'  (--full)' if args.full else '  (fast; use --full for Java)'}\n")
+          f"{'  (--full)' if args.full else '  (fast; use --full for Java)'}")
+    print("Each check runs a script and passes only if that script exits 0. "
+          "`--list` explains every one without running it.\n")
 
     failed, accepted, skipped, records = [], [], [], []
+    _shown_group = None
     for c in selected:
+        _g = group_of(c)
+        if _g != _shown_group:
+            print(f"\n  -- {_g} " + "-" * max(4, 56 - len(_g)))
+            _shown_group = _g
         ok, secs, out = run(c)
         rec = None
         if _fr is not None:
@@ -398,7 +482,47 @@ def main() -> int:
     #
     # Printed whether or not something failed: a fast run that fails also
     # skipped these, and the reader is owed both facts.
+    def _partial_convert_notice() -> None:
+        """Say when this tree is the product of a PARTIAL convert.
+
+        A subset convert recomputes the SHARED phase state from the suites
+        in that run, and a chained phase name resolves by name against it.
+        So converting one suite can stop OTHER suites' chains resolving --
+        observed as ~4,596 `phase-order` findings in a suite nobody
+        converted, which reads as a converter bug rather than as "this
+        tree is half-built".
+
+        Printed before the skip notice, so the first thing a reader meets
+        is the reason the rest of the output may be noise.
+        """
+        marker = os.path.join(ROOT, "_audit", "partial_convert.json")
+        if not os.path.isfile(marker):
+            return
+        try:
+            import json as _json
+            with open(marker, encoding="utf-8") as fh:
+                d = _json.load(fh)
+        except (OSError, ValueError):
+            return
+        done, left = d.get("converted") or [], d.get("not_converted") or []
+        print(f"\n[PARTIAL TREE] the last convert covered {len(done)} "
+              f"suite(s) and left {len(left)} un-converted "
+              f"(at {d.get('at', '?')}).")
+        print("  converted    : " + ", ".join(done[:6])
+              + (" ..." if len(done) > 6 else ""))
+        print("  NOT converted: " + ", ".join(left[:6])
+              + (" ..." if len(left) > 6 else ""))
+        print("  Shared phase state was recomputed from the converted "
+              "suites only, so a tree-wide failure above may be an "
+              "artefact of that rather than a real fault -- phase-order, "
+              "step-parity, substitution and shape-index especially.")
+        print("  Convert the whole input directory before trusting them:")
+        print("    python tools/ra_converter/ra_converter.py --input "
+              "tools/ra_converter/input --output . --clean "
+              "--data-dir <workbooks>")
+
     def _skip_notice() -> None:
+        _partial_convert_notice()
         if args.full:
             return
         names = [c.name for c in CHECKS if c.full_only]

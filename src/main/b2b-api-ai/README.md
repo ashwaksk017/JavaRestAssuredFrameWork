@@ -88,33 +88,98 @@ If you only want a tree that compiles, you do not need an XML at all —
 python tools/ra_converter/ra_converter.py --bootstrap --output . --package-root com.hi.api
 ```
 
-Then convert:
+Then convert. **The whole directory is the only authoritative run:**
 
 ```powershell
 python tools/ra_converter/ra_converter.py `
     --input tools/ra_converter/input `
     --output . `
     --package-root com.hi.api `
+    --data-dir "C:\path\to\workbooks" `
     --clean `
     --max-name-len 40 `
     --no-cursor-assist
 ```
 
-Converts **all** XMLs in `tools/ra_converter/input/` in ONE process. That is
+```bash
+# the same, one line, for cmd.exe or a POSIX shell
+python tools/ra_converter/ra_converter.py --input tools/ra_converter/input --output . --package-root com.hi.api --data-dir "C:\path\to\workbooks" --clean
+```
+
+Converts **every** XML in `tools/ra_converter/input/` in ONE process. That is
 deliberate: fluent-phase votes are computed across every suite before any test
 is emitted, so a phase shared by two suites lands on one shared
 `ScenarioSteps` method instead of two suite-local copies. Converting suites
 separately (or in parallel) loses that, and several processes would race on
 the same `ScenarioSteps.java` / `fluent_catalog.json`.
 
-Expect: **18/18 suites, 1276 cases, 0 tracebacks**, ~20 minutes.
+> **`--data-dir` is not optional if any suite uses a ReadyAPI DataSource.**
+> It names the folder *directly* holding the `.xlsx` workbooks. Without it
+> every DataSource step reports `0 case(s) imported … N case(s) could not`
+> and those suites emit **no test class at all** — measured, this took a
+> 29-suite tree down to 6. The convert now fails rather than exiting 0 (it
+> prints `tests=NONE` per suite), but the flag is the fix.
 
-Single suite (rarely what you want — see above):
+### Converting less than everything
 
 ```powershell
-python tools/ra_converter/ra_converter.py --input tools/ra_converter/input/membervalidationregression.xml `
-    --output . --package-root com.hi.api --service-name MemberValidation --clean --max-name-len 40
+# one suite -- by path, or by bare name resolved against input/
+python tools/ra_converter/ra_converter.py --input tools/ra_converter/input/PartialGoalRegression.xml --output . --package-root com.hi.api --data-dir "C:\path\to\workbooks" --clean
+python tools/ra_converter/ra_converter.py --input PartialGoalRegression --output . --clean
+
+# several -- comma-separated, paths or bare names
+python tools/ra_converter/ra_converter.py --input PartialGoalRegression,InventorySTAGE,MFRSTAGE --output . --package-root com.hi.api --data-dir "C:\path\to\workbooks" --clean
 ```
+
+Fine for iterating on one suite. **It leaves the tree partial**, and that is
+not cosmetic: the shared phase state is recomputed from the suites in *this*
+run, so chained phase names in suites you did NOT convert can stop resolving
+— seen as thousands of `phase-order` findings in a suite nobody touched. The
+convert records this and `verify_all` says so:
+
+```
+[PARTIAL TREE] the last convert covered 1 suite(s) and left 28 un-converted.
+  Shared phase state was recomputed from the converted suites only, so a
+  tree-wide failure above may be an artefact of that rather than a real fault.
+```
+
+Convert the directory before trusting the gate. A full convert clears the marker.
+
+### A project that is not B2B (GOAL, etc.)
+
+`scenario.entry_class` is project-wide, so pass a separate config rather than
+editing the shared one — otherwise a GOAL test reads as onboarding:
+
+```powershell
+python tools/ra_converter/ra_converter.py `
+    --input tools/ra_converter/input `
+    --output . --package-root com.hi.api `
+    --data-dir "C:\path\to\workbooks" `
+    --config path\to\converter.config.goal.json `
+    --clean
+```
+
+### Useful flags
+
+| flag | what it does |
+|---|---|
+| `--input` | a directory (all), one XML (that suite), or `a,b,c` (those suites) |
+| `--data-dir` | folder **directly** holding the `.xlsx` workbooks |
+| `--clean` | remove **this suite's** previous output first (other suites untouched) |
+| `--config` | per-project converter settings, e.g. `scenario.entry_class` |
+| `--envs` | comma-separated env names to emit config for (default `qa,prod`) |
+| `--skip-self-test` | skip the two pre-flight scripts that otherwise abort the convert |
+| `--skip-dataflow-check` | do not fail on the post-emit ctx-dataflow check |
+| `--bootstrap` | framework types only, no XML needed |
+| `--diagrams-only` | re-render diagrams without re-emitting code |
+
+> **A path containing a space must be quoted.** `--data-dir C:\…\Telegram
+> Desktop\x` splits at the space and argparse rejects the leftover with
+> `unrecognized arguments: Desktop\x`.
+
+> **`convert aborted` means a self-test failed**, before anything was
+> emitted — so nothing was written. The message names the script; run it
+> directly to see which test: `python tools/ra_converter/test_converter_fixes.py`.
 
 `--clean` deletes that suite's generated tests / CSVs / templates /
 `_audit` / `_flows` / SetupHelper / TestSupport / SuiteCleanup. It must NOT
@@ -179,15 +244,47 @@ loop shows `PARTIAL`. Both read `FULL` once the rows are imported.
 ### 2. Verify
 
 ```powershell
-python tools/verify_all.py            # 52 checks, ~30s
-python tools/verify_all.py --full     # + Java compile + TestNG guards, ~70s
+python tools/verify_all.py                 # 61 checks, ~40s
+python tools/verify_all.py --full          # + Java compile + TestNG guards, ~2.5 min
+python tools/verify_all.py --list          # what every check is for; runs nothing
+python tools/verify_all.py --full --baseline   # what to run before a commit
 ```
 
 One command instead of nine. Run `--full` **before any reconvert or commit**.
 Exit code is 0 only when every check passes; a failing check prints the last
 25 lines of its output.
 
-Two flags exist for tooling rather than for reading:
+### What is actually being checked
+
+`--list` (or `--explain`) prints every check with the command it runs and why
+it exists, grouped into six families:
+
+| group | n | what it reads |
+|---|---|---|
+| **CONVERTER** | 33 | the converter's own unit tests, before any tree is read |
+| **EMITTED TREE** | 15 | the generated Java / CSV / XML — the group a **partial convert** makes unreliable |
+| **JIRA / XRAY** | 6 | story → request → match → the brief handed to Cursor |
+| **AUTOFIX LOOP** | 7 | what an agent may touch, accept, and must re-verify |
+| **REPO HYGIENE** | 1 | what may be committed; this repo is public |
+| **JAVA** (`--full`) | 2 | compile the emitted tree, run the framework guards |
+
+64 checks in total; 61 run without `--full`. The three that need it are
+`emitted-java`, `java-compile` and `java-tests` (`--list` marks them).
+
+A run prints the same headers, so a cluster of failures in one family points
+at one cause rather than looking like unrelated bugs:
+
+```
+  -- EMITTED TREE --------------------------------------------
+  [FAIL] phase-order       0.5s   every chained phase resolves, in order, and none is unreachable
+  [FAIL] step-parity       1.0s   every ReadyAPI REST step reaches a phase, verify or setup flow
+  [FAIL] substitution      2.8s   every placeholder resolves; no raw ${...} survives
+```
+
+Three EMITTED TREE failures together usually means the tree is half-built —
+see the `[PARTIAL TREE]` banner and reconvert the whole directory.
+
+### The other flags
 
 ```powershell
 # machine-readable failure records: fingerprint, implicated files, the
@@ -199,11 +296,25 @@ python tools/verify_all.py --json target/verify.json
 # artifacts and exit 0 for them. OFF by default, so the exit code keeps
 # meaning exactly what it always has
 python tools/verify_all.py --baseline
+
+# the last 8 lines of every passing check too, not just the failures
+python tools/verify_all.py -v
 ```
 
-A check that exits 0 having checked nothing now reports `SKIP` rather than
-`PASS` — `request-schemas` does this when no OpenAPI spec is present — so a
-pass is never mistaken for evidence.
+Run one check on its own — the command is in `--list`, e.g.:
+
+```powershell
+python tools/check_phase_order.py --show 40
+python tools/check_substitutions.py
+python tools/check_step_parity.py
+python tools/ra_converter/test_converter_fixes.py
+```
+
+A check that exits 0 having checked nothing reports `SKIP` rather than
+`PASS` — `request-schemas` with no OpenAPI spec, `tracked-csv` outside a git
+repo, `phase-order` before the first convert — so a pass is never mistaken
+for evidence. The set lives in `_SKIP_PATTERNS` in
+`tools/autofix/failure_record.py`; **register any new check that can no-op**.
 
 | Check | Guards against |
 |---|---|

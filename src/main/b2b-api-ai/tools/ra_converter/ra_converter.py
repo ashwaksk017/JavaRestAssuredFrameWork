@@ -18526,33 +18526,106 @@ def _xmls_in_dir(path: str) -> list[str]:
         and os.path.isfile(_fs_path(os.path.join(path, f))))
 
 
+def _resolve_input_token(token: str) -> str:
+    """One `--input` item -> an absolute path, or "" if it resolves to none.
+
+    Accepts a path (absolute or relative), with or without the `.xml`, and
+    a bare suite name, which is resolved against the conventional
+    `tools/ra_converter/input/` drop folder. So all four of these name the
+    same file:
+
+        tools/ra_converter/input/PartialGoalRegression.xml
+        tools/ra_converter/input/PartialGoalRegression
+        PartialGoalRegression.xml
+        PartialGoalRegression
+    """
+    t = (token or "").strip().strip('"').strip("'")
+    if not t:
+        return ""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for cand in (t, t + ".xml",
+                 os.path.join(here, "input", t),
+                 os.path.join(here, "input", t + ".xml")):
+        full = os.path.abspath(cand)
+        if os.path.isfile(_fs_path(full)):
+            return full
+    return ""
+
+
+def _subset_note(selected: list[str], parent: str) -> None:
+    """Say what a partial convert does NOT do, every time it happens.
+
+    The old behaviour converted every sibling whenever the named file sat
+    in a folder called `input` -- so `--input .../PartialGoalRegression.xml`
+    silently converted 29 suites. That contradicted the argument the
+    caller passed, and it made the autofix ladder's cheap `repro-convert`
+    rung secretly run the whole tree while advertising "~150s each,
+    against ~40min for all".
+    """
+    siblings = _xmls_in_dir(parent) if parent else []
+    others = [os.path.basename(x) for x in siblings
+              if os.path.normcase(x) not in
+              {os.path.normcase(s) for s in selected}]
+    if not others:
+        return
+    print(f"[ra_converter] converting {len(selected)} suite(s); "
+          f"{len(others)} other XML(s) in {parent} were NOT converted.")
+    print(f"[ra_converter]   not converted: {', '.join(others[:8])}"
+          + (f", ... (+{len(others) - 8})" if len(others) > 8 else ""))
+    print("[ra_converter]   A partial convert is NOT side-effect-free: "
+          "shared phases and clustering are computed across the whole set, "
+          "and converting one suite rewrites CSV data rows in others. Pass "
+          "the DIRECTORY as --input for an authoritative run.")
+
+
 def _discover_input_xmls(path: str) -> list[str]:
-    path = os.path.abspath(path)
-    if os.path.isdir(path):
-        xmls = _xmls_in_dir(path)
+    """Directory -> every XML in it. One file -> THAT file. `a,b` -> both.
+
+    An existing literal path is tried before any comma split, because a
+    filename may legally contain a comma and splitting a real file into
+    two missing ones would be a worse failure than not supporting it.
+    """
+    raw = (path or "").strip()
+    abs_path = os.path.abspath(raw) if raw else ""
+    if abs_path and os.path.isdir(abs_path):
+        xmls = _xmls_in_dir(abs_path)
         if not xmls:
             raise SystemExit(
-                f"[ra_converter] no .xml files in --input directory: {path}")
+                f"[ra_converter] no .xml files in --input directory: {abs_path}")
         return xmls
-    if os.path.isfile(_fs_path(path)):
-        parent = os.path.dirname(path)
-        siblings = _xmls_in_dir(parent)
-        # Conventional drop-folder: converting any file under `input/`
-        # still processes every suite so support/ tests stay in sync.
-        if os.path.basename(parent).lower() == "input" and len(siblings) > 1:
-            print(f"[ra_converter] --input is a file in {parent}; "
-                  f"converting all {len(siblings)} XML suite(s) in that "
-                  f"folder so each suite gets support classes")
-            return siblings
-        if len(siblings) > 1:
-            others = [os.path.basename(x) for x in siblings
-                      if os.path.normcase(x) != os.path.normcase(path)]
-            print(f"[ra_converter] NOTE: {len(others)} other XML(s) in "
-                  f"{parent} were not converted ({', '.join(others)}). "
-                  f"Pass the directory as --input to emit support for "
-                  f"every suite.")
-        return [path]
-    raise SystemExit(f"[ra_converter] --input not found: {path}")
+    if abs_path and os.path.isfile(_fs_path(abs_path)):
+        # HONOUR THE FILE NAMED. Converting the siblings too was the old
+        # behaviour and it ignored the argument it was given.
+        _subset_note([abs_path], os.path.dirname(abs_path))
+        return [abs_path]
+    if "," in raw:
+        tokens = [t for t in (x.strip() for x in raw.split(",")) if t]
+        resolved: list[str] = []
+        unresolved: list[str] = []
+        for t in tokens:
+            full = _resolve_input_token(t)
+            if not full:
+                unresolved.append(t)
+            elif full not in resolved:          # same suite named twice
+                resolved.append(full)
+        if unresolved:
+            raise SystemExit(
+                "[ra_converter] --input: could not find "
+                + ", ".join(unresolved)
+                + ". Give a path, or a suite name that exists in "
+                + os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "input"))
+        if resolved:
+            print(f"[ra_converter] --input named {len(resolved)} suite(s): "
+                  + ", ".join(os.path.basename(x) for x in resolved))
+            _subset_note(resolved, os.path.dirname(resolved[0]))
+            return resolved
+    # A bare suite name, no comma.
+    one = _resolve_input_token(raw)
+    if one:
+        _subset_note([one], os.path.dirname(one))
+        return [one]
+    raise SystemExit(f"[ra_converter] --input not found: {raw}")
 
 
 _STARTUP_FINDINGS: list = []
@@ -18604,6 +18677,70 @@ def _emitted_file_exists(path: str) -> bool:
     return os.path.isfile(_fs_path(path))
 
 
+PARTIAL_MARKER_REL = "_audit/partial_convert.json"
+
+
+def _record_convert_scope(output_dir: str, converted: list) -> None:
+    """Record whether this convert covered the whole input set.
+
+    A SUBSET convert does not only leave other suites un-emitted. It
+    recomputes the SHARED state -- `_finalize_framework_fluent` and the
+    phase votes in fluent_catalog.json -- from the suites in THIS run, and
+    a chained phase name resolves by name against that shared state. So
+    after converting one suite, other suites' chains can stop resolving:
+    observed as ~4,596 `phase-order` findings in a suite that was not even
+    converted, alongside step-parity and substitution failures.
+
+    That is exactly the hazard the old "a file in input/ converts every
+    sibling" behaviour was avoiding. Honouring the argument instead is
+    right -- a tool that ignores what it was told is worse -- but the
+    consequence has to be recorded where the GATE can read it, because a
+    printed line scrolls away and the failure surfaces much later, in a
+    different suite, looking like a converter bug.
+
+    Written on a subset convert, REMOVED on a full one, so the marker can
+    never outlive the condition it describes.
+    """
+    marker = os.path.join(output_dir, PARTIAL_MARKER_REL.replace("/", os.sep))
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        all_xmls = _xmls_in_dir(os.path.join(here, "input"))
+        full = {_default_suite_name(x) for x in all_xmls}
+        done = {str(c) for c in converted}
+        if not full or full.issubset(done):
+            if os.path.exists(_fs_path(marker)):
+                os.remove(_fs_path(marker))
+                print("[ra_converter] full convert: cleared "
+                      + PARTIAL_MARKER_REL)
+            return
+        os.makedirs(_fs_path(os.path.dirname(marker)), exist_ok=True)
+        import json as _json
+        payload = {
+            "schema": 1,
+            "converted": sorted(done),
+            "not_converted": sorted(full - done),
+            "at": __import__("datetime").datetime.now().strftime(
+                "%Y-%m-%dT%H:%M:%S"),
+            "why_it_matters": (
+                "Shared phase state (fluent_catalog.json, the framework "
+                "fluent finalisation) was recomputed from these suites "
+                "only. Chained phase names in the suites NOT converted may "
+                "no longer resolve, so tree-wide checks can fail in a suite "
+                "this run never touched. Convert the whole input directory "
+                "before trusting phase-order, step-parity, substitution or "
+                "shape-index."),
+        }
+        with io.open(_fs_path(marker), "w", encoding="utf-8",
+                     newline="\n") as fh:
+            fh.write(_json.dumps(payload, indent=1) + "\n")
+        print(f"[ra_converter] PARTIAL convert recorded in "
+              f"{PARTIAL_MARKER_REL}: {len(done)} of {len(full)} suite(s). "
+              f"Tree-wide gate checks are not meaningful until a full "
+              f"convert.")
+    except OSError as e:
+        print(f"[ra_converter] could not record convert scope: {e}")
+
+
 def _verify_emitted_suite_support(output_dir: str, package_root: str,
                                   jobs: list[tuple[str, str, str]]) -> list[str]:
     """Fail the convert if suite or framework support files are missing."""
@@ -18633,6 +18770,23 @@ def _verify_emitted_suite_support(output_dir: str, package_root: str,
             flags.append(f"{label}={'yes' if ok else 'MISSING'}")
             if not ok:
                 gap = True
+        # AND AT LEAST ONE @Test CLASS. Neither file above is a test, so
+        # this inventory used to report `TestSupport=yes, SetupHelper=yes`
+        # for a suite that emitted NOTHING runnable -- and the convert
+        # exited 0. Observed: one run reported all 29 suites healthy while
+        # 11 of them, `programaccountregression` among them, produced zero
+        # test classes. The support scaffolding is emitted from the suite
+        # name; the tests come from its cases, so the two fail apart.
+        tests_dir = os.path.join(
+            output_dir, "src/test/java", package_root.replace(".", "/"),
+            "tests", "imported", suite)
+        n_tests = 0
+        if os.path.isdir(_fs_path(tests_dir)):
+            for _root, _dirs, _files in os.walk(_fs_path(tests_dir)):
+                n_tests += sum(1 for f in _files if f.endswith("Test.java"))
+        flags.append(f"tests={n_tests if n_tests else 'NONE'}")
+        if n_tests == 0:
+            gap = True
         print(f"  - {suite} ({os.path.basename(xml)}, {svc}Client): "
               f"{', '.join(flags)}")
         if gap:
@@ -18735,9 +18889,13 @@ def _finalize_framework_fluent(preps: list[_PreparedSuite]) -> None:
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--input", required=False,
-                   help="ReadyAPI/SoapUI project XML, or a directory of XMLs "
-                        "(converts every suite in one pass so fluent reuse "
-                        "is computed across the whole imported codebase)")
+                   help="what to convert. ONE XML converts that suite only. "
+                        "A DIRECTORY converts every XML in it in one pass, so "
+                        "fluent reuse and clustering are computed across the "
+                        "whole imported codebase -- the only authoritative "
+                        "run. Several suites: comma-separate them, by path or "
+                        "by bare name resolved against tools/ra_converter/"
+                        "input (e.g. --input PartialGoalRegression,MFRSTAGE)")
     # (Legacy `--prefix` and `--all-prefixes` modes have been removed.
     # There is exactly ONE emission mode now: ONE Java test class per
     # SoapUI <testSuite>, with cases clustered into methods, per-method
@@ -19127,6 +19285,7 @@ def _main_dispatch_inner(args):
         if missing:
             raise SystemExit(
                 "[ra_converter] missing support: " + ", ".join(missing))
+        _record_convert_scope(args.output, [suite])
         return rc
 
     # Must precede the first collect: names allocated before this point
@@ -19186,6 +19345,7 @@ def _main_dispatch_inner(args):
         if failures:
             bits.append("failed suites: " + ", ".join(s for s, _ in failures))
         raise SystemExit("[ra_converter] " + "; ".join(bits))
+    _record_convert_scope(args.output, [j[1] for j in jobs])
     return 0
 
 
