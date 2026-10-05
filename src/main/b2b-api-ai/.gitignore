@@ -112,6 +112,25 @@ src/main/resources/templates/post_activate.json
 src/main/resources/templates/tokenrequest.json
 src/main/resources/test_data.example.properties
 
+# Converter scratch space and the cross-suite reuse catalog.
+#
+# These were ignored ONLY by the repository-root .gitignore, which sits
+# three levels above this directory. That works today and stops working
+# the moment b2b-api-ai is promoted to a repository of its own -- the
+# protection would be left behind, silently, and `fluent_catalog.json`
+# plus any snapshot directory the converter writes would become
+# trackable on a public repo.
+#
+# A rule belongs next to the thing it protects. The ReadyAPI XMLs already
+# follow that: tools/ra_converter/.gitignore carries `input/*`, so their
+# protection travels with the directory rather than depending on a file
+# somewhere above it.
+_rearch_snapshot/
+tools/ra_converter/_smoke_snapshot/
+tools/ra_converter/_suite_xml_snapshot/
+tools/ra_converter/single_input/
+tools/ra_converter/fluent_catalog.json
+
 # Converter backups left by a REFRESH of an author-editable file.
 # Ignored wherever they land: support/ was already covered, data/ was not,
 # so a PlaceholderResolver refresh left an untracked file next to tracked ones.

@@ -213,6 +213,10 @@ CHECKS = [
           [PY, "tools/check_skill_api.py"],
           "a Cursor skill never names a helper, class or path that does "
           "not exist -- an agent follows it literally"),
+    Check("shape-match",
+          [PY, "tools/jira/test_shape_match.py"],
+          "a story's request resolves to a verdict and a concrete target; "
+          "several targets are reported, never guessed between"),
     Check("shape-index",
           [PY, "tools/jira/test_shapes.py"],
           "two different requests never share a signature; a placeholder "
