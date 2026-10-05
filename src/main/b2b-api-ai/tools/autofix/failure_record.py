@@ -510,6 +510,13 @@ _SKIP_PATTERNS = {
     # Exit 0 is right (a copy cannot commit anything) but PASS would be a
     # lie: the protection is absent, not satisfied.
     "tracked-csv": re.compile(r"not a git repository -- nothing to check", re.I),
+    # Both of these already PRINT "nothing to check" and were still
+    # counted as passes -- the exact lie the rest of this table exists to
+    # stop. `phase-order` checks nothing before the first convert, and
+    # `skill-api` checks nothing in a tree with no .cursor/skills, so in
+    # both cases the guard is absent rather than satisfied.
+    "phase-order": re.compile(r"nothing to check", re.I),
+    "skill-api": re.compile(r"nothing to check", re.I),
 }
 
 

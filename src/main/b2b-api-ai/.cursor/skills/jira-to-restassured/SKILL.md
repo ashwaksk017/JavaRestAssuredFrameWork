@@ -123,6 +123,18 @@ public class AccountActivationTest extends BaseApiTest {
         String body = "{\"status\":\"ACTIVE\"}";
         Response res = RestUtilities.getResponsePost(
                 body, baseUrl() + "/businesses/" + accountId + "/activate", headers);
+        // An inline literal is right for a one-field body. For anything
+        // bigger, or any field that varies per row, put the body in
+        // src/test/resources/templates/manual/<step>.json and render it:
+        //
+        //   String body = ManualBody.render(
+        //           "templates/manual/activate.json", row, ctx);
+        //
+        // Do NOT call RestUtilities.mapJsonValues directly: a <<faker>>
+        // token in the body goes to the server verbatim and a missing
+        // column renders the string "null". ManualBody does what the
+        // generated engine does and throws instead. See MANUAL_FIXES.md
+        // section 5.
 
         RestUtilities.logResponseBody(testCaseId, holder,
                 RestUtilities.getResponseAsString(res));

@@ -1,0 +1,10 @@
+{
+  "_comment": "Worked example for MANUAL_FIXES.md section 5. Rendered by ManualTemplateExampleTest, so if the placeholder contract ever changes this file fails the build instead of going quietly stale. Nothing here is a real value -- this directory is COMMITTED.",
+  "accountId": "#Properties_accountId#",
+  "contactEmail": "#Properties_Email#",
+  "employeeCount": "@Properties_employeeCount@",
+  "selfManaged": "%Properties_selfManaged%",
+  "activationSource": "leadspace",
+  "freshEachTime": "<<digits(6)>>",
+  "stableWithinTheRow": "${username}"
+}

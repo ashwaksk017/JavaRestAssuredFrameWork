@@ -185,7 +185,7 @@ path must be the **full** path, not the leaf:
 A leaf-only path there (`"roomTypeCode"` for a field two levels down)
 returns null, and the request goes out empty with nothing reporting it.
 If you see that, the XPath had a shape the converter could not translate
-— [raise it](#6-when-none-of-this-applies) rather than editing the
+— [raise it](#8-when-none-of-this-applies) rather than editing the
 generated file.
 
 Then:
@@ -317,6 +317,66 @@ git status --short tools/ra_converter/input/    # must print NOTHING
 That last command is the check that matters: these files carry endpoint
 paths, hostnames, and in at least one case a plaintext DB password.
 
+### Excel workbooks, for a suite driven by DataSources
+
+A ReadyAPI DataSource step points at an `.xlsx` by a path from the author's
+machine, which does not resolve here. Point the converter at the workbooks:
+
+```bash
+python tools/ra_converter/ra_converter.py \
+    --input tools/ra_converter/input/<Suite>.xml \
+    --output . --clean --data-dir C:\path\to\workbooks
+```
+
+`--data-dir` must name the folder that **directly contains** the `.xlsx`
+files. A project root whose workbooks sit in a sub-folder finds nothing,
+and the convert carries on — so check the log says it read them:
+
+```bash
+grep -iE "workbook|datasource" <your convert log> | head
+```
+
+Without the workbooks the rows come out empty rather than absent, which
+is the shape that looks like a data problem at run time.
+
+### The database, for suites with JDBC steps
+
+An unconfigured DB does **not** fail a test. `Db.executeTranslated` logs
+`Skipping JDBC step (Db not configured)` and returns `DID_NOT_RUN`, so a
+suite with DB validations can report green having checked none of them.
+
+Fill in the `database` block in `program_configuration.json`, then
+confirm the queries actually ran:
+
+```bash
+grep -cE "jdbc SQL:" full-run.log        # how many ran
+grep -cE "jdbc SKIPPED|Db not configured" full-run.log   # how many did not
+```
+
+If the second number is not zero, the run proved less than it appears to.
+
+### Pushing results to Xray — off on purpose
+
+`xray.enabled=false` is the default, and it is a deliberate kill switch so
+a run from a public-repo clone never phones home. Turning it on is a
+conscious act:
+
+```bash
+mvn test "-Dxray.enabled=true" "-DsuiteXmlFile=Suites/<Suite>_Regression.xml"
+```
+
+Fill `xray_api_config` in `program_configuration.json` first. Omit
+`testExecutionKey` and Xray creates a fresh execution per run.
+
+### A readable full-run log on Windows
+
+`mvn` on Windows mangles non-ASCII in a redirected log. Use the wrapper,
+or the log you read back will differ from what the run printed:
+
+```powershell
+tools\mvn-utf8.ps1 test "-DsuiteXmlFile=Suites/<Suite>_Regression.xml" > full-run.log
+```
+
 ### Per-project converter settings
 
 `tools/ra_converter/converter.config.json`. The one most often wrong:
@@ -350,6 +410,135 @@ Full manual: [CreateTestCase.md](CreateTestCase.md). The short version:
 | rows | `src/test/resources/csv/manual/<Class>/<method>.csv` |
 | body templates | `src/test/resources/templates/manual/` |
 
+### 5a. Placing a JSON payload and tying it to the test
+
+**Step 1 — put the body here:**
+
+```
+src/test/resources/templates/manual/<your_step>.json
+```
+
+**Not** `src/main/resources/templates/<suite>/`. That tree is converter
+output: it is gitignored, renumbered every convert, and `--clean` deletes
+it. `src/test/resources/` is committed, untouched by `--clean`, and still
+on the classpath.
+
+> This directory **is committed**. No password, token, or real customer
+> value in a body — reference a column instead and keep the value in the
+> per-method CSV, which is gitignored.
+
+**Step 2 — reference it by its classpath path** (drop
+`src/test/resources/`):
+
+```java
+String body = ManualBody.render("templates/manual/activate.json", row, ctx);
+Response res = RestUtilities.getResponsePost(body, url, headers);
+```
+
+One line, because the obvious call is wrong in two ways that both fail
+quietly — see [5c](#5c-two-traps-measured-not-guessed).
+
+In a **phase chain** (a test reusing converted phases) you name it on the
+phase instead, and it applies to the next phase only:
+
+```java
+.using(Template.ofPath("activate, custom", "templates/manual/activate.json"))
+.activateAccount()
+```
+
+Or per row, from the CSV — the column takes a path as well as a handle:
+
+```
+template_activateAccount
+templates/manual/activate.json
+```
+
+**Worked, executed example:** `templates/manual/example_request.json`
+plus [ManualTemplateExampleTest.java](src/test/java/com/hi/api/tests/framework/ManualTemplateExampleTest.java).
+It renders that file the way this section prescribes and pins the result,
+so these instructions fail the build rather than going stale.
+
+### 5b. Parameterising the attributes
+
+A template is JSON with placeholders. **The delimiter decides the JSON
+type**, because the scalar forms replace the surrounding quotes too:
+
+| In the template | CSV cell | Rendered | JSON type |
+|---|---|---|---|
+| `"accountId": "#Properties_accountId#"` | `12345` | `"12345"` | **string**, JSON-escaped |
+| `"employeeCount": "@Properties_employeeCount@"` | `33` | `33` | **number** — quotes eaten |
+| `"selfManaged": "%Properties_selfManaged%"` | `true` | `true` | **boolean** — quotes eaten |
+| `"activationSource": "leadspace"` | — | `"leadspace"` | literal, untouched |
+
+The same cell `33` becomes `"33"` or `33` purely by which delimiter names
+it. `#...#` values are JSON-escaped, so a value containing `"` or `\`
+cannot corrupt the payload.
+
+**Add a column of the same name to the row file:**
+
+```csv
+test_case_id,execute,Properties_accountId,Properties_employeeCount,Properties_selfManaged
+DOC-1_activate_204,,12345,33,true
+```
+
+> **Use UNDERSCORES in a hand-written row file.** The dot-to-underscore
+> aliasing (`Properties.accountId` satisfying `#Properties_accountId#`)
+> lives in the generated per-suite `TestSupport.mergedRow`, which a
+> hand-written test must not import. A dotted column therefore does not
+> feed an underscore placeholder — measured, and `ManualBody.render`
+> fails naming the key rather than letting it through.
+
+**Random and unique values** go in the **CSV cell**, and are referenced
+from the template by column:
+
+| Form | Behaviour | Use when |
+|---|---|---|
+| `<<email(example.com)>>`, `<<digits(9)>>` | fresh on **every occurrence** | each field should differ |
+| `${username}`, `${email}` | generated once, **stable for the rest of the row** | two fields must agree |
+
+```csv
+Properties_Email,Properties_user,Properties_userAgain
+<<email(example.com)>>,${username},${username}
+```
+
+`Properties_user` and `Properties_userAgain` come out equal; a second row
+gets a different identity. `<<>>` vocabulary: `name firstName lastName
+username(N) email email(domain) phone address city state zip country
+company uuid unique int(min,max) alphanum(N) alpha(N) digits(N)`. `${}`
+keys: `email email_domain domain phone username firstName lastName uuid`.
+
+A hand-written test gets no `regenIdentity()`, so a fixed literal is sent
+every run and a second run can collide on a duplicate. Use `${}` / `<<>>`
+for anything that must be unique per run.
+
+**Values captured earlier** are referenced the same way: `#key#` resolves
+against `ctx` as well as the row, so an id a previous call put in `ctx`
+can be named in a later body.
+
+### 5c. Two traps, measured not guessed
+
+Both are why `ManualBody.render(...)` exists rather than a documented
+three-line incantation. The naive call —
+
+```java
+RestUtilities.mapJsonValues(RestUtilities.getRequestTemplate(path), row)   // DON'T
+```
+
+— does this:
+
+| | naive call | `ManualBody.render` |
+|---|---|---|
+| `<<digits(6)>>` **in the template body** | sent to the server verbatim, inside the quotes | resolved |
+| `#key#` with no matching column | renders the 4-character string `"null"` | **throws**, naming the key |
+
+The generated engine escapes both only because `RestStep` wraps
+`mapJsonValues` with `PlaceholderResolver.resolveAll` on either side, and
+carries an explicit `"null"` workaround — its comment cites
+`B2B-3056 attest sent travelAgentId=null and H4B 400'd`. Nothing wraps a
+hand-written call, so `ManualBody` does the same thing and is strict: you
+get an exception naming the placeholder instead of a server complaint
+about a different field.
+
 From a Jira story, let the tooling build the brief first — see
 [README §From a Jira story](README.md#from-a-jira-story-no-readyapi-xml):
 
@@ -367,7 +556,82 @@ mvn test -DsuiteXmlFile=src/test/resources/testng-guards.xml
 
 ---
 
-## 6. When none of this applies
+## 6. A green run that verified nothing
+
+Success is not the same as evidence, and three things here can pass
+without checking anything. Each has to be read, not assumed.
+
+**A gate check that checked nothing.** `verify_all` reports these
+separately, and they are **not** passes:
+
+```
+[SKIP]  request-schemas -- exited 0 but checked nothing: no OpenAPI spec
+        in src/main/resources/openapi/ -- nothing to check.
+  "a generated body satisfies the contract it is sent to (needs a spec)"
+  is NOT verified by this run.
+```
+
+| check | checks nothing when | to make it real |
+|---|---|---|
+| `request-schemas` | no spec in `src/main/resources/openapi/` | drop the spec in — [§4](#the-openapi--swagger-spec) |
+| `tracked-csv` | the tree is not a git repo (an unzipped copy) | clone instead of unzipping, or accept that the no-tracked-rows protection is untested |
+| `phase-order` | no `src/main/java` yet | expected before the first convert |
+| `skill-api` | no `.cursor/skills/` in the tree | nothing to do unless you expected skills |
+
+The set lives in `_SKIP_PATTERNS` in `tools/autofix/failure_record.py`.
+**If you add a check that can no-op, add it there too** — `phase-order`
+and `skill-api` both printed "nothing to check" and were still counted as
+passes until this was written, which is the exact lie the mechanism
+exists to stop.
+
+**A JDBC step that never ran.** See [§4](#the-database-for-suites-with-jdbc-steps)
+— it warns and the test still passes.
+
+**A data row switched off.** `execute=N` is reported as SKIPPED, which is
+how it stays visible. Count them before trusting a green run:
+
+```bash
+grep -c "\[execute\] SKIPPED" full-run.log
+```
+
+The habit worth keeping: read the tail of `verify_all` as well as its
+exit code. It prints what it did not verify, and that list is the part a
+passing run cannot tell you.
+
+---
+
+## 7. An interrupted convert
+
+A convert killed partway leaves a **half-written tree** — neither the old
+output nor the new. The next compile then reports errors against files in
+an inconsistent state, pointing nowhere useful.
+
+The ladder's own timeout is sized from the suite count for this reason
+(`ladder.full_convert_timeout_s()`), but a `Ctrl-C`, a laptop sleep, or a
+full disk will still do it.
+
+Recover by reconverting the suites that were in flight — `--clean`
+removes that suite's previous output first, so a partial tree is replaced
+rather than merged:
+
+```bash
+python tools/ra_converter/ra_converter.py \
+    --input tools/ra_converter/input/<Suite>.xml --output . --clean
+python tools/verify_all.py --full --baseline
+```
+
+If you cannot tell which suite was in flight, convert the whole input
+directory. It is slower than guessing and it is the only answer that is
+certainly complete:
+
+```bash
+python tools/ra_converter/ra_converter.py \
+    --input tools/ra_converter/input --output . --clean
+```
+
+---
+
+## 8. When none of this applies
 
 Before hand-editing anything generated, check which list it is on at the
 top of this file. If it is rewritten by a convert, the fix belongs
