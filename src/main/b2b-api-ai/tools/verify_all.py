@@ -522,12 +522,51 @@ def main() -> int:
               "artefact of that rather than a real fault -- phase-order, "
               "step-parity, substitution and shape-index especially.")
         print("  Convert the whole input directory before trusting them:")
+        # The folder THAT RUN used, not the conventional one. A reader
+        # given a path they do not convert from runs it, gets a different
+        # tree, and trusts the result.
+        where = d.get("input_dir") or "tools/ra_converter/input"
+        if " " in where:
+            where = '"' + where + '"'
         print("    python tools/ra_converter/ra_converter.py --input "
-              "tools/ra_converter/input --output . --clean "
-              "--data-dir <workbooks>")
+              + where + " --output . --clean --data-dir <workbooks>")
+
+    def _catalog_rebuild_notice() -> None:
+        """The catalog's own flag, which the marker file does not cover.
+
+        Two signals, written together but living in different trees: the
+        marker under --output, the flag inside fluent_catalog.json next to
+        the converter. Convert to a different --output, or clear _audit,
+        and the marker is gone while the flag remains -- so the gate would
+        go quiet about a tree whose next convert is still going to rebuild
+        every phase from scratch. Reading both costs one open.
+        """
+        cat = os.path.join(ROOT, "tools", "ra_converter",
+                           "fluent_catalog.json")
+        if not os.path.isfile(cat):
+            return
+        try:
+            import json as _json
+            with open(cat, encoding="utf-8") as fh:
+                d = _json.load(fh)
+        except (OSError, ValueError):
+            return
+        if not d.get("incomplete"):
+            return
+        why = d.get("incompleteReason") or []
+        print()
+        print("[CATALOG INCOMPLETE] fluent_catalog.json is flagged "
+              + ("(" + ", ".join(str(r) for r in why[:3]) + ")" if why
+                 else "")
+              + ".")
+        print("  The next convert will rebuild its phase names from "
+              "scratch rather than inherit votes computed from part of "
+              "the tree. Expect phase names to MOVE on that run, and do "
+              "not read the difference as a regression.")
 
     def _skip_notice() -> None:
         _partial_convert_notice()
+        _catalog_rebuild_notice()
         if args.full:
             return
         names = [c.name for c in CHECKS if c.full_only]

@@ -143,7 +143,48 @@ convert records this and `verify_all` says so:
   tree-wide failure above may be an artefact of that rather than a real fault.
 ```
 
-Convert the directory before trusting the gate. A full convert clears the marker.
+Convert the directory before trusting the gate. A full convert clears the
+marker.
+
+**"The directory" means whichever one you passed.** Completeness is judged
+against the folder `--input` resolved against, so converting every XML in your
+own drop folder counts as a full convert:
+
+```powershell
+# a full convert, even though the folder is not tools/ra_converter/input
+python tools/ra_converter/ra_converter.py --input "C:\path\to\my\xmls" --output . --package-root com.hi.api --data-dir "C:\path\to\workbooks" --clean
+```
+
+If the run cannot tell what it was selecting from -- a comma list naming files
+in two different folders, or a folder it could not list -- it says so and
+records the run as **partial** rather than guess:
+
+```
+[ra_converter] convert scope UNKNOWN -- could not list the folder --input
+  resolved against, so this run is recorded as partial.
+```
+
+That is deliberately the pessimistic reading. "Complete" is what licenses the
+gate to run tree-wide checks, so a run that cannot establish its own scope
+does not get it.
+
+#### `[CATALOG INCOMPLETE]`
+
+A second banner, from a second signal. The marker file lives under
+`--output`; the flag lives in `fluent_catalog.json` next to the converter. So
+convert to a different `--output`, or delete `_audit/`, and the marker is gone
+while the flag remains -- which is why `verify_all` reads both:
+
+```
+[CATALOG INCOMPLETE] fluent_catalog.json is flagged (partial convert: 1 of 29 suite(s)).
+  The next convert will rebuild its phase names from scratch rather than
+  inherit votes computed from part of the tree.
+```
+
+It is not an error, and nothing is broken. It means phase **names will move**
+on the next convert -- so if you diff that output against an earlier tree,
+expect the difference and do not read it as a regression. A full convert
+clears the flag as well as the marker.
 
 ### A project that is not B2B (GOAL, etc.)
 

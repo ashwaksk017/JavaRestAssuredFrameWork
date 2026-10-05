@@ -78,19 +78,29 @@ def main() -> int:
                           capture_output=True, text=True)
     out = (proc.stdout or "") + (proc.stderr or "")
 
-    # ONLY undefined names. pyflakes also reports unused imports and
-    # f-strings without placeholders; those are style, they are already
-    # numerous in this tree, and failing a gate on them would train
-    # everyone to ignore it.
-    bad = [l for l in out.splitlines() if "undefined name" in l.lower()]
+    # Undefined names AND syntax errors. Not style: pyflakes also reports
+    # unused imports and f-strings without placeholders, this tree has 128
+    # of those, and failing a gate on them trains everyone to ignore it.
+    #
+    # Syntax errors are here because the first version of this check
+    # grepped for "undefined name" alone and reported a clean pass on a
+    # file that would not even parse -- a check that misses the louder
+    # fault while catching the quieter one is worse than useless, because
+    # it is trusted.
+    bad = [l for l in out.splitlines()
+           if "undefined name" in l.lower()
+           or "invalid syntax" in l.lower()
+           or "unterminated" in l.lower()
+           or l.strip().endswith("unexpected indent")]
     print(f"check_python_defs: {len(files)} tool module(s) scanned")
     if bad:
         print()
         for l in bad:
             print("  FAIL  " + l.strip())
-        print(f"\n{len(bad)} undefined name(s). Each one is a NameError that "
+        print(f"\n{len(bad)} fault(s). An undefined name is a NameError that "
               f"fires only when that line runs -- which may be on someone "
-              f"else's machine, mid-convert, after work has been written.")
+              f"else's machine, mid-convert, after work has been written. "
+              f"A syntax error means the module will not import at all.")
         return 1
     print("No tool module uses a name it does not define or import.")
     return 0

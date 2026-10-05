@@ -617,18 +617,41 @@ rather than merged:
 
 ```bash
 python tools/ra_converter/ra_converter.py \
-    --input tools/ra_converter/input/<Suite>.xml --output . --clean
-python tools/verify_all.py --full --baseline
+    --input tools/ra_converter/input/<Suite>.xml --output . \
+    --data-dir "C:/path/to/workbooks" --clean
 ```
 
-If you cannot tell which suite was in flight, convert the whole input
-directory. It is slower than guessing and it is the only answer that is
-certainly complete:
+> **Keep `--data-dir`.** Every command in this section carries it because
+> without it each DataSource step imports nothing and those suites emit
+> **no test class at all** — measured, that took a 29-suite tree down to
+> 6, and the run still looked plausible. It names the folder *directly*
+> holding the `.xlsx` workbooks.
+
+That gets the suite back. It does **not** give you a tree the gate can
+check: a one-suite convert recomputes the shared phase state from that
+suite alone, so `verify_all`'s tree-wide checks can fail in suites you
+never touched. The run says so, and the banner is the thing to read
+first:
+
+```
+[PARTIAL TREE] the last convert covered 1 suite(s) and left 28 un-converted
+```
+
+So reconvert the whole directory before trusting the gate — which is also
+the answer when you cannot tell which suite was in flight. It is slower
+than guessing and it is the only answer that is certainly complete:
 
 ```bash
 python tools/ra_converter/ra_converter.py \
-    --input tools/ra_converter/input --output . --clean
+    --input tools/ra_converter/input --output . \
+    --data-dir "C:/path/to/workbooks" --clean
+python tools/verify_all.py --full --baseline
 ```
+
+A full convert clears both the `[PARTIAL TREE]` marker and the
+`[CATALOG INCOMPLETE]` flag. Until then read a tree-wide failure as
+"this tree is half-built" rather than as a converter bug — see
+[README](README.md#converting-less-than-everything).
 
 ---
 

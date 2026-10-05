@@ -18552,6 +18552,33 @@ def _resolve_input_token(token: str) -> str:
     return ""
 
 
+# Which drop folder this run's --input resolved against, and what it
+# picked out of it. `_record_convert_scope` needs BOTH to say whether the
+# run was complete, and only `_discover_input_xmls` knows them.
+#
+# It used to compare against `tools/ra_converter/input` no matter what
+# --input said. Two ways that was wrong, and they pull in opposite
+# directions: converting every XML in some OTHER folder was reported as a
+# partial convert and locked the gate out of tree-wide checks for a run
+# that was in fact complete, while on a clone -- where that folder is
+# gitignored customer XML and so absent -- the set came back empty, which
+# the completeness test read as "nothing left over, must be full", and no
+# partial convert was ever flagged at all.
+_INPUT_SCOPE: dict = {}
+
+
+def _note_input_scope(selected: list, parent: str) -> None:
+    """Remember the folder a selection came from, if they share one."""
+    parents = {os.path.normcase(os.path.dirname(os.path.abspath(s)))
+               for s in selected}
+    _INPUT_SCOPE.clear()
+    _INPUT_SCOPE["selected"] = list(selected)
+    # A comma list may name files in different folders. There is then no
+    # single set this run can be judged complete against, so record that
+    # rather than pick one folder and judge against the wrong one.
+    _INPUT_SCOPE["parent"] = (parent if len(parents) == 1 else "")
+
+
 def _subset_note(selected: list[str], parent: str) -> None:
     """Say what a partial convert does NOT do, every time it happens.
 
@@ -18592,10 +18619,12 @@ def _discover_input_xmls(path: str) -> list[str]:
         if not xmls:
             raise SystemExit(
                 f"[ra_converter] no .xml files in --input directory: {abs_path}")
+        _note_input_scope(xmls, abs_path)
         return xmls
     if abs_path and os.path.isfile(_fs_path(abs_path)):
         # HONOUR THE FILE NAMED. Converting the siblings too was the old
         # behaviour and it ignored the argument it was given.
+        _note_input_scope([abs_path], os.path.dirname(abs_path))
         _subset_note([abs_path], os.path.dirname(abs_path))
         return [abs_path]
     if "," in raw:
@@ -18618,11 +18647,13 @@ def _discover_input_xmls(path: str) -> list[str]:
         if resolved:
             print(f"[ra_converter] --input named {len(resolved)} suite(s): "
                   + ", ".join(os.path.basename(x) for x in resolved))
+            _note_input_scope(resolved, os.path.dirname(resolved[0]))
             _subset_note(resolved, os.path.dirname(resolved[0]))
             return resolved
     # A bare suite name, no comma.
     one = _resolve_input_token(raw)
     if one:
+        _note_input_scope([one], os.path.dirname(one))
         _subset_note([one], os.path.dirname(one))
         return [one]
     raise SystemExit(f"[ra_converter] --input not found: {raw}")
@@ -18703,15 +18734,32 @@ def _record_convert_scope(output_dir: str, converted: list) -> None:
     """
     marker = os.path.join(output_dir, PARTIAL_MARKER_REL.replace("/", os.sep))
     try:
-        here = os.path.dirname(os.path.abspath(__file__))
-        all_xmls = _xmls_in_dir(os.path.join(here, "input"))
+        parent = _INPUT_SCOPE.get("parent") or ""
+        all_xmls = _xmls_in_dir(parent) if parent else []
         full = {_default_suite_name(x) for x in all_xmls}
         done = {str(c) for c in converted}
-        if not full or full.issubset(done):
+        if not full:
+            # Nothing to judge against: --input named files in several
+            # folders, or the folder could not be listed. Say so and treat
+            # the run as partial, because "complete" is a licence for the
+            # gate to run tree-wide checks and this run cannot earn it.
+            print("[ra_converter] convert scope UNKNOWN -- could not list "
+                  "the folder --input resolved against, so this run is "
+                  "recorded as partial. Pass a DIRECTORY as --input for a "
+                  "run the gate will treat as authoritative.")
+            full = done | {"<unknown>"}
+        if full.issubset(done):
             if os.path.exists(_fs_path(marker)):
                 os.remove(_fs_path(marker))
                 print("[ra_converter] full convert: cleared "
                       + PARTIAL_MARKER_REL)
+            # And the catalog's own flag, which moves with it. This runs
+            # only on the success path -- a run with failing suites raises
+            # before here -- so "every suite converted, none failed" is
+            # exactly the condition under which the votes are complete.
+            # Leaving the flag set would make every later convert rebuild
+            # its phases from scratch for a reason that no longer holds.
+            _clear_catalog_incomplete()
             return
         os.makedirs(_fs_path(os.path.dirname(marker)), exist_ok=True)
         import datetime as _datetime
@@ -18719,6 +18767,12 @@ def _record_convert_scope(output_dir: str, converted: list) -> None:
             "schema": 1,
             "converted": sorted(done),
             "not_converted": sorted(full - done),
+            # The folder --input resolved against, so the gate can print
+            # the command that would make this tree authoritative. It is
+            # not always `tools/ra_converter/input` -- telling a reader to
+            # re-convert a folder they do not use is worse than silence,
+            # because they run it and believe the result.
+            "input_dir": parent,
             "at": _datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
             "why_it_matters": (
                 "Shared phase state (fluent_catalog.json, the framework "
@@ -18737,6 +18791,21 @@ def _record_convert_scope(output_dir: str, converted: list) -> None:
         with open(_fs_path(marker), "w", encoding="utf-8",
                   newline="\n") as fh:
             fh.write(json.dumps(payload, indent=1) + "\n")
+        # The catalog this run just saved holds phase votes from THESE
+        # suites only. Left looking complete, the next convert inherits a
+        # subset's votes and recomputes the shared / suite-local split
+        # from them -- so phases move, and the suites NOT converted are
+        # still on disk built against the previous split. That is the
+        # cross-suite mismatch, and it surfaces later as thousands of
+        # `phase-order` findings in a suite nobody touched.
+        #
+        # Same treatment a run with failing suites already gets, for the
+        # same reason: votes computed from partial data must be rebuilt,
+        # not inherited.
+        _mark_catalog_incomplete(
+            [f"partial convert: {len(done)} of {len(full)} suite(s)"]
+            + sorted(full - done)[:9],
+            why=f"converted {len(done)} of {len(full)} suite(s)")
         print(f"[ra_converter] PARTIAL convert recorded in "
               f"{PARTIAL_MARKER_REL}: {len(done)} of {len(full)} suite(s). "
               f"Tree-wide gate checks are not meaningful until a full "
@@ -19353,8 +19422,47 @@ def _main_dispatch_inner(args):
     return 0
 
 
-def _mark_catalog_incomplete(reasons: list) -> None:
-    """Flag fluent_catalog.json so the next run rebuilds its phases."""
+def _clear_catalog_incomplete() -> None:
+    """Drop the incomplete flag after a whole-tree, no-failure convert.
+
+    The counterpart to `_mark_catalog_incomplete`. Without it the flag is
+    one-way: once any partial or failed run sets it, every later convert
+    rebuilds its phases from scratch forever, and the catalog -- whose
+    entire purpose is to accumulate votes across runs -- stops doing its
+    job silently.
+    """
+    try:
+        _here = os.path.dirname(os.path.abspath(__file__))
+        if _here not in sys.path:
+            sys.path.insert(0, _here)
+        from fluent_scenario import catalog_path
+        path = catalog_path()
+        if not os.path.isfile(_fs_path(path)):
+            return
+        with open(_fs_path(path), encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not data.get("incomplete"):
+            return
+        data.pop("incomplete", None)
+        data.pop("incompleteReason", None)
+        tmp = path + ".tmp"
+        with open(_fs_path(tmp), "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(data, indent=2) + "\n")
+        os.replace(tmp, path)
+        print("[ra_converter] whole-tree convert: fluent_catalog.json is no "
+              "longer marked incomplete")
+    except Exception as exc:       # never mask the real outcome
+        print(f"[ra_converter] WARN: could not clear the catalog flag: {exc}")
+
+
+def _mark_catalog_incomplete(reasons: list, why: str = "some suites failed") -> None:
+    """Flag fluent_catalog.json so the next run rebuilds its phases.
+
+    `why` because there are now two reasons to distrust the votes -- a run
+    whose suites crashed, and a run that deliberately converted a subset --
+    and a line blaming failures for a clean partial convert sends the
+    reader looking for an error that never happened.
+    """
     try:
         _here = os.path.dirname(os.path.abspath(__file__))
         if _here not in sys.path:
@@ -19371,9 +19479,9 @@ def _mark_catalog_incomplete(reasons: list) -> None:
         with open(_fs_path(tmp), "w", encoding="utf-8") as fh:
             fh.write(json.dumps(data, indent=2) + "\n")
         os.replace(tmp, path)
-        print("[ra_converter] fluent_catalog.json marked INCOMPLETE "
-              "(some suites failed) -- the next convert will rebuild its "
-              "phases rather than inherit partial votes")
+        print(f"[ra_converter] fluent_catalog.json marked INCOMPLETE "
+              f"({why}) -- the next convert will rebuild its phases rather "
+              f"than inherit votes computed from part of the tree")
     except Exception as exc:  # never mask the real failure
         print(f"[ra_converter] WARN: could not mark catalog incomplete: {exc}")
 

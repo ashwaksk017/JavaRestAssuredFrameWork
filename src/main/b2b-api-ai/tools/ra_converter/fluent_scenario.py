@@ -822,6 +822,47 @@ def _empty_catalog() -> dict:
             "emitterVersion": emitter_version()}
 
 
+def _invalidated(data: dict, headline: str, keep_shapes: bool) -> dict:
+    """Reset the phase tables; keep what the reset does not invalidate.
+
+    An invalidation targets `phases` / `verifies` / `bootstrap`: keyed by
+    phase name and holding cached Java. Everything else in the catalog is
+    keyed by something an invalidation does not touch, so this is one
+    function rather than a hand-picked list per branch -- the three
+    branches used to disagree about `suites`, and that was the bug this
+    docstring exists to prevent coming back.
+
+    `suites` is {name: {serviceName}}: the registry that keeps a suite's
+    client class named the same thing on every later convert. Nothing
+    about a new emitter, a new vocabulary or a short run makes a name
+    already emitted to disk wrong -- and dropping it lets one suite's
+    client be renamed while every other suite still on disk calls the old
+    name. That is not a stale cache, it is a tree that no longer compiles.
+
+    `clientMethods` is keyed by client signature, not by phase name.
+
+    `shapes` is the one conditional case, hence the flag. Each entry
+    carries `engine`, which IS a vocabulary name
+    (`phase_vocabulary.canonical_name`), so a vocabulary bump invalidates
+    it -- and only a vocabulary bump does.
+    """
+    kept_shapes = (data.get("shapes", {}) or {}) if keep_shapes else {}
+    kept_suites = data.get("suites", {}) or {}
+    stale = len(data.get("phases", {}) or {})
+    fresh = _empty_catalog()
+    fresh["clientMethods"] = data.get("clientMethods", [])
+    fresh["shapes"] = kept_shapes
+    fresh["suites"] = kept_suites
+    also = ""
+    if not keep_shapes:
+        also = ", %d shape(s)" % len(data.get("shapes") or {})
+    print("[fluent_catalog] %s -- discarded %d phase %s%s; rebuilding from "
+          "this run (%d suite name(s) kept)"
+          % (headline, stale, "entry" if stale == 1 else "entries", also,
+             len(kept_suites)))
+    return fresh
+
+
 def load_fluent_catalog() -> dict:
     path = catalog_path()
     if not os.path.isfile(path):
@@ -832,56 +873,37 @@ def load_fluent_catalog() -> dict:
     except (OSError, json.JSONDecodeError):
         return _empty_catalog()
 
-    # Vocabulary-versioned invalidation.
-    #
+    # An invalidation discards the phase tables. Three conditions trigger
+    # one and `_invalidated` owns what each one carries over, because when
+    # the three branches hand-picked that for themselves they disagreed --
+    # and the disagreements were oversights, not decisions.
+    current_emitter = emitter_version()
+    if data.get("emitterVersion") != current_emitter:
+        # The emit code changed, so cached Java bodies may be stale.
+        # Rebuild them rather than replay Java produced by a converter
+        # that no longer exists.
+        return _invalidated(data, "converter changed", keep_shapes=True)
+
+    if data.get("incomplete"):
+        # Votes computed from part of the tree. Inheriting them makes the
+        # next convert's output neither correct nor reproducible, and
+        # nothing in the log would explain the difference.
+        reason = data.get("incompleteReason") or []
+        return _invalidated(
+            data,
+            "previous run did not complete ("
+            + ", ".join(str(r) for r in reason[:3]) + ")",
+            keep_shapes=True)
+
+    current = phase_vocabulary.version()
     # `phases` and `verifies` are keyed BY PHASE NAME, so a catalog written
     # under an older vocabulary re-seeds the names that vocabulary produced
     # -- 751 of 798 entries were counter-suffixed (readProgramAccount776),
-    # and reusing them would silently undo a vocabulary change. The stamp is
-    # a hash of the rule table, so it bumps ITSELF whenever the vocabulary
-    # is edited; nobody has to remember to purge the file.
-    #
-    # `clientMethods` is keyed by client signature, not phase name, so it
-    # survives -- discarding it would needlessly churn generated clients.
-    # The emit code changed -> cached Java bodies may be stale. Rebuild them
-    # rather than replay Java produced by a converter that no longer exists.
-    current_emitter = emitter_version()
-    if data.get("emitterVersion") != current_emitter:
-        kept = data.get("clientMethods", [])
-        kept_shapes = data.get("shapes", {}) or {}
-        stale = len(data.get("phases", {}) or {})
-        data = _empty_catalog()
-        data["clientMethods"] = kept
-        data["shapes"] = kept_shapes
-        print(f"[fluent_catalog] converter changed -- discarded {stale} cached "
-              f"phase bodies so the new emit takes effect")
-        return data
-
-    current = phase_vocabulary.version()
-    # A catalog written by a run that had failing suites holds votes computed
-    # from partial data. Inheriting those makes the next convert's output
-    # neither correct nor reproducible, and nothing in the log explains the
-    # difference -- so treat it exactly like a vocabulary bump and rebuild.
-    if data.get("incomplete"):
-        kept = data.get("clientMethods", [])
-        kept_shapes = data.get("shapes", {}) or {}
-        stale = len(data.get("phases", {}) or {})
-        reason = data.get("incompleteReason") or []
-        data = _empty_catalog()
-        data["clientMethods"] = kept
-        data["shapes"] = kept_shapes
-        print(f"[fluent_catalog] previous run did not complete "
-              f"({', '.join(str(r) for r in reason[:3])}) -- discarded {stale} "
-              f"phase entries computed from partial data; rebuilding")
-        return data
+    # and reusing them would silently undo a vocabulary change. The stamp
+    # is a hash of the rule table, so it bumps ITSELF whenever the
+    # vocabulary is edited; nobody has to remember to purge the file.
     if data.get("vocabularyVersion") != current:
-        kept = data.get("clientMethods", [])
-        stale = len(data.get("phases", {}) or {})
-        data = _empty_catalog()
-        data["clientMethods"] = kept
-        print(f"[fluent_catalog] vocabulary changed -- discarded {stale} stale "
-              f"phase entries (clientMethods kept); rebuilding from this run")
-        return data
+        return _invalidated(data, "vocabulary changed", keep_shapes=False)
 
     data.setdefault("phases", {})
     data.setdefault("verifies", {})
