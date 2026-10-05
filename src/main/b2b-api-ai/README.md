@@ -10,6 +10,7 @@ The utility layer (`RestUtilities`, `RestLoggerUtilityDataHolder`, `RestLogAppen
 |---|---|
 | put a ReadyAPI XML in so the converter picks it up | [Quick start §1](#1-generate-everything-from-the-readyapi-xmls) — `tools/ra_converter/input/` |
 | put the Swagger / OpenAPI spec in | [Where the OpenAPI (Swagger) spec goes](#where-the-openapi-swagger-spec-goes) — `src/main/resources/openapi/` |
+| find out what the spec actually validates, and why nothing in the output mentions it | [What actually reads the spec, and when](#what-actually-reads-the-spec-and-when) |
 | convert a suite driven by Excel DataSources | [Excel DataSources](#excel-datasources) — `--data-dir` |
 | make a tree compile without any XML | `--bootstrap`, [Quick start §1](#1-generate-everything-from-the-readyapi-xmls) |
 | read a value from the datasheet into a request body | [Authoring template values](#authoring-template-values--types-the-datasheet-and-random-data) |
@@ -875,7 +876,9 @@ one spec and validates bodies against another, and that mismatch surfaces
 nowhere near its cause. A spec in the folder that `openapi.spec` does not
 name is simply ignored — the build will not find it and will not say so.
 
-Two things the spec is used for, and only one of them needs generation:
+Two things *generation* affects, and only one of them needs the flag. (A
+third consumer, the request-side check, needs neither — see
+[What actually reads the spec, and when](#what-actually-reads-the-spec-and-when).)
 
 * **typed models** — `OpenApiModels.as(res, ProgramAccount.class)`. Needs
   generation on, so it needs the flag.
@@ -886,6 +889,86 @@ Two things the spec is used for, and only one of them needs generation:
 Neither is required by a converted test: those assert with JsonPath and a
 `Map<String,String>` ctx, so a tree with no spec at all runs the full imported
 suite. Typed binding is additive.
+
+### What actually reads the spec, and when
+
+Three separate consumers. They are easy to conflate because all three say
+"schema", but they run at different times, check opposite directions, and
+each is off for its own reason.
+
+| | What it checks | Direction | When | On by default? |
+|---|---|---|---|---|
+| `tools/check_request_schemas.py` | generated **request** bodies vs the spec's `requestBody` schemas | request | `verify_all` (check `request-schemas`) | runs, but **skips** with no spec |
+| `openapi-generator` (Maven) | nothing — it *generates* model classes | — | `generate-sources` | **no** — `openapi.codegen.skip=true` |
+| `OpenApiModels` / `SchemaValidator.validateOpenApi` | a **response** body vs a spec definition | response | runtime, inside a test | available, but **nothing calls it** |
+
+So the request side is a static check at verify time, and the response side
+is a runtime assertion. They are different code paths and neither feeds the
+other.
+
+**The converter never touches the spec.** It mentions it only in
+documentation and emits no spec-validation call, so no converted test
+validates anything against the contract in either direction. Measured on
+this tree:
+
+```
+SchemaValidator.validate(         1   -- samples/PostsSmokeTests, and that uses
+                                       schemas/post-schema.json, a hand-written
+                                       JSON Schema, NOT the spec
+SchemaValidator.validateOpenApi(  0
+SchemaValidator.matchesOpenApi(   0
+ResponseAsserts.matchesOpenApi    defined, 0 callers
+generated tree -> OpenApiModels   0
+converter emits matchesDefinition 0
+```
+
+That is why a convert or a `verify_all` run says nothing about the spec:
+nothing happened. The one line you should see, when no spec is present, is
+`verify_all` refusing to call it a pass:
+
+```
+[SKIP] request-schemas -- exited 0 but checked nothing: no OpenAPI spec in
+       src/main/resources/openapi/ -- nothing to check.
+       "a generated body satisfies the contract it is sent to" is NOT verified by this run.
+```
+
+#### Turning each one on
+
+```powershell
+# 0. the spec itself -- gitignored, so a clone has none
+copy ProgramAccounts-1.0.71.yaml src\main\resources\openapi\
+
+# 1. request bodies vs the contract. Reports to STDOUT; writes no file.
+python tools\check_request_schemas.py
+
+#    or through the gate, where it stops reporting SKIP once a spec exists
+python tools\verify_all.py --full --baseline
+
+# 2. typed models + the tests that use them (off by default)
+mvn -o clean test -Dopenapi.codegen.skip=false -Dopenapi.spec=ProgramAccounts-1.0.71.yaml
+
+# 3. response vs a definition -- needs the spec present, not generated,
+#    and needs a CALLER: nothing invokes it today
+#    ResponseAsserts.matchesOpenApi(softAssert, res, "ProgramAccount");
+```
+
+`check_request_schemas` prints and stops there — spec name, operation count,
+how many generated calls matched an operation, how many bodies were checked,
+then findings by severity. There is no report file, and that is deliberate:
+
+> These are REPORTS, not fixes.
+
+The ReadyAPI recording is evidence of what the server actually accepted; the
+spec is a document, and documents drift from deployments. Where they
+disagree, a human decides which is wrong. Silently "correcting" a payload to
+match a spec would hide that the source project is stale.
+
+**The gap worth knowing.** Even with the spec dropped in, response validation
+stays unused until something calls `ResponseAsserts.matchesOpenApi(...)`, and
+the converter emits no such call. Wiring that into generated tests is an
+emitter change — and worth doing only after `check_request_schemas` has run
+against a real spec, because its findings tell you how far the spec and the
+recordings have already drifted.
 
 ### OpenAPI models (Program Accounts)
 
