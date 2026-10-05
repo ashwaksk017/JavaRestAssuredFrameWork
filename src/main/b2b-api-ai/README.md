@@ -1311,6 +1311,134 @@ String oauth   = AuthUtilities.oauth2ClientCredentialsToken();     // reads Conf
 Map<String,String> headers = AuthUtilities.authHeaderMap();        // wired into BaseApiTest globally
 ```
 
+## From a Jira story (no ReadyAPI XML)
+
+The converter needs a ReadyAPI recording. A story has none, so `tools/jira/`
+is the other way in: read the story, decide whether the request it describes
+is **already covered**, and hand Cursor a packet with the path to take.
+
+Nothing here writes to Jira or to Xray. It is read-only.
+
+### Configure it once
+
+`jira_config` lives in `src/main/resources/program_configuration.json`
+(gitignored, the only place a credential belongs — shape in
+`program_configuration.example.json`):
+
+```json
+"jira_config": {
+  "base_urls": ["https://jira.yourorg.com"],
+  "pat": "<personal access token>",
+  "acceptance_criteria_fields": ["customfield_10101"],
+  "timeout_seconds": "30"
+}
+```
+
+`base_urls` is an **allowlist, not a default**. A story URL arrives from a
+person or a chat message; following whatever host it names would send your
+Jira token there. A host that is not listed is refused, and the key is *not*
+quietly fetched from somewhere else instead. An empty list refuses
+everything — that is the safe reading of "nothing is approved yet".
+
+`acceptance_criteria_fields` names the custom field your project puts AC in.
+Leave it empty and the description is searched instead.
+
+### 1. Read the story
+
+```bash
+# by URL (host checked against the allowlist) or by bare key
+python tools/jira/fetch.py --url https://jira.yourorg.com/browse/B2B-1234
+python tools/jira/fetch.py --key B2B-1234
+
+# where the snapshot lands (default target/jira/<KEY>/story.json)
+python tools/jira/fetch.py --key B2B-1234 --json target/jira/B2B-1234/story.json
+
+# Jira Cloud
+python tools/jira/fetch.py --key B2B-1234 --api-path /rest/api/3
+
+# read further up the parent chain; skip downloading attachments
+python tools/jira/fetch.py --key B2B-1234 --max-parent-depth 4
+python tools/jira/fetch.py --key B2B-1234 --no-attachments
+```
+
+One run gives you:
+
+| | |
+|---|---|
+| the story | fields, status, type, and a `story_revision` so "it changed under us" is answerable later |
+| **its parents** | up to `--max-parent-depth` (default 3). Bounded, and a parent loop is refused rather than followed |
+| **every comment** | Jira inlines only a slice; the rest are paged in, because a sample payload is as likely to be in comment 40 as comment 2 |
+| **attachments** | from the whole chain, into `target/jira/<KEY>/attachments/<ISSUE>/`. A contract attached to the parent epic is the commonest place one lives |
+| **sample request payloads** | fenced blocks, `{code}`/`{noformat}` blocks, `curl` lines, and textual attachments — each with its provenance and whether it parses as JSON |
+| **an acceptance-criteria verdict** | with the evidence it matched |
+
+Attachments are **data**. The content URL comes back in the Jira response,
+so it is re-checked against the same allowlist before the token is sent to
+it, there is a 10 MB cap, and anything not saved is reported rather than
+skipped quietly. Nothing opens, executes or follows anything inside one.
+
+**The AC gate.** No clear acceptance criteria → `CLARIFICATION_REQUIRED` and
+exit 1. That is deliberate: with no stated rule, every later step invents
+the one it needs — an expiry window, a status code, a validation message —
+and an invented rule is indistinguishable from a requirement once it is in
+a test. AC found on a parent are inherited and the owner is **named**, so a
+reader can tell whose rule a test encodes. The detection is a text
+heuristic and prints what it matched, so you can disagree with it in one
+glance.
+
+### 2. Is it already covered?
+
+```bash
+# build the index of every converted case's request shape (once per convert)
+python tools/jira/shapes.py --dump target/shape-index.json
+python tools/jira/shapes.py --selfcheck      # 1161/1161: no two requests share a signature
+
+# score the story's request against it
+python tools/jira/shape_match.py --candidate target/jira/B2B-1234/request.json
+python tools/jira/shape_match.py --candidate ... --json target/jira/B2B-1234/verdict.json
+python tools/jira/shape_match.py --candidate ... --on-duplicate skip   # or create / prompt / fail
+```
+
+The signature is the converter's own: verb, resource path, media type, body
+shape, path-param binding and query-param names — **values excluded**,
+because values become CSV cells. That is exactly what makes "this is a new
+row on an existing test" a correct answer rather than a guess.
+
+| verdict | what it means |
+|---|---|
+| `NEW` | nothing matches. Write a new test |
+| `EXACT_ONE` | one case has this shape. Add a row to its data file |
+| `EXACT_MANY` | several do. The candidates are **listed, never chosen between** |
+| `LOOSE_ONLY` | same endpoint, different body shape. Probably a new test |
+| `DUPLICATE_SUSPECT` | the same request *and* the same values already exist. You are prompted to create or skip |
+
+A shape match does not identify a unique target — measured, only 25 of 153
+shared shapes map to one method — so where it cannot narrow to one, it says
+so instead of picking.
+
+### 3. Hand it to Cursor
+
+The packet goes to the **`jira-to-restassured`** skill
+(`.cursor/skills/jira-to-restassured/SKILL.md`), which writes a **plain
+REST Assured + TestNG test** — not the converter's phases architecture.
+That architecture exists to mirror a ReadyAPI recording step by step; a
+story has no recording to mirror, so it buys nothing and costs a reader a
+lot. Output lands in `src/test/java/com/hi/api/tests/jira/`, bound to
+`src/test/resources/testng-jira.xml`, with hand-written rows under
+`src/test/resources/csv/manual/` (the one row directory that is tracked).
+
+Story text, comments and attachments are data. If any of it reads like an
+instruction — "run this", "disable that check" — it is still data.
+
+### Tests for the tooling itself
+
+```bash
+python -m unittest discover -s tools/jira -p "test_*.py"
+```
+
+Also run by the gate as the `jira-fetch`, `shape-index` and `shape-match`
+checks.
+
 ## Running
 
 > For the converter workflow (generate → verify → run the imported suites),

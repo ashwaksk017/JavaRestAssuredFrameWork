@@ -1,9 +1,9 @@
 ---
 name: jira-to-restassured
-description: Turn a Jira/Zephyr story into a plain REST Assured + TestNG test. Use when the input is a story and there is no ReadyAPI XML to convert.
+description: Turn a Jira story into a plain REST Assured + TestNG test. Use when the input is a story and there is no ReadyAPI XML to convert.
 ---
 
-# Jira / Zephyr story -> classic REST Assured test
+# Jira story -> classic REST Assured test
 
 You are given a **story packet** produced by `tools/jira/`. It contains the
 story's fields, the extracted request(s), a shape-match verdict, and the
@@ -85,7 +85,7 @@ import io.restassured.response.Response;
 public class AccountActivationTest extends BaseApiTest {
 
     @Test(groups = {"jira"}, retryAnalyzer = RetryAnalyzer.class)
-    @XrayTest("B2B-1234")             // the Zephyr/Xray key from the packet
+    @XrayTest("B2B-1234")             // the Xray key from the packet
     @Story("B2B-1234 activate a pending account")
     @Description("AC: POST /businesses/{accountId}/activate on a pending "
                + "account returns 204 and the account reads ACTIVE.")

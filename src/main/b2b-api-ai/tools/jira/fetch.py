@@ -217,10 +217,248 @@ def _urllib_transport(url: str, token: str, timeout: int) -> dict:
 
 def fetch_issue(key: str, base_url: str, token: str, api_path: str = DEFAULT_API_PATH,
                 timeout: int = 30, transport=None) -> dict:
+    # `fields=*all` is not padding. Without it Jira returns `*navigable`,
+    # which on Cloud leaves out `comment` entirely -- and this tool reads
+    # comments for sample payloads, so it would have searched a field it
+    # was never sent and reported "no payload found" with a straight face.
     url = (f"{base_url.rstrip('/')}{api_path}/issue/{key}"
-           f"?expand=changelog,renderedFields")
+           f"?expand=changelog,renderedFields&fields=*all")
     fn = transport or _urllib_transport
     return fn(url, token, timeout)
+
+
+# Jira inlines only a slice of the comments. A sample payload is as
+# likely to be in comment 40 as comment 2, so the rest are paged in.
+MAX_COMMENT_PAGES = 10
+
+
+def fetch_comments(key: str, base_url: str, token: str,
+                   api_path: str = DEFAULT_API_PATH, timeout: int = 30,
+                   transport=None, max_pages: int = MAX_COMMENT_PAGES) -> list:
+    """Every comment on an issue, paged. Bounded both ways.
+
+    `max_pages` caps the work, and an empty page stops the walk: a server
+    that never advanced `startAt` would otherwise be followed forever.
+    """
+    fn = transport or _urllib_transport
+    out: list = []
+    at = 0
+    for _ in range(max_pages):
+        url = (f"{base_url.rstrip('/')}{api_path}/issue/{key}/comment"
+               f"?startAt={at}&maxResults=100")
+        page = fn(url, token, timeout) or {}
+        batch = page.get("comments") or []
+        if not batch:
+            break
+        out.extend(batch)
+        at += len(batch)
+        if at >= int(page.get("total") or at):
+            break
+    return out
+
+
+def _top_up_comments(issue: dict, key: str, base_url: str, token: str,
+                     api_path: str, timeout: int, transport) -> None:
+    """Replace the inlined comment slice with the full list when it is short.
+
+    A read failure is recorded on the field rather than raised: a missing
+    comment page must not lose the story, but it must not pass for
+    "there were no more comments" either.
+    """
+    f = issue.get("fields")
+    if not isinstance(f, dict):
+        return
+    c = f.get("comment")
+    if not isinstance(c, dict):
+        return
+    have = len(c.get("comments") or [])
+    total = int(c.get("total") or have)
+    if total <= have:
+        return
+    try:
+        every = fetch_comments(key, base_url, token, api_path, timeout, transport)
+    except (RuntimeError, OSError, ValueError) as e:
+        c["_error"] = f"only {have} of {total} comments could be read: {e}"
+        return
+    if len(every) >= have:
+        c["comments"] = every
+    if len(every) < total:
+        c["_error"] = (f"{len(every)} of {total} comments read; the rest are "
+                       f"past the {MAX_COMMENT_PAGES}-page cap")
+
+
+# --- the parent chain --------------------------------------------------
+MAX_PARENT_DEPTH = 3
+
+# Story-level AC often lives on the parent, and a sub-task frequently
+# carries none at all. Walking up is what stops "this story has no
+# acceptance criteria" from being wrong whenever the team put them one
+# level above.
+def parent_key(issue: dict) -> str:
+    f = (issue or {}).get("fields") or {}
+    p = f.get("parent") or {}
+    return str(p.get("key") or "").strip()
+
+
+def fetch_chain(key: str, base_url: str, token: str,
+                api_path: str = DEFAULT_API_PATH, timeout: int = 30,
+                transport=None, max_depth: int = MAX_PARENT_DEPTH) -> list:
+    """[story, parent, grandparent...], stopping at the first gap.
+
+    Bounded, and it refuses to revisit a key: a parent link that loops
+    would otherwise fetch forever, and Jira does not promise it cannot
+    loop.
+    """
+    chain, seen = [], set()
+    cur = key
+    while cur and cur not in seen and len(chain) < max_depth:
+        seen.add(cur)
+        try:
+            issue = fetch_issue(cur, base_url, token, api_path, timeout, transport)
+        except RuntimeError as e:
+            chain.append({"key": cur, "_error": str(e)})
+            break
+        _top_up_comments(issue, cur, base_url, token, api_path, timeout, transport)
+        chain.append(issue)
+        cur = parent_key(issue)
+    return chain
+
+
+# --- attachments -------------------------------------------------------
+# Parsed for payload candidates. Everything else is downloaded and
+# labelled, never opened.
+TEXTUAL = (".json", ".yaml", ".yml", ".xml", ".txt", ".csv", ".har", ".md")
+MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+
+
+def download_attachments(issue: dict, outdir: str, token: str, allowlist: list,
+                         timeout: int = 30, fetcher=None,
+                         max_bytes: int = MAX_ATTACHMENT_BYTES) -> list:
+    """Save each attachment; report the ones not saved and why.
+
+    The content URL comes from the Jira RESPONSE, so it is as untrusted as
+    the story URL was: it is checked against the same allowlist before the
+    token is sent to it. An attachment is DATA -- nothing here opens,
+    executes or follows anything inside one.
+    """
+    out: list = []
+    used: set = set()
+    f = (issue or {}).get("fields") or {}
+    issue_key = str((issue or {}).get("key") or "")
+    for a in (f.get("attachment") or []):
+        name = str(a.get("filename") or "attachment")
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", name)[:120] or "attachment"
+        if safe in used:
+            # Two attachments can share a filename -- a revised contract
+            # re-uploaded under the same name is the usual case. Writing
+            # both to one path would lose the first while reporting it
+            # "saved", so the id disambiguates.
+            safe = f"{a.get('id') or len(used)}_{safe}"
+        used.add(safe)
+        size = int(a.get("size") or 0)
+        url = str(a.get("content") or "")
+        row = {"name": name, "issue": issue_key, "size": size,
+               "mime": a.get("mimeType", ""), "saved_to": "", "status": ""}
+        ok, why = host_allowed(f"{urlparse(url).scheme}://{urlparse(url).netloc}"
+                               if url else "", allowlist)
+        if not url:
+            row["status"] = "no content url in the Jira response"
+        elif not ok:
+            row["status"] = f"refused: {why}"
+        elif size > max_bytes:
+            row["status"] = (f"skipped: {size} bytes is over the "
+                             f"{max_bytes} byte cap")
+        else:
+            try:
+                data = (fetcher or _download)(url, token, timeout)
+                os.makedirs(outdir, exist_ok=True)
+                path = os.path.join(outdir, safe)
+                with open(path, "wb") as fh:
+                    fh.write(data)
+                row["saved_to"] = path
+                row["status"] = "saved"
+            except Exception as e:                       # report, never raise
+                row["status"] = f"failed: {type(e).__name__}: {e}"
+        out.append(row)
+    return out
+
+
+def _download(url: str, token: str, timeout: int) -> bytes:
+    import urllib.request
+    req = urllib.request.Request(url, method="GET")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+
+# --- sample request payloads -------------------------------------------
+_FENCE_RX = re.compile(r"```[a-zA-Z0-9]*\s*\n(.*?)```", re.S)
+_CURL_RX = re.compile(r"(?is)\bcurl\b[^\n]*(?:\\\s*\n[^\n]*)*")
+_NOFORMAT_RX = re.compile(r"(?s)\{(?:code|noformat)[^}]*\}(.*?)\{(?:code|noformat)\}")
+
+
+def payload_candidates(issues: list, attachments: list | None = None) -> list:
+    """Sample request payloads found in the story, with provenance.
+
+    Collection only -- it does not decide which is THE request. That is
+    extract.py's job, and keeping them apart means a payload that was
+    found can be shown even when nothing could be concluded from it.
+    """
+    found: list = []
+
+    def add(source: str, kind: str, text: str):
+        text = (text or "").strip()
+        if not text:
+            return
+        parsed, note = None, ""
+        try:
+            parsed = json.loads(text)
+            note = "parses as JSON"
+        except ValueError:
+            note = "not JSON"
+        found.append({"source": source, "kind": kind, "parses": parsed is not None,
+                      "note": note, "chars": len(text),
+                      "preview": text[:400]})
+
+    for issue in issues or []:
+        key = issue.get("key", "?")
+        f = issue.get("fields") or {}
+        texts = [("description", _text_of(f.get("description")))]
+        for c in ((f.get("comment") or {}).get("comments") or []):
+            texts.append((f"comment by {((c.get('author') or {}).get('displayName') or '?')}",
+                          _text_of(c.get("body"))))
+        for where, text in texts:
+            if not text:
+                continue
+            for m in _FENCE_RX.finditer(text):
+                add(f"{key} {where}", "fenced block", m.group(1))
+            for m in _NOFORMAT_RX.finditer(text):
+                add(f"{key} {where}", "{code} block", m.group(1))
+            for m in _CURL_RX.finditer(text):
+                add(f"{key} {where}", "curl", m.group(0))
+
+    for a in attachments or []:
+        path = a.get("saved_to")
+        if not path or not os.path.isfile(path):
+            continue
+        where = f"attachment {a['name']}" + (f" on {a['issue']}" if a.get("issue") else "")
+        if not path.lower().endswith(TEXTUAL):
+            found.append({"source": where, "kind": "binary",
+                          "parses": False,
+                          "note": "not a textual type; downloaded, not parsed",
+                          "chars": a.get("size", 0), "preview": ""})
+            continue
+        try:
+            with io.open(path, encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except OSError as e:
+            found.append({"source": where, "kind": "unreadable",
+                          "parses": False, "note": str(e), "chars": 0,
+                          "preview": ""})
+            continue
+        add(where, "attachment", text)
+    return found
 
 
 def story_revision(issue: dict) -> str:
@@ -235,6 +473,34 @@ def story_revision(issue: dict) -> str:
     body = json.dumps(issue, sort_keys=True, ensure_ascii=False)
     h = hashlib.sha1(body.encode("utf-8", "replace")).hexdigest()[:12]
     return f"{updated}|{h}" if updated else h
+
+
+def acceptance_criteria_chain(chain: list, ac_fields: list | None = None) -> dict:
+    """AC from the story, else inherited from a parent, saying which.
+
+    A sub-task often carries none and the story above it carries them all.
+    Reporting "absent" without looking up would stop a run for a story
+    whose criteria are one level away -- and inheriting SILENTLY would be
+    worse, because a reader could not tell whose rule a test encodes. So
+    it is inherited and the owner is named.
+    """
+    first = None
+    for depth, issue in enumerate(chain or []):
+        if issue.get("_error"):
+            continue
+        ac = acceptance_criteria(issue, ac_fields)
+        ac = dict(ac, found_on=issue.get("key", ""), depth=depth)
+        if depth == 0:
+            first = ac
+        if ac["present"]:
+            if depth:
+                ac["reasons"] = list(ac["reasons"]) + [
+                    f"inherited from {ac['found_on']}, {depth} level(s) up -- "
+                    f"the story itself states none"]
+            return ac
+    return first or {"present": False, "confidence": "absent", "source": "",
+                     "evidence": "", "reasons": ["no issue could be read"],
+                     "found_on": "", "depth": 0}
 
 
 def summarise(issue: dict, ac: dict) -> dict:
@@ -265,8 +531,12 @@ def main(argv: list[str] | None = None) -> int:
                          "/rest/api/3)")
     ap.add_argument("--json", metavar="PATH",
                     help="write the snapshot (default target/jira/<KEY>/story.json)")
-    ap.add_argument("--raw", action="store_true",
-                    help="also write the unmodified Jira response beside it")
+    ap.add_argument("--no-attachments", action="store_true",
+                    help="do not download attachments (they are still listed)")
+    ap.add_argument("--max-parent-depth", type=int, default=MAX_PARENT_DEPTH,
+                    help="how far up the parent chain to read (default "
+                         "%(default)s). Acceptance criteria are often on the "
+                         "parent, so 1 is rarely enough")
     args = ap.parse_args(argv)
 
     cfg, note = projectconfig.section("jira_config")
@@ -297,31 +567,74 @@ def main(argv: list[str] | None = None) -> int:
     timeout = int(str(cfg.get("timeout_seconds") or "").strip() or 30)
 
     print(f"fetch : {key} from {base}{args.api_path}/issue/{key}")
-    try:
-        issue = fetch_issue(key, base, token, args.api_path, timeout)
-    except RuntimeError as e:
-        print(f"failed: {e}")
+    chain = fetch_chain(key, base, token, args.api_path, timeout,
+                        max_depth=args.max_parent_depth)
+    if not chain or chain[0].get("_error"):
+        print(f"failed: {chain[0].get('_error') if chain else 'nothing returned'}")
         return 1
+    issue = chain[0]
+    if len(chain) > 1:
+        print("parents: " + " -> ".join(
+            f"{i.get('key','?')}"
+            + (" (unreadable)" if i.get("_error") else
+               f" [{((i.get('fields') or {}).get('issuetype') or {}).get('name','?')}]")
+            for i in chain[1:]))
 
-    ac = acceptance_criteria(issue, cfg.get("acceptance_criteria_fields") or [])
+    outdir = os.path.join(ROOT, "target", "jira", key)
+    attachments = []
+    if not args.no_attachments:
+        # The whole chain, not just the story: a request contract attached
+        # to the parent epic is the commonest place one lives, and reading
+        # only the story would miss it while reporting "0 attachments".
+        for n, iss in enumerate(chain):
+            if iss.get("_error"):
+                continue
+            k = iss.get("key") or f"issue{n}"
+            attachments.extend(download_attachments(
+                iss, os.path.join(outdir, "attachments", k), token,
+                cfg.get("base_urls") or [], timeout))
+
+    payloads = payload_candidates(chain, attachments)
+    ac = acceptance_criteria_chain(
+        chain, cfg.get("acceptance_criteria_fields") or [])
     summary = summarise(issue, ac)
+    summary["parent_chain"] = [i.get("key", "") for i in chain[1:]]
+    summary["attachments"] = attachments or summary["attachments"]
+    summary["payload_candidates"] = payloads
 
-    out = args.json or os.path.join(ROOT, "target", "jira", key, "story.json")
+    out = args.json or os.path.join(outdir, "story.json")
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
-    payload = {"schema": 1, "summary": summary, "issue": issue}
+    payload = {"schema": 1, "summary": summary, "issue": issue,
+               "parents": chain[1:]}
     io.open(out, "w", encoding="utf-8", newline="\n").write(
         json.dumps(payload, indent=1, ensure_ascii=False) + "\n")
 
     print(f"\n{key}  {summary['issue_type']}  [{summary['status']}]")
     print(f"  {summary['summary'][:110]}")
     print(f"  revision   : {summary['story_revision']}")
-    print(f"  attachments: {len(summary['attachments'])}"
-          + (f"  ({', '.join(a['name'] or '?' for a in summary['attachments'][:4])})"
-             if summary["attachments"] else ""))
     print(f"  snapshot   : {out}")
 
+    print(f"\nattachments: {len(attachments)}")
+    for a in attachments:
+        print(f"  {a['status']:<10} {(a.get('issue') or '?'):<12} "
+              f"{a['name'][:46]:<46} {a['size']} bytes")
+    if any(a["status"] != "saved" for a in attachments):
+        print("  Anything not saved is reported, never skipped silently -- an "
+              "unread attachment is a requirement nobody saw.")
+
+    parsed = [p for p in payloads if p["parses"]]
+    print(f"\nsample request payloads: {len(payloads)} candidate(s), "
+          f"{len(parsed)} parse as JSON")
+    for p in payloads[:8]:
+        print(f"  [{'JSON' if p['parses'] else p['kind']:<14}] {p['source'][:46]:<46} "
+              f"{p['chars']} chars")
+    if payloads and not parsed:
+        print("  None parsed. A request shape cannot be derived from these, so "
+              "extract.py will need the story read by a person or an agent.")
+
     print(f"\nacceptance criteria: {ac['confidence'].upper()}"
-          + (f"  (field: {ac['source']})" if ac.get("source") else ""))
+          + (f"  (field: {ac['source']})" if ac.get("source") else "")
+          + (f"  on {ac['found_on']}" if ac.get("found_on") else ""))
     for r in ac.get("reasons") or []:
         print(f"  - {r}")
     if ac.get("evidence"):

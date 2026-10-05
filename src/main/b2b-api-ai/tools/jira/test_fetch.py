@@ -16,8 +16,10 @@ Two behaviours carry most of the weight:
 """
 from __future__ import annotations
 
+import io
 import os
 import sys
+import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -201,6 +203,256 @@ class Snapshot(unittest.TestCase):
         self.assertEqual(s["attachments"][0]["name"], "contract.yaml")
         self.assertTrue(s["acceptance_criteria"]["present"])
         self.assertTrue(s["fetched_at"].endswith("Z"))
+
+
+class ParentChain(unittest.TestCase):
+    """AC often live on the parent, and a sub-task often carries none."""
+
+    def test_the_chain_walks_up_to_the_epic(self):
+        issues = {
+            "S-1": issue(key="S-1", fields={"parent": {"key": "P-1"}}),
+            "P-1": issue(key="P-1", fields={"parent": {"key": "E-1"}}),
+            "E-1": issue(key="E-1"),
+        }
+        chain = fetch_chain_t(self, issues, "S-1")
+        self.assertEqual([i["key"] for i in chain], ["S-1", "P-1", "E-1"])
+
+    def test_depth_is_bounded(self):
+        issues = {f"K-{i}": issue(key=f"K-{i}",
+                                  fields={"parent": {"key": f"K-{i+1}"}})
+                  for i in range(10)}
+        chain = fetch_chain_t(self, issues, "K-0", depth=2)
+        self.assertEqual(len(chain), 2)
+
+    def test_a_parent_loop_cannot_spin(self):
+        issues = {"A-1": issue(key="A-1", fields={"parent": {"key": "B-1"}}),
+                  "B-1": issue(key="B-1", fields={"parent": {"key": "A-1"}})}
+        chain = fetch_chain_t(self, issues, "A-1", depth=9)
+        self.assertEqual([i["key"] for i in chain], ["A-1", "B-1"])
+
+    def test_an_unreadable_parent_is_recorded_not_fatal(self):
+        issues = {"S-1": issue(key="S-1", fields={"parent": {"key": "GONE-9"}})}
+        chain = fetch_chain_t(self, issues, "S-1")
+        self.assertEqual(chain[0]["key"], "S-1")
+        self.assertIn("_error", chain[1])
+
+    def test_ac_is_inherited_from_a_parent_and_the_owner_is_named(self):
+        chain = [issue(key="S-1", description="no criteria here, just prose"),
+                 issue(key="P-1",
+                       description="Acceptance Criteria\n- a rule\n- another\n")]
+        ac = fetch.acceptance_criteria_chain(chain)
+        self.assertTrue(ac["present"])
+        self.assertEqual(ac["found_on"], "P-1")
+        self.assertIn("inherited from P-1", " ".join(ac["reasons"]))
+
+    def test_the_storys_own_ac_wins_over_the_parents(self):
+        chain = [issue(key="S-1", description="Acceptance Criteria\n- own\n- two\n"),
+                 issue(key="P-1", description="Acceptance Criteria\n- parent\n- x\n")]
+        ac = fetch.acceptance_criteria_chain(chain)
+        self.assertEqual(ac["found_on"], "S-1")
+        self.assertEqual(ac["depth"], 0)
+
+    def test_no_ac_anywhere_still_reports_the_storys_own_verdict(self):
+        chain = [issue(key="S-1", description="prose"),
+                 issue(key="P-1", description="more prose")]
+        ac = fetch.acceptance_criteria_chain(chain)
+        self.assertFalse(ac["present"])
+        self.assertEqual(ac["found_on"], "S-1")
+
+
+def fetch_chain_t(tc, issues, key, depth=fetch.MAX_PARENT_DEPTH):
+    def transport(url, token, timeout):
+        k = url.split("/issue/")[1].split("?")[0]
+        if k not in issues:
+            raise RuntimeError(f"404 for {k}")
+        return issues[k]
+    return fetch.fetch_chain(key, "https://jira.example.com", "t",
+                             transport=transport, max_depth=depth)
+
+
+class Comments(unittest.TestCase):
+    """A sample payload is as likely to be in comment 40 as comment 2."""
+
+    def test_all_fields_are_requested(self):
+        """Jira Cloud omits `comment` from the default field set, and this
+        tool reads comments for payloads."""
+        seen = []
+        fetch.fetch_issue("A-1", "https://j", "t",
+                          transport=lambda u, t, to: seen.append(u) or {})
+        self.assertIn("fields=*all", seen[0])
+
+    def _pager(self, total, per_page=2):
+        def transport(url, token, timeout):
+            if "/comment?" not in url:
+                return issue(fields={"comment": {"total": total, "comments": [
+                    {"body": f"c{i}"} for i in range(min(per_page, total))]}})
+            at = int(url.split("startAt=")[1].split("&")[0])
+            return {"total": total, "startAt": at,
+                    "comments": [{"body": f"c{i}"}
+                                 for i in range(at, min(at + per_page, total))]}
+        return transport
+
+    def test_comments_beyond_the_inlined_slice_are_paged_in(self):
+        chain = fetch.fetch_chain("A-1", "https://j", "t",
+                                  transport=self._pager(7))
+        got = chain[0]["fields"]["comment"]["comments"]
+        self.assertEqual(len(got), 7)
+
+    def test_an_issue_whose_comments_all_fit_is_not_paged_again(self):
+        calls = []
+        def transport(url, token, timeout):
+            calls.append(url)
+            return issue(fields={"comment": {"total": 1,
+                                             "comments": [{"body": "only"}]}})
+        fetch.fetch_chain("A-1", "https://j", "t", transport=transport,
+                          max_depth=1)
+        self.assertFalse([u for u in calls if "/comment?" in u])
+
+    def test_a_server_that_never_advances_cannot_loop(self):
+        def transport(url, token, timeout):
+            if "/comment?" not in url:
+                return issue(fields={"comment": {"total": 999,
+                                                 "comments": [{"body": "a"}]}})
+            return {"total": 999, "comments": []}
+        chain = fetch.fetch_chain("A-1", "https://j", "t", transport=transport,
+                                  max_depth=1)
+        self.assertIn("_error", chain[0]["fields"]["comment"])
+
+    def test_a_comment_read_failure_is_recorded_not_raised(self):
+        def transport(url, token, timeout):
+            if "/comment?" in url:
+                raise RuntimeError("Jira returned 503")
+            return issue(fields={"comment": {"total": 9,
+                                             "comments": [{"body": "a"}]}})
+        chain = fetch.fetch_chain("A-1", "https://j", "t", transport=transport,
+                                  max_depth=1)
+        c = chain[0]["fields"]["comment"]
+        self.assertIn("503", c["_error"])
+        self.assertEqual(len(c["comments"]), 1)   # what was read is kept
+
+
+class Attachments(unittest.TestCase):
+    def _issue(self, *atts):
+        return issue(fields={"attachment": list(atts)})
+
+    def _att(self, name, size=10, host="https://jira.example.com"):
+        return {"filename": name, "size": size, "mimeType": "application/json",
+                "content": f"{host}/secure/attachment/1/{name}"}
+
+    def test_an_attachment_on_an_unapproved_host_is_refused(self):
+        """The content URL comes from the Jira RESPONSE -- as untrusted as
+        the story URL was, and the token would be sent to it."""
+        with tempfile.TemporaryDirectory() as td:
+            got = fetch.download_attachments(
+                self._issue(self._att("a.json", host="https://evil.example.net")),
+                td, "tok", ALLOW, fetcher=lambda *a: b"{}")
+        self.assertIn("refused", got[0]["status"])
+        self.assertEqual(got[0]["saved_to"], "")
+
+    def test_an_oversized_attachment_is_skipped_and_said_so(self):
+        with tempfile.TemporaryDirectory() as td:
+            got = fetch.download_attachments(
+                self._issue(self._att("big.json", size=99)), td, "t", ALLOW,
+                fetcher=lambda *a: b"{}", max_bytes=10)
+        self.assertIn("over the", got[0]["status"])
+
+    def test_a_good_attachment_is_saved(self):
+        with tempfile.TemporaryDirectory() as td:
+            got = fetch.download_attachments(
+                self._issue(self._att("ok.json")), td, "t", ALLOW,
+                fetcher=lambda *a: b'{"a":1}')
+            self.assertEqual(got[0]["status"], "saved")
+            self.assertTrue(os.path.isfile(got[0]["saved_to"]))
+
+    def test_a_hostile_filename_cannot_escape_the_directory(self):
+        with tempfile.TemporaryDirectory() as td:
+            got = fetch.download_attachments(
+                self._issue(self._att("../../etc/passwd")), td, "t", ALLOW,
+                fetcher=lambda *a: b"x")
+            self.assertEqual(got[0]["status"], "saved")
+            self.assertEqual(os.path.dirname(os.path.abspath(got[0]["saved_to"])),
+                             os.path.abspath(td))
+
+    def test_two_attachments_sharing_a_name_do_not_overwrite_each_other(self):
+        """A revised contract re-uploaded under the same name is the usual
+        case; one path would lose the first and still report it saved."""
+        a1 = dict(self._att("contract.json"), id="101")
+        a2 = dict(self._att("contract.json"), id="202")
+        with tempfile.TemporaryDirectory() as td:
+            got = fetch.download_attachments(self._issue(a1, a2), td, "t", ALLOW,
+                                             fetcher=lambda *a: b"{}")
+        self.assertEqual([r["status"] for r in got], ["saved", "saved"])
+        self.assertNotEqual(got[0]["saved_to"], got[1]["saved_to"])
+
+    def test_each_attachment_names_the_issue_it_came_from(self):
+        with tempfile.TemporaryDirectory() as td:
+            got = fetch.download_attachments(
+                dict(self._issue(self._att("a.json")), key="EPIC-9"),
+                td, "t", ALLOW, fetcher=lambda *a: b'{"a":1}')
+            self.assertEqual(got[0]["issue"], "EPIC-9")
+            payloads = fetch.payload_candidates([], got)
+            self.assertIn("on EPIC-9", payloads[0]["source"])
+
+    def test_a_download_failure_is_reported_not_raised(self):
+        def boom(*a):
+            raise OSError("connection reset")
+        with tempfile.TemporaryDirectory() as td:
+            got = fetch.download_attachments(self._issue(self._att("x.json")),
+                                             td, "t", ALLOW, fetcher=boom)
+        self.assertIn("failed", got[0]["status"])
+
+
+class SamplePayloads(unittest.TestCase):
+    def test_a_fenced_json_block_is_found_and_parsed(self):
+        got = fetch.payload_candidates([issue(
+            'Send this:\n```json\n{"accountId": "1", "status": "ACTIVE"}\n```\n')])
+        self.assertEqual(len(got), 1)
+        self.assertTrue(got[0]["parses"])
+        self.assertIn("accountId", got[0]["preview"])
+
+    def test_a_jira_code_macro_block_is_found(self):
+        got = fetch.payload_candidates([issue(
+            '{code:json}\n{"a": 1}\n{code}\n')])
+        self.assertTrue(any(p["parses"] for p in got))
+
+    def test_a_curl_command_is_captured_even_though_it_is_not_json(self):
+        got = fetch.payload_candidates([issue(
+            "curl -X POST https://api/x -d '{\"a\":1}'")])
+        self.assertTrue(any(p["kind"] == "curl" for p in got))
+        self.assertFalse(got[0]["parses"])
+
+    def test_comments_are_searched_too(self):
+        got = fetch.payload_candidates([issue("", fields={"comment": {"comments": [
+            {"author": {"displayName": "QA"}, "body": '```\n{"b":2}\n```'}]}})])
+        self.assertTrue(any("comment by QA" in p["source"] for p in got))
+
+    def test_the_parent_chain_is_searched(self):
+        got = fetch.payload_candidates([
+            issue(key="S-1", description="nothing here"),
+            issue(key="P-1", description='```\n{"fromParent":true}\n```')])
+        self.assertTrue(any(p["source"].startswith("P-1") for p in got))
+
+    def test_a_textual_attachment_becomes_a_candidate(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = os.path.join(td, "payload.json")
+            with io.open(p, "w", encoding="utf-8") as fh:
+                fh.write('{"x":1}')
+            got = fetch.payload_candidates(
+                [], [{"name": "payload.json", "saved_to": p, "size": 7}])
+        self.assertTrue(got[0]["parses"])
+
+    def test_a_binary_attachment_is_labelled_not_parsed(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = os.path.join(td, "shot.png")
+            with io.open(p, "wb") as fh:
+                fh.write(b"\x89PNG")
+            got = fetch.payload_candidates(
+                [], [{"name": "shot.png", "saved_to": p, "size": 4}])
+        self.assertEqual(got[0]["kind"], "binary")
+        self.assertFalse(got[0]["parses"])
+
+    def test_a_story_with_no_payload_yields_nothing_rather_than_a_guess(self):
+        self.assertEqual(fetch.payload_candidates([issue("just prose")]), [])
 
 
 class Config(unittest.TestCase):

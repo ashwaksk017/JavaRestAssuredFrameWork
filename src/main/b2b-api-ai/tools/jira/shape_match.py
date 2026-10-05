@@ -1,6 +1,6 @@
 """Does this story's request already exist? -- index hit to concrete target.
 
-Takes a candidate request extracted from a Jira/Zephyr story, scores it
+Takes a candidate request extracted from a Jira story, scores it
 with the CONVERTER'S OWN signature, and answers with somewhere to put the
 test rather than an opinion.
 

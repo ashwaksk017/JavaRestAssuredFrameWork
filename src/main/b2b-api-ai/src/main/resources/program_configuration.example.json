@@ -53,13 +53,6 @@
       "acceptance_criteria_fields": [],
       "timeout_seconds": ""
     },
-    "_zephyr_comment": "Zephyr test management. `pat` is the Zephyr personal access token: it belongs HERE and nowhere else -- not in a committed properties file, not in a CI script, not on a command line where it would reach the shell history. Code reads it through Config/the tooling's config loader so no generated artifact or log ever shows the value.",
-    "zephyr_config": {
-      "api_end_point": "",
-      "pat": "",
-      "project_key": "",
-      "folder_id": ""
-    },
     "poll_interval": "",
     "timeout": ""
   }

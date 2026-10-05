@@ -2,7 +2,7 @@
 <!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">
 
 <!--
-  Tests written from a Jira / Zephyr story.
+  Tests written from a Jira story, tracked in Xray.
 
   These are plain REST Assured + TestNG tests under
   com.hi.api.tests.jira, authored by following

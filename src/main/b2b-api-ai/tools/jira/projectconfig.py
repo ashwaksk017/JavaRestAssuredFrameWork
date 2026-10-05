@@ -36,12 +36,13 @@ def active_env() -> tuple[str, str]:
         return env, "TEST_ENV"
     p = os.path.join(ROOT, PROPS_REL.replace("/", os.sep))
     if os.path.isfile(p):
-        for line in io.open(p, encoding="utf-8", errors="replace"):
-            line = line.strip()
-            if line.startswith("env=") and not line.startswith("#"):
-                v = line[4:].strip()
-                if v:
-                    return v, PROPS_REL
+        with io.open(p, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if line.startswith("env=") and not line.startswith("#"):
+                    v = line[4:].strip()
+                    if v:
+                        return v, PROPS_REL
     return "qa", "built-in default"
 
 
@@ -54,7 +55,8 @@ def load() -> tuple[dict, str]:
                     f"program_configuration.example.json and fill it in "
                     f"(env `{env}`, chosen by {src})")
     try:
-        doc = json.load(io.open(p, encoding="utf-8"))
+        with io.open(p, encoding="utf-8") as fh:
+            doc = json.load(fh)
     except (OSError, ValueError) as e:
         return {}, f"{CONFIG_REL} could not be read: {e}"
     block = doc.get(env)
