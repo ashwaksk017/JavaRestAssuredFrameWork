@@ -51,6 +51,32 @@ import projectconfig  # noqa: E402
 ROOT = projectconfig.ROOT
 DEFAULT_API_PATH = "/rest/api/2"
 
+# Progress reporting. OFF by default so importing this module stays silent
+# -- the 191 tests inject their own transport and would otherwise print a
+# line per call -- and turned on by the CLI, where a run that fetches a
+# three-deep parent chain and a handful of attachments at a 30s timeout
+# can otherwise sit mute for a minute with nothing to say whether it is
+# talking to Jira, waiting, or stuck.
+VERBOSE = False
+
+
+def say(msg: str) -> None:
+    """One progress line, flushed.
+
+    `flush=True` is the point: buffered progress arrives in a block after
+    the work finishes, which is the same as having none.
+    """
+    if VERBOSE:
+        print(f"[jira] {msg}", flush=True)
+
+
+def _human(n: int) -> str:
+    for unit in ("B", "KB", "MB"):
+        if n < 1024 or unit == "MB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024.0
+    return f"{n:.0f} B"
+
 _KEY_RX = re.compile(r"\b([A-Z][A-Z0-9_]+-\d+)\b")
 _BROWSE_RX = re.compile(r"/browse/([A-Z][A-Z0-9_]+-\d+)", re.I)
 
@@ -197,6 +223,7 @@ def acceptance_criteria(issue: dict, ac_fields: list | None = None) -> dict:
 
 # --- fetching ----------------------------------------------------------
 def _urllib_transport(url: str, token: str, timeout: int) -> dict:
+    import time
     import urllib.error
     import urllib.request
     req = urllib.request.Request(url, method="GET")
@@ -204,17 +231,31 @@ def _urllib_transport(url: str, token: str, timeout: int) -> dict:
     if token:
         # Header, never the URL: a URL reaches proxies, logs and history.
         req.add_header("Authorization", f"Bearer {token}")
+    # The URL is safe to print -- the token is a header, and `host_allowed`
+    # has already approved the host. Printed BEFORE the call so a hang has
+    # a visible cause instead of looking like the tool doing nothing.
+    say(f"GET  {url}")
+    say(f"     auth: {'Bearer token (header)' if token else 'NONE'}"
+        f"   timeout: {timeout}s")
+    t0 = time.time()
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode("utf-8", "replace"))
+            raw = r.read()
+            ms = int((time.time() - t0) * 1000)
+            say(f"     {r.status} {r.reason}  {_human(len(raw))} in {ms} ms")
+            return json.loads(raw.decode("utf-8", "replace"))
     except urllib.error.HTTPError as e:
+        ms = int((time.time() - t0) * 1000)
         body = ""
         try:
             body = e.read().decode("utf-8", "replace")[:400]
         except Exception:
             pass
+        say(f"     {e.code} {e.reason} after {ms} ms")
         raise RuntimeError(f"Jira returned {e.code} {e.reason}. {body}") from None
     except urllib.error.URLError as e:
+        ms = int((time.time() - t0) * 1000)
+        say(f"     unreachable after {ms} ms: {e.reason}")
         raise RuntimeError(f"could not reach Jira: {e.reason}") from None
 
 
@@ -249,9 +290,12 @@ def fetch_comments(key: str, base_url: str, token: str,
     for _ in range(max_pages):
         url = (f"{base_url.rstrip('/')}{api_path}/issue/{key}/comment"
                f"?startAt={at}&maxResults=100")
+        say(f"  comment page at offset {at}")
         page = fn(url, token, timeout) or {}
         batch = page.get("comments") or []
         if not batch:
+            say("  empty page -- stopping rather than following a "
+                "server that never advances")
             break
         out.extend(batch)
         at += len(batch)
@@ -277,7 +321,10 @@ def _top_up_comments(issue: dict, key: str, base_url: str, token: str,
     have = len(c.get("comments") or [])
     total = int(c.get("total") or have)
     if total <= have:
+        say(f"  comments: {have} of {total} -- all inlined, no paging needed")
         return
+    say(f"  comments: Jira inlined {have} of {total} -- paging for the rest "
+        f"(a sample payload is as likely to be in the last one)")
     try:
         every = fetch_comments(key, base_url, token, api_path, timeout, transport)
     except (RuntimeError, OSError, ValueError) as e:
@@ -285,6 +332,7 @@ def _top_up_comments(issue: dict, key: str, base_url: str, token: str,
         return
     if len(every) >= have:
         c["comments"] = every
+        say(f"  comments: {len(every)} read")
     if len(every) < total:
         c["_error"] = (f"{len(every)} of {total} comments read; the rest are "
                        f"past the {MAX_COMMENT_PAGES}-page cap")
@@ -316,14 +364,25 @@ def fetch_chain(key: str, base_url: str, token: str,
     cur = key
     while cur and cur not in seen and len(chain) < max_depth:
         seen.add(cur)
+        say(f"reading {'story' if not chain else 'parent'} {cur}"
+            f"  (depth {len(chain) + 1}/{max_depth})")
         try:
             issue = fetch_issue(cur, base_url, token, api_path, timeout, transport)
         except RuntimeError as e:
+            say(f"  {cur} could not be read: {e}")
             chain.append({"key": cur, "_error": str(e)})
             break
         _top_up_comments(issue, cur, base_url, token, api_path, timeout, transport)
         chain.append(issue)
-        cur = parent_key(issue)
+        nxt = parent_key(issue)
+        if not nxt:
+            say(f"  {cur} has no parent -- chain ends here")
+        elif nxt in seen:
+            say(f"  {cur} points back at {nxt}, already read -- refusing to loop")
+        elif len(chain) >= max_depth:
+            say(f"  stopping at depth {max_depth} (--max-parent-depth); "
+                f"{nxt} not read")
+        cur = nxt
     return chain
 
 
@@ -348,7 +407,10 @@ def download_attachments(issue: dict, outdir: str, token: str, allowlist: list,
     used: set = set()
     f = (issue or {}).get("fields") or {}
     issue_key = str((issue or {}).get("key") or "")
-    for a in (f.get("attachment") or []):
+    _atts = list(f.get("attachment") or [])
+    if _atts:
+        say(f"  {len(_atts)} attachment(s) on {issue_key or '?'} -> {outdir}")
+    for _n, a in enumerate(_atts, 1):
         name = str(a.get("filename") or "attachment")
         safe = re.sub(r"[^A-Za-z0-9._-]", "_", name)[:120] or "attachment"
         if safe in used:
@@ -365,14 +427,21 @@ def download_attachments(issue: dict, outdir: str, token: str, allowlist: list,
         ok, why = host_allowed(f"{urlparse(url).scheme}://{urlparse(url).netloc}"
                                if url else "", allowlist)
         if not url:
+            say(f"    [{_n}/{len(_atts)}] {name}: no content url in the "
+                f"Jira response -- nothing to fetch")
             row["status"] = "no content url in the Jira response"
         elif not ok:
+            say(f"    [{_n}/{len(_atts)}] REFUSED {name}: {why}")
             row["status"] = f"refused: {why}"
         elif size > max_bytes:
+            say(f"    [{_n}/{len(_atts)}] skipped {name}: {_human(size)} "
+                f"is over the {_human(max_bytes)} cap")
             row["status"] = (f"skipped: {size} bytes is over the "
                              f"{max_bytes} byte cap")
         else:
             try:
+                say(f"    [{_n}/{len(_atts)}] downloading {name} "
+                    f"({_human(size)}) from an approved host")
                 data = (fetcher or _download)(url, token, timeout)
                 os.makedirs(outdir, exist_ok=True)
                 path = os.path.join(outdir, safe)
@@ -380,7 +449,11 @@ def download_attachments(issue: dict, outdir: str, token: str, allowlist: list,
                     fh.write(data)
                 row["saved_to"] = path
                 row["status"] = "saved"
+                say(f"    [{_n}/{len(_atts)}] saved {_human(len(data))} "
+                    f"-> {path}")
             except Exception as e:                       # report, never raise
+                say(f"    [{_n}/{len(_atts)}] FAILED {name}: "
+                    f"{type(e).__name__}: {e}")
                 row["status"] = f"failed: {type(e).__name__}: {e}"
         out.append(row)
     return out
@@ -536,11 +609,17 @@ def main(argv: list[str] | None = None) -> int:
                     help="write the snapshot (default target/jira/<KEY>/story.json)")
     ap.add_argument("--no-attachments", action="store_true",
                     help="do not download attachments (they are still listed)")
+    ap.add_argument("--quiet", action="store_true",
+                    help="suppress the per-request progress lines. The "
+                         "summary is always printed")
     ap.add_argument("--max-parent-depth", type=int, default=MAX_PARENT_DEPTH,
                     help="how far up the parent chain to read (default "
                          "%(default)s). Acceptance criteria are often on the "
                          "parent, so 1 is rarely enough")
     args = ap.parse_args(argv)
+
+    global VERBOSE
+    VERBOSE = not args.quiet
 
     cfg, note = projectconfig.section("jira_config")
     print(f"config: {note}")
@@ -569,6 +648,21 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     timeout = int(str(cfg.get("timeout_seconds") or "").strip() or 30)
 
+    host = base.split("//")[-1].split("/")[0]
+    cloud = host.endswith(".atlassian.net")
+    say("-" * 68)
+    say(f"connecting to Jira at {base}")
+    say(f"  deployment : {'Cloud (*.atlassian.net)' if cloud else 'Server / Data Centre (self-hosted host)'}")
+    say(f"  api        : {args.api_path}"
+        + ("" if cloud or args.api_path != "/rest/api/3"
+           else "   (v3 is Cloud-only; Server/DC stops at v2)"))
+    say(f"  auth       : personal access token from jira_config.pat "
+        f"({len(str(cfg.get('pat') or ''))} chars), sent as a header")
+    say(f"  host check : {why}")
+    say(f"  reading    : {key}, plus up to {args.max_parent_depth - 1} "
+        f"parent(s), every comment"
+        + ("" if args.no_attachments else ", and attachments"))
+    say("-" * 68)
     print(f"fetch : {key} from {base}{args.api_path}/issue/{key}")
     chain = fetch_chain(key, base, token, args.api_path, timeout,
                         max_depth=args.max_parent_depth)

@@ -27,6 +27,23 @@ import io.restassured.response.Response;
 
 public final class AuthUtilities {
 
+    private static final org.slf4j.Logger LOG =
+            org.slf4j.LoggerFactory.getLogger(AuthUtilities.class);
+
+    /** Last 4 characters only -- enough to tell two client ids apart. */
+    private static String maskTail(String s) {
+        if (s == null || s.isBlank()) {
+            return "(unset)";
+        }
+        String t = s.trim();
+        return t.length() <= 4 ? "****" : "****" + t.substring(t.length() - 4);
+    }
+
+    private static String blankToNone(String s) {
+        return (s == null || s.isBlank()) ? "(none)" : s;
+    }
+
+
     private static volatile String cachedOauth2Token;
     private static volatile Instant cachedOauth2Expiry;
 
@@ -89,6 +106,12 @@ public final class AuthUtilities {
             return cachedOauth2Token;
         }
         synchronized (AuthUtilities.class) {
+            // Reported because this call reaches an identity provider and
+            // used to do it in complete silence: a run authenticated,
+            // cached, and never said where from, so a token minted
+            // against the wrong environment looked like no token call at
+            // all.
+
             if (cachedOauth2Token != null && cachedOauth2Expiry != null
                     && now.isBefore(cachedOauth2Expiry.minusSeconds(60))) {
                 return cachedOauth2Token;
@@ -97,6 +120,11 @@ public final class AuthUtilities {
             if (tokenUrl == null || tokenUrl.isBlank()) {
                 throw new IllegalStateException("auth.oauth2.tokenUrl is not configured");
             }
+            LOG.info("OAuth2: requesting a client_credentials token from {} "
+                    + "(client_id {}, scope {})", tokenUrl,
+                    maskTail(Config.oauth2ClientId()),
+                    blankToNone(Config.oauth2Scope()));
+            long t0 = System.currentTimeMillis();
             Response res = given()
                     .relaxedHTTPSValidation()
                     .contentType("application/x-www-form-urlencoded")
@@ -107,7 +135,10 @@ public final class AuthUtilities {
                     .when()
                     .post(tokenUrl);
 
+            long ms = System.currentTimeMillis() - t0;
             if (res.statusCode() < 200 || res.statusCode() >= 300) {
+                LOG.warn("OAuth2: token request to {} returned HTTP {} after "
+                        + "{} ms", tokenUrl, res.statusCode(), ms);
                 throw new IllegalStateException(
                         "OAuth2 token request failed: HTTP " + res.statusCode()
                                 + " body=" + res.body().asString());
@@ -133,6 +164,8 @@ public final class AuthUtilities {
             }
             cachedOauth2Token = accessToken;
             cachedOauth2Expiry = Instant.now().plusSeconds(expiresIn);
+            LOG.info("OAuth2: got a token in {} ms, cached for {}s (until {})",
+                    ms, expiresIn, cachedOauth2Expiry);
             return cachedOauth2Token;
         }
     }

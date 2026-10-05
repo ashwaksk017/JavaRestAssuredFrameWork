@@ -120,8 +120,12 @@ def main(argv: list[str] | None = None) -> int:
         _rule("2a/4  shapes -- indexing what is already converted")
         why = ("asked for" if args.rebuild_index
                else f"{args.index} does not exist yet")
-        print(f"rebuilding ({why}); this parses every input XML.")
-        shapes.save(shapes.build(verbose=False), index_path)
+        print(f"rebuilding ({why}); this parses every input XML -- "
+              f"{len(shapes.suites_from_inputs())} suite(s), a few minutes.")
+        # verbose=True: it prints a line per suite. Silence here meant
+        # minutes with no output on a 29-suite tree, which is
+        # indistinguishable from a hang.
+        shapes.save(shapes.build(verbose=True), index_path)
         print(f"-> {index_path}")
 
     # --- 3. the request ---------------------------------------------

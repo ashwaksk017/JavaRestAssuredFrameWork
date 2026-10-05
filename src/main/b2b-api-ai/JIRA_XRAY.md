@@ -213,6 +213,55 @@ is re-checked against the same allowlist before the token is sent to it,
 there is a 10 MB cap, and anything not saved is reported rather than
 skipped quietly.
 
+### Watching it work
+
+Every outbound call says so before it is made, so a run that is waiting
+on Jira looks different from a run that is stuck:
+
+```
+[jira] --------------------------------------------------------------------
+[jira] connecting to Jira at https://jira.yourorg.com
+[jira]   deployment : Server / Data Centre (self-hosted host)
+[jira]   api        : /rest/api/2
+[jira]   auth       : personal access token from jira_config.pat (44 chars), sent as a header
+[jira]   host check : host matches an approved base url
+[jira]   reading    : B2B-1234, plus up to 2 parent(s), every comment, and attachments
+[jira] --------------------------------------------------------------------
+[jira] reading story B2B-1234  (depth 1/3)
+[jira] GET  https://jira.yourorg.com/rest/api/2/issue/B2B-1234?expand=changelog,renderedFields&fields=*all
+[jira]      auth: Bearer token (header)   timeout: 30s
+[jira]      200 OK  412.5 KB in 1840 ms
+[jira]   comments: Jira inlined 2 of 42 -- paging for the rest
+[jira]   comment page at offset 0
+[jira]   comment page at offset 40
+[jira]   comments: 42 read
+[jira] reading parent EPIC-9  (depth 2/3)
+[jira]   EPIC-9 has no parent -- chain ends here
+[jira]   1 attachment(s) on B2B-1234 -> target/jira/B2B-1234/attachments/B2B-1234
+[jira]     [1/1] downloading contract.json (2.0 KB) from an approved host
+[jira]     [1/1] saved 2.0 KB -> target/jira/.../contract.json
+```
+
+The token is never printed — only its length, and only to confirm one is
+set. The URL is safe to show because the token travels as a header and
+the host has already been checked against the allowlist.
+
+`--quiet` suppresses the per-request lines; the summary always prints.
+These lines are **off** when the module is imported rather than run, so
+`run.py` and the 195 tests are not noisy.
+
+Publishing says the same kind of thing, before it calls:
+
+```
+[XrayClient] publishing 37 result(s) to SERVER at https://jira.yourorg.com/rest/raven/1.0/import/execution
+[XrayClient]   auth: Jira personal access token, sent straight as a bearer (no authenticate call)
+[XrayClient]   into existing execution PROJ-42
+[XrayClient] imported 37 result(s) to SERVER ... -> HTTP 200 OK
+```
+
+and a rebuild of the shape index prints a line per suite rather than
+going quiet for several minutes.
+
 ### Each stage can be run alone
 
 Which is the point — a tester who disagrees with the verdict can see the

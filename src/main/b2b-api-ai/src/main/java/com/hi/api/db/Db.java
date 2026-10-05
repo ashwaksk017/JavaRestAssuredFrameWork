@@ -982,10 +982,53 @@ public final class Db {
                         "db.driver class not found on classpath: " + driverClass, e);
             }
         }
+        announceOnce();
         if (user == null || user.isBlank()) {
             return DriverManager.getConnection(url);
         }
         return DriverManager.getConnection(url, user, pass == null ? "" : pass);
+    }
+
+    /** URLs already announced, so this says each target once per JVM. */
+    private static final java.util.Set<String> ANNOUNCED =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
+     * Say WHICH database, once.
+     *
+     * <p>Every query was logged as {@code .. jdbc SQL: ...} and nothing
+     * ever named the server it ran against. A suite pointed at the wrong
+     * environment therefore produced a log that looked completely normal,
+     * and `Db not configured` and `connected to the wrong host` read
+     * identically on the way past.</p>
+     *
+     * <p>Once per distinct URL per JVM, because one line per query would
+     * bury the SQL it is meant to give context to. The password is never
+     * included -- the user name is, because "connected as whom" is half of
+     * why a permission error happens.</p>
+     */
+    private void announceOnce() {
+        if (url == null || !ANNOUNCED.add(url)) {
+            return;
+        }
+        LOG.info("Db: connecting to {}  as {}{}",
+                redactUrlCredentials(url),
+                (user == null || user.isBlank()) ? "(no user -- url-embedded or trusted)" : user,
+                (driverClass == null || driverClass.isBlank()) ? "" : "  driver=" + driverClass);
+    }
+
+    /**
+     * A JDBC URL with any inline credentials removed.
+     *
+     * <p>`jdbc:postgresql://host/db?user=x&password=y` is legal, and this
+     * line goes to a log file that gets pasted into tickets.</p>
+     */
+    static String redactUrlCredentials(String jdbcUrl) {
+        if (jdbcUrl == null) {
+            return "";
+        }
+        return jdbcUrl.replaceAll("(?i)([?&;](password|pwd|user|username)=)[^&;]*",
+                                  "$1***");
     }
 
     private static void bind(PreparedStatement ps, Object[] params) throws SQLException {

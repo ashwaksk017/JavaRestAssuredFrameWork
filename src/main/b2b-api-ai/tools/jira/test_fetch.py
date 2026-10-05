@@ -205,6 +205,47 @@ class Snapshot(unittest.TestCase):
         self.assertTrue(s["fetched_at"].endswith("Z"))
 
 
+class ProgressReporting(unittest.TestCase):
+    """Chatty on the CLI, silent as a library.
+
+    The progress lines exist so a run that is waiting on Jira looks
+    different from a run that is stuck. They must not leak into anything
+    that imports this module: these 191 tests inject their own transport
+    and would otherwise print a line per call, and `run.py` composes the
+    stages rather than shelling out.
+    """
+
+    def test_it_is_off_until_the_cli_turns_it_on(self):
+        self.assertFalse(fetch.VERBOSE,
+                         "importing fetch.py must not make it chatty")
+
+    def test_say_prints_nothing_when_off(self):
+        buf = io.StringIO()
+        real, sys.stdout = sys.stdout, buf
+        try:
+            fetch.VERBOSE = False
+            fetch.say("should not appear")
+        finally:
+            sys.stdout = real
+        self.assertEqual(buf.getvalue(), "")
+
+    def test_say_prints_a_prefixed_line_when_on(self):
+        buf = io.StringIO()
+        real, sys.stdout = sys.stdout, buf
+        try:
+            fetch.VERBOSE = True
+            fetch.say("talking to Jira")
+        finally:
+            sys.stdout = real
+            fetch.VERBOSE = False
+        self.assertEqual(buf.getvalue(), "[jira] talking to Jira\n")
+
+    def test_sizes_are_rendered_for_a_human(self):
+        self.assertEqual(fetch._human(512), "512 B")
+        self.assertEqual(fetch._human(2048), "2.0 KB")
+        self.assertIn("MB", fetch._human(5 * 1024 * 1024))
+
+
 class ParentChain(unittest.TestCase):
     """AC often live on the parent, and a sub-task often carries none."""
 

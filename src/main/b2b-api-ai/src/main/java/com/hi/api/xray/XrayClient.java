@@ -244,6 +244,25 @@ public final class XrayClient {
             return false;
         }
 
+        // Said BEFORE the calls, not after: a hang or a wrong target was
+        // previously invisible until the run ended, and "published
+        // nowhere" read the same as "published fine".
+        log("publishing " + results.size() + " result(s) to " + flavour
+                + " at " + baseUrl + importPath);
+        log("  auth: " + (flavour == Flavour.SERVER
+                ? "Jira personal access token, sent straight as a bearer "
+                  + "(no authenticate call)"
+                : "client id + secret exchanged at " + AUTH_PATH + " for a JWT"));
+        if (isSet(testExecutionKey)) {
+            log("  into existing execution " + testExecutionKey.trim());
+        } else {
+            log("  no testExecutionKey -- Xray will create a new execution"
+                    + (flavour == Flavour.SERVER
+                       ? (isSet(projectKey) ? " in project " + projectKey.trim()
+                          : " (SERVER/DC needs xray.projectKey for that)")
+                       : ""));
+        }
+
         // Cloud exchanges keys for a JWT; Server / DC sends the PAT as-is.
         // The bearer differs, nothing else does.
         String bearer;
@@ -251,7 +270,9 @@ public final class XrayClient {
             bearer = token.trim();
         } else {
             try {
+                log("  authenticating at " + baseUrl + AUTH_PATH);
                 bearer = authenticate();
+                log("  authenticated -- JWT received");
             } catch (RuntimeException authErr) {
                 log("auth failed: " + authErr.getMessage());
                 return false;
