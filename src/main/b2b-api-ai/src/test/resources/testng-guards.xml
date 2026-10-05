@@ -13,6 +13,7 @@
             <class name="com.hi.api.tests.framework.ExecuteFlagEndToEndTest"/>
             <class name="com.hi.api.tests.framework.ManualTemplateExampleTest"/>
             <class name="com.hi.api.tests.framework.XrayKeyGuardTest"/>
+            <class name="com.hi.api.tests.framework.XrayServerDcTest"/>
             <class name="com.hi.api.tests.security.DbSqlGuardTest"/>
             <class name="com.hi.api.tests.db.AccountRulesDomainsTest"/>
             <class name="com.hi.api.tests.db.DomainRulesTest"/>

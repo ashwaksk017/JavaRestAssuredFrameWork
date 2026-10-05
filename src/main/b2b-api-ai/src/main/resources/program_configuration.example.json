@@ -46,6 +46,18 @@
       "token": "",
       "testExecutionKey": ""
     },
+    "_xray_comment": "Result publishing. Xray CLOUD wants an API key PAIR (clientId + clientSecret, from Xray > Settings > API Keys). Xray SERVER / DATA CENTER wants a Jira personal access token in `token` and no pair at all. The flavour is inferred from `baseUrl` -- a self-hosted host means Server/DC -- or state it with `flavour`. `enabled` is the master kill switch and stays false until someone turns it on. `projectKey` is only needed on Server/DC when no testExecutionKey is given.",
+    "xray": {
+      "enabled": "",
+      "flavour": "",
+      "baseUrl": "",
+      "clientId": "",
+      "clientSecret": "",
+      "token": "",
+      "importPath": "",
+      "projectKey": "",
+      "testExecutionKey": ""
+    },
     "_jira_comment": "Read-only Jira access for the story-to-test tooling (tools/jira/). `base_urls` is an ALLOWLIST: a story URL whose host is not listed is refused rather than fetched, so a pasted link cannot redirect the fetcher at an arbitrary target. `pat` is a personal access token -- it is sent as a header, never placed in a URL or a log line. Leave the whole block empty to disable the tooling.",
     "jira_config": {
       "base_urls": [],

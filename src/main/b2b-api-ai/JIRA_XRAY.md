@@ -73,10 +73,27 @@ print({k: ('set' if str(v).strip() else 'EMPTY') \
 sends `Authorization: Bearer <jwt>`. So what it needs is an Xray **API key
 pair** (Xray → Settings → API Keys), not a personal access token.
 
-> **If your Xray is Server / Data Center, this does not work yet.** Server
-> authenticates with a Jira PAT as a bearer token against a different
-> route, and there is no code path for it. `xray.token` is aliased in
-> `Config` but nothing reads it.
+**Server / Data Center is supported too**, and needs no key pair: a Jira
+**personal access token** goes straight on as the bearer, with no
+authenticate call at all.
+
+```json
+"stg": {
+  "xray": {
+    "enabled": "true",
+    "baseUrl": "https://jira.yourorg.com",
+    "token": "<jira PAT>",
+    "projectKey": "PROJ"
+  }
+}
+```
+
+The flavour is inferred from the host, so setting `baseUrl` to your Jira
+is usually all it takes. `xray.importPath` overrides the route
+(`/rest/raven/1.0/import/execution` by default on Server/DC, and this
+repo's existing `xray_api_config.route` is honoured there too).
+`projectKey` matters only when you give no `testExecutionKey` — Server
+needs a project to create the execution in.
 
 #### Which one do you have?
 
@@ -425,19 +442,12 @@ It reports as SKIPPED, which is also what Xray receives.
 
 Stated so nobody waits for it:
 
-- **Publishing results to an Xray SERVER / DATA CENTER instance.**
-  Checked against this repo's own `xray_api_config`: the endpoint is a
-  self-hosted Jira host and the route is
-  `/rest/raven/1.0/import/execution`, which is the Server/DC API.
-  `XrayClient` implements Cloud OAuth against `xray.cloud.getxray.app`
-  and nothing else, so **result publishing has never worked here.**
-  Whoever filled in that block configured Server/DC correctly; the client
-  was written for Cloud. Making it work needs a second code path: send
-  the Jira PAT as `Authorization: Bearer`, POST to
-  `<jira-base>/rest/raven/1.0/import/execution`, and skip the
-  `/api/v2/authenticate` exchange entirely. `Config` already aliases
-  `xray.token` to `xray_api_config.token` for exactly this, and nothing
-  reads it yet.
+- **A publish verified against a live Server/DC instance.** The Server/DC
+  path is implemented and covered by 15 tests through an injected
+  transport, which assert the URL, the bearer and the body that would go
+  out — but no test has ever reached a real Jira. The first real run is
+  the one that proves the route and the PAT scope, so do it with
+  `xray.testExecutionKey` pointed at a throwaway execution.
 
 - **Nothing is written back to Jira or Xray except results.**
   `XrayClient` is push-results-only: it does not create or update a test

@@ -781,6 +781,8 @@ Every key in the codebase whose env-var name differs from the naive guess:
 | `xray.clientId`                  | `XRAY_CLIENTID`                  | `XRAY_CLIENT_ID`                     |
 | `xray.clientSecret`              | `XRAY_CLIENTSECRET`              | `XRAY_CLIENT_SECRET`                 |
 | `xray.testExecutionKey`          | `XRAY_TESTEXECUTIONKEY`          | `XRAY_TEST_EXECUTION_KEY`            |
+| `xray.importPath`                | `XRAY_IMPORTPATH`                | `XRAY_IMPORT_PATH`                   |
+| `xray.projectKey`                | `XRAY_PROJECTKEY`                | `XRAY_PROJECT_KEY`                   |
 
 Keys with no camelCase hump (`api_config.client_id` -> `API_CONFIG_CLIENT_ID`,
 `database.host` -> `DATABASE_HOST`) are unaffected: naive and real agree.
