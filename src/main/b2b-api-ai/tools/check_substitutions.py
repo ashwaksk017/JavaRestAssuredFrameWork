@@ -40,6 +40,22 @@ from check_ctx_dataflow import (  # noqa: E402
     _SETUP_HEAD_RX, method_effects,
 )
 
+
+def _walk_java_both(root):
+    """Every emitted .java, under src/main/java AND src/test/java.
+
+    Which root holds the producing code is an emit-mode detail: phase
+    puts it in support/<suite>/, classic puts it in the @Test. A check
+    that reads one of them describes one mode and silently mis-reports
+    the other.
+    """
+    seen = set()
+    for sub in ("src/main/java", "src/test/java"):
+        for path in _walk_java(os.path.join(root, sub)):
+            if path not in seen:
+                seen.add(path)
+                yield path
+
 HASH_RX = re.compile(r"#([A-Za-z0-9_.-]+)#")
 DOLLAR_RX = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_.#\-\[\]'$ ]*)\}")
 # Not placeholders: emitted comments and the RawRequest bookkeeping keys.
@@ -87,6 +103,11 @@ def properties_fallback_keys(raw: str) -> set:
 _SPEC_EXTRACT_RX = re.compile(r'\.extract(?:Whole|RawRequest|RawRequestPath)?\(\s*"([^"]+)"')
 
 
+# A --classic @Test: the whole scenario is inlined into it, so it is a
+# producing scope in exactly the way a phase method is in the other mode.
+_TEST_HEAD_RX = re.compile(
+    r"^[ \t]*public void (\w+)\(Map<String, String> row\)[^\n{]*\{",
+    re.M)
 _HOOK_HEAD_RX = re.compile(r"static void hook\w+\([^)]*\)\s*throws Exception\s*\{")
 
 
@@ -121,7 +142,11 @@ def collect_producers(root: str) -> tuple:
     exact, wild = spec_producers(root)
     exact = set(exact)
     wild = set(wild)
-    for path in _walk_java(os.path.join(root, "src/main/java")):
+    # BOTH source roots. --classic emits the auto-extract block into the
+    # @Test class instead of support/<suite>/, and scanning only
+    # src/main/java reported those keys as having no producer while the
+    # putExtracted call that produces them sat in src/test/java.
+    for path in _walk_java_both(root):
         text = _read(path)
         # A JDBC step publishes its result columns under
         # `<step>_Response_<COL>` and `<step>_Response_<TABLE>_<COL>`.
@@ -141,7 +166,8 @@ def collect_producers(root: str) -> tuple:
                 wild.add(step + "_Response_" + table + "_")
         if "putExtracted" not in text and "seedFromRow" not in text:
             continue
-        for head in (_METHOD_HEAD_RX, _BOOTSTRAP_HEAD_RX, _SETUP_HEAD_RX):
+        for head in (_METHOD_HEAD_RX, _BOOTSTRAP_HEAD_RX, _SETUP_HEAD_RX,
+                     _TEST_HEAD_RX):
             for _n, body in _bodies(text, head, group=0):
                 w, _r, _s = method_effects(body)
                 for k in w:
@@ -162,7 +188,7 @@ def config_keys(root: str) -> set:
     cfg = _read(os.path.join(root, "src/main/java/com/hi/api/config/Config.java"))
     keys |= set(re.findall(r'LEGACY_ALIASES\.put\("([^"]+)"', cfg))
     keys |= set(re.findall(r'Config\.get\("([^"]+)"', cfg))
-    for path in _walk_java(os.path.join(root, "src/main/java")):
+    for path in _walk_java_both(root):
         keys |= set(re.findall(r'Config\.get\("([^"]+)"', _read(path)))
     import json
     try:

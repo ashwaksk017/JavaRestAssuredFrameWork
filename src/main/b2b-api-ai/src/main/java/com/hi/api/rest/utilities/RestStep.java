@@ -188,6 +188,55 @@ public final class RestStep {
     }
 
     /**
+     * Record the resolved request body for a call this class did not
+     * make.
+     *
+     * <p>{@code publishCsvRawRequestRefs} reads {@code lastResolvedBody()}
+     * to publish {@code #<step>_RawRequest_<field>#}, and
+     * {@code execute} sets it on its way through. A {@code --classic}
+     * call site builds the body itself, so without this the raw-request
+     * refs silently resolve against the PREVIOUS step's body -- which is
+     * worse than empty, because it is plausible.</p>
+     */
+    public RestStep resolvedBody(String body) {
+        LAST_RESOLVED_BODY.set(body == null ? "" : body);
+        return this;
+    }
+
+    /**
+     * Everything {@code execute} does after the exchange, for a response
+     * obtained elsewhere.
+     *
+     * <p>{@code --classic} emits the exchange inline as
+     * {@code given()...when().get(...)} so the HTTP call is readable in
+     * the test. That is the only part it should own. Logging, the
+     * status soft-assert (including the per-row
+     * {@code expected_<step>_status_code} override), the runtime
+     * extracts that later steps read, the raw-request refs and the
+     * Salesforce id refresh are not call-shape decisions, and a second
+     * copy of them drifts.</p>
+     *
+     * <p>Returns the response it was given, so a call site can write
+     * {@code Response r = step.after("GET", url, given()...get(url));}
+     * when that reads better.</p>
+     */
+    public Response after(String verb, String resolvedUrl, Response res) {
+        if (res == null) {
+            return null;
+        }
+        if (holder != null) {
+            RestUtilities.logResponseBody(
+                    testCaseId, holder, RestUtilities.getResponseAsString(res));
+        }
+        ResponseAsserts.statusFromStepColumn(
+                softAssert, res, row, stepName, expectedStatus);
+        captureRuntimeExtracts(verb, resolvedUrl, res);
+        publishCsvRawRequestRefs();
+        maybeRefreshSalesforceIdAfterActivate(verb, resolvedUrl, res);
+        return res;
+    }
+
+    /**
      * Expected status as {@code ResponseAsserts.statusFromStepColumn}
      * resolves it: the {@code expected_<step>_status_code} CSV column wins
      * over the builder value. Negative = no expectation.

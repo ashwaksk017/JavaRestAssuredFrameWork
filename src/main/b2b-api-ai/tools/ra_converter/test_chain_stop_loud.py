@@ -77,7 +77,12 @@ def test_scenario_is_bound_only_when_something_reads_it():
     # Window widened and the anchor is now `elif`: a fully-disabled case
     # (every business step disabled upstream) branches first and throws
     # SkipException instead of emitting a chain that would pass empty.
-    seg = SRC.split("Expected expected = expected(row);", 1)[1][:3000]
+    # To the END OF THE BLOCK, not 3000 characters in. The count was a
+    # stand-in for the block and it stopped being one as soon as a branch
+    # was added: --classic pushed `else:` past it and this failed on code
+    # that still satisfied every assertion below.
+    seg = SRC.split("Expected expected = expected(row);", 1)[1]
+    seg = seg.split("if not fully_disabled:", 1)[0]
     assert "elif verify_calls:" in seg
     assert "var scenario =" in seg
     assert "else:" in seg

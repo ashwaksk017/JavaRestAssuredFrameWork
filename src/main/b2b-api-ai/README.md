@@ -186,6 +186,112 @@ on the next convert -- so if you diff that output against an earlier tree,
 expect the difference and do not read it as a regression. A full convert
 clears the flag as well as the marker.
 
+### Classic REST Assured (`--classic`)
+
+By default a `@Test` is a thin fluent chain and the HTTP call lives five
+layers down (`scenario/` -> `cases/Specs*` -> `Calls` -> typed client ->
+`RestUtilities`). `--classic` puts the whole scenario in the test method
+instead, as plain RestAssured:
+
+```powershell
+python tools/ra_converter/ra_converter.py --input tools/ra_converter/input --output . --package-root com.hi.api --data-dir "C:\path\to\workbooks" --classic --clean
+```
+
+```java
+java.util.Map<String, String> tokenRequestHeaders = Headers.builder()
+        .contentTypeJson().acceptJson()
+        .header("Authorization", RestUtilities.bearer(""))
+        .correlationId().build();
+String tokenRequestUrl = PlaceholderResolver.resolveAll("/realms/applications/token", ctx);
+Response tokenRequestRes = io.restassured.RestAssured.given()
+        .relaxedHTTPSValidation()
+        .headers(tokenRequestHeaders)
+        .body(tokenRequestPayload)
+    .when()
+        .post(Config.baseUrl() + tokenRequestUrl);
+ResponseAsserts.statusFromStepColumn(softAssert, tokenRequestRes, row, "tokenRequest", 200);
+```
+
+CSV rows still drive the data, and the CSV / templates / Allure / Xray /
+`execute` column all behave exactly as before. What is given up is
+cross-case phase sharing, so the tree gets bigger -- that is the trade,
+not a bug.
+
+`--classic` implies `--no-phase-specs`: a phase cannot be both inlined
+and shared, so passing both prints a line saying which one stopped
+applying rather than letting a stale flag decide the output shape.
+
+> **It is a WHOLE-TREE mode.** `support/scenario/` is shared across
+> suites and its shape depends on the mode, so the two cannot coexist in
+> one `--output`. Converting a single suite `--classic` into a phase tree
+> rewrote those shared classes and broke the other 28 suites -- about a
+> hundred compile errors, **none of them in the suite that was
+> converted**, and the convert exited 0. The converter now refuses before
+> emitting:
+>
+> ```
+> [ra_converter] REFUSING to emit: this run is classic, but 27 suite(s)
+>   already on disk were built phase -- accountdashboardregression, ...
+> ```
+>
+> Convert the whole directory in one mode, or give the other mode its own
+> `--output` tree. The mode of each suite is recorded in
+> `_audit/emit_mode.json`; for a tree built before that file existed it is
+> inferred from `support/<suite>/cases/Specs*.java`, which only the phase
+> path emits.
+
+#### What classic does NOT change
+
+`.then().statusCode(n)` is deliberately **not** emitted, though it is the
+shape people expect. The framework soft-asserts status so one wrong code
+records a failure and the rest of the case still runs, and the expected
+code is overridable per CSV row through the step's
+`expected_<step>_status_code` column -- a literal in the Java can see
+neither. `ResponseAsserts.statusFromStepColumn` is what the phase path
+calls and it honours both.
+
+A step needing identity regen, a readiness poll, Salesforce OAuth form
+encoding or multipart attachments keeps the `RestStep.exec` form and logs
+a `classic-fallback` finding in the audit. A chain that looked right but
+quietly skipped a readiness poll would fail intermittently with nothing
+in the generated code to suggest why.
+
+Only the CALL is inline. Body and query resolution, the transient retry,
+and everything after the response -- the status soft-assert, the runtime
+extracts later steps read, the raw-request refs -- go through the same
+helpers the phase path uses (`RestStep.resolveQuery`, `.resolvedBody`,
+`.after`). The first version of this reimplemented the post-call work and
+got two of the five parts, dropping the one that publishes
+`#<step>_Response_<field>#` into ctx, which is what chained steps read.
+A second implementation of shared behaviour drifts; this one is a call.
+
+**`_stop_after` is not honoured in classic.** Its guards need
+`__restStepIdx`, `__stopAfter` and `__noteStoppedEarly`, which live on the
+scenario base a `@Test` does not extend. The convert says so per case
+(`classic-no-stop-after` in the audit) rather than dropping it in
+silence. Convert that suite without `--classic` if you need the column.
+
+#### Verifying a classic tree
+
+Eighteen checks read the phase structure -- `phase-order`, `phase-model`,
+`phase-emit`, `hoist`, `consolidation`, `step-parity`, `dataflow`,
+`ctx-keys` and the rest. A classic tree has none of it, so they cannot
+say anything true about one, and a green from them would be counted as
+evidence it is not.
+
+`verify_all` reads `_audit/emit_mode.json` and holds them back by name,
+listing which ones it skipped:
+
+```
+[CLASSIC TREE] 29 suite(s) were emitted with --classic: adhocstage, ...
+  18 phase-structural check(s) are N/A and were NOT run: chain-stop-loud, ...
+  What still covers a classic tree: java-compile, java-tests,
+  substitution, csv-contract, generated, tracked-csv, service-routing.
+```
+
+They are listed rather than quietly dropped, because a shorter green run
+otherwise reads as a cleaner one.
+
 ### A project that is not B2B (GOAL, etc.)
 
 `scenario.entry_class` is project-wide, so pass a separate config rather than

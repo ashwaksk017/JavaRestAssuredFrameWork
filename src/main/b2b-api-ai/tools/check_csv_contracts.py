@@ -72,8 +72,14 @@ def inlined_columns(root):
     # stamp, which an earlier draft of this guard already was once.
     via_reader = re.compile(
         r'ResponseAsserts\.invalidStatus\([^;]*?"(expected_[^"]+)"')
-    for sub in ("support", "data", "rest"):
-        base = os.path.join(root, "src", "main", "java", "com", "hi", "api", sub)
+    # src/test/java too: --classic inlines the reader into the @Test, so
+    # scanning only src/main/java reported columns as UNREADABLE while
+    # the row.get that reads them sat in the test class.
+    bases = [os.path.join(root, "src", "main", "java", "com", "hi", "api", sub)
+             for sub in ("support", "data", "rest")]
+    bases.append(os.path.join(root, "src", "test", "java", "com", "hi",
+                              "api", "tests"))
+    for base in bases:
         for dirpath, _d, files in os.walk(base):
             for fn in files:
                 if fn.endswith(".java"):

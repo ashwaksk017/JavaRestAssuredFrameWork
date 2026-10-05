@@ -6976,6 +6976,7 @@ class Emitter:
         self._phase_specs: dict = {}
         # Stage 1b (--phase-specs): phases as data.
         self.phase_specs_enabled: bool = _PHASE_SPECS
+        self.classic_enabled: bool = _CLASSIC
         self._last_phase_spec = None            # set by the capture in _render_rest_step_body
         self._last_plan: dict | None = None     # last _fluent_render_groups result
         self._current_cluster: list | None = None
@@ -8811,6 +8812,153 @@ public interface ImportedRestClient {{
         self._step_suffix_by_name[step_name] = suf
         return suf
 
+    def _render_rest_call_classic(self, *, step, sid, suf, verb,
+                                  resolved_path_expr, response_var,
+                                  token_expr, query_entries, header_entries,
+                                  template_expr, expected_status,
+                                  needs_regen, poll_spec):
+        """One REST exchange as an inline RestAssured chain, or None.
+
+        None means "not eligible -- keep the RestStep emission", which is
+        how classic stays honest about its own coverage. A classic suite
+        that quietly skipped identity regen or a readiness poll would fail
+        intermittently, and the generated code would give the reader no
+        reason to suspect it.
+
+        The CALL is inline because that is what classic is for. Nothing
+        else is: the body/query resolution, the retry, and everything
+        after the response go through the same helpers the phase path
+        uses. A second implementation of those drifts, and the first
+        version of this method proved it -- it reimplemented two of the
+        five post-call steps and dropped the one chained steps depend on.
+        """
+        reasons = []
+        if needs_regen:
+            reasons.append("identity regen")
+        if poll_spec:
+            reasons.append("readiness poll")
+        if _is_salesforce_oauth_step(step):
+            reasons.append("Salesforce OAuth form encoding")
+        if step.attachments:
+            reasons.append("multipart attachments")
+        if reasons:
+            self.ledger.add_preflight_finding(
+                "LOW", "classic-fallback", step.step_name,
+                "kept the RestStep form: classic does not yet reproduce "
+                + ", ".join(reasons))
+            return None
+
+        # `suf` keeps two uses of ONE step name apart, and the response
+        # var already carries it. It is not sufficient on its own:
+        # `to_camel_case` is lossy, so two DIFFERENT names that
+        # sanitize_identifier distinguishes can collapse to one
+        # identifier -- a convert failed on exactly that with
+        # `variable httpRequest2002Headers is already defined`. Bump
+        # until every derived name is free.
+        _kinds = ("RawQuery", "Query", "Headers", "Url", "Payload", "Step")
+        _want = (to_camel_case(sid, upper_first=False) if sid else "step")
+        _want = _want + (suf or "")
+        base, _n = _want, 1
+        while any((base + k) in self._locals_in_method for k in _kinds):
+            _n += 1
+            base = _want + str(_n)
+        q_raw = base + "RawQuery"
+        q_map = base + "Query"
+        h_var = base + "Headers"
+        url_var = base + "Url"
+        payload_var = base + "Payload"
+        step_var = base + "Step"
+        for v in (q_raw, q_map, h_var, url_var, payload_var, step_var):
+            self._locals_in_method.add(v)
+
+        # Same routing the generated client uses. `Config.baseUrl()` is
+        # the fallback, exactly as `baseUrl` is there.
+        svc_key, svc_base = _service_key_for_uri(
+            getattr(step, "original_uri", "") or "")
+        if svc_key:
+            base_expr = ('Config.serviceBase("' + svc_key + '", "'
+                         + _jlit(svc_base or "") + '", Config.baseUrl())')
+        else:
+            base_expr = "Config.baseUrl()"
+
+        out = ["// ==== REST step (classic): " + step.step_name
+               + "  (" + verb + " " + str(step.resource_path) + ") ===="]
+
+        if query_entries:
+            out.append("java.util.Map<String, String> " + q_raw
+                       + " = new java.util.LinkedHashMap<>();")
+            for qk, qv in query_entries:
+                out.append(q_raw + '.put("' + _jlit(qk) + '", "'
+                           + _jlit(qv) + '");')
+            # The same resolver the phase path uses -- resolveAll ->
+            # mapJsonValues -> resolveAll, with the empty-cell/"null"
+            # rule. Re-implementing that inline is how a classic tree
+            # would drift from the phase tree one placeholder at a time.
+            out.append("java.util.Map<String, String> " + q_map
+                       + " = RestStep.resolveQuery(row, ctx, " + q_raw + ");")
+
+        out.append("java.util.Map<String, String> " + h_var
+                   + " = Headers.builder()")
+        out.append("        .contentTypeJson()")
+        out.append("        .acceptJson()")
+        out.append('        .header("Authorization", RestUtilities.bearer('
+                   + token_expr + "))")
+        for hk, hv in header_entries:
+            out.append('        .header("' + _jlit(hk)
+                       + '", PlaceholderResolver.resolveAll("'
+                       + _jlit(hv) + '", ctx))')
+        out.append("        .correlationId()")
+        out.append("        .build();")
+
+        if template_expr:
+            out.append("String " + payload_var
+                       + " = PlaceholderResolver.resolveAll("
+                       + "RestUtilities.mapJsonValues("
+                       + "RestUtilities.getRequestTemplate(" + template_expr
+                       + "), ImportedScenario.mergedRow(row, ctx), false),"
+                       + " ctx);")
+
+        out.append("String " + url_var + " = PlaceholderResolver.resolveAll("
+                   + resolved_path_expr + ", ctx);")
+        out.append('RestUtilities.assertPathResolved("' + verb + '", "'
+                   + _jlit(sid) + '", ' + url_var + ", "
+                   + str(expected_status) + ");")
+
+        # Carries the per-row expected-status override and the step name
+        # into the post-call work, and records the resolved body so
+        # #<step>_RawRequest_<field># refs publish.
+        out.append("RestStep " + step_var + " = RestStep.exec(ctx, row, "
+                   "softAssert, holder, testCaseId)")
+        out.append('        .name("' + _jlit(sid) + '")')
+        out.append("        .expectedStatus(" + str(expected_status) + ")")
+        out.append("        .resolvedBody("
+                   + (payload_var if template_expr else '""') + ");")
+
+        # Retried the way every other exchange in this framework is. A
+        # 502 on the way to a 200 is not a test failure, and classic
+        # without this would be flakier than the phase path for no
+        # reason a reader could see.
+        out.append("Response " + response_var
+                   + " = RestUtilities.callWithTransientRetry(")
+        out.append('        "' + _jlit(sid) + '", 15000L, '
+                   + str(expected_status) + ", () ->")
+        out.append("        io.restassured.RestAssured.given()")
+        out.append("                .relaxedHTTPSValidation()")
+        out.append("                .headers(" + h_var + ")")
+        if query_entries:
+            out.append("                .queryParams(" + q_map + ")")
+        if template_expr:
+            out.append("                .body(" + payload_var + ")")
+        out.append("            .when()")
+        out.append("                ." + verb.lower() + "(" + base_expr
+                   + " + " + url_var + "));")
+
+        # Log, status soft-assert (honouring expected_<step>_status_code),
+        # runtime extracts, raw-request refs, Salesforce id refresh.
+        out.append(step_var + '.after("' + verb + '", ' + url_var + ", "
+                   + response_var + ");")
+        return out
+
     def _render_rest_step_body(self, step: RestStep, service_class_name: str) -> list[str]:
         """Emit Java for one REST step: build body -> call client -> assertions -> extract via jsonPath."""
         lines = [f'// ==== REST step: {step.step_name}  ({step.http_method} {step.resource_path}) ====']
@@ -9072,6 +9220,12 @@ public interface ImportedRestClient {{
         }.get(verb_u, "post")
         expected_status = self._rest_expected_status(step)
         sid = sanitize_identifier(step.step_name)
+        # --classic swaps the block below for an inline given()/when()
+        # chain. Emitted first and replaced afterwards, rather than
+        # branched around: the RestStep path computes `poll_spec` and the
+        # Salesforce fill-ins on its way through, and re-indenting sixty
+        # lines of it under an `if` is a worse risk than a slice.
+        __classic_mark = len(lines)
         lines.append(
             f'Response {response_var} = RestStep.exec('
             f'ctx, row, softAssert, holder, testCaseId)')
@@ -9134,6 +9288,17 @@ public interface ImportedRestClient {{
         lines.append(
             f'TestSupport.putExtracted(ctx, "{sid}_RawRequest", '
             f'RestStep.lastResolvedBody() == null ? "" : RestStep.lastResolvedBody());')
+
+        if self.classic_enabled:
+            __classic = self._render_rest_call_classic(
+                step=step, sid=sid, suf=suf, verb=verb_u,
+                resolved_path_expr=resolved_path_expr,
+                response_var=response_var, token_expr=token_expr,
+                query_entries=query_entries, header_entries=header_entries,
+                template_expr=template_expr, expected_status=expected_status,
+                needs_regen=needs_regen, poll_spec=poll_spec)
+            if __classic is not None:
+                lines[__classic_mark:] = __classic
 
         # Assertions:
         # Emit ONLY this case's own assertions (not the cluster union).
@@ -13234,12 +13399,36 @@ public final class PlaceholderResolver {{
             "import org.testng.annotations.AfterMethod;\n"
             "import org.testng.annotations.BeforeMethod;\n")
         suite_cleanup_import = ""
+        # --classic inlines bodies written for the scenario class, which
+        # declares these. Bound once per class in the @BeforeMethod that
+        # already runs rather than re-declared in every @Test: 608
+        # bindings instead of 1,195 copies of the same five lines, and
+        # one place to change when the domain facade gains an API.
+        classic_members = ""
+        classic_bind = ""
+        if self.classic_enabled:
+            classic_members = (
+                "\n    /** Set per @Test: it names the ReadyAPI case. */\n"
+                "    private String testCaseId;\n"
+                "    /** Domain facades the translated Groovy calls. Bound\n"
+                "     *  once per method here, not rebuilt per step. */\n"
+                "    private com.hi.api.domain.guest.GuestApi guests;\n"
+                "    private com.hi.api.domain.account.ProgramAccountApi accounts;\n"
+                "    private com.hi.api.domain.member.MemberApi members;\n")
+            classic_bind = (
+                "        com.hi.api.domain.DomainApis __domainApis =\n"
+                "                com.hi.api.domain.DomainApis.bind(client);\n"
+                "        guests = __domainApis.guests();\n"
+                "        accounts = __domainApis.accounts();\n"
+                "        members = __domainApis.members();\n")
         suite_cleanup_hook = (
-            "\n    @BeforeMethod(alwaysRun = true)\n"
+            classic_members
+            + "\n    @BeforeMethod(alwaysRun = true)\n"
             "    public void bindImportedScenario() {\n"
             "        ImportedScenario.bind(client, ctx, softAssert, holder, "
             f"\"{self.suite_name}\");\n"
-            "    }\n"
+            + classic_bind
+            + "    }\n"
         )
         if getattr(self, "_suite_cleanup_emitted", False):
             suite_cleanup_import = (
@@ -13263,9 +13452,13 @@ public final class PlaceholderResolver {{
         ImportedScenario.unbind();
     }
 """
-        fluent_imports = "".join(
-            f"import {fqn};\n"
-            for fqn in getattr(self, "_pending_fluent_imports", []))
+        _pending = list(getattr(self, "_pending_fluent_imports", []))
+        if self.classic_enabled:
+            # Classic emits no scenario classes, so importing them does
+            # not compile. Five call sites append to this list; filtering
+            # here means a sixth cannot reopen the fault.
+            _pending = [f for f in _pending if ".scenario." not in f]
+        fluent_imports = "".join(f"import {fqn};\n" for fqn in _pending)
         header_lines = [
             f" * Auto-generated by ra_converter from SoapUI test suite `{soapui_suite_name}`.",
             f" *",
@@ -14455,6 +14648,12 @@ public class {class_name} extends BaseApiTest {{
         the lead suite only, and every other suite fell back to a per-case
         Support class for every case (577 of them in one suite).
         """
+        if self.classic_enabled:
+            # Nothing calls these in classic: every @Test holds its own
+            # calls. Emitting them anyway left the tree carrying a
+            # parallel copy of the whole suite that no test referenced --
+            # and made the README's "no scenario classes" false.
+            return []
         # The steps base FIRST: it populates the suite-local indexes the
         # entry classes and the shared-entry gate both read.
         suite: list[str] = []
@@ -15413,6 +15612,12 @@ public final class {type_name} {{
             case, service_class_name, emit_stop_checks)
         start_java = plan["start_java"]
         flow_java = plan["flow_java"]
+        if self.classic_enabled:
+            # The setup block is not part of `flow_java`, and in classic
+            # it is not part of a scenario class either -- it has to reach
+            # the @Test or the case runs its first business call with no
+            # token. Stashed per case, read once, cleared on read.
+            self._classic_start_java = list(start_java)
         verify_java = plan["verify_java"]
         all_java = plan["all_java"]
         assigned_flow = plan["assigned_flow"]
@@ -15745,12 +15950,126 @@ public final class {support_name} {{
                 "        private String __stopAfter;\n")
 
         rel = (f"src/main/java/{pkg.replace('.', '/')}/{support_name}.java")
-        self._write(rel, content)
-        fqn = f"{pkg}.{support_name}"
-        pending = getattr(self, "_pending_fluent_imports", None)
-        if pending is not None and fqn not in pending:
-            pending.append(fqn)
+        if not self.classic_enabled:
+            self._write(rel, content)
+            fqn = f"{pkg}.{support_name}"
+            pending = getattr(self, "_pending_fluent_imports", None)
+            if pending is not None and fqn not in pending:
+                pending.append(fqn)
+        # The class is still RENDERED above in classic mode and then
+        # dropped. That looks wasteful and is deliberate: rendering is
+        # what populates `flow_java`, the response-var-to-field rewrite
+        # and the import ledger, and the @Test inlines exactly those
+        # bodies. Short-circuiting earlier would mean maintaining a
+        # second, subtly different path to the same Java.
         return support_name, record_name, flow_java, verify_java
+
+    def _classic_inline_body(self, flow_java, verify_java=()) -> list:
+        """The case's own Java, in order, for pasting into its @Test.
+
+        Classic gives up phase sharing on purpose, so there is no chain to
+        call and no scenario class to call it on -- the setup block and
+        every step body belong to this one method.
+
+        The bodies arrive having been rendered FOR a scenario class, where
+        a response captured by one phase and read by a later one has to
+        outlive the call and is therefore a field (`this.fooRes = ...`).
+        Inlined into a single method they are all in scope already, so the
+        field form is undone here. Leaving it would not compile: the @Test
+        class declares no such field, and classic emits no class that
+        does.
+        """
+        out = []
+        start = getattr(self, "_classic_start_java", None)
+        self._classic_start_java = None
+        if start:
+            out.append("// ---- setup (inlined: classic emits no scenario "
+                       "class) ----")
+            out.extend(start)
+            out.append("")
+        declared = set()
+        for _fname, body in flow_java:
+            out.extend(body)
+        # Verify steps are REST calls like any other -- they are separated
+        # in the phase emit because they belong to a different registered
+        # flow, and classic has no flows to belong to. They run last, in
+        # the order the phase chain would have run them.
+        for _vcls, _vmeth, body in (verify_java or ()):
+            out.append("")
+            out.append("// ---- verify (inlined) ----")
+            out.extend(body)
+        out = self._classic_locals_not_fields(out, declared)
+        return self._classic_declare_dangling_responses(out, declared)
+
+    # `fooRes`, `fooRes2`, `foo_2Res` -- the shapes _step_suffix and
+    # sanitize_identifier produce for a step's response local.
+    _RES_REF_RX = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*Res\d*)\b")
+    _STRLIT_RX = re.compile(r'"(?:[^"\\]|\\.)*"')
+
+    def _classic_declare_dangling_responses(self, lines: list,
+                                            declared: set) -> list:
+        """Declare any `*Res` the body READS but never assigns.
+
+        The producing step is disabled in the ReadyAPI source, so no
+        exchange is emitted for it. The scenario class declared a field
+        per response var and the read was null; classic has no fields,
+        so without this the case does not compile. Null preserves the
+        phase tree's behaviour exactly -- the point is to not invent a
+        difference, and not to paper over one either, hence the note in
+        the generated code and the finding in the audit.
+        """
+        seen = []
+        for line in lines:
+            bare = self._STRLIT_RX.sub('""', line)
+            if bare.lstrip().startswith("//"):
+                continue
+            for name in self._RES_REF_RX.findall(bare):
+                if name not in declared and name not in seen:
+                    seen.append(name)
+        if not seen:
+            return lines
+        head = ["// The step(s) producing these responses are DISABLED in "
+                "the ReadyAPI",
+                "// source, so nothing here assigns them. Declared null to "
+                "match what the",
+                "// phase tree does (a field, never set) -- the reads below "
+                "were always null."]
+        for name in seen:
+            head.append("Response " + name + " = null;")
+            self.ledger.add_preflight_finding(
+                "LOW", "classic-null-response",
+                getattr(self, "_current_case", "") or "",
+                "`" + name + "` is read but its step is disabled in the "
+                "source, so it is null -- same as the phase tree, where it "
+                "is an unset field")
+        return head + [""] + lines
+
+    def _classic_locals_not_fields(self, lines: list, declared: set) -> list:
+        """`this.fooRes = given()...` -> `Response fooRes = given()...`.
+
+        Only the FIRST assignment to a given name declares it: a step name
+        that repeats in one case (ReadyAPI allows it, and `_step_suffix`
+        only disambiguates some of them) would otherwise emit two
+        declarations of the same local and fail to compile.
+        """
+        out = []
+        for line in lines:
+            stripped = line.lstrip()
+            if stripped.startswith("this."):
+                indent = line[:len(line) - len(stripped)]
+                rest = stripped[len("this."):]
+                name = rest.split("=", 1)[0].strip() if "=" in rest else ""
+                if name and name.isidentifier():
+                    if name in declared:
+                        out.append(indent + rest)
+                    else:
+                        declared.add(name)
+                        out.append(indent + "Response " + rest)
+                    continue
+                out.append(indent + rest)
+                continue
+            out.append(line)
+        return out
 
     def _render_test_method_v2(self, case: TestCase, service_class_name: str,
                                  method_name: str, expected_status_code: str,
@@ -15788,6 +16107,19 @@ public final class {support_name} {{
         self._reset_per_method_state()
         stop_markers = stop_markers or {}
         emit_stop_checks = bool(stop_markers)
+        if emit_stop_checks and self.classic_enabled:
+            # The guards read `__restStepIdx` / `__stopAfter` and call
+            # `__noteStoppedEarly`, all of which live on the scenario
+            # base. A @Test extends BaseApiTest, so inlining them does
+            # not compile. `_stop_after` is a triage aid, not a
+            # correctness feature -- losing it loudly beats emitting a
+            # tree that cannot build, and beats dropping it in silence.
+            emit_stop_checks = False
+            self.ledger.add_preflight_finding(
+                "MEDIUM", "classic-no-stop-after", case.name,
+                "the `_stop_after` CSV column is ignored for this case: "
+                "its guards need the scenario base that classic does not "
+                "emit. Convert this suite without --classic to use it.")
         support_name, record_name, flow_java, verify_java = self._emit_fluent_support(
             case, service_class_name, method_name,
             emit_stop_checks, cluster_size)
@@ -15915,6 +16247,18 @@ public final class {support_name} {{
                 "MEDIUM", "case-fully-disabled", case.name,
                 "emitted as a runtime skip: no enabled step survived the "
                 "auth preamble, so the chain would have asserted nothing")
+        elif self.classic_enabled:
+            # The one member that cannot be shared: it names THIS case.
+            body_lines.append(
+                f'testCaseId = "{_jlit(case.name)}";')
+            # Ahead of the verify branches on purpose. Behind them it
+            # never ran for a case that has verify steps, and a suite
+            # came out half inline and half chained -- which also meant
+            # the scenario classes it was supposed to make unnecessary
+            # were still being referenced.
+            body_lines.extend(self._readyapi_step_map(case))
+            body_lines.extend(
+                self._classic_inline_body(flow_java, verify_java))
         elif verify_calls and self._chainable_verifies(case) is not None:
             # Registered verifies become chain calls. Same runVerify
             # underneath; the difference is that the request they perform is
@@ -18711,6 +19055,124 @@ def _emitted_file_exists(path: str) -> bool:
 PARTIAL_MARKER_REL = "_audit/partial_convert.json"
 
 
+EMIT_MODE_REL = "_audit/emit_mode.json"
+
+
+def _emit_mode_path(output_dir: str) -> str:
+    return os.path.join(output_dir, EMIT_MODE_REL.replace("/", os.sep))
+
+
+def _read_emit_modes(output_dir: str) -> dict:
+    try:
+        with open(_fs_path(_emit_mode_path(output_dir)), encoding="utf-8") as fh:
+            d = json.load(fh)
+        return d.get("suites", {}) or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _suite_has_output(output_dir: str, suite: str) -> bool:
+    """Does this suite still have emitted files under --output?"""
+    for rel in (("src", "main", "java"), ("src", "test", "java")):
+        base = os.path.join(output_dir, *rel)
+        if not os.path.isdir(_fs_path(base)):
+            continue
+        for dirpath, dirs, _files in os.walk(_fs_path(base)):
+            if suite in dirs:
+                return True
+    return False
+
+
+def _record_emit_modes(output_dir: str, converted: list, classic: bool) -> None:
+    """Remember which emit mode each suite on disk was built with."""
+    modes = _read_emit_modes(output_dir)
+    for suite in converted:
+        modes[str(suite)] = "classic" if classic else "phase"
+    # Drop entries whose suite has no emitted files left. A suite removed
+    # from the input directory used to keep its mode forever, and a stale
+    # `classic` then refused a phase convert on behalf of a suite that
+    # was not on disk to clash with.
+    done = set(str(c) for c in converted)
+    for suite in [k for k in modes if k not in done]:
+        if not _suite_has_output(output_dir, suite):
+            modes.pop(suite, None)
+    try:
+        path = _emit_mode_path(output_dir)
+        os.makedirs(_fs_path(os.path.dirname(path)), exist_ok=True)
+        with open(_fs_path(path), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps({"schema": 1, "suites": modes}, indent=1)
+                     + "\n")
+    except OSError as exc:
+        print(f"[ra_converter] WARN: could not record the emit mode: {exc}")
+
+
+def _infer_phase_suites_on_disk(output_dir: str) -> set:
+    """Suites whose emitted files say `phase`, for trees with no marker.
+
+    `support/<suite>/cases/Specs*.java` is emitted by the phase path and
+    by nothing else. Absent means UNKNOWN, never classic: inventing a
+    mode that was never recorded is how a correct run gets refused.
+    """
+    found = set()
+    base = os.path.join(output_dir, "src", "main", "java")
+    if not os.path.isdir(_fs_path(base)):
+        return found
+    for dirpath, _dirs, files in os.walk(_fs_path(base)):
+        if os.path.basename(dirpath) != "cases":
+            continue
+        if not any(f.startswith("Specs") and f.endswith(".java")
+                   for f in files):
+            continue
+        suite = os.path.basename(os.path.dirname(dirpath))
+        if suite:
+            found.add(suite)
+    return found
+
+
+def _refuse_mixed_emit_mode(output_dir: str, converting: list,
+                            classic: bool) -> None:
+    """Abort before emitting if the run would leave a mixed tree.
+
+    support/scenario/ is SHARED across suites and its shape depends on the
+    mode, so it cannot describe both at once. Whichever mode runs last
+    wins the shared classes and every suite in the other mode stops
+    compiling -- in suites the run never touched, which is the worst place
+    for the failure to appear.
+
+    Fail closed and early. Emitting first and discovering it at
+    `java-compile` costs a full reconvert to undo.
+    """
+    modes = _read_emit_modes(output_dir)
+    # A tree built before the marker existed still has a mode, and it is
+    # readable from what was emitted. Recorded modes win where both
+    # disagree: the marker is written by the run that did the emitting.
+    for suite in _infer_phase_suites_on_disk(output_dir):
+        modes.setdefault(suite, "phase")
+    if not modes:
+        return
+    want = "classic" if classic else "phase"
+    staying = {s: m for s, m in modes.items()
+               if s not in set(str(c) for c in converting)}
+    clashing = sorted(s for s, m in staying.items() if m != want)
+    if not clashing:
+        return
+    shown = ", ".join(clashing[:6]) + (" ..." if len(clashing) > 6 else "")
+    other = "phase" if classic else "classic"
+    raise SystemExit(
+        "[ra_converter] REFUSING to emit: this run is " + want + ", but "
+        + str(len(clashing)) + " suite(s) already on disk were built "
+        + other + " -- " + shown + "." + NL
+        + "  support/scenario/ is shared across suites and its shape "
+        "depends on the mode, so the two cannot coexist: the last run "
+        "would win those classes and every suite in the other mode would "
+        "stop compiling." + NL
+        + "  Convert the WHOLE input directory in one mode:" + NL
+        + "    python tools/ra_converter/ra_converter.py --input "
+        "<dir> --output . --data-dir <workbooks> --clean"
+        + ("  --classic" if classic else "") + NL
+        + "  Or emit the other mode into its own --output tree.")
+
+
 def _record_convert_scope(output_dir: str, converted: list) -> None:
     """Record whether this convert covered the whole input set.
 
@@ -19032,6 +19494,16 @@ def main():
                         "default since suite-wide spec dedup made it "
                         "size-neutral (97,560 -> 63,290 lines).")
     p.set_defaults(phase_specs=True)
+    p.add_argument("--classic", action="store_true",
+                   help="Emit CLASSIC REST Assured: each @Test holds the "
+                        "whole scenario inline -- given()/when()/then() per "
+                        "call -- instead of a fluent chain over generated "
+                        "phase data. No scenario/Specs/Hooks/Calls classes "
+                        "are emitted for the suites converted this way. CSV "
+                        "rows still drive the data. Implies --no-phase-specs. "
+                        "Output is larger (cross-case phase sharing is what "
+                        "is given up) and the phase-structural gate checks do "
+                        "not apply to it -- see README `Classic mode`.")
     p.add_argument("--cursor-assist", action="store_true",
                    help="After convert, write a conversion-gap report and, if "
                         "the audit shows confusion (TODO/STUB/PARTIAL or HIGH "
@@ -19247,6 +19719,7 @@ def _run_prune_dead_props(args) -> None:
 
 
 _PHASE_SPECS = True
+_CLASSIC = False
 
 
 def _alias_self_for_config() -> None:
@@ -19280,7 +19753,7 @@ def _alias_self_for_config() -> None:
 
 
 def _main_dispatch_inner(args):
-    global _PHASE_SPECS
+    global _PHASE_SPECS, _CLASSIC
     global _CONVERTER_CONFIG
     import converter_config as _cc
     _alias_self_for_config()
@@ -19304,9 +19777,27 @@ def _main_dispatch_inner(args):
         print("[ra_converter] --input is required for a convert "
               "(use --bootstrap to emit only the framework support types)")
         return 2
+    _CLASSIC = bool(getattr(args, "classic", False))
     _PHASE_SPECS = bool(getattr(args, "phase_specs", True))
+    if _CLASSIC:
+        # Not "also allowed": the two describe the same decision from
+        # opposite ends. PhaseSpec data exists so a phase can be SHARED
+        # between cases; classic inlines every call into the one @Test
+        # that makes it. Honour --classic and say that the other flag
+        # stopped applying, rather than letting a stale --phase-specs in
+        # someone's saved command line silently decide the output shape.
+        if _PHASE_SPECS:
+            print("[ra_converter] --classic: --phase-specs does not apply "
+                  "(a phase cannot be both inlined and shared); emitting "
+                  "classic")
+        _PHASE_SPECS = False
     import fluent_scenario as _fs
     _fs.PHASE_SPECS = _PHASE_SPECS
+    _fs.CLASSIC = _CLASSIC
+    if _CLASSIC:
+        print("[ra_converter] --classic: each @Test gets the whole scenario "
+              "inline (given/when/then per call). No scenario/Specs/Hooks/"
+              "Calls classes for these suites.")
     if _PHASE_SPECS:
         print("[ra_converter] --phase-specs: single-call phases are emitted as "
               "PhaseSpec data (one engine per client operation); compound "
@@ -19325,6 +19816,7 @@ def _main_dispatch_inner(args):
         svc = _resolve_service_name(suite, catalog, args.service_name, multi)
         jobs.append((xml, suite, svc))
     jobs = _dedupe_service_names(jobs)
+    _refuse_mixed_emit_mode(args.output, [j[1] for j in jobs], _CLASSIC)
     multi = len(jobs) > 1
     if multi:
         print(f"[ra_converter] converting {len(jobs)} suite(s) in one pass "
@@ -19359,6 +19851,7 @@ def _main_dispatch_inner(args):
             raise SystemExit(
                 "[ra_converter] missing support: " + ", ".join(missing))
         _record_convert_scope(args.output, [suite])
+        _record_emit_modes(args.output, [suite], _CLASSIC)
         return rc
 
     # Must precede the first collect: names allocated before this point
@@ -19419,6 +19912,7 @@ def _main_dispatch_inner(args):
             bits.append("failed suites: " + ", ".join(s for s, _ in failures))
         raise SystemExit("[ra_converter] " + "; ".join(bits))
     _record_convert_scope(args.output, [j[1] for j in jobs])
+    _record_emit_modes(args.output, [j[1] for j in jobs], _CLASSIC)
     return 0
 
 

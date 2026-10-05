@@ -51,8 +51,37 @@ else:
 
 
 class Check:
-    def __init__(self, name, cmd, why, full_only=False):
+    def __init__(self, name, cmd, why, full_only=False, phase_only=False):
         self.name, self.cmd, self.why, self.full_only = name, cmd, why, full_only
+        # Reads the phase structure -- phases, specs, chains, the
+        # shared/suite-local split. A --classic tree has none of it, so
+        # this check cannot say anything true about one. Reported as
+        # N/A rather than run, because a check that passes having found
+        # nothing to look at is worse than one that did not run: it gets
+        # counted as evidence.
+        self.phase_only = phase_only
+
+
+# Names of the checks above that only mean something for a phase tree.
+PHASE_ONLY = {
+    "phase-model", "phase-emit", "db-phase-split", "consolidation",
+    "chain-stop-loud", "hoist", "ctx-keys", "dataflow", "phase-order",
+    "step-parity", "step-parity-rules", "vocabulary", "emit-shape",
+    "groovy-assert-shapes", "case-duplication", "case-duplication-rules",
+    "shape-index", "near-miss",
+}
+
+
+def classic_suites(root):
+    """Suites in this tree emitted by --classic, from the mode marker."""
+    import json as _json
+    try:
+        with open(os.path.join(root, "_audit", "emit_mode.json"),
+                  encoding="utf-8") as fh:
+            modes = (_json.load(fh).get("suites") or {})
+    except (OSError, ValueError):
+        return []
+    return sorted(k for k, v in modes.items() if v == "classic")
 
 
 CHECKS = [
@@ -64,6 +93,12 @@ CHECKS = [
           "no tool module uses a name it never imports -- a NameError "
           "fires only when that line runs, which was on a user's machine, "
           "mid-convert, after 40 files had been written"),
+    Check("classic-mode",
+          [PY, "tools/ra_converter/test_classic_mode.py"],
+          "--classic refuses to leave the tree half inlined and half "
+          "phase-shared -- support/scenario/ is shared, so converting one "
+          "suite in the other mode broke 28 suites the run never touched "
+          "and still exited 0"),
     Check("input-selection",
           [PY, "tools/ra_converter/test_input_selection.py"],
           "--input converts the suite it was given, not every sibling -- "
@@ -92,6 +127,12 @@ CHECKS = [
     Check("method-name-length",
           [PY, "tools/ra_converter/test_method_name_length.py"],
           "emitted @Test names stay inside the path budget, camelCase, and unique after truncation"),
+    Check("no-duplicate-methods",
+          [PY, "tools/check_no_duplicate_methods.py"],
+          "no emitted class declares the same method signature twice -- "
+          "`method-name-length` unit-tests the name BUILDER against "
+          "strings it invents and never reads the tree, so a collision "
+          "that survives the builder reached javac and nothing before it"),
     Check("chain-stop-loud",
           [PY, "tools/ra_converter/test_chain_stop_loud.py"],
           "a truncated chain reports itself; the scenario record is bound only when read"),
@@ -396,10 +437,34 @@ def main() -> int:
     if args.list_only:
         print_catalogue(CHECKS)
         return 0
+
+    # A --classic tree has no phases, specs or chains, so the checks that
+    # read them cannot say anything true about it. Held back by name and
+    # LISTED, not quietly dropped: the reader has to know which part of
+    # the gate did not cover this tree, or a shorter green run reads as a
+    # cleaner one.
+    _classic = classic_suites(ROOT)
+    _held = []
+    if _classic:
+        _held = [c for c in selected if c.name in PHASE_ONLY]
+        selected = [c for c in selected if c.name not in PHASE_ONLY]
+
     print(f"verify_all: {len(selected)} check(s)"
           f"{'  (--full)' if args.full else '  (fast; use --full for Java)'}")
     print("Each check runs a script and passes only if that script exits 0. "
           "`--list` explains every one without running it.\n")
+    if _classic:
+        print(f"[CLASSIC TREE] {len(_classic)} suite(s) were emitted with "
+              f"--classic: " + ", ".join(_classic[:6])
+              + (" ..." if len(_classic) > 6 else ""))
+        print(f"  {len(_held)} phase-structural check(s) are N/A and were "
+              f"NOT run: " + ", ".join(sorted(c.name for c in _held)))
+        print("  They read phases, specs and chains, which classic does "
+              "not emit. Running them would report a pass for having "
+              "found nothing, which is not evidence.")
+        print("  What still covers a classic tree: java-compile, "
+              "java-tests, substitution, csv-contract, generated, "
+              "tracked-csv, service-routing.\n")
 
     failed, accepted, skipped, records = [], [], [], []
     _shown_group = None
