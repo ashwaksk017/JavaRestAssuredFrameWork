@@ -25,11 +25,14 @@ The utility layer (`RestUtilities`, `RestLoggerUtilityDataHolder`, `RestLogAppen
 | see the response at a breakpoint, mid-chain | [Reading the response](#reading-the-response--lastresponse) — `lastResponse()` |
 | run only the framework guards (no HTTP, no DB) | [Quick start §3](#3-run-the-tests) — `testng-guards.xml` |
 | switch one data row off without deleting it | [The `execute` column](#switching-one-data-row-off--the-execute-column) — put `N` in the row |
+| fix something the converter or the gate cannot fix itself | [MANUAL_FIXES.md](MANUAL_FIXES.md) — every manual intervention, with steps |
 | turn a Jira story into a test | [From a Jira story](#from-a-jira-story-no-readyapi-xml) — `python tools/jira/run.py --url ...` |
 | find out whether a story's request is already automated | [Is it already covered?](#3-is-it-already-covered) — `tools/jira/shape_match.py` |
 
 The companion docs: **[CreateTestCase.md](CreateTestCase.md)** (writing a test
-by hand), **[ARCHITECTURE.md](ARCHITECTURE.md)** (convert-time vs run-time,
+by hand), **[MANUAL_FIXES.md](MANUAL_FIXES.md)** (every manual intervention
+the converter and the gate cannot do for you, with steps),
+**[ARCHITECTURE.md](ARCHITECTURE.md)** (convert-time vs run-time,
 generated vs hand-written), **[PHASES.md](PHASES.md)** (every phase the
 onboarding DSL offers). Start here; the table above says which one answers
 what.

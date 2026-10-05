@@ -2896,6 +2896,64 @@ def _response_fields_for_later_paths(current_step_name: str, case) -> list:
     return out
 
 
+def _xpath_to_dotted(expr: str) -> str:
+    """ReadyAPI ResponseAsXml XPath -> the dotted JSON path it means.
+
+    Only the EXTRACTION path. The placeholder NAME stays leaf-only,
+    because the template side derives the same name independently and
+    the two must agree; changing it there would break every consumer.
+
+    Two rules, both from ReadyAPI's own JSON-to-XML convention:
+
+      * `e[N]` is the array-element wrapper. It becomes an index on the
+        PARENT: `roomTypeInventory[1]/e[1]/roomTypeCode[1]` ->
+        `roomTypeInventory[0].roomTypeCode` (XPath is 1-based, JsonPath
+        0-based).
+      * every other `[N]` is an XPath positional predicate on a
+        single-occurrence element, not an array index, so it is dropped:
+        `externalMatch[1]/attestation[1]/sourceId[1]` ->
+        `externalMatch.attestation.sourceId`.
+
+    The second rule is checked against the tree rather than assumed: the
+    emitted suite already reads that field as
+    `externalMatch.attestation.sourceId` in ten other places, so an
+    index there would have been wrong.
+
+    Why it matters: leaf-only gave `safeJsonExtract(res, "sourceId")`
+    for a field two levels down, which returns null. The placeholder then
+    resolved to empty and the request went out without the value, with
+    nothing reporting it -- the quiet half of the same fault the
+    `#...#`-sent-verbatim case shows loudly.
+
+    Returns "" when the expression is not a plain path, so the caller
+    keeps its existing leaf behaviour.
+    """
+    expr = (expr or "").strip()
+    if "declare namespace" in expr and ";" in expr:
+        expr = expr.split(";", 1)[1].strip()
+    out: list[str] = []
+    for seg in expr.split("/"):
+        seg = seg.strip()
+        if not seg or seg in (".", ".."):
+            continue
+        if ":" in seg:
+            seg = seg.split(":", 1)[-1]
+        m = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_.-]*)(?:\[(\d+)\])?", seg)
+        if not m:
+            return ""
+        name, idx = m.group(1), m.group(2)
+        if name == "e":
+            # Array element: index belongs on the parent, which must exist.
+            if not out:
+                return ""
+            out[-1] = f"{out[-1]}[{max(0, int(idx) - 1) if idx else 0}]"
+            continue
+        if not out and name in ("Response", "Envelope", "Body", "return"):
+            continue                      # XML wrapper, not part of the body
+        out.append(name)
+    return ".".join(out)
+
+
 def _needed_response_extracts(current_step_name: str, case: "TestCase") -> dict[str, str]:
     """placeholder_key -> dotted JsonPath for `${thisStep#Response#...}` refs."""
     needed: dict[str, str] = {}
@@ -2934,14 +2992,15 @@ def _needed_response_extracts(current_step_name: str, case: "TestCase") -> dict[
                 field_key = field
             ph_key = (f"{src_sanitized}_Response_{field_key}"
                       if field_key else f"{src_sanitized}_Response")
-            # Leaf-only, deliberately: of the 29 nested ResponseAsXml refs
-            # in this input set, nearly all are JDBC
-            # (`${Postgres#ResponseAsXml#//Results[1]/ResultSet[1]/Row[1]/
-            # TABLE.COL[1]}`), and those are PUBLISHED under the leaf key
-            # from a result-row map rather than extracted from a JSON body.
-            # Deriving a full dotted path here would break every one of
-            # them.
-            if variant in ("AsXml", "AsHtml", "Headers"):
+            if variant in ("AsXml", "AsHtml"):
+                # Full dotted path; see _xpath_to_dotted. This touches
+                # only refs naming a REST step, which is all this
+                # function ever claims. The 26 nested AsXml refs that
+                # name a `jdbc` step are published by `publishJdbcRow`
+                # in the JdbcStep emit path under the leaf key, and are
+                # never reached from here -- measured, not assumed.
+                extract_field = _xpath_to_dotted(path_raw) or field_key
+            elif variant == "Headers":
                 extract_field = field_key.replace("Header_", "")
             else:
                 extract_field = field_key.replace("_", ".")

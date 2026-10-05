@@ -184,6 +184,10 @@ Three things worth knowing:
 The flag skips the row, not the test method. A method with four rows and
 one `N` still runs three times.
 
+For the other things that need a person — an unproduced placeholder, a
+parity gap, a credential, a dangling ReadyAPI reference — see
+**[MANUAL_FIXES.md](MANUAL_FIXES.md)**.
+
 Hand-written tests can also use TestNG XML / `-DdataFile=`:
 
 ```

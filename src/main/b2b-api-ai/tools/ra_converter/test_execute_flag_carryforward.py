@@ -177,5 +177,57 @@ class TheColumnIsEmitted(unittest.TestCase):
         self.assertLess(read_at, build_at)
 
 
+class XPathToDotted(unittest.TestCase):
+    """The EXTRACTION path for a ResponseAsXml ref.
+
+    Leaf-only sent `safeJsonExtract(res, "sourceId")` for a field two
+    levels down, which returns null: the placeholder then resolved to
+    empty and the request went out without the value, reported by
+    nothing. The quiet half of the same fault that the
+    `#...#`-sent-verbatim case shows loudly.
+    """
+
+    def test_the_e_wrapper_becomes_an_index_on_its_parent(self):
+        self.assertEqual(
+            rc._xpath_to_dotted(
+                "declare namespace ns1='https://example.com/x'; "
+                "//ns1:Response[1]/ns1:roomTypeInventory[1]/ns1:e[1]"
+                "/ns1:roomTypeCode[1]"),
+            "roomTypeInventory[0].roomTypeCode")
+
+    def test_a_positional_predicate_is_not_an_array_index(self):
+        """Checked against the tree, not assumed: the emitted suite reads
+        this field as `externalMatch.attestation.sourceId` in ten other
+        places, so an index here would have been wrong."""
+        self.assertEqual(
+            rc._xpath_to_dotted(
+                "//Response[1]/externalMatch[1]/attestation[1]/sourceId[1]"),
+            "externalMatch.attestation.sourceId")
+
+    def test_xpath_indices_are_1_based_and_jsonpath_is_0_based(self):
+        self.assertEqual(
+            rc._xpath_to_dotted("//Response/items[1]/e[3]/id"), "items[2].id")
+
+    def test_the_xml_wrapper_root_is_dropped(self):
+        self.assertEqual(rc._xpath_to_dotted("//Response[1]/groupId[1]"),
+                         "groupId")
+        self.assertEqual(rc._xpath_to_dotted("//Envelope/Body/result[1]/id"),
+                         "result.id")
+
+    def test_a_jdbc_shaped_path_is_left_alone_not_indexed(self):
+        """A `jdbc` step's ref never reaches this code -- publishJdbcRow
+        handles it under the leaf key -- but if one ever did, inventing
+        array indices for Results/ResultSet/Row would be wrong."""
+        self.assertEqual(
+            rc._xpath_to_dotted("//Results[1]/ResultSet[1]/Row[1]/TBL.COL[1]"),
+            "Results.ResultSet.Row.TBL.COL")
+
+    def test_anything_that_is_not_a_plain_path_yields_nothing(self):
+        """So the caller keeps its existing leaf behaviour rather than
+        extracting from a path this did not understand."""
+        for expr in ("count(//x)", "//a[@id='1']/b", "", "//a/text()"):
+            self.assertEqual(rc._xpath_to_dotted(expr), "", expr)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

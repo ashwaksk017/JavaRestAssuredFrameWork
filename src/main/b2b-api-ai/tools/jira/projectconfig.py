@@ -26,7 +26,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 CONFIG_REL = "src/main/resources/program_configuration.json"
 PROPS_REL = "src/main/resources/application.properties"
 
-SECRET_HINTS = ("pat", "token", "secret", "password", "assertion", "key")
+SECRET_HINTS = ("pat", "token", "secret", "password", "assertion", "key",
+                # A client id is half a client-credentials pair, and it
+                # matches none of the hints above -- `client_id` has no
+                # "key" or "secret" in it. It was printing in full.
+                "client_id", "username", "user")
 
 
 def active_env() -> tuple[str, str]:
