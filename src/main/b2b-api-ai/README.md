@@ -26,12 +26,15 @@ The utility layer (`RestUtilities`, `RestLoggerUtilityDataHolder`, `RestLogAppen
 | run only the framework guards (no HTTP, no DB) | [Quick start §3](#3-run-the-tests) — `testng-guards.xml` |
 | switch one data row off without deleting it | [The `execute` column](#switching-one-data-row-off--the-execute-column) — put `N` in the row |
 | fix something the converter or the gate cannot fix itself | [MANUAL_FIXES.md](MANUAL_FIXES.md) — every manual intervention, with steps |
+| turn a Jira story into a test and link it to Xray | [JIRA_XRAY.md](JIRA_XRAY.md) — fetch → packet → Cursor → Xray |
 | turn a Jira story into a test | [From a Jira story](#from-a-jira-story-no-readyapi-xml) — `python tools/jira/run.py --url ...` |
 | find out whether a story's request is already automated | [Is it already covered?](#3-is-it-already-covered) — `tools/jira/shape_match.py` |
 
 The companion docs: **[CreateTestCase.md](CreateTestCase.md)** (writing a test
 by hand), **[MANUAL_FIXES.md](MANUAL_FIXES.md)** (every manual intervention
 the converter and the gate cannot do for you, with steps),
+**[JIRA_XRAY.md](JIRA_XRAY.md)** (a Jira story to a test to an Xray
+result, end to end),
 **[ARCHITECTURE.md](ARCHITECTURE.md)** (convert-time vs run-time,
 generated vs hand-written), **[PHASES.md](PHASES.md)** (every phase the
 onboarding DSL offers). Start here; the table above says which one answers
@@ -987,7 +990,7 @@ ProgramAccount typed = accounts.readAs(token, accountId, ProgramAccount.class);
 
 ### Auth wiring — exercised by AuthTests
 
-`AuthUtilities` (`bearer` / `basic` / `oauth2ClientCredentialsToken`) is verified end-to-end by [AuthTests](src/test/java/com/hi/api/tests/AuthTests.java) against [httpbin.org](https://httpbin.org):
+`AuthUtilities` (`bearer` / `basic` / `oauth2ClientCredentialsToken`) is verified end-to-end by [AuthTests](src/test/java/com/hi/api/tests/samples/AuthTests.java) against [httpbin.org](https://httpbin.org):
 
 | Test | httpbin endpoint | Asserts |
 |---|---|---|
@@ -1028,11 +1031,11 @@ Map<String,String> h = Headers.builder()
 | `Headers.fromText(path)` | HTTP-style `Name: value` per line | `headers/qa.txt` |
 | `Headers.fromFile(path)` | Auto-detect by extension | any of the above |
 
-Sample fixtures ship under [src/test/resources/headers/](src/test/resources/headers/). Loader correctness + one httpbin round-trip are covered by [HeadersFromFileTests](src/test/java/com/hi/api/tests/HeadersFromFileTests.java).
+Sample fixtures ship under [src/test/resources/headers/](src/test/resources/headers/). Loader correctness + one httpbin round-trip are covered by [HeadersFromFileTests](src/test/java/com/hi/api/tests/samples/HeadersFromFileTests.java).
 
 ### Live login sample — Tricentis DemoWebshop
 
-[DemoWebshopLoginTest](src/test/java/com/hi/api/tests/DemoWebshopLoginTest.java) drives the login contract at [demowebshop.tricentis.com](https://demowebshop.tricentis.com) end-to-end — a classic form-encoded ASP.NET login with cookie-based session (no JSON tokens). Three tests:
+[DemoWebshopLoginTest](src/test/java/com/hi/api/tests/samples/DemoWebshopLoginTest.java) drives the login contract at [demowebshop.tricentis.com](https://demowebshop.tricentis.com) end-to-end — a classic form-encoded ASP.NET login with cookie-based session (no JSON tokens). Three tests:
 
 | Test | Signal |
 |---|---|
@@ -1082,7 +1085,7 @@ at the end of the suite.
    ```
 
 Live example in
-[PostsSmokeTests.get_singlePost_matchesPojoAndSchema()](src/test/java/com/hi/api/tests/PostsSmokeTests.java)
+[PostsSmokeTests.get_singlePost_matchesPojoAndSchema()](src/test/java/com/hi/api/tests/samples/PostsSmokeTests.java)
 — replace `PROJ-DEMO-1` with your real Jira Xray test key.
 
 **Precedence when both are present:**
@@ -1194,8 +1197,8 @@ Or via env vars: `DB_URL` / `DB_USER` / `DB_PASSWORD` (Config's dots-become-unde
 
 | Test | What it proves | When it runs |
 |---|---|---|
-| [H2QueryTest](src/test/java/com/hi/api/tests/H2QueryTest.java) | Every `Db` operation end-to-end against in-memory H2 in Postgres-compat mode | Always — H2 is a test-scoped dep, no external setup |
-| [PostgresQueryTest](src/test/java/com/hi/api/tests/PostgresQueryTest.java) | Live Postgres round-trip (`SELECT 1`, `pg_catalog` parameterized query) | Only when `db.url` is configured — else `@BeforeClass` throws `SkipException` |
+| [H2QueryTest](src/test/java/com/hi/api/tests/db/H2QueryTest.java) | Every `Db` operation end-to-end against in-memory H2 in Postgres-compat mode | Always — H2 is a test-scoped dep, no external setup |
+| [PostgresQueryTest](src/test/java/com/hi/api/tests/db/PostgresQueryTest.java) | Live Postgres round-trip (`SELECT 1`, `pg_catalog` parameterized query) | Only when `db.url` is configured — else `@BeforeClass` throws `SkipException` |
 
 **Result-set mapping** — every row comes back as a `LinkedHashMap<String,Object>`
 keyed by the ResultSetMetaData column *label* (so `SELECT foo AS bar` yields
@@ -1250,9 +1253,9 @@ Getter surface: `get(k)`, `get(k, fallback)`, `getInt(k)`, `getInt(k, fallback)`
 `getLong(k)`, `getBool(k)`, `has(k)`, `keys()`, `size()`, `asMap()`.
 Typed getters without a fallback fail fast on missing key or unparseable value.
 
-Wired into [PostsCsvDrivenTest](src/test/java/com/hi/api/tests/PostsCsvDrivenTest.java),
-[PostsJsonDrivenTest](src/test/java/com/hi/api/tests/PostsJsonDrivenTest.java),
-and [ParameterizedLoginTest](src/test/java/com/hi/api/tests/ParameterizedLoginTest.java) —
+Wired into [PostsCsvDrivenTest](src/test/java/com/hi/api/tests/data/PostsCsvDrivenTest.java),
+[PostsJsonDrivenTest](src/test/java/com/hi/api/tests/data/PostsJsonDrivenTest.java),
+and [ParameterizedLoginTest](src/test/java/com/hi/api/tests/data/ParameterizedLoginTest.java) —
 each demonstrates the `expected` column driving real assertions.
 
 ### Data-driven tests — CSV + JSON
@@ -1670,7 +1673,7 @@ Faker escape = FakeData.faker();                    // full library access
 mvn test "-Dgroups=faker" "-Dfake.seed=42"
 ```
 
-[FakerPostsTest](src/test/java/com/hi/api/tests/FakerPostsTest.java) shows the
+[FakerPostsTest](src/test/java/com/hi/api/tests/data/FakerPostsTest.java) shows the
 end-to-end pipeline: `FakeData.postDataMap()` → `RestUtilities.mapJsonValues()`
 (auto JSON-escapes string values) → POST → assert the server echoed the
 generated values back.

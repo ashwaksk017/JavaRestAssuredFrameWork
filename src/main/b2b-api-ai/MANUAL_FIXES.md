@@ -539,8 +539,9 @@ hand-written call, so `ManualBody` does the same thing and is strict: you
 get an exception naming the placeholder instead of a server complaint
 about a different field.
 
-From a Jira story, let the tooling build the brief first — see
-[README §From a Jira story](README.md#from-a-jira-story-no-readyapi-xml):
+From a Jira story, let the tooling build the brief first — the whole
+workflow, including the Cursor handoff and the Xray linkage, is in
+**[JIRA_XRAY.md](JIRA_XRAY.md)**:
 
 ```bash
 python tools/jira/run.py --url https://jira.yourorg.com/browse/B2B-1234
