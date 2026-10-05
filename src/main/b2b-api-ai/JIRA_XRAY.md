@@ -66,29 +66,53 @@ print({k: ('set' if str(v).strip() else 'EMPTY') \
        for k, v in c.section('jira_config')[0].items()})"
 ```
 
-### Publishing to Xray
+### Publishing to Xray — and why it is not a PAT
 
-Separate mechanism, separate keys. `XrayClient` reads these through
-`Config`, so `application.properties`, `-D`, or env vars — **not**
-`jira_config`:
+**`XrayClient` supports Xray Cloud only.** It does
+`POST /api/v2/authenticate {"client_id","client_secret"}`, gets a JWT, and
+sends `Authorization: Bearer <jwt>`. So what it needs is an Xray **API key
+pair** (Xray → Settings → API Keys), not a personal access token.
 
-```properties
-xray.enabled=false          # master kill switch, OFF by default
-xray.baseUrl=https://xray.cloud.getxray.app
-xray.clientId=
-xray.clientSecret=
-xray.testExecutionKey=      # optional; omit and Xray makes a new execution
+> **If your Xray is Server / Data Center, this does not work yet.** Server
+> authenticates with a Jira PAT as a bearer token against a different
+> route, and there is no code path for it. `xray.token` is aliased in
+> `Config` but nothing reads it. Tell someone before planning around it.
+
+Put the pair in the **same gitignored file as the Jira PAT**, as a nested
+`xray` block. `Config` flattens `stg.xray.clientId` to `xray.clientId`,
+which is exactly the key `XrayClient` reads — verified, not assumed:
+
+```json
+"stg": {
+  "jira_config": { "pat": "<jira PAT>", "base_urls": ["https://jira.yourorg.com"] },
+  "xray": {
+    "enabled": "true",
+    "baseUrl": "https://xray.cloud.getxray.app",
+    "clientId": "<xray client id>",
+    "clientSecret": "<xray client secret>"
+  }
+}
 ```
 
-Put real values in `src/main/resources/application-local.properties`
-(gitignored) or pass them at the command line. Never commit them.
+One file, gitignored, nothing else to remember. The equivalents as
+`-Dxray.clientId=...` or `XRAY_CLIENTID=...` still work and take
+priority, which is what CI should use.
 
-> **`xray_api_config` in `program_configuration.json` is not enough.**
-> `Config` aliases only three of its keys — `xray_api_config.api_end_point`
-> → `xray.baseUrl`, `.token` → `xray.token`, `.testExecutionKey` →
-> `xray.testExecutionKey`. `XrayClient` authenticates with
-> **`xray.clientId` + `xray.clientSecret`** and never reads `xray.token`,
-> so filling in that block alone leaves the sync disabled.
+**Two places that look right and are not:**
+
+> **`xray_api_config` is not enough.** `Config` aliases only three of its
+> keys — `.api_end_point` → `xray.baseUrl`, `.token` → `xray.token`,
+> `.testExecutionKey` → `xray.testExecutionKey`. The credentials
+> `XrayClient` actually uses, `xray.clientId` and `xray.clientSecret`, are
+> **not** aliased, and `xray.token` is never read. Filling in that block
+> alone leaves the sync disabled.
+
+> **`application-local.properties` is not read.** `Config` loads
+> `application-{env}.properties` for the active env, which is `stg` here —
+> so `-local` applies only with `-Denv=local`. The name it *does* read,
+> `application-stg.properties`, used not to be gitignored, so the file
+> that worked was the one that would have been committed. Both are
+> ignored now, and `program_configuration.json` above is the answer.
 
 ---
 

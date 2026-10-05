@@ -1053,7 +1053,15 @@ mvn test "-Dgroups=demoshop" "-Ddemoshop.username=you@example.com" "-Ddemoshop.p
 $env:DEMOSHOP_USERNAME="you@example.com"; $env:DEMOSHOP_PASSWORD="your-pass"; mvn test "-Dgroups=demoshop"
 ```
 
-For persistent local override without committing anything: create `src/main/resources/application-local.properties` and add the two keys there — the file is gitignored.
+For persistent local override without committing anything, put the keys in **`src/main/resources/program_configuration.json`** (gitignored) as a nested `xray` block under your environment — `Config` flattens `stg.xray.clientSecret` to `xray.clientSecret`, which is the key `XrayClient` reads:
+
+```json
+"stg": {
+  "xray": { "enabled": "true", "clientId": "...", "clientSecret": "..." }
+}
+```
+
+> Earlier advice here named `application-local.properties`. That file is read **only when the active env is literally `local`** — `Config` loads `application-{env}.properties`, and `env=stg` here — so the keys were silently ignored. The name it *does* read, `application-stg.properties`, was not gitignored; both are now, so a secret cannot land in the file that works. See [JIRA_XRAY.md §1](JIRA_XRAY.md#1-set-it-up-once).
 
 ### Jira Xray Cloud — result sync driven by a datasheet column
 

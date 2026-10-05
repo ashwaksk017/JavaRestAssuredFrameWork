@@ -36,6 +36,19 @@ application-secret.properties
 application-local.properties
 src/main/resources/application-local.properties
 src/test/resources/application-local.properties
+# EVERY per-env overlay, not just `-local`. Config loads
+# `application-{env}.properties` for the ACTIVE env (`env=stg` here), so
+# `application-local.properties` is read only when env IS `local` --
+# which made the ignored name the one Config does not read, and the name
+# Config does read (`application-stg.properties`) committable. Anyone
+# putting xray.clientSecret in the file that actually works would have
+# published it. Contents, not the directory, so the negations below
+# still apply.
+src/main/resources/application-*.properties
+src/test/resources/application-*.properties
+# The committed, secret-free overlays. Already tracked; named so intent
+# is explicit and `git add` keeps working for them.
+!src/main/resources/application-qa.properties
 # Cursor agent key for ra_converter assist (copy from *.example)
 cursor_agent.json
 **/cursor_agent.json
