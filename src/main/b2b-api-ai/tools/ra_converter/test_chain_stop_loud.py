@@ -20,14 +20,26 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 SRC = open(os.path.join(HERE, "ra_converter.py"), encoding="utf-8").read()
+# The notifier itself lives in the bundled framework file: the
+# scenario base only delegates, because a --classic @Test does
+# not extend that base and needs the same implementation.
+FRAMEWORK = open(os.path.join(HERE, "framework",
+                              "ImportedScenario.java"),
+                 encoding="utf-8").read()
 
 GUARD = "Integer.parseInt(__stopAfter))"
 NOTIFY = "__noteStoppedEarly(__stopAfter, __restStepIdx)"
 
 
-def test_the_notifier_is_defined_once_on_the_shared_base():
+def test_the_notifier_is_defined_once_and_shared_by_both_modes():
+    """One declaration on the scenario base, one implementation in the
+    framework, and the base delegates. Two copies is the fault this
+    guards: the phase path and classic must record the same thing the
+    same way."""
     assert SRC.count("protected final void __noteStoppedEarly") == 1
-    assert "protected boolean __stoppedNoted;" in SRC
+    assert "ImportedScenario.noteStoppedEarly(" in SRC, (
+        "the base must delegate, not carry its own copy")
+    assert FRAMEWORK.count("public static void noteStoppedEarly") == 1
 
 
 def test_every_emitted_stop_guard_reports_itself():
@@ -48,16 +60,21 @@ def test_no_silent_early_return_survives():
 
 def test_the_notifier_only_fires_once_per_chain():
     """The guard trips on EVERY remaining phase. Without the latch a
-    25-phase chain would log the same warning 20 times."""
-    body = SRC.split("protected final void __noteStoppedEarly", 1)[1][:600]
-    assert "if (__stoppedNoted)" in body
-    assert "__stoppedNoted = true;" in body
+    25-phase chain would log the same warning 20 times.
+
+    The latch is the ctx marker rather than a boolean field. It was a
+    field, and that is precisely what put this out of reach of a @Test;
+    the marker is written either way, so it latches both modes."""
+    body = FRAMEWORK.split("public static void noteStoppedEarly", 1)[1][:700]
+    assert 'ctx.containsKey("__stoppedEarly")' in body, body[:200]
+    assert "return;" in body
 
 
 def test_the_notifier_records_where_reporting_can_see_it():
-    body = SRC.split("protected final void __noteStoppedEarly", 1)[1][:900]
+    body = FRAMEWORK.split("public static void noteStoppedEarly", 1)[1][:900]
     assert "LOG.warn" in body, "a skipped run must show in the log"
-    assert '__stoppedEarly' in body, "and in ctx for the reporting layer"
+    assert "__stoppedEarly" in body, "and in ctx for the reporting layer"
+    assert "Allure.step" in body, "and in the report"
     assert "Allure.step" in body, "and in the report tree"
 
 
