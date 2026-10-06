@@ -1148,29 +1148,6 @@ public class RestUtilities {
         return response.body().asString();
     }
 
-    /**
-     * Authorization header value for a raw or already-prefixed token.
-     *
-     * <p>The generated {@code *Client} classes have always inlined this
-     * ternary at every call site. {@code --classic} emits the header at
-     * the call site instead of inside a client, so the same rule needed a
-     * name rather than a fourth copy -- three spellings of "is it already
-     * a Bearer?" in a tree is how one of them ends up subtly different.</p>
-     *
-     * <p>Empty stays empty on purpose: a step that declares "No
-     * Authorization" sends no credential, and {@code "Bearer "} with
-     * nothing after it is a credential as far as the server is
-     * concerned -- it answers 401 for the wrong reason and the negative
-     * test passes without testing anything.</p>
-     */
-    public static String bearer(String token) {
-        if (token == null || token.isEmpty()) {
-            return "";
-        }
-        return token.startsWith("Bearer ") ? token : "Bearer " + token;
-    }
-
-
     public static boolean containsStringPattern(String pattern, Response response) {
         return response.body().asString().contains(pattern);
     }

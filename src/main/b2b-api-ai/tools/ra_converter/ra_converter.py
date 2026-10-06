@@ -8817,28 +8817,32 @@ public interface ImportedRestClient {{
                                   token_expr, query_entries, header_entries,
                                   template_expr, expected_status,
                                   needs_regen, poll_spec):
-        """One REST exchange as an inline RestAssured chain, or None.
+        """One REST exchange, performed inline, or None to keep RestStep.
 
-        None means "not eligible -- keep the RestStep emission", which is
-        how classic stays honest about its own coverage. A classic suite
-        that quietly skipped identity regen or a readiness poll would fail
-        intermittently, and the generated code would give the reader no
-        reason to suspect it.
+        The call site does the REQUEST and nothing else. Everything
+        around it -- identity regen, body and query resolution, the path
+        assert, readiness polls, the token cache and refresh, transient
+        retry, the response log, the status soft-assert with its per-row
+        `expected_<step>_status_code` override, the runtime extracts
+        later steps read -- is `RestStep.execute`, unchanged and shared
+        with the phase path.
 
-        The CALL is inline because that is what classic is for. Nothing
-        else is: the body/query resolution, the retry, and everything
-        after the response go through the same helpers the phase path
-        uses. A second implementation of those drifts, and the first
-        version of this method proved it -- it reimplemented two of the
-        five post-call steps and dropped the one chained steps depend on.
+        Stage 1 reimplemented the tail of that pipeline inline and got
+        two of its five post-call steps, silently dropping the one that
+        publishes `#<step>_Response_<field>#` into ctx. This keeps the
+        request visible, which is the whole point of classic, and copies
+        nothing.
         """
         reasons = []
-        if needs_regen:
-            reasons.append("identity regen")
-        if poll_spec:
-            reasons.append("readiness poll")
         if _is_salesforce_oauth_step(step):
             reasons.append("Salesforce OAuth form encoding")
+        elif self._is_salesforce_step(step):
+            # Broader than the OAuth check on purpose. The client emitter
+            # rewrites BOTH host and path for any Salesforce step --
+            # ReadyAPI stores those paths relative to a My Domain host --
+            # and classic does not reproduce that yet. Rendering inline
+            # anyway would route the call to baseUrl and report nothing.
+            reasons.append("Salesforce host/path rewrite")
         if step.attachments:
             reasons.append("multipart attachments")
         if reasons:
@@ -8848,31 +8852,20 @@ public interface ImportedRestClient {{
                 + ", ".join(reasons))
             return None
 
-        # `suf` keeps two uses of ONE step name apart, and the response
-        # var already carries it. It is not sufficient on its own:
-        # `to_camel_case` is lossy, so two DIFFERENT names that
-        # sanitize_identifier distinguishes can collapse to one
-        # identifier -- a convert failed on exactly that with
-        # `variable httpRequest2002Headers is already defined`. Bump
-        # until every derived name is free.
-        _kinds = ("RawQuery", "Query", "Headers", "Url", "Payload", "Step")
+        # Lossy camelCase can collapse two names sanitize_identifier keeps
+        # apart, so the base is bumped until every derived name is free.
+        _kinds = ("Url", "Step")
         _want = (to_camel_case(sid, upper_first=False) if sid else "step")
         _want = _want + (suf or "")
         base, _n = _want, 1
         while any((base + k) in self._locals_in_method for k in _kinds):
             _n += 1
             base = _want + str(_n)
-        q_raw = base + "RawQuery"
-        q_map = base + "Query"
-        h_var = base + "Headers"
-        url_var = base + "Url"
-        payload_var = base + "Payload"
-        step_var = base + "Step"
-        for v in (q_raw, q_map, h_var, url_var, payload_var, step_var):
-            self._locals_in_method.add(v)
+        for k in _kinds:
+            self._locals_in_method.add(base + k)
 
-        # Same routing the generated client uses. `Config.baseUrl()` is
-        # the fallback, exactly as `baseUrl` is there.
+        # Same routing the generated clients use; Config.baseUrl() is the
+        # fallback, exactly as `baseUrl` is there.
         svc_key, svc_base = _service_key_for_uri(
             getattr(step, "original_uri", "") or "")
         if svc_key:
@@ -8881,82 +8874,60 @@ public interface ImportedRestClient {{
         else:
             base_expr = "Config.baseUrl()"
 
+        verb_l = verb.lower()
         out = ["// ==== REST step (classic): " + step.step_name
                + "  (" + verb + " " + str(step.resource_path) + ") ===="]
-
-        if query_entries:
-            out.append("java.util.Map<String, String> " + q_raw
-                       + " = new java.util.LinkedHashMap<>();")
-            for qk, qv in query_entries:
-                out.append(q_raw + '.put("' + _jlit(qk) + '", "'
-                           + _jlit(qv) + '");')
-            # The same resolver the phase path uses -- resolveAll ->
-            # mapJsonValues -> resolveAll, with the empty-cell/"null"
-            # rule. Re-implementing that inline is how a classic tree
-            # would drift from the phase tree one placeholder at a time.
-            out.append("java.util.Map<String, String> " + q_map
-                       + " = RestStep.resolveQuery(row, ctx, " + q_raw + ");")
-
-        out.append("java.util.Map<String, String> " + h_var
-                   + " = Headers.builder()")
-        out.append("        .contentTypeJson()")
-        out.append("        .acceptJson()")
-        out.append('        .header("Authorization", RestUtilities.bearer('
-                   + token_expr + "))")
-        for hk, hv in header_entries:
-            out.append('        .header("' + _jlit(hk)
-                       + '", PlaceholderResolver.resolveAll("'
-                       + _jlit(hv) + '", ctx))')
-        out.append("        .correlationId()")
-        out.append("        .build();")
-
-        if template_expr:
-            out.append("String " + payload_var
-                       + " = PlaceholderResolver.resolveAll("
-                       + "RestUtilities.mapJsonValues("
-                       + "RestUtilities.getRequestTemplate(" + template_expr
-                       + "), ImportedScenario.mergedRow(row, ctx), false),"
-                       + " ctx);")
-
-        out.append("String " + url_var + " = PlaceholderResolver.resolveAll("
-                   + resolved_path_expr + ", ctx);")
-        out.append('RestUtilities.assertPathResolved("' + verb + '", "'
-                   + _jlit(sid) + '", ' + url_var + ", "
-                   + str(expected_status) + ");")
-
-        # Carries the per-row expected-status override and the step name
-        # into the post-call work, and records the resolved body so
-        # #<step>_RawRequest_<field># refs publish.
-        out.append("RestStep " + step_var + " = RestStep.exec(ctx, row, "
-                   "softAssert, holder, testCaseId)")
+        out.append("Response " + response_var + " = RestStep.exec("
+                   "ctx, row, softAssert, holder, testCaseId)")
         out.append('        .name("' + _jlit(sid) + '")')
-        out.append("        .expectedStatus(" + str(expected_status) + ")")
-        out.append("        .resolvedBody("
-                   + (payload_var if template_expr else '""') + ");")
-
-        # Retried the way every other exchange in this framework is. A
-        # 502 on the way to a 200 is not a test failure, and classic
-        # without this would be flakier than the phase path for no
-        # reason a reader could see.
-        out.append("Response " + response_var
-                   + " = RestUtilities.callWithTransientRetry(")
-        out.append('        "' + _jlit(sid) + '", 15000L, '
-                   + str(expected_status) + ", () ->")
-        out.append("        io.restassured.RestAssured.given()")
-        out.append("                .relaxedHTTPSValidation()")
-        out.append("                .headers(" + h_var + ")")
-        if query_entries:
-            out.append("                .queryParams(" + q_map + ")")
         if template_expr:
-            out.append("                .body(" + payload_var + ")")
-        out.append("            .when()")
-        out.append("                ." + verb.lower() + "(" + base_expr
-                   + " + " + url_var + "));")
-
-        # Log, status soft-assert (honouring expected_<step>_status_code),
-        # runtime extracts, raw-request refs, Salesforce id refresh.
-        out.append(step_var + '.after("' + verb + '", ' + url_var + ", "
-                   + response_var + ");")
+            out.append("        .template(" + template_expr + ")")
+        if needs_regen:
+            out.append("        .regenIdentity()")
+        for qk, qv in query_entries:
+            out.append('        .query("' + _jlit(qk) + '", "'
+                       + _jlit(qv) + '")')
+        for hk, hv in header_entries:
+            out.append('        .header("' + _jlit(hk) + '", "'
+                       + _jlit(hv) + '")')
+        out.append("        .expectedStatus(" + str(expected_status) + ")")
+        if poll_spec:
+            _pf, _key, _dflt = poll_spec
+            out.append('        .pollUntilJsonPresent("' + _jlit(_pf)
+                       + '", com.hi.api.config.Config.getInt("'
+                       + _jlit(_key) + '", ' + str(_dflt) + "))")
+        # The resolved url arrives as the 4th lambda argument: execute()
+        # already resolved, asserted and logged it, and resolving again
+        # here would be a second answer (faker tokens generate).
+        out.append("        ." + verb_l + "(" + resolved_path_expr
+                   + ", (body, q, h, url) ->")
+        out.append("                io.restassured.RestAssured.given()")
+        out.append("                        .relaxedHTTPSValidation()")
+        # Built inside the lambda: regenIdentity rewrites Properties.*
+        # before the body is built, and a map assembled above the builder
+        # would carry the pre-regen values.
+        out.append("                        .headers(Headers.builder()")
+        out.append("                                .contentTypeJson()")
+        out.append("                                .acceptJson()")
+        # bearerOnce, NOT Headers.Builder.bearer(): the ctx value already
+        # carries the scheme, and the unconditional one would send
+        # `Bearer Bearer ...` and 401 everything.
+        out.append('                                .header("Authorization", '
+                   "com.hi.api.auth.AuthUtilities.bearerOnce("
+                   + token_expr + "))")
+        out.append("                                .correlationId()")
+        # The resolved extra headers go through the SAME builder. Chaining
+        # `.headers(auth).headers(h)` on the spec would make auth depend on
+        # whether RestAssured merges or replaces a repeated headers(Map).
+        out.append("                                .all(h)")
+        out.append("                                .build())")
+        if query_entries:
+            out.append("                        .queryParams(q)")
+        if template_expr:
+            out.append("                        .body(body)")
+        out.append("                    .when()")
+        out.append("                        ." + verb_l + "(" + base_expr
+                   + " + url));")
         return out
 
     def _render_rest_step_body(self, step: RestStep, service_class_name: str) -> list[str]:

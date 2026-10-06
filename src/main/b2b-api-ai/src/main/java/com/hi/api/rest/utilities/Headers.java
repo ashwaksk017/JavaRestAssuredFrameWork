@@ -310,6 +310,25 @@ public final class Headers {
             return new LinkedHashMap<>(h);
         }
 
+        /**
+         * Add every entry of {@code extra}, overwriting on conflict.
+         *
+         * <p>For a call site that has framework headers of its own plus a
+         * resolved map from somewhere else. The alternative --
+         * {@code .headers(a).headers(b)} on the RestAssured spec -- turns
+         * on whether that library merges or replaces a repeated
+         * {@code headers(Map)}, which is not a thing authentication
+         * should depend on. One builder, one map, one call.</p>
+         */
+        public Builder all(Map<String, String> extra) {
+            if (extra != null) {
+                for (Map.Entry<String, String> e : extra.entrySet()) {
+                    set(e.getKey(), e.getValue());
+                }
+            }
+            return this;
+        }
+
         // ---- internals ----
 
         private Builder set(String name, String value) {

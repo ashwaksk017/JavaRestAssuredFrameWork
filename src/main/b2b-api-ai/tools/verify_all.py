@@ -127,6 +127,12 @@ CHECKS = [
     Check("method-name-length",
           [PY, "tools/ra_converter/test_method_name_length.py"],
           "emitted @Test names stay inside the path budget, camelCase, and unique after truncation"),
+    Check("classic-shape",
+          [PY, "tools/check_classic_shape.py"],
+          "every inline exchange routes through config, builds its "
+          "Authorization with the idempotent bearer, and merges headers "
+          "once -- all three of those got this wrong once and COMPILED, "
+          "so nothing else in the gate would have caught them"),
     Check("no-duplicate-methods",
           [PY, "tools/check_no_duplicate_methods.py"],
           "no emitted class declares the same method signature twice -- "

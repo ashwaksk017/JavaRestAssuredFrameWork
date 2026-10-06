@@ -89,6 +89,31 @@ public final class AuthUtilities {
         return "Bearer " + token;
     }
 
+    /**
+     * Authorization value for a token that may ALREADY carry the scheme.
+     *
+     * <p>{@link #bearer(String)} prefixes unconditionally, which is right
+     * for a raw credential. The converter stores the scheme with the
+     * token -- {@code putExtracted(ctx, "tokenId.GeneratedTokenID",
+     * "Bearer " + id)} -- so prefixing again sends
+     * {@code Bearer Bearer ...} and the server answers 401. Every
+     * generated {@code *Client} has carried this ternary inline for that
+     * reason; naming it keeps the two rules apart where they are easy to
+     * confuse.</p>
+     *
+     * <p>Empty stays empty: a step declaring "No Authorization" must send
+     * no credential, and {@code "Bearer "} with nothing after it is still
+     * a credential as far as the server is concerned -- it answers 401
+     * for the wrong reason and the negative test passes without testing
+     * anything.</p>
+     */
+    public static String bearerOnce(String token) {
+        if (token == null || token.isEmpty()) {
+            return "";
+        }
+        return token.startsWith("Bearer ") ? token : "Bearer " + token;
+    }
+
     public static String basic(String username, String password) {
         if (username == null || username.isBlank()) return null;
         String raw = username + ":" + (password == null ? "" : password);

@@ -71,6 +71,8 @@ public final class RestStep {
 
     private static final Logger LOG = LoggerFactory.getLogger(RestStep.class);
     private static final long DEFAULT_RETRY_DEADLINE_MS = 15_000L;
+    /** Set by the InlineExchange overloads; wins over `call` in execute. */
+    private InlineExchange inlineCall;
     /**
      * Characters of a request/response body to LOG. 0 (the default) means
      * the whole thing.
@@ -188,55 +190,6 @@ public final class RestStep {
     }
 
     /**
-     * Record the resolved request body for a call this class did not
-     * make.
-     *
-     * <p>{@code publishCsvRawRequestRefs} reads {@code lastResolvedBody()}
-     * to publish {@code #<step>_RawRequest_<field>#}, and
-     * {@code execute} sets it on its way through. A {@code --classic}
-     * call site builds the body itself, so without this the raw-request
-     * refs silently resolve against the PREVIOUS step's body -- which is
-     * worse than empty, because it is plausible.</p>
-     */
-    public RestStep resolvedBody(String body) {
-        LAST_RESOLVED_BODY.set(body == null ? "" : body);
-        return this;
-    }
-
-    /**
-     * Everything {@code execute} does after the exchange, for a response
-     * obtained elsewhere.
-     *
-     * <p>{@code --classic} emits the exchange inline as
-     * {@code given()...when().get(...)} so the HTTP call is readable in
-     * the test. That is the only part it should own. Logging, the
-     * status soft-assert (including the per-row
-     * {@code expected_<step>_status_code} override), the runtime
-     * extracts that later steps read, the raw-request refs and the
-     * Salesforce id refresh are not call-shape decisions, and a second
-     * copy of them drifts.</p>
-     *
-     * <p>Returns the response it was given, so a call site can write
-     * {@code Response r = step.after("GET", url, given()...get(url));}
-     * when that reads better.</p>
-     */
-    public Response after(String verb, String resolvedUrl, Response res) {
-        if (res == null) {
-            return null;
-        }
-        if (holder != null) {
-            RestUtilities.logResponseBody(
-                    testCaseId, holder, RestUtilities.getResponseAsString(res));
-        }
-        ResponseAsserts.statusFromStepColumn(
-                softAssert, res, row, stepName, expectedStatus);
-        captureRuntimeExtracts(verb, resolvedUrl, res);
-        publishCsvRawRequestRefs();
-        maybeRefreshSalesforceIdAfterActivate(verb, resolvedUrl, res);
-        return res;
-    }
-
-    /**
      * Expected status as {@code ResponseAsserts.statusFromStepColumn}
      * resolves it: the {@code expected_<step>_status_code} CSV column wins
      * over the builder value. Negative = no expectation.
@@ -307,6 +260,54 @@ public final class RestStep {
                       Map<String, String> extraHeaders) throws Exception;
     }
 
+    /**
+     * An exchange the CALL SITE performs, given everything this class
+     * resolved for it -- including the final URL.
+     *
+     * <p>{@code Exchange} exists for the generated clients: they take
+     * path arguments and build the URL themselves, so three parameters
+     * are enough. {@code --classic} writes the request where the test
+     * can read it and therefore needs the URL this class already
+     * resolved, asserted and logged -- recomputing it at the call site
+     * would be a second answer to the same question, and
+     * {@code resolveAll} is not free of side effects (faker tokens
+     * generate).</p>
+     *
+     * <p>A separate interface because every generated {@code *Client} in
+     * every converted tree implements the three-arg shape.</p>
+     */
+    @FunctionalInterface
+    public interface InlineExchange {
+        Response send(String body, Map<String, String> queryParams,
+                      Map<String, String> extraHeaders,
+                      String resolvedUrl) throws Exception;
+    }
+
+    public Response get(String path, InlineExchange call) throws Exception {
+        this.inlineCall = call;
+        return execute("GET", path, null);
+    }
+
+    public Response post(String path, InlineExchange call) throws Exception {
+        this.inlineCall = call;
+        return execute("POST", path, null);
+    }
+
+    public Response put(String path, InlineExchange call) throws Exception {
+        this.inlineCall = call;
+        return execute("PUT", path, null);
+    }
+
+    public Response patch(String path, InlineExchange call) throws Exception {
+        this.inlineCall = call;
+        return execute("PATCH", path, null);
+    }
+
+    public Response delete(String path, InlineExchange call) throws Exception {
+        this.inlineCall = call;
+        return execute("DELETE", path, null);
+    }
+
     public Response get(String path, Exchange call) throws Exception {
         return execute("GET", path, call);
     }
@@ -372,7 +373,7 @@ public final class RestStep {
     }
 
     private Response execute(String verb, String path, Exchange call) throws Exception {
-        if (call == null) {
+        if (call == null && inlineCall == null) {
             throw new IllegalArgumentException("RestStep." + verb + " requires an Exchange lambda");
         }
         if (regenIdentity) {
@@ -456,9 +457,16 @@ public final class RestStep {
                     return cached;
                 }
             }
+            final String urlForCall = resolvedUrl;
             java.util.function.Supplier<Response> exchange = () -> {
                 try {
-                    return call.send(bodyForCall, queryForCall, headersForCall);
+                    // Same pipeline either way. The only difference is
+                    // who performs the request: a generated client, or
+                    // the test itself.
+                    return inlineCall != null
+                            ? inlineCall.send(bodyForCall, queryForCall,
+                                              headersForCall, urlForCall)
+                            : call.send(bodyForCall, queryForCall, headersForCall);
                 } catch (RuntimeException re) {
                     throw re;
                 } catch (Exception e) {

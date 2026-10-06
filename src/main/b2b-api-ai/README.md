@@ -250,20 +250,47 @@ code is overridable per CSV row through the step's
 neither. `ResponseAsserts.statusFromStepColumn` is what the phase path
 calls and it honours both.
 
-A step needing identity regen, a readiness poll, Salesforce OAuth form
-encoding or multipart attachments keeps the `RestStep.exec` form and logs
-a `classic-fallback` finding in the audit. A chain that looked right but
-quietly skipped a readiness poll would fail intermittently with nothing
-in the generated code to suggest why.
+**Only the request is inline.** The call site supplies it and nothing
+else: identity regen, body and query resolution, the path assert,
+readiness polls, the token cache and refresh, transient retry, the
+response log, the status soft-assert and the runtime extracts later
+steps read are all `RestStep.execute`, unchanged and shared with the
+phase path. Classic reaches it through `InlineExchange`, a second
+functional interface whose lambda also receives the resolved url:
 
-Only the CALL is inline. Body and query resolution, the transient retry,
-and everything after the response -- the status soft-assert, the runtime
-extracts later steps read, the raw-request refs -- go through the same
-helpers the phase path uses (`RestStep.resolveQuery`, `.resolvedBody`,
-`.after`). The first version of this reimplemented the post-call work and
-got two of the five parts, dropping the one that publishes
-`#<step>_Response_<field>#` into ctx, which is what chained steps read.
-A second implementation of shared behaviour drifts; this one is a call.
+```java
+Response r = RestStep.exec(ctx, row, softAssert, holder, testCaseId)
+        .name("GET_Groups_Inventory").regenIdentity()
+        .query("startDate", "#Inputs_startDate#").expectedStatus(200)
+        .get(path, (body, q, h, url) -> given()
+                .relaxedHTTPSValidation()
+                .headers(Headers.builder().contentTypeJson().acceptJson()
+                        .header("Authorization", AuthUtilities.bearerOnce(token))
+                        .correlationId().all(h).build())
+                .queryParams(q)
+            .when().get(Config.serviceBase(...) + url));
+```
+
+An earlier cut reimplemented the work around the call instead and got
+two of its five post-call steps, silently dropping the one that
+publishes `#<step>_Response_<field>#` into ctx -- which is what chained
+steps read. A second implementation of shared behaviour drifts.
+
+Two details that look like style and are not. `AuthUtilities.bearerOnce`,
+never `bearer`: this converter stores the scheme WITH the token, so the
+unconditional one sends `Bearer Bearer ...` and the server answers 401.
+And one `.headers(...)` call with the extras merged in via
+`Headers.Builder.all(h)`, never `.headers(a).headers(b)`, which would
+leave authentication depending on whether RestAssured merges or replaces
+a repeated `headers(Map)`. `check_classic_shape` enforces both.
+
+A step whose request SHAPE classic does not reproduce keeps the
+`RestStep.exec` form and logs a `classic-fallback` finding: anything
+Salesforce (the client rewrites host AND path for those, because
+ReadyAPI stores the paths relative to a My Domain host) and multipart
+attachments. Falling back is the honest move -- rendering inline anyway
+routed Salesforce data calls at `baseUrl`, which compiles and reports
+nothing.
 
 **`_stop_after` is not honoured in classic.** Its guards need
 `__restStepIdx`, `__stopAfter` and `__noteStoppedEarly`, which live on the

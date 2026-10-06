@@ -298,5 +298,88 @@ class DanglingResponsesAreDeclared(unittest.TestCase):
         self.assertIn("classic-null-response", kinds)
 
 
+class ClassicFallsBackRatherThanGuess(unittest.TestCase):
+    """Rendering inline is only correct when classic reproduces what the
+    typed client would have done. Where it does not, the RestStep form
+    is kept and the reason is recorded.
+
+    The Salesforce case is the one that matters. `_is_salesforce_step`
+    (service names Salesforce) triggers a host AND path rewrite in the
+    client emitter, because ReadyAPI stores those paths relative to a My
+    Domain host. `_is_salesforce_oauth_step` is only the token POST.
+    Falling back for the narrow set alone sent Salesforce DATA calls to
+    baseUrl -- the wrong host, with nothing in the output saying so.
+    """
+
+    class _Step:
+        def __init__(self, service="", method_name="", resource_path="/x",
+                     attachments=()):
+            self.service = service
+            self.method_name = method_name
+            self.resource_path = resource_path
+            self.attachments = list(attachments)
+            self.step_name = "step"
+            self.original_uri = ""
+            self.http_method = "GET"
+
+    def _render(self, step):
+        e = rc.Emitter.__new__(rc.Emitter)
+
+        class _Ledger:
+            def __init__(self):
+                self.findings = []
+
+            def add_preflight_finding(self, sev, kind, case, msg):
+                self.findings.append((sev, kind, case, msg))
+
+        e.ledger = _Ledger()
+        e._locals_in_method = set()
+        e.classic_enabled = True
+        out = e._render_rest_call_classic(
+            step=step, sid="step", suf="", verb="GET",
+            resolved_path_expr='"/x"', response_var="stepRes",
+            token_expr='""', query_entries=[], header_entries=[],
+            template_expr=None, expected_status=200,
+            needs_regen=False, poll_spec=None)
+        return out, e.ledger.findings
+
+    def test_an_ordinary_step_renders_inline(self):
+        out, _ = self._render(self._Step())
+        self.assertIsNotNone(out, "nothing here needs the RestStep form")
+        self.assertTrue(any("RestAssured.given()" in l for l in out))
+
+    def test_a_salesforce_DATA_step_falls_back(self):
+        """The regression this class exists for: not an OAuth step, so
+        the narrow check passed it through to be routed at baseUrl."""
+        out, findings = self._render(
+            self._Step(service="Salesforce", method_name="getAccount",
+                       resource_path="/data/v55.0/sobjects/Account"))
+        self.assertIsNone(out, "a Salesforce step must keep RestStep")
+        self.assertTrue(any("host/path rewrite" in f[3] for f in findings),
+                        findings)
+
+    def test_a_salesforce_oauth_step_falls_back(self):
+        out, findings = self._render(
+            self._Step(service="Salesforce", method_name="auth",
+                       resource_path="/oauth2/token"))
+        self.assertIsNone(out)
+        self.assertTrue(any("OAuth" in f[3] for f in findings), findings)
+
+    def test_a_multipart_step_falls_back(self):
+        out, findings = self._render(
+            self._Step(attachments=[{"name": "f.pdf"}]))
+        self.assertIsNone(out)
+        self.assertTrue(any("multipart" in f[3] for f in findings), findings)
+
+    def test_regen_and_poll_no_longer_fall_back(self):
+        """Stage 2: both run through RestStep.execute now, so neither is
+        a reason to refuse. 3,503 and 844 findings respectively before."""
+        e_out, _ = self._render(self._Step())
+        self.assertIsNotNone(e_out)
+        out, findings = self._render(self._Step())
+        self.assertIsNotNone(out)
+        self.assertEqual(findings, [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
