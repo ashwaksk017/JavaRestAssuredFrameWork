@@ -19705,6 +19705,15 @@ def _run_post_emit_dataflow_check(args) -> None:
                   "and is lost with the rest of the setup. Every call in these "
                   "cases goes out unauthenticated -- see "
                   "tools/check_step_parity.py")
+    if _CLASSIC:
+        # The guard reads phase chains: it walks tests/imported and skips
+        # any file without `.start(row`, which classic never emits. On a
+        # classic tree it therefore inspects nothing and exits 0, and
+        # printing "passed" for that turns an empty scan into evidence.
+        print("[ra_converter] post-emit dataflow check: N/A for a "
+              "--classic tree -- the guard reads phase chains "
+              "(`.start(row`), which classic does not emit. NOT run.")
+        return
     print(f"[ra_converter] post-emit dataflow check [{mode}] ...")
     result = subprocess.run([sys.executable, guard, "--root", root])
     if result.returncode == 0:

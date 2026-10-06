@@ -262,6 +262,17 @@ class Destination(unittest.TestCase):
         self.assertIn("ReadyAPI XML", d)
         self.assertIn("overwrites", d)
 
+    def test_a_CLASSIC_generated_target_also_says_upstream(self):
+        """--classic emits into `.tests.classic.`, not `.tests.imported.`.
+
+        Without that root here, a classic test reads as hand-written and
+        this tells the user to edit a file the next convert overwrites.
+        No csv_path, so the `/csv/` fallback cannot mask it."""
+        d = sm.destination({"java_class_fqn":
+                            "com.hi.api.tests.classic.s.a.XTest"})
+        self.assertIn("ReadyAPI XML", d)
+        self.assertIn("overwrites", d)
+
     def test_a_hand_written_target_says_this_repository(self):
         d = sm.destination({"java_class_fqn": "com.hi.api.tests.jira.MyTest",
                             "csv_path": "csv/manual/MyTest/m.csv"})

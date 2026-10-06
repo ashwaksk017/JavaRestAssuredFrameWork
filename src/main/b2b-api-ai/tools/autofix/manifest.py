@@ -51,6 +51,10 @@ MANIFEST_ROOTS = (
     "src/main/resources/test_data_defaults",
     "src/main/resources/config",
     "src/test/java/com/hi/api/tests/imported",
+    # --classic emits here instead. Omitting it would drop every test
+    # class from a classic tree's manifest, so a convert that changed
+    # all of them would compare as "no code changed".
+    "src/test/java/com/hi/api/tests/classic",
     "src/test/resources/csv",
     "Suites",
 )
@@ -59,6 +63,7 @@ REPORT_ROOTS = ("_audit", "_flows")
 _SUITE_RX = re.compile(
     r"^(?:src/main/java/com/hi/api/support|"
     r"src/test/java/com/hi/api/tests/imported|"
+    r"src/test/java/com/hi/api/tests/classic|"
     r"src/main/resources/templates|"
     r"src/test/resources/csv|"
     r"_audit|_flows)/([^/]+)/")

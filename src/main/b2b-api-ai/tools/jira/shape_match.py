@@ -96,7 +96,9 @@ def destination(entry: dict) -> str:
     csv = (entry.get("csv_path") or "").replace("\\", "/")
     if "/csv/manual/" in f"/{csv}" or cls.startswith("com.hi.api.tests.jira."):
         return "this repository (hand-written test)"
-    if ".tests.imported." in cls or "/csv/" in f"/{csv}":
+    generated_root = (".tests.imported." in cls      # phase mode
+                      or ".tests.classic." in cls)    # --classic
+    if generated_root or "/csv/" in f"/{csv}":
         return ("ReadyAPI XML (generated: the next convert overwrites any "
                 "edit here, so the row belongs upstream in the suite's XML)")
     return "this repository (hand-written test)"
