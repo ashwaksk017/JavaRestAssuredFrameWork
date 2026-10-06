@@ -56,13 +56,18 @@ def classic_suites(root: str) -> list:
 # Only what the converter writes. `tests/imported/<suite>/...` is the
 # emitted tree; BaseApiTest and anything hand-written beside it are
 # author-owned and have their own reasons for the shape they use.
-EMITTED = os.sep + os.path.join("tests", "imported") + os.sep
+# Classic emits into tests/classic/; trees converted before that root
+# existed hold their classic suites under tests/imported/. Both are
+# generated, so both are in scope -- dropping the older one would make
+# this check silently vacuous on exactly the trees it was written for.
+EMITTED = tuple(os.sep + os.path.join("tests", r) + os.sep
+                for r in ("imported", "classic"))
 
 
 def test_files(root: str):
     base = os.path.join(root, "src", "test", "java")
     for dirpath, _d, files in os.walk(base):
-        if EMITTED not in dirpath + os.sep:
+        if not any(e in dirpath + os.sep for e in EMITTED):
             continue
         for fn in sorted(files):
             if fn.endswith("Test.java"):

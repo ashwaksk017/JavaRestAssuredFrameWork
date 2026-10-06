@@ -63,7 +63,8 @@ the other framework files alone; they are author-editable and skip-if-exists.
 
 `--clean` on a converter run **deletes**:
 
-- `src/test/java/com/hi/api/tests/imported/<suite>/`
+- `src/test/java/com/hi/api/tests/imported/<suite>/` (or
+  `tests/classic/<suite>/` when the tree was built with `--classic`)
 - `src/main/java/com/hi/api/support/<suite>/` (including generated `*Support`)
 - `src/test/resources/csv/<suite>/`
 - that suite’s templates, `_audit/<suite>/`, `_flows/<suite>/`
@@ -93,8 +94,8 @@ use one, it is an ordinary Java package segment, so:
 
 Two things it does **not** change:
 
-- **The CSV path.** Outside `tests.imported` the provider resolves by SIMPLE
-  CLASS NAME -- `csv/<SimpleClassName>/<methodName>.csv` -- so the area
+- **The CSV path.** Outside `tests.imported` / `tests.classic` the provider
+  resolves by SIMPLE CLASS NAME -- `csv/<SimpleClassName>/<methodName>.csv` -- so the area
   folder never appears in it. Two classes with the same simple name in
   different areas silently share one row folder. Keep simple names unique.
 - **Whether the suite finds it.** `testng-manual.xml` uses
@@ -200,9 +201,12 @@ Hand-written tests can also use TestNG XML / `-DdataFile=`:
 
 The provider looks at the test class FQN:
 
-- If the FQN contains `.tests.imported.`, the file is  
-  `csv/<everything after tests.imported.>/<methodName>.csv` (or `.xlsx` / `.json`)  
-  (package folders match Java packages.)
+- If the FQN contains `.tests.imported.` (phase mode) or `.tests.classic.`
+  (`--classic`), the file is  
+  `csv/<everything after that anchor>/<methodName>.csv` (or `.xlsx` / `.json`)  
+  (package folders match Java packages.) Both roots strip to the same
+  sub-path, so a suite's rows stay at `csv/<suite>/...` whichever mode
+  emitted them and nothing moves when you switch modes.
 - **Otherwise** (recommended for manual tests) the file is  
   `csv/<SimpleClassName>/<methodName>.csv` (or `.xlsx` / `.json`)
 
@@ -268,7 +272,8 @@ grep -n 'exec("' src/main/java/com/hi/api/dsl/CustomerOnboarding.java
 
 ### One caveat for manual tests
 
-Outside `tests.imported`, the provider resolves by **simple class name**
+Outside `tests.imported` / `tests.classic`, the provider resolves by
+**simple class name**
 (`getSimpleName()`), not by package. So two hand-written test classes with
 the same simple name in different packages resolve to the SAME
 `csv/<SimpleClassName>/` folder and would silently share row files. Keep

@@ -41,6 +41,12 @@ public final class PerMethodCsvDataProvider {
 
     private PerMethodCsvDataProvider() { }
 
+    /** Package roots a GENERATED test can live under, longest-lived first. */
+    private static final String[] ANCHORS = {
+        ".tests.imported.",
+        ".tests.classic.",
+    };
+
     @DataProvider(name = "rows")
     public static Object[][] rows(Method method) {
         String resourcePath = resolveResourcePath(method);
@@ -53,8 +59,21 @@ public final class PerMethodCsvDataProvider {
      */
     public static String resolveResourcePath(Method method) {
         String fqn = method.getDeclaringClass().getName();
-        String anchor = ".tests.imported.";
-        int idx = fqn.indexOf(anchor);
+        // Generated tests live under `.tests.imported.` (phase mode) or
+        // `.tests.classic.` (--classic). Both strip to the SAME sub-path,
+        // so a suite's rows stay at csv/<suite>/... whichever mode wrote
+        // them and no CSV moves when the mode changes. Anything with
+        // neither anchor is an author test; see below.
+        String anchor = null;
+        int idx = -1;
+        for (String candidate : ANCHORS) {
+            int at = fqn.indexOf(candidate);
+            if (at >= 0) {
+                anchor = candidate;
+                idx = at;
+                break;
+            }
+        }
         String subPath = (idx >= 0
                 ? fqn.substring(idx + anchor.length())
                 : method.getDeclaringClass().getSimpleName())

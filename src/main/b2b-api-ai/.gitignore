@@ -101,6 +101,11 @@ src/main/resources/test_data_defaults/
 src/main/resources/converter_identity.json
 src/main/resources/config/
 src/test/java/com/hi/api/tests/imported/
+# The --classic emit root. Same contents as tests/imported/ in every way
+# that matters here: generated test classes carrying customer-internal
+# data, in a PUBLIC repository. A new emit root that is not listed here
+# is tracked by default, which is how generated output gets published.
+src/test/java/com/hi/api/tests/classic/
 # Generated row files for the imported suites. These are NOT just build
 # output: they carry customer-internal data -- measured over 1,064 files,
 # 3,721 email addresses, 2,571 account/guest/confirmation ids, 685 vendor

@@ -6308,6 +6308,31 @@ def _entry_class_for(suite_name: str) -> str:
     return (_ENTRY_CLASS_BY_SUITE or {}).get(suite_name or "",
                                              _ENTRY_CLASS_NAME)
 
+
+# Sub-package under `<root>.tests.` that each emit mode writes into.
+# Phase and classic trees can then coexist in one project instead of one
+# wiping the other.
+_TESTS_ROOT_PHASE = "imported"
+_TESTS_ROOT_CLASSIC = "classic"
+# Every root a GENERATED test can live under. PerMethodCsvDataProvider
+# locates a test's CSV by finding `.tests.<root>.` in the class FQN and
+# treats anything else as an author test, so this list and the anchor
+# list in that template are one fact in two places -- a root added here
+# and not there makes every data-driven test in it silently receive zero
+# rows.
+_GENERATED_TESTS_ROOTS = (_TESTS_ROOT_PHASE, _TESTS_ROOT_CLASSIC)
+
+
+def _tests_root() -> str:
+    """`imported` for phase mode, `classic` for --classic.
+
+    Read off the module-level `_CLASSIC`, which main() sets before any
+    emission runs. A module function for the same reason
+    `_entry_class_for` is one: the name builders are exercised against
+    light stubs that have no Emitter.
+    """
+    return _TESTS_ROOT_CLASSIC if _CLASSIC else _TESTS_ROOT_PHASE
+
 _ID_HINTS = ("guestid", "accountid", "memberid", "hhonorsnumber",
              "hhonors_number", "partneraccountid", "customerid",
              "userid", "hilton_member_id", "hiltonmemberid")
@@ -12417,6 +12442,12 @@ public final class PerMethodCsvDataProvider {{
 
     private PerMethodCsvDataProvider() {{ }}
 
+    /** Package roots a GENERATED test can live under, longest-lived first. */
+    private static final String[] ANCHORS = {{
+        ".tests.imported.",
+        ".tests.classic.",
+    }};
+
     @DataProvider(name = "rows")
     public static Object[][] rows(Method method) {{
         // Derive CSV location from the calling class's FQN so the CSV
@@ -12424,8 +12455,21 @@ public final class PerMethodCsvDataProvider {{
         // strip the shared `.tests.imported.` prefix so paths stay
         // relative to the imported-tests root, then translate `.` -> `/`.
         String fqn = method.getDeclaringClass().getName();
-        String anchor = ".tests.imported.";
-        int idx = fqn.indexOf(anchor);
+        // Generated tests live under `.tests.imported.` (phase mode) or
+        // `.tests.classic.` (--classic). Both strip to the SAME sub-path,
+        // so a suite's rows stay at csv/<suite>/... whichever mode wrote
+        // them and no CSV moves when the mode changes. Anything with
+        // neither anchor is an author test; see below.
+        String anchor = null;
+        int idx = -1;
+        for (String candidate : ANCHORS) {{
+            int at = fqn.indexOf(candidate);
+            if (at >= 0) {{
+                anchor = candidate;
+                idx = at;
+                break;
+            }}
+        }}
         String subPath = (idx >= 0
                 ? fqn.substring(idx + anchor.length())
                 : method.getDeclaringClass().getSimpleName())
@@ -13243,10 +13287,11 @@ public final class PlaceholderResolver {{
         # buckets nest one level deeper into <suite>.<resource_slug>/ so
         # the file tree reads as a resource catalog.
         if subpackage_override:
-            pkg = (f"{self.package_root}.tests.imported."
+            pkg = (f"{self.package_root}.tests.{_tests_root()}."
                    f"{self.suite_name}.{subpackage_override}")
         else:
-            pkg = f"{self.package_root}.tests.imported.{self.suite_name}"
+            pkg = (f"{self.package_root}.tests.{_tests_root()}."
+                   f"{self.suite_name}")
         fqn_candidate = f"{pkg}.{class_name}"
         # Case-INSENSITIVE collision check.
         #
@@ -17547,7 +17592,8 @@ public final class Templates {{
         `bucket_manifest` -- list of {resource, class, fqn, method_count,
         multi_row_methods, case_count} dicts assembled by main().
         """
-        pkg_dir = f"src/test/java/{self.package_root.replace('.', '/')}/tests/imported/{self.suite_name}"
+        pkg_dir = (f"src/test/java/{self.package_root.replace('.', '/')}"
+                   f"/tests/{_tests_root()}/{self.suite_name}")
         rel = f"{pkg_dir}/README.md"
 
         # Group by resource for the section layout.
@@ -18728,7 +18774,8 @@ def _clean_suite_output(output_dir: str, suite_name: str, package_root: str,
     scoped to `suite_name`. Never deletes framework types in
     ``support/*.java`` or ``support/scenario/``."""
     import shutil, glob as _g
-    pkg_path = f"src/test/java/{package_root.replace('.', '/')}/tests/imported/{suite_name}"
+    pkg_path = (f"src/test/java/{package_root.replace('.', '/')}"
+                f"/tests/{_tests_root()}/{suite_name}")
     support_pkg_path = f"src/main/java/{package_root.replace('.', '/')}/support/{suite_name}"
     templates_pkg_path = f"src/main/java/{package_root.replace('.', '/')}/templates/{suite_name}"
     imported_pkg_dir = os.path.join(output_dir, pkg_path)
@@ -19340,13 +19387,20 @@ def _verify_emitted_suite_support(output_dir: str, package_root: str,
         # 11 of them, `programaccountregression` among them, produced zero
         # test classes. The support scaffolding is emitted from the suite
         # name; the tests come from its cases, so the two fail apart.
-        tests_dir = os.path.join(
-            output_dir, "src/test/java", package_root.replace(".", "/"),
-            "tests", "imported", suite)
+        # Count across EVERY generated root, not just the one this run
+        # writes: a tree may hold a phase suite and a classic suite side
+        # by side, and scoping this to the active mode would report the
+        # other one as emitting nothing and fail the convert on its
+        # behalf.
         n_tests = 0
-        if os.path.isdir(_fs_path(tests_dir)):
-            for _root, _dirs, _files in os.walk(_fs_path(tests_dir)):
-                n_tests += sum(1 for f in _files if f.endswith("Test.java"))
+        for _root_name in _GENERATED_TESTS_ROOTS:
+            tests_dir = os.path.join(
+                output_dir, "src/test/java", package_root.replace(".", "/"),
+                "tests", _root_name, suite)
+            if os.path.isdir(_fs_path(tests_dir)):
+                for _root, _dirs, _files in os.walk(_fs_path(tests_dir)):
+                    n_tests += sum(1 for f in _files
+                                   if f.endswith("Test.java"))
         flags.append(f"tests={n_tests if n_tests else 'NONE'}")
         if n_tests == 0:
             gap = True
@@ -20515,7 +20569,7 @@ def _report_generated_tree(args) -> None:
     support = os.path.abspath(os.path.join(
         args.output, "src", "main", "java", pkg, "support"))
     tests = os.path.abspath(os.path.join(
-        args.output, "src", "test", "java", pkg, "tests", "imported"))
+        args.output, "src", "test", "java", pkg, "tests", _tests_root()))
     n = 0
     for base, _dirs, files in os.walk(_fs_path(support)):
         n += sum(1 for f in files if f.endswith(".java"))

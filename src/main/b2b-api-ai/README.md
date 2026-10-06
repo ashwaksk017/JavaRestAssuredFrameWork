@@ -206,8 +206,18 @@ python tools/verify_all.py --full --baseline
 mvn test -DsuiteXmlFile=Suites/<Suite>_Regression.xml
 ```
 
-**Side by side.** One `--output` holds one mode (see the whole-tree note
-below), so to keep both, give classic its own tree:
+**Where classic lands.** `--classic` emits its test classes under
+`src/test/java/com/hi/api/tests/classic/<suite>/`; phase mode uses
+`tests/imported/<suite>/`. Rows do not move: `PerMethodCsvDataProvider`
+anchors on both roots and strips either to the same sub-path, so a
+suite's CSVs stay at `csv/<suite>/...` in both modes.
+
+**Side by side.** The separate root is NOT enough to run both modes from
+one tree. `support/scenario/ScenarioSteps.java` is shared across suites
+and its shape depends on the mode -- the two versions have different
+method sets, and the generated clients call into it -- so one `--output`
+still holds one mode and the converter refuses a mixed tree. To keep
+both, give classic its own tree:
 
 ```powershell
 python tools/ra_converter/ra_converter.py --input tools/ra_converter/input --output ..\classic-tree --package-root com.hi.api --data-dir "C:\path\to\workbooks" --classic --clean

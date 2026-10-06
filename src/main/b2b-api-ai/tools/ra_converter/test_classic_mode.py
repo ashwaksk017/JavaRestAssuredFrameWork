@@ -463,5 +463,60 @@ class StopAfterCountersAreDeclared(unittest.TestCase):
         self.assertIn('row.getOrDefault("_stop_after", "")', seed)
 
 
+class TheClassicTestsRoot(unittest.TestCase):
+    """`--classic` emits into `<root>.tests.classic.`, phase into
+    `<root>.tests.imported.`, so one tree can hold both instead of a
+    convert in one mode wiping the other."""
+
+    def setUp(self):
+        self._was = rc._CLASSIC
+        self.addCleanup(lambda: setattr(rc, "_CLASSIC", self._was))
+
+    def test_each_mode_has_its_own_root(self):
+        rc._CLASSIC = True
+        self.assertEqual(rc._tests_root(), "classic")
+        rc._CLASSIC = False
+        self.assertEqual(rc._tests_root(), "imported")
+
+    def test_phase_root_is_unchanged(self):
+        """Renaming the phase root would move every existing CSV."""
+        self.assertEqual(rc._TESTS_ROOT_PHASE, "imported")
+
+    def test_every_root_is_an_anchor_in_BOTH_java_copies(self):
+        """The one that fails silently.
+
+        PerMethodCsvDataProvider finds a test's CSV by locating
+        `.tests.<root>.` in the FQN; a root with no matching anchor is
+        read as an author test, looked up under csv/manual/, and every
+        data-driven method in it receives ZERO rows -- no error, no
+        failure at emit time, just empty runs.
+
+        Both copies are checked because the file is in
+        _AUTHOR_EDITABLE_BASENAMES: `_write` SKIPs it when it exists, so
+        the emitter template serves fresh trees and the tracked file
+        serves every tree already on disk. Updating one is the whole
+        bug."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        root = os.path.abspath(os.path.join(here, "..", ".."))
+        copies = {
+            "emitter template": os.path.join(here, "ra_converter.py"),
+            "tracked framework file": os.path.join(
+                root, "src", "main", "java", "com", "hi", "api", "data",
+                "PerMethodCsvDataProvider.java"),
+        }
+        for label, path in copies.items():
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+            for name in rc._GENERATED_TESTS_ROOTS:
+                # assertTrue, not assertIn: assertIn puts the whole
+                # haystack in the failure message, and the haystack here
+                # is a 400-line Java file.
+                self.assertTrue(
+                    '".tests.%s."' % name in text,
+                    "%s does not anchor on the `%s` root -- every "
+                    "data-driven test there would silently get no rows"
+                    % (label, name))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
