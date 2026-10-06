@@ -118,12 +118,19 @@ def faults_in(block: list) -> list:
                    "bearerOnce -- the unconditional bearer() sends "
                    "`Bearer Bearer ...` for a ctx token that already "
                    "carries the scheme")
-    # The host comes from config, never from the request.
-    if "Config.serviceBase(" not in text and "Config.baseUrl()" not in text:
-        out.append("no Config.serviceBase/baseUrl -- the call does not "
-                   "route through configuration")
-    m = LITERAL_HOST.search(text)
-    if m and "Config.serviceBase(" not in text:
+    # The host comes from configuration, never from the request. Three
+    # spellings are legitimate: the per-service base, the default, and
+    # the Salesforce endpoint -- ReadyAPI stores those paths relative to
+    # a My Domain host, so they route through sf_config instead.
+    routed = ("Config.serviceBase(" in text
+              or "Config.baseUrl()" in text
+              or 'Config.get("sf_config.api_end_point"' in text)
+    if not routed:
+        out.append("no Config.serviceBase / baseUrl / sf_config endpoint "
+                   "-- the call does not route through configuration")
+    # A recorded default INSIDE Config.serviceBase(key, default, ...) is
+    # not a hardcoded host: it is the fallback the converter recorded.
+    if LITERAL_HOST.search(text) and "Config.serviceBase(" not in text:
         out.append("a literal host is written into the request")
     # The resolved url arrives as the lambda's 4th argument; recomputing
     # it at the call site is a second answer to the same question.

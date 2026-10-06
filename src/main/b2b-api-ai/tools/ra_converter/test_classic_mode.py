@@ -348,15 +348,33 @@ class ClassicFallsBackRatherThanGuess(unittest.TestCase):
         self.assertIsNotNone(out, "nothing here needs the RestStep form")
         self.assertTrue(any("RestAssured.given()" in l for l in out))
 
-    def test_a_salesforce_DATA_step_falls_back(self):
-        """The regression this class exists for: not an OAuth step, so
-        the narrow check passed it through to be routed at baseUrl."""
+    def test_a_salesforce_DATA_step_routes_to_its_own_endpoint(self):
+        """Renders inline, but NOT at baseUrl. ReadyAPI stores
+        `/data/v55.0/...` while the live resource sits under `/services`
+        on the configured Salesforce endpoint; emitting the stored path
+        against baseUrl reached the wrong host and 404'd. The client has
+        carried this rewrite all along and classic carries the same
+        one."""
         out, findings = self._render(
             self._Step(service="Salesforce", method_name="getAccount",
                        resource_path="/data/v55.0/sobjects/Account"))
-        self.assertIsNone(out, "a Salesforce step must keep RestStep")
-        self.assertTrue(any("host/path rewrite" in f[3] for f in findings),
-                        findings)
+        self.assertIsNotNone(out, "a DATA step is renderable")
+        text = "\n".join(out)
+        self.assertIn('Config.get("sf_config.api_end_point", "")', text,
+                      "must not route at baseUrl")
+        self.assertIn("/services/data/v55.0/sobjects/Account", text,
+                      "the /services prefix is what the client adds")
+        self.assertNotIn("Config.serviceBase(", text,
+                         "serviceBase knows nothing about My Domain")
+
+    def test_a_salesforce_path_already_under_services_is_left_alone(self):
+        """Prefixing twice would be its own wrong host."""
+        out, _ = self._render(
+            self._Step(service="Salesforce", method_name="q",
+                       resource_path="/services/data/v55.0/query"))
+        text = "\n".join(out)
+        self.assertIn("/services/data/v55.0/query", text)
+        self.assertNotIn("/services/services/", text)
 
     def test_a_salesforce_oauth_step_falls_back(self):
         out, findings = self._render(
@@ -379,6 +397,70 @@ class ClassicFallsBackRatherThanGuess(unittest.TestCase):
         out, findings = self._render(self._Step())
         self.assertIsNotNone(out)
         self.assertEqual(findings, [])
+
+
+class StopAfterCountersAreDeclared(unittest.TestCase):
+    """`_stop_after` guards read `__restStepIdx` and `__stopAfter`,
+    which are FIELDS on the scenario base. A @Test has no fields, so
+    classic declares them as locals -- but only when the guards are
+    actually emitted, since an unused local is a warning in every build
+    that takes warnings seriously.
+
+    The first cut built its detection text from the setup block and
+    flow_java only. Verify bodies are 3-tuples and fell out of the
+    comprehension, so a case whose guards landed in a verify step got
+    the guards without the counters: 60 `cannot find symbol` errors in
+    one file.
+    """
+
+    def _emitter(self):
+        e = rc.Emitter.__new__(rc.Emitter)
+
+        class _L:
+            def add_preflight_finding(self, *a, **k):
+                pass
+
+        e.ledger = _L()
+        e._current_case = "c"
+        e._classic_start_java = ["this.aRes = x();"]
+        return e
+
+    def test_guards_in_a_flow_body_get_counters(self):
+        out = self._emitter()._classic_inline_body(
+            [("f", ["__restStepIdx++;"])], ())
+        self.assertTrue(any("__restStepIdx = 0" in l for l in out))
+
+    def test_guards_in_a_VERIFY_body_get_counters(self):
+        """The regression: verify bodies were not scanned."""
+        out = self._emitter()._classic_inline_body(
+            [("f", ["doThing();"])],
+            [("V", "m", ["__restStepIdx++;",
+                         'if (!__stopAfter.isEmpty()) { return; }'])])
+        self.assertTrue(any("__restStepIdx = 0" in l for l in out),
+                        "a guard in a verify body needs its counters too")
+        self.assertTrue(any("__stopAfter =" in l for l in out))
+
+    def test_guards_in_the_SETUP_block_get_counters(self):
+        e = self._emitter()
+        e._classic_start_java = ["this.aRes = x();", "__restStepIdx++;"]
+        out = e._classic_inline_body([("f", ["doThing();"])], ())
+        self.assertTrue(any("__restStepIdx = 0" in l for l in out))
+
+    def test_no_counters_when_no_guard_is_emitted(self):
+        """Declaring them unconditionally would put two unused locals in
+        every one of 1,195 methods."""
+        out = self._emitter()._classic_inline_body(
+            [("f", ["doThing();"])], [("V", "m", ["plain();"])])
+        self.assertFalse(any("__restStepIdx = 0" in l for l in out))
+
+    def test_the_seed_matches_the_scenario_base(self):
+        """`flow.__stopAfter = flow.row.getOrDefault("_stop_after", "")`
+        there; the same expression here, or the column means something
+        different depending on the emit mode."""
+        out = self._emitter()._classic_inline_body(
+            [("f", ["__restStepIdx++;"])], ())
+        seed = [l for l in out if "__stopAfter =" in l][0]
+        self.assertIn('row.getOrDefault("_stop_after", "")', seed)
 
 
 if __name__ == "__main__":

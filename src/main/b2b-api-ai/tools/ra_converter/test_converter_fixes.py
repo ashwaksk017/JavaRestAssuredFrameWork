@@ -2449,7 +2449,7 @@ def test_case_with_every_step_disabled_skips_instead_of_passing_empty():
 _FRAMEWORK_REVS = {
     "CtxFields.java": (11, "8f4899e1b5b55282"),
     "IdentityVocabulary.java": (2, "f2faba88c0f4a21f"),
-    "ImportedScenario.java": (27, "e151e1e7e9a49a02"),
+    "ImportedScenario.java": (28, "08a25b12acbf1b95"),
     "ImportedTemplates.java": (3, "69ed930f09be446a"),
     "ImportedTestdataCleanup.java": (4, "f7cff51999fd99a3"),
     "TestThreadState.java": (3, "03c9b17a164928af"),

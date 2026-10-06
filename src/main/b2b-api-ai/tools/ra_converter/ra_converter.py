@@ -8816,7 +8816,8 @@ public interface ImportedRestClient {{
                                   resolved_path_expr, response_var,
                                   token_expr, query_entries, header_entries,
                                   template_expr, expected_status,
-                                  needs_regen, poll_spec):
+                                  needs_regen, poll_spec,
+                                  path_param_names=(), path_args=()):
         """One REST exchange, performed inline, or None to keep RestStep.
 
         The call site does the REQUEST and nothing else. Everything
@@ -8836,13 +8837,11 @@ public interface ImportedRestClient {{
         reasons = []
         if _is_salesforce_oauth_step(step):
             reasons.append("Salesforce OAuth form encoding")
-        elif self._is_salesforce_step(step):
-            # Broader than the OAuth check on purpose. The client emitter
-            # rewrites BOTH host and path for any Salesforce step --
-            # ReadyAPI stores those paths relative to a My Domain host --
-            # and classic does not reproduce that yet. Rendering inline
-            # anyway would route the call to baseUrl and report nothing.
-            reasons.append("Salesforce host/path rewrite")
+        # A Salesforce DATA step is handled below: same /services
+        # prefix and configured endpoint the client would have used.
+        # Only the token POST still falls back -- it routes to the JWT
+        # `aud` host and needs form encoding, which is a different
+        # request shape rather than a different base.
         if step.attachments:
             reasons.append("multipart attachments")
         if reasons:
@@ -8866,13 +8865,32 @@ public interface ImportedRestClient {{
 
         # Same routing the generated clients use; Config.baseUrl() is the
         # fallback, exactly as `baseUrl` is there.
-        svc_key, svc_base = _service_key_for_uri(
-            getattr(step, "original_uri", "") or "")
-        if svc_key:
-            base_expr = ('Config.serviceBase("' + svc_key + '", "'
-                         + _jlit(svc_base or "") + '", Config.baseUrl())')
+        path_expr = resolved_path_expr
+        if self._is_salesforce_step(step):
+            # ReadyAPI stores `/data/v55.0/...` but the live resource is
+            # under `/services` on the configured Salesforce endpoint.
+            # Emitting baseUrl + the stored path reached the wrong host
+            # and 404'd -- the client has carried this rewrite for that
+            # reason, and classic has to carry the same one.
+            sf_path = str(step.resource_path or "")
+            if not sf_path.startswith("/services") and (
+                    sf_path.startswith("/data/")
+                    or sf_path.startswith("/oauth2/")):
+                sf_path = "/services" + sf_path
+            path_expr = '"' + _jlit(sf_path) + '"'
+            for i, pname in enumerate(path_param_names or ()):
+                arg = (path_args or ())[i]
+                path_expr = (path_expr + '.replace("{' + pname + '}", ('
+                             + arg + ') == null ? "" : (' + arg + '))')
+            base_expr = 'Config.get("sf_config.api_end_point", "")'
         else:
-            base_expr = "Config.baseUrl()"
+            svc_key, svc_base = _service_key_for_uri(
+                getattr(step, "original_uri", "") or "")
+            if svc_key:
+                base_expr = ('Config.serviceBase("' + svc_key + '", "'
+                             + _jlit(svc_base or "") + '", Config.baseUrl())')
+            else:
+                base_expr = "Config.baseUrl()"
 
         verb_l = verb.lower()
         out = ["// ==== REST step (classic): " + step.step_name
@@ -8899,7 +8917,7 @@ public interface ImportedRestClient {{
         # The resolved url arrives as the 4th lambda argument: execute()
         # already resolved, asserted and logged it, and resolving again
         # here would be a second answer (faker tokens generate).
-        out.append("        ." + verb_l + "(" + resolved_path_expr
+        out.append("        ." + verb_l + "(" + path_expr
                    + ", (body, q, h, url) ->")
         out.append("                io.restassured.RestAssured.given()")
         out.append("                        .relaxedHTTPSValidation()")
@@ -9267,7 +9285,8 @@ public interface ImportedRestClient {{
                 response_var=response_var, token_expr=token_expr,
                 query_entries=query_entries, header_entries=header_entries,
                 template_expr=template_expr, expected_status=expected_status,
-                needs_regen=needs_regen, poll_spec=poll_spec)
+                needs_regen=needs_regen, poll_spec=poll_spec,
+                path_param_names=path_param_names, path_args=path_args)
             if __classic is not None:
                 lines[__classic_mark:] = __classic
 
@@ -13588,7 +13607,17 @@ public class {class_name} extends BaseApiTest {{
         start_steps, flow_groups, verify_groups = group_flow_and_verify(
             steps_to_render, self._phase_label_for_step)
 
+        # A @Test is void and extends BaseApiTest, so it can neither
+        # `return this` nor reach the scenario base's protected notifier.
+        # Same guard, reachable form.
+        _classic = getattr(self, "classic_enabled", False)
+        _stop_note = ("ImportedScenario.noteStoppedEarly(ctx, __stopAfter, "
+                      "__restStepIdx);" if _classic
+                      else "__noteStoppedEarly(__stopAfter, __restStepIdx);")
+
         def render_group(gsteps, early_return="return this;"):
+            if _classic:
+                early_return = "return;"
             lines: list[str] = []
             for step in gsteps:
                 lines.extend(self._render_step(step, service_class_name))
@@ -13597,7 +13626,7 @@ public class {class_name} extends BaseApiTest {{
                     lines.append(
                         "if (!__stopAfter.isEmpty() && __restStepIdx >= "
                         "Integer.parseInt(__stopAfter)) { "
-                        "__noteStoppedEarly(__stopAfter, __restStepIdx); "
+                        f"{_stop_note} "
                         f"{early_return} }}")
                 lines.append("")
             return rewrite_response_to_fields(lines)
@@ -14832,7 +14861,6 @@ public abstract class ScenarioSteps<S extends ScenarioSteps<S>> {{
     protected String testCaseId;
     protected int __restStepIdx;
     protected String __stopAfter;
-    protected boolean __stoppedNoted;
 {phase_fields}{resp_decls}
 
     protected ScenarioSteps(ImportedRestClient client,
@@ -14934,22 +14962,11 @@ public abstract class ScenarioSteps<S extends ScenarioSteps<S>> {{
      * the fields here, so reading them from this frame would see "".
      */
     protected final void __noteStoppedEarly(String stopAfter, int idx) {{
-        if (__stoppedNoted) {{
-            return;
-        }}
-        __stoppedNoted = true;
-        String detail = "chain stopped early at REST step " + idx
-                + " (_stop_after=" + stopAfter + "); later phases were skipped";
-        LOG.warn(" .. {{}}", detail);
-        if (ctx != null) {{
-            ctx.put("__stoppedEarly", String.valueOf(idx));
-            ctx.put("__stoppedEarlyDetail", detail);
-        }}
-        try {{
-            io.qameta.allure.Allure.step("stopped early: " + detail);
-        }} catch (Throwable ignored) {{
-            // reporting must never fail a test
-        }}
+        // One implementation, in ImportedScenario, because a --classic
+        // @Test cannot reach a protected member of this class and has to
+        // record the same thing the same way.
+        com.hi.api.support.ImportedScenario.noteStoppedEarly(
+                ctx, stopAfter, idx);
     }}
 
     public static ScenarioSteps<?> current() {{
@@ -15953,6 +15970,22 @@ public final class {support_name} {{
         out = []
         start = getattr(self, "_classic_start_java", None)
         self._classic_start_java = None
+        # `_stop_after` guards read these. They are FIELDS on the
+        # scenario base; a @Test has none, so they are locals here --
+        # seeded exactly as the base seeds them.
+        # EVERY body that gets inlined, verifies included. They are
+        # 3-tuples, which is how they fell out of this the first time:
+        # the guards were emitted into a verify step and the counters
+        # they read were not declared.
+        _all_bodies = [list(start or [])]
+        _all_bodies += [list(b) for _f, b in flow_java]
+        _all_bodies += [list(b) for _c, _m, b in (verify_java or ())]
+        body_text = "\n".join(l for b in _all_bodies for l in b)
+        if "__restStepIdx" in body_text or "__stopAfter" in body_text:
+            out.append("int __restStepIdx = 0;")
+            out.append('String __stopAfter = (row == null) ? "" '
+                       ': row.getOrDefault("_stop_after", "");')
+            out.append("")
         if start:
             out.append("// ---- setup (inlined: classic emits no scenario "
                        "class) ----")
@@ -15976,6 +16009,10 @@ public final class {support_name} {{
     # sanitize_identifier produce for a step's response local.
     _RES_REF_RX = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*Res\d*)\b")
     _STRLIT_RX = re.compile(r'"(?:[^"\\]|\\.)*"')
+    # `Response fooRes = ...` / `Response fooRes;` -- a declaration that
+    # did not come through the field rewrite.
+    _RES_DECL_RX = re.compile(
+        r"^\s*Response\s+([A-Za-z_][A-Za-z0-9_]*)\s*[=;]", re.M)
 
     def _classic_declare_dangling_responses(self, lines: list,
                                             declared: set) -> list:
@@ -15989,6 +16026,11 @@ public final class {support_name} {{
         difference, and not to paper over one either, hence the note in
         the generated code and the finding in the audit.
         """
+        # Anything already declared in these lines counts, however it
+        # got there -- `declared` only carries what the field-to-local
+        # rewrite touched.
+        declared = set(declared) | set(
+            self._RES_DECL_RX.findall("\n".join(lines)))
         seen = []
         for line in lines:
             bare = self._STRLIT_RX.sub('""', line)
@@ -16078,19 +16120,6 @@ public final class {support_name} {{
         self._reset_per_method_state()
         stop_markers = stop_markers or {}
         emit_stop_checks = bool(stop_markers)
-        if emit_stop_checks and self.classic_enabled:
-            # The guards read `__restStepIdx` / `__stopAfter` and call
-            # `__noteStoppedEarly`, all of which live on the scenario
-            # base. A @Test extends BaseApiTest, so inlining them does
-            # not compile. `_stop_after` is a triage aid, not a
-            # correctness feature -- losing it loudly beats emitting a
-            # tree that cannot build, and beats dropping it in silence.
-            emit_stop_checks = False
-            self.ledger.add_preflight_finding(
-                "MEDIUM", "classic-no-stop-after", case.name,
-                "the `_stop_after` CSV column is ignored for this case: "
-                "its guards need the scenario base that classic does not "
-                "emit. Convert this suite without --classic to use it.")
         support_name, record_name, flow_java, verify_java = self._emit_fluent_support(
             case, service_class_name, method_name,
             emit_stop_checks, cluster_size)

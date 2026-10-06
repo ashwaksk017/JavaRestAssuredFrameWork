@@ -1,6 +1,6 @@
 package com.hi.api.support;
 
-// ra_converter-framework-rev: 27
+// ra_converter-framework-rev: 28
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -54,6 +54,39 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * them back in {@code complete()}.</p>
  */
 public final class ImportedScenario {
+
+    /**
+     * Record that a chain stopped early because of {@code _stop_after}.
+     *
+     * <p>Shared because both emit modes need it and neither should own
+     * a copy: the phase path calls it from the scenario base, and a
+     * {@code --classic} @Test calls it directly -- that base is exactly
+     * what classic does not extend, which is why the feature used to be
+     * switched off for it.</p>
+     *
+     * <p>The "already noted" flag lives in ctx rather than a field. A
+     * field is what made this unreachable from a @Test in the first
+     * place, and the marker is written to ctx regardless.</p>
+     */
+    public static void noteStoppedEarly(java.util.Map<String, String> ctx,
+                                        String stopAfter, int idx) {
+        if (ctx != null && ctx.containsKey("__stoppedEarly")) {
+            return;
+        }
+        String detail = "chain stopped early at REST step " + idx
+                + " (_stop_after=" + stopAfter + "); later phases were skipped";
+        LOG.warn(" .. {}", detail);
+        if (ctx != null) {
+            ctx.put("__stoppedEarly", String.valueOf(idx));
+            ctx.put("__stoppedEarlyDetail", detail);
+        }
+        try {
+            io.qameta.allure.Allure.step("stopped early: " + detail);
+        } catch (Throwable ignored) {
+            // reporting must never fail a test
+        }
+    }
+
 
     private static final Logger LOG = LoggerFactory.getLogger(ImportedScenario.class);
     private static final ObjectMapper JSON = new ObjectMapper();

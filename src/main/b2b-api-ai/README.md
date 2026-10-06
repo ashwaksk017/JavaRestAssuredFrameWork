@@ -284,19 +284,33 @@ And one `.headers(...)` call with the extras merged in via
 leave authentication depending on whether RestAssured merges or replaces
 a repeated `headers(Map)`. `check_classic_shape` enforces both.
 
-A step whose request SHAPE classic does not reproduce keeps the
-`RestStep.exec` form and logs a `classic-fallback` finding: anything
-Salesforce (the client rewrites host AND path for those, because
-ReadyAPI stores the paths relative to a My Domain host) and multipart
-attachments. Falling back is the honest move -- rendering inline anyway
-routed Salesforce data calls at `baseUrl`, which compiles and reports
-nothing.
+Salesforce DATA steps render inline with their own routing: ReadyAPI
+stores `/data/v55.0/...` while the live resource sits under `/services`
+on `sf_config.api_end_point`, and classic applies the same rewrite the
+client does. Emitting the stored path against `baseUrl` reached the
+wrong host, compiled, and reported nothing -- which is why
+`check_classic_shape` now treats "the host comes from configuration" as
+an invariant rather than a convention.
 
-**`_stop_after` is not honoured in classic.** Its guards need
-`__restStepIdx`, `__stopAfter` and `__noteStoppedEarly`, which live on the
-scenario base a `@Test` does not extend. The convert says so per case
-(`classic-no-stop-after` in the audit) rather than dropping it in
-silence. Convert that suite without `--classic` if you need the column.
+**Two things keep the `RestStep` + typed-client form, deliberately.**
+Both log a `classic-fallback` finding saying which:
+
+* the Salesforce OAuth token POST. It routes to the JWT `aud` host via
+  `SalesforceAuth.tokenEndpointBase(form)`, which MUTATES the form map
+  to fill `grant_type` / `assertion`, and the chain depends on when that
+  mutation lands relative to `.formParams(...)`. The client form is
+  known to work; reproducing that ordering inline cannot be verified
+  without a live Salesforce, and getting it wrong fails authentication
+  silently. Not worth it for 31 steps.
+* multipart attachments, which need a `.multiPart(...)` per file rather
+  than a body.
+
+`_stop_after` IS honoured in classic. Its guards used to need
+`__noteStoppedEarly`, protected on the scenario base a `@Test` does not
+extend; that moved to `ImportedScenario.noteStoppedEarly` and the base
+now delegates to it, so both modes run one implementation. The two
+counters it reads are fields there and locals here, declared only in the
+methods that actually emit a guard.
 
 #### Verifying a classic tree
 
