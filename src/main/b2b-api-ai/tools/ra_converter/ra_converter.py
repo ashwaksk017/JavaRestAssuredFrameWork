@@ -7749,11 +7749,13 @@ public interface ImportedRestClient {{
         verb_call = verb.lower()
         if verb == "GET":
             call = ('Response res = RestAssured.given()\n'
+                    '                .relaxedHTTPSValidation()\n'
                     '                .headers(headers)\n'
                     f'                {query_chain}\n'
                     f'                .get({base_expr} + path);')
         elif verb == "DELETE":
             call = ('Response res = RestAssured.given()\n'
+                    '                .relaxedHTTPSValidation()\n'
                     '                .headers(headers)\n'
                     f'                {query_chain}\n'
                     f'                .delete({base_expr} + path);')
@@ -7766,12 +7768,14 @@ public interface ImportedRestClient {{
             # (it never saw the assertion on the query string).
             if force_urlenc and takes_query:
                 call = ('Response res = RestAssured.given()\n'
+                        '                .relaxedHTTPSValidation()\n'
                         '                .headers(headers)\n'
                         f'                {content_chain}\n'
                         '                .formParams(queryParams)\n'
                         f'                .{verb_call}({base_expr} + path);')
             else:
                 call = ('Response res = RestAssured.given()\n'
+                        '                .relaxedHTTPSValidation()\n'
                         '                .headers(headers)\n'
                         f'                {content_chain}\n'
                         f'                {query_chain}\n'
@@ -8396,6 +8400,7 @@ public interface ImportedRestClient {{
                 f'"{_jlit(step.step_name)}", {url_var});')
             lines.append(
                 f'Response {resp_var} = io.restassured.RestAssured.given()'
+                f'.relaxedHTTPSValidation()'
                 f'.contentType("{step.media_type}")'
                 f'.body({payload_var})'
                 f'.post({url_var});')
@@ -8453,6 +8458,7 @@ public interface ImportedRestClient {{
                 body_chain = ""
             lines.append(
                 f'Response {resp_var} = io.restassured.RestAssured.given()'
+                f'.relaxedHTTPSValidation()'
                 f'.contentType("{step.media_type}"){body_chain}'
                 f'.{verb}({url_var});')
             lines.append(

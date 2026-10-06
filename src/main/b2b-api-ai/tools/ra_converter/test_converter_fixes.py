@@ -3278,6 +3278,41 @@ def test_bootstrap_seeds_an_empty_config_and_never_overwrites_a_real_one():
             "not recoverable from anywhere else in the repo")
 
 
+def test_every_emitted_call_relaxes_tls():
+    """The generated clients never called relaxedHTTPSValidation.
+
+    RestUtilities.baseRequest(), AuthUtilities, XrayClient and
+    GitLabClient always have. The clients -- which carry essentially all
+    of a converted suite's traffic -- did not, and nobody noticed until a
+    machine stopped trusting the service CA and a 2,283-second run came
+    back with 284 `PKIX path building failed` and zero passes. The
+    framework's own calls would have gone straight through, which is what
+    made it look like a converter regression.
+
+    Asserted at every site that builds a request, because the fault was
+    not a wrong call -- it was a missing one in four branches nobody
+    compared against the two that had it.
+    """
+    src = open(os.path.join(HERE, "ra_converter.py"), encoding="utf-8").read()
+    # the client emitter: one per verb branch
+    client_calls = src.count("Response res = RestAssured.given()")
+    client_relaxed = src.count(
+        "'                .relaxedHTTPSValidation()")
+    assert client_calls >= 4, client_calls
+    assert client_relaxed == client_calls, (
+        "%d client call branch(es) but %d relax TLS -- a branch that "
+        "skips it fails only on a machine that does not already trust "
+        "the CA" % (client_calls, client_relaxed))
+
+    # the inline SOAP/XML calls have the same exposure
+    inline = src.count("io.restassured.RestAssured.given()")
+    inline_relaxed = src.count(".relaxedHTTPSValidation()")
+    assert inline >= 2, inline
+    assert inline_relaxed >= inline, (
+        "%d inline given() site(s) but only %d relax TLS"
+        % (inline, inline_relaxed))
+
+
 def test_script_runner_is_the_last_thing_in_this_file():
     """verify_all runs this file as a SCRIPT, not under pytest.
 
