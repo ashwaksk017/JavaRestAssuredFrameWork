@@ -31,7 +31,24 @@
 
   "scenario": {
     "_comment": "The class a hand-written test calls to start a chain: <entry_class>.start(row, \"<case id>\"). Default Onboarding, which is what the B2B projects are. Set it per project -- a GOAL project uses GoalJourney so a goal test does not read as onboarding. Must be a Java identifier.",
-    "entry_class": "Onboarding"
+    "entry_class": "Onboarding",
+    "_comment_by_suite": "Per-suite override, for a tree that holds more than one project: this one has 14 GOAL suites and 15 B2B, and entry_class alone forces a single name on both. Keyed by the suite name derived from the XML basename (lowercased, non-alphanumeric to _), so InventorySTAGE.xml is inventorystage. Unlisted suites use entry_class.",
+    "entry_class_by_suite": {
+      "adhocstage": "GoalJourney",
+      "amadeusonestepstage": "GoalJourney",
+      "group360createstage": "GoalJourney",
+      "group360shopstage": "GoalJourney",
+      "groupsdatastage": "GoalJourney",
+      "inventorystage": "GoalJourney",
+      "mfrstage": "GoalJourney",
+      "pepmeetingdetailsstage": "GoalJourney",
+      "partialgoalregression": "GoalJourney",
+      "roomblocksstage": "GoalJourney",
+      "roomratesstage": "GoalJourney",
+      "roomingliststage": "GoalJourney",
+      "topicapistage": "GoalJourney",
+      "smokeprod": "GoalJourney"
+    }
   },
 
   "project": {

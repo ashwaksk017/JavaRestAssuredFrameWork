@@ -337,6 +337,25 @@ public final class RestStep {
                                                    Map<String, String> ctx,
                                                    Map<String, String> raw)
             throws Exception {
+        // Headers keep every key: one this converter emits was declared
+        // explicitly in the recording, not filled from a data sheet.
+        return resolveQuery(row, ctx, raw, false);
+    }
+
+    /**
+     * @param dropEmpty omit a parameter that resolves to empty, the way
+     *                  ReadyAPI omits one whose property is not set. The
+     *                  GOAL sheets rely on it: a blank cell under
+     *                  {@code ignoreEmpty=true} means "no filter", and
+     *                  sending {@code propCode=} fails the service's
+     *                  pattern check exactly as {@code propCode=null}
+     *                  did.
+     */
+    public static Map<String, String> resolveQuery(Map<String, String> row,
+                                                   Map<String, String> ctx,
+                                                   Map<String, String> raw,
+                                                   boolean dropEmpty)
+            throws Exception {
         Map<String, String> out = new LinkedHashMap<>();
         if (raw == null || raw.isEmpty()) return out;
         Map<String, String> merged = ImportedScenario.mergedRow(row, ctx);
@@ -356,6 +375,17 @@ public final class RestStep {
                     && (expr.isBlank() || resolved.isBlank()
                     || "null".equalsIgnoreCase(mapped.trim()))) {
                 value = "";
+            }
+            if (dropEmpty && (value == null || value.isEmpty())
+                    && !Config.getBool("test.sendEmptyQueryParams", false)) {
+                // Not sent at all. ReadyAPI does not put an unset
+                // property on the query string, and an empty value is
+                // rejected by the same pattern check that rejected
+                // "null" -- so keeping the key only changes which wrong
+                // thing we send.
+                LOG.debug(" .. [query] omitting `{}` -- resolved empty "
+                        + "(ReadyAPI would not send it)", e.getKey());
+                continue;
             }
             out.put(e.getKey(), value == null ? "" : value);
         }
@@ -411,7 +441,7 @@ public final class RestStep {
         }
         LAST_RESOLVED_BODY.set(body);
 
-        Map<String, String> query = resolveQuery(row, resolveCtx, rawQuery);
+        Map<String, String> query = resolveQuery(row, resolveCtx, rawQuery, true);
         Map<String, String> headers = resolveQuery(row, resolveCtx, rawHeaders);
         String resolvedUrl = fillTrailingSalesforceId(
                 PlaceholderResolver.resolveAll(path == null ? "" : path, resolveCtx));

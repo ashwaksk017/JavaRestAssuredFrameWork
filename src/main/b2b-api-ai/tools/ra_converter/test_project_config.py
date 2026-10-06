@@ -74,6 +74,11 @@ def test_emitter_tables_equal_defaults_before_apply():
     ident = cc.DEFAULTS["identity"]
     proj = cc.DEFAULTS["project"]
     assert rc._ENTRY_CLASS_NAME == cc.DEFAULTS["scenario"]["entry_class"]
+    # Per-suite overrides default to EMPTY, so a tree with no
+    # config emits exactly the project-wide name -- the whole
+    # "a no-config run is byte-identical" claim rests on this.
+    assert rc._ENTRY_CLASS_BY_SUITE == cc.DEFAULTS["scenario"][
+        "entry_class_by_suite"]
     assert rc._REGEN_TRIGGER_KEYS == frozenset(ident["regen_trigger_keys"])
     assert tuple(rc._ID_HINTS) == tuple(ident["id_hint_fields"])
     assert rc._PATH_ID_PARAM_NAMES == frozenset(ident["id_param_names"])

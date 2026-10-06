@@ -6285,6 +6285,28 @@ _ABSENT_OPS = ("not exists", "notexists", "not-exists", "absent", "null", "is nu
 # scenario.entry_class by converter_config.apply_to_modules; the literal
 # here is the committed default so a run with no config is unchanged.
 _ENTRY_CLASS_NAME = "Onboarding"
+# scenario.entry_class_by_suite: {suite: ClassName}. Empty unless the
+# config names one, so a single-project tree is unchanged.
+_ENTRY_CLASS_BY_SUITE: dict = {}
+
+
+def _entry_class_for(suite_name: str) -> str:
+    """The chain entry class for one suite.
+
+    `scenario.entry_class` is project-wide, and a tree can hold two
+    projects: this one has 14 GOAL suites and 15 B2B. Converting them
+    separately with different configs used to be the answer, but a subset
+    run recomputes the shared phase state and the converter now refuses
+    to treat it as authoritative -- so the setting resolves per suite
+    instead.
+
+    A module function rather than an Emitter method because the name
+    builders are tested against light stubs; requiring a method on those
+    broke six guards for no behavioural gain. Falls back to the
+    project-wide name, so a single-project tree is unchanged.
+    """
+    return (_ENTRY_CLASS_BY_SUITE or {}).get(suite_name or "",
+                                             _ENTRY_CLASS_NAME)
 
 _ID_HINTS = ("guestid", "accountid", "memberid", "hhonorsnumber",
              "hhonors_number", "partneraccountid", "customerid",
@@ -14509,7 +14531,7 @@ public class {class_name} extends BaseApiTest {{
 
         def descriptor(boot) -> str:
             text = NL.join(boot.get("body") or [])
-            parts = [_ENTRY_CLASS_NAME]
+            parts = [_entry_class_for(getattr(self, "suite_name", ""))]
             m = self._ENTRY_FLOW_RX.search(text)
             if m:
                 flow = m.group(1) or m.group(2) or ""
@@ -14528,8 +14550,8 @@ public class {class_name} extends BaseApiTest {{
             # field names onto one truncated prefix.
             while len("".join(parts)) > 40 and len(parts) > 1:
                 parts.pop()
-            return java_ident("".join(parts) or _ENTRY_CLASS_NAME,
-                              _ENTRY_CLASS_NAME)
+            return java_ident("".join(parts) or _entry_class_for(getattr(self, "suite_name", "")),
+                              _entry_class_for(getattr(self, "suite_name", "")))
 
         groups: dict = {}
         for i, boot in enumerate(self._shared_bootstraps):
@@ -14545,13 +14567,13 @@ public class {class_name} extends BaseApiTest {{
         if getattr(self, "phase_specs_enabled", False):
             # one entry per suite: the bootstrap is registered data, so the
             # vote-allocated names (OnboardingFlowAGuestidmember8) mean nothing
-            return _ENTRY_CLASS_NAME
+            return _entry_class_for(getattr(self, "suite_name", ""))
         """Entry type for a shared bootstrap, named after its setup."""
         if not self._entry_class_names:
             self._derive_entry_class_names()
         if 0 <= index < len(self._entry_class_names):
             return self._entry_class_names[index]
-        return _ENTRY_CLASS_NAME
+        return _entry_class_for(getattr(self, "suite_name", ""))
 
     def _shared_bootstrap_matches(self, body: list[str]) -> bool:
         return self._shared_bootstrap_index(body) is not None

@@ -88,6 +88,12 @@ DEFAULTS: dict[str, Any] = {
         # not onboarding anything should say so here rather than read
         # `Onboarding.start` on every goal test.
         "entry_class": "Onboarding",
+        # Per-suite override. One tree can hold two projects -- this one
+        # has 14 GOAL suites and 15 B2B -- and `entry_class` alone forces
+        # a single name on both. Keyed by the suite name the converter
+        # derives from the XML basename (lowercased, non-alphanumeric to
+        # `_`), so `InventorySTAGE.xml` is `inventorystage`.
+        "entry_class_by_suite": {},
     },
     "identity": {
         "namespace": "Properties",
@@ -219,6 +225,12 @@ def validate(cfg: dict) -> list[str]:
         problems.append("diagrams.png.cases must be a string pattern or a list of case names")
 
     scen = cfg.get("scenario") or {}
+    by_suite = scen.get("entry_class_by_suite") or {}
+    if not isinstance(by_suite, dict):
+        problems.append(
+            "scenario.entry_class_by_suite must be an object of "
+            "{suite: ClassName}, got %r" % (by_suite,))
+        by_suite = {}
     entry = scen.get("entry_class", "Onboarding")
     # A bad value does not fail the convert -- it emits a class that will
     # not compile, minutes later and far from the cause.
@@ -228,6 +240,20 @@ def validate(cfg: dict) -> list[str]:
     elif entry in _JAVA_KEYWORDS:
         problems.append(
             "scenario.entry_class %r is a Java keyword" % (entry,))
+    for _suite, _cls in sorted(by_suite.items()):
+        # Same rules as the default. A name that is not a Java identifier
+        # emits a class that will not compile, minutes later and far from
+        # the cause -- which is the reason the default is checked here
+        # rather than trusted.
+        if not isinstance(_cls, str) or not re.fullmatch(
+                r"[A-Za-z_$][A-Za-z0-9_$]*", _cls or ""):
+            problems.append(
+                "scenario.entry_class_by_suite[%r] must be a Java "
+                "identifier, got %r" % (_suite, _cls))
+        elif _cls in _JAVA_KEYWORDS:
+            problems.append(
+                "scenario.entry_class_by_suite[%r] %r is a Java keyword"
+                % (_suite, _cls))
 
     proj = cfg.get("project") or {}
     try:
@@ -309,6 +335,8 @@ def apply_to_modules(cfg: dict) -> None:
     if rc is not None:
         rc._ENTRY_CLASS_NAME = (
             (cfg.get("scenario") or {}).get("entry_class") or "Onboarding")
+        rc._ENTRY_CLASS_BY_SUITE = dict(
+            (cfg.get("scenario") or {}).get("entry_class_by_suite") or {})
         rc._REGEN_TRIGGER_KEYS = frozenset(s.lower() for s in ident.get("regen_trigger_keys", []))
         rc._ID_HINTS = tuple(s.lower() for s in ident.get("id_hint_fields", []))
         rc._PATH_ID_PARAM_NAMES = frozenset(ident.get("id_param_names", []))

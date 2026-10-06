@@ -393,4 +393,50 @@ public class RestStepTest {
                 java.nio.charset.StandardCharsets.UTF_8));
         return "templates/" + rel;
     }
+
+    @Test(groups = "guards")
+    @Description("A query param that resolves EMPTY is not sent -- ReadyAPI "
+            + "does not put an unset property on the query string.")
+    public void resolveQuery_emptyQueryParamIsOmitted() throws Exception {
+        // The GOAL case: `200_success` row 1 is "retrieve all group
+        // events", so the _Get filter cells are blank on purpose and the
+        // DataSource declares ignoreEmpty=true. Sending `propCode=`
+        // failed the service's pattern check exactly as `propCode=null`
+        // did -- keeping the key only changed which wrong thing we sent.
+        Map<String, String> raw = new LinkedHashMap<>();
+        raw.put("propCode", "#DataSource_propCode_Get#");   // no such column
+        raw.put("limit", "491");
+        Map<String, String> q =
+                RestStep.resolveQuery(new HashMap<>(), new HashMap<>(), raw, true);
+        Assert.assertFalse(q.containsKey("propCode"),
+                "an empty query param must not be sent at all; got " + q);
+        Assert.assertEquals(q.get("limit"), "491",
+                "a resolved param is unaffected");
+    }
+
+    @Test(groups = "guards")
+    @Description("Headers keep every key: one the converter emits was "
+            + "declared in the recording, not filled from a data sheet.")
+    public void resolveQuery_headersKeepEmptyKeys() throws Exception {
+        Map<String, String> raw = new LinkedHashMap<>();
+        raw.put("X-Thing", "#DataSource_missing#");
+        Map<String, String> h =
+                RestStep.resolveQuery(new HashMap<>(), new HashMap<>(), raw);
+        Assert.assertTrue(h.containsKey("X-Thing"),
+                "the 3-arg form must not drop keys: " + h);
+        Assert.assertEquals(h.get("X-Thing"), "",
+                "and the literal word `null` must never go on the wire");
+    }
+
+    @Test(groups = "guards")
+    @Description("The word `null` never reaches the wire -- B2B-3056, where "
+            + "attest sent travelAgentId=null and H4B 400'd.")
+    public void resolveQuery_neverSendsTheWordNull() throws Exception {
+        Map<String, String> raw = new LinkedHashMap<>();
+        raw.put("travelAgentId", "#DataSource_travelAgentId#");
+        Map<String, String> q =
+                RestStep.resolveQuery(new HashMap<>(), new HashMap<>(), raw, true);
+        Assert.assertFalse(q.containsValue("null"), q.toString());
+        Assert.assertFalse(q.containsValue("NULL"), q.toString());
+    }
 }
