@@ -79,6 +79,13 @@ token has been observed returning HTTP 200 on this block.
 | `hospitality_internal_ro_v2` | **UNSET — see above** |
 | `5978_b3x4n32` | **UNSET — see above** |
 
+## Token chain
+
+All 16 B2B suites extract `access_token`, publish it with the `Bearer `
+prefix and read it back -- the same shape GOAL uses. The request
+**body** has the same unfilled credential placeholders as GOAL: the gap
+is converter-wide, not per application. See the common skill.
+
 ## `ALLOWED_DOMAINS` is a B2B key
 
 Referenced by 12 B2B projects and zero GOAL ones. `CtxFields` builds

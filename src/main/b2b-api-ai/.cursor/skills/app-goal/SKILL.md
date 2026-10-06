@@ -71,6 +71,18 @@ it is. All 23 calls on that key are ordinary GOAL paths
 The GOAL schema, not the B2B one. Verified working: the JDBC steps
 connect and return rows under `-Denv=goal`.
 
+## Token chain state (all 14 XMLs converted in one pass)
+
+`audit_token_chain.py`: 13 suites have a token step and every one of
+them extracts `access_token`, publishes it to ctx **with** the `Bearer `
+prefix, and reads it back. GroupsData has no token step, which is
+correct -- it talks to an unauthenticated service.
+
+The one failing link is the request **body**: all 13 share one token
+template whose four credential placeholders have no CSV column. See the
+common skill for why that is not fixable from config today. It is not
+GOAL-specific; B2B has it too.
+
 ## Known non-auth gaps
 
 - `ALLOWED_DOMAINS` is **B2B-only** — referenced by 12 B2B projects and zero GOAL ones. Its absence is noise in a GOAL run, not a fault.

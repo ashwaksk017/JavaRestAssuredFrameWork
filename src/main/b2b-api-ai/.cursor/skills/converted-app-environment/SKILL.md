@@ -59,6 +59,42 @@ key is unset *and* its fallback is unattested. It prints key and suite
 names only, never a host value, so its output is safe to paste into a
 ticket.
 
+## The chain has five links, not one
+
+Routing is only the first. `audit_service_keys.py` answers WHERE the
+token request goes; `audit_token_chain.py` answers whether the rest of
+it survived conversion:
+
+```
+body ---> POST ---> extract ---> publish to ctx ---> reused as Authorization
+```
+
+```bash
+python tools/audit_token_chain.py --config src/main/resources/program_configuration.json
+```
+
+Every link fails independently, every failure looks like `401`, and that
+is also what a wrong host looks like -- run both before blaming
+credentials.
+
+**The body link is the one that is currently broken, in both
+applications.** The emitted token template carries `#client_id#`,
+`#client_secret#`, `#username#` and `#password#`, and the converter
+emits **no CSV column for any of them** (0 of 1,197 row files). The body
+is substituted against `mergedRow(row, ctx)` -- the CSV row plus ctx --
+and `PlaceholderResolver` reads ctx only, so there is no config fallback
+on that path: an unfilled placeholder goes out on the wire as the
+literal `#client_id#`.
+
+A tree that authenticates today therefore has those columns added
+**outside the converter**, and a reconvert wipes them. It also puts
+credentials in generated CSVs, which is the opposite of keeping them in
+one config file.
+
+Until the converter sources them from config, treat "re-paste the
+credential columns" as a required step after every convert, and expect
+`audit_token_chain.py` to exit 1.
+
 ## Deciding a host
 
 Take it from `<con:endpoint>`, never from `<con:originalUri>`:
