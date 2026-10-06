@@ -12,6 +12,8 @@ The utility layer (`RestUtilities`, `RestLoggerUtilityDataHolder`, `RestLogAppen
 | put the Swagger / OpenAPI spec in | [Where the OpenAPI (Swagger) spec goes](#where-the-openapi-swagger-spec-goes) — `src/main/resources/openapi/` |
 | find out what the spec actually validates, and why nothing in the output mentions it | [What actually reads the spec, and when](#what-actually-reads-the-spec-and-when) |
 | convert a suite driven by Excel DataSources | [Excel DataSources](#excel-datasources) — `--data-dir` |
+| emit plain `given()/when()/then()` instead of a fluent chain | [Classic REST Assured](#classic-rest-assured---classic) — `--classic` |
+| read one test top to bottom without opening four other files | [Classic REST Assured](#classic-rest-assured---classic) |
 | make a tree compile without any XML | `--bootstrap`, [Quick start §1](#1-generate-everything-from-the-readyapi-xmls) |
 | read a value from the datasheet into a request body | [Authoring template values](#authoring-template-values--types-the-datasheet-and-random-data) |
 | send a number or boolean rather than a string | [Authoring template values](#authoring-template-values--types-the-datasheet-and-random-data) |
@@ -194,8 +196,26 @@ layers down (`scenario/` -> `cases/Specs*` -> `Calls` -> typed client ->
 instead, as plain RestAssured:
 
 ```powershell
+# convert -- the whole directory, as classic
 python tools/ra_converter/ra_converter.py --input tools/ra_converter/input --output . --package-root com.hi.api --data-dir "C:\path\to\workbooks" --classic --clean
+
+# verify -- --full also compiles and runs the guard suite
+python tools/verify_all.py --full --baseline
+
+# run -- unchanged. Classic emits ordinary TestNG classes.
+mvn test -DsuiteXmlFile=Suites/<Suite>_Regression.xml
 ```
+
+**Side by side.** One `--output` holds one mode (see the whole-tree note
+below), so to keep both, give classic its own tree:
+
+```powershell
+python tools/ra_converter/ra_converter.py --input tools/ra_converter/input --output ..\classic-tree --package-root com.hi.api --data-dir "C:\path\to\workbooks" --classic --clean
+```
+
+**Switching an existing tree back to phase mode** is the same command
+without `--classic`. Convert the whole directory either way: a partial
+convert leaves the two modes mixed and the converter refuses it.
 
 ```java
 java.util.Map<String, String> tokenRequestHeaders = Headers.builder()
@@ -681,8 +701,15 @@ what to install. A full suite of ~700 diagrams takes a few minutes; the
 python tools/ra_converter/ra_converter.py --input tools/ra_converter/input --output . --package-root com.hi.api --clean --max-name-len 40 --phase-specs
 ```
 
-Opt-in for now (the default output is unchanged until a regression run
-matches it). With the flag, a ReadyAPI step is no longer copied into a
+**On by default** -- suite-wide spec dedup made it size-neutral
+(97,560 -> 63,290 lines), and `--no-phase-specs` opts out. There is a
+third option: [`--classic`](#classic-rest-assured---classic) emits the
+request inline in each `@Test` instead, giving up the sharing this
+section is about in exchange for a test you can read top to bottom.
+`--classic` implies `--no-phase-specs`, since a phase cannot be both
+inlined and shared.
+
+With phase specs, a ReadyAPI step is no longer copied into a
 method of its own -- 1,304 of them on programaccountregression, 30,000
 lines in one class -- but described as data:
 
