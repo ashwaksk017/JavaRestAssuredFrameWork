@@ -51,6 +51,34 @@ mvn -o test-compile
 
 ---
 
+## 1b. Skills — common vs per-application
+
+`.cursor/skills/` holds two kinds. Cursor picks them up from the
+`description` in each `SKILL.md`; this list is for the human.
+
+**Common** — the method, for any application we convert:
+
+| skill | for |
+|---|---|
+| `readyapi-restassured-migration` | emit is incomplete or likely wrong (TODO/STUB/PARTIAL, preflight HIGH) |
+| `jira-to-restassured` | a Jira story with no ReadyAPI XML to convert |
+| `converted-app-environment` | service keys, token routing, credentials, databases — and the `<con:endpoint>` vs `<con:originalUri>` trap |
+
+**Per application** — the answers for one converted app, written from
+the checklist at the end of `converted-app-environment`:
+
+| skill | for |
+|---|---|
+| `app-goal` | the GOAL suites |
+| `app-b2b` | the B2B suites, including the service keys still unanswered |
+
+Converting a new application means adding `app-<name>/SKILL.md`. Keep
+host values and credentials OUT of these files — this repository is
+public. They name keys, suites and decisions; the values belong only in
+the gitignored `program_configuration.json`.
+
+---
+
 ## 2. THE most important rule: generated vs committed
 
 **Editing a generated file appears to work and is silently undone by the
