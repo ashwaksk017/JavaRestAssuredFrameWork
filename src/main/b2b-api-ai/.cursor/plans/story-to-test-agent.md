@@ -134,16 +134,13 @@ three fixed and one deferred:
 | an ambiguous title lookup took `results[0]` | fixed — two pages can share a title across versions or archived copies, and the wrong one reads as plausible. It refuses and names the ids |
 | no response size cap | fixed — 20 MB, refused rather than held in memory |
 | the child walk had no dedup or global cap | fixed — a space is a diamond, not a tree; 100 pages total |
-| **attachments are not implemented** | **deferred** — see below |
+| attachments are not implemented | **out of scope** — decided, not deferred |
 
-**Known gap: attachments.** The gap review listed them ("identical
-rules, different endpoint") and they are not built. On these pages the
-spec is often *the attachment* rather than the page body, so Stage 2
-will see pages that look empty of requests when the request is in a
-file hanging off them. The Jira side already has the shape to copy —
-textual extensions only, a 10 MB cap, allowlist-checked downloads —
-so this is a contained addition, not a redesign. Decide it with Stage 2,
-once we see how often a page carries nothing readable without it.
+**Attachments are out of scope** (decided 2026-10-06). Pages whose spec
+lives in an attachment will read to Stage 2 as pages with no request in
+them, and that is the accepted behaviour: the gate says what was
+missing rather than guessing. The Jira side already has the shape to
+copy if this is ever revisited.
 
 ### Stage 2 — Intake and brief
 
