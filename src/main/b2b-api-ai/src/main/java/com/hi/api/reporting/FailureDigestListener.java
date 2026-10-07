@@ -408,6 +408,19 @@ public class FailureDigestListener implements ITestListener {
         try {
             int total = com.hi.api.rest.utilities.ResponseAsserts.skippedTotal();
             if (total <= 0) {
+                // Say so rather than stay silent. One full run logged 56
+                // `[assert SKIPPED]` lines from ResponseAsserts -- all of
+                // which call countSkip, all of them BEFORE this listener
+                // ran -- and this method still saw zero, then printed
+                // nothing. An absent line is indistinguishable from "the
+                // listener never fired", so there was no way to tell which
+                // half was broken. Resets, duplicate classes, an untracked
+                // copy and classloader isolation were all ruled out; this
+                // line is the evidence the next run needs.
+                System.out.println("[digest] 0 check(s) recorded as skipped. "
+                        + "If the run logged `[assert SKIPPED]` lines, the "
+                        + "counter and this listener are not seeing the same "
+                        + "ResponseAsserts class.");
                 return;
             }
             StringBuilder sb = new StringBuilder();
