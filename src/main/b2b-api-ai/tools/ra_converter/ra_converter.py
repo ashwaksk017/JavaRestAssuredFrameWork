@@ -15497,42 +15497,45 @@ public class {class_name} extends BaseApiTest {{
             taken = set(self._shared_phases) | set(self._suite_local_phases()) | set(_pm.RUN_TAKEN)
             _pm.RUN_TAKEN.update(taken)
             self._taken_vocab_names = taken
-            # Union with whatever a PRIOR suite left here. Without it the
-            # last suite converted wins the shared base and every other
-            # suite's chain calls stop resolving -- see
-            # _existing_scenario_steps_vocabs.
-            _prev_phase, _prev_verify = _existing_scenario_steps_vocabs(
-                self.output_dir, self.package_root)
-            vocab_methods = _pe.vocab_methods_java(
-                sorted(self._spec_vocabs | _pm.RUN_VOCABS | set(_prev_phase)),
-                taken)
-            # Verifies chain too, so a trailing read-back sits in the chain
-            # with the steps around it instead of after .complete().
-            _vv = set()
-            for _names in (self._spec_verify_vocabs or {}).values():
-                _vv |= set(_names)
-            # A name used as BOTH a phase and a verify already has a method
-            # here, and it calls runPhase. Emitting a second one is a compile
-            # error; silently reusing the phase method would run the wrong
-            # thing. Such names keep the trailing-call shape -- see
-            # _chainable_verifies, which refuses them for the same reason.
-            _vv |= set(_prev_verify) | set(_ALL_VERIFY_VOCABS)
-            # `_prev_phase` belongs in this subtraction for the same reason
-            # the two sets above it do: the phase list a few lines up is
-            # built from `... | set(_prev_phase)`, so a name a PRIOR suite
-            # registered as a phase already has a method here. Leaving it
-            # out made the two lists overlap, and the overlap is a compile
-            # error -- `verifyProgramAccount` is a phase in an
-            # already-converted suite and a verify in this one, so
-            # converting a single XML into a populated tree emitted it
-            # twice and `mvn compile` failed with "already defined".
+            # NO vocabulary here. `enrollGuest()` and its siblings used to
+            # be emitted on this class from every suite in the run, so the
+            # one file every suite extends was rewritten from whichever
+            # suites happened to be converted: convert one XML and the
+            # methods the other 28 chain through were gone. Three unions
+            # were bolted on to hide that (RUN_VOCABS, _ALL_VERIFY_VOCABS,
+            # _existing_scenario_steps_vocabs) and each one fixed a compile
+            # error the previous one had left.
             #
-            # It only bites on a per-suite convert into a tree that
-            # already holds other suites, which is why a full --clean
-            # convert never showed it.
-            _vv -= (self._spec_vocabs | _pm.RUN_VOCABS | set(_prev_phase))
-            if _vv:
-                vocab_methods += "\n" + _pe.verify_vocab_methods_java(sorted(_vv))
+            # Each suite now carries its OWN vocabulary on its own steps
+            # base -- see _emit_suite_steps_base -- and this class is the
+            # engine only: nothing in it depends on which suites were
+            # converted, so no convert can take anything away from a suite
+            # it did not touch.
+            #
+            # ONE exception, and it removes itself. A suite converted
+            # before this change has no vocabulary of its own and still
+            # resolves through this class. While such a suite is on disk
+            # and NOT part of this run, its methods are carried forward
+            # verbatim; a suite that carries its own simply overrides
+            # them. Reconvert the last legacy suite and this block emits
+            # nothing.
+            _legacy = _legacy_vocab_suites(self.output_dir, self.package_root)
+            if _legacy:
+                _prev_phase, _prev_verify = _existing_scenario_steps_vocabs(
+                    self.output_dir, self.package_root)
+                vocab_methods = _pe.vocab_methods_java(
+                    sorted(set(_prev_phase)), taken)
+                # A name that is both keeps ONE method, the phase one:
+                # runPhase asks the case which side it is registered on.
+                _vv = set(_prev_verify) - set(_prev_phase)
+                if _vv:
+                    vocab_methods += "\n" + _pe.verify_vocab_methods_java(sorted(_vv))
+                print("[ra_converter] ScenarioSteps keeps %d vocabulary "
+                      "method(s) for %d suite(s) converted before per-suite "
+                      "vocabulary: %s%s. Reconvert them to drop the shared "
+                      "copy." % (len(_prev_phase) + len(_vv), len(_legacy),
+                                 ", ".join(_legacy[:6]),
+                                 " ..." if len(_legacy) > 6 else ""))
         content = f"""package {pkg};
 
 import java.util.Map;
@@ -15770,6 +15773,44 @@ public abstract class ScenarioSteps<S extends ScenarioSteps<S>> {{
                 f"    public void {runner}() throws Exception {{" + NL
                 + self._indent_java(body, 8) + NL
                 + "    }" + NL)
+        vocab_marker = ""
+        if self.phase_specs_enabled:
+            import phase_emit as _pe
+            import phase_model as _pm
+            # THIS suite's vocabulary, on THIS suite's class. The names
+            # come from this suite's own spec entries and from nowhere
+            # else, so what is emitted here cannot change because another
+            # suite was, or was not, part of the run.
+            #
+            # `taken` is the same rule the shared base applied: a name
+            # that is also a text-path method keeps that method as its
+            # no-arg form, and only the step overload is added.
+            _p_vocabs = set(self._spec_vocabs)
+            _taken = (set(self._shared_phases) | set(_raw_phases)
+                      | set(_pm.RUN_TAKEN))
+            _vocab_java = _pe.vocab_methods_java(sorted(_p_vocabs), _taken)
+            # A name used as both a phase and a verify gets the phase
+            # method only: a second declaration would not compile, and
+            # runPhase resolves either side from the case registration.
+            _v_vocabs = set()
+            for _names in (self._spec_verify_vocabs or {}).values():
+                _v_vocabs |= set(_names)
+            _v_vocabs -= {_pe.safe_vocab(x) for x in _p_vocabs}
+            _v_vocabs -= _p_vocabs
+            if _v_vocabs:
+                _vocab_java += NL + _pe.verify_vocab_methods_java(sorted(_v_vocabs))
+            if _vocab_java.strip():
+                methods.append(_vocab_java)
+            # Read back after the suite's tests are rendered: a name that
+            # appears only then would have no method here.
+            # Keyed by suite: in a multi-suite run ONE emitter writes every
+            # suite's base in turn, so an attribute on it would hold only
+            # the last suite's answer by the time any test is rendered.
+            _SUITE_VOCAB_EMITTED[self.suite_name] = (
+                frozenset(_p_vocabs), frozenset(_v_vocabs | _p_vocabs))
+            vocab_marker = (" *" + NL + " * <p>" + SUITE_VOCAB_MARKER + " -- this "
+                            "suite's phase and verify vocabulary is declared "
+                            "here, not on the shared base.</p>" + NL)
         if self.phase_specs_enabled:
             methods.append(
                 "    @Override" + NL
@@ -15813,7 +15854,7 @@ import io.restassured.response.Response;
  * body only one case renders lives here rather than on the framework base,
  * which every suite shares and which would overflow the class-file
  * constant pool if all eighteen suites poured their singletons into it.</p>
- */
+{vocab_marker} */
 public abstract class {cls}<S extends {cls}<S>> extends ScenarioSteps<S> {{
 {resp_decls}
 
@@ -19363,6 +19404,60 @@ _SCENARIO_VERIFY_VOCAB_RX = re.compile(
 _ALL_VERIFY_VOCABS: set = set()
 
 
+# Written into every suite steps base that declares its own vocabulary.
+# Its ABSENCE is what marks a suite as converted before that change.
+SUITE_VOCAB_MARKER = "ra_converter-suite-vocab: 1"
+
+# Suites this process converts. A suite in here is being rewritten, so
+# whatever its steps base says on disk is about to be replaced and says
+# nothing about what the shared base still owes it.
+_SUITES_THIS_RUN: set = set()
+
+# suite -> (phase vocabulary, phase + verify vocabulary) its steps base was
+# written with. Read back by _assert_suite_vocab_is_complete.
+_SUITE_VOCAB_EMITTED: dict = {}
+
+
+def _legacy_vocab_suites(output_dir: str, package_root: str) -> list:
+    """Suites on disk, outside this run, that have no vocabulary of their own.
+
+    Their chains resolve through the SHARED ScenarioSteps, so that class
+    must keep the methods it had. A suite whose steps base carries
+    SUITE_VOCAB_MARKER does not count; neither does one this run is
+    converting, nor a --classic suite (it has no scenario package at all).
+    Read from disk rather than remembered, so it cannot outlive the
+    condition: reconvert a suite and it stops being listed.
+    """
+    base = os.path.join(output_dir, "src", "main", "java",
+                        *package_root.split("."), "support")
+    out = []
+    try:
+        names = sorted(os.listdir(_fs_path(base)))
+    except OSError:
+        return out
+    for suite in names:
+        if suite == "scenario" or suite in _SUITES_THIS_RUN:
+            continue
+        scen = os.path.join(base, suite, "scenario")
+        if not os.path.isdir(_fs_path(scen)):
+            continue
+        steps = [f for f in os.listdir(_fs_path(scen)) if f.endswith("Steps.java")]
+        if not steps:
+            continue
+        marked = False
+        for f in steps:
+            try:
+                with open(_fs_path(os.path.join(scen, f)), encoding="utf-8") as fh:
+                    if SUITE_VOCAB_MARKER in fh.read():
+                        marked = True
+                        break
+            except OSError:
+                continue
+        if not marked:
+            out.append(suite)
+    return out
+
+
 def _existing_scenario_steps_vocabs(output_dir: str, package_root: str) -> tuple:
     """Vocabulary methods a PRIOR suite convert left on ScenarioSteps.
 
@@ -21595,6 +21690,7 @@ def _run_convert(args):
     _CRED_KEYS_ROUTED.clear()
     _WORKBOOK_CELLS_UNTRANSLATED.clear()
     suite_name = args.suite_name or _default_suite_name(args.input)
+    _SUITES_THIS_RUN.add(suite_name)
     print(f"[ra_converter] suite: {suite_name}  "
           f"(namespaces test packages / CSVs / templates / testng / audit / flows)")
 
@@ -21908,6 +22004,40 @@ def _run_convert(args):
     return _emit_imported_tests(prep)
 
 
+def _assert_suite_vocab_is_complete(emitter, suite_name: str) -> None:
+    """Every vocabulary name the suite's tests chain has a method to call.
+
+    The suite steps base is written BEFORE the suite's tests are rendered,
+    from the names the collect pass saw. If rendering the tests registers a
+    name the collect pass did not, the chain calls a method that is not on
+    the class and the fault shows up at `mvn compile`, as a "cannot find
+    symbol" in a generated test, a long way from here.
+
+    When the vocabulary lived on the shared base a run-wide union papered
+    over exactly this. Per-suite vocabulary has no union to hide behind, so
+    the assumption is checked instead of trusted.
+    """
+    emitted = _SUITE_VOCAB_EMITTED.get(suite_name)
+    if emitted is None:
+        return                      # nothing spec'd: no steps base was written
+    had_phases, had_all = emitted
+    now_verifies = set()
+    for names in (emitter._spec_verify_vocabs or {}).values():
+        now_verifies |= set(names)
+    late = sorted((set(emitter._spec_vocabs) - set(had_phases))
+                  | (now_verifies - set(had_all)))
+    if late:
+        raise SystemExit(
+            "[ra_converter] suite " + suite_name + ": " + str(len(late))
+            + " vocabulary name(s) were registered AFTER its steps base was "
+            "written, so its tests chain methods that class does not "
+            "declare: " + ", ".join(late[:8])
+            + (" ..." if len(late) > 8 else "") + NL
+            + "  This is a converter fault, not a problem with the input: "
+            "the collect pass and the test render disagreed about the "
+            "suite's phases.")
+
+
 def _emit_imported_tests(prep: _PreparedSuite) -> int:
     global _PROJECT_ENVIRONMENTS, _INTERFACE_METHOD_MAP, _INTERFACE_METHOD_PATH_MAP
     args = prep.args
@@ -22085,6 +22215,7 @@ def _emit_imported_tests(prep: _PreparedSuite) -> int:
     # runs where multiple threads interleave inline method-body logs.
     if getattr(emitter, "phase_specs_enabled", False):
         emitter.emit_phase_index_and_calls()
+        _assert_suite_vocab_is_complete(emitter, suite_name)
     listener_rel = emitter.emit_progress_listener()
     emitter.emit_failure_digest_listener()
     print(f"[ra_converter] emitted progress listener: {listener_rel}")

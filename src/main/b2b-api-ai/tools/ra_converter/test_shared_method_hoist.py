@@ -236,7 +236,11 @@ def test_singleton_bodies_go_on_a_PER_SUITE_base():
     across eighteen suites it would overflow. A per-suite base keeps each
     one independent.
     """
-    fn = SRC.split("def _emit_suite_steps_base", 1)[1][:6000]
+    # The whole function, not a fixed slice of it: the class declaration
+    # sits at the END, and the 6,000-character window stopped short of it
+    # the day the function grew (per-suite vocabulary), failing on a line
+    # that was still there.
+    fn = SRC.split("def _emit_suite_steps_base", 1)[1].split("\n    def ", 1)[0]
     assert "_suite_scenario_pkg()" in fn, "the base must live in the SUITE package"
     assert "extends ScenarioSteps<S>" in fn, "it must sit under the framework base"
 

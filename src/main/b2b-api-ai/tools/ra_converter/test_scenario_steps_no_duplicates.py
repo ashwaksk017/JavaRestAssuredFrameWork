@@ -107,6 +107,22 @@ def test_the_generated_file_has_no_duplicate_methods():
         % sorted({d[0] for d in dup}))
 
 
+def test_no_suite_steps_base_has_duplicate_methods():
+    """The vocabulary now lives on each suite's own steps base, beside that
+    suite's text-path methods -- so that is where a name emitted twice
+    would land. Same rule, every suite's file."""
+    for path in glob.glob(os.path.join(
+            ROOT, "src", "main", "java", "com", "hi", "api", "support",
+            "*", "scenario", "*Steps.java")):
+        java = open(path, encoding="utf-8", errors="ignore").read()
+        if not java.rstrip().endswith("}"):
+            continue                # mid-write; a convert is running
+        dup = _dupes(java)
+        assert not dup, (
+            "%s declares these twice, which will not compile: %s"
+            % (os.path.basename(path), sorted({d[0] for d in dup})))
+
+
 if __name__ == "__main__":
     passed = 0
     for name, fn in sorted(list(globals().items())):

@@ -102,7 +102,7 @@ Green = hand-written framework. Blue = generated.
 |---|---|---|
 | phases live as | data (`Specs`/`Phases`) | copied Java methods |
 | entry classes | 1 (`Onboarding`) | 134, of which 101 numbered |
-| `ScenarioSteps` methods | 192 (96 vocabulary names × 2) | 540 |
+| chain methods (`enrollGuest()` …) | on each suite's own `<Suite>Steps`, that suite's names only | 540 on the shared `ScenarioSteps` |
 | per-case setup | `CaseRegistry.forCase(id)` | one class per bootstrap variant |
 
 Compare **method counts, not line counts**. The emitter preserves
@@ -112,6 +112,26 @@ tree that has had several suites converted into it carries their fields
 too. A fresh single-suite convert emits ~963 lines; this repo's tree is
 1,188 because 225 fields survive from earlier suite converts. The method
 count is unaffected by that and is the stable comparison.
+
+### Nothing generated is shared between suites' vocabularies
+
+`support/scenario/ScenarioSteps` is the ENGINE only -- `runPhase`,
+`runVerify`, `dispatch`, the response accessors. It holds no chain methods,
+so it is byte-identical whichever suites a convert covered.
+
+Each suite's chain methods are emitted on that suite's own
+`support/<suite>/scenario/<Suite>Steps`, from that suite's spec entries
+alone. Converting one XML therefore cannot remove a method another suite's
+tests call. That was the standing cause of "fixed one suite, broke
+another": the methods used to be emitted on the shared class from
+whichever suites were in the run.
+
+A steps base that declares its own vocabulary carries the marker
+`ra_converter-suite-vocab: 1`. A suite converted before this change has no
+marker; while one is on disk and outside the run, `ScenarioSteps` carries
+its methods forward unchanged and the convert says so. Reconvert the last
+such suite and the shared class is clean. Guarded by
+`tools/ra_converter/test_suite_vocab_isolation.py`.
 
 Both modes produce the same tests, the same CSV columns and the same
 TestNG suites. The default exists because numbered clones

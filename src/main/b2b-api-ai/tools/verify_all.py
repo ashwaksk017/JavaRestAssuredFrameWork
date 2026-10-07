@@ -175,6 +175,12 @@ CHECKS = [
           "LocalDate a GString reads is in ctx before the SQL that uses it "
           "-- both emitted nothing, passed the convert, and sent a stale "
           "OTP and a literal `#olderDate#` at run time"),
+    Check("suite-vocab-isolation",
+          [PY, "tools/ra_converter/test_suite_vocab_isolation.py"],
+          "a suite's chain methods live on its OWN steps class -- they were "
+          "emitted on the shared ScenarioSteps from whichever suites were in "
+          "the run, so converting one XML removed the methods 28 others "
+          "call; the shared class must be the same whoever wrote it"),
     Check("external-secrets",
           [PY, "tools/ra_converter/test_external_secrets.py"],
           "credentials reach the request from config, never from the XML"),
