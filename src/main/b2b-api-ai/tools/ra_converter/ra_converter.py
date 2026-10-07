@@ -3608,6 +3608,92 @@ def fields_written_by_groovy(script: str) -> dict:
     return out
 
 
+_DATASHEET_STEP_REF_RX = re.compile(r"^\s*\$\{([^#${}]+)#([^#${}]+)\}\s*$")
+_DATASHEET_CELL_REF_RX = re.compile(r"^#([A-Za-z0-9_.\-]+)#$")
+
+
+def datasheet_ref_live_key(case, step, expr: str) -> Optional[str]:
+    """Bind a path parameter to the key a Groovy publishes, not to the
+    datasheet cell that merely names it.
+
+    `${DataSource#propCode}` in a URL reads a workbook column. When every
+    cell of that column is itself a reference into a Properties step --
+    `${generatedDatesAndProps#hcrs}` -- and a Groovy that runs BEFORE this
+    REST step writes that field, the value the request needs is the one
+    that Groovy just produced. Resolving it through the datasheet instead
+    reaches the row, and the row also carries the Properties step's saved
+    XML snapshot of the same field (the seed column for the no-search
+    case). Run 7, partialgoalregression goal10:
+
+        [availability] groovyScript_availPropertyAndDates -> LONME on 2026-11-09
+        -> GET  /props/MILHI/groups            <- the saved value
+
+    The query and body routes never had this problem: they resolve through
+    the merged row where ctx wins. Only the path argument walked
+    datasheet -> row -> snapshot. So the path argument is pointed at the
+    live key: `${generatedDatesAndProps#hcrs}`, which the existing
+    translator renders as `ctxGet(ctx, "generatedDatesAndProps.hcrs")`.
+    With no search in the run, the Properties step's if-absent seed has
+    already put the saved value under that same key, so the no-search
+    case reads exactly what it read before.
+
+    Returns the SoapUI-syntax replacement, or None when the rule does not
+    apply: a literal, a column whose cells differ or are not all the one
+    reference, a reference into something no earlier Groovy writes, a step
+    that is not in ``case``. Every "no" keeps the old binding byte for byte.
+    """
+    m = _DATASHEET_STEP_REF_RX.match(expr or "")
+    if not m or case is None:
+        return None
+    src_name, column = m.group(1).strip(), m.group(2).strip()
+    steps = list(getattr(case, "steps", []) or [])
+    if not any(s is step for s in steps):
+        return None                      # a stale case: no evidence
+    if not any(isinstance(s, DataSourceStep) and s.step_name == src_name
+               for s in steps):
+        return None
+    cells = []
+    for loop in (getattr(case, "ds_loops", None) or []):
+        if loop.get("source") == src_name:
+            cells = [(r.get(column) or "").strip()
+                     for r in (getattr(case, "ds_rows", None) or [])]
+            break
+    if not cells:
+        lookup = (getattr(case, "ds_lookup", None) or {}).get(src_name)
+        if lookup:
+            cells = [(lookup.get(column) or "").strip()]
+    distinct = set(cells)
+    if len(distinct) != 1:
+        return None
+    cm = _DATASHEET_CELL_REF_RX.match(distinct.pop())
+    if not cm:
+        return None
+    token = cm.group(1)
+    before = []
+    for s in steps:
+        if s is step:
+            break
+        before.append(s)
+    for p in before:
+        if not isinstance(p, PropertiesStep):
+            continue
+        # The translator's spelling of `${P#f}`: step name sanitised to an
+        # identifier, then `_`, then the field.
+        san = re.sub(r"[^A-Za-z0-9_]", "_", (p.step_name or "").strip())
+        prefix = san + "_"
+        if not token.startswith(prefix) or len(token) <= len(prefix):
+            continue
+        fld = token[len(prefix):]
+        written = set()
+        for g in before:
+            if isinstance(g, GroovyStep):
+                written |= set(fields_written_by_groovy(g.script or "")
+                               .get(p.step_name or "", ()))
+        if fld in written:
+            return "${%s#%s}" % (p.step_name, fld)
+    return None
+
+
 # Author-controlled random fields. `TestSupport.regenRandomProperties`
 # refreshes ONLY these (plus their case-flipped / suite-specific
 # variants) before each REST step whose body references any of them.
@@ -6283,7 +6369,14 @@ def _assert_default_value(a: "Assertion") -> str:
         code_list = [c for c in re.split(r"[,\s]+", codes)
                      if c and c.strip().lstrip("-").isdigit()]
         if len(code_list) > 1:
-            return ""  # let runtime Set.contains handle it
+            # The whole list, not an empty cell. An empty cell made
+            # RestStep.statusFromStepColumn log "no expected status
+            # configured" and count a SKIPPED check on every call --
+            # 26 per run on goal3487 -- while the hook's own Set.of
+            # check quietly did the assertion. ResponseAsserts now
+            # accepts a comma list, so one check runs and the digest
+            # tells the truth. A row may still override with one code.
+            return ",".join(code_list)
         return code_list[0] if code_list else "200"
     if t == "Invalid HTTP Status Codes":
         return (cfg.get("codes", "") or "").strip()
@@ -9299,6 +9392,21 @@ public interface ImportedRestClient {{
                     f"{expr_stripped}` is a repeating-digit fake or a 4xx "
                     f"step's hardcoded id. Preserved literal so negative "
                     f"tests still hit a guaranteed-nonexistent resource.")
+            # A datasheet column that is one reference into a Properties
+            # step an earlier Groovy writes: bind to the live key, not to
+            # the row (which also holds the step's saved snapshot).
+            _live = datasheet_ref_live_key(
+                getattr(self, "_props_seed_case", None)
+                or getattr(self, "_current_case_obj", None), step, expr)
+            if _live:
+                self.ledger.add_preflight_finding(
+                    "INFO", "path-param-bound-to-live-key",
+                    self._current_case,
+                    f"REST step `{step.step_name}` path param `{p}={expr}` "
+                    f"reads a datasheet cell that is itself {_live}, a field "
+                    f"an earlier Groovy writes; bound to {_live} so the "
+                    f"searched value is used, not the saved snapshot.")
+                expr = _live
             if _is_literal_param_value(expr) and "${" not in (expr or ""):
                 col = _rest_param_csv_col("path", step.step_name, p)
                 path_args.append(
@@ -9885,18 +9993,17 @@ public interface ImportedRestClient {{
             # CSV override (`expected_<step>_status_code`) still wins
             # when non-empty AND overrides with a strict single value.
             if len(code_list) > 1:
-                valid_set_lit = ("java.util.Set.of("
-                                 + ", ".join(code_list) + ")")
+                # Asserted ONCE, by RestStep.statusFromStepColumn, which now
+                # accepts the comma list the CSV cell carries (see
+                # _assert_default_value). The inline Set.of check this used
+                # to emit ran in parallel with RestStep's call on an empty
+                # cell -- which counted a SKIPPED check every time -- and
+                # with the list in the cell it would have parsed the list
+                # as one int and asserted the first code strictly.
                 return ([
-                    f'String rawStatus_{vsid} = row.get("{col_name}");',
-                    f'java.util.Set<Integer> validCodes_{vsid} = {valid_set_lit};',
-                    f'if (rawStatus_{vsid} != null && !rawStatus_{vsid}.isEmpty()) {{',
-                    f'    int expected_{vsid} = com.hi.api.rest.utilities.RestUtilities'
-                    f'.parseIntOrDefault(rawStatus_{vsid}, {first_code}, "{col_name}");',
-                    f'    softAssert.assertEquals({response_var}.statusCode(), expected_{vsid}, "expected status for {step_name} (CSV override of multi-code {code_list})");',
-                    f'}} else {{',
-                    f'    softAssert.assertTrue(validCodes_{vsid}.contains({response_var}.statusCode()), "expected status for {step_name} in {code_list} but got " + {response_var}.statusCode());',
-                    f'}}',
+                    f'// [Valid HTTP Status Codes] {",".join(code_list)} -- '
+                    f'any listed code; asserted by RestStep via '
+                    f'`{col_name}`',
                 ], "FULL")
             # Single-code (or empty -> -1) is asserted by RestStep.expectedStatus.
             return ([
@@ -20239,7 +20346,7 @@ def _committed_java(output_dir: str):
                     continue
                 full = os.path.join(dirpath, fn)
                 try:
-                    with open(full, encoding="utf-8", errors="replace") as fh:
+                    with open(_fs_path(full), encoding="utf-8", errors="replace") as fh:
                         yield full, fh.read()
                 except OSError:
                     continue
