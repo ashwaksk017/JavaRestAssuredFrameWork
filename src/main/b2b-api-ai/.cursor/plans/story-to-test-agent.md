@@ -84,19 +84,46 @@ Confluence, the loop, the guardrails, the UI and the push-back.
 Each stage is independently useful and independently verifiable. Stop
 after any of them and the repo is still in a better state.
 
-### Stage 1 — Confluence fetch *(no open decisions block this; can start now)*
+### Stage 1 — Confluence fetch *(no open decisions block this)*
 
-`tools/confluence/fetch.py`, deliberately a near-copy of
-`tools/jira/fetch.py`:
+**Gap review changed this stage.** The plan called it "a near-copy of
+`tools/jira/fetch.py`". It is not. That file is 754 lines and most of
+what it does, Confluence needs *differently* rather than identically:
 
-- `confluence_config.base_urls` (list) + `pat`, read from `program_configuration.json`
-- exact scheme+host allowlist; an unapproved host is **refused**, not fetched from elsewhere
-- page id or URL in, `target/agent/<job>/sources/confluence-<id>.md` out
-- strips macros/attachments to text; records the page version so a later run can say "this changed"
-- refuses on empty body, the same way `fetch.py` refuses on missing acceptance criteria
+| `fetch.py` does | Confluence equivalent |
+|---|---|
+| one key shape (`ABC-123`) | at least four URL forms, two needing an extra lookup |
+| text fields | `body.storage` XHTML full of `<ac:structured-macro>` |
+| walks **parents**, depth 3 | specs span **children** — opposite direction |
+| pages comments | same idea, different endpoint |
+| attachments: textual-only, 10 MB cap, allowlisted | identical rules, different endpoint |
+| refuses without acceptance criteria | a page has no AC field — see below |
 
-Verification: unit tests mirroring `test_fetch.py`, including an
-unapproved host and a bare page id.
+What actually has to be built:
+
+1. **URL forms.** `/display/SPACE/Page+Title`, `/pages/viewpage.action?pageId=N`, `/spaces/SPACE/pages/N/Title`, and short `/x/AbCdEf`. Title-based needs a space+title lookup; short links need redirect resolution. Both stay on the allowlisted host, so the existing `host_allowed` still governs.
+2. **Code macros before tag-stripping.** `<ac:structured-macro ac:name="code">` carries the payloads Stage 2 exists to read. Naive tag-stripping destroys exactly the part that matters. Extract macros to fenced blocks FIRST, then strip — the mirror of `payload_candidates`, against different markup.
+3. **Children, with a cap**, defaulting to depth 1 and off unless asked. Unbounded child-walking turns one link into a crawl of the space.
+4. **Comments**, which on a Confluence page often carry the final contract.
+5. **Server/DC first.** Jira here is Server/DC (`/rest/api/2`, PAT), so Confluence is `/rest/api/content/<id>?expand=body.storage,version`. Cloud's `/wiki/api/v2` differs; make the path configurable the way `--api-path` already is, and default to Server/DC.
+6. **`confluence_config`** shaped exactly like `jira_config`: `base_urls` as a **LIST** (the existing comment warns that a bare string iterates as characters and refuses every fetch), `pat`, `timeout_seconds`. `projectconfig.section()` already reads it with no change.
+
+**The refusal gate moves.** `fetch.py` refuses a story with no acceptance
+criteria because AC is what makes a story testable. A page has no AC
+field, so copying that rule would invent one. Confluence fetch refuses
+only what it genuinely cannot do — unreachable, unapproved host, empty
+body — and "no request could be read" stays Stage 2's gate, which
+already owns it. Two stages refusing the same thing is how a pipeline
+starts arguing with itself.
+
+**Secrets.** Confluence pages routinely carry credentials inline. The
+snapshot is gitignored like every other `target/` artifact, but the UI
+renders it and the agent prompt will embed it, so redaction happens on
+the way into both. `cursor_assist.redact_for_log` only masks a known
+key; this needs a pattern pass.
+
+Verification: tests mirroring `test_fetch.py` — an unapproved host, each
+URL form, a code macro surviving the strip, and an empty body.
 
 ### Stage 2 — Intake and brief
 
