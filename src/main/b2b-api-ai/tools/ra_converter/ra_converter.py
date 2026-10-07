@@ -12698,6 +12698,13 @@ public final class AuthHelper {{
         "AvailabilitySearch.java",
     )
 
+    # The package segments the converter GENERATES, and therefore the
+    # only ones a non-default --package-root may move. Everything
+    # else a bundled framework file imports -- auth, config, context,
+    # data, db (with db.repo), domain, rest.utilities -- is
+    # hand-maintained, committed at com.hi.api and never relocated.
+    _GENERATED_PACKAGE_SEGMENTS = ("support", "templates", "rest.clients")
+
     def emit_framework_support(self) -> list[str]:
         """Copy bundled framework types into ``<pkg>.support`` if missing.
 
@@ -12723,7 +12730,18 @@ public final class AuthHelper {{
             with open(_fs_path(src), encoding="utf-8") as f:
                 content = f.read()
             if self.package_root != "com.hi.api":
-                content = content.replace("com.hi.api", self.package_root)
+                # Re-root ONLY what we generate. A blanket replace
+                # also rewrote imports of the committed framework
+                # packages, so every non-default root emitted
+                # `<root>.config`, `<root>.auth`, `<root>.db`,
+                # `<root>.data` and `<root>.rest.utilities` -- none
+                # of which exist. The tree then failed with 28
+                # `cannot find symbol` and a wall of `package ...
+                # does not exist`, a long way from this line.
+                for _seg in self._GENERATED_PACKAGE_SEGMENTS:
+                    content = content.replace(
+                        "com.hi.api." + _seg,
+                        self.package_root + "." + _seg)
             rel = f"src/main/java/{pkg.replace('.', '/')}/{name}"
             written.append(self._write(rel, content))
         # The runtime's copy of identity + heuristics (IdentityVocabulary
