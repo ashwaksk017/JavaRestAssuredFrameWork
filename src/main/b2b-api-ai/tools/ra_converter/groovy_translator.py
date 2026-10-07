@@ -427,6 +427,87 @@ def _try_flatten_concat_sql(expr: str) -> Optional[str]:
     return "".join(out_parts)
 
 
+_LOCAL_DATE_NOW_RX = re.compile(
+    r"^[ \t]*def\s+([A-Za-z_]\w*)\s*=\s*(?:java\.time\.)?LocalDate\.now\(\s*\)"
+    r"[ \t]*;?[ \t]*$", re.M)
+_LOCAL_DATE_CHAIN_RX = re.compile(
+    r"^[ \t]*def\s+(?P<var>[A-Za-z_]\w*)\s*=\s*"
+    r"(?P<root>(?:java\.time\.)?LocalDate\.now\(\s*\)|[A-Za-z_]\w*)"
+    r"(?P<chain>(?:\.(?:plus|minus)(?:Days|Weeks|Months|Years)\(\s*\d+\s*\))+)"
+    r"[ \t]*;?[ \t]*$", re.M)
+
+
+def _unformatted_local_date_vars(script: str) -> list:
+    """``[(var, java_expr, groovy_src)]`` for LocalDate locals a GString reads.
+
+    Covers ``def x = LocalDate.now().minusDays(n)`` and the two-step form
+    through a ``def today = LocalDate.now()`` variable. The value is the
+    ISO date ``LocalDate.toString()`` gives, which is what Groovy
+    interpolates.
+
+    Deliberately narrow, because a wrong date is worse than a missing one:
+
+    * the chain must END the statement -- anything after it (``.format``,
+      ``.atStartOfDay``) belongs to another recogniser or to none;
+    * a variable root must itself be ``LocalDate.now()``, declared once;
+    * the result must be interpolated in a string (``${x}`` or ``$x``).
+      A local nobody reads is not worth a ctx key.
+    """
+    now_vars = [m.group(1) for m in _LOCAL_DATE_NOW_RX.finditer(script)]
+    out: list = []
+    seen: set = set()
+    for m in _LOCAL_DATE_CHAIN_RX.finditer(script):
+        var, root, chain = m.group("var"), m.group("root"), m.group("chain")
+        if var in seen:
+            continue
+        if "LocalDate" not in root and now_vars.count(root) != 1:
+            continue
+        if not re.search(r"\$\{\s*%s\s*\}|\$%s\b" % (re.escape(var), re.escape(var)),
+                         script):
+            continue
+        seen.add(var)
+        chain = re.sub(r"\s+", "", chain)
+        out.append((var, "java.time.LocalDate.now()%s.toString()" % chain,
+                    m.group(0).split("=", 1)[1].strip().rstrip(";")))
+    return out
+
+
+def _join_plus_continuation(rhs: str, script: str, end: int) -> str:
+    """``rhs`` with the lines its trailing ``+`` continues onto.
+
+    A ReadyAPI author wraps a long query after the operator:
+
+        def sql_query = "select email_otp from ... where account_member_id = " +
+        hiltonmemberid
+
+    Groovy reads that as one statement. The ``def`` lookup reads one LINE,
+    so it saw a concat with nothing on its right, could not flatten it, and
+    the step emitted a hand-wire comment instead of the query. Nothing
+    failed at convert time; at run time the OTP was never read and the
+    confirm call went out with the code saved in the datasheet.
+
+    Only a line ending in a binary ``+`` continues. ``diffNum++`` ends in
+    ``+`` as well and is a complete statement -- 269 of the 273 such line
+    endings in the 29 suites are that -- so ``++`` never joins.
+    """
+    pos = end
+    while rhs.endswith("+") and not rhs.endswith("++"):
+        nl = script.find("\n", pos)
+        if nl < 0:
+            break
+        nxt_end = script.find("\n", nl + 1)
+        if nxt_end < 0:
+            nxt_end = len(script)
+        nxt = script[nl + 1:nxt_end].strip().rstrip(";").strip()
+        pos = nxt_end                # the newline that ends the line just read
+        if not nxt:
+            continue                 # blank line inside the statement
+        if nxt.startswith("//"):
+            break
+        rhs = rhs + " " + nxt
+    return rhs
+
+
 # ---------------------------------------------------------------------------
 # Pattern recognizers
 # ---------------------------------------------------------------------------
@@ -1891,6 +1972,30 @@ def translate(script: str, response_var_by_step: dict[str, str],
                 f'    TestSupport.putExtracted(ctx, "{var}", {var});')
         lines.append('}')
         patterns_matched.append("context_expand_def")
+        consumed = True
+
+    # ---- A LocalDate local that a GString reads, with no .format():
+    #
+    #     def currentDate = LocalDate.now()
+    #     def olderDate = currentDate.minusDays(390)
+    #     sql.executeUpdate("update account set d='${olderDate}' where ...")
+    #
+    # The date recogniser further down needs `.format(...)` and a chain
+    # rooted directly at `LocalDate.now()`, so this shape emitted nothing.
+    # The SQL still became `'#olderDate#'`, a placeholder with no producer,
+    # and the update ran against the literal text. Emitted HERE, beside the
+    # context.expand locals and for the same reason: both must be in ctx
+    # before the JDBC block below reads them.
+    _local_date_vars = _unformatted_local_date_vars(script)
+    if _local_date_vars:
+        lines.append('{')
+        for var, java_expr, src in _local_date_vars:
+            lines.append(f'    // [translated] def {var} = {src}')
+            lines.append(f'    String {var} = {java_expr};')
+            lines.append(
+                f'    TestSupport.putExtracted(ctx, "{var}", {var});')
+        lines.append('}')
+        patterns_matched.append("local_date_def")
         consumed = True
 
     # ---- Bare `context.expand('${...}')` calls that WEREN'T bound to a
@@ -3498,7 +3603,8 @@ def translate(script: str, response_var_by_step: dict[str, str],
                 rf"def\s+{re.escape(qe)}\s*=\s*(.+?)(?:$|;|\r|\n)",
                 script + "\n")
             if m_def:
-                rhs = m_def.group(1).strip()
+                rhs = _join_plus_continuation(
+                    m_def.group(1).strip(), script, m_def.end(1))
                 # RHS may itself be a quoted literal or a concat
                 if (len(rhs) >= 2 and rhs[0] in ('"', "'")
                         and rhs[-1] == rhs[0]

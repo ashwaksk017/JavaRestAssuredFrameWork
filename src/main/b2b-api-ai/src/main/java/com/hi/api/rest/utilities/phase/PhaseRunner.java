@@ -64,6 +64,9 @@ public final class PhaseRunner {
 
         Response res;
         String url = resolvedPath(spec, c);
+        if (trailingParamIsAuthorEmpty(spec, c)) {
+            step.allowAuthorEmptyTrailingSegment();
+        }
         switch (spec.verb) {
             case "GET":    res = step.get(url, exchange); break;
             case "PUT":    res = step.put(url, exchange); break;
@@ -133,6 +136,27 @@ public final class PhaseRunner {
     /** Test seam: the resolved URL without sending anything. */
     public static String resolvedPathForTest(PhaseSpec spec, PhaseContext c) {
         return resolvedPath(spec, c);
+    }
+
+    /**
+     * Does the path END in a parameter the ReadyAPI author saved with no value?
+     *
+     * <p>{@code POST .../partneraccounts/{partneraccount}} is recorded with
+     * {@code partneraccount=""}: the project posts to the collection. Only the
+     * LAST parameter qualifies, and only when its Ref says the emptiness is the
+     * author's ({@link Ref#authorEmpty}); an empty id in the middle of a path,
+     * or one an extract failed to supply, is still a broken path.</p>
+     */
+    static boolean trailingParamIsAuthorEmpty(PhaseSpec spec, PhaseContext c) {
+        String p = spec.path;
+        if (p == null || !p.endsWith("}")) {
+            return false;
+        }
+        int params = 0;
+        for (int i = p.indexOf('{'); i >= 0; i = p.indexOf('{', i + 1)) {
+            params++;
+        }
+        return params > 0 && spec.arg(params - 1).authorEmpty(c);
     }
 
     /** The path template with every {@code {param}} replaced by its resolved Ref, in order. */

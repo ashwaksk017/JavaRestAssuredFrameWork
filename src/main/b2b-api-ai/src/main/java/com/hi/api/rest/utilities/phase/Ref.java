@@ -28,6 +28,21 @@ public abstract class Ref {
     /** A stable, human-readable form for logs and the dedup report. */
     public abstract String describe();
 
+    /**
+     * True when this value is empty because the AUTHOR left it empty, not
+     * because something upstream failed to produce it.
+     *
+     * <p>The broken-path guard cannot tell the two apart from the URL alone,
+     * and they need opposite answers: an extract that came back empty is a
+     * fault to stop on, while a ReadyAPI parameter saved with no value is the
+     * request the project actually sends. Only a row literal with no fallback
+     * and no cell can say "the author meant this"; every other kind stays
+     * false, so the guard keeps failing closed.</p>
+     */
+    public boolean authorEmpty(PhaseContext c) {
+        return false;
+    }
+
     @Override
     public String toString() {
         return describe();
@@ -78,6 +93,11 @@ public abstract class Ref {
                     return fallback == null ? "" : fallback;
                 }
                 return v;
+            }
+
+            @Override
+            public boolean authorEmpty(PhaseContext c) {
+                return (fallback == null || fallback.isEmpty()) && resolve(c).isEmpty();
             }
 
             @Override

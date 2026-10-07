@@ -782,6 +782,7 @@ Every key in the codebase whose env-var name differs from the naive guess:
 | `rest.pollSalesforceIdMs`        | `REST_POLLSALESFORCEIDMS`        | `REST_POLL_SALESFORCE_ID_MS`         |
 | `test.interMethodCoolDownMs`     | `TEST_INTERMETHODCOOLDOWNMS`     | `TEST_INTER_METHOD_COOL_DOWN_MS`     |
 | `test.isolateCtxPerMethod`       | `TEST_ISOLATECTXPERMETHOD`       | `TEST_ISOLATE_CTX_PER_METHOD`        |
+| `test.sendEmptyHeaders`          | `TEST_SENDEMPTYHEADERS`          | `TEST_SEND_EMPTY_HEADERS`            |
 | `test.sendEmptyQueryParams`      | `TEST_SENDEMPTYQUERYPARAMS`      | `TEST_SEND_EMPTY_QUERY_PARAMS`       |
 | `xray.baseUrl`                   | `XRAY_BASEURL`                   | `XRAY_BASE_URL`                      |
 | `xray.clientId`                  | `XRAY_CLIENTID`                  | `XRAY_CLIENT_ID`                     |

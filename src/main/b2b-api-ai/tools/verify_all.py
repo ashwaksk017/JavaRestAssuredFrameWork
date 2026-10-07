@@ -169,6 +169,12 @@ CHECKS = [
     Check("groovy-dates",
           [PY, "tools/ra_converter/test_groovy_datetime.py"],
           "java.time computation reaches ctx, not dropped"),
+    Check("wrapped-sql-local-dates",
+          [PY, "tools/ra_converter/test_wrapped_sql_and_local_dates.py"],
+          "a query wrapped after `+` still converts to a Db read, and a "
+          "LocalDate a GString reads is in ctx before the SQL that uses it "
+          "-- both emitted nothing, passed the convert, and sent a stale "
+          "OTP and a literal `#olderDate#` at run time"),
     Check("external-secrets",
           [PY, "tools/ra_converter/test_external_secrets.py"],
           "credentials reach the request from config, never from the XML"),

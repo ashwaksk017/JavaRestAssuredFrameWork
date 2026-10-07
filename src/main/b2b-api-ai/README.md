@@ -541,6 +541,7 @@ for evidence. The set lives in `_SKIP_PATTERNS` in
 | `emit-shape` | A dangling block in the JDBC emit — this class of bug once made 13 of 18 suites fail silently and lose ~390k lines |
 | `assertions` | An assertion type converting to *nothing* while coverage still reports FULL |
 | `groovy-dates` | `java.time` computation vanishing instead of reaching ctx |
+| `wrapped-sql-local-dates` | A query wrapped after `+`, or a `LocalDate` local read by a GString, converting to nothing — the run then sends a stale OTP or a literal `#olderDate#` |
 | `vocabulary` | Phase names deriving from the full path, so a sub-resource is never swallowed by its parent |
 | `generated` | Filename/class mismatch, unbalanced braces, leftover TODOs, implausibly few files, new conversion holes vs baseline |
 | `java-compile` *(--full)* | All generated Java still compiles |

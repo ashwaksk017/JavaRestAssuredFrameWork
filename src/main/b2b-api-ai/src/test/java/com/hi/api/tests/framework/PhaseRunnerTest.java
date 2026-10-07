@@ -114,6 +114,110 @@ public class PhaseRunnerTest {
     }
 
     @Test(groups = {"unit", "guards"})
+    @Story("a response recorded under the sanitised step name is found by the name ReadyAPI spells")
+    @Description("""
+            A phase records as http_request_200_3_CreatePendingAccountmember;
+            the reference lifted from the project says
+            http_request_200_3-CreatePendingAccountmember. The read returned
+            null, {memberId} resolved empty and the next GET died on a
+            trailing empty segment while the id sat in a 200 response.
+            """)
+    public void responseIsFoundUnderTheReadyApiSpelling() {
+        PhaseContext c = context(new LinkedHashMap<>(), new LinkedHashMap<>(), new SoftAssert());
+        c.record("http_request_200_3_CreatePendingAccountmember", json(200, "{\"memberId\": 405830}"));
+        c.record("http_POST_request_Create_Account_200", json(200, "{\"accountId\": 7}"));
+
+        Assert.assertEquals(
+                Ref.resp("http_request_200_3-CreatePendingAccountmember", "memberId").resolve(c),
+                "405830", "hyphen in the ReadyAPI name");
+        Assert.assertEquals(
+                Ref.resp("http_POST_request_Create _Account_200_", "accountId").resolve(c),
+                "7", "space, doubled separator and trailing underscore");
+    }
+
+    @Test(groups = {"unit", "guards"})
+    @Story("NEGATIVE CONTROL: the exact name wins, and a different step is not found by accident")
+    public void normalisedLookupNeverOverridesAnExactMatch() {
+        PhaseContext c = context(new LinkedHashMap<>(), new LinkedHashMap<>(), new SoftAssert());
+        c.record("get-account", json(200, "{\"id\": \"exact\"}"));
+        c.record("get_account", json(200, "{\"id\": \"other\"}"));
+
+        Assert.assertEquals(Ref.resp("get-account", "id").resolve(c), "exact",
+                "a name recorded verbatim must resolve to its own response");
+        Assert.assertEquals(Ref.resp("get_account", "id").resolve(c), "other");
+        Assert.assertNull(c.response("get_accounts"), "a different step name must stay unfound");
+        Assert.assertNull(c.response(null));
+    }
+
+    @Test(groups = {"unit", "guards"})
+    @Story("a path ending in a parameter the author saved empty is the collection URL, not a broken path")
+    @Description("""
+            POST .../partneraccounts/{partneraccount} is recorded with
+            partneraccount="". The guard read the trailing slash as a missing
+            id and threw before the request was sent.
+            """)
+    public void authorEmptyTrailingParameterIsSent() throws Exception {
+        Map<String, String> ctx = new LinkedHashMap<>();
+        ctx.put("PropertiesaccountID.accountID", "2000510649");
+        PhaseContext c = context(ctx, new LinkedHashMap<>(), new SoftAssert());
+        PhaseSpec spec = PhaseSpec.phase("post_create_partneraccount")
+                .post("/businesses/{accountId}/partneraccounts/{partneraccount}")
+                .args(Ref.ctx("PropertiesaccountID.accountID"),
+                      Ref.row("path_post_create_partneraccount_partneraccount", ""))
+                .expect(201)
+                .build();
+
+        Assert.assertEquals(PhaseRunner.resolvedPathForTest(spec, c),
+                "/businesses/2000510649/partneraccounts/", "the wire URL is not rewritten");
+        Response res = PhaseRunner.run(spec, c, (b, q, h) -> json(201, "{}"));
+        Assert.assertEquals(res.statusCode(), 201, "the call must be sent, not refused by the guard");
+    }
+
+    @Test(groups = {"unit", "guards"})
+    @Story("NEGATIVE CONTROL: an id that an extract failed to supply still stops the step")
+    public void emptyTrailingIdFromAnExtractStillFailsFast() throws Exception {
+        PhaseContext c = context(new LinkedHashMap<>(), new LinkedHashMap<>(), new SoftAssert());
+
+        // trailing, but from ctx: nothing says the author meant it
+        PhaseSpec fromCtx = PhaseSpec.phase("read_member")
+                .get("/businesses/{accountId}/members/{memberId}")
+                .args(Ref.literal("a"), Ref.ctx("no.such.key"))
+                .expect(200).build();
+        assertBrokenPath(fromCtx, c, "TRAILING empty path segment");
+
+        // trailing, from a prior response that never ran
+        PhaseSpec fromResp = PhaseSpec.phase("read_member")
+                .get("/businesses/{accountId}/members/{memberId}")
+                .args(Ref.literal("a"), Ref.resp("never_ran", "memberId"))
+                .expect(200).build();
+        assertBrokenPath(fromResp, c, "TRAILING empty path segment");
+
+        // author-empty, but in the MIDDLE of the path
+        PhaseSpec middle = PhaseSpec.phase("read_member")
+                .get("/businesses/{accountId}/members")
+                .args(Ref.row("path_read_member_accountId", ""))
+                .expect(200).build();
+        assertBrokenPath(middle, c, "EMPTY path segment");
+
+        // author-empty last parameter does not excuse an empty one before it
+        PhaseSpec both = PhaseSpec.phase("post_create_partneraccount")
+                .post("/businesses/{accountId}/partneraccounts/{partneraccount}")
+                .args(Ref.ctx("no.such.key"), Ref.row("path_x_partneraccount", ""))
+                .expect(201).build();
+        assertBrokenPath(both, c, "EMPTY path segment");
+    }
+
+    private static void assertBrokenPath(PhaseSpec spec, PhaseContext c, String expectedDetail)
+            throws Exception {
+        try {
+            PhaseRunner.run(spec, c, (b, q, h) -> json(200, "{}"));
+            Assert.fail("must not be sent: " + PhaseRunner.resolvedPathForTest(spec, c));
+        } catch (IllegalStateException expected) {
+            Assert.assertTrue(expected.getMessage().contains(expectedDetail), expected.getMessage());
+        }
+    }
+
+    @Test(groups = {"unit", "guards"})
     @Story("NEGATIVE CONTROL: the builder refuses a spec whose Refs do not match the path")
     public void builderRefusesArgCountMismatch() {
         try {

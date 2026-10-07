@@ -439,4 +439,41 @@ public class RestStepTest {
         Assert.assertFalse(q.containsValue("null"), q.toString());
         Assert.assertFalse(q.containsValue("NULL"), q.toString());
     }
+
+    @Test(groups = "guards")
+    @Description("A header whose value was a REFERENCE that resolved to "
+            + "nothing is not sent -- ReadyAPI skips an unset parameter, "
+            + "header or query alike. EADkafkaevents: X-JWT-Assertion reads "
+            + "${datasource_200#X-JWT-Assertion} and the project has no such "
+            + "DataSource.")
+    public void resolveHeaders_omitsAReferenceThatResolvedEmpty() throws Exception {
+        Map<String, String> raw = new LinkedHashMap<>();
+        raw.put("X-JWT-Assertion", "#datasource_200_X_JWT_Assertion#");
+        raw.put("Hilton-Operator-Location", "MEMPHI");
+        Map<String, String> h =
+                RestStep.resolveHeaders(new HashMap<>(), new HashMap<>(), raw);
+        Assert.assertFalse(h.containsKey("X-JWT-Assertion"),
+                "an unset reference must not be sent as an empty header: " + h);
+        Assert.assertEquals(h.get("Hilton-Operator-Location"), "MEMPHI",
+                "a literal header is unaffected");
+    }
+
+    @Test(groups = "guards")
+    @Description("NEGATIVE CONTROL: only an EMPTY REFERENCE is dropped. A "
+            + "reference that resolves, and a header the recording declared "
+            + "literally empty, both still go out.")
+    public void resolveHeaders_keepsResolvedAndLiterallyEmptyHeaders() throws Exception {
+        Map<String, String> ctx = new HashMap<>();
+        ctx.put("datasource_200.X-JWT-Assertion", "eyJ.abc.def");
+        Map<String, String> row = new HashMap<>();
+        row.put("datasource_200_confNumber", "12345");
+        Map<String, String> raw = new LinkedHashMap<>();
+        raw.put("X-Conf", "#datasource_200_confNumber#");
+        raw.put("X-Declared-Empty", "");
+        Map<String, String> h = RestStep.resolveHeaders(row, ctx, raw);
+        Assert.assertEquals(h.get("X-Conf"), "12345",
+                "a reference the row supplies must be sent: " + h);
+        Assert.assertTrue(h.containsKey("X-Declared-Empty"),
+                "a literally empty header was declared in the recording and stays: " + h);
+    }
 }

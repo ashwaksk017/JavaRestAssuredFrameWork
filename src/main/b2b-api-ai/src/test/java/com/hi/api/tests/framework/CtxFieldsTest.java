@@ -891,4 +891,38 @@ public class CtxFieldsTest {
         ImportedScenario.regenRandomProperties(ctx2, lit);
         Assert.assertEquals(ctx2.get("Properties.websiteDomain"), "www.etsy.com");
     }
+
+    @Test(groups = {"unit"})
+    @Story("Name-shape generators")
+    @Description("updatedmailAddress is an email address although its name has no `email` in it. "
+            + "Generated as a bare word it went out as \"emailAddress\": \"dzjfwa\" and the member "
+            + "update was rejected 400 Invalid email address.")
+    public void updatedmailAddress_isGeneratedAsAnEmail() {
+        String alone = CtxFields.valueFor("updatedmailAddress");
+        Assert.assertTrue(alone.matches("[^@\\s]+@[^@\\s]+\\.[A-Za-z]+"), alone);
+
+        Map<String, String> ctx = new HashMap<>();
+        CtxFields.generateStandard(ctx, "Properties", "guestIDmember", "updatedmailAddress");
+        String inPack = ctx.get("Properties.updatedmailAddress");
+        String domain = ctx.get("Properties.Domain");
+        Assert.assertNotNull(inPack, "the extra field must be generated");
+        Assert.assertTrue(inPack.endsWith("@" + domain),
+                "and sit on the pack's own domain, like every other address in it: "
+                        + inPack + " vs " + domain);
+        Assert.assertNotEquals(inPack, ctx.get("Properties.Email"),
+                "an UPDATED address that equals the current one updates nothing");
+    }
+
+    @Test(groups = {"unit"})
+    @Story("Name-shape generators")
+    @Description("NEGATIVE CONTROL: only address-shaped names change. A name that merely "
+            + "contains `mail` or `address` keeps the shape it had.")
+    public void emailShapeDoesNotSpreadToOtherNames() {
+        Assert.assertFalse(CtxFields.valueFor("mailingCity").contains("@"),
+                CtxFields.valueFor("mailingCity"));
+        Assert.assertFalse(CtxFields.valueFor("addressLine1").contains("@"),
+                CtxFields.valueFor("addressLine1"));
+        Assert.assertFalse(CtxFields.valueFor("Username").contains("@"),
+                CtxFields.valueFor("Username"));
+    }
 }

@@ -2448,7 +2448,7 @@ def test_case_with_every_step_disabled_skips_instead_of_passing_empty():
 # the rev alone does not change the fingerprint of the code it guards.
 _FRAMEWORK_REVS = {
     "AvailabilitySearch.java": (3, "240175ece3b7a192"),
-    "CtxFields.java": (12, "23d62e0570195441"),
+    "CtxFields.java": (13, "2588ae60b828fec4"),
     "IdentityVocabulary.java": (2, "f2faba88c0f4a21f"),
     "ImportedScenario.java": (29, "ec27641c7fa4f436"),
     "ImportedTemplates.java": (3, "69ed930f09be446a"),

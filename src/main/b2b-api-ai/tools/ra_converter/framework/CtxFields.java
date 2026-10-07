@@ -1,6 +1,6 @@
 package com.hi.api.support;
 
-// ra_converter-framework-rev: 12
+// ra_converter-framework-rev: 13
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -148,7 +148,7 @@ public final class CtxFields {
         for (String field : fields) {
             if (field == null || field.isEmpty()) continue;
             String p = field.toLowerCase();
-            if (isDomainField(field) || isWebsiteField(field) || p.contains("email")) {
+            if (isDomainField(field) || isWebsiteField(field) || isEmailField(field)) {
                 needsDomain = true;
                 break;
             }
@@ -168,7 +168,7 @@ public final class CtxFields {
                 value = sharedDomain;
             } else if (sharedDomain != null && isWebsiteField(field)) {
                 value = "www." + sharedDomain;
-            } else if (sharedDomain != null && p.contains("email")) {
+            } else if (sharedDomain != null && isEmailField(field)) {
                 value = FakeData.username() + "@" + sharedDomain;
             } else {
                 value = valueFor(field);
@@ -363,7 +363,7 @@ public final class CtxFields {
         if (isWebsiteField(field)) {
             return "www." + allowedDomainOrRandom();
         }
-        if (p.contains("email")) {
+        if (isEmailField(field)) {
             String allowed = allowedDomainOrNull();
             return FakeData.username() + "@"
                     + (allowed != null ? allowed : Config.get("ALLOWED_DOMAIN", "example.com"));
@@ -476,6 +476,22 @@ public final class CtxFields {
             return;
         }
         ImportedScenario.putIfNonEmpty(ctx, key, value);
+    }
+
+    /**
+     * A field that holds an email ADDRESS, by name.
+     *
+     * <p>{@code contains("email")} alone missed {@code updatedmailAddress}
+     * -- "updated mail address", no "email" in it -- so the generator fell
+     * through to a bare word and {@code PUT .../members/{id}} was sent
+     * {@code "emailAddress": "dzjfwa"} (400, "Invalid email address").
+     * ReadyAPI builds that field as {@code <digits>@<domain>}. It is the
+     * only such name in the 29 suites, written 226 times.</p>
+     */
+    static boolean isEmailField(String field) {
+        if (field == null) return false;
+        String p = field.toLowerCase();
+        return p.contains("email") || p.contains("mailaddress");
     }
 
     static boolean isDomainField(String field) {

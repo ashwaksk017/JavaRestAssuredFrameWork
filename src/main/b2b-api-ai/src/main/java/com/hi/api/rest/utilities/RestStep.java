@@ -108,6 +108,7 @@ public final class RestStep {
     private String stepName = "unnamed";
     private String templateResource;
     private boolean regenIdentity;
+    private boolean authorEmptyTrailingSegment;
     private int expectedStatus = 200;
     private int pollUntilStatus = -1;
     private String pollUntilJsonPath;
@@ -186,6 +187,19 @@ public final class RestStep {
 
     public RestStep expectedStatus(int status) {
         this.expectedStatus = status;
+        return this;
+    }
+
+    /**
+     * The path's LAST parameter is one the ReadyAPI author saved with no
+     * value, so a URL ending in {@code /} is the request the project sends
+     * and not a missing id. Set by {@code PhaseRunner} from the spec's own
+     * Ref; nothing else may set it, because the trailing-segment check exists
+     * to catch an extract that came back empty and that case looks identical
+     * on the wire.
+     */
+    public RestStep allowAuthorEmptyTrailingSegment() {
+        this.authorEmptyTrailingSegment = true;
         return this;
     }
 
@@ -392,6 +406,66 @@ public final class RestStep {
         return out;
     }
 
+    private static final java.util.regex.Pattern HEADER_PLACEHOLDER =
+            java.util.regex.Pattern.compile("[#@][A-Za-z0-9_.\\-]+[#@]|\\$\\{[^}]*\\}");
+
+    /**
+     * Resolve extra headers, omitting one whose value was a REFERENCE that
+     * resolved to nothing.
+     *
+     * <p>ReadyAPI does not send a parameter whose property is unset, header
+     * or query alike. The query side already follows that
+     * ({@link #resolveQuery(Map, Map, Map, boolean)} with {@code dropEmpty});
+     * the header side sent the name with an empty value, so
+     * {@code X-JWT-Assertion: } went out for a step whose
+     * {@code ${datasource_200#X-JWT-Assertion}} names a DataSource the
+     * project does not contain.</p>
+     *
+     * <p>Narrower than the query rule on purpose: a header the recording
+     * declared with a literal value -- including a literally empty one -- is
+     * kept exactly as before. Only a value that was a placeholder and came
+     * back empty is dropped. {@code -Dtest.sendEmptyHeaders=true} restores
+     * the old behaviour.</p>
+     */
+    public static Map<String, String> resolveHeaders(Map<String, String> row,
+                                                     Map<String, String> ctx,
+                                                     Map<String, String> raw)
+            throws Exception {
+        Map<String, String> out = resolveQuery(row, ctx, raw, false);
+        if (out.isEmpty() || Config.getBool("test.sendEmptyHeaders", false)) {
+            return out;
+        }
+        for (Map.Entry<String, String> e : raw.entrySet()) {
+            String expr = e.getValue();
+            String value = out.get(e.getKey());
+            if (expr != null && HEADER_PLACEHOLDER.matcher(expr).find()
+                    && (value == null || value.isEmpty())) {
+                LOG.info(" .. [header] omitting `{}` -- `{}` resolved empty "
+                        + "(ReadyAPI would not send it)", e.getKey(), expr);
+                out.remove(e.getKey());
+            }
+        }
+        return out;
+    }
+
+    /**
+     * The URL the broken-path guard should judge.
+     *
+     * <p>With an author-empty last parameter the single trailing {@code /}
+     * is intended, so it is not shown to the guard; everything else the
+     * guard checks -- an empty segment in the MIDDLE ({@code //}), a leftover
+     * placeholder -- is still judged on the same text. The request itself is
+     * unchanged.</p>
+     */
+    static String pathForGuard(String resolvedUrl, boolean authorEmptyTrailingSegment) {
+        if (!authorEmptyTrailingSegment || resolvedUrl == null
+                || resolvedUrl.length() < 2 || !resolvedUrl.endsWith("/")
+                || resolvedUrl.endsWith("//")) {
+            return resolvedUrl;
+        }
+        return resolvedUrl.substring(0, resolvedUrl.length() - 1);
+    }
+
     /**
      * Resolved request body from the most recent {@code exec} on this
      * thread. Used by converter auto-extract of
@@ -442,10 +516,11 @@ public final class RestStep {
         LAST_RESOLVED_BODY.set(body);
 
         Map<String, String> query = resolveQuery(row, resolveCtx, rawQuery, true);
-        Map<String, String> headers = resolveQuery(row, resolveCtx, rawHeaders);
+        Map<String, String> headers = resolveHeaders(row, resolveCtx, rawHeaders);
         String resolvedUrl = fillTrailingSalesforceId(
                 PlaceholderResolver.resolveAll(path == null ? "" : path, resolveCtx));
-        RestUtilities.assertPathResolved(verb, stepName, resolvedUrl, expectedStatus);
+        RestUtilities.assertPathResolved(verb, stepName,
+                pathForGuard(resolvedUrl, authorEmptyTrailingSegment), expectedStatus);
         LOG.info(" -> {} {}  (step={})", verb, resolvedUrl, stepName);
         warnIfEmptyHanded(verb, body, query);
         if (!query.isEmpty()) {
