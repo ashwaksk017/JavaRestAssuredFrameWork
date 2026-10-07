@@ -16586,6 +16586,56 @@ public final class {support_name} {{
             out.append(",".join(_csv_quote(c) for c in cells) if touched else row_text)
         return out
 
+    def _add_declared_datasource_columns(self, cols: list, rows: list,
+                                         cluster: list) -> tuple:
+        """Every property a DataSource DECLARES gets a column.
+
+        `DataSourceStep.columns` was parsed at import and then only
+        counted in an audit line -- nothing ever turned it into CSV
+        columns. So the emitted rows could reference a column that does
+        not exist: goal494 declares 13 properties and got 4, and its
+        request body asks for `#DataSource_inventoryCount#`. With no
+        cell to resolve from, the placeholder went out as literal text
+        (182 such references in one suite) and
+        `fill_datasource_csv.py` could not help, because there was
+        nowhere to write the value.
+
+        Columns are only ever APPENDED, so every existing column keeps
+        its index -- which matters because
+        {@link _expand_rows_for_datasource} maps by index. That pass
+        runs AFTER this one, so the new columns are populated from the
+        workbook in the same sweep as the rest; this method adds the
+        slot, it does not invent data.
+
+        Shadowing is not a risk: `ImportedScenario.mergedRow` applies
+        ctx AFTER the row, so a new column that stays empty cannot hide
+        a value ctx publishes. And most of these workbook cells hold
+        `${generatedDatesAndProps#arrivalDate}`-style refs, which the
+        emitter already rewrites to `#generatedDatesAndProps_arrivalDate#`
+        and the availability probe publishes -- so they resolve to a real
+        date rather than merely becoming blank.
+        """
+        existing = {str(c).strip().strip('"') for c in cols}
+        extra: list = []
+        for case in cluster or []:
+            for st in getattr(case, "steps", []) or []:
+                if not isinstance(st, DataSourceStep):
+                    continue
+                base = (getattr(st, "step_name", "") or "DataSource").strip()
+                for prop in (getattr(st, "columns", None) or []):
+                    p = (prop or "").strip()
+                    if not p:
+                        continue
+                    name = f"{base}_{p}"
+                    if name in existing:
+                        continue
+                    existing.add(name)
+                    extra.append(name)
+        if not extra:
+            return cols, rows
+        pad = "," * len(extra)
+        return list(cols) + extra, [r + pad for r in rows]
+
     def _expand_rows_for_datasource(self, cols: list, rows: list,
                                     cluster: list) -> list:
         """One row per case -> one per imported workbook row.
@@ -17099,6 +17149,11 @@ public final class {support_name} {{
         # through the assembly above: that code composes a row from six
         # groups of cells, and the only thing that varies per workbook row
         # is the handful of DataSource_ columns.
+        # Add the slots a DataSource declares before anything fills them,
+        # so the fill passes below populate the new columns too. The
+        # header is rebuilt because this can widen `cols`.
+        cols, rows = self._add_declared_datasource_columns(cols, rows, cluster)
+        header_row = ",".join(_csv_quote(c) for c in cols)
         rows = self._fill_lookup_datasource_cells(cols, rows, cluster)
         rows = self._expand_rows_for_datasource(cols, rows, cluster)
 
