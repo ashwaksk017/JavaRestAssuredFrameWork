@@ -7,20 +7,41 @@ nothing and anything the page does can be re-run from the command line.
 
 ## Start it
 
-From the repository root (`src/main/b2b-api-ai`):
+**The path is relative to where you are.** This file sits next to the
+code, so you are probably already in `tools/agent/` — in which case:
+
+```
+python server.py
+```
+
+From the repository root (`src/main/b2b-api-ai`) instead:
 
 ```
 python tools/agent/server.py
 ```
 
+Either is fine. The working directory does not matter: the server finds
+the repository from its own location, and the banner prints the root it
+resolved, so check that line rather than guessing. Giving the wrong
+relative path produces the doubled-up one:
+
+```
+tools/agent> python tools/agent/server.py
+python: can't open file '...\tools\agent\tools\agent\server.py'
+```
+
 Then open **http://127.0.0.1:8787**.
 
 ```
-python tools/agent/server.py --port 9000     # a different port
-python tools/agent/server.py --verbose       # log every request
+python server.py --port 9000     # a different port
+python server.py --verbose       # log every request
 ```
 
 Ctrl-C stops it. Nothing is installed and nothing is left running.
+
+> Every other command below is written **from the repository root**
+> (`src/main/b2b-api-ai`). From `tools/agent/` drop the `tools/agent/`
+> prefix, as above.
 
 Requires Python 3.9 or newer (3.11 is what it is run on). The UI itself
 needs no third-party packages; the converter it drives in tab 2 needs
