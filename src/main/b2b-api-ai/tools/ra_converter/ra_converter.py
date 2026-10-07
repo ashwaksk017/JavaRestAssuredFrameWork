@@ -10588,26 +10588,41 @@ public interface ImportedRestClient {{
         that omitted it would read that 400 as "no rooms" for every
         combination and and so never find one.
         """
+        self._probe_reject = "no getTestStepByName target is a REST step"
         case = getattr(self, "_current_case_obj", None)
         if case is None:
+            self._probe_reject = "no current case"
             return ""
-        for nm in re.findall(r'getTestStepByName\(\s*"([^"]+)"\s*\)', script or ""):
+        # Single OR double quotes: the scripts use both, and matching only
+        # double quotes made every `getTestStepByName('GET_Shop')` script
+        # look like it named no step at all.
+        for nm in re.findall(
+                r'''getTestStepByName\(\s*["']([^"']+)["']\s*\)''', script or ""):
             rs = next((s for s in (getattr(case, "steps", []) or [])
                        if isinstance(s, RestStep)
                        and (s.step_name or "") == nm), None)
             if rs is None:
                 continue
             if (rs.http_method or "GET").upper() != "GET":
+                self._probe_reject = f"{nm} is {rs.http_method}, not GET"
                 continue
             if len(rs.path_params or {}) != 1:
+                self._probe_reject = (
+                    f"{nm} has {len(rs.path_params or {})} path params, "
+                    f"expected exactly 1")
                 continue
             key = (rs.method_name, rs.resource_path)
             method = self.client_method_by_op.get(key)
             if not method:
+                self._probe_reject = (
+                    f"no client method for {nm} ({rs.method_name} "
+                    f"{rs.resource_path})")
                 continue
             if not self.client_takes_query.get(key, bool(rs.query_params)):
+                self._probe_reject = f"{nm}'s client method takes no query bag"
                 continue
             if self.client_takes_body.get(key, False):
+                self._probe_reject = f"{nm}'s client method takes a body"
                 continue
             col = sanitize_identifier(rs.step_name or nm)
             puts = []
@@ -10658,6 +10673,52 @@ public interface ImportedRestClient {{
             )
         return ""
 
+    # `def formattedArrDate2 = currentDate.plus(52).format('yyyy-MM-dd')`
+    _PROBE_DATE_VAR_RX = re.compile(
+        r'def\s+(\w+)\s*=\s*(?:currentDate|now)\s*\.\s*plus(?:Days)?\s*'
+        r'\(\s*(\d+)\s*\)')
+
+    def _probe_arrival_offsets(self, script: str) -> list:
+        """The ARRIVAL day offsets, in the order the script tries them.
+
+        Only the arrival list. The script also builds departureDates as
+        the day after each arrival, and counting both gave 8 offsets and
+        a claim of 80 combinations where ReadyAPI tries 40.
+
+        Two shapes exist, and reading only the first is why 79 of 92
+        sites never ran the search and silently published the first
+        candidate instead:
+
+            def arrivalDates = [currentDate.plus(32)...]      # inline
+            def formattedArrDate = currentDate.plus(32)...    # via a var
+            def arrivalDates = [formattedArrDate.toString()]
+
+        In the second -- the dominant one -- the list holds identifiers,
+        so scoping the offset search to the list text finds no `plus(N)`
+        at all. Resolving the names keeps the ORDER, which matters: the
+        winner ReadyAPI picks is the first in ITS order, not ours.
+        """
+        m_arr = re.search(r'def\s+arrival\w*\s*=\s*\[([^\]]*)\]', script,
+                          re.S)
+        if not m_arr:
+            # No arrival list: fall back to scanning the whole script, as
+            # before. Departure offsets ride along, which over-counts the
+            # grid but never changes which property is tried first.
+            return [int(x) for x in self._PROBE_OFFSETS_RX.findall(script)]
+        body = m_arr.group(1)
+        inline = [int(x) for x in self._PROBE_OFFSETS_RX.findall(body)]
+        if inline:
+            return inline
+        by_name = {m.group(1): int(m.group(2))
+                   for m in self._PROBE_DATE_VAR_RX.finditer(script)}
+        if not by_name:
+            return []
+        out = []
+        for tok in re.findall(r'[A-Za-z_]\w*', body):
+            if tok in by_name:
+                out.append(by_name[tok])
+        return out
+
     def _render_availability_probe(self, step: GroovyStep):
         """Java for the search, or None when this is not that script.
 
@@ -10674,12 +10735,13 @@ public interface ImportedRestClient {{
                  for m in self._PROBE_LIST_RX.finditer(script)}
         if "hcrs" not in lists or not lists["hcrs"]:
             return None
-        # ONLY the arrival list. The script also builds departureDates as
-        # the day after each arrival, and counting both gave 8 offsets and
-        # a claim of 80 combinations where ReadyAPI tries 40.
-        m_arr = re.search(r'def\s+arrival\w*\s*=\s*\[([^\]]*)\]', script)
-        scope = m_arr.group(1) if m_arr else script
-        offsets = [int(x) for x in self._PROBE_OFFSETS_RX.findall(scope)]
+        # A script that hunts for an EMPTY roomRates response is the
+        # OPPOSITE search -- `goal09_Get_shop_200_emptyResponse` wants a
+        # property with nothing available. Publishing a property that HAS
+        # rooms would defeat it, so leave that shape to the fallback.
+        if re.search(r'emptyResponseFound|EMPTY RESPONSE FOUND', script):
+            return None
+        offsets = self._probe_arrival_offsets(script)
         if not offsets:
             return None
         m_thr = self._PROBE_THRESHOLD_RX.search(script)
@@ -10764,7 +10826,8 @@ public interface ImportedRestClient {{
             f'"{_jlit(props_step)}.hcrs", "{_jlit(hcrs0)}");',
             f'ImportedScenario.putExtracted(ctx, '
             f'"{_jlit(props_step)}.pcrs", "{_jlit(pcrs0)}");',
-            f'LOG.warn("availability search NOT run for `{step_j}`: '
+            f'LOG.warn("availability search NOT run for `{step_j}` '
+            f'({_jlit(getattr(self, "_probe_reject", "reason not recorded"))}): '
             f'ReadyAPI tries up to {combos} property/date combination(s) '
             f'until inventory > {threshold}; this sends only the first '
             f'({{}} on {{}}). A no-availability answer here may mean the '
