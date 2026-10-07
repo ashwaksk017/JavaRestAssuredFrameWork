@@ -60,6 +60,42 @@ import io.restassured.response.Response;
  */
 public final class ResponseAsserts {
 
+    /**
+     * How many checks did not run, and why.
+     *
+     * <p>Skipping is right -- asserting a literal `#placeholder#` against
+     * a body can only ever be false, and reporting that as a finding was
+     * 24 fake failures in one run. But a skipped check is still a check
+     * that did not happen, and nothing counted them: one run skipped 246
+     * and reported 20 tests PASSED, with no way to tell from the summary
+     * that those tests verified almost nothing. A green run that checked
+     * nothing is the most expensive kind of green.</p>
+     */
+    private static final java.util.Map<String, java.util.concurrent.atomic.AtomicInteger>
+            SKIPPED = new java.util.concurrent.ConcurrentHashMap<>();
+
+    static void countSkip(String reason) {
+        SKIPPED.computeIfAbsent(reason == null ? "unknown" : reason,
+                k -> new java.util.concurrent.atomic.AtomicInteger()).incrementAndGet();
+    }
+
+    /** Skipped-check counts by reason, for the end-of-run summary. */
+    public static java.util.Map<String, Integer> skippedCounts() {
+        java.util.Map<String, Integer> out = new java.util.TreeMap<>();
+        SKIPPED.forEach((k, v) -> out.put(k, v.get()));
+        return out;
+    }
+
+    /** Total checks that did not run. */
+    public static int skippedTotal() {
+        return SKIPPED.values().stream()
+                .mapToInt(java.util.concurrent.atomic.AtomicInteger::get).sum();
+    }
+
+    public static void resetSkippedCountsForTest() {
+        SKIPPED.clear();
+    }
+
     private ResponseAsserts() {}
 
     /**
@@ -79,6 +115,7 @@ public final class ResponseAsserts {
         int expected = RestUtilities.parseIntOrDefault(
                 raw, exp.getInt("statusCode", defaultStatus), col);
         if (expected < 0) {
+            countSkip("no expected status configured");
             org.slf4j.LoggerFactory.getLogger(ResponseAsserts.class)
                     .warn(" .. [status-code assert SKIPPED] step={} -- no expected status "
                             + "configured (CSV column `{}` empty, and `expected` column has "
@@ -103,6 +140,7 @@ public final class ResponseAsserts {
         String raw = row == null ? null : row.get(col);
         int expected = RestUtilities.parseIntOrDefault(raw, defaultStatus, col);
         if (expected < 0) {
+            countSkip("no expected status configured");
             org.slf4j.LoggerFactory.getLogger(ResponseAsserts.class)
                     .warn(" .. [status-code assert SKIPPED] step={} -- no expected status "
                             + "configured (CSV column `{}` empty). Actual status was {}.",
@@ -147,6 +185,7 @@ public final class ResponseAsserts {
             }
         }
         if (forbidden.isEmpty()) {
+            countSkip("no invalid-status column");
             org.slf4j.LoggerFactory.getLogger(ResponseAsserts.class)
                     .warn(" .. [invalid-status assert SKIPPED] column `{}` "
                             + "and the recorded default are both empty -- "
@@ -343,6 +382,7 @@ public final class ResponseAsserts {
             // only ever be false -- 24 failures in one run were exactly this.
             // Skip rather than report a certainty as a finding. Fail-open,
             // like rowSaysSkip: it can lose a check, it cannot invent one.
+            countSkip("expected is an unresolved placeholder");
             org.slf4j.LoggerFactory.getLogger(ResponseAsserts.class).warn(
                     " .. [assert SKIPPED] {} -- expected is an unresolved "
                     + "placeholder {} (nothing published that key)",

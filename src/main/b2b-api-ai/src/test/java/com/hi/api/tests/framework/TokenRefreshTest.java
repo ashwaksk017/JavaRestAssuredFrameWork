@@ -248,4 +248,53 @@ public class TokenRefreshTest {
                 ? withScheme.substring("Bearer ".length()) : withScheme;
         Assert.assertTrue(com.hi.api.auth.TokenCache.isRejected(stripped));
     }
+
+    // --- skipped checks have to be countable -------------------------
+    //
+    // Skipping an assertion whose expected value is still a placeholder
+    // is right: it could only ever be false, and reporting it was 24
+    // fake failures in one run. But the run then says PASSED for a test
+    // that verified almost nothing. One run skipped 246 checks and
+    // reported 20 passes, and the only trace was 246 WARN lines in a
+    // 20 MB log.
+
+    @Test(groups = {"framework", "reporting"})
+    @Story("A skipped check is counted, not just logged")
+    @Description("A green run that checked nothing is the most expensive "
+            + "kind of green, so the count must reach the summary.")
+    public void skippedChecksAreCounted() {
+        com.hi.api.rest.utilities.ResponseAsserts.resetSkippedCountsForTest();
+        Assert.assertEquals(
+                com.hi.api.rest.utilities.ResponseAsserts.skippedTotal(), 0);
+
+        SoftAssert sa = new SoftAssert();
+        Response res = json(200, "{\"propCode\":\"ABC\"}");
+        com.hi.api.rest.utilities.ResponseAsserts.valueInResponse(
+                sa, res, "#DataSource_propCode#", "propCode", "JsonPath Match");
+
+        Assert.assertEquals(
+                com.hi.api.rest.utilities.ResponseAsserts.skippedTotal(), 1,
+                "an assertion skipped for an unresolved placeholder must be "
+                + "counted, or the summary overstates what ran");
+        Assert.assertTrue(
+                com.hi.api.rest.utilities.ResponseAsserts.skippedCounts()
+                        .keySet().stream()
+                        .anyMatch(k -> k.contains("placeholder")),
+                "the count must say WHY, so the summary can be acted on");
+        sa.assertAll();   // the skip must not have recorded a failure
+    }
+
+    @Test(groups = {"framework", "reporting"})
+    @Story("A check that DOES run is not counted as skipped")
+    @Description("Otherwise the number is noise.")
+    public void aRealAssertionIsNotCountedAsSkipped() {
+        com.hi.api.rest.utilities.ResponseAsserts.resetSkippedCountsForTest();
+        SoftAssert sa = new SoftAssert();
+        Response res = json(200, "{\"propCode\":\"ABC\"}");
+        com.hi.api.rest.utilities.ResponseAsserts.valueInResponse(
+                sa, res, "ABC", "propCode", "JsonPath Match");
+        Assert.assertEquals(
+                com.hi.api.rest.utilities.ResponseAsserts.skippedTotal(), 0);
+        sa.assertAll();
+    }
 }

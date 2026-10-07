@@ -394,6 +394,38 @@ public class FailureDigestListener implements ITestListener {
     private static final java.util.concurrent.atomic.AtomicBoolean WRITTEN =
             new java.util.concurrent.atomic.AtomicBoolean(false);
 
+    /**
+     * Say how many checks did not run.
+     *
+     * <p>Skipping an assertion whose expected value is still a
+     * placeholder is right -- it could only ever be false. But the run
+     * then reports PASSED for a test that verified almost nothing, and
+     * until now the only trace was 246 separate WARN lines in a 20 MB
+     * log. A count next to the result is the difference between "green"
+     * and "green, having checked 246 fewer things than it looks like".</p>
+     */
+    private void reportSkippedChecks() {
+        try {
+            int total = com.hi.api.rest.utilities.ResponseAsserts.skippedTotal();
+            if (total <= 0) {
+                return;
+            }
+            StringBuilder sb = new StringBuilder();
+            sb.append("[digest] ").append(total)
+              .append(" check(s) did NOT run. A passing test here verified "
+                      + "less than its name suggests:");
+            com.hi.api.rest.utilities.ResponseAsserts.skippedCounts()
+                    .forEach((reason, n) ->
+                            sb.append("\n           ").append(n)
+                              .append(" x ").append(reason));
+            System.out.println(sb.toString());
+        } catch (RuntimeException e) {
+            // A reporting aid must never be the reason a suite fails.
+            System.out.println("[digest] skipped-check summary "
+                               + "unavailable: " + e);
+        }
+    }
+
     @Override
     public void onFinish(ITestContext context) {
         // Registered BOTH in the generated suite XML and via
@@ -403,6 +435,7 @@ public class FailureDigestListener implements ITestListener {
         if (!WRITTEN.compareAndSet(false, true)) {
             return;
         }
+        reportSkippedChecks();
         List<String[]> all;
         synchronized (FAILURES) {
             all = new ArrayList<>(FAILURES.values());
