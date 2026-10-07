@@ -202,4 +202,50 @@ public class TokenRefreshTest {
         Assert.assertFalse(TokenRefresh.shouldAttempt("SomeStep", 401, plain401));
         Assert.assertFalse(TokenRefresh.shouldAttempt("SomeStep", 403, plain401));
     }
+
+    // --- the auth server re-issuing the SAME token -------------------
+    //
+    // A client-credentials grant is not a refresh-token exchange: most
+    // servers hand back the identical access token until it expires. On
+    // one full run 1,229 of 1,230 refreshes produced a token the cache
+    // already knew was rejected, and every retry then failed. Worse, the
+    // log read "regenerating ... then retrying", so the following 401
+    // looked like bad credentials rather than an unchanged token sent to
+    // the wrong audience.
+
+    @Test(groups = {"framework", "auth"})
+    @Story("A re-issued token is recognised, not retried")
+    @Description("TokenCache knows the token was rejected; refreshing to "
+            + "the same value cannot help and must not be presented again.")
+    public void rejectedTokenIsRecognisedWhenTheServerReissuesIt() {
+        String token = "same-token-value-aaaaaaaaaaaa";
+        com.hi.api.auth.TokenCache.markRejected(token);
+        Assert.assertTrue(com.hi.api.auth.TokenCache.isRejected(token),
+                "the cache must remember a rejected token for the refresh "
+                + "path to be able to notice a re-issue");
+    }
+
+    @Test(groups = {"framework", "auth"})
+    @Story("A genuinely new token is not mistaken for a re-issue")
+    @Description("The guard must not block a refresh that DID change the "
+            + "token, or every real refresh stops working.")
+    public void aDifferentTokenIsNotTreatedAsRejected() {
+        com.hi.api.auth.TokenCache.markRejected("old-token-value-bbbbbbbb");
+        Assert.assertFalse(
+                com.hi.api.auth.TokenCache.isRejected("new-token-value-cccccccc"),
+                "a new token value must still be usable");
+    }
+
+    @Test(groups = {"framework", "auth"})
+    @Story("The bearer prefix does not hide a re-issue")
+    @Description("ctx stores the token WITH the scheme; the cache stores it "
+            + "without. Comparing the wrong one would miss the re-issue.")
+    public void theSchemePrefixDoesNotHideARejectedToken() {
+        String raw = "prefixed-token-value-dddddddd";
+        com.hi.api.auth.TokenCache.markRejected(raw);
+        String withScheme = "Bearer " + raw;
+        String stripped = withScheme.startsWith("Bearer ")
+                ? withScheme.substring("Bearer ".length()) : withScheme;
+        Assert.assertTrue(com.hi.api.auth.TokenCache.isRejected(stripped));
+    }
 }

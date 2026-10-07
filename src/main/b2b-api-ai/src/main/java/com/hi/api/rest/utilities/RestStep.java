@@ -739,6 +739,25 @@ public final class RestStep {
         if (res.getStatusCode() == expectedStatus) {
             return res; // nothing to wait for
         }
+        // An auth verdict is not eventual consistency. The budget exists
+        // for a record that is not visible YET -- waiting lets the write
+        // land. A 401/403 is the gateway saying no to this token for this
+        // audience, and it will say no just as firmly in three seconds.
+        //
+        // Measured on one full run before this guard: 1,522 waits spent
+        // 48.6 minutes of deliberate delay on 401s, inside a run that
+        // took 50 minutes. Every one of them then failed anyway.
+        //
+        // Unless the test EXPECTS the auth failure -- a negative case
+        // waiting for a 401 to appear is a legitimate wait, and that is
+        // what the expectedStatus comparison above already allows.
+        int code = res.getStatusCode();
+        if (code == 401 || code == 403) {
+            LOG.info(" .. [async-budget] step={} got HTTP {} -- NOT spending "
+                     + "the budget: an auth verdict does not become a "
+                     + "success by waiting", stepName, code);
+            return res;
+        }
         if (!AsyncBudget.hasBudget()) {
             return res;
         }

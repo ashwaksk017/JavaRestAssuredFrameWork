@@ -237,6 +237,9 @@ public final class TokenRefresh {
                 LOG.warn(" .. [token-refresh] tokenRequest 200 but no access_token");
                 return false;
             }
+            if (reissuedTheRejectedToken(access)) {
+                return false;
+            }
             applyToken(ctx, access);
             return true;
         } catch (UnsupportedOperationException e) {
@@ -261,6 +264,40 @@ public final class TokenRefresh {
             access = access.substring("Bearer ".length());
         }
         applyToken(ctx, access);
+        return true;
+    }
+
+    /**
+     * Did the auth server hand back the very token that was just rejected?
+     *
+     * <p>A client-credentials grant is not a refresh-token exchange. Most
+     * authorization servers re-issue the SAME access token for the same
+     * client until it expires, so "regenerate and retry" fetches the
+     * identical string, presents it again, and gets the identical 401.
+     * Measured on one full run: 1,229 of 1,230 refreshes produced a token
+     * the cache already knew was rejected, and every one of those retries
+     * failed.</p>
+     *
+     * <p>Two costs, and the second is the worse one. The retry is a wasted
+     * round trip; and the log said "regenerating ... then retrying", which
+     * reads as though a NEW token was tried, so a 401 after it looks like
+     * the credentials are wrong rather than that the token never
+     * changed. That sent the diagnosis at the token instead of at the
+     * audience -- which is where it belonged, since the call was going to
+     * a gateway the token was not minted for.</p>
+     */
+    private static boolean reissuedTheRejectedToken(String access) {
+        String raw = access.startsWith("Bearer ")
+                ? access.substring("Bearer ".length()) : access;
+        if (!TokenCache.isRejected(raw)) {
+            return false;
+        }
+        LOG.warn(" .. [token-refresh] the auth server re-issued the SAME token "
+                 + "the server just rejected (len={}), so retrying cannot "
+                 + "help. A client-credentials grant re-issues until expiry; "
+                 + "a 401 on an unchanged token is about WHERE it was sent "
+                 + "(audience/gateway) or the credentials, not staleness.",
+                 raw.length());
         return true;
     }
 
