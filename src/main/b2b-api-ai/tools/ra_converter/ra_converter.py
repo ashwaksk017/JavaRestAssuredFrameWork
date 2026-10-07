@@ -15207,7 +15207,20 @@ public class {class_name} extends BaseApiTest {{
             # thing. Such names keep the trailing-call shape -- see
             # _chainable_verifies, which refuses them for the same reason.
             _vv |= set(_prev_verify) | set(_ALL_VERIFY_VOCABS)
-            _vv -= (self._spec_vocabs | _pm.RUN_VOCABS)
+            # `_prev_phase` belongs in this subtraction for the same reason
+            # the two sets above it do: the phase list a few lines up is
+            # built from `... | set(_prev_phase)`, so a name a PRIOR suite
+            # registered as a phase already has a method here. Leaving it
+            # out made the two lists overlap, and the overlap is a compile
+            # error -- `verifyProgramAccount` is a phase in an
+            # already-converted suite and a verify in this one, so
+            # converting a single XML into a populated tree emitted it
+            # twice and `mvn compile` failed with "already defined".
+            #
+            # It only bites on a per-suite convert into a tree that
+            # already holds other suites, which is why a full --clean
+            # convert never showed it.
+            _vv -= (self._spec_vocabs | _pm.RUN_VOCABS | set(_prev_phase))
             if _vv:
                 vocab_methods += "\n" + _pe.verify_vocab_methods_java(sorted(_vv))
         content = f"""package {pkg};
