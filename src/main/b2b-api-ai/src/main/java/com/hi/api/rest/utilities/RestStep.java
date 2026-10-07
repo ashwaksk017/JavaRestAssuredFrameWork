@@ -376,32 +376,15 @@ public final class RestStep {
                     || "null".equalsIgnoreCase(mapped.trim()))) {
                 value = "";
             }
-            // Drop ONLY a parameter whose value was a reference that
-            // resolved to nothing. A parameter the request DECLARES as
-            // empty is a different thing and ReadyAPI sends it.
-            //
-            // The first version of this check dropped both, and that
-            // cost 316 failures: `numAttendees=` and
-            // `serviceChargesAndTaxesIncluded=` are declared empty on
-            // GOAL Single/Multi Prop Shop, ReadyAPI puts them on the
-            // query string, and the server answers 400 -- which is what
-            // those cases assert. Without them the request is valid, the
-            // server answers 200, and every one of those cases failed
-            // with "expected [400] but found [200]" while passing in
-            // ReadyAPI.
-            //
-            // `expr` is the raw value from the source: blank means the
-            // project declared it empty, non-blank means it was a
-            // reference (`#DataSource_propCode#`) that did not resolve
-            // -- and an unset property is what ReadyAPI leaves off.
-            boolean wasAReference = expr != null && !expr.isBlank();
-            if (dropEmpty && wasAReference
-                    && (value == null || value.isEmpty())
+            if (dropEmpty && (value == null || value.isEmpty())
                     && !Config.getBool("test.sendEmptyQueryParams", false)) {
-                LOG.debug(" .. [query] omitting `{}` -- its reference `{}` "
-                        + "resolved to nothing, and ReadyAPI does not put "
-                        + "an unset property on the query string",
-                        e.getKey(), expr);
+                // Not sent at all. ReadyAPI does not put an unset
+                // property on the query string, and an empty value is
+                // rejected by the same pattern check that rejected
+                // "null" -- so keeping the key only changes which wrong
+                // thing we send.
+                LOG.debug(" .. [query] omitting `{}` -- resolved empty "
+                        + "(ReadyAPI would not send it)", e.getKey());
                 continue;
             }
             out.put(e.getKey(), value == null ? "" : value);
