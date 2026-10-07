@@ -72,7 +72,7 @@ conf_fetch = _load("agent_conf_fetch", os.path.join(_CONF, "fetch.py"))
 
 ROOT = projectconfig.ROOT
 
-_JIRA_KEY_RX = re.compile(r"^[A-Z][A-Z0-9_]+-\d+$")
+_JIRA_KEY_RX = re.compile(r"^[A-Za-z][A-Za-z0-9_]+-\d+$")
 _JIRA_BROWSE_RX = re.compile(r"/browse/[A-Z][A-Z0-9_]+-\d+", re.I)
 
 JIRA, CONFLUENCE, UNKNOWN = "jira", "confluence", "unknown"
@@ -93,8 +93,28 @@ def classify(link: str) -> str:
     return UNKNOWN
 
 
+_SAFE_JOB_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def safe_job(job: str) -> str:
+    """A job id that cannot leave target/agent/.
+
+    This comes from a UI text box. `os.path.join` lets an ABSOLUTE
+    second argument win outright, so a job id of `C:/Windows/Temp` or
+    `/etc` does not land under the job root at all, and `../..` walks
+    out of it. Validate rather than sanitise: a silently-rewritten id
+    makes two different jobs share a directory.
+    """
+    j = (job or "").strip()
+    if not _SAFE_JOB_RX.match(j) or j in (".", ".."):
+        raise ValueError(
+            f"unusable job id {job!r}. Letters, digits, dot, dash and "
+            f"underscore only, up to 64 characters -- it names a directory.")
+    return j
+
+
 def job_dir(job: str, root: str = "") -> str:
-    return os.path.join(root or ROOT, "target", "agent", job)
+    return os.path.join(root or ROOT, "target", "agent", safe_job(job))
 
 
 def _requests_from(text: str, source: str) -> list:
@@ -105,12 +125,23 @@ def _requests_from(text: str, source: str) -> list:
                  "provenance": f"{source}: could not be read"}]
 
 
-def gather_confluence(link: str, outdir: str, api_path: str = "") -> dict:
-    """Fetch one Confluence page into sources/. Never raises."""
+def gather_confluence(link: str, sources: str, slot: str,
+                      api_path: str = "") -> dict:
+    """Fetch one Confluence page into its OWN directory under sources/.
+
+    An earlier version diffed the sources directory before and after the
+    fetch to find the new file. That is wrong twice: two links to the
+    same page produce no new file the second time, and RE-RUNNING a job
+    produces none at all because the file is already on disk. Both read
+    as "fetched fine, nothing in it", and re-running is the normal thing
+    to do from a UI. A directory per link makes the answer positional
+    instead of inferred.
+    """
+    outdir = os.path.join(sources, slot)
+    os.makedirs(outdir, exist_ok=True)
     argv = ["--url", link, "--out", outdir]
     if api_path:
         argv += ["--api-path", api_path]
-    before = set(os.listdir(outdir)) if os.path.isdir(outdir) else set()
     try:
         rc = conf_fetch.main(argv)
     except SystemExit as e:           # argparse inside a library call
@@ -121,10 +152,13 @@ def gather_confluence(link: str, outdir: str, api_path: str = "") -> dict:
     if rc != 0:
         return {"link": link, "kind": CONFLUENCE, "ok": False,
                 "reason": "the fetcher refused -- run it directly to see why"}
-    after = set(os.listdir(outdir)) - before
-    md = sorted(n for n in after if n.endswith(".md"))
+    md = sorted(n for n in os.listdir(outdir) if n.endswith(".md"))
+    if not md:
+        return {"link": link, "kind": CONFLUENCE, "ok": False,
+                "reason": "the fetcher reported success but wrote no page"}
     return {"link": link, "kind": CONFLUENCE, "ok": True,
-            "files": sorted(after), "text_file": md[0] if md else ""}
+            "dir": slot, "files": md,
+            "text_file": os.path.join(slot, md[0])}
 
 
 def build(job: str, text: str = "", links=None, root: str = "",
@@ -139,10 +173,11 @@ def build(job: str, text: str = "", links=None, root: str = "",
     found += _requests_from(text, "pasted text")
 
     gathered = []
-    for link in links:
+    for n, link in enumerate(links, 1):
         kind = classify(link)
         if kind == CONFLUENCE:
-            got = gather_confluence(link, sources, api_path)
+            got = gather_confluence(link, sources, f"{n:02d}-confluence",
+                                    api_path)
             gathered.append(got)
             if got.get("ok") and got.get("text_file"):
                 with io.open(os.path.join(sources, got["text_file"]),
@@ -165,7 +200,40 @@ def build(job: str, text: str = "", links=None, root: str = "",
                              "reason": "not a Jira key or a Confluence page link"})
             notes.append(f"{link}: not recognised as Jira or Confluence")
 
+    # Extraction failures were being dropped here: a step with no verb
+    # is filtered out, so a paste the extractor choked on vanished
+    # without a word. Surface them before filtering.
+    for step in found:
+        if step.get("error"):
+            notes.append(f"{step.get('provenance', 'a source')}: "
+                         f"{step['error']}")
+
     usable = [s for s in found if s.get("verb") and s.get("raw_path")]
+
+    # The same request often arrives twice -- pasted AND on the page it
+    # was pasted from. Left in, Stage 3 proposes two tests for one
+    # request. Keep the first, which carries the earliest provenance.
+    seen, deduped = set(), []
+    for step in usable:
+        key = (step.get("verb"), step.get("raw_path"),
+               tuple(step.get("query_param_names") or ()),
+               (step.get("body") or "").strip())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(step)
+    if len(deduped) != len(usable):
+        notes.append(f"{len(usable) - len(deduped)} duplicate request(s) "
+                     f"collapsed")
+    usable = deduped
+
+    # A request body can carry a credential -- a token-request payload
+    # is literally a client id and secret. The Confluence fetcher
+    # redacts what IT reads, but pasted text reaches here unredacted,
+    # and intake.json feeds both the UI and the agent prompt.
+    for step in usable:
+        if step.get("body"):
+            step["body"] = conf_fetch.redact(step["body"])
     result = {
         "job": job,
         "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -236,6 +304,12 @@ def main(argv=None) -> int:
     ap.add_argument("--api-path", default="")
     ap.add_argument("--root", default="")
     args = ap.parse_args(argv)
+
+    try:
+        safe_job(args.job)
+    except ValueError as e:
+        print(f"refused: {e}")
+        return 2
 
     text = args.text
     if args.text_file:

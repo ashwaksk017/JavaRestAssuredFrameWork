@@ -29,6 +29,9 @@ _spec.loader.exec_module(intake)
 CURL = ('curl -X POST "https://host/props/ABC/groups/roomrates?peakRooms=10" '
         '-H "Content-Type: application/json" -d \'{"arrivalDate":"2026-11-29"}\'')
 
+# A fetched page whose body carries one readable request.
+PAGE_WITH_A_GET = "```\nGET /props/ABC/groups\n```"
+
 
 class Classify(unittest.TestCase):
     def test_a_bare_jira_key(self):
@@ -116,6 +119,105 @@ class RefusesRatherThanGuesses(Base):
 
     def test_an_empty_intake_is_not_ok(self):
         self.assertFalse(intake.build("j", root=self.tmp)["ok"])
+
+
+class JobIdIsUserInput(Base):
+    """It names a directory and comes from a UI text box."""
+
+    def test_an_absolute_job_id_cannot_escape_the_job_root(self):
+        """os.path.join lets an absolute second argument win outright,
+        so this did not land under target/agent at all."""
+        for bad in ("C:/Windows/Temp", "/etc", r"\server\share"):
+            with self.assertRaises(ValueError, msg=bad):
+                intake.job_dir(bad, self.tmp)
+
+    def test_traversal_is_refused(self):
+        for bad in ("../../escaped", "..", "a/../../b", "x/y"):
+            with self.assertRaises(ValueError, msg=bad):
+                intake.job_dir(bad, self.tmp)
+
+    def test_ordinary_ids_are_fine(self):
+        for good in ("j1", "B2B-1234", "job_2026.10.07", "a" * 64):
+            self.assertTrue(intake.job_dir(good, self.tmp))
+
+    def test_it_validates_rather_than_sanitises(self):
+        """A silently-rewritten id makes two different jobs share a
+        directory, which is worse than refusing."""
+        with self.assertRaises(ValueError):
+            intake.job_dir("../j1", self.tmp)
+
+
+class Secrets(Base):
+    def test_a_credential_in_a_pasted_body_is_redacted(self):
+        """The Confluence fetcher redacts what IT reads, but pasted text
+        reaches intake unredacted -- and intake.json feeds the UI and the
+        agent prompt. A token-request payload IS a client id and secret."""
+        r = intake.build("j", root=self.tmp, text=(
+            'curl -X POST "https://h/realms/applications/token" '
+            '-d \'{"client_secret":"SUPERSECRET98765"}\''))
+        self.assertTrue(r["ok"])
+        blob = json.dumps(r) + self.brief("j")
+        self.assertNotIn("SUPERSECRET98765", blob)
+
+
+class Reruns(Base):
+    """Re-running a job is the normal thing to do from a UI."""
+
+    def setUp(self):
+        super().setUp()
+        self._main = intake.conf_fetch.main
+        self.addCleanup(setattr, intake.conf_fetch, "main", self._main)
+
+        def fake(argv):
+            out = argv[argv.index("--out") + 1]
+            os.makedirs(out, exist_ok=True)
+            with io.open(os.path.join(out, "confluence-1-x.md"), "w",
+                         encoding="utf-8") as fh:
+                fh.write(PAGE_WITH_A_GET)
+            return 0
+        intake.conf_fetch.main = fake
+        self.link = "https://wiki.example.com/x/AbCdEf"
+
+    def test_the_second_run_still_reads_the_page(self):
+        """The old set-diff found no NEW file on a re-run and reported
+        'fetched fine, nothing in it'."""
+        first = intake.build("j", root=self.tmp, links=[self.link])
+        second = intake.build("j", root=self.tmp, links=[self.link])
+        self.assertEqual(len(first["requests"]), 1)
+        self.assertEqual(len(second["requests"]), 1)
+
+    def test_two_links_to_one_page_both_resolve(self):
+        r = intake.build("j", root=self.tmp, links=[self.link, self.link])
+        self.assertTrue(all(g["ok"] for g in r["links"]))
+
+    def test_each_link_gets_its_own_directory(self):
+        r = intake.build("j", root=self.tmp, links=[self.link, self.link])
+        self.assertNotEqual(r["links"][0]["dir"], r["links"][1]["dir"])
+
+
+class Deduplication(Base):
+    def test_the_same_request_pasted_and_fetched_counts_once(self):
+        """Otherwise Stage 3 proposes two tests for one request."""
+        self._m = intake.conf_fetch.main
+        self.addCleanup(setattr, intake.conf_fetch, "main", self._m)
+
+        def fake(argv):
+            out = argv[argv.index("--out") + 1]
+            os.makedirs(out, exist_ok=True)
+            with io.open(os.path.join(out, "c.md"), "w", encoding="utf-8") as fh:
+                fh.write(PAGE_WITH_A_GET)
+            return 0
+        intake.conf_fetch.main = fake
+        r = intake.build("j", root=self.tmp, text="GET /props/ABC/groups",
+                         links=["https://wiki.example.com/x/A"])
+        self.assertEqual(len(r["requests"]), 1)
+        self.assertTrue(any("duplicate" in n for n in r["notes"]))
+
+    def test_different_requests_are_kept(self):
+        r = intake.build(
+            "j", root=self.tmp,
+            text="GET /props/ABC/groups\nPOST /props/ABC/groups")
+        self.assertEqual(len(r["requests"]), 2)
 
 
 class Links(Base):
