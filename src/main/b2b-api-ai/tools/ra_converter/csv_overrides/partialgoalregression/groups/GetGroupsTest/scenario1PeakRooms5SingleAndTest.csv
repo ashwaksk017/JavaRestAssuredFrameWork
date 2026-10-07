@@ -1,0 +1,28 @@
+test_case_id,key:DataSource_peakRooms,expected_GOAL_Single_Shop_status_code,expected_GOAL_Multi_Prop_Shop_status_code
+Scenario 1 - peakRooms < 5_SingleAndMultiProduct,1,400,400
+Scenario 1 - peakRooms < 5_SingleAndMultiProduct,2,400,400
+Scenario 1 - peakRooms < 5_SingleAndMultiProduct,3,400,400
+Scenario 1 - peakRooms < 5_SingleAndMultiProduct,4,400,400
+Scenario 2 - peakRooms_between5And9_SingleAndMultiProduct,5,200,200
+Scenario 2 - peakRooms_between5And9_SingleAndMultiProduct,6,200,200
+Scenario 2 - peakRooms_between5And9_SingleAndMultiProduct,7,200,200
+Scenario 2 - peakRooms_between5And9_SingleAndMultiProduct,8,200,200
+Scenario 2 - peakRooms_between5And9_SingleAndMultiProduct,9,200,200
+Scenario 1 - peakRooms < 5_SingleAndMultiProduct 2,1,400,400
+Scenario 1 - peakRooms < 5_SingleAndMultiProduct 2,2,400,400
+Scenario 1 - peakRooms < 5_SingleAndMultiProduct 2,3,400,400
+Scenario 1 - peakRooms < 5_SingleAndMultiProduct 2,4,400,400
+Scenario 2 - peakRooms_between5And9_SingleAndMultiProduct 2,5,200,200
+Scenario 2 - peakRooms_between5And9_SingleAndMultiProduct 2,6,200,200
+Scenario 2 - peakRooms_between5And9_SingleAndMultiProduct 2,7,200,200
+Scenario 2 - peakRooms_between5And9_SingleAndMultiProduct 2,8,200,200
+Scenario 2 - peakRooms_between5And9_SingleAndMultiProduct 2,9,200,200
+Scenario 1 - peakRooms < 5_SingleAndMultiProduct 3,1,400,400
+Scenario 1 - peakRooms < 5_SingleAndMultiProduct 3,2,400,400
+Scenario 1 - peakRooms < 5_SingleAndMultiProduct 3,3,400,400
+Scenario 1 - peakRooms < 5_SingleAndMultiProduct 3,4,400,400
+Scenario 2 - peakRooms_between5And9_SingleAndMultiProduct 3,5,200,200
+Scenario 2 - peakRooms_between5And9_SingleAndMultiProduct 3,6,200,200
+Scenario 2 - peakRooms_between5And9_SingleAndMultiProduct 3,7,200,200
+Scenario 2 - peakRooms_between5And9_SingleAndMultiProduct 3,8,200,200
+Scenario 2 - peakRooms_between5And9_SingleAndMultiProduct 3,9,200,200

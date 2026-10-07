@@ -1278,6 +1278,51 @@ def _parse_jdbc_step(step_el: ET.Element) -> "JdbcStep":
         query=query, connection_string=conn, driver=driver)
 
 
+def _jdbc_database_name(connection_string: str) -> str:
+    """The database NAME a ReadyAPI JDBC connection string points at.
+
+    A JDBC step carries its own connection (`jdbc:postgresql://host:5432/
+    groupmaintenance?user=..&password=..`). The framework runs every suite
+    under ONE env block, so a step whose database is not the block's
+    `database.*` fails with `relation ... does not exist`. The generated
+    call therefore names the database -- `Db.forDatabase("groupmaintenance")`
+    -- and the runtime resolves `database.<name>.*` from the env block,
+    falling back to `database.*` when the name is not configured.
+
+    Only the NAME leaves the XML. Host, user and password are never
+    emitted into generated code, CSVs or the ledger (public repo).
+
+    Shapes handled:
+      jdbc:postgresql://h:5432/db?user=u&password=p   -> db
+      jdbc:postgresql://h/db                          -> db
+      jdbc:postgresql://h:5432/db/                    -> db
+      jdbc:oracle:thin:@//h:1521/service              -> service
+      jdbc:oracle:thin:@h:1521:SID                    -> SID
+      jdbc:sqlserver://h:1433;databaseName=db;x=y     -> db
+    Returns "" when nothing derivable (caller emits the un-named call).
+    """
+    s = (connection_string or "").strip()
+    if not s:
+        return ""
+    # SQL Server style keeps the name in a property, not the path.
+    m = re.search(r"(?i)[;?&](?:databaseName|database|db)=([^;&?]+)", s)
+    if m:
+        return m.group(1).strip()
+    # Drop query / property tails, then trailing slashes.
+    head = re.split(r"[?;]", s, maxsplit=1)[0].rstrip("/")
+    body = head.split("://", 1)[1] if "://" in head else head
+    if "/" in body:
+        name = body.rsplit("/", 1)[1]
+    else:
+        # Oracle SID form `@host:1521:SID` -- no path segment at all.
+        name = body.rsplit(":", 1)[1] if ":" in body else ""
+    name = name.strip()
+    # A host:port left over (no path) is not a database name.
+    if not name or name.isdigit() or "@" in name:
+        return ""
+    return name
+
+
 # --- Additional first-class step types ------------------------------------
 
 @dataclass
@@ -8536,11 +8581,33 @@ public interface ImportedRestClient {{
                         f'Check step ordering in your source SoapUI project '
                         f'if 0-row results are unexpected.')
             sid = sanitize_identifier(step.step_name)
+            # Per-database routing: the step's connection string names
+            # the database it was recorded against (`.../groupmaintenance?
+            # user=..`). Only that NAME is emitted -- never the host or the
+            # credentials -- and Db.forDatabase resolves it against
+            # `database.<name>.*` in the active env block, falling back to
+            # the plain `database.*` keys when the name is not configured.
+            # No name derivable -> the un-named call, exactly as before.
+            _db_name = _jdbc_database_name(step.connection_string)
+            _db_arg = f'"{_jlit(_db_name)}"' if _db_name else ""
+            if _db_name:
+                lines.append(
+                    f'// [jdbc] database `{_db_name}` -- resolved from '
+                    f'database.{_db_name}.* in the active env block, else '
+                    f'database.* (see DbRouting)')
+                self.ledger.add_preflight_finding(
+                    "INFO", "jdbc-database-routed",
+                    self._current_case,
+                    f"JDBC step `{step.step_name}` runs against database "
+                    f"`{_db_name}` (from its ReadyAPI connection string). "
+                    f"Emitted Db.forDatabase(\"{_db_name}\"); configure "
+                    f"database.{_db_name}.host/port/schema/username/password "
+                    f"in the env block, or it falls back to database.*.")
             if _is_select_step:
                 lines.append(
                     f'java.util.List<java.util.Map<String, Object>> '
                     f'__jdbcRows_{sid} = null;')
-            lines.append('if (Db.isConfigured()) {')
+            lines.append(f'if (Db.isConfigured({_db_arg})) {{')
             # RestUtilities.mapJsonValues expands #X# placeholders against
             # a merged (row + ctx + config) view so a query like
             # `where account_id='#accountID#'` resolves to the value
@@ -8574,7 +8641,10 @@ public interface ImportedRestClient {{
                 f'            LOG.info(" .. jdbc SQL: {{}}", __jdbcSql_{sid});')
             if _is_select_step:
                 lines.append(
-                    f'            __jdbcRows_{sid} = Db.queryAll(__jdbcSql_{sid});')
+                    f'            __jdbcRows_{sid} = '
+                    + (f'Db.forDatabase({_db_arg}).queryAllRows(__jdbcSql_{sid});'
+                       if _db_name else
+                       f'Db.queryAll(__jdbcSql_{sid});'))
                 lines.append(
                     f'            LOG.info(" .. jdbc rows returned: {{}}", '
                     f'__jdbcRows_{sid} == null ? 0 : __jdbcRows_{sid}.size());')
@@ -8592,7 +8662,10 @@ public interface ImportedRestClient {{
                     f'"{_jlit(_jdbc_table)}", __jdbcRows_{sid});')
             else:
                 lines.append(
-                    f'            Db.execute(__jdbcSql_{sid});')
+                    '            '
+                    + (f'Db.forDatabase({_db_arg}).executeStatement(__jdbcSql_{sid});'
+                       if _db_name else
+                       f'Db.execute(__jdbcSql_{sid});'))
             lines.append(
                 f'        }}')
             lines.append(f'    }} catch (Exception __jdbcEx) {{')
@@ -17632,6 +17705,10 @@ public final class {support_name} {{
         header_row = ",".join(_csv_quote(c) for c in cols)
         rows = self._fill_lookup_datasource_cells(cols, rows, cluster)
         rows = self._expand_rows_for_datasource(cols, rows, cluster)
+        # Last, once the file is complete: author-owned cell overrides from
+        # tools/ra_converter/csv_overrides/. Every per-method CSV of every
+        # suite passes through here, so no suite needs its own hook.
+        rows = self._apply_csv_overlay(rel, cols, rows)
 
         content = header_row + "\n" + "\n".join(rows) + "\n"
         # `rel` was computed above, before the rows, so the `execute`
@@ -17642,6 +17719,73 @@ public final class {support_name} {{
         # derives the SAME layout from the calling class's FQN.
         self._write(rel, content)
         return rel
+
+    def _apply_csv_overlay(self, rel: str, cols: list, rows: list,
+                           overlay_root: Optional[str] = None) -> list:
+        """Apply `tools/ra_converter/csv_overrides/<mirror of rel>` to the
+        finished rows of one generated CSV. See csv_overlay.py for the
+        file format and the match rule.
+
+        THE GENERATED ROW FILES ARE OVERWRITTEN BY EVERY CONVERT, so a
+        cell a tester corrects by hand is gone on the next run. The
+        overlay is the tracked place for such a correction: it is applied
+        here, after the rows are complete and before they are written, so
+        the correction survives any number of reconverts.
+
+        `rows` are the already-joined, already-quoted row strings. Only a
+        row that actually received an override is split and re-joined
+        (with `_csv_quote`, the same rule `_csv_cell` quotes by); every
+        other row, and the row order, are returned untouched.
+
+        A malformed overlay (unknown column, no `test_case_id`) raises:
+        a typo must not pass for "nothing to override". An overlay row
+        that matches no generated row is a WARN + ledger finding only.
+        """
+        _here = os.path.dirname(os.path.abspath(__file__))
+        if _here not in sys.path:
+            sys.path.insert(0, _here)
+        import csv as _csv
+        import csv_overlay
+        root = overlay_root or csv_overlay.OVERLAY_ROOT
+        ovl_abs = csv_overlay.overlay_path_for(rel, root)
+        if ovl_abs is None or not os.path.exists(_fs_path(ovl_abs)):
+            return rows
+        ovl_display = "tools/ra_converter/csv_overrides/" + (
+            csv_overlay.overlay_rel_for(rel) or "")
+        key_cols, override_cols, ovl_rows = csv_overlay.read_overlay(
+            _fs_path(ovl_abs), display_name=ovl_display)
+        parsed = []
+        for row_text in rows:
+            cells = next(_csv.reader([row_text]))
+            parsed.append(cells)
+        result = csv_overlay.merge_overlay(
+            cols, parsed, ovl_rows, key_cols, override_cols,
+            overlay_name=ovl_display)
+        for a in result.applied:
+            self.ledger.add_preflight_finding(
+                "INFO", "csv-overlay-applied", a.test_case_id,
+                f"suite={self.suite_name} file={rel} row={a.row + 1} "
+                f"column={a.column} old={a.old!r} new={a.new!r} "
+                f"from={ovl_display}")
+        for orow in result.unmatched:
+            keys = {k: v for k, v in orow.items()
+                    if k == csv_overlay.ID_COL
+                    or k.startswith(csv_overlay.KEY_PREFIX)}
+            print(f"[csv-overlay] WARN {ovl_display}: no generated row in "
+                  f"{rel} matches {keys}")
+            self.ledger.add_preflight_finding(
+                "MEDIUM", "csv-overlay-unmatched",
+                orow.get(csv_overlay.ID_COL, ""),
+                f"suite={self.suite_name} file={rel} overlay row {keys} "
+                f"matched no generated row (from {ovl_display})")
+        if not result.applied:
+            return rows
+        out = list(rows)
+        for ri in result.changed_rows:
+            out[ri] = ",".join(_csv_quote(c) for c in result.rows[ri])
+        print(f"[csv-overlay] {rel}: {len(result.applied)} cell(s) in "
+              f"{len(result.changed_rows)} row(s) from {ovl_display}")
+        return out
 
     def _existing_execute_flags(self, rel_path: str) -> dict:
         """{test_case_id: execute} from the CSV this run is about to replace.

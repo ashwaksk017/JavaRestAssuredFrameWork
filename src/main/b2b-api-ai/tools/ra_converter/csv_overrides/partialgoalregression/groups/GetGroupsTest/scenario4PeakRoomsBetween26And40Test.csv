@@ -1,0 +1,4 @@
+test_case_id,expected_GOAL_Single_Shop_status_code,expected_GOAL_Multi_Prop_Shop_status_code
+Scenario 4 - peakRooms_between26And40_SingleAndMultiProduct,200,200
+Scenario 4 - peakRooms_between26And40_SingleAndMultiProduct 2,200,200
+Scenario 4 - peakRooms_between26And40_SingleAndMultiProduct 3,200,200

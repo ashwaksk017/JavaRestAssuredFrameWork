@@ -6,7 +6,15 @@
       "password": "",
       "host": "",
       "port": "",
-      "schema": ""
+      "schema": "",
+      "groupmaintenance": {
+        "_comment": "Named database block. An imported JDBC step whose connection string points at .../groupmaintenance runs through Db.forDatabase(\"groupmaintenance\"), which reads database.groupmaintenance.* here and falls back to database.* when none of these is set. Add one sibling block per database name.",
+        "host": "",
+        "port": "",
+        "schema": "",
+        "username": "",
+        "password": ""
+      }
     },
     "api_config": {
       "api_end_point": "",

@@ -1,0 +1,2 @@
+test_case_id,qry_GET_Groups_SingleProp_arrivalDate,qry_GET_Groups_SingleProp_departureDate
+goal10_Post_rateplancreate_400,#generatedDatesAndProps_arrivalDate#,#generatedDatesAndProps_departureDate#

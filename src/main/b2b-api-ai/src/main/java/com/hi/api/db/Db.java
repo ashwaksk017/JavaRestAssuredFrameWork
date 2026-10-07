@@ -54,6 +54,12 @@
 // If db.url is blank, static shortcuts throw IllegalStateException with a
 // clear message. Tests that should skip rather than fail can call
 // Db.isConfigured() up-front and throw SkipException.
+//
+// Per-database routing (imported JDBC steps that name their own database):
+//     Db.forDatabase("groupmaintenance").queryAllRows(sql)
+// reads database.groupmaintenance.host|port|schema|username|password from the
+// active env block and falls back to the plain database.* keys when none of
+// the named keys is set. See DbRouting.
 // =============================================================================
 
 package com.hi.api.db;
@@ -223,6 +229,39 @@ public final class Db {
     public static boolean isConfigured() {
         String url = Config.get("db.url", null);
         return url != null && !url.isBlank();
+    }
+
+    /**
+     * Instance bound to the database a ReadyAPI JDBC step named.
+     *
+     * <p>The converter keeps only the database name out of the step's
+     * connection string (`.../groupmaintenance?user=...` -> {@code
+     * "groupmaintenance"}) and emits {@code Db.forDatabase("groupmaintenance")
+     * .queryAllRows(sql)}. {@link DbRouting} resolves that name to
+     * {@code database.<name>.host|port|schema|username|password} in the
+     * active env block, or to the plain {@code database.*} keys when no
+     * named key is set -- so a step that names the database the env block
+     * already points at runs exactly as before. A blank name is the same as
+     * {@link #configured()}.</p>
+     *
+     * <p>A handle rather than a {@code queryAll(database, sql)} overload: an
+     * extra leading String parameter would silently re-bind existing
+     * {@code queryAll(sql, "param")} calls to it.</p>
+     */
+    public static Db forDatabase(String databaseName) {
+        if (databaseName == null || databaseName.isBlank()) {
+            return configured();
+        }
+        DbRouting.Target t = DbRouting.resolve(databaseName);
+        return new Db(t.url(), t.user(), t.pass(), t.driver());
+    }
+
+    /** True when {@link #forDatabase(String)} would have a JDBC URL to use. */
+    public static boolean isConfigured(String databaseName) {
+        if (databaseName == null || databaseName.isBlank()) {
+            return isConfigured();
+        }
+        return DbRouting.resolve(databaseName).isConfigured();
     }
 
     // =========================================================================
