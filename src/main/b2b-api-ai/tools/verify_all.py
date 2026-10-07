@@ -181,6 +181,12 @@ CHECKS = [
           "emitted on the shared ScenarioSteps from whichever suites were in "
           "the run, so converting one XML removed the methods 28 others "
           "call; the shared class must be the same whoever wrote it"),
+    Check("suite-impact-rules",
+          [PY, "tools/test_suite_impact.py"],
+          "the suite-impact comparison reports a real change and ignores "
+          "renumbering -- spec numbers are positional, so a text diff calls "
+          "the whole suite changed every time and the one real change is "
+          "lost in it"),
     Check("external-secrets",
           [PY, "tools/ra_converter/test_external_secrets.py"],
           "credentials reach the request from config, never from the XML"),

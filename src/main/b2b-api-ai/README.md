@@ -558,6 +558,8 @@ for evidence. The set lives in `_SKIP_PATTERNS` in
 | `assertions` | An assertion type converting to *nothing* while coverage still reports FULL |
 | `groovy-dates` | `java.time` computation vanishing instead of reaching ctx |
 | `wrapped-sql-local-dates` | A query wrapped after `+`, or a `LocalDate` local read by a GString, converting to nothing — the run then sends a stale OTP or a literal `#olderDate#` |
+| `suite-vocab-isolation` | A suite's chain methods living on the shared `ScenarioSteps`, so converting one XML removes what the others call |
+| `suite-impact-rules` | The impact comparison calling a whole suite "changed" because specs were renumbered |
 | `vocabulary` | Phase names deriving from the full path, so a sub-resource is never swallowed by its parent |
 | `generated` | Filename/class mismatch, unbalanced braces, leftover TODOs, implausibly few files, new conversion holes vs baseline |
 | `java-compile` *(--full)* | All generated Java still compiles |
