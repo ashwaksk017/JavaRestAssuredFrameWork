@@ -423,6 +423,65 @@ public final class ResponseAsserts {
     }
 
     /**
+     * ReadyAPI's Simple Contains / Equals / NotContains: a RAW substring
+     * test over the whole response body, carrying the same
+     * unresolved-placeholder guard every other assertion here applies.
+     *
+     * <p>Deliberately NOT routed through {@link #valueInResponse}. That
+     * one matches a JSON scalar or a quoted string; ReadyAPI's Simple
+     * assertions are a plain {@code String.contains} over the raw body,
+     * so reusing the JSON walk would silently change which assertions
+     * pass. The only thing borrowed is the guard.</p>
+     *
+     * <p>The generated code used to inline
+     * {@code softAssert.assertTrue(res.asString().contains(token), ...)},
+     * which bypassed this class entirely. When nothing published the key
+     * a token names, that asserted the literal text
+     * {@code ${groupid#roomTypeCode}} against a response body -- 21
+     * failures in one run, every one a certainty rather than a finding,
+     * and none counted as a skipped check, which is why that run's
+     * digest reported zero skips while 21 checks had not really run.</p>
+     *
+     * <p>{@code mustContain=false} (NotContains) is guarded for the
+     * opposite reason: an unresolved placeholder is never in the body, so
+     * the assertion PASSED vacuously. Silent success is the worse of the
+     * two failure modes, because nothing in the run says the check was
+     * hollow.</p>
+     */
+    public static void rawBodyContains(SoftAssert softAssert, Response res,
+                                       String expected, boolean mustContain,
+                                       String label) {
+        if (softAssert == null || res == null) {
+            return;
+        }
+        String want = expected == null ? "" : expected;
+        String tag = label == null ? "response contains" : label;
+        if (looksUnresolvedPlaceholder(want)) {
+            countSkip("expected is an unresolved placeholder");
+            org.slf4j.LoggerFactory.getLogger(ResponseAsserts.class).warn(
+                    " .. [assert SKIPPED] {} -- expected is an unresolved "
+                    + "placeholder {} (nothing published that key)",
+                    tag, want);
+            return;
+        }
+        String body;
+        try {
+            body = res.asString();
+        } catch (RuntimeException e) {
+            // A response with no readable body is not a reason to fail the
+            // suite inside a reporting path; treat it as absent.
+            body = null;
+        }
+        boolean hit = body != null && body.contains(want);
+        org.slf4j.LoggerFactory.getLogger(ResponseAsserts.class)
+                .info(" .. [assert raw-contains] {} expected={} found={}",
+                        tag, want, hit);
+        softAssert.assertTrue(hit == mustContain,
+                tag + (mustContain ? " expected [" : " expected NOT [")
+                + want + "] in response body");
+    }
+
+    /**
      * ReadyAPI contains operator: path extract {@code contains} expected,
      * or the value is present as a JSON scalar anywhere in the body.
      */

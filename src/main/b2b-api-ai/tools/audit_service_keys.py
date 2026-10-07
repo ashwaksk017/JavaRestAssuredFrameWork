@@ -50,7 +50,11 @@ import re
 import sys
 from collections import Counter, defaultdict
 
-SB = re.compile(r'Config\.serviceBase\(\s*"([^"]+)"\s*,\s*"([^"]+)"')
+# The recorded base may legitimately be EMPTY: the converter emits no
+# host when the only one it recorded was loopback, so the call follows
+# callerBase. `[^"]*` keeps those keys visible here instead of dropping
+# them from the audit entirely.
+SB = re.compile(r'Config\.serviceBase\(\s*"([^"]+)"\s*,\s*"([^"]*)"')
 FILL = re.compile(r'ApiRoutes\.fill\("([^"]+)"|\.(?:get|post|put|patch|delete)\("([^"]+)"')
 TOKEN_PATH = re.compile(r"realms/applications/token|/oauth2?/token\b")
 ENDPOINT = re.compile(r"<con:endpoint>\s*(https?://[^<\s]+)\s*</con:endpoint>")
@@ -59,6 +63,25 @@ ENDPOINT = re.compile(r"<con:endpoint>\s*(https?://[^<\s]+)\s*</con:endpoint>")
 def host_of(url):
     m = re.match(r"https?://([^/]+)", url or "")
     return m.group(1) if m else ""
+
+
+def is_loopback(host):
+    """A recorded host that means "the machine making the call".
+
+    Checked separately from "is this key configured", because a
+    loopback fallback is a defect even when the key IS set. The key
+    minted from such a host is the HOSTNAME -- `services.localhost` --
+    so every unversioned local recording in the project lands on one
+    config value. In this repo that was four unrelated services (token,
+    rateplan, groups, shop) across 18 suites behind a single knob,
+    which cannot be correct for more than one of them at a time. The
+    key was set, so the unset/unattested check above stayed silent
+    while 101 calls died on `Connection refused` -- 49% of the failures
+    and 49% of the skips in one full run.
+    """
+    h = (host or "").split(":")[0].lower()
+    return (h in ("localhost", "::1", "0.0.0.0", "host.docker.internal")
+            or h.startswith("127."))
 
 
 def java_sources(root):
@@ -205,20 +228,40 @@ def main():
                      flag))
         print()
 
-    if problems:
+    # A loopback fallback fails on its own terms, whether or not the key
+    # is configured -- see is_loopback().
+    loopback = {k: {h: n for h, n in hosts.items() if is_loopback(h)}
+                for k, hosts in keys.items()}
+    loopback = {k: v for k, v in loopback.items() if v}
+    if loopback:
+        total = sum(sum(v.values()) for v in loopback.values())
+        print("  LOOPBACK FALLBACKS (%d call site(s) across %d key(s)):"
+              % (total, len(loopback)))
+        for key in sorted(loopback):
+            hosts = ", ".join("%s x%d" % (h, n)
+                              for h, n in sorted(loopback[key].items()))
+            print("    FAIL  services.%-24s falls back to %s" % (key, hosts))
+        print("          A loopback host is never the machine under test, so "
+              "no environment value makes these right. Re-run the converter: "
+              "it no longer emits one, and takes the real host from "
+              "<con:endpoint> where the XML has it.")
+        print()
+
+    if problems or loopback:
         for key, unset_in, n in problems:
             print("  FAIL  %s is unset in %s, and its recorded fallback names "
                   "%d host(s) no source XML declares as an endpoint"
                   % (key, "/".join(unset_in), n))
-        print("\n%d key(s) would route live traffic at a host NOBODY DECIDED: "
-              "not configured, and not declared as an endpoint either. That "
-              "is a question for whoever owns the environment, not a verdict "
-              "that the host is wrong -- set each one in "
-              "program_configuration.json, per environment block."
-              % len(problems))
+        if problems:
+            print("\n%d key(s) would route live traffic at a host NOBODY "
+                  "DECIDED: not configured, and not declared as an endpoint "
+                  "either. That is a question for whoever owns the "
+                  "environment, not a verdict that the host is wrong -- set "
+                  "each one in program_configuration.json, per environment "
+                  "block." % len(problems))
         return 1
     print("Every service key is either configured or falls back to a host "
-          "the source XML actually declares.")
+          "the source XML actually declares, and none falls back to loopback.")
     return 0
 
 

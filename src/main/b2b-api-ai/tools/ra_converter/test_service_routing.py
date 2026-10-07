@@ -26,10 +26,12 @@ is an environment
 choice, and guessing it would bake one reviewer's environment into
 several thousand generated calls.
 
-The compatibility rule is pinned below and is what makes this safe to
-ship against a working suite: an unset `services.<key>` falls back to
-baseUrl, so a project whose calls all belong to one service emits
-exactly what it emitted before.
+The compatibility rule is pinned below. It is NOT "an unset key falls
+back to baseUrl" -- this file used to say that, and it is false:
+`Config.serviceBase` prefers the RECORDED base over the caller's, so an
+unset key still routes to whatever host the recording held. The real
+rule is that a call with no RECORDED base falls back to baseUrl, which
+is why a loopback host must never be emitted as one.
 
     python tools/ra_converter/test_service_routing.py
 """
@@ -38,10 +40,30 @@ from __future__ import annotations
 import os
 import re
 import sys
+import types
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import ra_converter as R  # noqa: E402
+
+
+def _Step(original_uri: str, endpoint: str):
+    """A stand-in for the two host fields `_service_key_for_step` reads.
+
+    `test_the_step_fields_these_fixtures_stand_in_for_exist` keeps this
+    honest. A previous round of fixtures in this repo supplied a key
+    that real rows did not carry, and the tests passed against a shape
+    production never produces -- so a hand-made fixture is only worth
+    as much as the check that it still matches the real dataclass.
+    """
+    return types.SimpleNamespace(original_uri=original_uri, endpoint=endpoint)
+
+
+def test_the_step_fields_these_fixtures_stand_in_for_exist():
+    fields = set(getattr(R.RestStep, "__dataclass_fields__", {}))
+    assert {"original_uri", "endpoint"} <= fields, (
+        "RestStep no longer carries both recorded hosts; _service_key_for_step "
+        "and every _Step fixture below are reading dead attribute names")
 
 
 # --------------------------------------------------------- the key rule
@@ -81,9 +103,95 @@ def test_an_unversioned_service_is_identified_by_its_host():
 
 
 def test_a_port_is_part_of_the_base_but_not_the_key():
-    key, base = R._service_key_for_uri("http://localhost:9006/props/EPROP")
-    assert key == "localhost"
-    assert base == "http://localhost:9006"
+    key, base = R._service_key_for_uri("http://mocksvc.stg.example:9006/props/EPROP")
+    assert key == "mocksvc"
+    assert base == "http://mocksvc.stg.example:9006"
+
+
+# ------------------------------------- loopback is never a service host
+#
+# This block exists because the test it replaced asserted the bug.
+# `_service_key_for_uri("http://localhost:9006/...")` used to return
+# the key "localhost", and the converter emitted that as BOTH a config
+# key and a recorded base. Config.serviceBase prefers a recorded base
+# over the caller's baseUrl, so 23 generated call sites across 18
+# suites were pinned to this machine; the 101 that ran all died on
+# ConnectException -- 49% of the failures AND 49% of the skips in one
+# full run. The old test passed throughout.
+
+def test_a_loopback_host_yields_no_key_and_no_base():
+    for uri in ("http://localhost", "http://localhost:9006",
+                "http://127.0.0.1:8080", "http://127.1.2.3",
+                "http://0.0.0.0:9006", "http://host.docker.internal:9006"):
+        assert R._service_key_for_uri(uri) == ("", ""), uri
+
+
+def test_services_localhost_is_never_minted():
+    """One knob named after this machine cannot route four services.
+
+    `localhost` as a key collapsed the token, rateplan, groups and shop
+    services of 18 suites onto a single `services.localhost` value --
+    which cannot be correct for more than one of them at a time.
+    """
+    for uri in ("http://localhost/realms/applications/token",
+                "http://localhost/groups/rateplan",
+                "http://localhost:9006/props/EPROP/groups"):
+        key, _ = R._service_key_for_uri(uri)
+        assert key != "localhost", uri
+
+
+def test_a_versioned_prefix_on_loopback_keeps_the_key_but_drops_the_host():
+    """The prefix names the service; the host names the recorder."""
+    key, base = R._service_key_for_uri(
+        "http://localhost:9006/hospitality-partner/v2/realms/token")
+    assert key == "hospitality_partner_v2"
+    assert base == "", "a loopback host must never become a recorded base"
+
+
+def test_a_laptop_hostname_keeps_its_key_so_it_stays_overridable():
+    """Narrower than _is_local_host on purpose.
+
+    A dotless machine name resolves on somebody's network, so its key
+    is the knob that redirects it. Dropping the key would take that
+    knob away. Loopback is different: no environment can make it right.
+    """
+    key, base = R._service_key_for_uri("http://5978-b3x4n32:8080/kafka")
+    assert key == "5978_b3x4n32"
+    assert base == "http://5978-b3x4n32:8080"
+
+
+def test_the_endpoint_element_rescues_a_loopback_original_uri():
+    """ReadyAPI records two hosts and they disagree; take the real one.
+
+    Every loopback `tokenRequest` in this project carries a real
+    <con:endpoint>, so the right auth host comes from the XML rather
+    than from a guess -- the converter used to discard it by always
+    preferring <con:originalUri>.
+    """
+    step = _Step("http://localhost", "https://authgw.example.test")
+    key, base = R._service_key_for_step(step)
+    assert key == "authgw"
+    assert base == "https://authgw.example.test"
+    assert not R._loopback_only_step(step)
+
+
+def test_both_hosts_loopback_means_no_host_is_recoverable():
+    step = _Step("http://localhost", "http://localhost:9006")
+    assert R._service_key_for_step(step) == ("", "")
+    assert R._loopback_only_step(step), "must be reported, not silently routed"
+
+
+def test_a_real_original_uri_still_wins_over_the_endpoint():
+    """The fix must not reorder the normal case."""
+    step = _Step("https://partner-s.example.test/hospitality-partner/v2",
+                 "https://somewhere-else.example")
+    key, base = R._service_key_for_step(step)
+    assert key == "hospitality_partner_v2"
+    assert base == "https://partner-s.example.test/hospitality-partner/v2"
+
+
+def test_a_step_with_no_recorded_host_is_not_called_loopback():
+    assert not R._loopback_only_step(_Step("", ""))
 
 
 def test_no_uri_means_no_key_so_the_caller_keeps_baseUrl():

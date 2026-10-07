@@ -446,4 +446,85 @@ public class ResponseAssertsTest {
                 INVALID_COL, "200");
         Assert.assertThrows(AssertionError.class, sa::assertAll);
     }
+
+    // ---------------- ReadyAPI "Simple" assertions (rawBodyContains)
+    //
+    // These used to be inlined by the converter as
+    // `softAssert.assertTrue(res.asString().contains(token), ...)`, which
+    // bypassed this class and therefore the unresolved-placeholder guard.
+
+    @Test
+    @Story("a hash-wrapped placeholder that nothing resolved is skipped, not failed")
+    public void anUnresolvedTokenIsSkippedNotFailed() {
+        ResponseAsserts.resetSkippedCountsForTest();
+        SoftAssert sa = new SoftAssert();
+        ResponseAsserts.rawBodyContains(sa, json(200, "{\"roomTypeCode\":\"K1S\"}"),
+                "#groupid_roomTypeCode#", true, "Simple Contains");
+        sa.assertAll();     // must NOT fail: the check could only be false
+        Assert.assertEquals(ResponseAsserts.skippedTotal(), 1,
+                "a skipped check must be COUNTED, or the digest reports zero "
+                + "while checks silently did not run");
+    }
+
+    @Test
+    @Story("NotContains with an unresolved placeholder is skipped, not a free pass")
+    public void anUnresolvedTokenDoesNotPassVacuously() {
+        ResponseAsserts.resetSkippedCountsForTest();
+        SoftAssert sa = new SoftAssert();
+        // The old inlined form was assertFalse(body.contains("#x#")) -- always
+        // true, so it PASSED while verifying nothing at all.
+        ResponseAsserts.rawBodyContains(sa, json(200, "{\"a\":1}"),
+                "#groupid_roomTypeCode#", false, "Simple NotContains");
+        sa.assertAll();
+        Assert.assertEquals(ResponseAsserts.skippedTotal(), 1,
+                "a vacuous pass must be recorded as a skip");
+    }
+
+    @Test
+    @Story("a resolved token still does a RAW substring match, not a JSON walk")
+    public void aResolvedTokenMatchesRawSubstring() {
+        ResponseAsserts.resetSkippedCountsForTest();
+        SoftAssert sa = new SoftAssert();
+        // "oomTypeCod" is not a JSON scalar and not a quoted string, so the
+        // bodyContains/valueInResponse path would NOT match it. ReadyAPI's
+        // Simple Contains is a plain String.contains and must still pass,
+        // which is why this does not reuse that path.
+        ResponseAsserts.rawBodyContains(sa, json(200, "{\"roomTypeCode\":\"K1S\"}"),
+                "oomTypeCod", true, "Simple Contains");
+        sa.assertAll();
+        Assert.assertEquals(ResponseAsserts.skippedTotal(), 0);
+    }
+
+    @Test
+    @Story("a resolved token that is genuinely absent still fails")
+    public void aResolvedTokenThatIsAbsentFails() {
+        ResponseAsserts.resetSkippedCountsForTest();
+        SoftAssert sa = new SoftAssert();
+        ResponseAsserts.rawBodyContains(sa, json(200, "{\"roomTypeCode\":\"K1S\"}"),
+                "Q2SR", true, "Simple Contains");
+        Assert.assertThrows(AssertionError.class, sa::assertAll);
+        Assert.assertEquals(ResponseAsserts.skippedTotal(), 0,
+                "a real miss is a finding, not a skip");
+    }
+
+    @Test
+    @Story("NotContains fails when the token IS present")
+    public void notContainsFailsWhenPresent() {
+        ResponseAsserts.resetSkippedCountsForTest();
+        SoftAssert sa = new SoftAssert();
+        ResponseAsserts.rawBodyContains(sa, json(200, "{\"roomTypeCode\":\"K1S\"}"),
+                "K1S", false, "Simple NotContains");
+        Assert.assertThrows(AssertionError.class, sa::assertAll);
+    }
+
+    @Test
+    @Story("a ${..} reference that survived resolution is skipped too")
+    public void aDollarRefIsAlsoSkipped() {
+        ResponseAsserts.resetSkippedCountsForTest();
+        SoftAssert sa = new SoftAssert();
+        ResponseAsserts.rawBodyContains(sa, json(200, "{\"a\":1}"),
+                "${groupid#roomTypeCode}", true, "Simple Contains");
+        sa.assertAll();
+        Assert.assertEquals(ResponseAsserts.skippedTotal(), 1);
+    }
 }

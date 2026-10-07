@@ -5570,11 +5570,42 @@ _VERSIONED_PREFIX_RX = re.compile(
     r"^((?:/[A-Za-z0-9._-]+)*?/v\d+(?:\.\d+)?)(?=/|$)")
 
 
+def _is_loopback_base(uri: str) -> bool:
+    """True when the recorded host is THIS machine, not a service.
+
+    Narrower on purpose than {@link _is_local_host}, which also counts a
+    bare dotless hostname. A laptop name still resolves on somebody's
+    network, so it keeps its config key and stays overridable. Loopback
+    is categorically different: it means "the machine making the call",
+    and the machine running a test suite is never the machine under
+    test. No environment can ever make it right.
+    """
+    if not uri:
+        return False
+    try:
+        host = (_urlsplit(uri).hostname or "").lower()
+    except Exception:
+        return False
+    if host in ("localhost", "127.0.0.1", "::1", "0.0.0.0",
+                "host.docker.internal"):
+        return True
+    return host.startswith("127.")
+
+
 def _service_key_for_uri(original_uri: str) -> tuple:
     """(service_key, observed_base) for a recorded request URI.
 
     Returns ("", "") when there is no usable URI, so the caller keeps
     today's single-baseUrl behaviour instead of inventing a key.
+
+    A LOOPBACK host never yields an observed base. `Config.serviceBase`
+    prefers the recorded base over the caller's, so emitting one pins
+    the call to loopback for good -- an unset key does NOT fall back to
+    baseUrl, which is what this converter's own report used to claim.
+    Measured on one full run: 23 generated call sites across 18 suites
+    were pinned to `http://localhost`, and the 101 that executed all
+    died on `ConnectException: Connection refused` -- 49% of every
+    failure in the run.
     """
     if not original_uri:
         return ("", "")
@@ -5585,14 +5616,30 @@ def _service_key_for_uri(original_uri: str) -> tuple:
     if not parts.netloc:
         return ("", "")
     path = _unquote(parts.path or "")
+    loopback = _is_loopback_base(original_uri)
     m = _VERSIONED_PREFIX_RX.match(path)
     if m:
         prefix = m.group(1)
         key = prefix.strip("/").replace("/", "_").replace("-", "_").replace(".", "_")
+        if loopback:
+            # The PREFIX names the service independently of the host, so
+            # the key is still worth having -- it is the knob an
+            # environment turns. Only the host is discarded.
+            return (key.lower(), "")
         return (key.lower(), parts.scheme + "://" + parts.netloc + prefix)
+    if loopback:
+        # Nothing here names a service: no version segment to take a
+        # key from, and a host that identifies the recorder rather than
+        # the recorded. Deriving a key from the host would mint
+        # `services.localhost` -- one config knob shared by every
+        # unversioned local recording in the project, which in practice
+        # meant four unrelated services (token, rateplan, groups, shop)
+        # across 18 suites behind a single value that cannot be right
+        # for more than one of them.
+        return ("", "")
     # No version segment. The service does not version in its path, so
-    # the host IS its identity -- an unversioned internal service, a
-    # mock on localhost, or somebody's laptop hostname.
+    # the host IS its identity -- an unversioned internal service, or
+    # somebody's laptop hostname.
     #
     # Lowercased because a hostname is case-insensitive but a config key
     # is not: a mixed-case hostname key is one nobody types the same
@@ -5601,6 +5648,43 @@ def _service_key_for_uri(original_uri: str) -> tuple:
     key = parts.netloc.split(":")[0].split(".")[0]
     key = key.replace("-", "_").replace(".", "_").lower()
     return (key, parts.scheme + "://" + parts.netloc)
+
+
+def _service_key_for_step(step) -> tuple:
+    """(service_key, observed_base) for a step, preferring a REAL host.
+
+    ReadyAPI records two hosts per request and they disagree:
+    `<con:originalUri>` (what the recorder saw) and `<con:endpoint>`
+    (what the step would send to). Neither is reliably the live target
+    -- the two applications in this project are inverted on their token
+    step -- so the converter cannot rank them in general. One rule does
+    hold: a loopback host is never the target. So try each recorded
+    host in turn and take the first that names a service.
+
+    That single rule recovers a host the converter used to throw away.
+    Every loopback `tokenRequest` in this project carries a real
+    `<con:endpoint>`, so those 9 suites get their true auth host from
+    the XML instead of a guess. The remaining loopback steps are
+    loopback in BOTH elements (a mock on :9006) -- genuinely no host to
+    recover, and they fall back to the suite's baseUrl.
+    """
+    for uri in (getattr(step, "original_uri", "") or "",
+                getattr(step, "endpoint", "") or ""):
+        key, base = _service_key_for_uri(uri)
+        if key:
+            return (key, base)
+    return ("", "")
+
+
+def _loopback_only_step(step) -> bool:
+    """True when every host this step recorded is loopback.
+
+    These are the steps no environment can route, so they are worth
+    naming in the convert report rather than leaving to a stack trace.
+    """
+    hosts = [u for u in (getattr(step, "original_uri", "") or "",
+                         getattr(step, "endpoint", "") or "") if u]
+    return bool(hosts) and all(_is_loopback_base(u) for u in hosts)
 
 
 def _configured_service_keys(output_dir: str) -> dict:
@@ -5639,10 +5723,18 @@ def _is_local_host(base: str) -> bool:
     """A base that only resolves on the machine that recorded it.
 
     localhost, a loopback literal, or a bare hostname with no dot -- a
-    developer's laptop name. These matter because an UNSET services key
-    falls back to baseUrl, and for every other service that fallback is
-    merely imprecise; for one of these it silently redirects calls that
-    were never meant to leave the machine INTO a real environment.
+    developer's laptop name.
+
+    These matter because an unset services key does NOT reach baseUrl:
+    `Config.serviceBase` prefers the RECORDED base, so a local host
+    recorded into a generated client is where the call goes until
+    somebody sets the key. This docstring used to claim the opposite,
+    and so did the convert report -- which is how 23 call sites stayed
+    pinned to `http://localhost` through several runs while the report
+    said they were falling back to the real service. True loopback is
+    no longer emitted as a recorded base at all (see
+    {@link _is_loopback_base}); a laptop name still is, because it
+    resolves somewhere and its key is the knob that redirects it.
     """
     if not base:
         return False
@@ -5669,8 +5761,7 @@ def _collect_service_bases(cases) -> dict:
         for step in getattr(case, "steps", []) or []:
             if not isinstance(step, RestStep):
                 continue
-            key, base = _service_key_for_uri(
-                getattr(step, "original_uri", "") or "")
+            key, base = _service_key_for_step(step)
             if not key:
                 continue
             out.setdefault(key, {})
@@ -7694,8 +7785,7 @@ public interface ImportedRestClient {{
         # one. `baseUrl` stays the FALLBACK, so a project with a single
         # service -- or a key nobody has filled in yet -- emits exactly
         # what it emitted before.
-        _svc_key, _svc_base = _service_key_for_uri(
-            getattr(step, "original_uri", "") or "")
+        _svc_key, _svc_base = _service_key_for_step(step)
         if _svc_key:
             # Pass the RECORDED base through. Dropping it (which is what
             # `Config.get("services.<key>", baseUrl)` did) silently removes
@@ -8937,8 +9027,7 @@ public interface ImportedRestClient {{
                              + arg + ') == null ? "" : (' + arg + '))')
             base_expr = 'Config.get("sf_config.api_end_point", "")'
         else:
-            svc_key, svc_base = _service_key_for_uri(
-                getattr(step, "original_uri", "") or "")
+            svc_key, svc_base = _service_key_for_step(step)
             if svc_key:
                 base_expr = ('Config.serviceBase("' + svc_key + '", "'
                              + _jlit(svc_base or "") + '", Config.baseUrl())')
@@ -9850,25 +9939,39 @@ public interface ImportedRestClient {{
                 f'softAssert.assertTrue(matched_{vsid} != null && matched_{vsid}.matches(pattern_{vsid}), '
                 f'"JsonPath regex: {path}");',
             ], "FULL")
+        # The three Simple assertions go through ResponseAsserts rather
+        # than inlining `softAssert.assertTrue(res.asString().contains(..))`.
+        # Inlined, they bypassed the unresolved-placeholder guard every
+        # other assertion gets: when nothing published the key a token
+        # names, the generated code asserted the literal text
+        # `${groupid#roomTypeCode}` against a response body -- 21 failures
+        # in one run, none of them counted as a skipped check. NotContains
+        # was worse: an unresolved placeholder is never in the body, so it
+        # PASSED vacuously. rawBodyContains keeps the raw-substring
+        # semantics (NOT the JSON-scalar walk of bodyContains, which would
+        # change which assertions pass) and only adds the guard.
         if t == "Simple Equals":
             token = _jlit(cfg.get("token", ""))
             return ([
                 f'String token_{vsid} = {_row_expr(token)};',
-                f'softAssert.assertTrue({response_var}.asString().contains(token_{vsid}), '
+                f'com.hi.api.rest.utilities.ResponseAsserts.rawBodyContains('
+                f'softAssert, {response_var}, token_{vsid}, true, '
                 f'"Simple Equals contains token");',
             ], "FULL")
         if t == "Simple Contains":
             token = _jlit(cfg.get("token", ""))
             return ([
                 f'String token_{vsid} = {_row_expr(token)};',
-                f'softAssert.assertTrue({response_var}.asString().contains(token_{vsid}), '
+                f'com.hi.api.rest.utilities.ResponseAsserts.rawBodyContains('
+                f'softAssert, {response_var}, token_{vsid}, true, '
                 f'"Simple Contains: {token[:40]}");',
             ], "FULL")
         if t == "Simple NotContains":
             token = _jlit(cfg.get("token", ""))
             return ([
                 f'String token_{vsid} = {_row_expr(token)};',
-                f'softAssert.assertFalse({response_var}.asString().contains(token_{vsid}), '
+                f'com.hi.api.rest.utilities.ResponseAsserts.rawBodyContains('
+                f'softAssert, {response_var}, token_{vsid}, false, '
                 f'"Simple NotContains");',
             ], "FULL")
         if t == "Response SLA Assertion":
@@ -21205,8 +21308,10 @@ def _emit_imported_tests(prep: _PreparedSuite) -> int:
                 envs = ", ".join(sorted(_configured[key]))
                 flag = f"  [set in program_configuration.json: {envs}]"
             elif key in _local_unset:
-                flag = ("  <-- RECORDED ON A LOCAL HOST and unset: these "
-                        "calls fall back to baseUrl, i.e. your REAL service")
+                flag = ("  <-- RECORDED ON A LOCAL HOST and unset: the "
+                        "recorded host is what these calls USE (serviceBase "
+                        "prefers it over baseUrl), so set this key or they "
+                        "go to a machine that is not the one under test")
             elif len(bases) > 1:
                 flag = (f"  <-- {len(bases)} host variants, unset: pick the "
                         f"one for your environment")
@@ -21224,10 +21329,42 @@ def _emit_imported_tests(prep: _PreparedSuite) -> int:
                   "services." + k for k in sorted(_local_unset))
                   + " was recorded against a host that only exists on the "
                   "machine that captured it (a mock, or a developer laptop). "
-                  "Leaving it unset does NOT skip those calls -- they fall "
-                  "back to baseUrl and reach your real service. Point it at "
-                  "a stand-in, or expect those cases to behave differently "
-                  "than they did in ReadyAPI.")
+                  "Leaving it unset does NOT skip those calls and does NOT "
+                  "fall back to baseUrl -- serviceBase prefers the RECORDED "
+                  "host, so that is where they go. Point the key at a "
+                  "stand-in or at the real service.")
+
+    # Steps whose EVERY recorded host is loopback. No `services.*` key
+    # can route these, because the converter no longer mints one from a
+    # loopback host -- there is nothing in the recording that names a
+    # service. They follow the suite's baseUrl, which is a reachable
+    # guess rather than a guaranteed-dead one, and they are listed here
+    # because the right base is a question only a human can answer.
+    _loopback_steps = {}
+    for _case in cases_in_scope or []:
+        for _step in getattr(_case, "steps", []) or []:
+            if not isinstance(_step, RestStep) or not _loopback_only_step(_step):
+                continue
+            _sig = ((_step.http_method or "GET").upper(),
+                    _step.resource_path or "")
+            _loopback_steps.setdefault(_sig, set()).add(_step.step_name or "")
+    if _loopback_steps:
+        _n = sum(len(v) for v in _loopback_steps.values())
+        print(f"[ra_converter] loopback-only steps: {len(_loopback_steps)} "
+              f"distinct call(s) ({_n} step name(s)) recorded ONLY against "
+              f"this machine -- they now follow baseUrl, not localhost:")
+        for (_verb, _path) in sorted(_loopback_steps):
+            _names = ", ".join(sorted(n for n in _loopback_steps[(_verb, _path)] if n))
+            print(f"[ra_converter]     {_verb:6s} {_path}   [{_names}]")
+        print("[ra_converter]   NOTE: confirm each of these is on the suite's "
+              "baseUrl. A recording made against a local mock keeps the PATH "
+              "but loses the host, so the path may belong to a different "
+              "service -- set `baseUrl` for the env, or give the step a real "
+              "endpoint in the ReadyAPI project and reconvert.")
+        ledger.add_preflight_finding(
+            "MEDIUM", "loopback-only-endpoint", "",
+            f"{len(_loopback_steps)} distinct call(s) recorded only against "
+            f"loopback; they follow baseUrl. Confirm the host is right.")
 
     print(f"[ra_converter] audit ledger: {args.output}/_audit/{suite_name}/summary.md")
     # Same-call-different-data groups over the emitted tree -- the reuse

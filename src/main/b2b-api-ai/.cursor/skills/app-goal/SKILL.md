@@ -44,14 +44,37 @@ deliberate for the first three — the source XML has 43 token URIs on the
 partner host, and ReadyAPI's own environment config names it. Do not
 "fix" that mismatch.
 
-The `localhost` row is **not** deliberate. It is an `originalUri`
-artifact with the port stripped: nine suites would POST their token at
-`http://localhost/realms/applications/token` and get nothing, then 401
-on every following step. `services.localhost` must be set for GOAL, and
-it is. All 23 calls on that key are ordinary GOAL paths
-(`/realms/applications/token`, `/props/{propCode}/groups`,
-`/groups/rateplan`) — the same paths that elsewhere route through
-`hospitality_internal_all_v2`.
+The `localhost` row is **not** deliberate, and as of the converter fix
+below it **no longer exists** — reconvert and it is gone. Setting
+`services.localhost` is no longer the remedy; do not add it back.
+
+It was an `originalUri` artifact with the port stripped. The key was
+minted from the HOST, so one `services.localhost` value carried four
+unrelated services (token, rateplan, groups, shop) across 18 suites —
+a single knob that cannot be right for more than one of them. Worse,
+`Config.serviceBase` prefers the recorded base over the caller's, so
+the calls were pinned to loopback whether or not the key was set. One
+full run with the `stg` block (where the key points at a mock on
+`:9006` that was not running) lost 101 of 206 failures and 202 of 412
+skips to `ConnectException: Connection refused` — 49% of each.
+
+The converter now reads the host from `<con:endpoint>` as well as
+`<con:originalUri>`, taking whichever names a real service, and never
+emits a loopback host as a recorded base. That resolves the nine token
+suites from the XML rather than from a guess: every loopback
+`tokenRequest` carries a real `<con:endpoint>` on the GOAL gateway,
+whose versioned `/hospitality-internal-all/v2` prefix yields the
+EXISTING `hospitality_internal_all_v2` key — so no new key is needed.
+(Host values live only in the gitignored config, never here.)
+
+Three operations remain loopback in BOTH elements (a mock on `:9006`,
+so no host is recoverable): `POST /groups/rateplan`,
+`POST /props/{propCode}/groups`, `GET /shop/props/{propCode}`. They now
+follow the block's `base_url`, which for every GOAL block is already
+the GOAL gateway — the same value `services.localhost` had been
+hand-set to. The convert report
+lists them under "loopback-only steps" and records a MEDIUM preflight
+finding, because the right base for them is a human's call.
 
 ## Service keys
 
