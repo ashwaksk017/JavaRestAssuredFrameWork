@@ -1,6 +1,6 @@
 package com.hi.api.support;
 
-// ra_converter-framework-rev: 1
+// ra_converter-framework-rev: 2
 // Bumped whenever this bundled file changes. The converter SKIPS
 // author-editable files that already exist, so without a revision it
 // cannot tell an author's edit from a copy left by an older convert --
@@ -68,21 +68,51 @@ public final class AvailabilitySearch {
         Response shop(String propCode, String arrivalDate, String departureDate);
     }
 
-    /** One winning combination. */
+    /**
+     * One winning combination, and what the winning ROOM carried.
+     *
+     * <p>The Groovy does not merely choose a property and dates: on the
+     * first qualifying room it also captures {@code groupId},
+     * {@code cacheExpiryTime}, {@code roomTypeCode} and
+     * {@code inventoryCount} and publishes them to a second Properties
+     * step. Everything downstream reads those -- the POST body's
+     * {@code "groupId"}, a Simple Contains on {@code roomTypeCode}, and
+     * a 45-minute freshness assertion on {@code cacheExpiryTime}.
+     * Publishing only the dates left all of them unresolved, which the
+     * server answered with {@code 504 groupId Value not valid}.</p>
+     */
     public static final class Found {
         public final String hcrs;
         public final String pcrs;
         public final String arrivalDate;
         public final String departureDate;
         public final boolean verified;
+        /** From the winning response / room; empty when unverified. */
+        public final String groupId;
+        public final String cacheExpiryTime;
+        public final String roomTypeCode;
+        public final String inventoryCount;
+        final long foundAtMillis = System.currentTimeMillis();
 
         Found(String hcrs, String pcrs, String arrivalDate,
               String departureDate, boolean verified) {
+            this(hcrs, pcrs, arrivalDate, departureDate, verified,
+                 "", "", "", "");
+        }
+
+        Found(String hcrs, String pcrs, String arrivalDate,
+              String departureDate, boolean verified, String groupId,
+              String cacheExpiryTime, String roomTypeCode,
+              String inventoryCount) {
             this.hcrs = hcrs;
             this.pcrs = pcrs;
             this.arrivalDate = arrivalDate;
             this.departureDate = departureDate;
             this.verified = verified;
+            this.groupId = groupId == null ? "" : groupId;
+            this.cacheExpiryTime = cacheExpiryTime == null ? "" : cacheExpiryTime;
+            this.roomTypeCode = roomTypeCode == null ? "" : roomTypeCode;
+            this.inventoryCount = inventoryCount == null ? "" : inventoryCount;
         }
     }
 
@@ -108,8 +138,28 @@ public final class AvailabilitySearch {
      * @return true when the published combination was VERIFIED to have
      *         inventory; false when it is the unverified first candidate.
      */
+    /** Back-compat: no group step, scan every room. */
     public static boolean run(Map<String, String> ctx, String stepName,
                               String propsStep, List<String> hcrs,
+                              List<String> pcrs, List<Integer> offsets,
+                              int minInventory, Probe probe) {
+        return run(ctx, stepName, propsStep, "", 0, hcrs, pcrs, offsets,
+                   minInventory, probe);
+    }
+
+    /**
+     * @param groupStep Properties step the winning ROOM's fields go to
+     *                  ({@code groupId}, {@code cacheExpiryTime},
+     *                  {@code roomTypeCode}, {@code inventoryCount}).
+     *                  Empty to publish none.
+     * @param scanRooms how many {@code roomRates} entries to consider.
+     *                  The Groovy writes {@code for (t = 0; t < 6; t++)},
+     *                  so a 7th room with inventory does NOT qualify
+     *                  there and must not qualify here. 0 means all.
+     */
+    public static boolean run(Map<String, String> ctx, String stepName,
+                              String propsStep, String groupStep,
+                              int scanRooms, List<String> hcrs,
                               List<String> pcrs, List<Integer> offsets,
                               int minInventory, Probe probe) {
         if (ctx == null || hcrs == null || hcrs.isEmpty()
@@ -118,11 +168,12 @@ public final class AvailabilitySearch {
         }
         String props = propsStep == null || propsStep.isEmpty()
                 ? "generatedDatesAndProps" : propsStep;
+        String group = groupStep == null ? "" : groupStep.trim();
         Found first = candidate(hcrs, pcrs, offsets, 0, 0, false);
 
         if (!Config.getBool("rest.availabilitySearch.enabled", true)
                 || probe == null) {
-            publish(ctx, props, first);
+            publish(ctx, props, group, first);
             LOG.warn(" .. [availability] search DISABLED for `{}` -- publishing "
                      + "the first candidate {} on {} WITHOUT checking it has "
                      + "rooms. Downstream calls inherit whatever that is.",
@@ -134,8 +185,22 @@ public final class AvailabilitySearch {
         boolean perCase = Config.getBool("rest.availabilitySearch.perCase", false);
         if (!perCase) {
             Found cached = CACHE.get(key);
+            // cacheExpiryTime is asserted to be within 45 MINUTES of now, so
+            // a winner reused for long enough starts failing an assertion
+            // about freshness rather than about availability. Re-search past
+            // the TTL instead of serving a stale capture.
+            long ttlMin = Config.getInt("rest.availabilitySearch.cacheTtlMinutes", 30);
+            if (cached != null && ttlMin > 0
+                    && System.currentTimeMillis() - cached.foundAtMillis
+                       > ttlMin * 60_000L) {
+                LOG.info(" .. [availability] cached answer for `{}` is older than "
+                         + "{} min -- searching again so cacheExpiryTime stays "
+                         + "fresh", stepName, ttlMin);
+                CACHE.remove(key);
+                cached = null;
+            }
             if (cached != null) {
-                publish(ctx, props, cached);
+                publish(ctx, props, group, cached);
                 LOG.info(" .. [availability] reusing this run's answer for `{}`: "
                          + "{} on {} ({})", stepName, cached.hcrs,
                          cached.arrivalDate,
@@ -152,7 +217,7 @@ public final class AvailabilitySearch {
             cap = hcrs.size() * offsets.size();
         }
         Found winner = search(stepName, hcrs, pcrs, offsets, minInventory,
-                              probe, cap);
+                              probe, cap, scanRooms);
         if (winner == null) {
             winner = first;
             LOG.warn(" .. [availability] no combination for `{}` had inventory > "
@@ -161,20 +226,24 @@ public final class AvailabilitySearch {
                      + "is the ENVIRONMENT, not the test data.",
                      stepName, minInventory, cap, first.hcrs, first.arrivalDate);
         } else {
-            LOG.info(" .. [availability] `{}` -> {} on {}..{} (inventory > {})",
+            LOG.info(" .. [availability] `{}` -> {} on {}..{} "
+                     + "(inventory {} > {}, roomType {}, groupId {})",
                      stepName, winner.hcrs, winner.arrivalDate,
-                     winner.departureDate, minInventory);
+                     winner.departureDate, winner.inventoryCount,
+                     minInventory, winner.roomTypeCode,
+                     winner.groupId.isEmpty() ? "(none)" : "captured");
         }
         if (!perCase) {
             CACHE.put(key, winner);
         }
-        publish(ctx, props, winner);
+        publish(ctx, props, group, winner);
         return winner.verified;
     }
 
     private static Found search(String stepName, List<String> hcrs,
                                 List<String> pcrs, List<Integer> offsets,
-                                int minInventory, Probe probe, int cap) {
+                                int minInventory, Probe probe, int cap,
+                                int scanRooms) {
         int probes = 0;
         // Property-major, offset-minor: the same order the Groovy loops in,
         // so the winner this picks is the winner ReadyAPI would pick.
@@ -204,45 +273,98 @@ public final class AvailabilitySearch {
                              c.hcrs, c.arrivalDate, status);
                     continue;
                 }
-                int best = maxInventory(res);
-                LOG.info(" .. [availability] {} on {} -> HTTP {}, best inventory {}",
-                         c.hcrs, c.arrivalDate, status, best);
-                if (best > minInventory) {
-                    return c;
+                Found hit = qualifyingRoom(res, c, minInventory, scanRooms);
+                LOG.info(" .. [availability] {} on {} -> HTTP {}, best inventory "
+                         + "{} in the first {} room(s)",
+                         c.hcrs, c.arrivalDate, status,
+                         maxInventory(res, scanRooms),
+                         scanRooms > 0 ? scanRooms : "all");
+                if (hit != null) {
+                    return hit;
                 }
             }
         }
         return null;
     }
 
-    /** Largest {@code roomRates[*].inventory} in the body, or -1. */
-    static int maxInventory(Response res) {
-        List<Object> raw;
-        try {
-            raw = res.jsonPath().getList("roomRates.inventory");
-        } catch (RuntimeException e) {
-            return -1;
+    /**
+     * The first room that clears the threshold, with the fields the
+     * Groovy captures from it -- or null.
+     *
+     * <p>{@code scanRooms} is honoured because the Groovy writes
+     * {@code for (t = 0; t < 6; t++)}: a 7th room with inventory does
+     * not qualify there, so it must not qualify here either, or this
+     * picks a combination ReadyAPI would have rejected.</p>
+     */
+    static Found qualifyingRoom(Response res, Found c, int minInventory,
+                                int scanRooms) {
+        List<Object> inv = roomField(res, "inventory");
+        if (inv == null || inv.isEmpty()) {
+            return null;
         }
-        if (raw == null || raw.isEmpty()) {
-            return -1;
-        }
-        int best = -1;
-        for (Object o : raw) {
-            if (o == null) {
+        List<Object> codes = roomField(res, "roomTypeCode");
+        int limit = scanRooms > 0 ? Math.min(scanRooms, inv.size()) : inv.size();
+        for (int i = 0; i < limit; i++) {
+            int v = asInt(inv.get(i));
+            if (v <= minInventory) {
                 continue;
             }
-            try {
-                int v = (o instanceof Number)
-                        ? ((Number) o).intValue()
-                        : Integer.parseInt(String.valueOf(o).trim());
-                if (v > best) {
-                    best = v;
-                }
-            } catch (NumberFormatException ignored) {
-                // a non-numeric inventory is not a candidate
+            String code = (codes != null && i < codes.size() && codes.get(i) != null)
+                    ? String.valueOf(codes.get(i)) : "";
+            return new Found(c.hcrs, c.pcrs, c.arrivalDate, c.departureDate,
+                             true, scalar(res, "groupId"),
+                             scalar(res, "cacheExpiryTime"), code,
+                             Integer.toString(v));
+        }
+        return null;
+    }
+
+    /** Largest inventory within the scanned window, or -1. For the log. */
+    static int maxInventory(Response res, int scanRooms) {
+        List<Object> inv = roomField(res, "inventory");
+        if (inv == null || inv.isEmpty()) {
+            return -1;
+        }
+        int limit = scanRooms > 0 ? Math.min(scanRooms, inv.size()) : inv.size();
+        int best = -1;
+        for (int i = 0; i < limit; i++) {
+            int v = asInt(inv.get(i));
+            if (v > best) {
+                best = v;
             }
         }
         return best;
+    }
+
+    private static List<Object> roomField(Response res, String leaf) {
+        try {
+            return res.jsonPath().getList("roomRates." + leaf);
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    private static String scalar(Response res, String path) {
+        try {
+            Object o = res.jsonPath().get(path);
+            return o == null ? "" : String.valueOf(o);
+        } catch (RuntimeException e) {
+            return "";
+        }
+    }
+
+    private static int asInt(Object o) {
+        if (o == null) {
+            return -1;
+        }
+        if (o instanceof Number) {
+            return ((Number) o).intValue();
+        }
+        try {
+            return Integer.parseInt(String.valueOf(o).trim());
+        } catch (NumberFormatException e) {
+            return -1;   // a non-numeric inventory is not a candidate
+        }
     }
 
     private static Found candidate(List<String> hcrs, List<String> pcrs,
@@ -260,13 +382,31 @@ public final class AvailabilitySearch {
     }
 
     private static void publish(Map<String, String> ctx, String propsStep,
-                                Found f) {
+                                String groupStep, Found f) {
         ImportedScenario.putExtracted(ctx, propsStep + ".hcrs", f.hcrs);
         ImportedScenario.putExtracted(ctx, propsStep + ".pcrs", f.pcrs);
         ImportedScenario.putExtracted(ctx, propsStep + ".arrivalDate",
                                       f.arrivalDate);
         ImportedScenario.putExtracted(ctx, propsStep + ".departureDate",
                                       f.departureDate);
+        if (groupStep == null || groupStep.isEmpty()) {
+            return;
+        }
+        // Only when the search actually won. Publishing empties here would
+        // look like a resolved value and send `"groupId": ""`, which the
+        // server rejects with a message about groupId rather than about
+        // the search -- the unresolved placeholder at least names itself.
+        if (!f.verified || f.groupId.isEmpty()) {
+            return;
+        }
+        ImportedScenario.putExtracted(ctx, groupStep + ".groupId", f.groupId);
+        ImportedScenario.putExtracted(ctx, groupStep + ".groupid", f.groupId);
+        ImportedScenario.putExtracted(ctx, groupStep + ".cacheExpiryTime",
+                                      f.cacheExpiryTime);
+        ImportedScenario.putExtracted(ctx, groupStep + ".roomTypeCode",
+                                      f.roomTypeCode);
+        ImportedScenario.putExtracted(ctx, groupStep + ".inventoryCount",
+                                      f.inventoryCount);
     }
 
     private static String cacheKey(String propsStep, List<String> hcrs,

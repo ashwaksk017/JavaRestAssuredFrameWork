@@ -213,15 +213,11 @@ public class AvailabilitySearchTest {
     @Test(groups = {"unit"})
     @Story("maxInventory reads the largest room inventory, or -1")
     public void maxInventoryReadsTheBody() {
-        Assert.assertEquals(AvailabilitySearch.maxInventory(
-                json(200, "{\"roomRates\":[{\"inventory\":4},"
-                        + "{\"inventory\":26},{\"inventory\":8}]}")), 26);
-        Assert.assertEquals(AvailabilitySearch.maxInventory(
-                json(200, NO_ROOMS)), -1);
-        Assert.assertEquals(AvailabilitySearch.maxInventory(
-                json(200, "{}")), -1);
-        Assert.assertEquals(AvailabilitySearch.maxInventory(
-                json(400, "not json at all")), -1,
+        Assert.assertEquals(AvailabilitySearch.maxInventory(json(200, "{\"roomRates\":[{\"inventory\":4},"
+                        + "{\"inventory\":26},{\"inventory\":8}]}"), 0), 26);
+        Assert.assertEquals(AvailabilitySearch.maxInventory(json(200, NO_ROOMS), 0), -1);
+        Assert.assertEquals(AvailabilitySearch.maxInventory(json(200, "{}"), 0), -1);
+        Assert.assertEquals(AvailabilitySearch.maxInventory(json(400, "not json at all"), 0), -1,
                 "an unparseable body is not a candidate, and must not throw");
     }
 
@@ -234,5 +230,82 @@ public class AvailabilitySearchTest {
         Assert.assertFalse(AvailabilitySearch.run(new HashMap<>(), "p", "gen",
                 List.of(), List.of(), List.of(1), 0,
                 (a, b, c) -> json(200, rooms(99))));
+    }
+
+    // ------------- what the winning ROOM carries (the Groovy's real job)
+
+    private static String roomsWithCodes(int... inv) {
+        StringBuilder sb = new StringBuilder(
+            "{\"groupId\":\"G-123\",\"cacheExpiryTime\":\"2026-10-07T12:00:00Z\","
+            + "\"roomRates\":[");
+        for (int i = 0; i < inv.length; i++) {
+            if (i > 0) sb.append(",");
+            sb.append("{\"roomTypeCode\":\"RT").append(i)
+              .append("\",\"inventory\":").append(inv[i]).append("}");
+        }
+        return sb.append("]}").toString();
+    }
+
+    @Test(groups = {"unit"})
+    @Story("The winning room's groupId / roomTypeCode / inventory are published")
+    public void theWinningRoomIsPublished() {
+        Map<String, String> ctx = new HashMap<>();
+        boolean ok = AvailabilitySearch.run(ctx, "probe", "gen", "groupid", 6,
+                List.of("AAA"), List.of(), List.of(10), 9,
+                (p, a, d) -> json(200, roomsWithCodes(2, 40, 1)));
+        Assert.assertTrue(ok);
+        // the FIRST room over the threshold, not the largest
+        Assert.assertEquals(ctx.get("groupid.roomTypeCode"), "RT1");
+        Assert.assertEquals(ctx.get("groupid.inventoryCount"), "40");
+        Assert.assertEquals(ctx.get("groupid.groupId"), "G-123");
+        Assert.assertEquals(ctx.get("groupid.cacheExpiryTime"),
+                "2026-10-07T12:00:00Z");
+    }
+
+    @Test(groups = {"unit"})
+    @Story("Only the first N rooms count, as the Groovy's t<6 loop does")
+    public void roomsPastTheScanLimitDoNotQualify() {
+        Map<String, String> ctx = new HashMap<>();
+        // seven rooms; only the 7th has inventory. The Groovy scans 6, so
+        // this combination does NOT qualify and the search moves on.
+        boolean ok = AvailabilitySearch.run(ctx, "probe", "gen", "groupid", 6,
+                List.of("AAA"), List.of(), List.of(10), 9,
+                (p, a, d) -> json(200, roomsWithCodes(1, 1, 1, 1, 1, 1, 50)));
+        Assert.assertFalse(ok,
+                "a 7th room is outside the window ReadyAPI scans");
+        Assert.assertNull(ctx.get("groupid.groupId"),
+                "an unverified winner must not publish group fields");
+    }
+
+    @Test(groups = {"unit"})
+    @Story("scanRooms=0 means scan them all")
+    public void zeroScanRoomsMeansNoLimit() {
+        Map<String, String> ctx = new HashMap<>();
+        Assert.assertTrue(AvailabilitySearch.run(ctx, "probe", "gen", "groupid", 0,
+                List.of("AAA"), List.of(), List.of(10), 9,
+                (p, a, d) -> json(200, roomsWithCodes(1, 1, 1, 1, 1, 1, 50))));
+        Assert.assertEquals(ctx.get("groupid.inventoryCount"), "50");
+    }
+
+    @Test(groups = {"unit"})
+    @Story("A failed search publishes NO group fields")
+    public void aFailedSearchPublishesNoGroupFields() {
+        Map<String, String> ctx = new HashMap<>();
+        AvailabilitySearch.run(ctx, "probe", "gen", "groupid", 6,
+                List.of("AAA"), List.of(), List.of(10), 9,
+                (p, a, d) -> json(200, NO_ROOMS));
+        // dates still published so nothing dangles ...
+        Assert.assertNotNull(ctx.get("gen.arrivalDate"));
+        // ... but an empty groupId would read as resolved and go out as
+        // `"groupId": ""`, which the server blames on groupId.
+        Assert.assertNull(ctx.get("groupid.groupId"));
+    }
+
+    @Test(groups = {"unit"})
+    @Story("maxInventory honours the scan window")
+    public void maxInventoryHonoursTheWindow() {
+        Response r = json(200, roomsWithCodes(1, 2, 3, 4, 5, 6, 99));
+        Assert.assertEquals(AvailabilitySearch.maxInventory(r, 6), 6);
+        Assert.assertEquals(AvailabilitySearch.maxInventory(r, 0), 99);
     }
 }

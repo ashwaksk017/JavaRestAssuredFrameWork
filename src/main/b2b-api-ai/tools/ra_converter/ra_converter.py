@@ -10566,8 +10566,19 @@ public interface ImportedRestClient {{
         r'(?:currentDate|now)\s*\.\s*plus(?:Days)?\s*\(\s*(\d+)\s*\)')
     _PROBE_LIST_RX = re.compile(
         r'def\s+(?P<name>hcrs|pcrs)\s*=\s*\[(?P<body>[^\]]*)\]')
+    # `(json.roomRates[t].inventory) > 9` -- the closing paren sits between
+    # the word and the operator, and requiring them adjacent matched only
+    # 5 of 90 scripts. The other 85 fell through to a threshold of 0, so
+    # the search accepted a property with ONE room where ReadyAPI demands
+    # more than nine.
     _PROBE_THRESHOLD_RX = re.compile(
-        r'(?:inventory|inventoryCount)\s*>\s*(\d+)')
+        r'(?:inventory|inventoryCount)\s*\)?\s*>\s*(\d+)')
+    # `for(int t =0; t< 6; t++)` -- how many roomRates the Groovy looks at.
+    _PROBE_ROOM_SCAN_RX = re.compile(
+        r'for\s*\(\s*int\s+(\w+)\s*=\s*0\s*;\s*\1\s*<\s*(\d+)\s*;')
+    # `groupIdStep.setPropertyValue('groupId', ...)` -> which variable
+    _PROBE_GROUP_VAR_RX = re.compile(
+        r"""(\w+)\.setPropertyValue\(\s*['"]groupId['"]""")
 
     def _availability_probe_lambda(self, script: str,
                                    props_step: str = "generatedDatesAndProps") -> str:
@@ -10795,6 +10806,31 @@ public interface ImportedRestClient {{
             f'"{offs}".replace(" ", ""));',
         ]
 
+        # The Properties step the WINNING ROOM's fields go to. The Groovy
+        # does not only choose a property and dates: on the first
+        # qualifying room it captures groupId, cacheExpiryTime,
+        # roomTypeCode and inventoryCount and publishes them, and 80 of
+        # the 90 scripts do this. Everything downstream reads them -- the
+        # POST body's "groupId", a Simple Contains on roomTypeCode, and a
+        # 45-minute freshness assertion on cacheExpiryTime -- so omitting
+        # them left all three unresolved and the server answered
+        # `504 groupId Value not valid`.
+        group_step = ""
+        gv = self._PROBE_GROUP_VAR_RX.search(script)
+        if gv:
+            mg = re.search(
+                r'''def\s+%s\s*=.*?getTestStepByName\(\s*["']([^"']+)["']'''
+                % re.escape(gv.group(1)), script, re.S)
+            if mg:
+                group_step = mg.group(1)
+        # How many roomRates the Groovy inspects: `for(int t=0; t<6; t++)`.
+        # A 7th room with inventory does not qualify there, so it must not
+        # qualify here. 0 means no limit.
+        scan_rooms = 0
+        ms = self._PROBE_ROOM_SCAN_RX.search(script)
+        if ms:
+            scan_rooms = int(ms.group(2))
+
         probe = self._availability_probe_lambda(script, props_step)
         if probe:
             # Run it. AvailabilitySearch publishes the winner -- or the
@@ -10804,8 +10840,9 @@ public interface ImportedRestClient {{
             # question is about the environment, not this case's data.
             return head + [
                 f'com.hi.api.support.AvailabilitySearch.run(ctx, "{step_j}", '
-                f'"{_jlit(props_step)}", __probeHcrs_{step_j}, '
-                f'__probePcrs_{step_j}, __probeOffsets_{step_j}, {threshold},',
+                f'"{_jlit(props_step)}", "{_jlit(group_step)}", {scan_rooms}, '
+                f'__probeHcrs_{step_j}, __probePcrs_{step_j}, '
+                f'__probeOffsets_{step_j}, {threshold},',
                 f'        {probe});',
             ]
 
