@@ -856,8 +856,57 @@ public class RestUtilities {
             v = "";
         }
         if (!jsonPathMiss(v)) return v;
+        // A ReadyAPI ref into a ROOT ARRAY, `${Step#Response#$[0]['propCode']}`,
+        // reaches here as `0.propCode`: the converter folds `[0]` into a
+        // dotted segment. GPath cannot apply a bare `0` to a list -- it
+        // throws, the catch above swallowed it, and the extract came back
+        // "" with nothing in the log. Every `#GET_ratePlan_Response_0_*#`
+        // then fell back to null, the PUT path ended in an empty id, and
+        // the JDBC step was skipped over the literal it inherited.
+        // Re-spell numeric segments as index steps and try once more.
+        String bracketed = bracketNumericSegments(jsonPath);
+        if (!bracketed.equals(jsonPath)) {
+            try {
+                String raw = jp.getString(bracketed);
+                if (!jsonPathMiss(raw)) {
+                    LOG.info(" .. [jsonpath root-array] '{}' missed; using '{}'",
+                            jsonPath, bracketed);
+                    return raw;
+                }
+            } catch (Exception ignored) {
+                // fall through to the alias lookup
+            }
+        }
         String aliased = extractUsingReadyApiPathAliases(jp, jsonPath);
         return aliased == null ? "" : aliased;
+    }
+
+    /**
+     * {@code 0.propCode} to {@code [0].propCode}, {@code items.1.name} to
+     * {@code items[1].name}. A segment that is only digits is an index,
+     * never a key; anything else is returned untouched.
+     */
+    static String bracketNumericSegments(String path) {
+        if (path == null || path.isEmpty() || path.indexOf('.') < 0
+                && !path.chars().allMatch(Character::isDigit)) {
+            return path;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (String seg : path.split("\\.")) {
+            if (seg.isEmpty()) {
+                continue;
+            }
+            boolean index = seg.chars().allMatch(Character::isDigit);
+            if (index) {
+                sb.append('[').append(seg).append(']');
+            } else {
+                if (sb.length() > 0) {
+                    sb.append('.');
+                }
+                sb.append(seg);
+            }
+        }
+        return sb.toString();
     }
 
     private static boolean jsonPathMiss(String v) {
