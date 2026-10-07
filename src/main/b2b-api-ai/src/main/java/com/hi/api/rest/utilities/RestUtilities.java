@@ -403,9 +403,60 @@ public class RestUtilities {
      *               shell / query-string contexts where JSON escaping would
      *               corrupt the output).
      */
+    /**
+     * Is the whole template a single {@code #token#} and nothing else?
+     *
+     * <p>Such a template substitutes a WHOLE payload, so the value must
+     * pass through verbatim. Whitespace around it is ignored because the
+     * converter writes the token on its own line with a trailing
+     * newline.</p>
+     *
+     * <p>Package-private so the contract is unit-tested rather than
+     * inferred from a run.</p>
+     */
+    static boolean isWholeTemplateOnePlaceholder(String schema) {
+        if (schema == null) {
+            return false;
+        }
+        String s = schema.trim();
+        if (s.length() < 3 || s.charAt(0) != '#' || s.charAt(s.length() - 1) != '#') {
+            return false;
+        }
+        String inner = s.substring(1, s.length() - 1);
+        if (inner.isEmpty() || inner.indexOf('#') >= 0) {
+            return false;      // two tokens, or `##`: not a single token
+        }
+        for (int i = 0; i < inner.length(); i++) {
+            char c = inner.charAt(i);
+            if (!Character.isLetterOrDigit(c) && c != '_' && c != '.' && c != '-') {
+                return false;  // not a placeholder NAME, so not a token
+            }
+        }
+        return true;
+    }
+
     public static String mapJsonValues(String schema, Map<String, String> dataMap,
                                         boolean strict, boolean jsonEscape) throws Exception {
         if (dataMap == null) dataMap = Map.of();
+
+        // A template that is NOTHING BUT one placeholder is a pass-through,
+        // not a JSON string field, so escaping it corrupts the payload.
+        //
+        // ReadyAPI cases that keep their whole request in a DataSource cell
+        // convert to a template file holding exactly
+        // `#DataSource_Requestbody#`. Escaping that substitution turns the
+        // body into a JSON *string literal*: the server received
+        // `{\n  \"startDate\": ...` and answered `998 Invalid Parameter
+        // Value / JSON Parse Error` at `Line:1;Column:2` -- column 2 being
+        // the backslash. 108 of those in one run, and it was invisible
+        // until the loopback-routing fix let the call reach a server at all.
+        //
+        // Deliberately narrow: only when the trimmed template IS a single
+        // `#...#` token. A placeholder with any JSON around it still sits
+        // inside `"..."` and still needs escaping, so nothing else moves.
+        if (jsonEscape && isWholeTemplateOnePlaceholder(schema)) {
+            jsonEscape = false;
+        }
 
         List<String> unresolved = new ArrayList<>();
 

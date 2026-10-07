@@ -10569,7 +10569,8 @@ public interface ImportedRestClient {{
     _PROBE_THRESHOLD_RX = re.compile(
         r'(?:inventory|inventoryCount)\s*>\s*(\d+)')
 
-    def _availability_probe_lambda(self, script: str) -> str:
+    def _availability_probe_lambda(self, script: str,
+                                   props_step: str = "generatedDatesAndProps") -> str:
         """Java for the shop call the search re-runs, or "" if unclear.
 
         The script names its probe target --
@@ -10610,10 +10611,34 @@ public interface ImportedRestClient {{
                 continue
             col = sanitize_identifier(rs.step_name or nm)
             puts = []
-            for qp in (rs.query_params or {}):
+            for qp, recorded in (rs.query_params or {}).items():
                 low = (qp or "").strip().lower()
                 if not qp or low in ("arrivaldate", "departuredate"):
                     continue          # the probe supplies these two
+                raw = (recorded or "").strip()
+                if not raw:
+                    continue          # recorded empty: ReadyAPI sends nothing
+                if "${" not in raw:
+                    # A RECORDED LITERAL, and it is the whole point. The
+                    # probe step in this project pins peakRooms=22 and
+                    # numAttendees=10 rather than reading the DataSource,
+                    # which is what lets the search ask one question --
+                    # "can this property hold 22 rooms" -- independently of
+                    # the case's own data.
+                    #
+                    # Taking the row's value instead made the search
+                    # structurally unable to succeed: a negative case sets
+                    # peakRooms below the property minimum on purpose, so
+                    # 80 of 120 probes in one run came back 400 and no
+                    # combination was ever found.
+                    puts.append(
+                        f'            __av.accept("{_jlit(qp)}", '
+                        f'"{_jlit(raw)}");')
+                    continue
+                # A reference to the Properties step being searched is the
+                # probe's own business; anything else comes from the row.
+                if re.match(r'^\$\{%s#' % re.escape(props_step), raw):
+                    continue
                 puts.append(
                     f'            __av.accept("{_jlit(qp)}", '
                     f'row.get("qry_{col}_{_jlit(qp)}"));')
@@ -10708,7 +10733,7 @@ public interface ImportedRestClient {{
             f'"{offs}".replace(" ", ""));',
         ]
 
-        probe = self._availability_probe_lambda(script)
+        probe = self._availability_probe_lambda(script, props_step)
         if probe:
             # Run it. AvailabilitySearch publishes the winner -- or the
             # first candidate when nothing has rooms -- so the four keys
