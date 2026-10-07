@@ -5,17 +5,27 @@ WHY THIS EXISTS
 `Config.serviceBase(key, recordedBase, callerBase)` prefers a configured
 `services.<key>`; with none it falls back to the host the converter
 RECORDED. That fallback is the trap, because the source XML carries two
-kinds of host:
+kinds of host and NEITHER is reliably the live target:
 
-    <con:endpoint>     what ReadyAPI actually sends to
-    <con:originalUri>  where a request was first imported from -- a
-                       historical note ReadyAPI never calls
+    <con:endpoint>     the project's configured target when exported
+    <con:originalUri>  where the request was first imported from
 
-A key left unset routes live traffic at whatever was recorded, and three
-such keys in this project pointed at hosts that appear ONLY as an
-originalUri: a test-tier gateway (every call 401'd against a token
-minted elsewhere), a `localhost` with its port stripped (nine suites
-could not mint a token at all), and a developer's machine name.
+The converter prefers `originalUri` when present. Which one is right
+depends on how that project was last pointed, and the two applications
+in this repo are INVERTED on their token step:
+
+    GOAL  endpoint = the real gateway, originalUri = a stale localhost
+    B2B   endpoint = a local mock on :9006, originalUri = the real gateway
+
+So a recorded host is a GUESS, not a reading of intent, and reading
+either element as authoritative gets one application wrong. Keys left
+unset in this project pointed at a test-tier gateway (every call 401'd
+against a token minted elsewhere), a `localhost` with its port stripped
+(nine suites could not mint a token at all), and a developer's machine.
+
+What this check reports is therefore "nobody decided this host", not
+"this host is wrong" -- the decision belongs to whoever owns the
+environment.
 
 None of that is visible in the emitted Java, which looks correct, nor at
 compile time, nor to any other check. It surfaces as a run that fails
@@ -198,11 +208,14 @@ def main():
     if problems:
         for key, unset_in, n in problems:
             print("  FAIL  %s is unset in %s, and its recorded fallback names "
-                  "%d host(s) the source XML never declares as an endpoint"
+                  "%d host(s) no source XML declares as an endpoint"
                   % (key, "/".join(unset_in), n))
-        print("\n%d key(s) would route live traffic at a host ReadyAPI does "
-              "not call. Set each one in program_configuration.json, per "
-              "environment block." % len(problems))
+        print("\n%d key(s) would route live traffic at a host NOBODY DECIDED: "
+              "not configured, and not declared as an endpoint either. That "
+              "is a question for whoever owns the environment, not a verdict "
+              "that the host is wrong -- set each one in "
+              "program_configuration.json, per environment block."
+              % len(problems))
         return 1
     print("Every service key is either configured or falls back to a host "
           "the source XML actually declares.")

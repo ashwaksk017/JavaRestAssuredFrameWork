@@ -123,8 +123,23 @@ def suite_of(path):
             return seg
     base = os.path.basename(path)
     if base.endswith("Client.java"):
+        # Lowercasing alone is not the suite name: a suite directory can
+        # carry an underscore the client class drops
+        # (topicsprogramaccountsstgkafka_events ->
+        # TopicsprogramaccountsstgkafkaEventsClient). Taking the
+        # lowercased class invented a second, empty suite and reported it
+        # as having no token step. Resolved against the real directories
+        # by the caller; the squashed form is returned as a fallback.
         return base[: -len("Client.java")].lower()
     return ""
+
+
+def resolve_client_suite(name, known):
+    """Map a client-derived name onto the real suite directory."""
+    if name in known:
+        return name
+    squashed = {k.replace("_", ""): k for k in known}
+    return squashed.get(name.replace("_", ""), name)
 
 
 def read(path):
@@ -144,7 +159,7 @@ def main():
     # Whole-suite text, because the chain spans several files: the step
     # and extract sit in SetupHelper, the consumers in cases/Specs*.
     text_by_suite = defaultdict(str)
-    route_key = {}
+    route_key_raw = {}
 
     for path in support_files(args.root):
         text = read(path)
@@ -160,11 +175,16 @@ def main():
                     for j in range(i, min(len(lines), i + 25)):
                         m = SB.search(lines[j])
                         if m:
-                            route_key.setdefault(suite, m.group(1))
+                            route_key_raw.setdefault(suite, m.group(1))
                             break
                     break
             continue
         text_by_suite[suite] += "\n" + text
+
+    # Clients are named after a suite but not spelled like its directory,
+    # so fold them onto the directories that actually hold the code.
+    route_key = {resolve_client_suite(s, set(text_by_suite)): k
+                 for s, k in route_key_raw.items()}
 
     has_step = defaultdict(bool)
     extracts = defaultdict(set)

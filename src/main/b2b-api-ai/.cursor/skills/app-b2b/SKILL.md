@@ -79,12 +79,32 @@ token has been observed returning HTTP 200 on this block.
 | `hospitality_internal_ro_v2` | **UNSET — see above** |
 | `5978_b3x4n32` | **UNSET — see above** |
 
-## Token chain
+## Token chain (all 15 XMLs converted in one pass)
 
-All 16 B2B suites extract `access_token`, publish it with the `Bearer `
-prefix and read it back -- the same shape GOAL uses. The request
-**body** has the same unfilled credential placeholders as GOAL: the gap
-is converter-wide, not per application. See the common skill.
+Uniform and healthy: every suite has a token step, extracts
+`access_token`, publishes it to ctx **with** the `Bearer ` prefix, and
+reads it back. All 15 route through `hospitality_internal_all_v2` --
+the same key their API calls use, so a 401 here is about credentials or
+scope, never a gateway mismatch.
+
+The request **body** has the same unfilled credential placeholders as
+GOAL: the gap is converter-wide, not per application. See the common
+skill.
+
+`audit_service_keys.py` on a B2B-only tree finds 5 keys, of which only
+the two below are unset.
+
+## `localhost` here means a MOCK, unlike in GOAL
+
+B2B's `localhost` key carries only `/shop/props/{propCode}` (4 suites),
+and both `<con:endpoint>` and `<con:originalUri>` say `localhost:9006` --
+so ReadyAPI really does mock those calls. The config points the key at
+that mock, restoring the port the converter strips.
+
+Do not copy GOAL's value here. In GOAL the same key also carries the
+TOKEN step, whose endpoint is the real gateway, so GOAL must point it at
+a real host. Pointing B2B's at a real host instead would send four calls
+that were recorded as mocked to the live API.
 
 ## `ALLOWED_DOMAINS` is a B2B key
 

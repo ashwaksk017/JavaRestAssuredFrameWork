@@ -25,17 +25,30 @@ order:
 3. **the host the converter recorded**
 4. `Config.baseUrl()`
 
-Step 3 is the trap. The source XML carries two kinds of host and they
-are not interchangeable:
+Step 3 is the trap. The source XML carries two kinds of host, and
+**neither is reliably the live target**:
 
 | element | meaning |
 |---|---|
-| `<con:endpoint>` | what ReadyAPI actually sends to |
-| `<con:originalUri>` | where the request was first imported from — a historical note ReadyAPI never calls |
+| `<con:endpoint>` | the project's configured target at export time |
+| `<con:originalUri>` | where the request was first imported from |
 
-An unset key routes live traffic at whatever was recorded, and recorded
-can be an `originalUri`. In this project that produced, all three
-silently:
+The converter prefers `originalUri` when present. Which one is right
+depends on how that project was last pointed, and the two applications
+here are **inverted on their token step**:
+
+| project | `<con:endpoint>` | `<con:originalUri>` | the real gateway is |
+|---|---|---|---|
+| GOAL | the real gateway | a stale `localhost` | the endpoint |
+| B2B | a local mock on `:9006` | the real gateway | the originalUri |
+
+So a recorded host is a **guess**, not a reading of intent. Do not adopt
+a rule like "always trust the endpoint" — it gets one of these two
+applications wrong. Decide the host explicitly, per environment block,
+and let the audit tell you where nobody has decided yet.
+
+An unset key routes live traffic at whatever was recorded. In this
+project that produced, all three silently:
 
 - a **test-tier gateway** when the token was minted on a different one — every call `401 Invalid Credentials`, and refresh-and-retry got the same 401 because a fresh token from the wrong gateway is still the wrong gateway;
 - **`localhost` with its port stripped** as the token endpoint for nine suites — no token at all, so everything after it 401'd;
