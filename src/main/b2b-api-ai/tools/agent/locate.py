@@ -81,15 +81,20 @@ WHY = {
     UPSTREAM: "a GENERATED test covers it. The change belongs in the "
               "ReadyAPI XML; a hand-written test here is invisible to the "
               "next convert",
-    CONFIRM: "matched only loosely, or looks like a duplicate -- a human "
-             "decides this one",
+    CONFIRM: "matched only loosely, looks like a duplicate, or the path "
+             "fits several recorded templates -- a human decides this one",
 }
+
+
+# Loaded ONCE. This was re-executing intake.py on every job_dir call --
+# four call sites per run -- which re-runs its module-level code each
+# time for no gain.
+intake = _load("locate_intake", os.path.join(HERE, "intake.py"))
 
 
 def job_dir(job: str, root: str = "") -> str:
     # Reuse intake's validation rather than restate it: the id names a
     # directory and arrives from a UI text box.
-    intake = _load("locate_intake", os.path.join(HERE, "intake.py"))
     return intake.job_dir(job, root)
 
 
@@ -147,6 +152,10 @@ def candidate_from(request: dict, job: str, templates: list = ()) -> dict:
             "query_params": {n: "" for n in
                              (request.get("query_param_names") or [])},
             "path_params": t["path_params"],
+            # Without this shape_match's want_status is empty and
+            # DUPLICATE_SUSPECT can never fire -- one of the two stops
+            # this stage exists to raise, silently disabled.
+            "expected_status": request.get("expected_status") or "",
         }],
         "_templatized": t,
     }
@@ -172,12 +181,19 @@ def _entries(result: dict) -> list:
             or result.get("loose_matches") or [])
 
 
-def decide(result: dict) -> tuple[str, list]:
+def decide(result: dict, ambiguous_path: bool = False) -> tuple[str, list]:
     """(decision, the entries it was based on)."""
     entries = _entries(result)
     verdict = result.get("verdict")
 
     if verdict == shape_match.NEW or not entries:
+        # A path that fits SEVERAL recorded templates was handed to
+        # shape_match in its concrete form, because nothing could narrow
+        # it to one. That matches nothing and reads as NEW -- but we know
+        # two or more recorded calls look like this, so "write a new
+        # test" is the one answer we are sure is unsafe.
+        if ambiguous_path:
+            return CONFIRM, []
         return CREATE, []
 
     # A generated match wins over everything else. Writing a hand-written
@@ -199,12 +215,56 @@ def decide(result: dict) -> tuple[str, list]:
     return UPDATE, entries
 
 
+def newest_emitted_test(root: str = "") -> float:
+    """mtime of the most recently written generated test, or 0."""
+    base = os.path.join(root or ROOT, "src", "test", "java", "com", "hi",
+                        "api", "tests")
+    newest = 0.0
+    for sub in ("imported", "classic"):
+        d = os.path.join(base, sub)
+        if not os.path.isdir(d):
+            continue
+        for dirpath, _dirs, files in os.walk(d):
+            for fn in files:
+                if not fn.endswith(".java"):
+                    continue
+                try:
+                    newest = max(newest, os.path.getmtime(
+                        os.path.join(dirpath, fn)))
+                except OSError:
+                    pass
+    return newest
+
+
+def staleness(index_file: str) -> str:
+    """A warning when the tree was converted after the index was built.
+
+    The index is a SNAPSHOT of what was converted when it was made. A
+    convert since then means every verdict here is answered against the
+    old tree -- and the direction of that error is the dangerous one: a
+    call that IS now covered reads as NEW, which is permission to write
+    a duplicate. The existing note said "rebuild after a convert"; this
+    checks instead of asking.
+    """
+    try:
+        built = os.path.getmtime(index_file)
+    except OSError:
+        return ""
+    newest = newest_emitted_test()
+    if newest and newest > built:
+        return (" -- STALE: the converted tree has changed since this index "
+                "was built. Re-run with --rebuild-index, or every verdict "
+                "here describes the previous tree")
+    return ""
+
+
 def load_index(index_path: str, rebuild: bool = False) -> tuple[dict, str]:
     """(index, a note about where it came from). Builds when absent."""
     path = (index_path if os.path.isabs(index_path)
             else os.path.join(ROOT, index_path.replace("/", os.sep)))
     if not rebuild and os.path.isfile(path):
-        return shapes.load(path), f"loaded {os.path.relpath(path, ROOT)}"
+        return (shapes.load(path),
+                f"loaded {os.path.relpath(path, ROOT)}{staleness(path)}")
     index = shapes.build()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     shapes.save(index, path)
@@ -239,7 +299,8 @@ def run(job: str, root: str = "", index_path: str = DEFAULT_INDEX,
         cand = candidate_from(req, job, templates)
         t = cand.pop("_templatized")
         result = shape_match.match(cand, index)
-        decision, entries = decide(result)
+        decision, entries = decide(
+            result, ambiguous_path=bool(t["alternatives"]) and not t["templated"])
         decisions.append({
             "n": i,
             "verb": req.get("verb"),
@@ -282,6 +343,10 @@ def _write_plan(out: str, plan: dict) -> None:
     summary = ", ".join(f"{n} {k}" for k, n in sorted(counts.items()))
 
     lines = [f"# Plan: {summary}", ""]
+    if "STALE" in (plan.get("index") or ""):
+        lines += ["**The shape index is stale.** It was built before the "
+                  "last convert, so a call that is now covered can read as "
+                  "`CREATE`. Re-run with `--rebuild-index`.", ""]
     if plan["stops"]:
         lines += [f"**{len(plan['stops'])} request(s) stop here.** Nothing is "
                   f"written until they are resolved.", ""]

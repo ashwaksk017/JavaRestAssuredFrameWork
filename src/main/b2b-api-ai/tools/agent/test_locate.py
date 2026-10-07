@@ -120,6 +120,71 @@ class Destination(unittest.TestCase):
                 "ReadyAPI XML" in locate.shape_match.destination(e))
 
 
+class AmbiguousPath(unittest.TestCase):
+    """A path fitting SEVERAL recorded templates must ask, not assume."""
+
+    def test_ambiguous_becomes_confirm_not_create(self):
+        d, _ = locate.decide({"verdict": locate.shape_match.NEW},
+                             ambiguous_path=True)
+        self.assertEqual(d, locate.CONFIRM)
+
+    def test_unambiguous_no_match_is_still_create(self):
+        d, _ = locate.decide({"verdict": locate.shape_match.NEW},
+                             ambiguous_path=False)
+        self.assertEqual(d, locate.CREATE)
+
+    def test_templatize_reports_the_alternatives_it_could_not_narrow(self):
+        t = locate.templatize("/props/ABC/groups",
+                              ["/props/{propCode}/groups",
+                               "/props/{code}/groups"])
+        self.assertFalse(t["templated"])
+        self.assertEqual(len(t["alternatives"]), 2)
+
+
+class ExpectedStatus(unittest.TestCase):
+    def test_it_reaches_the_candidate(self):
+        """Empty here means shape_match's want_status is empty, which
+        disables DUPLICATE_SUSPECT entirely."""
+        c = locate.candidate_from(
+            {"verb": "POST", "raw_path": "/x", "expected_status": "201"}, "j")
+        self.assertEqual(c["steps"][0]["expected_status"], "201")
+
+    def test_absent_is_empty_not_missing(self):
+        c = locate.candidate_from({"verb": "GET", "raw_path": "/x"}, "j")
+        self.assertEqual(c["steps"][0]["expected_status"], "")
+
+
+class IndexStaleness(unittest.TestCase):
+    """The index is a snapshot. A convert since it was built makes a
+    covered call read as NEW -- permission to write a duplicate."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self._newest = locate.newest_emitted_test
+        self.addCleanup(setattr, locate, "newest_emitted_test", self._newest)
+        self.idx = os.path.join(self.tmp, "shape-index.json")
+        with io.open(self.idx, "w", encoding="utf-8") as fh:
+            fh.write("{}")
+
+    def test_a_tree_newer_than_the_index_is_reported(self):
+        locate.newest_emitted_test = lambda root="": os.path.getmtime(
+            self.idx) + 60
+        self.assertIn("STALE", locate.staleness(self.idx))
+
+    def test_a_tree_older_than_the_index_is_quiet(self):
+        locate.newest_emitted_test = lambda root="": os.path.getmtime(
+            self.idx) - 60
+        self.assertEqual(locate.staleness(self.idx), "")
+
+    def test_no_tree_at_all_is_quiet(self):
+        locate.newest_emitted_test = lambda root="": 0.0
+        self.assertEqual(locate.staleness(self.idx), "")
+
+    def test_a_missing_index_file_does_not_raise(self):
+        self.assertEqual(locate.staleness(os.path.join(self.tmp, "nope")), "")
+
+
 class CandidateShape(unittest.TestCase):
     def test_intake_raw_path_becomes_shape_match_path(self):
         """The two modules name it differently; a missing path matches

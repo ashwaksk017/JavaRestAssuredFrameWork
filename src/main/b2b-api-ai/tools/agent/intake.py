@@ -118,8 +118,22 @@ def job_dir(job: str, root: str = "") -> str:
 
 
 def _requests_from(text: str, source: str) -> list:
+    """Requests in a block of text, each carrying its expected status.
+
+    `from_text` does not return one, and without it shape_match's
+    `want_status` is always empty -- which silently disables
+    DUPLICATE_SUSPECT, one of the two stops the next stage exists to
+    raise. `extract.expected_status` reads it from the same prose, so
+    the information is there; it was simply being dropped.
+    """
     try:
-        return jira_extract.from_text(text or "", source) or []
+        steps = jira_extract.from_text(text or "", source) or []
+        status, evidence = jira_extract.expected_status(text or "")
+        for step in steps:
+            step.setdefault("expected_status", status or "")
+            if evidence:
+                step.setdefault("expected_status_evidence", evidence)
+        return steps
     except Exception as e:  # a malformed paste must not kill the job
         return [{"verb": "", "raw_path": "", "error": str(e),
                  "provenance": f"{source}: could not be read"}]
