@@ -20107,7 +20107,149 @@ def main():
                         "drive nothing. What was removed is listed in "
                         "_audit/<suite>/pruned_columns.csv.")
     args = p.parse_args()
+    _refuse_unfollowable_package_root(args)
     return _main_dispatch(args)
+
+
+# Generated trees follow --package-root; committed code does not. A path
+# holding any of these segments was emitted by the converter, so it says
+# nothing about what the committed code requires.
+_GENERATED_PATH_MARKERS = (
+    os.sep + "support" + os.sep,
+    os.sep + "templates" + os.sep,
+    os.sep + "clients" + os.sep,
+    os.sep + "imported" + os.sep,
+)
+
+_PACKAGE_DECL_RX = re.compile(r'^\s*package\s+([A-Za-z_][\w.]*)\s*;', re.M)
+
+
+def _committed_java(output_dir: str):
+    """(path, text) for every non-generated .java under the source roots."""
+    for base in ("src/main/java", "src/test/java"):
+        start = os.path.join(output_dir, base)
+        if not os.path.isdir(_fs_path(start)):
+            continue
+        for dirpath, _dirnames, filenames in os.walk(_fs_path(start)):
+            if any(m in dirpath + os.sep for m in _GENERATED_PATH_MARKERS):
+                continue
+            for fn in filenames:
+                if not fn.endswith(".java"):
+                    continue
+                full = os.path.join(dirpath, fn)
+                try:
+                    with open(full, encoding="utf-8", errors="replace") as fh:
+                        yield full, fh.read()
+                except OSError:
+                    continue
+
+
+def _committed_package_root(output_dir: str) -> str:
+    """The root the committed sources actually declare.
+
+    Longest common prefix of their `package` declarations. Derived, not
+    hardcoded, so a whole-repo rename is followed rather than refused.
+    Returns "" when there is no agreed prefix of at least two segments.
+    """
+    parts = []
+    for _full, text in _committed_java(output_dir):
+        m = _PACKAGE_DECL_RX.search(text)
+        if m:
+            parts.append(m.group(1).split("."))
+    if not parts:
+        return ""
+    common = []
+    for i in range(min(len(p) for p in parts)):
+        seg = {p[i] for p in parts}
+        if len(seg) != 1:
+            break
+        common.append(seg.pop())
+    return ".".join(common) if len(common) >= 2 else ""
+
+
+def _support_importers(output_dir: str, root: str):
+    """Committed files importing ``<root>.support.*``."""
+    needle = "import " + root + ".support."
+    needle_static = "import static " + root + ".support."
+    out = []
+    for full, text in _committed_java(output_dir):
+        if needle in text or needle_static in text:
+            try:
+                rel = os.path.relpath(full, output_dir)
+            except ValueError:
+                rel = full
+            out.append(rel.replace(os.sep, "/"))
+    return sorted(set(out))
+
+
+def _refuse_unfollowable_package_root(args) -> None:
+    """Stop BEFORE writing anything when the root cannot build.
+
+    `--package-root` moves only what the converter generates. The
+    committed framework imports `<root>.support.*` directly -- domain/,
+    dsl/, db/repo/, rest/utilities/phase/ and the committed tests -- and
+    nothing rewrites committed code. A foreign root therefore emits
+    `support` where none of those files can see it.
+
+    Worse, the broken tree OUTLIVES the run: Maven keeps compiling an
+    orphaned package tree that no later convert owns or removes, so
+    runs at the correct root still fail afterwards, with errors naming
+    generated files and never the root that caused them.
+
+    The enforcer rule catches this on a COLD tree. On a tree already
+    converted once at the committed root it does not, because
+    `<root>.support` is present and the precondition passes.
+    """
+    want = getattr(args, "package_root", None)
+    out = getattr(args, "output", None)
+    if not want or not out:
+        return
+    try:
+        committed = _committed_package_root(out)
+    except OSError:
+        return                       # a guard must never fail a run
+    if not committed or committed == want:
+        return
+    importers = _support_importers(out, committed)
+    if not importers:
+        # Committed code does not depend on the generated support
+        # package, so moving it harms nothing.
+        return
+    shown = importers[:6]
+    lines = [
+        "",
+        "[ra_converter] REFUSING: --package-root " + want,
+        "",
+        "  The committed sources declare %s and %d of them import"
+        % (committed, len(importers)),
+        "  %s.support.* directly. Nothing rewrites committed code, so"
+        % committed,
+        "  they could not see the support package this run would emit"
+        " under",
+        "  " + want + ".",
+        "",
+    ]
+    lines += ["      " + f for f in shown]
+    if len(importers) > len(shown):
+        lines.append("      ... and %d more" % (len(importers) - len(shown)))
+    lines += [
+        "",
+        "  The half-written tree would also OUTLIVE this run: Maven keeps",
+        "  compiling an orphaned package tree, so later converts at the",
+        "  right root keep failing until it is deleted by hand.",
+        "",
+        "  Suites are ALREADY namespaced under one root -- a second root",
+        "  is not needed to keep them apart:",
+        "      support/<suite>/   templates/<suite>/   "
+        "tests/imported/<suite>/",
+        "",
+        "  Re-run with --package-root " + committed,
+        "",
+        "  (nothing was written)",
+        "",
+    ]
+    raise SystemExit(chr(10).join(lines))
+
 
 
 CONVERTER_SELF_TESTS = (
