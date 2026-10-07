@@ -731,6 +731,65 @@ public final class RestStep {
      * owns that, gated behind its own opt-in budget, because retrying on a
      * value mismatch can mask a genuinely wrong value.</p>
      */
+    /**
+     * Is this status one that a wait could plausibly turn into the
+     * expected one?
+     *
+     * <p>The budget exists for a record that is not visible YET: waiting
+     * lets a write land. That makes it a one-way instrument -- waiting
+     * can only make a record MORE visible, never less -- so only the
+     * statuses that mean "not there yet" are worth spending on.</p>
+     *
+     * <ul>
+     *   <li>401/403 -- the gateway saying no to this token for this
+     *       audience. It will say no just as firmly in three seconds.</li>
+     *   <li>2xx -- the resource exists and the server is happy to return
+     *       it. A success does not become a rejection by waiting, so a
+     *       case that expected 400 will still see 200.</li>
+     *   <li>400 -- the server rejecting THIS REQUEST's own shape or
+     *       values. A parameter below its allowed minimum does not
+     *       become valid in three seconds.</li>
+     * </ul>
+     *
+     * <p>404/409/412 are deliberately still worth waiting on: those are
+     * the eventual-consistency shapes the budget was built for.</p>
+     *
+     * <p>Measured on one full run before this guard: 222 of 242 spends
+     * changed nothing at ~3.3s each -- roughly 800s of a 1,057s run,
+     * three quarters of the wall clock, waiting on verdicts that could
+     * not move. 180 were a single step holding at 200 while the case
+     * expected 400. The earlier 401/403 guard came from the same
+     * measurement on an earlier run (1,522 waits, 48.6 minutes).</p>
+     *
+     * <p>Package-private so the contract is unit-tested rather than
+     * inferred from the log.</p>
+     */
+    static boolean waitingCouldChangeTheVerdict(int actual) {
+        if (actual == 401 || actual == 403) {
+            return false;
+        }
+        if (actual >= 200 && actual < 300) {
+            return false;
+        }
+        return actual != 400;
+    }
+
+    /** The reason {@link #waitingCouldChangeTheVerdict} said no, for the log. */
+    static String whyWaitingCannotHelp(int actual) {
+        if (actual == 401 || actual == 403) {
+            return "an auth verdict does not become a success by waiting";
+        }
+        if (actual >= 200 && actual < 300) {
+            return "waiting makes a record more visible, never less, so a "
+                   + "success will not become a rejection";
+        }
+        if (actual == 400) {
+            return "a 400 rejects this request's own values, which a delay "
+                   + "does not change";
+        }
+        return "no reason recorded";
+    }
+
     private Response spendAsyncBudgetIfNeeded(Response res,
                                               java.util.function.Supplier<Response> exchange) {
         if (expectedStatus < 0 || res == null) {
@@ -752,10 +811,10 @@ public final class RestStep {
         // waiting for a 401 to appear is a legitimate wait, and that is
         // what the expectedStatus comparison above already allows.
         int code = res.getStatusCode();
-        if (code == 401 || code == 403) {
-            LOG.info(" .. [async-budget] step={} got HTTP {} -- NOT spending "
-                     + "the budget: an auth verdict does not become a "
-                     + "success by waiting", stepName, code);
+        if (!waitingCouldChangeTheVerdict(code)) {
+            LOG.info(" .. [async-budget] step={} got HTTP {} (expected {}) -- "
+                     + "NOT spending the budget: {}", stepName, code,
+                     expectedStatus, whyWaitingCannotHelp(code));
             return res;
         }
         if (!AsyncBudget.hasBudget()) {
