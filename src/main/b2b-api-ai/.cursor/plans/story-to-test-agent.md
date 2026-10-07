@@ -207,13 +207,43 @@ and means the fallback is not a rewrite.
 - **Delete** requires all three: the path is in the allowlist, the UI showed a confirmation naming the file, and `manifest.json` says this pipeline created it. A test the pipeline did not create is never deleted automatically.
 - **Secret scan** on the staged diff before any push, the same grep already used by hand this session.
 
-### Stage 6 — UI
+### Stage 6 — UI: three tabs, three different risk profiles
 
-Minimal and local: one Python process (FastAPI or stdlib `http.server`)
-serving one page plus a small JSON API over the job directory. Paste
-box, link list, a step timeline, the diff, the verify output, and two
-buttons — approve and reject. No framework, no build step, no database;
-the filesystem is the database.
+Decided 2026-10-07. One local page, three tabs, deliberately not the
+same kind of thing. The ordering matters: **nothing writes code until
+tab 3**, and tab 3 is opt-in.
+
+**Tab 1 — New test case.** Paste a story, payloads and Confluence links.
+Runs intake then locate, and stops at a plan. Entirely deterministic --
+no model, no file written outside `target/`. A person reads the plan and
+decides whether it is worth acting on.
+
+**Tab 2 — Convert ReadyAPI.** A form over the converter's existing CLI,
+exposing on screen what is typed on the console today. **No agent.** One
+known command, user-chosen options, streamed log, audits afterwards.
+
+**Tab 3 — Agent loop.** Takes a plan tab 1 produced and lets the agent
+act on it: propose, apply, verify. This is the only tab that writes
+code, so every guardrail in Stage 5 lives here and nowhere else.
+
+Splitting the agent out of tab 1 is the point. The deterministic stages
+are useful on their own -- "is this call already automated" is worth
+asking even when nobody intends to write anything -- and keeping them in
+a tab that cannot write means they can be used freely.
+
+The converter's surface is 23 options. The ones that need care in a form
+rather than a free-text box:
+
+| option | why the UI must not treat it as ordinary |
+|---|---|
+| `--output` | defaults to `.`; a mistyped value overwrites the live tree. Required and confirmed, never defaulted silently |
+| `--clean` | deletes a suite's generated files. A deliberate checkbox with what it will remove |
+| `--classic` | whole-tree: mixing modes in one output is refused by the converter, and the UI should say so before the run, not after |
+| `--data-dir` | required in practice; the known landmine is forgetting it |
+| `--input` | one XML, a comma list, or a directory -- and only the directory form is authoritative |
+
+What both tabs share: the job directory under `target/agent/<job>/`, the
+log, and the audits. Nothing else.
 
 ### Stage 7 — Push-back
 

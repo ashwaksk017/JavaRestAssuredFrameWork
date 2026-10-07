@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Test workbench</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+
+<header>
+  <h1>Test workbench</h1>
+  <label class="job">job
+    <input id="job" value="job1" spellcheck="false"
+           title="Names a directory under target/agent/. Letters, digits, dot, dash, underscore.">
+  </label>
+</header>
+
+<nav class="tabs" role="tablist">
+  <button role="tab" aria-selected="true"  data-tab="new">1 &middot; New test case</button>
+  <button role="tab" aria-selected="false" data-tab="convert">2 &middot; Convert ReadyAPI</button>
+  <button role="tab" aria-selected="false" data-tab="agent">3 &middot; Agent loop</button>
+</nav>
+
+<!-- ───────────────────────────── tab 1 ───────────────────────────── -->
+<section id="tab-new" class="tab" role="tabpanel">
+  <p class="lede">
+    Paste a story, request payloads, or both. Add Confluence links if the
+    contract lives there. This tab <strong>reads and decides only</strong> —
+    it writes nothing outside <code>target/</code>.
+  </p>
+
+  <label for="text">Story / payloads</label>
+  <textarea id="text" rows="12" spellcheck="false"
+    placeholder='Paste the story, a curl command, or a VERB /path line.
+
+curl -X POST "https://host/props/ABC/groups/roomrates" \
+  -H "Content-Type: application/json" \
+  -d &apos;{"arrivalDate":"2026-11-29"}&apos;
+
+Expect 201.'></textarea>
+
+  <label for="links">Links <span class="hint">one per line — Confluence page, or a Jira key</span></label>
+  <textarea id="links" rows="3" spellcheck="false"
+    placeholder="https://wiki.example.com/display/ABC/Group+Rate+Plan+API"></textarea>
+
+  <div class="row">
+    <button id="run-intake" class="go">Read it</button>
+    <button id="run-locate">Then: is it already automated?</button>
+    <span id="new-state" class="state"></span>
+  </div>
+
+  <div class="split">
+    <div><h3>brief.md</h3><pre id="brief" class="doc">—</pre></div>
+    <div><h3>plan.md</h3><pre id="plan" class="doc">—</pre></div>
+  </div>
+  <h3>Log</h3>
+  <pre id="new-log" class="log"></pre>
+</section>
+
+<!-- ───────────────────────────── tab 2 ───────────────────────────── -->
+<section id="tab-convert" class="tab" role="tabpanel" hidden>
+  <p class="lede">
+    The converter, with the options you would type on the console. No
+    agent is involved: this runs one known command.
+  </p>
+  <div id="convert-form" class="form"></div>
+
+  <div class="danger" id="convert-warnings" hidden></div>
+
+  <div class="row">
+    <button id="run-convert" class="go">Convert</button>
+    <button id="stop-convert">Stop</button>
+    <button id="run-keys">Audit service keys</button>
+    <button id="run-token">Audit token chain</button>
+    <span id="convert-state" class="state"></span>
+  </div>
+  <h3>Log</h3>
+  <pre id="convert-log" class="log"></pre>
+</section>
+
+<!-- ───────────────────────────── tab 3 ───────────────────────────── -->
+<section id="tab-agent" class="tab" role="tabpanel" hidden>
+  <p class="lede">
+    Takes the plan from tab 1 and lets the agent act on it. This is the
+    only tab that writes code.
+  </p>
+  <div class="notbuilt">
+    <h3>Not built yet</h3>
+    <p>Stage 4 of
+      <code>.cursor/plans/story-to-test-agent.md</code>. It will run
+      <em>propose &rarr; approve &rarr; apply &rarr; verify</em>, and before it
+      is wired up the guardrails in Stage&nbsp;5 have to exist in code rather
+      than in a prompt:</p>
+    <ul>
+      <li>a write-path allowlist enforced by the runner — anything touched
+          outside <code>tests/jira/</code> and <code>csv/manual/</code> fails
+          the job and is reverted</li>
+      <li>delete needs all three of: an allowed path, a confirmation naming
+          the file, and a manifest saying this pipeline created it</li>
+      <li>a secret scan on the staged diff before anything is pushed</li>
+    </ul>
+    <p>Until then, tab 1's plan tells you what the agent would be asked to
+       do, and you can do it by hand.</p>
+  </div>
+</section>
+
+<script src="/app.js"></script>
+</body>
+</html>
