@@ -18544,6 +18544,54 @@ public class FailureDigestListener implements ITestListener {{
         }});
     }}
 
+    /**
+     * Say how many checks did not run.
+     *
+     * <p>Skipping an assertion whose expected value is still a
+     * placeholder is right -- it could only ever be false. But the
+     * run then reports PASSED for a test that verified almost
+     * nothing, and the only trace is one WARN line per skip buried
+     * in a 20 MB log. A count next to the result is the difference
+     * between "green" and "green, having checked 246 fewer things
+     * than it looks like".
+     *
+     * <p>This method is emitted HERE, in the converter, and not
+     * only in the committed copy. It was added to the committed
+     * file alone, and because this listener is generated and is
+     * NOT author-editable-protected, every convert wrote the file
+     * back without it. The summary then never printed, and the
+     * absence read as a counter bug -- resets, duplicate classes
+     * and classloader isolation were all investigated before the
+     * method turned out not to be in the file at all.</p>
+     */
+    private void reportSkippedChecks() {{
+        try {{
+            int total = com.hi.api.rest.utilities.ResponseAsserts.skippedTotal();
+            if (total <= 0) {{
+                // Say so rather than stay silent: an absent line is
+                // indistinguishable from a listener that never fired.
+                System.out.println("[digest] 0 check(s) recorded as skipped. "
+                        + "If the run logged `[assert SKIPPED]` lines, the "
+                        + "counter and this listener are not seeing the same "
+                        + "ResponseAsserts class.");
+                return;
+            }}
+            StringBuilder sb = new StringBuilder();
+            sb.append("[digest] ").append(total)
+              .append(" check(s) did NOT run. A passing test here verified "
+                      + "less than its name suggests:");
+            com.hi.api.rest.utilities.ResponseAsserts.skippedCounts()
+                    .forEach((reason, n) ->
+                            sb.append("\\n           ").append(n)
+                              .append(" x ").append(reason));
+            System.out.println(sb.toString());
+        }} catch (RuntimeException e) {{
+            // A reporting aid must never be why a suite fails.
+            System.out.println("[digest] skipped-check summary "
+                               + "unavailable: " + e);
+        }}
+    }}
+
     private static final java.util.concurrent.atomic.AtomicBoolean WRITTEN =
             new java.util.concurrent.atomic.AtomicBoolean(false);
 
@@ -18556,6 +18604,7 @@ public class FailureDigestListener implements ITestListener {{
         if (!WRITTEN.compareAndSet(false, true)) {{
             return;
         }}
+        reportSkippedChecks();
         List<String[]> all;
         synchronized (FAILURES) {{
             all = new ArrayList<>(FAILURES.values());

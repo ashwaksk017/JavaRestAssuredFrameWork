@@ -391,32 +391,32 @@ public class FailureDigestListener implements ITestListener {
         });
     }
 
-    private static final java.util.concurrent.atomic.AtomicBoolean WRITTEN =
-            new java.util.concurrent.atomic.AtomicBoolean(false);
-
     /**
      * Say how many checks did not run.
      *
      * <p>Skipping an assertion whose expected value is still a
-     * placeholder is right -- it could only ever be false. But the run
-     * then reports PASSED for a test that verified almost nothing, and
-     * until now the only trace was 246 separate WARN lines in a 20 MB
-     * log. A count next to the result is the difference between "green"
-     * and "green, having checked 246 fewer things than it looks like".</p>
+     * placeholder is right -- it could only ever be false. But the
+     * run then reports PASSED for a test that verified almost
+     * nothing, and the only trace is one WARN line per skip buried
+     * in a 20 MB log. A count next to the result is the difference
+     * between "green" and "green, having checked 246 fewer things
+     * than it looks like".
+     *
+     * <p>This method is emitted HERE, in the converter, and not
+     * only in the committed copy. It was added to the committed
+     * file alone, and because this listener is generated and is
+     * NOT author-editable-protected, every convert wrote the file
+     * back without it. The summary then never printed, and the
+     * absence read as a counter bug -- resets, duplicate classes
+     * and classloader isolation were all investigated before the
+     * method turned out not to be in the file at all.</p>
      */
     private void reportSkippedChecks() {
         try {
             int total = com.hi.api.rest.utilities.ResponseAsserts.skippedTotal();
             if (total <= 0) {
-                // Say so rather than stay silent. One full run logged 56
-                // `[assert SKIPPED]` lines from ResponseAsserts -- all of
-                // which call countSkip, all of them BEFORE this listener
-                // ran -- and this method still saw zero, then printed
-                // nothing. An absent line is indistinguishable from "the
-                // listener never fired", so there was no way to tell which
-                // half was broken. Resets, duplicate classes, an untracked
-                // copy and classloader isolation were all ruled out; this
-                // line is the evidence the next run needs.
+                // Say so rather than stay silent: an absent line is
+                // indistinguishable from a listener that never fired.
                 System.out.println("[digest] 0 check(s) recorded as skipped. "
                         + "If the run logged `[assert SKIPPED]` lines, the "
                         + "counter and this listener are not seeing the same "
@@ -433,11 +433,14 @@ public class FailureDigestListener implements ITestListener {
                               .append(" x ").append(reason));
             System.out.println(sb.toString());
         } catch (RuntimeException e) {
-            // A reporting aid must never be the reason a suite fails.
+            // A reporting aid must never be why a suite fails.
             System.out.println("[digest] skipped-check summary "
                                + "unavailable: " + e);
         }
     }
+
+    private static final java.util.concurrent.atomic.AtomicBoolean WRITTEN =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
 
     @Override
     public void onFinish(ITestContext context) {
