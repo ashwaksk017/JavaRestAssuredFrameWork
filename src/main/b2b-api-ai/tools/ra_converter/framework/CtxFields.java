@@ -1,6 +1,6 @@
 package com.hi.api.support;
 
-// ra_converter-framework-rev: 11
+// ra_converter-framework-rev: 12
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -226,6 +226,39 @@ public final class CtxFields {
      * this is what generated tests emit so SoapUI literals populate
      * ctx without appearing in the test class.</p>
      */
+    /**
+     * Seed only the named fields that nothing EARLIER in this case has
+     * already put into ctx.
+     *
+     * <p>A ReadyAPI Properties step is storage. When a Groovy that runs
+     * before it writes a field, the value saved in the XML is that
+     * Groovy's last-run OUTPUT, and re-seeding it here replaces a live
+     * value with a stale one. The availability search picked LONME
+     * (inventory 163) and the very next shop went to MILHI, the saved
+     * value: 86 of 161 failures in one run.</p>
+     *
+     * <p>If-absent rather than skip, deliberately: when the writer's
+     * translation is STUBBED nothing is published, ctx has no value,
+     * and the saved one is seeded exactly as before. A live writer wins;
+     * a missing one changes nothing. ctx is fresh per method invocation
+     * ({@code test.isolateCtxPerMethod}), so a value can never carry
+     * over from an earlier row.</p>
+     */
+    public static void seedFromRowIfAbsent(Map<String, String> ctx, Map<String, String> row,
+                                           String keyPrefix, String... fields) {
+        if (ctx == null || keyPrefix == null || fields == null) return;
+        for (String f : fields) {
+            if (f == null || f.isEmpty()) continue;
+            String key = f.startsWith(keyPrefix) ? f : keyPrefix + f;
+            String live = ctx.get(key);
+            if (live != null && !live.isEmpty()) {
+                continue;               // an earlier step already produced it
+            }
+            if (isCapturedSalesforceSessionKey(key)) continue;
+            seedOne(ctx, key, ImportedScenario.testData(row, key));
+        }
+    }
+
     public static void seedFromRow(Map<String, String> ctx, Map<String, String> row,
                                    String keyPrefix, String... fields) {
         if (ctx == null || keyPrefix == null) return;

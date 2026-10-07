@@ -3573,6 +3573,41 @@ _SET_PROP_INSIDE_GROOVY_RX = re.compile(
     r'setPropertyValue\(\s*[\'"]([A-Za-z0-9_.-]+)[\'"]', re.IGNORECASE)
 
 
+# Which Properties step a Groovy writes, and which fields. The script
+# fetches the step into a variable (often across a line break) and
+# writes through it:
+#
+#     def generatedDatesPropertyVal =
+#         testRunner.testCase.getTestStepByName("generatedDatesAndProps")
+#     generatedDatesPropertyVal.setPropertyValue("hcrs", hcrs[j])
+#
+# or writes through the call directly. Anything whose target cannot be
+# named is NOT attributed: the caller then keeps seeding, which is the
+# old behaviour, so an unrecognised shape can only fail the old way.
+_GROOVY_STEP_VAR_RX = re.compile(
+    r'(\w+)\s*=\s*[\w.]*getTestStepByName\(\s*["\']([^"\']+)["\']\s*\)')
+_GROOVY_DIRECT_WRITE_RX = re.compile(
+    r'getTestStepByName\(\s*["\']([^"\']+)["\']\s*\)\s*'
+    r'\.setPropertyValue\(\s*["\']([^"\']+)["\']')
+_GROOVY_VAR_WRITE_RX = re.compile(
+    r'\b(\w+)\s*\.setPropertyValue\(\s*["\']([^"\']+)["\']')
+
+
+def fields_written_by_groovy(script: str) -> dict:
+    """``{target step name: {field, ...}}`` for every attributable write."""
+    out = {}
+    var_to_step = {}
+    for m in _GROOVY_STEP_VAR_RX.finditer(script or ""):
+        var_to_step[m.group(1)] = m.group(2)
+    for m in _GROOVY_DIRECT_WRITE_RX.finditer(script or ""):
+        out.setdefault(m.group(1), set()).add(m.group(2))
+    for m in _GROOVY_VAR_WRITE_RX.finditer(script or ""):
+        target = var_to_step.get(m.group(1))
+        if target:
+            out.setdefault(target, set()).add(m.group(2))
+    return out
+
+
 # Author-controlled random fields. `TestSupport.regenRandomProperties`
 # refreshes ONLY these (plus their case-flipped / suite-specific
 # variants) before each REST step whose body references any of them.
@@ -8164,6 +8199,39 @@ public interface ImportedRestClient {{
 
         return None
 
+    def _fields_written_before(self, props_step) -> tuple:
+        """Fields of ``props_step`` that a Groovy EARLIER in the same
+        case writes, and the names of those Groovy steps.
+
+        A Properties step is storage. Its saved XML values are the last
+        run's output, so re-seeding a field a preceding Groovy already
+        wrote replaces a live value with a stale one. The availability
+        search picked LONME (inventory 163) and the very next shop went
+        to MILHI, the saved value -- 86 of 161 failures in one run.
+        """
+        case = (getattr(self, "_props_seed_case", None)
+                or getattr(self, "_current_case_obj", None))
+        steps = list(getattr(case, "steps", []) or []) if case is not None else []
+        # Only a case that actually CONTAINS this step is evidence. A
+        # stale case from an earlier render (SetupHelper renders steps
+        # outside _fluent_render_groups) would attribute a writer that
+        # never ran before this step -- and silently drop a seed.
+        if not any(s is props_step for s in steps):
+            return set(), []
+        written, writers = set(), []
+        for s in steps:
+            if s is props_step or (
+                    isinstance(s, PropertiesStep)
+                    and (s.step_name or "") == (props_step.step_name or "")):
+                break
+            if isinstance(s, GroovyStep):
+                fields = fields_written_by_groovy(s.script or "").get(
+                    props_step.step_name or "")
+                if fields:
+                    written |= set(fields)
+                    writers.append(s.step_name)
+        return written, writers
+
     def _render_step(self, step, service_class_name: str) -> list[str]:
         """Render one step's Java lines. Shared by test-method emission
         AND SetupHelper emission so bug fixes benefit both."""
@@ -8201,7 +8269,35 @@ public interface ImportedRestClient {{
             # primary key and block ctxGet alias-walk.
             has_values = any(p and val for p, val in
                              (step.properties or {}).items())
-            if has_values:
+            # A field an EARLIER Groovy writes is never re-seeded: the
+            # saved XML value is that Groovy's last-run output, and
+            # seeding it here would overwrite the live value the Groovy
+            # just produced. Only the fields nothing earlier writes are
+            # seeded; when that leaves nothing, no seed is emitted.
+            _written, _writers = self._fields_written_before(step)
+            _xml_fields = [p for p, val in (step.properties or {}).items()
+                           if p and val]
+            _keep = [p for p in _xml_fields if p not in _written]
+            _live = [p for p in _xml_fields if p in _written]
+            if has_values and _live:
+                # If-absent, not skip: a STUBBED writer publishes nothing,
+                # ctx then has no value, and the saved one is seeded as
+                # before. A live writer wins; a missing one changes nothing.
+                lines.append(
+                    f'// [properties step] {step.step_name} -- '
+                    f'{", ".join(sorted(_live))} written by earlier '
+                    f'Groovy {", ".join(_writers)}: seeded only if absent '
+                    f'(saved XML values are last-run output)')
+                lines.append(
+                    f'CtxFields.seedFromRowIfAbsent(ctx, row, '
+                    f'"{_jlit(step.step_name)}.", '
+                    + ", ".join(f'"{_jlit(p)}"' for p in _live) + ');')
+                if _keep:
+                    lines.append(
+                        f'CtxFields.seedFromRow(ctx, row, '
+                        f'"{_jlit(step.step_name)}.", '
+                        + ", ".join(f'"{_jlit(p)}"' for p in _keep) + ');')
+            elif has_values:
                 lines.append(
                     f'// [properties step] {step.step_name}')
                 lines.append(
@@ -14026,6 +14122,11 @@ public class {class_name} extends BaseApiTest {{
     def _fluent_render_groups(self, case: TestCase, service_class_name: str,
                               emit_stop_checks: bool) -> dict:
         """Group + render one case's fluent phases without writing a file."""
+        # The Properties-step branch of _render_step needs the case to see
+        # which EARLIER Groovy writes a field. Kept on its OWN attribute:
+        # six other emitters gate on _current_case_obj, and setting that
+        # here changed their output (+93 bootstrap hooks in a cold diff).
+        self._props_seed_case = case
         _here = os.path.dirname(os.path.abspath(__file__))
         if _here not in sys.path:
             sys.path.insert(0, _here)
