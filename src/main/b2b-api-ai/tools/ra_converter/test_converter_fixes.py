@@ -2447,6 +2447,7 @@ def test_case_with_every_step_disabled_skips_instead_of_passing_empty():
 # with the rev line masked). The hash ignores the rev line itself, so bumping
 # the rev alone does not change the fingerprint of the code it guards.
 _FRAMEWORK_REVS = {
+    "AvailabilitySearch.java": (1, "b521ec267ed1664d"),
     "CtxFields.java": (11, "8f4899e1b5b55282"),
     "IdentityVocabulary.java": (2, "f2faba88c0f4a21f"),
     "ImportedScenario.java": (28, "08a25b12acbf1b95"),

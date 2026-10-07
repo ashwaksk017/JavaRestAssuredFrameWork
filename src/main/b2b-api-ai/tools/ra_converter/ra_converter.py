@@ -7270,6 +7270,7 @@ class Emitter:
         # Framework support types. Suite --clean / wiping support/<suite>
         # must not remove these; if the whole support folder is deleted,
         # the converter copies them back from tools/ra_converter/framework/.
+        "AvailabilitySearch.java",
         "CtxFields.java",
         "ImportedScenario.java",
         "ImportedTemplates.java",
@@ -10568,6 +10569,70 @@ public interface ImportedRestClient {{
     _PROBE_THRESHOLD_RX = re.compile(
         r'(?:inventory|inventoryCount)\s*>\s*(\d+)')
 
+    def _availability_probe_lambda(self, script: str) -> str:
+        """Java for the shop call the search re-runs, or "" if unclear.
+
+        The script names its probe target --
+        `getTestStepByName("GET_Shop")` -- so the step is identifiable,
+        and `client_method_by_op` already holds the Java method emitted
+        for it. What has to match is the SIGNATURE, so this only accepts
+        the shape every one of these scripts probes: a GET with exactly
+        one path parameter and a query bag. Anything else returns "" and
+        the caller keeps publishing the first candidate, which is what it
+        did before this existed.
+
+        The non-date query params come from the ROW, so the probe sends
+        what the real call would send. peakRooms matters especially: the
+        server rejects a request below a property's minimum, and a probe
+        that omitted it would read that 400 as "no rooms" for every
+        combination and and so never find one.
+        """
+        case = getattr(self, "_current_case_obj", None)
+        if case is None:
+            return ""
+        for nm in re.findall(r'getTestStepByName\(\s*"([^"]+)"\s*\)', script or ""):
+            rs = next((s for s in (getattr(case, "steps", []) or [])
+                       if isinstance(s, RestStep)
+                       and (s.step_name or "") == nm), None)
+            if rs is None:
+                continue
+            if (rs.http_method or "GET").upper() != "GET":
+                continue
+            if len(rs.path_params or {}) != 1:
+                continue
+            key = (rs.method_name, rs.resource_path)
+            method = self.client_method_by_op.get(key)
+            if not method:
+                continue
+            if not self.client_takes_query.get(key, bool(rs.query_params)):
+                continue
+            if self.client_takes_body.get(key, False):
+                continue
+            col = sanitize_identifier(rs.step_name or nm)
+            puts = []
+            for qp in (rs.query_params or {}):
+                low = (qp or "").strip().lower()
+                if not qp or low in ("arrivaldate", "departuredate"):
+                    continue          # the probe supplies these two
+                puts.append(
+                    f'            __av.accept("{_jlit(qp)}", '
+                    f'row.get("qry_{col}_{_jlit(qp)}"));')
+            body = "\n".join(puts)
+            return (
+                "(__p, __a, __d) -> {\n"
+                "            java.util.Map<String, String> __q = "
+                "new java.util.LinkedHashMap<>();\n"
+                "            java.util.function.BiConsumer<String, String> __av = "
+                "(k, v) -> { if (v != null && !v.isEmpty()) __q.put(k, v); };\n"
+                '            __av.accept("arrivalDate", __a);\n'
+                '            __av.accept("departureDate", __d);\n'
+                + (body + "\n" if body else "")
+                + "            return client." + method
+                + '(ctx.getOrDefault("tokenId.GeneratedTokenID", ""), __p, __q);\n'
+                "        }"
+            )
+        return ""
+
     def _render_availability_probe(self, step: GroovyStep):
         """Java for the search, or None when this is not that script.
 
@@ -10608,15 +10673,25 @@ public interface ImportedRestClient {{
         step_j = _jlit(step.step_name)
         combos = len(lists["hcrs"]) * len(offsets)
 
-        return [
+        # The Properties step the winner is written to. Named by the
+        # script, so read it off rather than assuming.
+        props_step = "generatedDatesAndProps"
+        _case = getattr(self, "_current_case_obj", None)
+        if _case is not None:
+            for _nm in re.findall(
+                    r'getTestStepByName\(\s*"([^"]+)"\s*\)', script):
+                if any(isinstance(s, PropertiesStep)
+                       and (s.step_name or "") == _nm
+                       for s in (getattr(_case, "steps", []) or [])):
+                    props_step = _nm
+                    break
+
+        head = [
             f'// [groovy] {step_j} -- availability search.',
             f'// ReadyAPI walks {len(lists["hcrs"])} propert(y|ies) x '
             f'{len(offsets)} date offset(s) = {combos} combination(s), '
             f're-running the shop call each time, and keeps the first with '
             f'inventory > {threshold}.',
-            f'// Emitted here: the candidate it would try FIRST, computed '
-            f'now rather than read from a capture-time CSV snapshot. The '
-            f'search itself is NOT run -- see the WARN.',
             f'java.util.List<String> __probeHcrs_{step_j} = '
             f'java.util.List.of({props});',
             f'java.util.List<String> __probePcrs_{step_j} = '
@@ -10625,24 +10700,45 @@ public interface ImportedRestClient {{
             f'java.util.List.of();',
             f'java.util.List<Integer> __probeOffsets_{step_j} = '
             f'java.util.List.of({offs});',
-            f'java.time.LocalDate __probeArr_{step_j} = '
-            f'java.time.LocalDate.now().plusDays({first_off});',
-            f'ImportedScenario.putExtracted(ctx, '
-            f'"generatedDatesAndProps.arrivalDate", '
-            f'__probeArr_{step_j}.toString());',
-            f'ImportedScenario.putExtracted(ctx, '
-            f'"generatedDatesAndProps.departureDate", '
-            f'__probeArr_{step_j}.plusDays(1).toString());',
-            f'ImportedScenario.putExtracted(ctx, '
-            f'"generatedDatesAndProps.hcrs", "{_jlit(hcrs0)}");',
-            f'ImportedScenario.putExtracted(ctx, '
-            f'"generatedDatesAndProps.pcrs", "{_jlit(pcrs0)}");',
             f'// The candidates, published so the search can be driven '
             f'later without re-reading the Groovy.',
             f'ImportedScenario.putExtracted(ctx, "{step_j}.candidateProps", '
             f'String.join(",", __probeHcrs_{step_j}));',
             f'ImportedScenario.putExtracted(ctx, "{step_j}.candidateOffsets", '
             f'"{offs}".replace(" ", ""));',
+        ]
+
+        probe = self._availability_probe_lambda(script)
+        if probe:
+            # Run it. AvailabilitySearch publishes the winner -- or the
+            # first candidate when nothing has rooms -- so the four keys
+            # downstream cells read are always present either way. It
+            # resolves once per run rather than per case, because the
+            # question is about the environment, not this case's data.
+            return head + [
+                f'com.hi.api.support.AvailabilitySearch.run(ctx, "{step_j}", '
+                f'"{_jlit(props_step)}", __probeHcrs_{step_j}, '
+                f'__probePcrs_{step_j}, __probeOffsets_{step_j}, {threshold},',
+                f'        {probe});',
+            ]
+
+        # No probe could be built (the target step is not the GET-with-one
+        # path-param shape, or its client method is unknown), so keep the
+        # old behaviour: publish the candidate ReadyAPI would try FIRST and
+        # say plainly that the search did not run.
+        return head + [
+            f'java.time.LocalDate __probeArr_{step_j} = '
+            f'java.time.LocalDate.now().plusDays({first_off});',
+            f'ImportedScenario.putExtracted(ctx, '
+            f'"{_jlit(props_step)}.arrivalDate", '
+            f'__probeArr_{step_j}.toString());',
+            f'ImportedScenario.putExtracted(ctx, '
+            f'"{_jlit(props_step)}.departureDate", '
+            f'__probeArr_{step_j}.plusDays(1).toString());',
+            f'ImportedScenario.putExtracted(ctx, '
+            f'"{_jlit(props_step)}.hcrs", "{_jlit(hcrs0)}");',
+            f'ImportedScenario.putExtracted(ctx, '
+            f'"{_jlit(props_step)}.pcrs", "{_jlit(pcrs0)}");',
             f'LOG.warn("availability search NOT run for `{step_j}`: '
             f'ReadyAPI tries up to {combos} property/date combination(s) '
             f'until inventory > {threshold}; this sends only the first '
@@ -12459,6 +12555,11 @@ public final class AuthHelper {{
         # The project vocabulary (converter.config.json identity/heuristics),
         # read by CtxFields / ImportedScenario / ImportedTestdataCleanup.
         "IdentityVocabulary.java",
+        # The availability search the Groovy probe translates into. Listed
+        # here for the same reason TestThreadState is: the emitted Hooks
+        # call it, so a fresh convert that did not write it would fail to
+        # compile on generated code the user never wrote.
+        "AvailabilitySearch.java",
     )
 
     def emit_framework_support(self) -> list[str]:
