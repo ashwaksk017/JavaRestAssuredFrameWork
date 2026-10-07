@@ -2389,6 +2389,19 @@ def translate(script: str, response_var_by_step: dict[str, str],
                 lines.append(
                     f'    TestSupport.putExtracted(ctx, "{step}.{field}", {expr});')
             _mark("var_backed_setproperty")
+        # A Domain the author TYPED is the test's subject, not test data.
+        # The pre-request identity regen would replace it with a fresh
+        # domain; mark it so the regen keeps it. A list pick is not marked:
+        # which entry is "the" domain is decided per run, and the regen
+        # already follows the saved row for those.
+        _dom_literal = any(
+            s_ == "Properties" and f_.lower() == "domain"
+            for (s_, f_) in list(lit_uncond) + list(lit_envcond)) or any(
+            s_ == "Properties" and f_.lower() == "domain" and e_.startswith('"')
+            for (s_, f_), e_ in var_pubs.items())
+        if _dom_literal:
+            lines.append('    ImportedScenario.pinAuthorDomain(ctx);')
+            _mark("author_domain_pinned")
         # A second properties step gets its OWN pack, in ITS namespace. The
         # Properties line above is left exactly as it was: 15 of these fields
         # are also read as #Properties_<field># by templates, so they must be

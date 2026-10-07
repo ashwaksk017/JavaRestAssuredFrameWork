@@ -1,6 +1,6 @@
 package com.hi.api.support;
 
-// ra_converter-framework-rev: 28
+// ra_converter-framework-rev: 29
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -972,6 +972,38 @@ public final class ImportedScenario {
      */
     public static final String IDENTITY_PACK_READY = "_identityPackReady";
 
+    /**
+     * The domain the script set with a string LITERAL
+     * ({@code setPropertyValue("Domain", "explorer.de")}), recorded by the
+     * generated hook right after it publishes the value.
+     *
+     * <p>{@link #regenRandomProperties} decides the identity domain from the
+     * saved row: it keeps a freemail domain, a create-400 domain and a
+     * {@code www.} literal, and replaces anything else with a fresh one.
+     * A managed-account domain is none of those, so a case whose whole
+     * point is "register for explorer.de and expect
+     * duplicateManagedAccount" enrolled and created its account on a
+     * random domain. The row cannot say which saved domains were typed by
+     * the author; the script can, and the converter has read it.</p>
+     */
+    public static final String AUTHOR_DOMAIN = "_authorLiteralDomain";
+
+    /** Record that {@code Properties.Domain}, as it stands, is the author's. */
+    public static void pinAuthorDomain(Map<String, String> ctx) {
+        if (ctx == null) {
+            return;
+        }
+        String v = firstNonBlank(ctx, "Properties.Domain", "Properties.domain");
+        if (v != null && !v.trim().isEmpty()) {
+            ctx.put(AUTHOR_DOMAIN, v.trim());
+        }
+    }
+
+    static String authorDomain(Map<String, String> ctx) {
+        String v = ctx == null ? null : ctx.get(AUTHOR_DOMAIN);
+        return v == null || v.isEmpty() ? null : v;
+    }
+
     public static boolean identityPackReady(Map<String, String> ctx) {
         return ctx != null && "true".equals(ctx.get(IDENTITY_PACK_READY));
     }
@@ -1097,7 +1129,9 @@ public final class ImportedScenario {
                 && csvDomain.trim().toLowerCase(Locale.ROOT).startsWith("www.");
         boolean keepCsvDomain = csvDomain != null && !csvDomain.isEmpty()
                 && (isFreemailDomain(csvDomain) || expectedCreate400(row) || literalWwwDomain);
-        boolean hasFrozenDomain = !keepCsvDomain
+        // A domain the script itself typed outranks every inference below.
+        String authorDomain = authorDomain(ctx);
+        boolean hasFrozenDomain = !keepCsvDomain && authorDomain == null
                 && frozen != null && !frozen.isEmpty();
         // Hardcodeddomain is a Properties value the row always carries; its
         // presence does not mean the case built identity on it. In 211 of the
@@ -1109,7 +1143,9 @@ public final class ImportedScenario {
         // does; with no saved identity values the freeze stays.
         boolean usingFrozenDomain = hasFrozenDomain && !rowUsedOwnDomain(row, frozen);
         String domain;
-        if (literalWwwDomain) {
+        if (authorDomain != null) {
+            domain = authorDomain;
+        } else if (literalWwwDomain) {
             domain = csvDomain.trim();
         } else if (keepCsvDomain) {
             domain = normalizeDomain(csvDomain);
@@ -1260,6 +1296,12 @@ public final class ImportedScenario {
         applyCsvRandomDomains(ctx, row);
         alignPackEmailsToIdentity(ctx, row, domain, frozen);
         restoreAuthorLiteralEmail(ctx, row);
+        if (authorDomain != null) {
+            // The row-driven passes above work from the SAVED domain and
+            // may have moved Domain again; the author's value is final.
+            CtxFields.putBothCases(ctx, "Properties", "Domain", authorDomain);
+            LOG.info(" .. [regen] Properties.Domain kept as the script's literal: {}", authorDomain);
+        }
         mirrorRowSpellings(ctx, row, before);
     }
 
