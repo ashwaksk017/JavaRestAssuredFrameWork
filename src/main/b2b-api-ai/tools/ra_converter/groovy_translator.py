@@ -4085,9 +4085,37 @@ def translate(script: str, response_var_by_step: dict[str, str],
             _mark("log_swap_gstring")
             consumed = True
             continue
-        # Wrap in a literal only if not already a string
+        # An unquoted argument is an EXPRESSION, not text. Quoting it
+        # logged the SOURCE: `log.info(responseJSON)` became
+        # `LOG.info("{}", "responseJSON")`, and `log.info(error[0]
+        # .getMessage())` became the string "error[0].getMessage()".
+        # Measured on one run: ~2,700 lines carrying the NAME of a value
+        # instead of the value, and the ones that mattered most --
+        # the server's error message, the response body -- were exactly
+        # the ones hidden, which is what a reader opens the log for.
         if not (msg.startswith('"') or msg.startswith("'")):
-            msg = '"' + msg.replace('"', '\\"') + '"'
+            if re.match(r'^[A-Za-z_][A-Za-z_0-9]*$', msg):
+                # A bare name: read it from ctx. Same compile-safe route
+                # the GString path takes, and for the same reason -- a
+                # `def X = ...` translation declares X in an inner scope
+                # that has closed by the time this line runs, so `+ X +`
+                # would not compile. Missing keys yield "" rather than
+                # NPE.
+                lines.append(
+                    f'LOG.{level}("{{}}", TestSupport.ctxGet(ctx, "{msg}"));')
+                _mark("log_swap")
+                consumed = True
+                continue
+            # A call or an index -- not translatable here. Say what was
+            # dropped rather than print its source, which reads like data
+            # and sent at least one reader hunting a value that was only
+            # ever the expression's text.
+            preview = " ".join(msg.split())[:80].replace('*/', '* /')
+            lines.append(
+                f'// [log.{level}] skipped (Groovy expression, not text): '
+                f'{preview}')
+            consumed = True
+            continue
         # Groovy's `\$` escape (literal dollar) is NOT a valid Java
         # string-literal escape -- Java would reject it as a compile
         # error (JLS 3.10.6: only \b \t \n \f \r \" \' \\ \0-\7 \u...

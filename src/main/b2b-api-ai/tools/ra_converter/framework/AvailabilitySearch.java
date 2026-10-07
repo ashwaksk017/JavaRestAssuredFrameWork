@@ -1,6 +1,6 @@
 package com.hi.api.support;
 
-// ra_converter-framework-rev: 2
+// ra_converter-framework-rev: 3
 // Bumped whenever this bundled file changes. The converter SKIPS
 // author-editable files that already exist, so without a revision it
 // cannot tell an author's edit from a copy left by an older convert --
@@ -119,6 +119,56 @@ public final class AvailabilitySearch {
     private static final Map<String, Found> CACHE = new ConcurrentHashMap<>();
 
     private AvailabilitySearch() {}
+
+    /**
+     * One probe query value, resolved the way the engine resolves it.
+     *
+     * <p>The emitted probe used to read `row.get("qry_<step>_<param>")`
+     * for every non-literal parameter. That column only exists for a
+     * parameter the XML gave no reference for. A parameter bound to
+     * `${DataSource#peakRoom}` is emitted by the normal path as the
+     * PLACEHOLDER `#DataSource_peakRoom#` and has no `qry_` column at
+     * all, so the lookup returned null, the parameter was dropped, and
+     * the probe went out without it. Measured: 460 of 500 probes came
+     * back HTTP 400 and no search ever succeeded -- which looked like
+     * an environment with no availability.</p>
+     *
+     * <p>Resolving against row+ctx merged is what the engine does, so
+     * the probe now sends what the real call sends rather than what a
+     * guessed column name happens to hold.</p>
+     *
+     * @return the resolved value, or "" when it does not resolve -- the
+     *         caller drops empties, which is better than sending the
+     *         literal placeholder text as a query value.
+     */
+    public static String resolve(String ref, Map<String, String> row,
+                                 Map<String, String> ctx) {
+        if (ref == null || ref.isEmpty()) {
+            return "";
+        }
+        if (ref.indexOf('#') < 0) {
+            return ref;                        // a recorded literal
+        }
+        String out;
+        try {
+            out = com.hi.api.rest.utilities.RestUtilities.mapJsonValues(
+                    ref, ImportedScenario.mergedRow(row, ctx), false, false);
+        } catch (Exception e) {
+            return "";
+        }
+        if (out == null) {
+            return "";
+        }
+        out = out.trim();
+        // Unresolved comes back either as the literal token or, after the
+        // non-strict fallback pass, as the string "null". Neither is a
+        // query value; dropping it is what ReadyAPI does with an unset
+        // parameter.
+        if (out.isEmpty() || out.equals("null") || out.indexOf('#') >= 0) {
+            return "";
+        }
+        return out;
+    }
 
     /** Drop the per-run cache. For tests. */
     public static void resetCacheForTest() {

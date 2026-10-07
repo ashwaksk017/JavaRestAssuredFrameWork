@@ -158,6 +158,83 @@ def test_the_step_name_matcher_accepts_both_quote_styles():
         "the step-name pattern must accept both quote styles: " + frag)
 
 
+# ------------------------------------------- the probe must send real data
+
+def test_every_probe_parameter_resolves_to_something_that_exists():
+    """A probe parameter read from a key nothing publishes is DROPPED.
+
+    This is the check that was missing. The first version emitted
+    `row.get("qry_<step>_<param>")` for every non-literal parameter --
+    but that column exists only for a parameter the XML gave no
+    reference for. A parameter bound to `${DataSource#peakRoom}` is
+    emitted by the normal path as `#DataSource_peakRoom#` and has NO
+    qry_ column, so the lookup returned null, `__av.accept` skipped the
+    empty, and the probe went out WITHOUT peakRooms.
+
+    The server answered 400 to 460 of 500 probes and no search ever
+    succeeded -- which reads as an environment with no availability
+    rather than a malformed request. Nothing in the run said the
+    parameter had been dropped.
+
+    One grep would have caught it, so here is the grep.
+    """
+    import csv as _csv
+    import glob as _glob
+    import io as _io
+    import re as _re
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.dirname(os.path.dirname(here))
+    hooks = _glob.glob(os.path.join(
+        root, "src", "main", "java", "com", "hi", "api", "support",
+        "*", "cases", "Hooks1.java"))
+    if not hooks:
+        return                       # nothing generated in this checkout
+
+    bad = []
+    for h in hooks:
+        suite = h.replace("\\", "/").split("/support/")[1].split("/")[0]
+        text = _io.open(h, encoding="utf-8", errors="ignore").read()
+        # Both shapes. `resolve("#key#")` is how the probe reads a value
+        # now; `row.get("col")` inside a probe lambda is how it used to,
+        # and that is the shape that shipped broken -- so the guard has to
+        # catch it too or it only protects against the fix.
+        refs = set(_re.findall(
+            r'AvailabilitySearch\.resolve\("#([^"#]+)#"', text))
+        for block in _re.findall(r'__av\.accept\([^;]*;', text):
+            refs |= set(_re.findall(r'row\.get\("([^"]+)"\)', block))
+        if not refs:
+            continue
+        cols = set()
+        for f in _glob.glob(os.path.join(
+                root, "src", "test", "resources", "csv", suite, "**", "*.csv"),
+                recursive=True):
+            try:
+                with _io.open(f, encoding="utf-8-sig") as fh:
+                    cols |= set(next(_csv.reader(fh)))
+            except Exception:
+                pass
+        if not cols:
+            continue                 # no CSVs for this suite on disk
+        for r in sorted(refs):
+            # Only refs that MUST come from a column are enforced. A
+            # `DataSource_*` or `qry_*` ref has no other producer, so a
+            # missing column means the parameter is dropped -- that is
+            # the bug this guards. A ref to another STEP's property
+            # (`GET_Groups_MeetingDates_arrivalDate`) is published into
+            # ctx at runtime and legitimately has no column, so failing
+            # on it would be a false alarm that gets the guard disabled.
+            if not _re.match(r'(?i)^(datasource|qry_)', r):
+                continue
+            if r not in cols and r.replace("_", ".") not in cols:
+                bad.append("%s: probe resolves #%s# but no CSV column has it"
+                           % (suite, r))
+    assert not bad, (
+        "A probe parameter that does not resolve is silently DROPPED from "
+        "the request, and the server's 400 then looks like missing "
+        "availability:" + "".join(chr(10) + "  " + b for b in bad))
+
+
 if __name__ == "__main__":
     passed = 0
     for name, fn in sorted(list(globals().items())):

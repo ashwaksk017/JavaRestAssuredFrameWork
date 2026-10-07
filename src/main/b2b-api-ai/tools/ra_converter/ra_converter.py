@@ -10662,12 +10662,23 @@ public interface ImportedRestClient {{
                         f'"{_jlit(raw)}");')
                     continue
                 # A reference to the Properties step being searched is the
-                # probe's own business; anything else comes from the row.
+                # probe's own business; anything else is resolved the way
+                # the engine resolves it.
                 if re.match(r'^\$\{%s#' % re.escape(props_step), raw):
                     continue
+                # NOT `row.get("qry_<step>_<param>")`. That column exists
+                # only for a parameter the XML gave no reference for. A
+                # parameter bound to `${DataSource#peakRoom}` is emitted by
+                # the normal path as the placeholder `#DataSource_peakRoom#`
+                # and has NO qry_ column, so the lookup returned null, the
+                # parameter was dropped, and the probe went out without it:
+                # 460 of 500 probes came back HTTP 400 and no search ever
+                # succeeded, which read as an environment with no
+                # availability rather than a malformed probe.
                 puts.append(
                     f'            __av.accept("{_jlit(qp)}", '
-                    f'row.get("qry_{col}_{_jlit(qp)}"));')
+                    f'com.hi.api.support.AvailabilitySearch.resolve('
+                    f'"{_jlit(_translate_readyapi_refs(raw))}", row, ctx));')
             body = "\n".join(puts)
             return (
                 "(__p, __a, __d) -> {\n"
