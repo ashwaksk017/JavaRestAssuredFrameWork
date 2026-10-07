@@ -125,6 +125,26 @@ key; this needs a pattern pass.
 Verification: tests mirroring `test_fetch.py` — an unapproved host, each
 URL form, a code macro surviving the strip, and an empty body.
 
+**Built, then reviewed.** The review found four defects in my own code,
+three fixed and one deferred:
+
+| found | status |
+|---|---|
+| the PAT followed a cross-host redirect | fixed — `urllib` copies every header but content-length/type onto a redirected request, and tiny links follow a redirect *by design*. Redirects off the approved host are now refused outright |
+| an ambiguous title lookup took `results[0]` | fixed — two pages can share a title across versions or archived copies, and the wrong one reads as plausible. It refuses and names the ids |
+| no response size cap | fixed — 20 MB, refused rather than held in memory |
+| the child walk had no dedup or global cap | fixed — a space is a diamond, not a tree; 100 pages total |
+| **attachments are not implemented** | **deferred** — see below |
+
+**Known gap: attachments.** The gap review listed them ("identical
+rules, different endpoint") and they are not built. On these pages the
+spec is often *the attachment* rather than the page body, so Stage 2
+will see pages that look empty of requests when the request is in a
+file hanging off them. The Jira side already has the shape to copy —
+textual extensions only, a 10 MB cap, allowlist-checked downloads —
+so this is a contained addition, not a redesign. Decide it with Stage 2,
+once we see how often a page carries nothing readable without it.
+
 ### Stage 2 — Intake and brief
 
 One normaliser that takes whatever the user pasted — free-text story,

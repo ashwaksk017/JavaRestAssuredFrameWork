@@ -17,6 +17,8 @@ import shutil
 import sys
 import tempfile
 import unittest
+import urllib.error
+import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -25,6 +27,8 @@ sys.path.insert(0, HERE)
 # `fetch`, and putting it on the path made `import fetch` resolve to the
 # Jira one. Load this package's module by path instead.
 import importlib.util  # noqa: E402
+
+import pageref  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location(
     "confluence_fetch", os.path.join(HERE, "fetch.py"))
@@ -152,6 +156,63 @@ class Refusals(unittest.TestCase):
                       "https://wiki.example.com/pages/viewpage.action?pageId=1",
                       "--out", self.tmp])
         self.assertEqual(rc, 1)
+
+
+class RedirectSafety(unittest.TestCase):
+    """The token must not travel off the approved host.
+
+    urllib copies every header except content-length/type onto a
+    redirected request, so Authorization follows a 302 anywhere. Tiny
+    links are resolved by following a redirect ON PURPOSE, which makes
+    this the sharpest edge in the module."""
+
+    def test_a_same_host_redirect_is_allowed(self):
+        h = cf._SameHostRedirect("wiki.example.com")
+        req = urllib.request.Request("https://wiki.example.com/x/A")
+        req.add_header("Authorization", "Bearer t")
+        out = h.redirect_request(
+            req, None, 302, "Found", {},
+            "https://wiki.example.com/pages/viewpage.action?pageId=1")
+        self.assertIsNotNone(out)
+
+    def test_a_cross_host_redirect_is_refused(self):
+        h = cf._SameHostRedirect("wiki.example.com")
+        req = urllib.request.Request("https://wiki.example.com/x/A")
+        req.add_header("Authorization", "Bearer t")
+        with self.assertRaises(urllib.error.URLError) as got:
+            h.redirect_request(req, None, 302, "Found", {},
+                               "https://evil.example.com/steal")
+        self.assertIn("leaves the approved host", str(got.exception))
+
+    def test_the_refusal_names_the_header_as_the_reason(self):
+        h = cf._SameHostRedirect("wiki.example.com")
+        req = urllib.request.Request("https://wiki.example.com/x/A")
+        with self.assertRaises(urllib.error.URLError) as got:
+            h.redirect_request(req, None, 302, "Found", {},
+                               "https://evil.example.com/steal")
+        self.assertIn("Authorization", str(got.exception))
+
+
+class TitleAmbiguity(unittest.TestCase):
+    def test_two_pages_with_one_title_refuse_rather_than_guess(self):
+        """Archived or cross-version copies share titles. Picking the
+        first fetches a page whose content reads entirely plausible."""
+        ref = pageref.PageRef("title", "raw", base_url="https://w",
+                              space="ABC", title="Dup")
+        cf._get = lambda *a, **k: {"results": [{"id": "1"}, {"id": "2"}]}
+        self.addCleanup(setattr, cf, "_get", cf._get)
+        page_id, why = cf.resolve(ref, "https://w", "t", "/rest/api/content", 5)
+        self.assertEqual(page_id, "")
+        self.assertIn("2 pages titled", why)
+
+    def test_one_match_resolves(self):
+        ref = pageref.PageRef("title", "raw", base_url="https://w",
+                              space="ABC", title="Only")
+        cf._get = lambda *a, **k: {"results": [{"id": "77"}]}
+        self.addCleanup(setattr, cf, "_get", cf._get)
+        self.assertEqual(
+            cf.resolve(ref, "https://w", "t", "/rest/api/content", 5),
+            ("77", ""))
 
 
 class AllowlistParity(unittest.TestCase):
