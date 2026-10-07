@@ -19554,6 +19554,26 @@ def _fold_placeholder_aliases(text: str) -> str:
     return text
 
 
+def _config_keys_with_folded_aliases(keys) -> set:
+    """Add the canonical spelling of every alias `_fold_placeholder_aliases`
+    rewrites, so the key the template now carries is one the runtime pulls.
+
+    The fold turns `#c_id#` into `#client_id#` in the written body. The
+    classifier read the ORIGINAL text, so CONFIG_KEYS listed only `c_id`:
+    the merged row held `c_id`, the body asked for `client_id`, and the
+    token request went out with `"client_id": null`. Every test in twelve
+    suites failed on its first step with HTTP 401 invalid_client.
+    """
+    out = set(keys)
+    aliases = converter_config().get("placeholder_aliases") or {}
+    for alias, canonical in aliases.items():
+        if alias.startswith("_"):
+            continue
+        if alias in out:
+            out.add(canonical)
+    return out
+
+
 def phase_model_run_vocabs() -> set:
     """The run-wide vocabulary set (phase_model.RUN_VOCABS), lazily imported."""
     _here = os.path.dirname(os.path.abspath(__file__))
@@ -21739,6 +21759,7 @@ def _run_convert(args):
     # _route_credential_literals). Without this the template would carry
     # #client_id# and nothing would ever resolve it.
     all_config_keys.update(_CRED_KEYS_ROUTED)
+    all_config_keys = _config_keys_with_folded_aliases(all_config_keys)
 
     support_rel = emitter.emit_test_support(sorted(all_config_keys))
     print(f"[ra_converter] emitted test-support helper: {support_rel}  "
