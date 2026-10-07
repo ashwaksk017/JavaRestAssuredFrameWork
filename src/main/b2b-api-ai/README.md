@@ -133,11 +133,27 @@ python tools/ra_converter/ra_converter.py --input PartialGoalRegression --output
 python tools/ra_converter/ra_converter.py --input PartialGoalRegression,InventorySTAGE,MFRSTAGE --output . --package-root com.hi.api --data-dir "C:\path\to\workbooks" --clean
 ```
 
-Fine for iterating on one suite. **It leaves the tree partial**, and that is
-not cosmetic: the shared phase state is recomputed from the suites in *this*
-run, so chained phase names in suites you did NOT convert can stop resolving
-— seen as thousands of `phase-order` findings in a suite nobody touched. The
-convert records this and `verify_all` says so:
+Fine for iterating on one suite, and **it leaves the other suites exactly as
+they were** once every suite on disk carries its own vocabulary (see
+ARCHITECTURE.md §4). The convert says which case it was on its last lines,
+and `verify_all` repeats it:
+
+```
+[SUBSET CONVERT] the last convert covered 1 suite(s) of 29: eadkafkaevents.
+  The others were not touched by it -- each suite carries its own vocabulary --
+  so the results above stand as they are.
+```
+
+Measured: three suites converted together, then two of them reconverted one
+at a time -- all 320 generated files byte-identical afterwards. And one suite
+reconverted alone inside a 29-suite tree changed no other suite's CSV,
+template, test or support class.
+
+**A tree that still holds a suite converted before that is different.** Such
+a suite resolves its chain through the shared `ScenarioSteps`; the convert
+carries its methods forward, but the shared phase state is recomputed from
+the suites in *this* run and the gate cannot vouch for the rest. The convert
+records it and `verify_all` says so:
 
 ```
 [PARTIAL TREE] the last convert covered 1 suite(s) and left 28 un-converted.

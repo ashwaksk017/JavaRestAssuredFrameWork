@@ -420,6 +420,148 @@ class EveryDiscoveryBranchRecordsItsScope(unittest.TestCase):
                 ["alpha.xml"])
 
 
+def _steps_file(out, suite, marked):
+    """A suite's steps base as the converter writes it, with or without
+    the per-suite vocabulary marker."""
+    d = os.path.join(out, "src", "main", "java", "com", "hi", "api",
+                     "support", suite, "scenario")
+    os.makedirs(d)
+    with io.open(os.path.join(d, suite.capitalize() + "Steps.java"), "w",
+                 encoding="utf-8") as fh:
+        fh.write("/** %s */ public abstract class %sSteps {}"
+                 % (rc.SUITE_VOCAB_MARKER if marked else "an older layout",
+                    suite.capitalize()))
+
+
+class IsolatedSubsetConvert(unittest.TestCase):
+    """A subset convert is a hazard only while something is still shared.
+
+    Each suite now carries its own chain methods, so converting one leaves
+    the others exactly as they were -- measured as 320 generated files
+    byte-identical after two single-suite reconverts. The marker used to
+    say "tree-wide checks are not meaningful" for every subset convert,
+    which stopped being true and would have trained readers to ignore it.
+
+    "Isolated" is claimed from positive evidence only. Every way of being
+    unsure has a test here, and each must come out NOT isolated.
+    """
+
+    def setUp(self):
+        self._modes = (rc._PHASE_SPECS, rc._CLASSIC)
+        rc._PHASE_SPECS, rc._CLASSIC = True, False
+
+    def tearDown(self):
+        rc._PHASE_SPECS, rc._CLASSIC = self._modes
+
+    def test_every_suite_marked_is_isolated(self):
+        with tempfile.TemporaryDirectory() as td:
+            _steps_file(td, "alpha", True)
+            _steps_file(td, "beta", True)
+            self.assertTrue(
+                rc._subset_convert_is_isolated(td, "com.hi.api", {"alpha"}))
+
+    def test_one_older_suite_on_disk_is_enough_to_say_no(self):
+        with tempfile.TemporaryDirectory() as td:
+            _steps_file(td, "alpha", True)
+            _steps_file(td, "beta", False)     # resolves through the shared base
+            self.assertFalse(
+                rc._subset_convert_is_isolated(td, "com.hi.api", {"alpha"}))
+
+    def test_a_converted_suite_with_no_marker_of_its_own_is_no(self):
+        with tempfile.TemporaryDirectory() as td:
+            _steps_file(td, "beta", True)
+            # alpha was "converted" but nothing on disk says how
+            self.assertFalse(
+                rc._subset_convert_is_isolated(td, "com.hi.api", {"alpha"}))
+
+    def test_the_other_emit_modes_are_never_isolated(self):
+        with tempfile.TemporaryDirectory() as td:
+            _steps_file(td, "alpha", True)
+            rc._CLASSIC = True
+            self.assertFalse(
+                rc._subset_convert_is_isolated(td, "com.hi.api", {"alpha"}))
+            rc._CLASSIC, rc._PHASE_SPECS = False, False
+            self.assertFalse(
+                rc._subset_convert_is_isolated(td, "com.hi.api", {"alpha"}))
+
+    def test_unknown_root_empty_tree_and_empty_run_are_no(self):
+        with tempfile.TemporaryDirectory() as td:
+            self.assertFalse(
+                rc._subset_convert_is_isolated(td, "com.hi.api", {"alpha"}))
+            _steps_file(td, "alpha", True)
+            self.assertFalse(
+                rc._subset_convert_is_isolated(td, None, {"alpha"}))
+            self.assertFalse(
+                rc._subset_convert_is_isolated(td, "com.hi.api", set()))
+
+    def test_the_check_does_not_disturb_the_run_wide_suite_set(self):
+        """It clears _SUITES_THIS_RUN to judge every suite on disk; the
+        set must come back, or the next emit forgets what it converted."""
+        with tempfile.TemporaryDirectory() as td:
+            _steps_file(td, "alpha", True)
+            saved = set(rc._SUITES_THIS_RUN)
+            rc._SUITES_THIS_RUN.update({"alpha", "zeta"})
+            try:
+                rc._subset_convert_is_isolated(td, "com.hi.api", {"alpha"})
+                self.assertTrue({"alpha", "zeta"} <= rc._SUITES_THIS_RUN)
+            finally:
+                rc._SUITES_THIS_RUN.clear()
+                rc._SUITES_THIS_RUN.update(saved)
+
+    def _record(self, td, marked_beta):
+        _steps_file(td, "alpha", True)
+        _steps_file(td, "beta", marked_beta)
+        with _Quiet() as q:
+            rc._record_convert_scope(td, ["alpha"], "com.hi.api")
+        with io.open(os.path.join(td, "_audit", "partial_convert.json"),
+                     encoding="utf-8") as fh:
+            return json.load(fh), q.text
+
+    def test_an_isolated_subset_is_recorded_as_such_and_spares_the_catalog(self):
+        import fluent_scenario as fs
+        if not os.path.isfile(fs.catalog_path()):
+            self.skipTest("no catalog in this tree")
+        before = io.open(fs.catalog_path(), encoding="utf-8").read()
+        try:
+            with _Drop("alpha", "beta", "gamma") as d:
+                d.select(os.path.join(d.td, "alpha.xml"))
+                with tempfile.TemporaryDirectory() as td:
+                    dd, text = self._record(td, marked_beta=True)
+            self.assertIs(dd["isolated"], True)
+            self.assertEqual(dd["converted"], ["alpha"])
+            self.assertEqual(sorted(dd["not_converted"]), ["beta", "gamma"])
+            self.assertIn("left exactly as they were", dd["why_it_matters"])
+            self.assertIn("NOT touched", text)
+            self.assertNotIn("PARTIAL convert recorded", text)
+            self.assertEqual(io.open(fs.catalog_path(), encoding="utf-8").read(),
+                             before, "nothing was recomputed from a subset, so "
+                             "the catalog must not be marked incomplete")
+        finally:
+            io.open(fs.catalog_path(), "w", encoding="utf-8",
+                    newline="").write(before)
+
+    def test_a_subset_beside_an_older_suite_keeps_the_loud_marker(self):
+        """NEGATIVE CONTROL for the test above: same call, one suite on
+        disk without the marker, and everything goes back to loud."""
+        import fluent_scenario as fs
+        if not os.path.isfile(fs.catalog_path()):
+            self.skipTest("no catalog in this tree")
+        before = io.open(fs.catalog_path(), encoding="utf-8").read()
+        try:
+            with _Drop("alpha", "beta", "gamma") as d:
+                d.select(os.path.join(d.td, "alpha.xml"))
+                with tempfile.TemporaryDirectory() as td:
+                    dd, text = self._record(td, marked_beta=False)
+            self.assertIs(dd["isolated"], False)
+            self.assertIn("phase", dd["why_it_matters"].lower())
+            self.assertIn("PARTIAL convert recorded", text)
+            with io.open(fs.catalog_path(), encoding="utf-8") as fh:
+                self.assertTrue(json.load(fh).get("incomplete"))
+        finally:
+            io.open(fs.catalog_path(), "w", encoding="utf-8",
+                    newline="").write(before)
+
+
 class CatalogAfterAPartialConvert(unittest.TestCase):
     """Votes from part of the tree must not be inherited as if whole.
 

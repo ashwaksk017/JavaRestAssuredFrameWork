@@ -76,7 +76,13 @@ command budget, so give it its own job. It is also the only convert that
 is authoritative: `--input <dir>` computes shared phases and clustering
 across all 15 suites at once.
 
-**A single-suite convert is not side-effect-free.** Measured here:
+**A single-suite convert was not side-effect-free when this was written,
+and may still not be in an older tree.** Re-measured after each suite
+began carrying its own vocabulary: the same convert changed no file in
+any other suite (see README, "one suite only"). The paragraph below
+describes the earlier behaviour, which still applies while the tree holds
+a suite converted before that change -- the convert's last lines say
+which case a run was. Measured then:
 converting `accountdashboardregression` alone changed 122 files across
 nine suites. Every one was a CSV and not one was Java — CSV data rows
 come from a shared identity allocation whose sequence depends on which

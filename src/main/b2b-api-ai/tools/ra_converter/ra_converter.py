@@ -19507,6 +19507,59 @@ def _legacy_vocab_suites(output_dir: str, package_root: str) -> list:
     return out
 
 
+def _subset_convert_is_isolated(output_dir: str, package_root, converted) -> bool:
+    """Did a subset convert leave every OTHER suite exactly as it was?
+
+    It does when nothing generated is shared between suites' phases: each
+    suite's chain methods are on its own steps base, so rewriting one
+    suite cannot change what another resolves against. Measured: three
+    suites converted together, then two of them reconverted one at a time
+    -- all 320 generated files byte-identical afterwards.
+
+    Answered from POSITIVE evidence only, because a wrong "yes" hides the
+    one hazard the partial-convert marker exists to report:
+
+    * this run is the phase-spec mode (the text and --classic modes still
+      share bodies through support/scenario/);
+    * every suite this run converted has a steps base carrying
+      SUITE_VOCAB_MARKER on disk;
+    * no suite on disk, in or out of the run, lacks it.
+
+    Anything else -- an unknown package root, an empty tree, a suite
+    converted before per-suite vocabulary -- is "no", and the caller keeps
+    the old, louder behaviour.
+    """
+    if not package_root or not _PHASE_SPECS or _CLASSIC:
+        return False
+    base = os.path.join(output_dir, "src", "main", "java",
+                        *str(package_root).split("."), "support")
+    if not os.path.isdir(_fs_path(base)):
+        return False
+    saved = set(_SUITES_THIS_RUN)
+    try:
+        _SUITES_THIS_RUN.clear()       # judge EVERY suite on disk
+        if _legacy_vocab_suites(output_dir, str(package_root)):
+            return False
+    finally:
+        _SUITES_THIS_RUN.update(saved)
+    for suite in converted:
+        scen = os.path.join(base, str(suite), "scenario")
+        marked = False
+        try:
+            for f in os.listdir(_fs_path(scen)):
+                if not f.endswith("Steps.java"):
+                    continue
+                with open(_fs_path(os.path.join(scen, f)), encoding="utf-8") as fh:
+                    if SUITE_VOCAB_MARKER in fh.read():
+                        marked = True
+                        break
+        except OSError:
+            return False
+        if not marked:
+            return False
+    return bool(converted)
+
+
 def _existing_scenario_steps_vocabs(output_dir: str, package_root: str) -> tuple:
     """Vocabulary methods a PRIOR suite convert left on ScenarioSteps.
 
@@ -20009,10 +20062,12 @@ def _subset_note(selected: list[str], parent: str) -> None:
           f"{len(others)} other XML(s) in {parent} were NOT converted.")
     print(f"[ra_converter]   not converted: {', '.join(others[:8])}"
           + (f", ... (+{len(others) - 8})" if len(others) > 8 else ""))
-    print("[ra_converter]   A partial convert is NOT side-effect-free: "
-          "shared phases and clustering are computed across the whole set, "
-          "and converting one suite rewrites CSV data rows in others. Pass "
-          "the DIRECTORY as --input for an authoritative run.")
+    print("[ra_converter]   A partial convert is NOT side-effect-free "
+          "while the tree holds a suite converted before per-suite "
+          "vocabulary: that suite resolves its chain through the shared "
+          "ScenarioSteps. Where every suite carries its own, the others "
+          "are left untouched -- the last lines of this run say which it "
+          "was. Pass the DIRECTORY as --input to convert everything.")
 
 
 def _discover_input_xmls(path: str) -> list[str]:
@@ -20245,7 +20300,8 @@ def _refuse_mixed_emit_mode(output_dir: str, converting: list,
         + "  Or emit the other mode into its own --output tree.")
 
 
-def _record_convert_scope(output_dir: str, converted: list) -> None:
+def _record_convert_scope(output_dir: str, converted: list,
+                          package_root=None) -> None:
     """Record whether this convert covered the whole input set.
 
     A SUBSET convert does not only leave other suites un-emitted. It
@@ -20297,10 +20353,17 @@ def _record_convert_scope(output_dir: str, converted: list) -> None:
             return
         os.makedirs(_fs_path(os.path.dirname(marker)), exist_ok=True)
         import datetime as _datetime
+        # A subset convert used to be a hazard by construction. It is one
+        # now only while something generated is still shared -- see
+        # _subset_convert_is_isolated. The marker is written either way,
+        # because WHICH suites this run covered is a fact worth keeping;
+        # what it claims about the rest of the tree depends on the answer.
+        isolated = _subset_convert_is_isolated(output_dir, package_root, done)
         payload = {
             "schema": 1,
             "converted": sorted(done),
             "not_converted": sorted(full - done),
+            "isolated": isolated,
             # The folder --input resolved against, so the gate can print
             # the command that would make this tree authoritative. It is
             # not always `tools/ra_converter/input` -- telling a reader to
@@ -20309,6 +20372,11 @@ def _record_convert_scope(output_dir: str, converted: list) -> None:
             "input_dir": parent,
             "at": _datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
             "why_it_matters": (
+                "Every suite on disk carries its own vocabulary, so the "
+                "suites NOT converted were left exactly as they were. An "
+                "input with no generated suite at all is reported by the "
+                "gate as SUITE-NOT-EMITTED."
+                if isolated else
                 "Shared phase state (fluent_catalog.json, the framework "
                 "fluent finalisation) was recomputed from these suites "
                 "only. Chained phase names in the suites NOT converted may "
@@ -20336,6 +20404,15 @@ def _record_convert_scope(output_dir: str, converted: list) -> None:
         # Same treatment a run with failing suites already gets, for the
         # same reason: votes computed from partial data must be rebuilt,
         # not inherited.
+        if isolated:
+            # Nothing was recomputed from a subset, so there are no
+            # half-formed votes for the next convert to inherit.
+            print(f"[ra_converter] converted {len(done)} of {len(full)} "
+                  f"suite(s). The others were NOT touched: each suite "
+                  f"carries its own vocabulary, so this run changed "
+                  f"nothing they resolve against. Recorded in "
+                  f"{PARTIAL_MARKER_REL}.")
+            return
         _mark_catalog_incomplete(
             [f"partial convert: {len(done)} of {len(full)} suite(s)"]
             + sorted(full - done)[:9],
@@ -21080,7 +21157,7 @@ def _main_dispatch_inner(args):
         if missing:
             raise SystemExit(
                 "[ra_converter] missing support: " + ", ".join(missing))
-        _record_convert_scope(args.output, [suite])
+        _record_convert_scope(args.output, [suite], args.package_root)
         _record_emit_modes(args.output, [suite], _CLASSIC)
         return rc
 
@@ -21141,7 +21218,8 @@ def _main_dispatch_inner(args):
         if failures:
             bits.append("failed suites: " + ", ".join(s for s, _ in failures))
         raise SystemExit("[ra_converter] " + "; ".join(bits))
-    _record_convert_scope(args.output, [j[1] for j in jobs])
+    _record_convert_scope(args.output, [j[1] for j in jobs],
+                          args.package_root)
     _record_emit_modes(args.output, [j[1] for j in jobs], _CLASSIC)
     return 0
 

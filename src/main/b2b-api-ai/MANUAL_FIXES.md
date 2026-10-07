@@ -44,8 +44,11 @@ The 11 author-editable files the converter writes **only if absent**:
 
 **2. `--clean` is per-suite.** It removes only the suite being converted
 ("Other suites and framework files are untouched"). Converting one suite
-never wipes another — but it *does* rewrite CSV data rows in other
-suites, so do not treat a single-suite convert as side-effect-free.
+never wipes another. It used to rewrite CSV data rows in other suites;
+measured again after per-suite vocabulary, reconverting one suite inside
+a 29-suite tree changed no other suite's CSV, template, test or support
+class. The run's last lines say whether the tree was in that state --
+trust them rather than this paragraph.
 
 ---
 

@@ -593,6 +593,19 @@ def main() -> int:
         except (OSError, ValueError):
             return
         done, left = d.get("converted") or [], d.get("not_converted") or []
+        if d.get("isolated"):
+            # Every suite carries its own vocabulary, so that convert left
+            # the other suites as they were: a failure above is a real
+            # finding, not noise from a half-built tree.
+            print(f"\n[SUBSET CONVERT] the last convert covered {len(done)} "
+                  f"suite(s) of {len(done) + len(left)} "
+                  f"(at {d.get('at', '?')}): " + ", ".join(done[:6])
+                  + (" ..." if len(done) > 6 else "") + ".")
+            print("  The others were not touched by it -- each suite carries "
+                  "its own vocabulary -- so the results above stand as they "
+                  "are. An input with no generated suite shows as "
+                  "SUITE-NOT-EMITTED under `generated`.")
+            return
         print(f"\n[PARTIAL TREE] the last convert covered {len(done)} "
               f"suite(s) and left {len(left)} un-converted "
               f"(at {d.get('at', '?')}).")
