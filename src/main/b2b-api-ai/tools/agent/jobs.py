@@ -158,14 +158,26 @@ def read_status(job: str, runnable: str) -> dict:
 
 
 def read_log(job: str, runnable: str, offset: int = 0) -> dict:
-    """Bytes from `offset` on, so the page can poll without re-reading."""
+    """Bytes from `offset` on, so the page can poll without re-reading.
+
+    A re-run TRUNCATES the log, so a client still holding the previous
+    run's offset asks for a byte past the end and is handed nothing --
+    it watches an empty pane and concludes the run is doing nothing.
+    A file shorter than the offset means the log restarted, so the read
+    restarts too and says it did.
+    """
     p = log_path(job, runnable)
     if not os.path.isfile(p):
-        return {"offset": 0, "text": ""}
+        return {"offset": 0, "text": "", "restarted": False}
+    size = os.path.getsize(p)
+    start_at = max(0, offset)
+    restarted = start_at > size
+    if restarted:
+        start_at = 0
     with io.open(p, "rb") as fh:
-        fh.seek(max(0, offset))
+        fh.seek(start_at)
         chunk = fh.read()
-    return {"offset": offset + len(chunk),
+    return {"offset": start_at + len(chunk), "restarted": restarted,
             "text": chunk.decode("utf-8", errors="replace")}
 
 
@@ -189,8 +201,22 @@ def start(job: str, runnable: str, options: dict) -> dict:
     _write(status_path(job, runnable), status)
 
     logf = io.open(log_path(job, runnable), "wb")
-    proc = subprocess.Popen(argv, cwd=ROOT, stdout=logf,
-                            stderr=subprocess.STDOUT)
+    try:
+        proc = subprocess.Popen(argv, cwd=ROOT, stdout=logf,
+                                stderr=subprocess.STDOUT)
+    except Exception as e:
+        # Without this the status file says "running" for a process that
+        # never existed, and the page polls it forever.
+        try:
+            logf.write(f"could not start: {e}\n".encode())
+            logf.close()
+        except Exception:
+            pass
+        failed = dict(status)
+        failed.update({"state": "failed", "exit_code": -1,
+                       "finished": _now(), "error": str(e)})
+        _write(status_path(job, runnable), failed)
+        raise
     with _LOCK:
         _RUNNING[key] = proc
 

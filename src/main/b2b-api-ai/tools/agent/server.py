@@ -68,6 +68,45 @@ class Handler(BaseHTTPRequestHandler):
     def _fail(self, exc: Exception, code: int = 400) -> None:
         self._json({"error": str(exc), "kind": type(exc).__name__}, code)
 
+    def _guard(self) -> None:
+        """Refuse requests a web page could have made on the user's behalf.
+
+        This process starts commands that write to the repository, and
+        it listens on a port any page in the browser can reach. Two
+        things made that exploitable:
+
+        * `Content-Type: text/plain` is a SIMPLE request -- no CORS
+          preflight -- and the body was parsed as JSON regardless of the
+          declared type. A form on any site could therefore start a
+          convert, including `--clean`. Requiring the JSON content type
+          forces a preflight, which cross-origin cannot pass.
+        * no `Host` check, so a domain resolving to 127.0.0.1 (DNS
+          rebinding) was same-origin as far as the browser was
+          concerned.
+
+        None of this makes the server safe to expose. It closes the
+        drive-by path; `--host` still prints a warning.
+        """
+        host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]")
+        if host.lower() not in ("127.0.0.1", "localhost", "::1", ""):
+            raise PermissionError(
+                f"Host header {host!r} is not loopback. Refusing -- a name "
+                f"that resolves to 127.0.0.1 is how a page in the browser "
+                f"reaches a local server it should not.")
+        origin = (self.headers.get("Origin") or "").strip()
+        if origin and urlparse(origin).hostname not in (
+                "127.0.0.1", "localhost", "::1"):
+            raise PermissionError(
+                f"cross-origin request from {origin}. This API starts "
+                f"commands; it answers only its own page.")
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip()
+        if ctype.lower() != "application/json":
+            raise PermissionError(
+                "POST needs Content-Type: application/json. A text/plain "
+                "body is a simple request that skips the CORS preflight, "
+                "which is exactly how a page on another site would reach "
+                "this.")
+
     def _body(self) -> dict:
         n = int(self.headers.get("Content-Length") or 0)
         if n <= 0:
@@ -81,6 +120,12 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         try:
+            # Host only: a GET reads, and the page itself sends no
+            # Content-Type. Rebinding still has to be refused.
+            host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]")
+            if host.lower() not in ("127.0.0.1", "localhost", "::1", ""):
+                raise PermissionError(
+                    f"Host header {host!r} is not loopback")
             if u.path in ("/", "/index.html"):
                 return self._file("index.html", "text/html; charset=utf-8")
             if u.path == "/app.js":
@@ -104,12 +149,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"text": jobs.read_artifact(
                     q.get("job", ""), q.get("name", ""))})
             return self._json({"error": "no such route"}, 404)
+        except PermissionError as e:
+            return self._fail(e, 403)
         except Exception as e:                           # noqa: BLE001
             return self._fail(e)
 
     def do_POST(self):                                   # noqa: N802
         u = urlparse(self.path)
         try:
+            self._guard()
             body = self._body()
             if u.path == "/api/start":
                 return self._json(jobs.start(body.get("job", ""),
@@ -123,6 +171,8 @@ class Handler(BaseHTTPRequestHandler):
                 # line: argv has a length limit and a story does not.
                 return self._json(self._intake(body))
             return self._json({"error": "no such route"}, 404)
+        except PermissionError as e:
+            return self._fail(e, 403)
         except Exception as e:                           # noqa: BLE001
             return self._fail(e)
 

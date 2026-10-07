@@ -1,0 +1,149 @@
+"""The job runner starts only what is declared, and tells the truth after.
+
+    python tools/agent/test_jobs.py
+
+This module exists because the UI is a web page that starts commands.
+Most of what is tested here is refusal: a form field reaches `start()`
+as text, and the page is reachable by anything in the browser.
+"""
+from __future__ import annotations
+
+import importlib.util
+import io
+import os
+import shutil
+import sys
+import tempfile
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+_spec = importlib.util.spec_from_file_location(
+    "jobs_under_test", os.path.join(HERE, "jobs.py"))
+jobs = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(jobs)
+
+
+class ArgvIsNeverFreeText(unittest.TestCase):
+    """A UI that posted a command string would be a remote shell."""
+
+    def test_a_declared_option_is_accepted(self):
+        argv = jobs.build_argv("convert", {"--classic": True,
+                                           "--suite-name": "goal"})
+        self.assertIn("--classic", argv)
+        self.assertIn("goal", argv)
+
+    def test_an_undeclared_option_is_refused(self):
+        with self.assertRaises(ValueError) as got:
+            jobs.build_argv("convert", {"--rm": "-rf"})
+        self.assertIn("does not accept", str(got.exception))
+
+    def test_an_unknown_runnable_is_refused(self):
+        with self.assertRaises(ValueError):
+            jobs.build_argv("sh", {})
+
+    def test_a_false_flag_contributes_nothing(self):
+        self.assertNotIn("--clean", jobs.build_argv("convert",
+                                                    {"--clean": False}))
+
+    def test_a_repeatable_option_takes_a_list(self):
+        argv = jobs.build_argv("intake", {"--link": ["a", "b"]})
+        self.assertEqual(argv.count("--link"), 2)
+
+
+class PathsAreConfined(unittest.TestCase):
+    """`--output ../../..` would otherwise write wherever this runs."""
+
+    def test_traversal_is_refused(self):
+        for bad in ("../../../tmp/pwn", "..", "../"):
+            with self.assertRaises(ValueError, msg=bad):
+                jobs.confine(bad)
+
+    def test_an_absolute_path_outside_the_repo_is_refused(self):
+        with self.assertRaises(ValueError):
+            jobs.confine(tempfile.gettempdir())
+
+    def test_a_path_inside_the_repo_is_allowed(self):
+        self.assertTrue(jobs.confine("tools"))
+
+    def test_the_repo_root_itself_is_allowed(self):
+        self.assertTrue(jobs.confine("."))
+
+    def test_an_empty_path_is_refused(self):
+        with self.assertRaises(ValueError):
+            jobs.confine("   ")
+
+
+class LogReading(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self._jd = jobs.job_dir
+        self.addCleanup(setattr, jobs, "job_dir", self._jd)
+        jobs.job_dir = lambda job: self.tmp
+
+    def _write(self, data: bytes):
+        with io.open(jobs.log_path("j", "convert"), "wb") as fh:
+            fh.write(data)
+
+    def test_an_offset_reads_only_what_is_new(self):
+        self._write(b"one\n")
+        first = jobs.read_log("j", "convert", 0)
+        self._write(b"one\ntwo\n")
+        second = jobs.read_log("j", "convert", first["offset"])
+        self.assertEqual(second["text"], "two\n")
+
+    def test_a_truncated_log_restarts_the_read(self):
+        """A re-run truncates the log. A client holding the previous
+        run's offset asks past the end and is handed nothing -- it
+        watches an empty pane and concludes nothing is happening."""
+        self._write(b"a long first run\n" * 20)
+        stale = jobs.read_log("j", "convert", 0)["offset"]
+        self._write(b"second run\n")
+        again = jobs.read_log("j", "convert", stale)
+        self.assertTrue(again["restarted"])
+        self.assertEqual(again["text"], "second run\n")
+
+    def test_a_missing_log_is_empty_not_an_error(self):
+        r = jobs.read_log("j", "nothing-ran", 0)
+        self.assertEqual(r["text"], "")
+        self.assertFalse(r["restarted"])
+
+
+class StatusTellsTheTruth(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self._jd = jobs.job_dir
+        self.addCleanup(setattr, jobs, "job_dir", self._jd)
+        jobs.job_dir = lambda job: self.tmp
+        jobs.RUNNABLES["_broken"] = {
+            "argv": ["definitely-not-a-program-anywhere"],
+            "label": "cannot start", "options": {}}
+        self.addCleanup(jobs.RUNNABLES.pop, "_broken", None)
+
+    def test_a_spawn_that_fails_is_not_left_running(self):
+        """The status file said `running` for a process that never
+        existed, and the page polled it forever."""
+        with self.assertRaises(Exception):
+            jobs.start("j", "_broken", {})
+        st = jobs.read_status("j", "_broken")
+        self.assertEqual(st["state"], "failed")
+        self.assertIn("error", st)
+
+    def test_an_unknown_runnable_fails_before_any_directory_is_made(self):
+        with self.assertRaises(ValueError):
+            jobs.start("j", "nope", {})
+
+
+class Artifacts(unittest.TestCase):
+    def test_names_are_checked_against_a_list_not_joined(self):
+        with self.assertRaises(ValueError):
+            jobs.read_artifact("demo", "../../../../etc/passwd")
+
+    def test_a_known_name_is_allowed(self):
+        jobs.read_artifact("demo", "brief.md")   # absent file -> ""
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
