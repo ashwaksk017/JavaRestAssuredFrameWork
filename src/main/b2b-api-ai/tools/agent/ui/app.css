@@ -23,16 +23,16 @@ h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .07em;
   border-radius: 6px; padding: .3rem .5rem; width: 11rem; margin-left: .4rem;
   font: inherit;
 }
-.tabs { display: flex; gap: .25rem; padding: .6rem 1.2rem 0;
+.tabs { display: flex; gap: .75rem; padding: .85rem 1.6rem 0;
         border-bottom: 1px solid var(--line); background: var(--panel); }
 .tabs button {
   background: none; border: 0; border-bottom: 2px solid transparent;
-  color: var(--dim); padding: .55rem .9rem; font: inherit; cursor: pointer;
-  border-radius: 6px 6px 0 0;
+  color: var(--dim); padding: .7rem 1.5rem; font: inherit; cursor: pointer;
+  border-radius: 6px 6px 0 0; white-space: nowrap;
 }
 .tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
 .tabs button:hover { color: var(--ink); background: #1e2230; }
-.tab { padding: 1.2rem; max-width: 1180px; }
+.tab { padding: 1.6rem; max-width: 1320px; }
 .lede { color: var(--dim); margin: 0 0 1.1rem; max-width: 70ch; }
 label { display: block; font-size: .8rem; color: var(--dim); margin: .9rem 0 .3rem; }
 .hint { color: #6f768a; font-weight: 400; }
@@ -67,14 +67,19 @@ pre.log { max-height: 26rem; min-height: 5rem; }
 pre.doc { max-height: 24rem; min-height: 5rem; color: #cdd3e1; }
 .split { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
 @media (max-width: 860px) { .split { grid-template-columns: 1fr; } }
-.form { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
-        gap: .4rem 1.1rem; }
+.form { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        gap: 1.1rem 1.8rem; align-items: start; }
 .form .field { display: flex; flex-direction: column; }
-.form .field.flag { flex-direction: row; align-items: center; gap: .5rem;
-                    padding: .35rem 0; }
-.form label { margin: .5rem 0 .2rem; }
+.form .field.flag { flex-direction: row; align-items: center; gap: .6rem;
+                    padding: .55rem 0; }
+.form label { margin: .5rem 0 .3rem; }
 .form .req label::after { content: " required"; color: var(--warn);
                           font-size: .7rem; letter-spacing: .04em; }
+/* Not required, but the run is usually wrong without it when the suite
+   has DataSource workbooks -- so it is called out without being a gate. */
+.form .advised label::after { content: " if the suite has workbooks";
+                              color: var(--dim); font-size: .7rem;
+                              letter-spacing: .04em; }
 .form small { color: #6f768a; font-size: .72rem; margin-top: .15rem; }
 .danger {
   border: 1px solid #5a3030; background: #2a1718; color: #ffd7d7;

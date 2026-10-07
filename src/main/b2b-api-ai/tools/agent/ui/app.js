@@ -109,12 +109,18 @@ $("run-locate").onclick = async () => {
 const NOTE = {
   "--output": "Where the converted tree is written. A mistyped value overwrites a real tree.",
   "--input": "One XML, a comma-separated list, or a directory. Only the directory form is authoritative.",
-  "--data-dir": "The DataSource workbooks. Forgetting this is the usual cause of a bad run.",
+  "--data-dir": "The DataSource workbooks. Optional — a suite with no workbooks needs none. When the suite HAS them, forgetting this is the usual cause of a bad run.",
   "--clean": "DELETES this suite's previously-generated files first.",
   "--classic": "Whole-tree: one output holds one mode. Mixing is refused.",
   "--skip-self-test": "Skips the converter's own unit checks before emitting.",
 };
-const REQUIRED = ["--input", "--output", "--data-dir"];
+// --data-dir is NOT required: the converter does not require it either,
+// and a suite whose ReadyAPI project has no DataSource workbooks has
+// nothing to point it at. It is ADVISED instead -- forgetting it when
+// the suite does read workbooks is still the usual cause of a bad run,
+// so the form says so without refusing to run.
+const REQUIRED = ["--input", "--output"];
+const ADVISED = ["--data-dir"];
 const PRIMARY = ["--input", "--output", "--data-dir", "--package-root",
                  "--suite-name", "--envs", "--config"];
 
@@ -133,7 +139,8 @@ const PRIMARY = ["--input", "--output", "--data-dir", "--package-root",
   for (const [name, kind] of entries) {
     const field = document.createElement("div");
     field.className = `field ${kind === "flag" ? "flag" : ""} ` +
-                      (REQUIRED.includes(name) ? "req" : "");
+                      (REQUIRED.includes(name) ? "req" : "") + " " +
+                      (ADVISED.includes(name) ? "advised" : "");
     const id = `opt${name.replace(/-/g, "_")}`;
     if (kind === "flag") {
       const cb = document.createElement("input");
@@ -186,6 +193,12 @@ function warn() {
   }
   for (const r of REQUIRED) {
     if (!o[r]) msgs.push(`<code>${r}</code> is not set.`);
+  }
+  if (!o["--data-dir"]) {
+    msgs.push("<code>--data-dir</code> is not set. Fine for a suite whose " +
+              "ReadyAPI project has no DataSource workbooks. If it does " +
+              "have them, every DataSource column comes out EMPTY and the " +
+              "run looks like an API problem rather than a missing path.");
   }
   const box = $("convert-warnings");
   box.hidden = msgs.length === 0;

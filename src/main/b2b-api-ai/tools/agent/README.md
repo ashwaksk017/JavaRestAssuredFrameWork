@@ -109,9 +109,13 @@ A form over the converter's CLI. Every flag the command line takes is
 here, and the command it builds is shown before it runs, so the page is
 never doing something you cannot reproduce in a terminal.
 
-`--data-dir` is the one that matters most: it points at the folder of
-`.xlsx` workbooks the ReadyAPI XML names, and it is how DataSource
-columns get real values instead of empty cells.
+`--data-dir` points at the folder of `.xlsx` workbooks the ReadyAPI XML
+names, and is how DataSource columns get real values instead of empty
+cells. It is **optional** — a suite whose project has no DataSource
+workbooks needs none — so the form marks it *advised*, not required,
+and will run without it. When the suite does read workbooks, leaving it
+out empties every DataSource column, and the run then looks like an API
+problem rather than a missing path, which is why the form says so.
 
 ### Tab 3 — Agent loop
 
