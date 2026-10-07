@@ -179,8 +179,12 @@ CaseRegistry.register(id)
     .verify(...)
 ```
 
-* `Specs*.java` — WHAT to call (method, path, query, token, template)
-* `Hooks*.java` — what to do with the RESPONSE (extracts, assertions)
+* `<Suite>Specs*.java` — WHAT to call (method, path, query, token, template)
+* `<Suite>Hooks*.java` — what to do with the RESPONSE (extracts, assertions)
+* Both are prefixed with the suite's name (`EadkafkaeventsHooks1`); a tree
+  converted before that has plain `Specs1` / `Hooks1`, and the tools read both.
+* A suite's chain methods (`enrollGuest()` …) are on its own `<Suite>Steps`,
+  never on the shared `ScenarioSteps` — see ARCHITECTURE.md §4.
 * `PhaseContext` carries `client`, `ctx`, `row`, `softAssert`
 
 Arguments resolve through `Ref`:

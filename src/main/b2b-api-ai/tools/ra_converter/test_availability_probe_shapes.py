@@ -187,7 +187,7 @@ def test_every_probe_parameter_resolves_to_something_that_exists():
     root = os.path.dirname(os.path.dirname(here))
     hooks = _glob.glob(os.path.join(
         root, "src", "main", "java", "com", "hi", "api", "support",
-        "*", "cases", "Hooks1.java"))
+        "*", "cases", "*Hooks1.java"))
     if not hooks:
         return                       # nothing generated in this checkout
 

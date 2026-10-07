@@ -230,7 +230,11 @@ def main() -> int:
                 cases_dirs.append(dirpath)
     specs = sum(1 for d in cases_dirs
                 for f in os.listdir(_lp(d))
-                if f.startswith("Specs") and f.endswith(".java"))
+                # `<Suite>Specs<N>.java`, or `Specs<N>.java` in a tree
+                # converted before the suite prefix. Matching only the old
+                # name made every reconverted suite look half-built and
+                # the prune refuse to run.
+                if re.match(r"^\w*?Specs\d+\.java$", f))
     n_csv = len(csv_files(args.root, args.suite))
     if n_csv and specs == 0:
         print("[prune-props] REFUSING to prune: %d CSV file(s) but no "

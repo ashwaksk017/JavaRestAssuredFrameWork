@@ -218,12 +218,12 @@ def test_no_path_arg_reads_a_datasheet_cell_that_is_a_groovy_written_ref():
         # way: a tree where only some suites were reconverted (the user
         # scoped a run to one XML) would fail here on the stale ones.
         newest_spec = max((os.path.getmtime(p) for p in
-                           glob.glob(os.path.join(cases_dir, "Specs*.java"))),
+                           glob.glob(os.path.join(cases_dir, "*Specs*.java"))),
                           default=0)
         if newest_spec < converter_mtime:
             continue
         hooks = "".join(io.open(h, encoding="utf-8", errors="replace").read()
-                        for h in glob.glob(os.path.join(cases_dir, "Hooks*.java")))
+                        for h in glob.glob(os.path.join(cases_dir, "*Hooks*.java")))
         written = set()
         for m in re.finditer(r'seedFromRowIfAbsent\(ctx, row, "([^"]+)\.", ([^;]*)\);', hooks):
             for f in re.findall(r'"([^"]+)"', m.group(2)):
@@ -231,7 +231,7 @@ def test_no_path_arg_reads_a_datasheet_cell_that_is_a_groovy_written_ref():
         if not written:
             continue
         specs = {}
-        for sp in glob.glob(os.path.join(cases_dir, "Specs*.java")):
+        for sp in glob.glob(os.path.join(cases_dir, "*Specs*.java")):
             text = io.open(sp, encoding="utf-8", errors="replace").read()
             cls = os.path.basename(sp)[:-5]
             for m in re.finditer(r"static PhaseSpec (spec\d+)\(\) \{(.*?)\n    \}", text, re.S):
@@ -241,7 +241,7 @@ def test_no_path_arg_reads_a_datasheet_cell_that_is_a_groovy_written_ref():
             text = io.open(ph, encoding="utf-8", errors="replace").read()
             for m in re.finditer(r'register\("[^"]+", "([^"]+)"\)(.*?);', text, re.S):
                 case_specs.setdefault(m.group(1), []).extend(
-                    re.findall(r"(Specs\d+)::(spec\d+)", m.group(2)))
+                    re.findall(r"(\w*Specs\d+)::(spec\d+)", m.group(2)))
         tests_root = os.path.join(ROOT, "src", "test", "java", "com", "hi", "api",
                                   "tests", "imported", suite)
         csv_root = os.path.join(ROOT, "src", "test", "resources", "csv", suite)

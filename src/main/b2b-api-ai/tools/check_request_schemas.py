@@ -194,8 +194,13 @@ def call_sites(root: str) -> list:
         r'\.(get|post|put|patch|delete)\("([^"]+)"\).*?'
         r'\.template\(Templates\.([A-Z0-9_]+)\)', re.S)
     out = []
-    for f in glob.glob(os.path.join(root, "src/main/java/**/cases/Specs*.java"),
+    # `<Suite>Specs<N>.java` since the suite prefix; `Specs<N>.java` in a
+    # tree converted before it. A *Phases.java is never one of them.
+    _specs_rx = re.compile(r"^\w*?Specs\d+\.java$")
+    for f in glob.glob(os.path.join(root, "src/main/java/**/cases/*Specs*.java"),
                        recursive=True):
+        if not _specs_rx.match(os.path.basename(f)):
+            continue
         src = io.open(_lp(f), encoding="utf-8", errors="replace").read()
         for m in rx.finditer(src):
             out.append((m.group(1), _norm(m.group(2)), m.group(3)))

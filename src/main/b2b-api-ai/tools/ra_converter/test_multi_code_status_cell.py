@@ -95,7 +95,7 @@ def test_the_generated_cells_carry_the_list():
 
 def test_the_hook_for_a_multi_code_step_is_a_comment_not_a_check():
     hooks = glob.glob(os.path.join(ROOT, "src", "main", "java", "com", "hi", "api",
-                                   "support", "*", "cases", "Hooks*.java"))
+                                   "support", "*", "cases", "*Hooks*.java"))
     converter_mtime = os.path.getmtime(os.path.join(HERE, "ra_converter.py"))
     for h in hooks:
         if os.path.getmtime(h) < converter_mtime:

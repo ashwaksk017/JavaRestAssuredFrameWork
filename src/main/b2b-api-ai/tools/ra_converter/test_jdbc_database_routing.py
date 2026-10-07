@@ -135,7 +135,7 @@ def converted_pgr(tmp_path_factory):
 def _hooks_sources(out):
     files = glob.glob(os.path.join(
         out, "src", "main", "java", "**", "support", "partialgoalregression",
-        "cases", "Hooks*.java"), recursive=True)
+        "cases", "*Hooks*.java"), recursive=True)
     assert files, "no Hooks*.java generated for partialgoalregression"
     return {f: open(f, encoding="utf-8").read() for f in files}
 

@@ -15817,7 +15817,8 @@ public abstract class ScenarioSteps<S extends ScenarioSteps<S>> {{
                 + "    protected io.restassured.response.Response dispatch(" + NL
                 + "            com.hi.api.rest.utilities.phase.PhaseContext c," + NL
                 + "            com.hi.api.rest.utilities.phase.PhaseSpec p) throws Exception {" + NL
-                + f"        return {self.package_root}.support.{self.suite_name}.Calls.call(c, p);" + NL
+                + f"        return {self.package_root}.support.{self.suite_name}"
+                  f".{self._suite_class_prefix()}Calls.call(c, p);" + NL
                 + "    }" + NL)
         content = f"""package {pkg};
 
@@ -16005,12 +16006,55 @@ public abstract class {cls}<S extends {cls}<S>> extends ScenarioSteps<S> {{
     def _specs_class_of(self, spec_name: str) -> str:
         """`spec37` -> `Specs1`, `spec151` -> `Specs2`: its chunk."""
         n = int(re.match(r"spec(\d+)$", spec_name).group(1))
-        return "Specs%d" % ((n - 1) // self._specs_per_file + 1)
+        return "%sSpecs%d" % (self._suite_class_prefix(),
+                              (n - 1) // self._specs_per_file + 1)
 
     def _hooks_class_of(self, hook_name: str) -> str:
         """`hook37_x` -> `Hooks1`, `hook151_x` -> `Hooks2`: the chunk it lives in."""
         n = int(re.match(r"hook(\d+)_", hook_name).group(1))
-        return f"Hooks{(n - 1) // self._hooks_per_file + 1}"
+        return (f"{self._suite_class_prefix()}Hooks"
+                f"{(n - 1) // self._hooks_per_file + 1}")
+
+    def _suite_class_prefix(self) -> str:
+        """This suite's name as a class-name prefix; see phase_emit."""
+        import phase_emit
+        return phase_emit.suite_class_prefix(self.suite_name)
+
+    def _drop_unprefixed_suite_classes(self, cases_pkg: str, suite_pkg: str) -> list:
+        """Remove this suite's Hooks/Specs/CaseIndex/Calls under their OLD names.
+
+        `--clean` already removes them with the rest of the suite. Without
+        it, a reconvert would leave `Hooks1.java` beside
+        `<Suite>Hooks1.java`: both compile, nothing references the old one,
+        and every check that reads the suite's specs would count each step
+        twice. They are this suite's own generated output, being replaced
+        in this same call.
+        """
+        import phase_emit
+        doomed = []
+        cases_dir = os.path.join(self.output_dir, "src", "main", "java",
+                                 *cases_pkg.split("."))
+        try:
+            names = os.listdir(_fs_path(cases_dir))
+        except OSError:
+            names = []
+        for f in names:
+            m = phase_emit.SPECS_FILE_RX.match(f) or phase_emit.HOOKS_FILE_RX.match(f)
+            if (m and m.group(1) == "") or f == "CaseIndex.java":
+                doomed.append(os.path.join(cases_dir, f))
+        doomed.append(os.path.join(self.output_dir, "src", "main", "java",
+                                   *suite_pkg.split("."), "Calls.java"))
+        gone = []
+        for path in doomed:
+            try:
+                os.remove(_fs_path(path))
+                gone.append(os.path.basename(path))
+            except OSError:
+                pass
+        if gone:
+            print("[ra_converter] removed %d class(es) emitted under the old "
+                  "un-prefixed names: %s" % (len(gone), ", ".join(sorted(gone))))
+        return gone
 
     def emit_phase_index_and_calls(self) -> list[str]:
         """CaseIndex (loads every Phases class) + Calls (the engine switch)."""
@@ -16022,8 +16066,12 @@ public abstract class {cls}<S extends {cls}<S>> extends ScenarioSteps<S> {{
         import phase_emit
         written = []
         cases_pkg = self._suite_cases_pkg()
-        rel = f"src/main/java/{cases_pkg.replace('.', '/')}/CaseIndex.java"
-        self._write(rel, phase_emit.case_index_java(cases_pkg, self._phases_classes))
+        prefix = self._suite_class_prefix()
+        self._drop_unprefixed_suite_classes(
+            cases_pkg, f"{self.package_root}.support.{self.suite_name}")
+        rel = f"src/main/java/{cases_pkg.replace('.', '/')}/{prefix}CaseIndex.java"
+        self._write(rel, phase_emit.case_index_java(
+            cases_pkg, self._phases_classes, f"{prefix}CaseIndex"))
         written.append(rel)
         imports = list(self._PHASES_IMPORTS) + [
             f"{self.package_root}.support.{self.suite_name}.SetupHelper",
@@ -16033,16 +16081,17 @@ public abstract class {cls}<S extends {cls}<S>> extends ScenarioSteps<S> {{
         per = self._hooks_per_file
         chunks = [self._suite_hook_java[i:i + per] for i in range(0, len(self._suite_hook_java), per)] or [[]]
         for idx, chunk in enumerate(chunks, start=1):
-            rel = f"src/main/java/{cases_pkg.replace('.', '/')}/Hooks{idx}.java"
-            self._write(rel, phase_emit.hooks_class_java(cases_pkg, imports, chunk, f"Hooks{idx}"))
+            rel = f"src/main/java/{cases_pkg.replace('.', '/')}/{prefix}Hooks{idx}.java"
+            self._write(rel, phase_emit.hooks_class_java(
+                cases_pkg, imports, chunk, f"{prefix}Hooks{idx}"))
             written.append(rel)
         sper = self._specs_per_file
         schunks = [self._suite_spec_java[i:i + sper]
                    for i in range(0, len(self._suite_spec_java), sper)] or [[]]
         for idx, chunk in enumerate(schunks, start=1):
-            rel = f"src/main/java/{cases_pkg.replace(chr(46), chr(47))}/Specs{idx}.java"
+            rel = f"src/main/java/{cases_pkg.replace(chr(46), chr(47))}/{prefix}Specs{idx}.java"
             self._write(rel, phase_emit.specs_class_java(
-                cases_pkg, f"Specs{idx}", imports, chunk))
+                cases_pkg, f"{prefix}Specs{idx}", imports, chunk))
             written.append(rel)
         ops = []
         for (op, path), java_name in self.client_method_by_op.items():
@@ -16052,8 +16101,8 @@ public abstract class {cls}<S extends {cls}<S>> extends ScenarioSteps<S> {{
                         bool(self.client_takes_extra_headers.get(key, False)),
                         bool(self.client_takes_body.get(key, False))))
         suite_pkg = f"{self.package_root}.support.{self.suite_name}"
-        rel = f"src/main/java/{suite_pkg.replace('.', '/')}/Calls.java"
-        self._write(rel, phase_emit.calls_java(suite_pkg, ops))
+        rel = f"src/main/java/{suite_pkg.replace('.', '/')}/{prefix}Calls.java"
+        self._write(rel, phase_emit.calls_java(suite_pkg, ops, f"{prefix}Calls"))
         written.append(rel)
         print(f"[ra_converter] --phase-specs: {len(self._phases_classes)} Phases class(es), "
               f"{len(self._suite_spec_java)} distinct spec(s) in Specs, "
@@ -16159,7 +16208,7 @@ public abstract class {cls}<S extends {cls}<S>> extends ScenarioSteps<S> {{
                 f'        flow.phases = com.hi.api.rest.utilities.phase.'
                 f'CaseRegistry.forCase("{_sq}", flow.testCaseId);{NL}'
                 f"        if (flow.phases == null) {{{NL}"
-                f"            {self._suite_cases_pkg()}.CaseIndex.ensureLoaded();{NL}"
+                f"            {self._suite_cases_pkg()}.{self._suite_class_prefix()}CaseIndex.ensureLoaded();{NL}"
                 f'            flow.phases = com.hi.api.rest.utilities.phase.'
                 f'CaseRegistry.forCase("{_sq}", flow.testCaseId);{NL}'
                 f"        }}{NL}")
@@ -20123,6 +20172,12 @@ def _record_emit_modes(output_dir: str, converted: list, classic: bool) -> None:
         print(f"[ra_converter] WARN: could not record the emit mode: {exc}")
 
 
+def _specs_file_rx():
+    """phase_emit.SPECS_FILE_RX, imported lazily like its other users here."""
+    import phase_emit
+    return phase_emit.SPECS_FILE_RX
+
+
 def _infer_phase_suites_on_disk(output_dir: str) -> set:
     """Suites whose emitted files say `phase`, for trees with no marker.
 
@@ -20137,7 +20192,7 @@ def _infer_phase_suites_on_disk(output_dir: str) -> set:
     for dirpath, _dirs, files in os.walk(_fs_path(base)):
         if os.path.basename(dirpath) != "cases":
             continue
-        if not any(f.startswith("Specs") and f.endswith(".java")
+        if not any(_specs_file_rx().match(f)
                    for f in files):
             continue
         suite = os.path.basename(os.path.dirname(dirpath))

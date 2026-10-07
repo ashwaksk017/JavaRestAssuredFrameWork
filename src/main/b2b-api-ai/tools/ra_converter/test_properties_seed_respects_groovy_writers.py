@@ -215,7 +215,7 @@ def test_no_search_site_is_followed_by_an_unconditional_seed_of_its_outputs():
     seed of the same fields is the fix, not a violation."""
     hooks = glob.glob(os.path.join(
         ROOT, "src", "main", "java", "com", "hi", "api", "support",
-        "*", "cases", "Hooks*.java"))
+        "*", "cases", "*Hooks*.java"))
     if not hooks:
         return
     bad = []

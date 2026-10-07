@@ -33,6 +33,26 @@ import re
 import sys
 
 
+# A suite's Hooks<N> / Specs<N> classes carry the suite name in front
+# (`LeadspaceattestationsuiteHooks1`); trees converted before that do not
+# (`Hooks1`). Both are on disk in a partly reconverted tree, so both are
+# read. A `*Phases.java` whose test class happens to contain the word is
+# NOT one of them -- hence a pattern, not a bare glob.
+_CASES_CLASS_RX = {
+    "Hooks": re.compile(r"^\w*?Hooks\d+\.java$"),
+    "Specs": re.compile(r"^\w*?Specs\d+\.java$"),
+}
+
+
+def cases_class_files(root: str, kind: str) -> list:
+    """Every generated `<prefix>Hooks<N>.java` / `<prefix>Specs<N>.java`."""
+    rx = _CASES_CLASS_RX[kind]
+    return sorted(
+        f for f in glob.glob(os.path.join(
+            root, "src/main/java/**/cases/*%s*.java" % kind), recursive=True)
+        if rx.match(os.path.basename(f)))
+
+
 def norm(name: str) -> str:
     """Fold a ReadyAPI step name to the form the emitter would sanitise it to."""
     return re.sub(r"[^A-Za-z0-9]+", "_", name or "").strip("_").lower()
@@ -91,8 +111,7 @@ def hook_steps(root: str) -> dict:
     entirely and the case looks like it never authenticates.
     """
     out = {}
-    for f in glob.glob(os.path.join(root, "src/main/java/**/cases/Hooks*.java"),
-                       recursive=True):
+    for f in cases_class_files(root, "Hooks"):
         src = read(f)
         per = out.setdefault(suite_of(f), {})
         # split on method headers so a step is attributed to ITS hook
@@ -110,8 +129,7 @@ def hook_steps(root: str) -> dict:
 def spec_hooks(root: str) -> dict:
     """{suite: {specNN: [hook methods that spec references]}}."""
     out = {}
-    for f in glob.glob(os.path.join(root, "src/main/java/**/cases/Specs*.java"),
-                       recursive=True):
+    for f in cases_class_files(root, "Specs"):
         src = read(f)
         per = out.setdefault(suite_of(f), {})
         for m in re.finditer(
@@ -144,8 +162,7 @@ def spec_step_names(root: str) -> dict:
     reported unreachable.
     """
     out = {}
-    for f in glob.glob(os.path.join(root, "src/main/java/**/cases/Specs*.java"),
-                       recursive=True):
+    for f in cases_class_files(root, "Specs"):
         src = read(f)
         per = out.setdefault(suite_of(f), {})
         for m in re.finditer(

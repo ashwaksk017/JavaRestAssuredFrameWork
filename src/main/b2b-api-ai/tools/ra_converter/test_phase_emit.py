@@ -190,13 +190,68 @@ def test_specs_are_deduped_suite_wide_not_per_class():
     assert other != r1
     assert len(em._suite_spec_java) == 2
 
-    # chunked like Hooks, so no single file grows unbounded
-    assert em._specs_class_of("spec1") == "Specs1"
-    assert em._specs_class_of("spec151") == "Specs2"
-    assert r1.startswith("Specs1::spec")
+    # chunked like Hooks, so no single file grows unbounded -- and named for
+    # the suite, so 29 suites do not each own a `Specs1`
+    assert em._specs_class_of("spec1") == "S1Specs1"
+    assert em._specs_class_of("spec151") == "S1Specs2"
+    assert r1.startswith("S1Specs1::spec")
 
-    out = pe.specs_class_java("p", "Specs1", [], em._suite_spec_java)
+    out = pe.specs_class_java("p", "S1Specs1", [], em._suite_spec_java)
     assert out.count("static PhaseSpec spec") == 2, out
+
+
+def test_suite_classes_carry_the_suite_name():
+    """`Hooks1` existed once per suite: 29 files of one name, told apart
+    only by a package nobody reads in a stack trace."""
+    import ra_converter as rc
+    em = rc.Emitter("out", suite_name="leadspaceattestationsuite")
+    assert em._hooks_class_of("hook3_x") == "LeadspaceattestationsuiteHooks1"
+    assert em._hooks_class_of("hook151_x") == "LeadspaceattestationsuiteHooks2"
+    assert em._specs_class_of("spec12") == "LeadspaceattestationsuiteSpecs1"
+
+    # a separator starts a word; a leading digit cannot start an identifier
+    assert pe.suite_class_prefix("topicsprogramaccountsstgkafka_events") == \
+        "TopicsprogramaccountsstgkafkaEvents"
+    assert pe.suite_class_prefix("2fa-suite") == "S2faSuite"
+    assert pe.suite_class_prefix("") == "Suite"
+
+    # two suites never produce the same class name for the same chunk
+    other = rc.Emitter("out", suite_name="eadkafkaevents")
+    assert other._hooks_class_of("hook3_x") != em._hooks_class_of("hook3_x")
+
+    idx = pe.case_index_java("p", ["APhases"], "EadkafkaeventsCaseIndex")
+    assert "public final class EadkafkaeventsCaseIndex {" in idx
+    assert "private EadkafkaeventsCaseIndex()" in idx
+    calls = pe.calls_java("p", [("readX", 1, False, False, False)], "EadkafkaeventsCalls")
+    assert "public final class EadkafkaeventsCalls {" in calls
+    assert "private EadkafkaeventsCalls()" in calls
+    # the defaults still emit the old names: nothing else may depend on them
+    assert "public final class Calls {" in pe.calls_java("p", [])
+    assert "public final class CaseIndex {" in pe.case_index_java("p", [])
+
+
+def test_readers_accept_both_spellings_and_nothing_else():
+    """A partly reconverted tree holds `Hooks1.java` beside
+    `<Suite>Hooks1.java`. Reading only one spelling drops a suite from
+    every check that follows; reading too much picks up a `*Phases.java`
+    whose test class merely contains the word."""
+    for name, specs, hooks in (
+            ("Specs1.java", True, False),
+            ("EadkafkaeventsSpecs12.java", True, False),
+            ("Hooks2.java", False, True),
+            ("EadkafkaeventsHooks1.java", False, True),
+            ("HhonorsSpecsTestPhases.java", False, False),
+            ("HooksTestPhases.java", False, False),
+            ("Specs.java", False, False)):
+        assert bool(pe.SPECS_FILE_RX.match(name)) is specs, name
+        assert bool(pe.HOOKS_FILE_RX.match(name)) is hooks, name
+    assert pe.SPECS_FILE_RX.match("Specs1.java").group(1) == ""
+    assert pe.SPECS_FILE_RX.match("AbcSpecs1.java").group(1) == "Abc"
+
+    line = '.phase("a", "b", Specs1::spec3, EadkafkaeventsSpecs2::spec151)'
+    assert pe.SPEC_REF_RX.findall(line) == ["spec3", "spec151"]
+    line = ".after(Hooks1::hook3_x) .after(EadkafkaeventsHooks2::hook9_y)"
+    assert pe.HOOK_REF_RX.findall(line) == ["hook3_x", "hook9_y"]
 
 
 if __name__ == "__main__":

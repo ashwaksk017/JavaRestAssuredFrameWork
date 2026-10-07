@@ -133,6 +133,19 @@ its methods forward unchanged and the convert says so. Reconvert the last
 such suite and the shared class is clean. Guarded by
 `tools/ra_converter/test_suite_vocab_isolation.py`.
 
+### A suite's classes carry the suite's name
+
+`Hooks<N>`, `Specs<N>`, `Calls` and `CaseIndex` are written as
+`<Suite>Hooks<N>`, `<Suite>Specs<N>`, `<Suite>Calls` and
+`<Suite>CaseIndex` -- `LeadspaceattestationsuiteHooks1`, not one of 29
+files called `Hooks1`. The prefix is the suite name with each word
+capitalised (`phase_emit.suite_class_prefix`). Where this document says
+`Specs<N>` or `Hooks<N>`, read the prefixed name.
+
+A tree converted before the prefix still holds the old names, and every
+tool that reads these classes accepts both. Reconverting a suite removes
+its old-name files, with or without `--clean`.
+
 Both modes produce the same tests, the same CSV columns and the same
 TestNG suites. The default exists because numbered clones
 (`Onboarding2`, `createProgramAccount104`) made the tree hard to read.
