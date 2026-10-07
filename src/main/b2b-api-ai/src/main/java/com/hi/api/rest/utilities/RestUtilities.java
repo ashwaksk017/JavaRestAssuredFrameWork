@@ -558,9 +558,14 @@ public class RestUtilities {
                     new java.util.TreeSet<>(unresolvedSnapshot));
             String nearby = nearMissKeys(unresolvedSnapshot, dataMap);
             if (!nearby.isEmpty()) {
-                LOG.warn("mapJsonValues: ...but a value IS present under a "
-                        + "near-miss name -- this is a converter naming gap, "
-                        + "not missing data: {}", nearby);
+                // A hint, not a verdict. `#guestID#` in an OTP query was a
+                // script-local variable holding the MEMBER id; the lookalike
+                // key Properties.guestID held an unrelated generated number,
+                // and this line used to call that "a converter naming gap,
+                // not missing data".
+                LOG.warn("mapJsonValues: ...a similarly named key does hold a "
+                        + "value -- a naming gap if it is the same field, "
+                        + "unrelated if it is not; check the source step: {}", nearby);
             }
         }
         return schema;

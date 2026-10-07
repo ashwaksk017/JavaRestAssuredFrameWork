@@ -738,6 +738,7 @@ def _var_backed_publications(script: str) -> dict:
                           + ", ".join('"%s"' % _java_escape(v) for v in values) + ")")
     literals = {m.group(1): m.group(3) for m in _VAR_LITERAL_RX.finditer(script)
                 if m.group(3)}
+    computed = _computed_var_expressions(script)
     last = _last_nonempty_setproperty(script)
     for step, field, expr in _find_setproperty_targets(script):
         var = _bare_setproperty_expr(expr)
@@ -750,6 +751,84 @@ def _var_backed_publications(script: str) -> dict:
             out[(step, field)] = picks[var]
         elif var in literals:
             out[(step, field)] = '"%s"' % _java_escape(literals[var])
+        elif var in computed:
+            out[(step, field)] = computed[var]
+    return out
+
+
+def _ctx_backed_bind(script: str, ident: str):
+    """Where a JDBC bind identifier gets its value: ``(ctx_key, java_fmt)``.
+
+    Recognises ``def <ident> = context.expand('${Step#field}')`` with an
+    optional ``.toLong()`` / ``.toInteger()``. ``java_fmt`` takes the Java
+    local holding the ctx string and yields the bind argument; the numeric
+    conversion is kept because a String bound to a bigint column is a
+    type error in Postgres, not a match. Returns None for anything else
+    (a project property, a computed value): the caller must not guess.
+    """
+    if not re.fullmatch(r"[A-Za-z_]\w*", ident or ""):
+        return None
+    m = re.search(
+        # Anchored to the line start: a commented-out `//def x = ...` is
+        # not where the value comes from.
+        r"^[ 	]*(?:def|String|Long|long|Integer|int)\s+" + re.escape(ident)
+        + r"""\s*=\s*context\.expand\(\s*(['"])\$\{([^#}'"]+)#([^}'"]+)\}\1\s*\)"""
+        + r"(\.toLong\(\)|\.toInteger\(\)|\.toString\(\)|\.trim\(\))*",
+        script, re.M)
+    if not m:
+        return None
+    key = "%s.%s" % (m.group(2).strip(), m.group(3).strip())
+    tail = m.group(0)
+    if ".toLong()" in tail:
+        return key, "Long.valueOf(%s.trim())"
+    if ".toInteger()" in tail:
+        return key, "Integer.valueOf(%s.trim())"
+    return key, "%s"
+
+
+# `def dateFormat = new SimpleDateFormat("yyyy-MM-dd")`, either quote style,
+# `def` or a declared type.
+_SDF_VAR_RX = re.compile(
+    r"""(?:def|SimpleDateFormat)\s+(\w+)\s*=\s*new\s+(?:java\.text\.)?"""
+    r"""SimpleDateFormat\(\s*(['"])([^'"]*)\2\s*\)""")
+# `def currentDay = dateFormat.format(new Date()-1)`. Groovy's Date +/- int
+# moves by whole days.
+_DATE_FORMAT_VAR_RX = re.compile(
+    r"""def\s+(\w+)\s*=\s*(\w+)\.format\(\s*new\s+(?:java\.util\.)?Date\(\s*\)"""
+    r"""\s*(?:([+-])\s*(\d+))?\s*\)""")
+_UUID_VAR_RX = re.compile(
+    r"""def\s+(\w+)\s*=\s*(?:java\.util\.)?UUID\.randomUUID\(\)"""
+    r"""(?:\.toString\(\))?\s*$""", re.M)
+
+
+def _computed_var_expressions(script: str) -> dict:
+    """Variables whose value is COMPUTED, not random text: ``{var: java}``.
+
+    A date and a UUID have a shape the receiving API validates. Left to
+    CtxFields.generateStandard they became six random letters
+    (``"startDate": "tscbgv"``) and a nine-digit number where the author
+    wrote ``UUID.randomUUID()`` -- because the generator picks by the
+    FIELD NAME and neither ``todayDate`` nor ``partnerAccountID1`` says
+    what the script computes.
+
+    A variable written to two fields gets two evaluations. For a date
+    that is the same value; for a UUID it is two different ones, where
+    ReadyAPI would have reused one. No script in the 29 suites does that.
+    """
+    out: dict = {}
+    formats = {m.group(1): m.group(3) for m in _SDF_VAR_RX.finditer(script)}
+    for m in _DATE_FORMAT_VAR_RX.finditer(script):
+        var, fmt, sign, days = m.group(1), m.group(2), m.group(3), m.group(4)
+        if fmt not in formats:
+            continue
+        offset = ""
+        if days and int(days):
+            offset = " %s %sL * 86400000L" % (sign, int(days))
+        out[var] = ('new java.text.SimpleDateFormat("%s").format('
+                    'new java.util.Date(System.currentTimeMillis()%s))'
+                    % (_java_escape(formats[fmt]), offset))
+    for m in _UUID_VAR_RX.finditer(script):
+        out[m.group(1)] = "java.util.UUID.randomUUID().toString()"
     return out
 
 
@@ -3176,6 +3255,9 @@ def translate(script: str, response_var_by_step: dict[str, str],
             # simple literals; a bare identifier means the caller
             # relied on Groovy scope we can't recreate in Java.
             bind_java = ""
+            bind_locals: list = []
+            bind_untranslated = False
+            bind_numeric: set = set()
             if args_expr:
                 if args_expr.startswith("[") and args_expr.endswith("]"):
                     inner = args_expr[1:-1].strip()
@@ -3199,7 +3281,7 @@ def translate(script: str, response_var_by_step: dict[str, str],
                         parts.append(buf.strip())
                     safe = []
                     ok = True
-                    for p in parts:
+                    for _bi, p in enumerate(parts):
                         if ((p.startswith('"') and p.endswith('"'))
                                 or (p.startswith("'") and p.endswith("'"))
                                 or p in ("null",)
@@ -3207,23 +3289,77 @@ def translate(script: str, response_var_by_step: dict[str, str],
                             if p.startswith("'"):
                                 p = '"' + p[1:-1].replace('"', '\\"') + '"'
                             safe.append(p)
-                        else:
+                            continue
+                        # An identifier the script read from a step
+                        # property is a ctx value under a known key.
+                        _src = _ctx_backed_bind(script, p)
+                        if _src is None:
                             ok = False
                             break
+                        _bkey, _bconv = _src
+                        _blocal = f"{result_var}_b{_bi}"
+                        bind_locals.append((_blocal, _bkey))
+                        if "valueOf" in _bconv:
+                            bind_numeric.add(_blocal)
+                        safe.append(_bconv % _blocal)
                     if ok and safe:
                         bind_java = ", " + ", ".join(safe)
                     elif not ok:
-                        lines.append(
-                            f'// [jdbc] sql.{method_name} bind list contains '
-                            f'Groovy identifiers -- omitting bind values')
+                        bind_untranslated = True
+                        bind_locals = []
             lines.append(f'// [translated] JDBC {method_name} -> {java_helper}')
+            if bind_untranslated:
+                # `?` with no value is a guaranteed SQL error (22023), sent
+                # to a shared database on every attempt. Say so and do not
+                # send it.
+                lines.extend([
+                    f'// [jdbc] sql.{method_name} bind list holds a Groovy '
+                    f'value this translator cannot source -- query not sent',
+                    f'{result_type} {result_var} = null;',
+                    f'LOG.warn(" .. jdbc SKIPPED (bind list not translated; '
+                    f'hand-wire the value): {{}}", {java_query});',
+                ])
+            elif bind_locals:
+                _bkeys = ", ".join(k for _l, k in bind_locals)
+                lines.append(f'// [jdbc] bind values read from ctx: {_bkeys}')
+                for _blocal, _bkey in bind_locals:
+                    lines.append(
+                        f'String {_blocal} = TestSupport.ctxGet(ctx, "{_bkey}");')
+                # A numeric bind must BE a number: a seeded placeholder
+                # such as `@Properties_accountID@` is "no value" too.
+                _bempty = " || ".join(
+                    (f'{_l} == null || !{_l}.trim().matches("-?[0-9]+")'
+                     if _l in bind_numeric else
+                     f'{_l} == null || {_l}.trim().isEmpty()')
+                    for _l, _k in bind_locals)
+                lines.extend([
+                    f'{result_type} {result_var} = null;',
+                    f'if ({_bempty}) {{',
+                    f'    LOG.warn(" .. jdbc SKIPPED (no value for bind '
+                    f'parameter -- {_bkeys} holds none; the step that '
+                    f'produces it did not run): {{}}", {java_query});',
+                    f'}} else if (Db.isConfigured()) {{',
+                    f'    try {{',
+                    f'        String __jdbcSql = RestUtilities.mapSqlValues('
+                    f'{java_query}, TestSupport.mergedRow(row, ctx), ctx);',
+                    f'        {result_var} = Db.{composed_helper}(__jdbcSql{bind_java});',
+                    f'    }} catch (Exception __jdbcEx) {{',
+                    f'        LOG.warn("JDBC {method_name} failed: {{}}", '
+                    f'__jdbcEx.getMessage());',
+                    f'    }}',
+                    f'}} else {{',
+                    f'    LOG.warn("Skipping JDBC {method_name} step '
+                    f'(Db not configured)");',
+                    f'}}',
+                ])
             if subs:
                 lines.append(
                     f'// [jdbc] parameterized {len(subs)} hardcoded WHERE '
                     f'literal(s) with #placeholder# refs -- columns: '
                     f'{", ".join(subs)}. Populate ctx or the runtime-'
                     f'resolved query will still carry unresolved.')
-            lines.extend([
+            if not (bind_untranslated or bind_locals):
+              lines.extend([
                 f'{result_type} {result_var} = null;',
                 f'if (Db.isConfigured()) {{',
                 f'    try {{',
@@ -3239,7 +3375,7 @@ def translate(script: str, response_var_by_step: dict[str, str],
                 f'    LOG.warn("Skipping JDBC {method_name} step '
                 f'(Db not configured)");',
                 f'}}',
-            ])
+              ])
             # R6-1 fix: for sql.firstRow, walk the script for
             # `<groovyVar> = <resultLocal>.<field>` assignments and emit
             # Java extract + putExtracted for any downstream
