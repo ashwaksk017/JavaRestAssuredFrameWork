@@ -112,6 +112,9 @@ public final class ResponseAsserts {
         Expected exp = Expected.from(row == null ? null : row.get("expected"));
         String col = "expected_" + step + "_status_code";
         String raw = row == null ? null : row.get(col);
+        if (assertStatusInList(softAssert, res, raw, step)) {
+            return;
+        }
         int expected = RestUtilities.parseIntOrDefault(
                 raw, exp.getInt("statusCode", defaultStatus), col);
         if (expected < 0) {
@@ -138,6 +141,9 @@ public final class ResponseAsserts {
         if (softAssert == null || res == null) return;
         String col = "expected_" + step + "_status_code";
         String raw = row == null ? null : row.get(col);
+        if (assertStatusInList(softAssert, res, raw, step)) {
+            return;
+        }
         int expected = RestUtilities.parseIntOrDefault(raw, defaultStatus, col);
         if (expected < 0) {
             countSkip("no expected status configured");
@@ -148,6 +154,53 @@ public final class ResponseAsserts {
             return;
         }
         softAssert.assertEquals(res.statusCode(), expected, "expected status for " + step);
+    }
+
+    /**
+     * A ReadyAPI {@code Valid HTTP Status Codes} assertion may list several
+     * codes ({@code 200,201,206}). The converter used to drop such a list
+     * to an EMPTY cell -- the step then logged "no expected status
+     * configured" and the check was silently skipped (26 skipped checks
+     * in one run of goal3487). The cell now carries the list; any listed
+     * code passes.
+     *
+     * @return true when {@code raw} was a list and the assertion was made
+     *         (or the list could not be parsed and the skip was recorded);
+     *         false when {@code raw} is a single code or empty, so the
+     *         caller's single-code path runs unchanged.
+     */
+    static boolean assertStatusInList(SoftAssert softAssert, Response res,
+                                      String raw, String step) {
+        java.util.Set<Integer> codes = expectedStatusList(raw);
+        if (codes == null) {
+            return false;
+        }
+        int actual = res.statusCode();
+        softAssert.assertTrue(codes.contains(actual),
+                "expected status for " + step + " in " + codes
+                        + " but found [" + actual + "]");
+        return true;
+    }
+
+    /**
+     * {@code "200,201,206"} (also space- or semicolon-separated) to a set;
+     * {@code null} when the cell is empty or holds a single code, so the
+     * single-code path keeps its exact assertion message.
+     */
+    static java.util.Set<Integer> expectedStatusList(String raw) {
+        if (raw == null) return null;
+        String s = raw.trim();
+        if (s.isEmpty() || s.matches("-?\\d+")) return null;
+        java.util.Set<Integer> out = new java.util.LinkedHashSet<>();
+        for (String part : s.split("[,;\\s]+")) {
+            if (part.isEmpty()) continue;
+            try {
+                out.add(Integer.parseInt(part));
+            } catch (NumberFormatException e) {
+                return null;            // not a code list; let the caller decide
+            }
+        }
+        return out.size() > 1 ? out : null;
     }
 
     /**

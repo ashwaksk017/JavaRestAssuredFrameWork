@@ -217,6 +217,19 @@ public abstract class Ref {
         while (m.find()) {
             String k = m.group(1);
             String v = ImportedScenario.ctxGet(ctx, k);
+            // A cell reference is spelled `#Step_field#`; the live ctx key the
+            // Groovy published is `Step.field`. ctxGet does not alias the two,
+            // so the lookup missed and fell to the ROW -- which also carries
+            // the Properties step's saved snapshot of the same field. The
+            // availability search picked LONME and the path went to MILHI.
+            // Try the dotted spellings in ctx BEFORE the row.
+            if ((v == null || v.isEmpty()) && k.indexOf('_') >= 0) {
+                int last = k.lastIndexOf('_');
+                v = ImportedScenario.ctxGet(ctx, k.substring(0, last) + "." + k.substring(last + 1));
+                if (v == null || v.isEmpty()) {
+                    v = ImportedScenario.ctxGet(ctx, k.replace('_', '.'));
+                }
+            }
             if (v == null || v.isEmpty()) {
                 v = row == null ? null : row.get(k);
             }

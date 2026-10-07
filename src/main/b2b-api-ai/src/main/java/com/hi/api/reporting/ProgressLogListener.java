@@ -122,8 +122,7 @@ public class ProgressLogListener implements ITestListener, IConfigurationListene
     public void onTestFailure(ITestResult r) {
         int attempt = currentAttempt(r);
         Throwable t = r.getThrowable();
-        String msg = (t == null) ? "(no throwable)" : t.getClass().getSimpleName()
-                + ": " + (t.getMessage() == null ? "" : t.getMessage());
+        String msg = (t == null) ? "(no throwable)" : describe(t);
         // Log every FAILED at WARN with attempt count. Users see the
         // retry story in the [Retry] lines RetryAnalyzer prints AND in
         // the attempt=N here. Silencing intermediate failures based on
@@ -183,15 +182,59 @@ public class ProgressLogListener implements ITestListener, IConfigurationListene
         if (t == null) {
             return "";
         }
-        String msg = t.getMessage();
+        return " -- " + describe(t);
+    }
+
+    /**
+     * {@code Top: message <- Root: message} -- the wrapper AND the cause.
+     *
+     * <p>Four Kafka tests reported a bare {@code UndeclaredThrowableException:}
+     * with nothing after the colon, and 24 more reported
+     * {@code IllegalStateException: SetupHelper.flow_A for suite ...}. The
+     * real reason in every case was {@code UnknownHostException:
+     * kapi-s.hhc.hilton.com}, visible only in the stack trace. A FAILED
+     * line that names the wrapper and not the cause sends the reader to
+     * the wrong place; this walks the cause chain (including the
+     * reflective wrappers that carry their cause in a different field)
+     * and appends the root.</p>
+     */
+    public static String describe(Throwable t) {
+        if (t == null) {
+            return "(no throwable)";
+        }
+        Throwable root = rootCause(t);
+        String top = t.getClass().getSimpleName() + ": " + firstLine(t.getMessage());
+        if (root == t) {
+            return top;
+        }
+        return top + " <- " + root.getClass().getSimpleName() + ": "
+                + firstLine(root.getMessage());
+    }
+
+    public static Throwable rootCause(Throwable t) {
+        Throwable cur = t;
+        for (int guard = 0; cur != null && guard < 32; guard++) {
+            Throwable next = cur.getCause();
+            if (next == null && cur instanceof java.lang.reflect.UndeclaredThrowableException) {
+                next = ((java.lang.reflect.UndeclaredThrowableException) cur).getUndeclaredThrowable();
+            }
+            if (next == null && cur instanceof java.lang.reflect.InvocationTargetException) {
+                next = ((java.lang.reflect.InvocationTargetException) cur).getTargetException();
+            }
+            if (next == null || next == cur) {
+                return cur;
+            }
+            cur = next;
+        }
+        return cur == null ? t : cur;
+    }
+
+    private static String firstLine(String msg) {
         if (msg == null || msg.isBlank()) {
-            return " -- " + t.getClass().getSimpleName();
+            return "";
         }
-        String firstLine = msg.strip().split("\\R", 2)[0];
-        if (firstLine.length() > 400) {
-            firstLine = firstLine.substring(0, 400) + " ...";
-        }
-        return " -- " + t.getClass().getSimpleName() + ": " + firstLine;
+        String line = msg.strip().split("\\R", 2)[0];
+        return line.length() > 400 ? line.substring(0, 400) + " ..." : line;
     }
 
     @Override
