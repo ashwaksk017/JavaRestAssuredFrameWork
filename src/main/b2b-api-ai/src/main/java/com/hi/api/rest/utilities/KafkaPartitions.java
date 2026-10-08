@@ -174,20 +174,30 @@ public final class KafkaPartitions {
             return dflt;
         }
         try {
-            Object got = JsonPath.from(eventsJson).get(path);
-            if (got instanceof List) {
-                for (Object v : (List<?>) got) {
-                    if (v != null && !String.valueOf(v).isEmpty()) {
-                        return String.valueOf(v);
-                    }
-                }
-                return dflt;
-            }
-            return got == null || String.valueOf(got).isEmpty() ? dflt : String.valueOf(got);
+            String found = firstScalar(JsonPath.from(eventsJson).get(path));
+            return found == null ? dflt : found;
         } catch (RuntimeException e) {
             LOG.warn(" .. [kafka] could not read `{}` from the events: {}", path, e.getMessage());
             return dflt;
         }
+    }
+
+    /** Depth-first first non-null, non-empty scalar; a path can spread over more than one list. */
+    private static String firstScalar(Object got) {
+        if (got == null) {
+            return null;
+        }
+        if (got instanceof List) {
+            for (Object v : (List<?>) got) {
+                String s = firstScalar(v);
+                if (s != null) {
+                    return s;
+                }
+            }
+            return null;
+        }
+        String s = String.valueOf(got);
+        return s.isEmpty() ? null : s;
     }
 
     private static List<Map<String, Object>> rows(String json) {
@@ -195,7 +205,17 @@ public final class KafkaPartitions {
             return null;
         }
         try {
-            return JsonPath.from(json).getList("$");
+            List<Object> raw = JsonPath.from(json).getList("$");
+            List<Map<String, Object>> out = new java.util.ArrayList<>();
+            for (Object o : raw) {
+                if (!(o instanceof Map)) {
+                    return null;            // not a partition listing
+                }
+                @SuppressWarnings("unchecked")
+                Map<String, Object> m = (Map<String, Object>) o;
+                out.add(m);
+            }
+            return out;
         } catch (RuntimeException e) {
             return null;
         }

@@ -105,7 +105,7 @@ def test_the_database_is_read_and_the_pick_is_published():
     assert ('String __jdbcSql = "SELECT value FROM segment.account_rules '
             "WHERE reason = 'managed_domain'\";") in java, java
     assert "Db.queryAll(__jdbcSql)" in java
-    assert '__row.get("value")' in java
+    assert '"value".equalsIgnoreCase(__e.getKey())' in java
     assert "__picked.get(new java.util.Random().nextInt(__picked.size()))" in java
     assert 'TestSupport.putExtracted(ctx, "Properties.managed_email_domain", randomDomain);' in java
     assert meta["coverage"] == "FULL"

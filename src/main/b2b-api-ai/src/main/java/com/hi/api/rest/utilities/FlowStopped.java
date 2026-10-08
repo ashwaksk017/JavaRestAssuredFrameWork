@@ -23,6 +23,12 @@ import io.restassured.response.Response;
  * raised, so stopping never turns a pass into a failure. It only ends the
  * test at the step that broke it, with the server's answer in the message.</p>
  *
+ * <p>Two things it DOES change. A case the converter marks to SKIP at a later
+ * untranslated database step is reported FAILED when an earlier write is
+ * refused -- it never reaches the skip. And the steps after the refusal no
+ * longer run, including a DELETE the case itself ends with; what earlier
+ * steps created is left to the per-case cleanup.</p>
+ *
  * <p>This is NOT what ReadyAPI does: most cases are saved with "abort on
  * error" off, and ReadyAPI runs the remaining steps against the same stale
  * property values. {@code test.stopAfterRejectedWrite=false} restores
@@ -45,7 +51,11 @@ public final class FlowStopped extends AssertionError {
         this.transientRejection = transientRejection;
         // Ids and timestamps differ between attempts; the reason does not.
         this.signature = step + "|" + status + "|"
-                + (serverSaid == null ? "" : serverSaid.replaceAll("[0-9]+", "#"));
+                + (serverSaid == null ? "" : serverSaid
+                        // trace ids and UUIDs first, then any remaining number
+                        .replaceAll("(?i)\\b[0-9a-f]{8}(?:-?[0-9a-f]{4}){3}-?[0-9a-f]{12}\\b", "#")
+                        .replaceAll("(?i)\\b(?=[0-9a-f]*[0-9])[0-9a-f]{12,}\\b", "#")
+                        .replaceAll("[0-9]+", "#"));
     }
 
     /**

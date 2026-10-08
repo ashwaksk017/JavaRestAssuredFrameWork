@@ -502,6 +502,10 @@ _PLAIN_DEF_RX = re.compile(
 _EMPTY_LIST_RX = re.compile(r"^[ \t]*def\s+(\w+)\s*=\s*\[\s*\][ \t]*;?[ \t]*$", re.M)
 
 
+_RESERVED_HOOK_NAMES = {"ctx", "row", "softAssert", "holder", "testCaseId", "client",
+                        "res", "c", "exp", "guests", "accounts", "members"}
+
+
 def collect_and_pick_blocks(script: str) -> list:
     """`sql.eachRow` loops that COLLECT a column into a list a later line
     picks one entry from.
@@ -548,10 +552,20 @@ def collect_and_pick_blocks(script: str) -> list:
             continue
         row_var = head.group(1)
         body = live[m.end() + head.end():close]
-        add = re.search(r"\b(\w+)\.add\(", body) or re.search(r"\b(\w+)\s*<<", body)
+        rv = re.escape(row_var)
+        # the row's column, directly or through one local: `def d = row.col`
+        src = r"(?:%s\.\w+" % rv
+        for alias in re.findall(r"\bdef\s+(\w+)\s*=\s*%s\.\w+\b" % rv, body):
+            src += "|" + re.escape(alias)
+        src += ")"
+        add = (re.search(r"\b(\w+)\.add\(\s*%s(?:\.toString\(\))?(?:\.trim\(\))?\s*\)" % src, body)
+               or re.search(r"\b(\w+)\s*<<\s*%s(?:\.toString\(\))?(?:\.trim\(\))?\s*$" % src,
+                            body, re.M))
         if not add or add.group(1) not in lists:
-            continue
+            continue                    # not `list.add(row.col)`: a transform we would drop
         list_var = add.group(1)
+        if len(re.findall(r"\.add\(|<<", body)) != 1:
+            continue                    # more than one collector in the closure
         cols = set(re.findall(r"\b%s\.(\w+)\b" % re.escape(row_var), body)) \
             - {"toString", "trim"}
         if len(cols) != 1:
@@ -566,6 +580,8 @@ def collect_and_pick_blocks(script: str) -> list:
         clean = re.sub(r"\s+", " ", sql).strip().rstrip(";").strip()
         if not re.match(r"(?i)select\b", clean):
             continue
+        if pick.group(1) in _RESERVED_HOOK_NAMES or pick.group(1).endswith("Res"):
+            continue                    # would redeclare a local of the generated method
         out.append({"query_var": qvar, "sql": clean, "column": cols.pop(),
                     "list_var": list_var, "pick_var": pick.group(1)})
     return out
@@ -2854,9 +2870,14 @@ def translate(script: str, response_var_by_step: dict[str, str],
         _dom_picks = _allowed_domain_pick_publications(script)
         _explained = (set(lit_uncond) | set(lit_envcond) | set(var_pubs)
                       | set(_dom_picks))
+        # `set_targets` is receiver-agnostic: it also sees
+        # `getTestStepByName("Properties").setPropertyValue(...)`, which the
+        # bound-variable scan above does not. Every field NAME must be
+        # accounted for, or a random field set that way would be dropped.
         _no_random = (bool(_all_set)
                       and "Properties" not in {s_ for s_, _f in _all_set}
-                      and _all_set <= _explained)
+                      and _all_set <= _explained
+                      and set(set_targets) <= {f_ for _s, f_ in _explained})
         if _no_random:
             lines.append('    // no random field is set: the identity is left as it is')
             for (s_, f_), _expr in sorted(_dom_picks.items()):
@@ -2889,6 +2910,11 @@ def translate(script: str, response_var_by_step: dict[str, str],
                     lines.append('        if (__earlier != null && !__earlier.trim().isEmpty()) {')
                     lines.append(
                         f'            TestSupport.putExtracted(ctx, "{step}.{field}", __earlier.trim());')
+                    if step == "Properties" and field.lower() == "domain":
+                        # Pinned HERE: with nothing written there is nothing
+                        # of this run's to pin, only whatever was there.
+                        lines.append('            ImportedScenario.pinAuthorDomain(ctx);')
+                        _mark("author_domain_pinned")
                     lines.append('        }')
                     lines.append('    }')
                     continue
@@ -2904,7 +2930,7 @@ def translate(script: str, response_var_by_step: dict[str, str],
             s_ == "Properties" and f_.lower() == "domain"
             for (s_, f_) in list(lit_uncond) + list(lit_envcond)) or any(
             s_ == "Properties" and f_.lower() == "domain"
-            and (e_.startswith('"') or e_.startswith("TestSupport.ctxGet("))
+            and e_.startswith('"')
             for (s_, f_), e_ in var_pubs.items())
         if _dom_literal:
             lines.append('    ImportedScenario.pinAuthorDomain(ctx);')
@@ -4078,7 +4104,10 @@ def translate(script: str, response_var_by_step: dict[str, str],
             '                java.util.List<java.util.Map<String, Object>> __rows = Db.queryAll(__jdbcSql);',
             '                if (__rows != null) {',
             '                    for (java.util.Map<String, Object> __row : __rows) {',
-            f'                        Object __v = __row.get("{_col}");',
+            '                        Object __v = null;',
+            '                        for (java.util.Map.Entry<String, Object> __e : __row.entrySet()) {',
+            f'                            if ("{_col}".equalsIgnoreCase(__e.getKey())) {{ __v = __e.getValue(); break; }}',
+            '                        }',
             '                        if (__v != null && !String.valueOf(__v).trim().isEmpty()) {',
             '                            __picked.add(String.valueOf(__v).trim());',
             '                        }',

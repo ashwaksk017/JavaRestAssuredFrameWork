@@ -366,6 +366,8 @@ def _request_level_headers(req_el) -> dict:
             # config like any other project property; when the key is unset
             # the runtime omits the header rather than sending a
             # placeholder (RestStep.resolveHeaders).
+            if "${#Global#" in v or "${#Env#" in v:
+                continue        # not examined; dropped as before
             out[k] = v
     return out
 
@@ -8563,8 +8565,9 @@ public interface ImportedRestClient {{
             # sends the next step to read somebody else's event.
             _cursor = self._partition_cursor_fields(step)
             if _cursor:
-                _dropped = [p for p in _live if p in _cursor]
+                _dropped = [p for p in _live + _keep if p in _cursor]
                 _live = [p for p in _live if p not in _cursor]
+                _keep = [p for p in _keep if p not in _cursor]
                 if _dropped:
                     lines.append(
                         f'// [properties step] {step.step_name} -- '

@@ -87,11 +87,16 @@ public final class ApiRoutes {
      * in effect for this thread. See {@link #fill}.
      */
     public static <T> T withAuthorEmptyTail(java.util.concurrent.Callable<T> call) throws Exception {
+        Boolean before = AUTHOR_EMPTY_TAIL.get();
         AUTHOR_EMPTY_TAIL.set(Boolean.TRUE);
         try {
             return call.call();
         } finally {
-            AUTHOR_EMPTY_TAIL.remove();
+            if (before == null) {
+                AUTHOR_EMPTY_TAIL.remove();
+            } else {
+                AUTHOR_EMPTY_TAIL.set(before);      // nested: the outer call still holds
+            }
         }
     }
 

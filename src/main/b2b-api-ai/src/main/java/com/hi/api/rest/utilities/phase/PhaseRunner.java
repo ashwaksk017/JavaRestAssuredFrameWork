@@ -189,8 +189,8 @@ public final class PhaseRunner {
         int q = url.indexOf('?');
         String path = q >= 0 ? url.substring(0, q) : url;
         String rest = q >= 0 ? url.substring(q) : "";
-        while (path.length() > 1 && path.endsWith("/")) {
-            path = path.substring(0, path.length() - 1);
+        if (path.length() > 1 && path.endsWith("/")) {
+            path = path.substring(0, path.length() - 1);    // one, as ApiRoutes.fill does
         }
         return path + rest;
     }
