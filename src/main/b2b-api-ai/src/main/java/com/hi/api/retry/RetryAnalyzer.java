@@ -26,6 +26,7 @@ import org.testng.IRetryAnalyzer;
 import org.testng.ITestResult;
 
 import com.hi.api.config.Config;
+import com.hi.api.rest.utilities.FlowStopped;
 
 public class RetryAnalyzer implements IRetryAnalyzer {
 
@@ -56,6 +57,17 @@ public class RetryAnalyzer implements IRetryAnalyzer {
         }
         int max = Config.retryMaxCount();
         String k = key(result);
+        if (settledRejection(result)) {
+            // The server refused what this test sends; it sends the same
+            // thing every time. Counter to max so the listeners count this
+            // attempt as the terminal failure it is.
+            ATTEMPTS_BY_KEY.put(k, Math.max(max, 0));
+            System.err.printf("[Retry] %s.%s -- not retried: %s%n",
+                    result.getTestClass().getRealClass().getSimpleName(),
+                    result.getMethod().getMethodName(),
+                    "a rejected write does not change by running the test again");
+            return false;
+        }
         int attempts = ATTEMPTS_BY_KEY.getOrDefault(k, 0);
         if (attempts < max) {
             attempts++;
@@ -80,7 +92,21 @@ public class RetryAnalyzer implements IRetryAnalyzer {
         if (result == null) return false;
         int max = Config.retryMaxCount();
         if (max <= 0) return false;
+        if (settledRejection(result)) return false;
         return ATTEMPTS_BY_KEY.getOrDefault(key(result), 0) < max;
+    }
+
+    /**
+     * Did the test end on a write the server refused for a reason another
+     * attempt cannot change? See {@link FlowStopped#worthRetrying}.
+     * {@code test.retryRejectedWrite=true} retries those too.
+     */
+    static boolean settledRejection(ITestResult result) {
+        Throwable t = result == null ? null : result.getThrowable();
+        if (!(t instanceof FlowStopped) || ((FlowStopped) t).worthRetrying()) {
+            return false;
+        }
+        return !Config.getBool("test.retryRejectedWrite", false);
     }
 
     /** Drop the per-invocation counter after a terminal pass/fail. */

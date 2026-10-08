@@ -153,14 +153,19 @@ public class TokenRefreshTest {
         AtomicInteger calls = new AtomicInteger();
         TokenRefresh.overrideRefresherForTest(c -> false);
         SoftAssert sa = new SoftAssert();
-        Response out = RestStep.exec(new HashMap<>(), new HashMap<>(), sa, null, "B2B-fail")
-                .name("CreateProgramAccount")
-                .expectedStatus(200)
-                .post("/businesses", (body, q, h) -> {
-                    calls.incrementAndGet();
-                    return json(401, "Token has expired");
-                });
-        Assert.assertEquals(out.getStatusCode(), 401);
+        // The 401 stands, and a create that was refused ends the case there
+        // (FlowStopped) -- still after exactly one send.
+        com.hi.api.rest.utilities.FlowStopped stop = Assert.expectThrows(
+                com.hi.api.rest.utilities.FlowStopped.class,
+                () -> RestStep.exec(new HashMap<>(), new HashMap<>(), sa, null, "B2B-fail")
+                        .name("CreateProgramAccount")
+                        .expectedStatus(200)
+                        .post("/businesses", (body, q, h) -> {
+                            calls.incrementAndGet();
+                            return json(401, "Token has expired");
+                        }));
+        Assert.assertEquals(stop.status(), 401);
+        Assert.assertTrue(stop.worthRetrying(), "a fresh attempt gets a fresh token");
         Assert.assertEquals(calls.get(), 1);
     }
 

@@ -700,6 +700,12 @@ public final class RestStep {
             captureRuntimeExtracts(verb, resolvedUrl, res);
             publishCsvRawRequestRefs();
             maybeRefreshSalesforceIdAfterActivate(verb, resolvedUrl, res);
+            // LAST: the status assertion above has already recorded the
+            // failure, and everything a later diagnostic reads is stored.
+            FlowStopped.stopIfRejectedWrite(verb, resolvedUrl, stepName, assertedStatus,
+                    ResponseAsserts.expectedStatusList(
+                            row == null ? null : row.get("expected_" + stepName + "_status_code")),
+                    res);
             return res;
         });
     }

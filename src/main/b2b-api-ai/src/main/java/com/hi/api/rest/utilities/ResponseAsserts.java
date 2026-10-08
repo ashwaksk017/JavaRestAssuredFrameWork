@@ -187,7 +187,7 @@ public final class ResponseAsserts {
      * {@code null} when the cell is empty or holds a single code, so the
      * single-code path keeps its exact assertion message.
      */
-    static java.util.Set<Integer> expectedStatusList(String raw) {
+    public static java.util.Set<Integer> expectedStatusList(String raw) {
         if (raw == null) return null;
         String s = raw.trim();
         if (s.isEmpty() || s.matches("-?\\d+")) return null;
