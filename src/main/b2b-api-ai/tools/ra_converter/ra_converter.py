@@ -21217,11 +21217,11 @@ def _reapply_agent_patches(args) -> None:
     """
     try:
         out = os.path.abspath(getattr(args, "output", ".") or ".")
-        if not os.path.isdir(os.path.join(out, ".agent-patches")):
+        if not os.path.isdir(_fs_path(os.path.join(out, ".agent-patches"))):
             return
         here = os.path.dirname(os.path.abspath(__file__))
         mod_path = os.path.join(os.path.dirname(here), "agent", "patches.py")
-        if not os.path.isfile(mod_path):
+        if not os.path.isfile(_fs_path(mod_path)):
             return
         import importlib.util as _ilu
         spec = _ilu.spec_from_file_location("ra_agent_patches", mod_path)
