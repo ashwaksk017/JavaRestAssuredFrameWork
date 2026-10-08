@@ -97,7 +97,7 @@ RUNNABLES = {
         "argv": [PY, "-B", os.path.join("tools", "agent", "design.py")],
         "label": "Design the API test cases (Cursor, plan mode)",
         "options": {"--job": "text", "--service": "text", "--speed": "text",
-                    "--mode": "text"},
+                    "--mode": "text", "--fresh": "flag"},
     },
     # Tab 3. Fixed sub-commands of one script; the page chooses which,
     # names the job, and for `generate` picks a scope the script itself

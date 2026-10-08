@@ -33,8 +33,8 @@ class ArgvIsNeverFreeText(unittest.TestCase):
         pointed at is sent to Cursor and copied into a log this API
         serves, so the page may not point it at anything."""
         argv = jobs.build_argv("agent-design", {"--job": "j", "--speed": "fast",
-                                                "--mode": "plan"})
-        self.assertEqual(argv[-6:], ["--job", "j", "--speed", "fast", "--mode", "plan"])
+                                                "--mode": "plan", "--fresh": True})
+        self.assertEqual(argv[-7:], ["--job", "j", "--speed", "fast", "--mode", "plan", "--fresh"])
         for option in ("--swagger-file", "--requirements-file", "--notes-file"):
             with self.assertRaises(ValueError):
                 jobs.build_argv("agent-design", {option: os.path.join(

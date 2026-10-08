@@ -51,6 +51,22 @@ Each call has a time limit (policy.json, `cursor_deadline_seconds`). A
 call that does not come back is reported as stuck instead of leaving the
 job "running" for ever.
 
+THE SAME QUESTION IS NOT PAID FOR TWICE. A reply that was read whole
+and gave at least one usable case is kept in the job directory under a
+hash of exactly what was sent -- the prompt after everything was removed
+from it, the mode, the model -- and of CACHE_VERSION, which changes when
+the way a reply is read does. Run the step again and, if the prompt
+comes out the same, that reply is used; the log and design.md say so
+with its date. Anything that changes what is sent asks again: the
+material, the notes, the speed, the prompt template. (What is NOT sent
+changes nothing: text past a size limit, the layout of a specification's
+JSON, the date the story was read.) Each part of a large specification
+is kept as soon as it is read, so a run that stops half way does not pay
+for its finished parts again. A reply that was cut off, had to be asked
+for twice, or gave no usable case is never kept; a kept reply that can
+no longer be read is asked for again. `--fresh` asks again and forgets
+what was kept for that question.
+
 Cursor is asked in PLAN mode (it proposes, it does not edit or run) and
 is started in an empty temporary directory. That is a starting point,
 not a sandbox: it is still a program on this machine. So the reply is
@@ -78,6 +94,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import importlib.util
 import io
 import json
@@ -118,6 +135,9 @@ VERBS = ("get", "post", "put", "patch", "delete", "head", "options")
 ARTIFACTS = ("design.json", "design.md", "test-cases.csv", "xray.csv")
 MODES = ("plan", "agent")
 MAX_PARTS = 6                 # calls to Cursor for one design, at most
+CACHE_DIR = "design-cache"
+CACHE_KEEP = 24               # replies kept per job
+CACHE_VERSION = 1             # bump when a reply would be READ differently
 DEFAULT_DEADLINE = 900        # seconds for one call, when the policy has none
 # What the page pasted, written by the server next to the job's other files.
 PASTED = {"swagger": "design-swagger.txt", "requirements": "design-requirements.txt",
@@ -706,7 +726,13 @@ def write_outputs(out_dir: str, design: dict) -> None:
           f"- test cases: {len(cases)}"
           + (" (PARTIAL: a reply was cut off, or a part of the API "
              "produced nothing)" if design.get("partial") else ""),
-          f"- reply read: {design['parsed']}", ""]
+          f"- reply read: {design['parsed']}"]
+    if design.get("reused_calls"):
+        md.append(f"- Cursor was NOT asked again for {design['reused_calls']} of "
+                  f"{design.get('calls', 1)} call(s): nothing in the request had "
+                  f"changed since {', '.join(design.get('reused_from') or ['an earlier run'])}. "
+                  f"Run with `--fresh` (the page: *Ask again*) for a new answer.")
+    md.append("")
     if design.get("summary"):
         md += [design["summary"], ""]
     if design["warnings"]:
@@ -754,6 +780,62 @@ def clear_outputs(out_dir: str) -> None:
 
 
 # ---- the run ----------------------------------------------------------
+
+def cache_key(prompt: str, mode: str, model: str) -> str:
+    basis = json.dumps({"v": CACHE_VERSION, "prompt": prompt, "mode": mode,
+                        "model": model}, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()
+
+
+def cache_get(out_dir: str, key: str):
+    """{reply, at, model} for a question asked before, or None. A file
+    that is damaged, or is not the answer to THIS question, is no hit."""
+    try:
+        with io.open(os.path.join(out_dir, CACHE_DIR, key + ".json"), encoding="utf-8") as fh:
+            hit = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(hit, dict) or hit.get("key") != key or \
+            not isinstance(hit.get("reply"), str) or not hit["reply"].strip():
+        return None
+    hit["at"] = hit["at"] if isinstance(hit.get("at"), str) else ""
+    hit["model"] = hit["model"] if isinstance(hit.get("model"), str) else ""
+    try:                                   # used now: not the next to be pruned
+        os.utime(os.path.join(out_dir, CACHE_DIR, key + ".json"))
+    except OSError:
+        pass
+    return hit
+
+
+def cache_drop(out_dir: str, key: str) -> None:
+    try:
+        os.remove(os.path.join(out_dir, CACHE_DIR, key + ".json"))
+    except OSError:
+        pass
+
+
+def cache_put(out_dir: str, key: str, reply: str, model: str) -> None:
+    """Best effort: a design that cannot be remembered is still a design."""
+    d = os.path.join(out_dir, CACHE_DIR)
+    tmp = os.path.join(d, f"{key}.{os.getpid()}.tmp")
+    try:
+        os.makedirs(d, exist_ok=True)
+        with io.open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"key": key, "model": model, "reply": reply,
+                       "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}, fh)
+        os.replace(tmp, os.path.join(d, key + ".json"))
+        kept = sorted((n for n in os.listdir(d) if n.endswith(".json")),
+                      key=lambda n: os.path.getmtime(os.path.join(d, n)), reverse=True)
+        for old in kept[CACHE_KEEP:]:
+            os.remove(os.path.join(d, old))
+    except OSError:
+        pass
+    finally:
+        try:
+            os.remove(tmp)                 # only still there when the write failed
+        except OSError:
+            pass
+
 
 def deadline_for(what: str, policy: dict = None) -> float:
     """Seconds one Cursor call of this kind may take (policy.json)."""
@@ -814,7 +896,7 @@ def _tree_state(root: str):
 
 def design(job: str, service: str = "", swagger: str = "", requirements: str = "",
            notes: str = "", speed: str = "balanced", root: str = "",
-           agent=None, mode: str = "plan") -> int:
+           agent=None, mode: str = "plan", fresh: bool = False) -> int:
     """Run the step. `agent(prompt, followup) -> {"result": text}` replaces
     Cursor in the tests."""
     root = root or ROOT
@@ -856,7 +938,10 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
     else:
         say(" ..  no specification given or found in this job")
 
-    story = _read(os.path.join(out_dir, "brief.md"))
+    # Without the line that says WHEN the story was read: it is not part
+    # of the story, and it would make every re-read a new question.
+    story = "\n".join(l for l in _read(os.path.join(out_dir, "brief.md")).splitlines()
+                      if not l.startswith("- at:"))
     listed = "\n".join(endpoints)
     if spec is not None and base_paths(spec):
         listed = (f"(every path below is served under {', '.join(base_paths(spec))}; "
@@ -911,14 +996,16 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
     # happens to be a path segment, the copied form must still match.
     known += [redact(line, private)[0] for line in known]
 
-    secret = ""
+    secret, asked_model = "", ""
     if agent is None:
         try:
             loop.ensure_sdk(root)
-            secret = loop.cursor_config(root)[1].api_key
+            _cfg = loop.cursor_config(root)[1]
+            secret, asked_model = _cfg.api_key, str(getattr(_cfg, "model", "") or "")
         except RuntimeError as e:
             say(f"FAIL {e}")
             return 1
+    reused = []
     clog = loop.CursorLog(out_dir, secret, list(private))
     clog.write(f"===== design the API tests: job {job}, speed {speed} "
                f"(at most {max_cases}), {len(parts)} call(s) =====")
@@ -927,8 +1014,10 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
     removed = {"private": 0, "hosts": 0, "leaked": 0}
 
     def ask(prompt: str, label: str) -> tuple:
-        """One call: (parsed reply, how it was read, model). RuntimeError
-        when the agent failed or nothing usable came back."""
+        """One call: (parsed reply, how it was read, model, keep). `keep`
+        is (key, reply, model) when the reply may be kept for next time,
+        else None. RuntimeError when the agent failed or nothing usable
+        came back."""
         # The requirements and the story go out with every part; counting
         # their removals once per part would report six times what is there.
         prompt, n = redact(prompt, private)
@@ -946,22 +1035,51 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
             except ValueError:
                 return JSON_ONLY
 
-        say(f" ..  asking Cursor{' for ' + label if label else ''} "
-            f"({len(prompt)} characters, {mode} mode"
-            + (f", up to {deadline:.0f}s" if deadline else "")
-            + "); progress is in the Cursor log")
-        if agent is not None:
-            got = agent(prompt, followup)
+        key = cache_key(prompt, mode, asked_model)
+        if fresh:
+            cache_drop(out_dir, key)       # a new answer replaces it, or nothing does
+        hit = None if fresh else cache_get(out_dir, key)
+        if hit:
+            try:
+                read_reply(redact(hit["reply"], private)[0])
+            except ValueError:
+                # Kept by a version that read replies differently, or
+                # damaged since. Asking again is right; failing is not.
+                clog.write(f"the kept reply (design-cache/{key[:12]}...) can no "
+                           f"longer be read; asking Cursor again")
+                cache_drop(out_dir, key)
+                hit = None
+        if hit:
+            # Exactly this was asked before and the answer was read whole.
+            reused.append(hit["at"])
+            got = {"result": hit["reply"], "model": hit["model"]}
+            say(f" ..  {'for ' + label + ': ' if label else ''}nothing in the "
+                f"request has changed since {hit['at'] or 'an earlier run'}; "
+                f"that reply is used (--fresh asks again)")
+            clog.write(f"reused the reply of {hit['at'] or '?'} "
+                       f"(design-cache/{key[:12]}...); Cursor was not called")
         else:
-            got = call_cursor(prompt, root, lambda line: clog.write("  cursor: " + line),
-                              followup, mode, deadline)
+            say(f" ..  asking Cursor{' for ' + label if label else ''} "
+                f"({len(prompt)} characters, {mode} mode"
+                + (f", up to {deadline:.0f}s" if deadline else "")
+                + "); progress is in the Cursor log")
+            if agent is not None:
+                got = agent(prompt, followup)
+            else:
+                got = call_cursor(prompt, root, lambda line: clog.write("  cursor: " + line),
+                                  followup, mode, deadline)
         # What comes back is as untrusted as what went in: the agent is a
         # program on this machine and may have read more than it was sent.
+        # (A kept reply was redacted before it was kept; the private
+        # configuration may have gained a value since.)
         reply, n = redact(str(got.get("result") or ""), private)
         removed["leaked"] += n
         if first.get("text") is not None:
             first["text"] = redact(str(first["text"]), private)[0]
-        clog.block(f"reply{' ' + label if label else ''}", reply)
+        if hit:
+            clog.write(f"(its {len(reply)} characters are in the log of the run that asked)")
+        else:
+            clog.block(f"reply{' ' + label if label else ''}", reply)
         # The last reply read whole; else the complete cases of whichever
         # reply has any. `first` is the answer before the "JSON only" turn.
         candidates = [reply] + ([first["text"]] if first.get("text") not in (None, reply) else [])
@@ -969,9 +1087,16 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
             for text in candidates:
                 try:
                     data, how = read_reply(text, partial)
-                    return data, how, got.get("model", "")
                 except ValueError:
                     continue
+                # Kept only when it is the one reply to the one prompt and
+                # was read to its end: a second turn's answer is an answer
+                # to a different conversation, and a cut-off one is not an
+                # answer worth repeating.
+                one_turn = first.get("text") in (None, reply)
+                keep = (key, reply, str(got.get("model", "") or asked_model)) \
+                    if (not hit and not partial and text is reply and one_turn) else None
+                return data, how, got.get("model", ""), keep
         raise RuntimeError("Cursor answered, but no test cases could be read "
                            "from the reply. It is in the Cursor log.")
 
@@ -1017,7 +1142,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
             "notes": sections["notes"] or empty,
         })
         try:
-            data, how, model = ask(prompt, label)
+            data, how, model, keep = ask(prompt, label)
         except RuntimeError as e:
             clog.write(f"FAILED{' ' + label if label else ''}: {e}")
             if len(parts) == 1:
@@ -1047,6 +1172,11 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
                                 f"share of the limit is {share}, and the first "
                                 f"{share} were kept")
                 got_cases = got_cases[:share]
+        # Kept now, not at the end: a run stopped during part 4 has paid
+        # for parts 1 to 3. And only when THIS reply gave a usable case --
+        # one whose cases are all dropped is not worth repeating.
+        if keep and normalise(got_cases, known)[0]:
+            cache_put(out_dir, *keep)
         raw += got_cases
         how_read.append(how)
         is_partial = is_partial or how.startswith("partial")
@@ -1116,6 +1246,8 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         "parsed": parsed,
         "partial": is_partial,
         "calls": len(parts),
+        "reused_calls": len(reused),
+        "reused_from": sorted(set(r for r in reused if r)),
         "failed_parts": failed,
         "summary": " ".join(dict.fromkeys(summaries)),
         "mode": mode if agent is None else "",
@@ -1146,6 +1278,8 @@ def main(argv=None) -> int:
     ap.add_argument("--requirements-file", default="")
     ap.add_argument("--notes-file", default="")
     ap.add_argument("--speed", default="balanced")
+    ap.add_argument("--fresh", action="store_true",
+                    help="ask Cursor even when exactly this was asked before")
     ap.add_argument("--mode", default="plan",
                     help="plan (default): Cursor proposes and changes nothing. "
                          "agent: only if plan mode gives no usable reply.")
@@ -1164,7 +1298,7 @@ def main(argv=None) -> int:
                  "notes": a.notes_file}
         text = {k: _read(v or os.path.join(out_dir, PASTED[k])) for k, v in given.items()}
         return design(a.job, a.service, text["swagger"], text["requirements"],
-                      text["notes"], a.speed, mode=a.mode)
+                      text["notes"], a.speed, mode=a.mode, fresh=a.fresh)
     except ValueError as e:                   # an unusable job id
         say(f"FAIL {e}")
         return 1

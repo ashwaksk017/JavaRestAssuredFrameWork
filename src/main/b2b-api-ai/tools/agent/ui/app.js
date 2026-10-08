@@ -176,6 +176,7 @@ $("run-design").onclick = async () => {
       service: $("design-service").value.trim(),
       speed: $("design-speed").value,
       mode: $("design-mode").value,
+      fresh: $("design-fresh").checked,
       swagger: $("design-swagger").value,
       requirements: $("design-requirements").value,
       notes: $("design-notes").value,
@@ -184,6 +185,8 @@ $("run-design").onclick = async () => {
     follow("agent-design", $("design-log"), $("design-state"), () => {
       stopCursorLog();
       showDesign(j);
+      // One run. Left ticked, every later click would pay again in silence.
+      $("design-fresh").checked = false;
     });
   } catch (e) { setState($("design-state"), "bad", e.message); }
 };

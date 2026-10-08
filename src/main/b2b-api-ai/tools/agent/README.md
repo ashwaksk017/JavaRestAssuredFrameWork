@@ -160,6 +160,18 @@ What the step checks instead of trusting:
   six calls gets larger parts, which lose examples, then long
   descriptions, and are then cut at the size limit -- each reported for
   the part it happened to.
+- The same question is not paid for twice. A reply that was read whole
+  is kept in the job directory (`design-cache/`) under a hash of exactly
+  what was sent, the mode and the model. Run the step again with nothing
+  changed and that reply is used; `design.md` says so, with its date.
+  Change anything that is sent -- the material, the notes, the speed --
+  and Cursor is asked again; what is not sent (text past a size limit,
+  the date the story was read) changes nothing. Each part of a large
+  specification is kept as soon as it is read, so a run stopped half way
+  does not pay for its finished parts again. A reply that was cut off,
+  needed a second turn, or gave no usable case is never kept. Tick **Ask
+  again** (`--fresh`) for a new answer to the same question; it unticks
+  itself after the run.
 - Each call to Cursor has a time limit (`cursor_deadline_seconds` in
   `policy.json`: 900 seconds for a design call; 2700 for a tab 3 call,
   per attempt, so twice that with the repair attempt; 0 is no limit, and
@@ -422,6 +434,7 @@ target/agent/<job>/
   <runnable>.log         full output of each command
   <runnable>.status.json state, exit code, and the argv it ran
   design-*.txt           design: the specification, requirements and notes as pasted
+  design-cache/          design: replies kept so an unchanged request is not asked again
   design.md / .json      design: the proposed test cases, and what was left out
   test-cases.csv         design: one row per step
   xray.csv               design: the same, grouped for Xray's importer

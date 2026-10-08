@@ -234,6 +234,8 @@ class Handler(BaseHTTPRequestHandler):
                               ("mode", "--mode")):
             if str(body.get(field) or "").strip():
                 options[option] = str(body[field]).strip()
+        if body.get("fresh") is True:
+            options["--fresh"] = True
         return jobs.start(job, "agent-design", options)
 
     def _file(self, name: str, ctype: str) -> None:

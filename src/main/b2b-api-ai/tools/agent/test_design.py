@@ -461,6 +461,7 @@ class Run(unittest.TestCase):
 
     def run_design(self, agent, **kw):
         kw.setdefault("swagger", json.dumps(SPEC))
+        kw.setdefault("fresh", True)       # each test asks; the cache has its own tests
         return design.design("j1", root=self.root, agent=agent, **kw)
 
     def read(self, name):
@@ -671,6 +672,171 @@ class Run(unittest.TestCase):
         self.assertEqual(loop.cursor_deadline(loop.load_policy(), "generate"), 2700)
         self.assertEqual(design.deadline_for("design"), 900)
 
+    def cached(self):
+        d = os.path.join(self.out, design.CACHE_DIR)
+        return sorted(os.listdir(d)) if os.path.isdir(d) else []
+
+    def test_the_same_question_is_not_asked_twice(self):
+        self.assertEqual(self.run_design(self.agent(reply(case())), fresh=False), 0)
+        self.assertEqual(len(self.cached()), 1)
+        again = self.agent(reply(case(title="a different answer")))
+        self.assertEqual(self.run_design(again, fresh=False), 0)
+        self.assertEqual(len(self.prompts), 1, "Cursor was asked once")
+        d = json.loads(self.read("design.json"))
+        self.assertEqual(d["test_cases"][0]["title"], "Create a rate returns 201")
+        self.assertEqual(d["reused_calls"], 1)
+        self.assertTrue(d["reused_from"])
+        self.assertIn("Cursor was NOT asked again", self.read("design.md"))
+        self.assertIn("Cursor was not called", self.read("cursor.log"))
+
+    def test_any_change_to_what_is_sent_asks_again(self):
+        self.run_design(self.agent(reply(case())), fresh=False)
+        for change in ({"notes": "focus on dates"}, {"speed": "fast"},
+                       {"requirements": "AC-1"}, {"service": "other"},
+                       {"swagger": json.dumps(dict(SPEC, info={"title": "x"}))}):
+            before = len(self.prompts)
+            self.run_design(self.agent(reply(case())), fresh=False, **change)
+            self.assertEqual(len(self.prompts), before + 1, change)
+
+    def test_fresh_asks_again_and_replaces_what_is_kept(self):
+        self.run_design(self.agent(reply(case())), fresh=False)
+        self.run_design(self.agent(reply(case(title="newer"))), fresh=True)
+        self.assertEqual(len(self.prompts), 2)
+        self.run_design(self.agent("never used"), fresh=False)
+        self.assertEqual(len(self.prompts), 2)
+        self.assertEqual(json.loads(self.read("design.json"))["test_cases"][0]["title"], "newer")
+
+    def test_a_reply_that_was_cut_off_or_needed_a_second_turn_is_not_kept(self):
+        whole = reply(case(), case(id="TC-002"), case(id="TC-003"))
+        self.run_design(self.agent(whole[:whole.index('"TC-003"') + 20], "still not json"),
+                        fresh=False)
+        self.assertEqual(self.cached(), [])
+        self.run_design(self.agent("Sure! Here you go.", reply(case())), fresh=False,
+                        notes="another question")
+        self.assertEqual(self.cached(), [], "the second answer belongs to a two-turn conversation")
+
+    def test_a_reply_with_no_usable_case_is_not_what_the_next_run_gets(self):
+        self.assertEqual(self.run_design(self.agent(reply(case(steps=[]))), fresh=False), 1)
+        self.assertEqual(self.run_design(self.agent(reply(case())), fresh=False), 0)
+        self.assertEqual(len(self.prompts), 2)
+
+    def test_a_damaged_or_foreign_cache_file_is_ignored(self):
+        self.run_design(self.agent(reply(case())), fresh=False)
+        name = self.cached()[0]
+        path = os.path.join(self.out, design.CACHE_DIR, name)
+        for content in ("{ not json", json.dumps({"key": "another-question", "reply": reply(case())}),
+                        json.dumps({"key": name[:-5], "reply": "   "}), json.dumps([1, 2])):
+            with io.open(path, "w", encoding="utf-8") as fh:
+                fh.write(content)
+            before = len(self.prompts)
+            self.assertEqual(self.run_design(self.agent(reply(case())), fresh=False), 0)
+            self.assertEqual(len(self.prompts), before + 1, content[:30])
+
+    def test_a_kept_reply_is_redacted_again_with_todays_private_values(self):
+        self.run_design(self.agent(reply(case(title="Log in as svc-account-9"))), fresh=False)
+        cfg = os.path.join(self.root, "src", "main", "resources")
+        os.makedirs(cfg)
+        with io.open(os.path.join(cfg, "program_configuration.json"), "w", encoding="utf-8") as fh:
+            json.dump({"auth": {"client_secret": "svc-account-9"}}, fh)
+        self.run_design(self.agent("never used"), fresh=False)
+        self.assertEqual(len(self.prompts), 1)
+        self.assertNotIn("svc-account-9", self.read("design.json"))
+
+    def test_reading_the_same_story_again_is_not_a_new_question(self):
+        os.makedirs(self.out)
+        brief = os.path.join(self.out, "brief.md")
+        with io.open(brief, "w", encoding="utf-8") as fh:
+            fh.write("# Intake: 1 request(s)\n- job: j1\n- at: 2026-01-01T00:00:00Z\nthe story\n")
+        self.run_design(self.agent(reply(case())), fresh=False)
+        with io.open(brief, "w", encoding="utf-8") as fh:
+            fh.write("# Intake: 1 request(s)\n- job: j1\n- at: 2026-02-02T09:30:00Z\nthe story\n")
+        self.run_design(self.agent("never used"), fresh=False)
+        self.assertEqual(len(self.prompts), 1)
+        self.assertNotIn("- at:", self.prompts[0])
+        with io.open(brief, "w", encoding="utf-8") as fh:
+            fh.write("# Intake: 1 request(s)\n- job: j1\n- at: 2026-02-02T09:30:00Z\nanother story\n")
+        self.run_design(self.agent(reply(case())), fresh=False)
+        self.assertEqual(len(self.prompts), 2)
+
+    def test_finished_parts_are_kept_even_when_the_run_is_cut_short(self):
+        self.small_limit(4000)
+        spec = json.dumps(big_spec(12))
+        n = []
+
+        def interrupted(prompt, followup):
+            n.append(1)
+            if len(n) == 3:
+                raise KeyboardInterrupt()
+            return {"result": reply(case(endpoint="GET /things0/{id}"))}
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_design(interrupted, swagger=spec, fresh=False)
+        self.assertEqual(len(self.cached()), 2)
+
+    def test_a_part_whose_cases_were_all_dropped_is_not_kept_though_others_were(self):
+        self.small_limit(4000)
+        spec = json.dumps(big_spec(12))
+        n = []
+
+        def agent(prompt, followup):
+            n.append(1)
+            if len(n) == 1:
+                return {"result": reply(case(steps=[]))}
+            return {"result": reply(case(endpoint="GET /things0/{id}"))}
+        self.assertEqual(self.run_design(agent, swagger=spec, fresh=False), 0)
+        calls = json.loads(self.read("design.json"))["calls"]
+        self.assertEqual(len(self.cached()), calls - 1)
+
+    def test_a_kept_reply_that_can_no_longer_be_read_is_asked_for_again(self):
+        self.run_design(self.agent(reply(case())), fresh=False)
+        name = self.cached()[0]
+        with io.open(os.path.join(self.out, design.CACHE_DIR, name), "w", encoding="utf-8") as fh:
+            json.dump({"key": name[:-5], "reply": "kept by a version that read replies differently",
+                       "at": {"not": "text"}, "model": 5}, fh)
+        self.assertEqual(self.run_design(self.agent(reply(case(title="asked again"))),
+                                         fresh=False), 0)
+        self.assertEqual(len(self.prompts), 2)
+        self.assertEqual(json.loads(self.read("design.json"))["test_cases"][0]["title"],
+                         "asked again")
+        self.assertIn("can no longer be read", self.read("cursor.log"))
+
+    def test_fresh_forgets_the_old_answer_even_when_the_new_one_is_not_kept(self):
+        self.run_design(self.agent(reply(case(title="old"))), fresh=False)
+        whole = reply(case(title="new"), case(id="TC-002"))
+        self.run_design(self.agent(whole[:whole.index('"TC-002"') + 20], "no"), fresh=True)
+        self.assertEqual(self.cached(), [])
+        self.run_design(self.agent(reply(case(title="third"))), fresh=False)
+        self.assertEqual(json.loads(self.read("design.json"))["test_cases"][0]["title"], "third")
+
+    def test_no_temporary_file_is_left_in_the_cache(self):
+        self.run_design(self.agent(reply(case())), fresh=False)
+        self.assertEqual([n for n in self.cached() if not n.endswith(".json")], [])
+
+    def test_only_so_many_replies_are_kept(self):
+        old = design.CACHE_KEEP
+        design.CACHE_KEEP = 3
+        self.addCleanup(setattr, design, "CACHE_KEEP", old)
+        for n in range(6):
+            self.run_design(self.agent(reply(case())), fresh=False, notes=f"question {n}")
+        self.assertEqual(len(self.cached()), 3)
+
+    def test_each_part_of_a_large_specification_is_kept_on_its_own(self):
+        self.small_limit(4000)
+        spec = json.dumps(big_spec(12))
+        n = []
+
+        def agent(prompt, followup):
+            n.append(1)
+            if len(n) == 2:
+                raise RuntimeError("part two failed this time")
+            return {"result": reply(case(endpoint="GET /things0/{id}"))}
+        self.run_design(agent, swagger=spec, fresh=False)
+        first_calls = len(n)
+        self.run_design(agent, swagger=spec, fresh=False)
+        d = json.loads(self.read("design.json"))
+        self.assertEqual(len(n), first_calls + 1, "only the part that failed is asked again")
+        self.assertEqual(d["reused_calls"], d["calls"] - 1)
+        self.assertEqual(d["failed_parts"], [])
+
     def test_an_unknown_mode_is_refused(self):
         self.assertEqual(self.run_design(self.agent(reply(case())), mode="yolo"), 1)
         self.assertEqual(self.prompts, [])
@@ -679,8 +845,10 @@ class Run(unittest.TestCase):
         seen = {}
         orig, orig_dir = design.design, loop.intake.job_dir
         loop.intake.job_dir = lambda job, root="": self.out
-        design.design = lambda job, service, swagger, requirements, notes, speed, mode="plan": \
-            seen.update(swagger=swagger, requirements=requirements, notes=notes, mode=mode) or 0
+        def fake(job, service, swagger, requirements, notes, speed, mode="plan", fresh=False):
+            seen.update(swagger=swagger, requirements=requirements, notes=notes, mode=mode)
+            return 0
+        design.design = fake
         try:
             os.makedirs(self.out)
             with io.open(os.path.join(self.out, "design-swagger.txt"), "w", encoding="utf-8") as fh:
@@ -879,6 +1047,12 @@ class ThePageCannotPointTheStepAtAFile(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.post({"job": "../x", "swagger": "S"})
         self.assertEqual(os.listdir(self.d), [])
+
+    def test_ask_again_is_only_a_real_true(self):
+        for value, expect in ((True, True), ("true", False), (1, False), (None, False)):
+            self.started.clear()
+            self.post({"job": "j", "swagger": "S", "fresh": value})
+            self.assertEqual("--fresh" in self.started[0][2], expect, repr(value))
 
     def test_only_the_four_design_files_download(self):
         self.assertEqual(sorted(self.server.DOWNLOADS),
