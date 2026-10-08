@@ -163,7 +163,10 @@ class OutsideThePaths(Repo):
         self.assertEqual(self.generate(agent), 1)
         reason = self.state()["reason"]
         self.assertIn("generated file(s) outside this scope", reason)
-        self.assertIn("reconvert goal", reason)
+        self.assertIn("put back", reason)
+        with io.open(os.path.join(self.root, GEN + "goal/Hooks.java")) as fh:
+            self.assertEqual(fh.read(), "class Hooks {}\n",
+                             "git cannot restore it; the copy taken before the run does")
         self.assertFalse(os.path.isfile(os.path.join(self.root, JIRA + "NewTest.java")),
                          "the rest of the attempt is still undone")
 
@@ -352,10 +355,44 @@ class ConvertedScope(Repo):
             write(self.root, GEN + "goal/Hooks.java", "class Hooks { int not_yours; }\n")
             return {"result": ""}
         self.assertEqual(self.generate(agent, scope="converted", suite="amex"), 1)
-        self.assertIn("reconvert goal", self.state()["reason"])
+        self.assertIn("may only change suite `amex`", self.state()["reason"])
+        self.assertIn("suite(s) goal", self.state()["reason"])
+        with io.open(os.path.join(self.root, GEN + "goal/Hooks.java")) as fh:
+            self.assertEqual(fh.read(), "class Hooks {}\n",
+                             "the OTHER suite's hook is put back")
         with io.open(os.path.join(self.root, GEN + "amex/Hooks.java")) as fh:
             self.assertEqual(fh.read(), "class Hooks { int amex; }\n",
                              "the in-scope edit of the failed attempt is undone")
+
+    def test_a_class_every_suite_shares_is_out_of_scope_too(self):
+        """ImportedScenario sits next to the suite folders, not in one. A
+        change to it changes every suite, so a one-suite job may not."""
+        write(self.root, GEN + "ImportedScenario.java", "class ImportedScenario {}\n")
+        def agent(_prompt):
+            write(self.root, GEN + "amex/Hooks.java", "class Hooks { int ok; }\n")
+            write(self.root, GEN + "ImportedScenario.java", "class ImportedScenario { int x; }\n")
+            return {"result": ""}
+        self.assertEqual(self.generate(agent, scope="converted", suite="amex"), 1)
+        self.assertIn("files every suite shares", self.state()["reason"])
+        with io.open(os.path.join(self.root, GEN + "ImportedScenario.java")) as fh:
+            self.assertEqual(fh.read(), "class ImportedScenario {}\n")
+
+    def test_cursor_is_told_which_files_are_the_suites_and_which_are_not(self):
+        write(self.root, GEN + "ImportedScenario.java", "class ImportedScenario {}\n")
+        seen = {}
+        def agent(prompt):
+            seen["p"] = prompt
+            return self.edit_amex(prompt)
+        self.assertEqual(self.generate(agent, scope="converted", suite="amex"), 0)
+        p = seen["p"]
+        self.assertIn("THE SUITE YOU ARE WORKING IN: amex", p)
+        self.assertIn("  " + GEN + "amex/Hooks.java", p)            # its own
+        shared = p[p.index("SHARED by every suite"):p.index("OTHER suites")]
+        self.assertIn(GEN + "ImportedScenario.java", shared)
+        self.assertNotIn("amex/Hooks.java", shared)
+        self.assertIn("OTHER suites -- their folders are off limits: goal", p)
+        own = p[p.index("This suite's generated Java"):p.index("SHARED by every suite")]
+        self.assertNotIn("goal/Hooks.java", own, "another suite's file is not listed as its own")
 
     def test_tracked_code_is_out_of_scope_for_a_converted_job(self):
         def agent(_prompt):
@@ -383,6 +420,7 @@ class ConvertedScope(Repo):
         head = sh(self.root, "rev-parse", "HEAD")
         self.assertEqual(loop.cmd_approve(self.job, self.root, self.policy, "job1", "job1"), 0)
         self.assertEqual(self.state()["state"], "approved-local")
+        self.assertEqual(self.state()["stored"], "amex/001-job1")
         self.assertEqual(sh(self.root, "rev-parse", "HEAD"), head)
         self.assertEqual(sh(self.root, "branch", "--list", "agent/*"), "")
         self.assertTrue(os.path.isfile(os.path.join(self.job, "converted.patch")))
@@ -396,6 +434,110 @@ class ConvertedScope(Repo):
         self.assertEqual(self.generate(agent, scope="converted", suite="nosuchsuite"), 1)
         self.assertEqual(self.generate(agent, scope="converted", suite="../etc"), 1)
         self.assertEqual(called, [])
+
+
+class SurvivesAReconvert(Repo):
+    """An approved change to converted Java is put back after the
+    converter rewrites the suite."""
+
+    HOOK = GEN + "amex/Hooks.java"
+    BEFORE = "class Hooks {\n    int a;\n    int b;\n    int c;\n    int d;\n    int e;\n}\n"
+
+    def setUp(self):
+        super().setUp()
+        write(self.root, self.HOOK, self.BEFORE)
+        def agent(_prompt):
+            write(self.root, self.HOOK, self.BEFORE.replace("int e;", "int e; // approved fix"))
+            write(self.root, GEN + "amex/Extra.java", "class Extra {}\n")
+            return {"result": ""}
+        self.assertEqual(self.generate(agent, scope="converted", suite="amex"), 0)
+        self.assertEqual(loop.cmd_approve(self.job, self.root, self.policy, "job1", "job1"), 0)
+
+    def reconvert(self, text):
+        """What a convert does: rewrite the suite's files from scratch."""
+        write(self.root, self.HOOK, text)
+        p = os.path.join(self.root, GEN + "amex/Extra.java")
+        if os.path.isfile(p):
+            os.remove(p)
+
+    def hook(self):
+        with io.open(os.path.join(self.root, self.HOOK)) as fh:
+            return fh.read()
+
+    def test_the_same_output_gets_the_change_back(self):
+        self.reconvert(self.BEFORE)
+        r = loop.patches.reapply(self.root, "amex")
+        self.assertEqual(len(r["applied"]), 2, r)
+        self.assertEqual(r["conflicts"], [])
+        self.assertIn("// approved fix", self.hook())
+        self.assertTrue(os.path.isfile(os.path.join(self.root, GEN + "amex/Extra.java")))
+
+    def test_new_converter_output_elsewhere_in_the_file_is_kept_too(self):
+        """The reason this is a merge and not a diff: the converter changed
+        a different line, and both changes must survive."""
+        self.reconvert(self.BEFORE.replace("int a;", "int a; // converter now emits this"))
+        r = loop.patches.reapply(self.root, "amex")
+        self.assertEqual(r["conflicts"], [], r)
+        self.assertIn("// approved fix", self.hook())
+        self.assertIn("// converter now emits this", self.hook())
+
+    def test_an_overlap_leaves_the_converters_file_alone_and_says_so(self):
+        regenerated = self.BEFORE.replace("int e;", "long e;   // converter changed the same line")
+        self.reconvert(regenerated)
+        r = loop.patches.reapply(self.root, "amex")
+        self.assertEqual(len(r["conflicts"]), 1, r)
+        self.assertIn(".agent-patches/amex/001-job1/after/", r["conflicts"][0])
+        self.assertEqual(self.hook(), regenerated, "no conflict markers, no half-applied file")
+        self.assertNotIn("<<<<<<<", self.hook())
+
+    def test_running_it_twice_changes_nothing_the_second_time(self):
+        self.reconvert(self.BEFORE)
+        loop.patches.reapply(self.root, "amex")
+        again = loop.patches.reapply(self.root, "amex")
+        self.assertEqual(again["applied"], [])
+        self.assertEqual(len(again["already"]), 2)
+
+    def test_the_converter_entry_point_reports_and_never_raises(self):
+        self.reconvert(self.BEFORE)
+        self.assertEqual(loop.patches.reapply_after_convert(self.root, ["amex", "goal", "../x"]), 0)
+        self.assertIn("// approved fix", self.hook())
+
+    def test_a_stored_change_cannot_name_another_suites_file(self):
+        """NEGATIVE CONTROL: the store is per suite. A manifest edited to
+        point at another suite's hook is refused, not applied."""
+        entry = os.path.join(self.root, ".agent-patches", "amex", "001-job1")
+        with io.open(os.path.join(entry, "manifest.json"), encoding="utf-8") as fh:
+            m = json.load(fh)
+        foreign = GEN + "goal/Hooks.java"
+        m["modified"].append(foreign)
+        write(self.root, ".agent-patches/amex/001-job1/manifest.json", json.dumps(m))
+        write(self.root, ".agent-patches/amex/001-job1/after/" + foreign, "class Hooks { int hijacked; }\n")
+        write(self.root, ".agent-patches/amex/001-job1/base/" + foreign, "class Hooks {}\n")
+        r = loop.patches.reapply(self.root, "amex")
+        self.assertTrue(any(foreign in x for x in r["refused"]), r)
+        with io.open(os.path.join(self.root, foreign)) as fh:
+            self.assertEqual(fh.read(), "class Hooks {}\n")
+        with self.assertRaises(ValueError):
+            loop.patches.save(self.root, "amex", "j", [], [foreign], self.root)
+
+    def test_the_next_job_is_told_what_was_already_approved(self):
+        seen = {}
+        def agent(prompt):
+            seen["p"] = prompt
+            write(self.root, GEN + "amex/Other.java", "class Other {}\n")
+            return {"result": ""}
+        job2 = os.path.join(self.root, "target", "agent", "job2")
+        os.makedirs(job2)
+        write(self.root, "target/agent/job2/plan.md", "# plan\n")
+        self.assertEqual(loop.cmd_generate(job2, self.root, self.policy, "converted", "amex",
+                                           agent=agent, verifier=OK), 0)
+        self.assertIn("Changes already approved for this suite", seen["p"])
+        self.assertIn("001-job1: " + self.HOOK, seen["p"])
+
+    def test_forget_removes_one_entry(self):
+        self.assertTrue(loop.patches.forget(self.root, "amex", "001-job1"))
+        self.assertEqual(loop.patches.entries(self.root, "amex"), [])
+        self.assertFalse(loop.patches.forget(self.root, "amex", "001-job1"))
 
 
 class ConverterScope(Repo):

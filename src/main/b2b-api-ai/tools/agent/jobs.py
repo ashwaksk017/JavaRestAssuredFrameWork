@@ -57,7 +57,7 @@ RUNNABLES = {
             "--no-phase-specs": "flag", "--cursor-assist": "flag",
             "--no-cursor-assist": "flag", "--skip-self-test": "flag",
             "--bootstrap": "flag", "--skip-dataflow-check": "flag",
-            "--keep-dead-props": "flag",
+            "--keep-dead-props": "flag", "--no-reapply-patches": "flag",
         },
     },
     "intake": {
@@ -100,6 +100,16 @@ RUNNABLES = {
         "argv": [PY, "-B", os.path.join("tools", "agent", "loop.py"), "approve"],
         "label": "Approve: push a branch, or keep converted Java locally",
         "options": {"--job": "text", "--confirm": "text"},
+    },
+    "agent-reapply": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "patches.py"), "reapply"],
+        "label": "Put a suite's approved changes back (after a convert)",
+        "options": {"--suite": "text"},
+    },
+    "agent-patches": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "patches.py"), "list"],
+        "label": "List the approved changes that are stored",
+        "options": {"--suite": "text"},
     },
     "agent-discard": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "loop.py"), "discard"],

@@ -153,3 +153,7 @@ tools/ra_converter/fluent_catalog.json
 # Ignored wherever they land: support/ was already covered, data/ was not,
 # so a PlaceholderResolver refresh left an untracked file next to tracked ones.
 *.stale.orig
+
+# Approved workbench changes to converted Java (tools/agent/patches.py).
+# Generated code: local to the machine, like the tree it patches.
+.agent-patches/

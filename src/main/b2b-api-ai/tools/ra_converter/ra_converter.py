@@ -20900,6 +20900,12 @@ def main():
                         "generated CSV can open with dozens of columns that "
                         "drive nothing. What was removed is listed in "
                         "_audit/<suite>/pruned_columns.csv.")
+    p.add_argument("--no-reapply-patches", action="store_true",
+                   help="Do not put approved workbench changes "
+                        "(.agent-patches/<suite>/) back onto the suites "
+                        "this run converts. Default is to re-apply them: "
+                        "the convert rewrites those files, and an approved "
+                        "edit would otherwise be lost without a word.")
     args = p.parse_args()
     _refuse_unfollowable_package_root(args)
     return _main_dispatch(args)
@@ -21180,12 +21186,56 @@ def _main_dispatch(args):
             and not getattr(args, "diagrams_only", False)
             and not getattr(args, "bootstrap", False)):
         _report_suite_impact(args)
+    # AFTER the fingerprint: that records what the CONVERTER produced. A
+    # change approved in the workbench is put back on top of it, so the
+    # suite does not read as "moved" on every convert because of an edit
+    # the converter never made.
+    if (rc == 0
+            and not getattr(args, "diagrams_only", False)
+            and not getattr(args, "bootstrap", False)
+            and not getattr(args, "no_reapply_patches", False)):
+        _reapply_agent_patches(args)
     # The last word: where the tree is, and whether it is there. Compare
     # this against the path in any "required files are missing" build
     # error -- if they differ, the convert wrote somewhere else.
     if rc == 0 and not getattr(args, "diagrams_only", False):
         _report_generated_tree(args)
     return rc
+
+
+def _reapply_agent_patches(args) -> None:
+    """Put approved workbench changes back onto the suites just converted.
+
+    The converter rewrites a suite's files on every run, so an edit a
+    person approved to them (workbench tab 3, scope "converted") would be
+    lost silently. tools/agent/patches.py keeps each one per suite and
+    merges it back here; a change that overlaps what the converter now
+    writes is reported and left out, never half-applied.
+
+    Only a tree that HAS a store is touched: a convert into a scratch
+    directory has none and this does nothing. Never fails the convert.
+    """
+    try:
+        out = os.path.abspath(getattr(args, "output", ".") or ".")
+        if not os.path.isdir(os.path.join(out, ".agent-patches")):
+            return
+        here = os.path.dirname(os.path.abspath(__file__))
+        mod_path = os.path.join(os.path.dirname(here), "agent", "patches.py")
+        if not os.path.isfile(mod_path):
+            return
+        import importlib.util as _ilu
+        spec = _ilu.spec_from_file_location("ra_agent_patches", mod_path)
+        mod = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        left_out = mod.reapply_after_convert(out, sorted(_SUITES_THIS_RUN))
+        if left_out:
+            print(f"[ra_converter] {left_out} approved change(s) could NOT "
+                  f"be put back -- see the [agent-patches] lines above. "
+                  f"--no-reapply-patches skips this step.")
+    except Exception as e:                               # noqa: BLE001
+        print(f"[ra_converter] approved workbench changes were not "
+              f"re-applied ({type(e).__name__}: {e}); the tree is as "
+              f"converted.")
 
 
 def _report_suite_impact(args) -> None:

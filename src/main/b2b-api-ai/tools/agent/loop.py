@@ -35,10 +35,22 @@ enforced is checked AFTER the agent returns, against the files on disk:
   nothing, this tool does.
 
 On a failure everything is put back: tracked files from git (or from the
-copy taken of your own uncommitted version), and the suite's generated
-files from the copy taken before the run. The one thing that cannot be
-put back is a generated file OUTSIDE the suite in scope -- nothing copied
-it -- so the job names the suite to reconvert.
+copy taken of your own uncommitted version), and generated files -- of
+ANY suite, and the shared ones -- from a copy of the whole generated tree
+taken before the run.
+
+ONE SUITE MEANS ONE SUITE
+-------------------------
+Generated classes are per suite (`<Suite>Hooks1`, `<Suite>Specs1`,
+`<Suite>Steps`, ...). A `converted` job names its suite and is held to
+that suite's folders: another suite's classes, and the generated files
+every suite shares (`ImportedScenario`, `ImportedRestClient`, ...), are
+out of scope, and touching one fails the job and restores it. Cursor is
+also TOLD this up front -- the prompt lists the suite's own files, the
+shared ones and the other suites -- so the wall is rarely reached.
+
+An approved `converted` change is stored (tools/agent/patches.py) and put
+back after every later convert of that suite.
 
 THE CURSOR LOG
 --------------
@@ -79,6 +91,7 @@ def _load(name: str, path: str):
 
 
 intake = _load("loop_intake", os.path.join(HERE, "intake.py"))
+patches = _load("loop_patches", os.path.join(HERE, "patches.py"))
 ROOT = intake.ROOT
 POLICY_FILE = os.path.join(HERE, "policy.json")
 REQUIREMENTS = "requirements-cursor.txt"
@@ -554,7 +567,76 @@ _SCOPE_BRIEFING = {
 }
 
 
-def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "") -> str:
+def suite_briefing(root: str, policy: dict, scope: dict, cap: int = 120) -> str:
+    """What Cursor is told about the suite it is working in.
+
+    Enforcement happens after the fact; this is so the agent does not have
+    to find the boundary by hitting it. It lists the suite's own generated
+    files, names the generated files EVERY suite shares, names the other
+    suites, and says what earlier approved changes already exist.
+    """
+    suite = scope.get("suite") or ""
+    if not suite:
+        return ""
+    own, shared, others = [], [], set()
+    for gen in policy["generated_roots"]:
+        base = os.path.join(root, gen)
+        for dirpath, _dirs, files in os.walk(base):
+            for name in files:
+                rel = os.path.relpath(os.path.join(dirpath, name), root).replace("\\", "/")
+                if in_roots(rel, policy["generated_exclude"]):
+                    continue
+                if in_roots(rel, scope["write_roots"]):
+                    own.append(rel)
+                    continue
+                rest = rel[len(gen):]
+                if "/" in rest:
+                    others.add(rest.split("/", 1)[0])
+                elif rel.endswith(".java"):
+                    shared.append(rel)
+    own.sort()
+    java = [p for p in own if p.endswith(".java")]
+    lines = [
+        f"===== THE SUITE YOU ARE WORKING IN: {suite} =====",
+        f"Every generated class belongs to exactly one suite. This suite's "
+        f"classes carry its name ({suite[:1].upper() + suite[1:]}Hooks1, "
+        f"...Specs1, ...Steps, ...Calls, ...CaseIndex) and live only in the "
+        f"folders listed under WHERE YOU MAY WRITE. A fix for {suite} goes in "
+        f"{suite}'s own hook, spec, phases or CSV -- never in a class another "
+        f"suite also uses.",
+        "",
+        f"This suite's generated Java ({len(java)} file(s)"
+        + (f", first {cap} shown" if len(java) > cap else "") + "):",
+    ] + [f"  {p}" for p in java[:cap]]
+    data = len(own) - len(java)
+    if data:
+        lines.append(f"  ... plus {data} template / CSV file(s) in its "
+                     f"templates/ and csv/ folders.")
+    if shared:
+        lines += ["", "SHARED by every suite -- read them, do NOT edit them "
+                      "(a change here changes all "
+                      f"{len(others) or 'the other'} suites):"]
+        lines += [f"  {p}" for p in sorted(shared)[:40]]
+    others.discard(suite)
+    if others:
+        lines += ["", f"OTHER suites -- their folders are off limits: "
+                      + ", ".join(sorted(others))]
+    try:
+        earlier = patches.entries(root, suite)
+    except ValueError:
+        earlier = []
+    if earlier:
+        lines += ["", "Changes already approved for this suite, which are in "
+                      "the files now and must be kept:"]
+        for e in earlier[-10:]:
+            m = e["manifest"]
+            for rel in (m.get("created") or []) + (m.get("modified") or []):
+                lines.append(f"  {e['id']}: {rel}")
+    return "\n".join(lines)
+
+
+def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
+                 root: str = "") -> str:
     brief = _read(os.path.join(job_dir, "brief.md"))
     plan = _read(os.path.join(job_dir, "plan.md"))
     roots = "\n".join(f"  - {r}{'**' if r.endswith('/') else ''}"
@@ -580,6 +662,8 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "") -> s
         "any value from src/main/resources/program_configuration.json in "
         "a file: read it through Config at run time. The repository is "
         "public.",
+        "",
+        suite_briefing(root or ROOT, policy, scope),
         "",
         "Act on the plan below. For a request the plan marks UPSTREAM or "
         "STOP, write nothing for it and say why.",
@@ -827,10 +911,15 @@ def cmd_generate(job_dir: str, root: str, policy: dict, scope_name: str = "new-t
     backup_dir = os.path.join(job_dir, "pre")
     backup(root, before, backup_dir)
     gen_before = snapshot_generated(root, policy)
-    # The generated files this scope may change, copied so they can be
-    # diffed and put back. Only the suite in scope: a few megabytes.
+    # The WHOLE generated tree is copied, not just the suite in scope: a
+    # file the agent should not have touched -- another suite's hook, a
+    # shared class -- is exactly the one that must be put back, and git
+    # cannot do it. Pruned to the files actually changed once the run is
+    # accepted.
     gen_backup = os.path.join(job_dir, "pre-generated")
-    backup(root, [p for p in gen_before if in_roots(p, roots)], gen_backup)
+    say(f" .. copying the generated tree ({len(gen_before)} files) so "
+        f"anything touched can be put back")
+    backup(root, gen_before, gen_backup)
 
     review = write_review(job_dir, {
         "state": "generating", "scope": scope["name"], "suite": scope["suite"],
@@ -849,7 +938,8 @@ def cmd_generate(job_dir: str, root: str, policy: dict, scope_name: str = "new-t
         notes = restore_tracked(root, touched, before, backup_dir)
         g = classify_generated(gen_before, snapshot_generated(root, policy), roots)
         notes += restore_generated(
-            root, g["created"] + g["modified"] + g["deleted"], gen_backup)
+            root, g["created"] + g["modified"] + g["deleted"] + g["outside"],
+            gen_backup)
         return notes
 
     def reject(reason: str, restore: bool = True) -> int:
@@ -866,7 +956,7 @@ def cmd_generate(job_dir: str, root: str, policy: dict, scope_name: str = "new-t
     for attempt in range(1, attempts + 1):
         say(f" .. calling Cursor (attempt {attempt} of {attempts}) -- "
             f"the conversation is in cursor.log")
-        prompt = build_prompt(job_dir, policy, scope, repair)
+        prompt = build_prompt(job_dir, policy, scope, repair, root)
         with io.open(os.path.join(job_dir, f"agent-prompt-{attempt}.txt"),
                      "w", encoding="utf-8") as fh:
             fh.write(prompt)
@@ -915,11 +1005,14 @@ def cmd_generate(job_dir: str, root: str, policy: dict, scope_name: str = "new-t
         problems = []
         if gen["outside"]:
             suites = sorted({_suite_of(p) for p in gen["outside"]} - {""})
+            whose = (f"suite(s) {', '.join(suites)}" if suites
+                     else "files every suite shares")
             problems.append(
                 f"{len(gen['outside'])} generated file(s) outside this "
-                f"scope were changed, e.g. {gen['outside'][0]}. Nothing "
-                f"copied them, so they cannot be put back: reconvert "
-                f"{', '.join(suites) or 'the affected suite'}.")
+                f"scope were changed ({whose}), e.g. {gen['outside'][0]}. "
+                + (f"This job may only change suite `{scope['suite']}`. "
+                   if scope["suite"] else "")
+                + "They have been put back.")
         if tracked["outside"]:
             problems.append("files changed outside the allowed paths: "
                             + ", ".join(tracked["outside"][:10]))
@@ -948,6 +1041,7 @@ def cmd_generate(job_dir: str, root: str, policy: dict, scope_name: str = "new-t
                       hashes={f: _sha(os.path.join(root, f)) for f in files})
         if result["ok"]:
             say(" ok  verified")
+            _prune_backup(gen_backup, generated)
             write_review(job_dir, dict(review, state="pending-review"))
             clog.write("PENDING REVIEW")
             say("PENDING REVIEW -- read proposed.diff. Nothing is committed "
@@ -960,11 +1054,27 @@ def cmd_generate(job_dir: str, root: str, policy: dict, scope_name: str = "new-t
         # The repair attempt edits the files just written. `before` stays
         # the ORIGINAL snapshot, so the next classification still covers
         # everything the agent has done since the job started.
+    _prune_backup(gen_backup, review.get("generated") or [])
     write_review(job_dir, dict(review, state="verify-failed"))
     clog.write("VERIFY FAILED after the repair attempt")
     say("VERIFY FAILED after the repair attempt. The files are still in "
         "place so you can look at them; `discard` puts them back.")
     return 1
+
+
+def _prune_backup(gen_backup: str, keep) -> None:
+    """Keep only the copies of files the accepted run changed: they are
+    what the diff, a discard and the stored patch need."""
+    keep = {k.replace("\\", "/") for k in keep}
+    for dirpath, _dirs, files in os.walk(gen_backup, topdown=False):
+        for name in files:
+            p = os.path.join(dirpath, name)
+            if os.path.relpath(p, gen_backup).replace("\\", "/") not in keep:
+                os.remove(p)
+        try:
+            os.rmdir(dirpath)
+        except OSError:
+            pass
 
 
 def _suite_of(rel: str) -> str:
@@ -1053,15 +1163,22 @@ def cmd_approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
         patch = os.path.join(job_dir, "converted.patch")
         with io.open(patch, "w", encoding="utf-8") as fh:
             fh.write(diff)
+        suite = review.get("suite") or ""
+        try:
+            entry = patches.save(root, suite, job, files.get("created") or [],
+                                 files.get("modified") or [], gen_backup)
+        except ValueError as e:
+            say(f"FAIL could not store the change for re-applying: {e}")
+            return 1
         write_review(job_dir, dict(review, state="approved-local",
-                                   approved=_now(), patch="converted.patch"))
-        clog.write(f"APPROVED (kept locally): {len(paths)} file(s), "
-                   f"patch saved as converted.patch")
+                                   approved=_now(), patch="converted.patch",
+                                   stored=f"{suite}/{entry}"))
+        clog.write(f"APPROVED (kept locally): {len(paths)} file(s), stored "
+                   f"as {patches.STORE_DIR}/{suite}/{entry}")
         say(f"APPROVED -- {len(paths)} converted file(s) kept on this "
             f"machine. They are gitignored, so nothing was committed or "
-            f"pushed. A reconvert of `{review.get('suite')}` will overwrite "
-            f"them; the change is saved as "
-            f"target/agent/{job}/converted.patch.")
+            f"pushed. The change is stored as {patches.STORE_DIR}/{suite}/"
+            f"{entry} and will be put back after every convert of `{suite}`.")
         return 0
 
     branch = policy["branch_prefix"] + job
@@ -1150,7 +1267,8 @@ def _commit_body(job_dir: str, files: dict) -> str:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("command",
-                    choices=("setup", "generate", "approve", "push", "discard"))
+                    choices=("setup", "generate", "approve", "push", "discard",
+                             "reapply"))
     ap.add_argument("--job", required=True)
     ap.add_argument("--scope", default="new-test")
     ap.add_argument("--suite", default="")
@@ -1165,6 +1283,8 @@ def main(argv=None) -> int:
         return cmd_generate(job_dir, ROOT, policy, args.scope, args.suite)
     if args.command == "discard":
         return cmd_discard(job_dir, ROOT)
+    if args.command == "reapply":
+        return patches.main(["reapply", "--suite", args.suite])
     return cmd_approve(job_dir, ROOT, policy, intake.safe_job(args.job),
                        args.confirm)
 

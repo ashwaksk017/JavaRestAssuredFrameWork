@@ -250,7 +250,8 @@ const REVIEW_TEXT = {
   "pending-review": "PENDING REVIEW — read the diff, then approve or discard.",
   "pushed": "Pushed.",
   "approved-local": "Approved. The converted files stay on this machine; the " +
-                    "change is saved as converted.patch in the job folder.",
+                    "change is stored and is put back after every convert " +
+                    "of the suite.",
   "push-failed": "Committed locally, but the push failed. Approve again to retry.",
   "discarded": "Discarded.",
 };
@@ -333,7 +334,8 @@ function runAgent(runnable, options) {
 const SCOPE_NOTE = {
   "new-test": "Tracked files. Approve commits them to branch agent/<job> and pushes it.",
   "converted": "Generated files are gitignored: approve keeps them on THIS machine " +
-               "and saves a patch. A reconvert of the suite overwrites them.",
+               "and stores the change, which is put back after every " +
+               "convert of that suite. One suite only.",
   "converter": "Tracked files. The whole gate runs before and after; a check that " +
                "passed before must still pass. Approve pushes branch agent/<job>.",
 };
@@ -367,6 +369,15 @@ $("agent-stop").onclick = async () => {
   catch (e) { setState($("agent-state"), "bad", e.message); }
 };
 $("agent-refresh").onclick = () => { refreshReview(); pollCursorLog(true); };
+$("agent-patches").onclick = () => {
+  const suite = $("agent-suite").value.trim();
+  runAgent("agent-patches", suite ? { "--suite": suite } : {});
+};
+$("agent-reapply").onclick = () => {
+  const suite = $("agent-suite").value.trim();
+  if (!suite) { setState($("agent-state"), "bad", "name the suite"); return; }
+  runAgent("agent-reapply", { "--suite": suite });
+};
 $("agent-discard").onclick = () => {
   if (!confirm("Remove the files the agent created and restore the ones it " +
                "changed?")) return;
@@ -380,8 +391,8 @@ $("agent-push").onclick = () => {
       j + " and pushes that branch to origin. The repository is public. " +
       "main is not touched."
     : "Approve?\n\nThe converted files stay as Cursor left them, on this " +
-      "machine only. Nothing is committed or pushed. A reconvert of the " +
-      "suite will overwrite them; the change is saved as converted.patch.";
+      "machine only. Nothing is committed or pushed. The change is " +
+      "stored and put back after every convert of the suite.";
   if (!confirm(msg)) return;
   runAgent("agent-approve", { "--job": j, "--confirm": j });
 };

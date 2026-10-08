@@ -102,7 +102,15 @@ Expect 201.'></textarea>
       <input id="agent-suite" type="text" spellcheck="false"
              placeholder="amexbackbook">
       <small>The lower-case suite directory under <code>support/</code>.
-             Cursor is limited to this suite's generated files.</small>
+             Cursor is limited to this suite's generated files; another
+             suite's classes and the shared ones are put back if touched.</small>
+      <div class="row">
+        <button id="agent-patches">Stored changes</button>
+        <button id="agent-reapply">Put them back now</button>
+      </div>
+      <small>An approved change is stored and put back automatically after
+             every convert of the suite. Use this after a convert run with
+             <code>--no-reapply-patches</code>, or to see what is stored.</small>
     </div>
   </div>
 
