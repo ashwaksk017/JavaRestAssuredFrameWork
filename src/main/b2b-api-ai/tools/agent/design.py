@@ -29,6 +29,27 @@ WHAT IS CHECKED HERE RATHER THAN TRUSTED
   "partial", not an error and not a guess.
 * Each input has a size limit. What was left out is reported; nothing is
   shortened silently.
+* Every endpoint of the specification is accounted for: the ones no
+  designed case touches are listed. "40 cases" says nothing about which
+  third of the API they are all on.
+
+A SPECIFICATION TOO LARGE FOR ONE PROMPT is split before it is cut. Its
+paths go into parts, each sent with only the schemas it refers to, one
+call after another, and the cases are put together. Each part may
+propose its share of the case limit and no more. A part that fails is
+named, the design is labelled PARTIAL, and the other parts are kept; a
+failure that would repeat (no key, no connection, a call that timed
+out) stops the remaining parts instead of paying for each to fail.
+
+There is a ceiling. Past MAX_PARTS calls the parts are made larger, and
+a part that still does not fit loses its examples, then its long
+descriptions, and then is cut at the size limit. Each of those is
+reported for the part it happened to. A specification of several
+megabytes is designed from what fits, and says so.
+
+Each call has a time limit (policy.json, `cursor_deadline_seconds`). A
+call that does not come back is reported as stuck instead of leaving the
+job "running" for ever.
 
 Cursor is asked in PLAN mode (it proposes, it does not edit or run) and
 is started in an empty temporary directory. That is a starting point,
@@ -65,7 +86,7 @@ import re
 import sys
 import tempfile
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -96,6 +117,8 @@ SPEEDS = {"fast": 25, "balanced": 40, "thorough": 80}
 VERBS = ("get", "post", "put", "patch", "delete", "head", "options")
 ARTIFACTS = ("design.json", "design.md", "test-cases.csv", "xray.csv")
 MODES = ("plan", "agent")
+MAX_PARTS = 6                 # calls to Cursor for one design, at most
+DEFAULT_DEADLINE = 900        # seconds for one call, when the policy has none
 # What the page pasted, written by the server next to the job's other files.
 PASTED = {"swagger": "design-swagger.txt", "requirements": "design-requirements.txt",
           "notes": "design-notes.txt"}
@@ -293,6 +316,111 @@ def spec_text(spec: dict, limit: int) -> tuple:
     text = dump(body, False)
     notes.append("descriptions in the specification were shortened to 160 characters")
     return text, notes
+
+
+def _refs(node, out: list) -> list:
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k == "$ref" and isinstance(v, str) and v.startswith("#/"):
+                out.append(v)
+            else:
+                _refs(v, out)
+    elif isinstance(node, list):
+        for v in node:
+            _refs(v, out)
+    return out
+
+
+def _pointer(ref: str) -> list:
+    return [unquote(p).replace("~1", "/").replace("~0", "~") for p in ref[2:].split("/")]
+
+
+def _child(node, part: str):
+    """One step of a pointer. YAML gives `404:` as the number 404 and a
+    pointer writes it as text; a list is indexed by position."""
+    if isinstance(node, dict):
+        if part in node:
+            return part, node[part]
+        for k, v in node.items():
+            if str(k) == part:
+                return k, v
+    return None, None
+
+
+def sub_spec(spec: dict, paths: list, missing: set = None) -> dict:
+    """The specification with only `paths`, and only the schemas,
+    parameters and responses those paths refer to -- directly or through
+    one another. What a part of the API needs to be understood alone."""
+    shared = ("paths", "components", "definitions", "parameters", "responses")
+    out = {k: v for k, v in spec.items() if k not in shared}
+    out["paths"] = {p: spec["paths"][p] for p in paths if p in spec["paths"]}
+    # Named, not referred to: an operation says `security: [{oauth: []}]`.
+    schemes = (spec.get("components") or {}).get("securitySchemes") \
+        if isinstance(spec.get("components"), dict) else None
+    if schemes:
+        out["components"] = {"securitySchemes": schemes}
+    todo, seen = _refs(out["paths"], []), set()
+    unresolved = set()
+    while todo:
+        ref = todo.pop()
+        if ref in seen:
+            continue
+        seen.add(ref)
+        node, keys = spec, []
+        for part in _pointer(ref):
+            key, node = _child(node, part)
+            if key is None:
+                break
+            keys.append(key)
+        else:
+            if keys and keys[0] != "paths":
+                dest = out
+                for key in keys[:-1]:
+                    dest = dest.setdefault(key, {})
+                dest[keys[-1]] = node
+            _refs(node, todo)
+            continue
+        unresolved.add(ref)
+    if unresolved and missing is not None:
+        missing.update(unresolved)
+    return out
+
+
+def _size(spec: dict) -> int:
+    return len(json.dumps(_strip(spec, False, 0, []), ensure_ascii=False,
+                          default=str, separators=(",", ":")))
+
+
+def plan_parts(spec: dict, limit: int, max_parts: int = MAX_PARTS) -> list:
+    """[[path, ...], ...]: the paths of the specification, in order, in as
+    few parts as fit `limit` characters each at full detail. One part
+    when the whole specification fits."""
+    paths = [p for p in (spec.get("paths") or {}) if _path_item(spec, spec["paths"][p])]
+    if not paths or _size(spec) <= limit:
+        return [paths]
+    parts, current = [], []
+    for p in paths:
+        if current and _size(sub_spec(spec, current + [p])) > limit:
+            parts.append(current)
+            current = []
+        current.append(p)
+    parts.append(current)
+    if len(parts) > max_parts:
+        # Too many calls. Fewer, larger parts; spec_text() then drops
+        # examples and long descriptions from each, and says so.
+        per = -(-len(paths) // max_parts)
+        parts = [paths[i:i + per] for i in range(0, len(paths), per)]
+    return parts
+
+
+def uncovered(endpoints: list, prefixes: list, cases: list) -> list:
+    """The endpoints of the specification that no designed case is on."""
+    touched = {endpoint_key(c.get("endpoint", "")) for c in cases}
+    out = []
+    for line in endpoints:
+        if not ({endpoint_key(l) for l in match_lines([line], prefixes)} & touched):
+            out.append(line.split(" -- ")[0])
+    return out
 
 
 _FENCE_RX = re.compile(r"```[A-Za-z0-9_-]*[ \t]*\r?\n(.*?)```", re.S)
@@ -576,7 +704,8 @@ def write_outputs(out_dir: str, design: dict) -> None:
     md = [f"# API test design: {design['service'] or design['job']}", "",
           f"- job: {design['job']}", f"- at: {design['at']}",
           f"- test cases: {len(cases)}"
-          + (" (PARTIAL: the reply was cut off)" if design.get("partial") else ""),
+          + (" (PARTIAL: a reply was cut off, or a part of the API "
+             "produced nothing)" if design.get("partial") else ""),
           f"- reply read: {design['parsed']}", ""]
     if design.get("summary"):
         md += [design["summary"], ""]
@@ -584,6 +713,16 @@ def write_outputs(out_dir: str, design: dict) -> None:
         md += ["## Read this first", ""] + [f"- {w}" for w in design["warnings"]] + [""]
     if design["open_questions"]:
         md += ["## Open questions", ""] + [f"- {q}" for q in design["open_questions"]] + [""]
+    missing = design.get("uncovered_endpoints") or []
+    if missing:
+        md += [f"## Endpoints with no test case ({len(missing)} of "
+               f"{len(design.get('endpoints') or [])})", "",
+               "Nothing below is covered by this design. Run again with a "
+               "higher case limit, or say in the notes which of these matter.", ""]
+        md += [f"- `{e}`" for e in missing[:80]]
+        if len(missing) > 80:
+            md.append(f"- ... and {len(missing) - 80} more, in design.json")
+        md.append("")
     md += ["## Test cases", ""]
     for c in cases:
         flag = "  [NOT IN THE SPECIFICATION]" if c.get("endpoint_in_spec") is False else ""
@@ -616,7 +755,36 @@ def clear_outputs(out_dir: str) -> None:
 
 # ---- the run ----------------------------------------------------------
 
-def call_cursor(prompt: str, root: str, on_event, followup, mode: str = "plan") -> dict:
+def deadline_for(what: str, policy: dict = None) -> float:
+    """Seconds one Cursor call of this kind may take (policy.json)."""
+    try:
+        policy = loop.load_policy() if policy is None else policy
+    except (OSError, ValueError):
+        policy = {}
+    return loop.cursor_deadline(policy, what, DEFAULT_DEADLINE)
+
+
+def shares(counts: list, total: int) -> list:
+    """`total` cases divided between parts in proportion to their
+    endpoints, summing to `total` exactly (largest remainder), each part
+    getting at least one while there are enough to go round."""
+    n = sum(counts) or 1
+    exact = [total * c / n for c in counts]
+    out = [int(x) for x in exact]
+    for i in sorted(range(len(counts)), key=lambda i: exact[i] - out[i], reverse=True):
+        if sum(out) >= total:
+            break
+        out[i] += 1
+    for i, v in enumerate(out):
+        if v == 0 and counts[i] and total >= len(counts):
+            j = max(range(len(out)), key=lambda k: out[k])
+            out[j] -= 1
+            out[i] = 1
+    return out
+
+
+def call_cursor(prompt: str, root: str, on_event, followup, mode: str = "plan",
+                deadline: float = DEFAULT_DEADLINE) -> dict:
     """Cursor, in plan mode, started in an empty directory."""
     ca, cfg = loop.cursor_config(root)
     hide = lambda s: ca.redact_for_log(str(s), cfg.api_key)
@@ -628,9 +796,11 @@ def call_cursor(prompt: str, root: str, on_event, followup, mode: str = "plan") 
         try:
             out = loop.cursor_call.run(prompt, ca, cfg,
                                        on_event=lambda line: on_event(hide(line)),
-                                       followup=followup, mode=mode)
+                                       followup=followup, mode=mode,
+                                       deadline_seconds=deadline)
         except loop.cursor_call.CursorCallError as e:
-            raise RuntimeError(hide(e) + ("\n" + hide(e.details) if e.details else "")) from e
+            raise loop.CursorFailed(hide(e) + ("\n" + hide(e.details) if e.details else ""),
+                                    e.kind, e.cancelled) from e
     out["result"] = hide(out.get("result") or "")
     return out
 
@@ -670,8 +840,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         prefixes = base_paths(spec)
         known = match_lines(endpoints, prefixes)
         source = "specification"
-        swagger_sent, notes_ = spec_text(spec, SECTION_LIMITS["swagger"])
-        warnings += notes_
+        swagger_sent, whole_notes = spec_text(spec, SECTION_LIMITS["swagger"])
         say(f" ok  specification ({how}, {where}): {len(endpoints)} endpoint(s)"
             + (f", base path {', '.join(prefixes)}" if prefixes else ""))
         if not endpoints:
@@ -718,36 +887,29 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
             "carries a request.")
         return 1
 
-    sections, cut = fit({"swagger": swagger_sent, "requirements": requirements,
-                         "story": story, "notes": notes, "endpoints": listed})
-    warnings += cut
-    for line in cut:
-        say(f" ..  {line}")
-    empty = "(none given)"
-    prompt = render(_read(TEMPLATE), {
-        "service": service.strip() or job,
-        "max_cases": max_cases,
-        "endpoints": sections["endpoints"] or
-                     "(none could be read. Name an endpoint only as the "
-                     "material itself writes it.)",
-        "swagger": sections["swagger"] or empty,
-        "requirements": sections["requirements"] or empty,
-        "story": sections["story"] or empty,
-        "notes": sections["notes"] or empty,
-    })
+    prefixes = base_paths(spec) if spec is not None else []
+    parts = [None]
+    if spec is not None and endpoints:
+        if len(swagger) > 4 * SECTION_LIMITS["swagger"]:
+            say(" ..  working out how to split the specification (this can "
+                "take a moment for a large one)")
+        parts = plan_parts(spec, SECTION_LIMITS["swagger"])
+        if len(parts) > 1:
+            say(f" ..  the specification does not fit one prompt at full "
+                f"detail: {len(parts)} calls, one part of the API each")
+    if len(parts) == 1 and spec is not None:
+        warnings += whole_notes
+    part_counts = [len(endpoints_of(sub_spec(spec, p))) for p in parts] \
+        if len(parts) > 1 else [len(endpoints)]
+    part_share = shares(part_counts, max_cases) if len(parts) > 1 else [max_cases]
+    unresolved_refs = set()
+    asked_service = service.strip()
+
     private = loop.config_secrets(os.path.join(
         root, "src", "main", "resources", "program_configuration.json"))
-    prompt, hidden = redact(prompt, private)
-    if hidden:
-        say(f" ..  {hidden} host or credential value(s) from the private "
-            f"configuration were removed from the prompt")
-        # The agent copies endpoints from the prompt. If a private value
-        # happens to be a path segment, the copied form must still match.
-        known += [redact(line, private)[0] for line in known]
-    prompt, hosts = hide_hosts(prompt)
-    if hosts:
-        say(f" ..  the host of {hosts} URL(s) in the material was replaced "
-            f"with host.invalid")
+    # The agent copies endpoints from the prompt. If a private value
+    # happens to be a path segment, the copied form must still match.
+    known += [redact(line, private)[0] for line in known]
 
     secret = ""
     if agent is None:
@@ -759,32 +921,142 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
             return 1
     clog = loop.CursorLog(out_dir, secret, list(private))
     clog.write(f"===== design the API tests: job {job}, speed {speed} "
-               f"(at most {max_cases}) =====")
-    clog.block("prompt", prompt)
-
-    first = {}
-
-    def followup(text: str):
-        first["text"] = text
-        try:
-            read_reply(text)
-            return None
-        except ValueError:
-            return JSON_ONLY
-
+               f"(at most {max_cases}), {len(parts)} call(s) =====")
+    deadline = deadline_for("design")
     before = _tree_state(root) if agent is None else None
-    say(f" ..  asking Cursor ({len(prompt)} characters, {mode} mode); "
-        f"progress is in the Cursor log")
-    try:
+    removed = {"private": 0, "hosts": 0, "leaked": 0}
+
+    def ask(prompt: str, label: str) -> tuple:
+        """One call: (parsed reply, how it was read, model). RuntimeError
+        when the agent failed or nothing usable came back."""
+        # The requirements and the story go out with every part; counting
+        # their removals once per part would report six times what is there.
+        prompt, n = redact(prompt, private)
+        removed["private"] = max(removed["private"], n)
+        prompt, n = hide_hosts(prompt)
+        removed["hosts"] = max(removed["hosts"], n)
+        clog.block(f"prompt{' ' + label if label else ''}", prompt)
+        first = {}
+
+        def followup(text: str):
+            first["text"] = text
+            try:
+                read_reply(text)
+                return None
+            except ValueError:
+                return JSON_ONLY
+
+        say(f" ..  asking Cursor{' for ' + label if label else ''} "
+            f"({len(prompt)} characters, {mode} mode"
+            + (f", up to {deadline:.0f}s" if deadline else "")
+            + "); progress is in the Cursor log")
         if agent is not None:
             got = agent(prompt, followup)
         else:
-            got = call_cursor(prompt, root,
-                              lambda line: clog.write("  cursor: " + line), followup, mode)
-    except RuntimeError as e:
-        clog.write(f"FAILED: {e}")
-        say(f"FAIL {e}")
-        return 1
+            got = call_cursor(prompt, root, lambda line: clog.write("  cursor: " + line),
+                              followup, mode, deadline)
+        # What comes back is as untrusted as what went in: the agent is a
+        # program on this machine and may have read more than it was sent.
+        reply, n = redact(str(got.get("result") or ""), private)
+        removed["leaked"] += n
+        if first.get("text") is not None:
+            first["text"] = redact(str(first["text"]), private)[0]
+        clog.block(f"reply{' ' + label if label else ''}", reply)
+        # The last reply read whole; else the complete cases of whichever
+        # reply has any. `first` is the answer before the "JSON only" turn.
+        candidates = [reply] + ([first["text"]] if first.get("text") not in (None, reply) else [])
+        for partial in (False, True):
+            for text in candidates:
+                try:
+                    data, how = read_reply(text, partial)
+                    return data, how, got.get("model", "")
+                except ValueError:
+                    continue
+        raise RuntimeError("Cursor answered, but no test cases could be read "
+                           "from the reply. It is in the Cursor log.")
+
+    raw, how_read, failed, summaries, questions, model = [], [], [], [], [], ""
+    is_partial = False
+    for n, paths in enumerate(parts, 1):
+        if len(parts) == 1:
+            label, part_spec, part_listed, share = "", swagger_sent, listed, max_cases
+        else:
+            label = f"part {n} of {len(parts)}"
+            sub = sub_spec(spec, paths, unresolved_refs)
+            part_eps = endpoints_of(sub)
+            part_spec, notes_ = spec_text(sub, SECTION_LIMITS["swagger"])
+            warnings += [f"{label}: {x}" for x in notes_ if "entries were not sent" not in x]
+            part_listed = (f"(this is {label} of the API; the other parts are "
+                           f"designed separately)\n"
+                           + (f"(every path below is served under {', '.join(prefixes)}; "
+                              f"write the path as listed, without it)\n" if prefixes else "")
+                           + "\n".join(part_eps))
+            share = part_share[n - 1]
+            if share < 1:
+                failed.append(f"{label} ({len(paths)} path(s), from `{paths[0]}`) "
+                              f"was not designed: the case limit of {max_cases} "
+                              f"leaves it none. Use a higher limit.")
+                continue
+        sections, cut = fit({"swagger": part_spec, "requirements": requirements,
+                             "story": story, "notes": notes, "endpoints": part_listed})
+        for line in cut:
+            line = f"{label}: {line}" if label else line
+            if line not in warnings:
+                warnings.append(line)
+                say(f" ..  {line}")
+        empty = "(none given)"
+        prompt = render(_read(TEMPLATE), {
+            "service": asked_service or job,
+            "max_cases": share,
+            "endpoints": sections["endpoints"] or
+                         "(none could be read. Name an endpoint only as the "
+                         "material itself writes it.)",
+            "swagger": sections["swagger"] or empty,
+            "requirements": sections["requirements"] or empty,
+            "story": sections["story"] or empty,
+            "notes": sections["notes"] or empty,
+        })
+        try:
+            data, how, model = ask(prompt, label)
+        except RuntimeError as e:
+            clog.write(f"FAILED{' ' + label if label else ''}: {e}")
+            if len(parts) == 1:
+                say(f"FAIL {e}")
+                return 1
+            first_line = str(e).strip().splitlines()[0] if str(e).strip() else "failed"
+            failed.append(f"{label} ({len(paths)} path(s), from `{paths[0]}`) "
+                          f"produced nothing: {first_line}")
+            say(f"WARN {failed[-1]}")
+            if getattr(e, "kind", "") in ("setup", "startup", "timeout"):
+                # The next part would meet the same key, the same network,
+                # the same stuck service -- and wait just as long to say so.
+                left = len(parts) - n
+                if left:
+                    failed.append(f"{left} further part(s) were not attempted: "
+                                  f"the failure above would repeat")
+                    say(f"WARN {failed[-1]}")
+                break
+            continue
+        got_cases = [c for c in (cases_in(data) or []) if isinstance(c, dict)]
+        if len(parts) > 1:
+            for c in got_cases:          # each part numbers from TC-001
+                for key in [k for k in c if _norm_key(k) in ("id", "testid")]:
+                    c[key] = ""
+            if len(got_cases) > share:
+                warnings.append(f"{label}: {len(got_cases)} cases came back; its "
+                                f"share of the limit is {share}, and the first "
+                                f"{share} were kept")
+                got_cases = got_cases[:share]
+        raw += got_cases
+        how_read.append(how)
+        is_partial = is_partial or how.startswith("partial")
+        if isinstance(data, dict):
+            if _text(data.get("summary")):
+                summaries.append(_text(data.get("summary")))
+            if isinstance(data.get("open_questions"), list):
+                questions += [_text(q) for q in data["open_questions"] if _text(q)]
+            service = service.strip() or _text(data.get("service"))
+
     if before is not None and _tree_state(root) != before:
         msg = ("files in the repository changed while the design ran. This "
                "step asks Cursor to change nothing: look at `git status` "
@@ -792,69 +1064,68 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         warnings.append(msg)
         clog.write("WARNING: " + msg)
         say(f"WARN {msg}")
-    # What comes back is as untrusted as what went in: the agent is a
-    # program on this machine and may have read more than it was sent.
-    reply, leaked = redact(str(got.get("result") or ""), private)
-    if first.get("text") is not None:
-        first["text"] = redact(str(first["text"]), private)[0]
-    if leaked:
-        warnings.append(f"{leaked} host or credential value(s) of the private "
-                        f"configuration were in Cursor's reply and were removed")
-        say(f"WARN {leaked} private value(s) were in the reply and were removed")
-    clog.block("reply", reply)
-
-    # The last reply read whole; else the complete cases of whichever
-    # reply has any. `first` is the answer before the "JSON only" turn.
-    data, parsed = None, ""
-    candidates = [reply] + ([first["text"]] if first.get("text") not in (None, reply) else [])
-    for partial in (False, True):
-        for text in candidates:
-            try:
-                data, parsed = read_reply(text, partial)
-                break
-            except ValueError:
-                continue
-        if data is not None:
-            break
-    if data is None:
-        say("FAIL Cursor answered, but no test cases could be read from the "
-            "reply. It is in the Cursor log.")
+    if removed["private"]:
+        say(f" ..  {removed['private']} host or credential value(s) from the "
+            f"private configuration were removed from the prompt")
+    if removed["hosts"]:
+        say(f" ..  the host of {removed['hosts']} URL(s) in the material was "
+            f"replaced with host.invalid")
+    if removed["leaked"]:
+        warnings.append(f"{removed['leaked']} host or credential value(s) of the "
+                        f"private configuration were in Cursor's reply and were removed")
+        say(f"WARN {removed['leaked']} private value(s) were in the reply and were removed")
+    if not raw:
+        for line in failed:
+            say(f" ..  {line}")
+        say("FAIL no part of the design produced a test case.")
         return 1
-    if isinstance(data, list):
-        data = {"test_cases": data}
-    is_partial = parsed.startswith("partial")
-    if parsed != "as written":
+
+    parsed = "; ".join(dict.fromkeys(how_read))
+    if any(h != "as written" for h in how_read):
         say(f" ..  the reply was read after a repair: {parsed}")
     if is_partial:
-        warnings.append("the reply was cut off before its end; only the "
+        warnings.append("a reply was cut off before its end; only the "
                         "complete test cases are here. Run again with speed "
                         "'fast', or with less material.")
+    if failed:
+        is_partial = True
+        warnings += failed
+    if unresolved_refs:
+        warnings.append(f"{len(unresolved_refs)} reference(s) in the specification "
+                        f"point at something that is not in it and were sent "
+                        f"unresolved: " + ", ".join(sorted(unresolved_refs)[:5])
+                        + (" ..." if len(unresolved_refs) > 5 else ""))
 
-    cases, more = normalise(cases_in(data), known, max_cases)
+    cases, more = normalise(raw, known, max_cases)
     warnings += more
     if not cases:
         for w in more[:8]:
             say(f" ..  {w}")
         say("FAIL the reply holds no usable test case.")
         return 1
-    questions = data.get("open_questions")
+    missing = uncovered(endpoints, prefixes, cases) if source == "specification" else []
+    if missing:
+        warnings.append(f"{len(missing)} of {len(endpoints)} endpoint(s) have "
+                        f"no test case; they are listed in design.md")
     result = {
         "job": job,
         "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "service": service.strip() or _text(data.get("service")),
+        "service": service.strip(),
         "speed": speed,
-        "model": got.get("model", ""),
+        "model": model,
         "parsed": parsed,
         "partial": is_partial,
-        "summary": _text(data.get("summary")),
+        "calls": len(parts),
+        "failed_parts": failed,
+        "summary": " ".join(dict.fromkeys(summaries)),
         "mode": mode if agent is None else "",
         "brief": loop.brief_fingerprint(out_dir),
         "endpoints": endpoints,
         "endpoint_source": source,
         "endpoints_checked": bool(known),
+        "uncovered_endpoints": missing,
         "test_cases": cases,
-        "open_questions": [_text(q) for q in questions if _text(q)]
-                          if isinstance(questions, list) else [],
+        "open_questions": list(dict.fromkeys(questions)),
         "warnings": warnings,
     }
     write_outputs(out_dir, result)

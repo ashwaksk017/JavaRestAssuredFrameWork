@@ -97,6 +97,33 @@ WHY = {
 # four call sites per run -- which re-runs its module-level code each
 # time for no gain.
 intake = _load("locate_intake", os.path.join(HERE, "intake.py"))
+# Evidence shown beside the plan. Deciding does not depend on it, so a
+# fault in it must not stop a decision from being made.
+try:
+    history = _load("locate_history", os.path.join(HERE, "history.py"))
+    _HISTORY_ERROR = ""
+except Exception as _e:                                  # noqa: BLE001
+    history, _HISTORY_ERROR = None, type(_e).__name__
+
+
+def story_history(out: str, root: str) -> dict:
+    """Commits and test files that name this job's story (history.py), or
+    a record that the lookup failed -- never an exception, never silence."""
+    if history is None:
+        return {"keys": [], "error": _HISTORY_ERROR}
+    try:
+        return history.build(out, root)
+    except Exception as e:                               # noqa: BLE001
+        return {"keys": [], "error": type(e).__name__}
+
+
+def _history_lines(plan: dict) -> list:
+    found = plan.get("history") or {}
+    if history is None:
+        return (["## Earlier work that names this story", "",
+                 f"This could not be looked up ({found.get('error', 'unavailable')}). "
+                 f"It is not evidence that nothing exists.", ""] if found else [])
+    return history.render(found)
 
 
 def job_dir(job: str, root: str = "") -> str:
@@ -337,6 +364,9 @@ def run(job: str, root: str = "", index_path: str = DEFAULT_INDEX,
         "stops": [d for d in decisions if d["decision"] in STOPS],
     }
     plan["ok"] = not plan["stops"]
+    # Evidence beside the decisions, never an input to them: commits and
+    # test files that name the story this job is about. See history.py.
+    plan["history"] = story_history(out, root or ROOT)
     _write_plan(out, plan)
     with io.open(os.path.join(out, "locate.json"), "w", encoding="utf-8") as fh:
         json.dump(plan, fh, indent=2, ensure_ascii=False)
@@ -384,6 +414,7 @@ def _write_plan(out: str, plan: dict) -> None:
                 lines.append(f"      {m.get('destination', '')}")
         lines.append("")
 
+    lines += _history_lines(plan)
     lines += ["## Next", ""]
     if plan["stops"]:
         lines.append("Resolve the stops above. `UPSTREAM` means the change "

@@ -221,6 +221,11 @@ CHECKS = [
           "when it does not, and pushes only an approved job to its own "
           "branch after a secret scan -- this is the code that decides "
           "what reaches a public repository"),
+    Check("agent-history",
+          [PY, "tools/agent/test_history.py"],
+          "earlier work on a story is found by its exact key -- ABC-1 is "
+          "not ABC-12 -- on any branch, shown as evidence beside the plan "
+          "and never as a decision"),
     Check("agent-design",
           [PY, "tools/agent/test_design.py"],
           "the API test design step: the endpoint list comes from the "
@@ -349,6 +354,16 @@ CHECKS = [
           [PY, "tools/jira/test_fetch.py"],
           "a story URL is untrusted input: an unapproved host is refused "
           "and the token never leaves a header; no clear AC stops the run"),
+    Check("jira-search",
+          [PY, "tools/jira/test_search.py"],
+          "a list read from Jira says when it is short -- an issue that "
+          "moved while the pages were read, a server that stopped early, a "
+          "limit -- and the token goes to the configured host and no other"),
+    Check("jira-query",
+          [PY, "tools/jira/test_query.py"],
+          "a paste is stories, a query or neither by its SHAPE -- a "
+          "sentence that uses JQL's words is not searched for, and the "
+          "host a pasted address names is reported, never acted on"),
     Check("jira-extract",
           [PY, "tools/jira/test_extract.py"],
           "a request is READ from a story or not produced at all; a concrete "

@@ -262,6 +262,84 @@ class TheSpecification(unittest.TestCase):
         self.assertEqual(n, 2)
 
 
+def big_spec(n=12, pad=400):
+    """n paths, each with its own schema, plus one schema nothing uses."""
+    paths, schemas = {}, {"Unused": {"type": "object", "description": "u" * pad}}
+    for i in range(n):
+        schemas[f"Thing{i}"] = {"type": "object", "description": "d" * pad,
+                                "properties": {"inner": {"$ref": f"#/components/schemas/Inner{i}"}}}
+        schemas[f"Inner{i}"] = {"type": "string", "description": "i" * pad}
+        paths[f"/things{i}/{{id}}"] = {"get": {"summary": f"Get {i}", "responses": {"200": {
+            "content": {"application/json": {"schema": {"$ref": f"#/components/schemas/Thing{i}"}}}}}}}
+    return {"openapi": "3.0.1", "paths": paths, "components": {"schemas": schemas}}
+
+
+class ASpecificationTooLargeForOnePrompt(unittest.TestCase):
+    def test_a_part_carries_only_what_its_paths_refer_to(self):
+        spec = big_spec(4)
+        sub = design.sub_spec(spec, ["/things1/{id}"])
+        self.assertEqual(list(sub["paths"]), ["/things1/{id}"])
+        self.assertEqual(sorted(sub["components"]["schemas"]), ["Inner1", "Thing1"],
+                         "the schema it names, and the one THAT names; nothing else")
+        self.assertEqual(sub["openapi"], "3.0.1")
+
+    def test_a_schema_that_refers_to_itself_does_not_loop(self):
+        spec = {"paths": {"/a": {"get": {"schema": {"$ref": "#/definitions/Node"}}}},
+                "definitions": {"Node": {"properties": {"next": {"$ref": "#/definitions/Node"},
+                                                        "gone": {"$ref": "#/definitions/Missing"}}}}}
+        self.assertEqual(list(design.sub_spec(spec, ["/a"])["definitions"]), ["Node"])
+
+    def test_one_part_when_it_fits_and_as_few_as_fit_when_it_does_not(self):
+        spec = big_spec(12)
+        self.assertEqual(design.plan_parts(spec, 10**6), [list(spec["paths"])])
+        parts = design.plan_parts(spec, 4000)
+        self.assertGreater(len(parts), 1)
+        self.assertEqual([p for part in parts for p in part], list(spec["paths"]),
+                         "every path, once, in order")
+        for part in parts:
+            self.assertLessEqual(design._size(design.sub_spec(spec, part)), 4000)
+
+    def test_the_number_of_calls_is_capped(self):
+        spec = big_spec(30)
+        parts = design.plan_parts(spec, 1500, max_parts=4)
+        self.assertEqual(len(parts), 4)
+        self.assertEqual(sum(len(p) for p in parts), 30)
+
+    def test_security_schemes_go_with_every_part(self):
+        spec = big_spec(3)
+        spec["components"]["securitySchemes"] = {"oauth": {"type": "oauth2"}}
+        spec["security"] = [{"oauth": []}]
+        sub = design.sub_spec(spec, ["/things0/{id}"])
+        self.assertEqual(sub["components"]["securitySchemes"], {"oauth": {"type": "oauth2"}})
+        self.assertEqual(sub["security"], [{"oauth": []}])
+
+    def test_references_written_the_awkward_ways_are_followed_and_dead_ones_are_named(self):
+        spec = {"paths": {"/a": {"get": {"responses": {
+            "200": {"$ref": "#/components/schemas/My%20Type"},
+            "404": {"$ref": "#/components/responses/404"},
+            "500": {"$ref": "#/components/schemas/Gone"},
+            "x": {"$ref": "#/components/schemas/a~1b"}}}}},
+            "components": {"schemas": {"My Type": {"type": "object"}, "a/b": {"type": "string"}},
+                           "responses": {404: {"description": "not found"}}}}
+        missing = set()
+        sub = design.sub_spec(spec, ["/a"], missing)
+        self.assertEqual(sorted(sub["components"]["schemas"]), ["My Type", "a/b"])
+        self.assertEqual(sub["components"]["responses"], {404: {"description": "not found"}})
+        self.assertEqual(missing, {"#/components/schemas/Gone"})
+
+    def test_the_case_limit_is_shared_out_exactly(self):
+        self.assertEqual(design.shares([1, 1, 1, 1, 1, 95], 25), [1, 1, 1, 1, 1, 20])
+        self.assertEqual(sum(design.shares([3, 3, 3], 40)), 40)
+        self.assertEqual(design.shares([10], 25), [25])
+        self.assertEqual(sum(design.shares([5] * 8, 4)), 4, "fewer cases than parts: some get none")
+
+    def test_endpoints_no_case_is_on_are_named(self):
+        eps = ["GET /a/{id} -- x", "POST /a", "DELETE /b"]
+        cases = [{"endpoint": "get /v1/a/{aId}"}, {"endpoint": "`DELETE /b`"}]
+        self.assertEqual(design.uncovered(eps, ["/v1"], cases), ["POST /a"])
+        self.assertEqual(design.uncovered(eps, [], []), ["GET /a/{id}", "POST /a", "DELETE /b"])
+
+
 class ThePrompt(unittest.TestCase):
     def test_a_section_over_its_limit_is_cut_and_reported(self):
         out, notes = design.fit({"story": "s" * 500, "notes": "n" * 50},
@@ -474,6 +552,124 @@ class Run(unittest.TestCase):
         self.assertEqual(d["brief"], loop.brief_fingerprint(self.out))
         self.assertTrue(d["brief"])
         self.assertIn("TC-001", loop.designed_cases(self.out)[0])
+
+    def small_limit(self, n):
+        old = design.SECTION_LIMITS["swagger"]
+        design.SECTION_LIMITS["swagger"] = n
+        self.addCleanup(design.SECTION_LIMITS.__setitem__, "swagger", old)
+
+    def test_a_large_specification_is_designed_in_parts_and_put_together(self):
+        self.small_limit(4000)
+        spec = big_spec(12)
+        calls = []
+
+        def agent(prompt, followup):
+            calls.append(prompt)
+            listed = prompt.split("===== ENDPOINTS =====")[1].split("=====")[0]
+            eps = [l.split(" -- ")[0] for l in listed.splitlines() if l.startswith("GET ")]
+            return {"result": reply(*[case(id="TC-001", endpoint=e, title=f"covers {e}")
+                                      for e in eps[:-1] or eps])}
+        self.assertEqual(self.run_design(agent, swagger=json.dumps(spec), speed="thorough"), 0)
+        d = json.loads(self.read("design.json"))
+        self.assertGreater(d["calls"], 1)
+        self.assertEqual(len(calls), d["calls"])
+        ids = [c["id"] for c in d["test_cases"]]
+        self.assertEqual(len(set(ids)), len(ids), "numbered across the parts, no clash")
+        self.assertFalse(any("used twice" in w for w in d["warnings"]))
+        self.assertTrue(all(c["endpoint_in_spec"] for c in d["test_cases"]))
+        self.assertIn("part 1 of", calls[0])
+        self.assertNotIn("Thing11", calls[0], "a part is sent only its own schemas")
+        self.assertTrue(d["uncovered_endpoints"], "each part skipped its last endpoint")
+        self.assertIn("Endpoints with no test case", self.read("design.md"))
+
+    def test_a_part_that_fails_is_named_and_the_others_are_kept(self):
+        self.small_limit(4000)
+        spec = big_spec(12)
+        n = []
+
+        def agent(prompt, followup):
+            n.append(1)
+            if len(n) == 2:
+                raise RuntimeError("Cursor did not finish within 900s and was stopped waiting for.")
+            return {"result": reply(case(endpoint="GET /things0/{id}"))}
+        self.assertEqual(self.run_design(agent, swagger=json.dumps(spec)), 0)
+        d = json.loads(self.read("design.json"))
+        self.assertTrue(d["partial"])
+        self.assertEqual(len(d["failed_parts"]), 1)
+        self.assertIn("part 2 of", d["failed_parts"][0])
+        self.assertIn("did not finish within 900s", d["failed_parts"][0])
+        self.assertIn("PARTIAL", self.read("design.md"))
+
+    def test_a_part_keeps_its_share_and_the_last_part_is_not_the_one_that_pays(self):
+        self.small_limit(4000)
+        spec = big_spec(12)
+
+        def greedy(prompt, followup):
+            listed = prompt.split("===== ENDPOINTS =====")[1].split("=====")[0]
+            eps = [l.split(" -- ")[0] for l in listed.splitlines() if l.startswith("GET ")]
+            return {"result": reply(*[case(endpoint=eps[i % len(eps)], title=f"t{i}")
+                                      for i in range(60)])}
+        self.assertEqual(self.run_design(greedy, swagger=json.dumps(spec), speed="fast"), 0)
+        d = json.loads(self.read("design.json"))
+        self.assertEqual(len(d["test_cases"]), 25)
+        last = [c for c in d["test_cases"] if c["endpoint"].startswith("GET /things11")]
+        self.assertTrue(last, "the last part of the API still has cases")
+        self.assertTrue(any("its share of the limit" in w for w in d["warnings"]))
+
+    def test_a_failure_that_would_repeat_stops_the_remaining_parts(self):
+        self.small_limit(4000)
+        calls = []
+
+        def agent(prompt, followup):
+            calls.append(1)
+            if len(calls) == 1:
+                return {"result": reply(case(endpoint="GET /things0/{id}"))}
+            raise loop.CursorFailed("the agent did not start: 401", "startup")
+        self.assertEqual(self.run_design(agent, swagger=json.dumps(big_spec(12))), 0)
+        d = json.loads(self.read("design.json"))
+        self.assertEqual(len(calls), 2, "no third call to be told the same thing")
+        self.assertTrue(any("were not attempted" in f for f in d["failed_parts"]))
+        self.assertTrue(d["partial"])
+
+    def test_whole_specification_notes_are_not_reported_for_text_that_was_never_sent(self):
+        self.small_limit(4000)
+        spec = big_spec(12)
+        spec["paths"]["/things0/{id}"]["get"]["example"] = "e" * 200
+        self.run_design(self.agent(reply(case(endpoint="GET /things0/{id}"))),
+                        swagger=json.dumps(spec))
+        d = json.loads(self.read("design.json"))
+        self.assertFalse([w for w in d["warnings"]
+                          if w.startswith("examples and x- extensions")])
+
+    def test_every_part_failing_is_a_failure(self):
+        self.small_limit(4000)
+
+        def agent(prompt, followup):
+            raise RuntimeError("the agent did not start: 401")
+        self.assertEqual(self.run_design(agent, swagger=json.dumps(big_spec(12))), 1)
+        self.assertFalse(os.path.isfile(os.path.join(self.out, "design.json")))
+
+    def test_one_call_when_the_specification_fits(self):
+        self.run_design(self.agent(reply(case())))
+        d = json.loads(self.read("design.json"))
+        self.assertEqual((d["calls"], d["failed_parts"]), (1, []))
+        self.assertEqual(d["uncovered_endpoints"], ["GET /groups/{groupId}/rates", "GET /health"])
+
+    def test_the_time_limit_comes_from_the_policy(self):
+        self.assertEqual(design.deadline_for("design", {"cursor_deadline_seconds": {"design": 60}}), 60)
+        self.assertEqual(design.deadline_for("design", {}), design.DEFAULT_DEADLINE)
+        self.assertEqual(design.deadline_for("design", {"cursor_deadline_seconds": {"design": "soon"}}),
+                         design.DEFAULT_DEADLINE, "a typo is the default, not no limit")
+        self.assertEqual(design.deadline_for("design", {"cursor_deadline_seconds": {"design": 0}}), 0)
+        self.assertEqual(loop.cursor_deadline({"cursor_deadline_seconds": {"generate": "x"}},
+                                              "generate"), 2700)
+        for bad in (-5, float("nan"), float("inf"), None, [1]):
+            self.assertEqual(loop.cursor_deadline(
+                {"cursor_deadline_seconds": {"generate": bad}}, "generate"), 2700, bad)
+        self.assertEqual(loop.cursor_deadline({"cursor_deadline_seconds": 120}, "generate"), 120,
+                         "one number applies to every kind of call")
+        self.assertEqual(loop.cursor_deadline(loop.load_policy(), "generate"), 2700)
+        self.assertEqual(design.deadline_for("design"), 900)
 
     def test_an_unknown_mode_is_refused(self):
         self.assertEqual(self.run_design(self.agent(reply(case())), mode="yolo"), 1)
@@ -757,6 +953,143 @@ class AskingAgainOnTheSameAgent(unittest.TestCase):
         self.sent.clear()
         self.call(None, mode="plan")
         self.assertEqual(self.options.mode, "plan")
+
+    def test_a_run_that_never_comes_back_is_reported_as_stuck(self):
+        import threading
+        release = threading.Event()
+        self.addCleanup(release.set)
+        cancelled, closed, seen = [], [], []
+        outer = self
+
+        class Stuck:
+            def messages(self):
+                return iter([types.SimpleNamespace(type="status", status="running", message="")])
+
+            def wait(self):
+                release.wait(30)
+                return types.SimpleNamespace(status="finished", result="too late", id="r")
+
+            def cancel(self):
+                cancelled.append(True)
+
+        class Session:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def send(self, prompt):
+                return Stuck()
+
+            def close(self):
+                closed.append(True)
+
+        sys.modules["cursor_sdk"].Agent.create = staticmethod(lambda options: Session())
+        t0 = __import__("time").time()
+        with self.assertRaises(loop.cursor_call.CursorCallError) as got:
+            loop.cursor_call.run("p", None, self.cfg, on_event=seen.append, deadline_seconds=0.3)
+        self.assertLess(__import__("time").time() - t0, 5)
+        self.assertEqual(got.exception.kind, "timeout")
+        self.assertIn("did not finish within", str(got.exception))
+        self.assertEqual((cancelled, closed), ([True], [True]))
+        self.assertTrue(any("time limit" in s and "cancelled" in s for s in seen))
+        release.set()
+        __import__("time").sleep(0.1)
+        self.assertFalse(any("too late" in s for s in seen))
+
+    def test_a_limit_that_passes_before_the_prompt_was_sent_stops_the_worker(self):
+        import threading
+        import time
+        gate = threading.Event()
+        self.addCleanup(gate.set)
+        sent, closed = [], []
+
+        class Session:
+            def __enter__(self):
+                gate.wait(30)                # the limit passes in here
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def send(self, prompt):
+                sent.append(prompt)
+                raise AssertionError("the prompt must not be sent once nobody is waiting")
+
+            def close(self):
+                closed.append(True)
+
+        sys.modules["cursor_sdk"].Agent.create = staticmethod(lambda options: Session())
+        with self.assertRaises(loop.cursor_call.CursorCallError) as got:
+            loop.cursor_call.run("p", None, self.cfg, deadline_seconds=0.2)
+        self.assertEqual((got.exception.kind, got.exception.cancelled), ("timeout", False))
+        self.assertIn("could NOT be confirmed cancelled", str(got.exception))
+        gate.set()
+        time.sleep(0.3)
+        self.assertEqual(sent, [])
+        self.assertTrue(closed)
+
+    def test_no_second_turn_is_paid_for_once_nobody_is_waiting(self):
+        import threading
+        import time
+        release = threading.Event()
+        self.addCleanup(release.set)
+        asked = []
+
+        class Slow:
+            def messages(self):
+                return iter(())
+
+            def wait(self):
+                release.wait(30)
+                return types.SimpleNamespace(status="finished", result="prose", id="r")
+
+            def cancel(self):
+                pass
+
+        class Session:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def send(self, prompt):
+                return Slow()
+
+        sys.modules["cursor_sdk"].Agent.create = staticmethod(lambda options: Session())
+        with self.assertRaises(loop.cursor_call.CursorCallError) as got:
+            loop.cursor_call.run("p", None, self.cfg, deadline_seconds=0.2,
+                                 followup=lambda text: asked.append(text) or "again")
+        self.assertTrue(got.exception.cancelled)
+        release.set()
+        time.sleep(0.3)
+        self.assertEqual(asked, [])
+
+    def test_a_run_that_finishes_in_time_is_untouched_by_the_limit(self):
+        self.results = [("finished", "quick")]
+        out = self.call(None, deadline_seconds=30)
+        self.assertEqual(out["result"], "quick")
+
+    def test_a_failure_inside_the_limit_is_still_that_failure(self):
+        def boom(options):
+            raise OSError("bridge gone")
+        sys.modules["cursor_sdk"].Agent.create = staticmethod(boom)
+        with self.assertRaises(loop.cursor_call.CursorCallError) as got:
+            self.call(None, deadline_seconds=30)
+        self.assertEqual(got.exception.kind, "run")
+        self.assertIn("bridge gone", str(got.exception))
+
+    def test_a_cancel_that_hangs_does_not_hang_the_caller(self):
+        import threading
+        never = threading.Event()
+        self.addCleanup(never.set)
+        obj = types.SimpleNamespace(cancel=lambda: never.wait(30))
+        t0 = __import__("time").time()
+        self.assertFalse(loop.cursor_call._best_effort(obj, "cancel", seconds=0.2))
+        self.assertLess(__import__("time").time() - t0, 3)
+        self.assertFalse(loop.cursor_call._best_effort(None, "cancel"))
 
     def test_a_second_turn_that_raises_keeps_the_first_answer(self):
         self.results = [("finished", "the first answer")]      # no second result: IndexError

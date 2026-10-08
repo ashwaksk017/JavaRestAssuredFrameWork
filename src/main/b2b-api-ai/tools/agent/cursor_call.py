@@ -28,6 +28,15 @@ list of things that went wrong first. What is taken from it here:
   (antivirus scan of the bundled Node), and the SDK's default gave up.
 * **Diagnostics.** Tool errors seen on the way are kept and attached to
   the failure message.
+* **A time limit.** `run.wait()` has no timeout of its own, and a bridge
+  that has lost its connection waits for ever: the job shows "running"
+  until somebody kills it. With `deadline_seconds` the call is made on a
+  worker thread and given that long. Past it, the run is asked to
+  cancel, the agent to close, and the caller gets a failure of kind
+  "timeout" -- stuck is reported as stuck, not as slow. The worker is a
+  daemon thread on purpose: a pool used as a context manager would wait
+  for the very call that is not returning. (The pattern is from a
+  sibling tool that learnt it the same way.)
 
 If the installed SDK has no `Agent.create` (an older one), this falls
 back to the converter's `Agent.prompt` call rather than failing.
@@ -48,6 +57,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 
 WINDOWS_BRIDGE_TIMEOUT = 90.0
@@ -59,13 +69,19 @@ class CursorCallError(RuntimeError):
     kind: "setup"   the SDK or the key is missing
           "startup" the run never started (auth, network, bridge)
           "run"     the run started and failed
+          "timeout" the run did not finish inside its time limit
     """
 
-    def __init__(self, message: str, kind: str, run_id: str = "", details: str = ""):
+    def __init__(self, message: str, kind: str, run_id: str = "", details: str = "",
+                 cancelled=None):
         super().__init__(message)
         self.kind = kind
         self.run_id = run_id
         self.details = details
+        # For a timeout: True when the run confirmed it was cancelled,
+        # False when it could not be. A caller that lets the agent edit
+        # files needs to know which.
+        self.cancelled = cancelled
 
 
 def patch_bridge(ca) -> None:
@@ -147,7 +163,58 @@ def _conversation_text(run) -> str:
         return ""
 
 
-def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent") -> dict:
+def _best_effort(obj, method: str, seconds: float = 5.0) -> bool:
+    """Call obj.method() without letting it hang this thread too."""
+    fn = getattr(obj, method, None)
+    if not callable(fn):
+        return False
+    done = []
+
+    def go():
+        try:
+            fn()
+            done.append(True)
+        except Exception:                                # noqa: BLE001
+            pass
+
+    th = threading.Thread(target=go, name=f"cursor-{method}", daemon=True)
+    th.start()
+    th.join(seconds)
+    return bool(done)
+
+
+def bounded(work, seconds, on_timeout=None):
+    """work() with a wall-clock limit. Its value or its exception; or
+    TimeoutError, after `on_timeout()` has been called."""
+    if not seconds or seconds <= 0:
+        return work()
+    box = {}
+
+    def target():
+        try:
+            box["value"] = work()
+        except BaseException as e:                       # noqa: BLE001
+            box["error"] = e
+
+    th = threading.Thread(target=target, name="cursor-call", daemon=True)
+    th.start()
+    try:
+        th.join(seconds)
+    except BaseException:                   # Ctrl+C while waiting: still cancel
+        if on_timeout:
+            on_timeout()
+        raise
+    if th.is_alive():
+        if on_timeout:
+            on_timeout()
+        raise TimeoutError(f"no result after {seconds:.0f}s")
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
+
+
+def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
+        deadline_seconds: float = 0) -> dict:
     """Send one prompt; return {status, result, id, model, transport}.
 
     Raises CursorCallError. `on_event(line)` is called for each status
@@ -161,6 +228,9 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent")
 
     `mode` is "agent" (it edits and runs things) or "plan" (it proposes
     and changes nothing) -- the two the SDK declares.
+
+    `deadline_seconds`: the whole call, both turns, gets this long. 0 is
+    no limit. See the module docstring.
     """
     emit = on_event or (lambda line: None)
     if not getattr(cfg, "api_key", ""):
@@ -176,54 +246,105 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent")
             f"{sys.executable} -m pip install cursor-sdk", "setup") from e
     patch_bridge(ca)
     cwd = os.fspath(cfg.cwd)                 # ONE string, never a list
+    started = time.time()
+    live = {}                                # what to cancel if time runs out
+    stopped = threading.Event()              # a late event is not logged as live
+
+    def gave_up():
+        stopped.set()
+        live["cancelled"] = _best_effort(live.get("run"), "cancel")
+        _best_effort(live.get("agent"), "close")
+        emit(f"time limit of {deadline_seconds:.0f}s reached; "
+             + ("the run was cancelled" if live["cancelled"] else
+                "the run could not be cancelled and may still be working"))
+
+    def timed_out(e) -> CursorCallError:
+        return CursorCallError(
+            f"Cursor did not finish within {deadline_seconds:.0f}s and was "
+            f"stopped waiting for. This is a stuck or very slow run, not a "
+            f"refusal: check the network path to Cursor, make the request "
+            f"smaller, or raise the limit."
+            + ("" if live.get("cancelled") else
+               " The run could NOT be confirmed cancelled and may still be "
+               "working."), "timeout", cancelled=bool(live.get("cancelled")))
+
+    class _Abandoned(Exception):
+        """Raised inside the worker once nobody is waiting for it."""
+
+    def still_wanted(agent=None, run_=None) -> None:
+        # The limit can pass while the worker is inside create() or send(),
+        # before there was anything to cancel. Without this it would carry
+        # on -- in agent mode, editing files -- with nobody watching.
+        if stopped.is_set():
+            _best_effort(run_, "cancel")
+            _best_effort(agent, "close")
+            raise _Abandoned()
 
     if not hasattr(Agent, "create"):
         emit("this cursor-sdk has no Agent.create; using the single "
              "blocking call (no progress until it returns)")
         try:
-            out = ca._sdk_prompt(prompt, cfg)
+            out = bounded(lambda: ca._sdk_prompt(prompt, cfg), deadline_seconds, gave_up)
+        except TimeoutError as e:
+            raise timed_out(e) from None
         except Exception as e:                           # noqa: BLE001
             raise CursorCallError(str(e), "run") from e
         return dict(out, model=cfg.model, transport="prompt")
 
     startup_error = getattr(cursor_sdk, "CursorAgentError", None)
     diagnostics: list = []
-    started = time.time()
-    try:
+
+    def say(line: str) -> None:
+        if not stopped.is_set():
+            emit(line)
+
+    def session():
         options = AgentOptions(api_key=cfg.api_key, model=cfg.model, mode=mode,
                                local=LocalAgentOptions(cwd=cwd))
         with Agent.create(options) as agent:
+            live["agent"] = agent
+            still_wanted(agent)
             run_ = agent.send(prompt)
-            emit("sent; waiting for the agent")
+            live["run"] = run_
+            still_wanted(agent, run_)
+            say("sent; waiting for the agent")
             for message in run_.messages():
                 line = describe(message)
                 if not line:
                     continue
-                emit(line)
+                say(line)
                 if " error" in line:
                     diagnostics.append(line)
             result = run_.wait()
             text = getattr(result, "result", None) or ""
             if not str(text).strip():
                 text = _conversation_text(run_)
+            still_wanted(agent, run_)       # no second, paid turn for nobody
             again = followup(str(text)) if followup else None
             if again and str(getattr(result, "status", "")).lower() != "error":
-                emit("the first answer was not usable; asking once more on the same agent")
+                say("the first answer was not usable; asking once more on the same agent")
                 try:
                     second = agent.send(again)
+                    live["run"] = second
                     for message in second.messages():
                         line = describe(message)
                         if line:
-                            emit(line)
+                            say(line)
                     result2 = second.wait()
                     text2 = getattr(result2, "result", None) or _conversation_text(second)
                     if str(text2).strip() and str(getattr(result2, "status", "")).lower() != "error":
                         result, text = result2, text2
                 except Exception as e:                   # noqa: BLE001
-                    emit(f"the second turn failed ({type(e).__name__}: {e}); "
-                         f"keeping the first answer")
+                    say(f"the second turn failed ({type(e).__name__}: {e}); "
+                        f"keeping the first answer")
+            return result, text
+
+    try:
+        result, text = bounded(session, deadline_seconds, gave_up)
     except CursorCallError:
         raise
+    except TimeoutError as e:
+        raise timed_out(e) from None
     except Exception as e:                               # noqa: BLE001
         if startup_error is not None and isinstance(e, startup_error):
             raise CursorCallError(

@@ -87,6 +87,14 @@ the chain.
 
 Writes `brief.md` and `plan.md` into the job directory.
 
+When the job names a story -- a Jira link in the links box, or a key
+written in the pasted text -- the plan ends with **Earlier work that
+names this story**: commits on any branch whose message mentions the
+key, with the files they touched, and test files that mention it now.
+It is evidence, not a verdict: the create / update decision is made from
+the shape of the request and is not changed by it. A `CREATE` next to
+commits that name the story is one to read twice.
+
 Two things it needs before links will work:
 
 - **Jira and Confluence hosts must be allowlisted** in
@@ -139,6 +147,32 @@ What the step checks instead of trusting:
   on the same agent. A reply cut off half way gives its complete cases
   and the design is labelled **PARTIAL** — with or without `json-repair`
   installed.
+- Every endpoint of the specification is accounted for: the ones no
+  designed case is on are listed in `design.md` under *Endpoints with no
+  test case*.
+- A specification too large for one prompt is split before it is cut.
+  Its paths go into parts -- each sent with only the schemas it refers
+  to -- and are designed one call after another, at most six, each part
+  with its share of the case limit. A part that fails is named, the
+  design is labelled **PARTIAL**, and the rest is kept; a failure that
+  would repeat (no key, no connection, a timeout) stops the remaining
+  parts. There is a ceiling: a specification that would need more than
+  six calls gets larger parts, which lose examples, then long
+  descriptions, and are then cut at the size limit -- each reported for
+  the part it happened to.
+- Each call to Cursor has a time limit (`cursor_deadline_seconds` in
+  `policy.json`: 900 seconds for a design call; 2700 for a tab 3 call,
+  per attempt, so twice that with the repair attempt; 0 is no limit, and
+  a value that is not a number is the default). A call that does not
+  come back is asked to cancel and reported as stuck, instead of the job
+  showing "running" until someone kills it.
+- When a tab 3 call times out, the tree is put back, and after a few
+  seconds it is checked again. If the run wrote again, or could not be
+  confirmed cancelled, the job is left **discardable**: end the Cursor
+  bridge process (`cursor-sdk-bridge` / `node`) in the task manager if
+  it is still there, then **Discard**, which puts back anything written
+  since. **Stop** ends a job that is still running; it cannot reach a
+  helper process the job left behind.
 - Each input has a size limit (specification 80,000 characters,
   requirements 100,000, brief 40,000, notes 20,000; 200,000 together).
   A large specification loses its examples and long descriptions before
@@ -418,6 +452,7 @@ The API never accepts a command *string*. Every runnable is named in
 | `convert` | convert ReadyAPI suites |
 | `intake` | read the pasted story and links |
 | `locate` | decide create / update / upstream |
+| `jira-verify` | ask Jira whether the configured token is accepted (no options) |
 | `audit-service-keys` | audit service keys |
 | `audit-token-chain` | audit the token chain |
 | `agent-design` | Cursor proposes API test cases (plan mode); takes no path, writes the job directory |
@@ -453,6 +488,7 @@ python tools/agent/test_jobs.py
 python tools/agent/test_locate.py
 python tools/agent/test_loop.py
 python tools/agent/test_design.py
+python tools/agent/test_history.py
 ```
 
 `test_loop.py` is in the gate (`verify_all`, check `agent-loop`): it is

@@ -187,6 +187,11 @@ DEFAULT_POLICY = {
         "tools/ra_converter/cursor_agent.json",
     ],
     "repair_attempts": 1,
+    # One Cursor call may take this long before it is reported as stuck.
+    # `generate` is per attempt: with one repair attempt, twice this.
+    "cursor_deadline_seconds": {"generate": 2700, "design": 900},
+    # After a timeout, how long to wait before looking for late writes.
+    "timeout_settle_seconds": 5,
     "branch_prefix": "agent/",
     "remote": "origin",
     "protected_branches": ["main", "master"],
@@ -428,7 +433,35 @@ def cursor_config(root: str):
     return ca, cfg
 
 
-def call_cursor(prompt: str, root: str, on_event=None) -> dict:
+class CursorFailed(RuntimeError):
+    """A Cursor call that failed, with what kind of failure it was
+    (cursor_call.CursorCallError.kind) and, for a timeout, whether the
+    run confirmed it had stopped."""
+
+    def __init__(self, message: str, kind: str = "run", cancelled=None):
+        super().__init__(message)
+        self.kind = kind
+        self.cancelled = cancelled
+
+
+def cursor_deadline(policy: dict, what: str, default: float = 2700) -> float:
+    """Seconds one Cursor call may take; 0 is no limit, and only a plain
+    0 is. A value that is not a usable number -- a typo, a negative, NaN
+    -- is the default: a mistake in the policy must not remove the limit.
+    One number instead of a table applies to every kind of call."""
+    table = policy.get("cursor_deadline_seconds")
+    raw = table.get(what, default) if isinstance(table, dict) else \
+        (default if table is None else table)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if value != value or value < 0 or value == float("inf"):
+        return default
+    return value
+
+
+def call_cursor(prompt: str, root: str, on_event=None, deadline: float = 0) -> dict:
     """One prompt to Cursor in this repository. See cursor_call.py for why
     it is a session with streamed progress rather than one blocking call."""
     ca, cfg = cursor_config(root)
@@ -436,12 +469,13 @@ def call_cursor(prompt: str, root: str, on_event=None) -> dict:
     try:
         out = cursor_call.run(prompt, ca, cfg,
                               on_event=(lambda line: on_event(redact(line)))
-                              if on_event else None)
+                              if on_event else None,
+                              deadline_seconds=deadline)
     except cursor_call.CursorCallError as e:
         msg = redact(e)
         if e.details:
             msg += "\n" + redact(e.details)
-        raise RuntimeError(msg) from e
+        raise CursorFailed(msg, e.kind, e.cancelled) from e
     out["result"] = redact(out.get("result") or "")
     return out
 
@@ -1230,7 +1264,8 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             say(f"FAIL {e}")
             return 1
     call = agent or (lambda prompt: call_cursor(
-        prompt, root, on_event=lambda line: clog.write("  cursor: " + line)))
+        prompt, root, on_event=lambda line: clog.write("  cursor: " + line),
+        deadline=cursor_deadline(policy, "generate")))
     design_note = designed_cases(job_dir)[1]
     if design_note and scope_name != "converter":
         say(f" ..  {design_note}")
@@ -1341,6 +1376,29 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         except Exception as e:                           # noqa: BLE001
             say(f"FAIL Cursor call failed: {e}")
             clog.write(f"call FAILED after {time.time() - started:.1f}s: {e}")
+            if getattr(e, "kind", "") == "timeout":
+                # Nobody is waiting for this run any more, but it may not
+                # have stopped. Put the tree back, wait, and look again: a
+                # run that is still writing must leave a job that can be
+                # discarded, not one that says "rejected, nothing to do".
+                for note in undo():
+                    say(f" .. {note}")
+                    clog.write(f"undo: {note}")
+                time.sleep(max(0.0, float(policy.get("timeout_settle_seconds", 5))))
+                late = undo()
+                alive = bool(late) or not getattr(e, "cancelled", False)
+                reason = f"Cursor call failed: {e}"
+                if alive:
+                    review = dict(review, needs_discard=True)
+                    reason += (
+                        " The tree was put back, but the run "
+                        + ("wrote again afterwards" if late else
+                           "could not be confirmed stopped")
+                        + ". End the Cursor bridge process (cursor-sdk-bridge / "
+                          "node) if it is still running, then use Discard: it "
+                          "puts back anything written after this.")
+                    say(f"WARN {reason}")
+                return reject(reason, restore=False)
             return reject(f"Cursor call failed: {e}")
         text = str(answer.get("result") or "")
         with io.open(os.path.join(job_dir, f"agent-answer-{attempt}.md"),
@@ -1576,9 +1634,10 @@ def cmd_discard(job_dir: str, root: str) -> int:
 def _discard(job_dir: str, root: str, review: dict) -> int:
     if review.get("state") == "rejected" and review.get("needs_discard"):
         review = dict(review, state="generating")     # same recovery path
-        say(" .. this run was rejected WITHOUT being undone (the branch or "
+        say(" .. this run was rejected and may have left changes behind (it "
+            "timed out and could not be confirmed stopped, or the branch or "
             "HEAD had moved). The branch is not touched here -- check `git "
-            "reflog` -- but the files are put back.")
+            "reflog` if HEAD moved -- but the files are put back.")
     if review.get("state") == "generating":
         # The run was stopped or died: no list of files was ever written.
         say(" .. the last run did not finish; putting back everything "

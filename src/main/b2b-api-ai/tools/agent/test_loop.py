@@ -236,6 +236,63 @@ class VerifyAndRepair(Repo):
         self.assertIn("not on PATH", got["steps"][0]["tail"])
 
 
+class ARunThatTimedOut(Repo):
+    """Nobody is waiting for the run any more. It may not have stopped."""
+
+    def setUp(self):
+        super().setUp()
+        self.policy["timeout_settle_seconds"] = 0
+
+    def stuck(self, cancelled, after=None):
+        def agent(_prompt):
+            write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
+            write(self.root, JIRA + "ExistingTest.java", "class ExistingTest { int x; }\n")
+            if after:
+                after()
+            raise loop.CursorFailed("Cursor did not finish within 2700s", "timeout", cancelled)
+        return agent
+
+    def test_a_cancelled_run_is_put_back_and_that_is_the_end_of_it(self):
+        self.assertEqual(self.generate(self.stuck(cancelled=True)), 1)
+        self.assertEqual(self.status(), "")
+        r = self.state()
+        self.assertEqual(r["state"], "rejected")
+        self.assertFalse(r.get("needs_discard"))
+        self.assertIn("did not finish within", r["reason"])
+
+    def test_a_run_that_could_not_be_cancelled_leaves_a_job_that_can_be_discarded(self):
+        self.assertEqual(self.generate(self.stuck(cancelled=False)), 1)
+        self.assertEqual(self.status(), "", "what it wrote so far is put back")
+        r = self.state()
+        self.assertTrue(r["needs_discard"])
+        self.assertIn("could not be confirmed stopped", r["reason"])
+        self.assertIn("Discard", r["reason"])
+        # ...and the run, still alive, writes again after the job has ended.
+        write(self.root, JIRA + "LateTest.java", "class LateTest {}\n")
+        write(self.root, "README.md", "scribbled on later\n")
+        self.assertEqual(loop.cmd_discard(self.job, self.root), 0)
+        self.assertEqual(self.status(), "", "discard puts back what came after")
+
+    def test_writes_that_arrive_while_settling_are_seen_even_after_a_confirmed_cancel(self):
+        import threading
+        self.policy["timeout_settle_seconds"] = 0.8
+        late = lambda: threading.Timer(
+            0.25, lambda: write(self.root, JIRA + "LateTest.java", "class LateTest {}\n")).start()
+        self.assertEqual(self.generate(self.stuck(cancelled=True, after=late)), 1)
+        r = self.state()
+        self.assertTrue(r["needs_discard"])
+        self.assertIn("wrote again afterwards", r["reason"])
+        self.assertEqual(self.status(), "")
+
+    def test_any_other_failure_is_handled_as_before(self):
+        def agent(_prompt):
+            write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
+            raise loop.CursorFailed("the agent did not start: 401", "startup")
+        self.assertEqual(self.generate(agent), 1)
+        self.assertFalse(self.state().get("needs_discard"))
+        self.assertEqual(self.status(), "")
+
+
 class Discard(Repo):
     def test_discard_removes_what_the_agent_wrote_and_nothing_else(self):
         write(self.root, "README.md", "my unsaved work\n")

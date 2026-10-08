@@ -87,6 +87,10 @@
     "tools/ra_converter/cursor_agent.json"
   ],
   "repair_attempts": 1,
+  "cursor_deadline_seconds": {
+    "generate": 2700,
+    "design": 900
+  },
   "branch_prefix": "agent/",
   "remote": "origin",
   "protected_branches": [
