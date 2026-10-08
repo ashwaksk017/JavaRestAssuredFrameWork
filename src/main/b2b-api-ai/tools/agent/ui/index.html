@@ -85,24 +85,44 @@ Expect 201.'></textarea>
     Takes the plan from tab 1 and lets the agent act on it. This is the
     only tab that writes code.
   </p>
-  <div class="notbuilt">
-    <h3>Not built yet</h3>
-    <p>Stage 4 of
-      <code>.cursor/plans/story-to-test-agent.md</code>. It will run
-      <em>propose &rarr; approve &rarr; apply &rarr; verify</em>, and before it
-      is wired up the guardrails in Stage&nbsp;5 have to exist in code rather
-      than in a prompt:</p>
-    <ul>
-      <li>a write-path allowlist enforced by the runner — anything touched
-          outside <code>tests/jira/</code> and <code>csv/manual/</code> fails
-          the job and is reverted</li>
-      <li>delete needs all three of: an allowed path, a confirmation naming
-          the file, and a manifest saying this pipeline created it</li>
-      <li>a secret scan on the staged diff before anything is pushed</li>
-    </ul>
-    <p>Until then, tab 1's plan tells you what the agent would be asked to
-       do, and you can do it by hand.</p>
+  <ol class="steps">
+    <li><strong>Generate</strong> — Cursor reads this job's
+        <code>brief.md</code> and <code>plan.md</code> and writes the test.
+        It may only write under <code>tests/jira/</code> and
+        <code>csv/manual/</code>; anything else fails the job and is put
+        back. The result is compiled and checked.</li>
+    <li><strong>Review</strong> — read the diff below. Nothing is committed
+        and nothing has left this machine.</li>
+    <li><strong>Approve &amp; push</strong> — scans the diff for secrets,
+        commits to branch <code>agent/&lt;job&gt;</code> and pushes that
+        branch. Never <code>main</code>.</li>
+  </ol>
+
+  <div class="row">
+    <button id="agent-setup">Check Cursor setup</button>
+    <button id="agent-generate" class="go">Generate with Cursor</button>
+    <button id="agent-stop">Stop</button>
+    <button id="agent-refresh">Refresh</button>
+    <span id="agent-state" class="state"></span>
   </div>
+
+  <div id="review-box" class="review" hidden>
+    <span id="review-badge" class="badge"></span>
+    <span id="review-detail"></span>
+    <div class="row">
+      <button id="agent-push" class="go" disabled>Approve &amp; push</button>
+      <button id="agent-discard" disabled>Discard</button>
+    </div>
+  </div>
+
+  <div class="split">
+    <div><h3>Files</h3><pre id="agent-files" class="doc">—</pre></div>
+    <div><h3>Verify</h3><pre id="agent-verify" class="doc">—</pre></div>
+  </div>
+  <h3>proposed.diff</h3>
+  <pre id="agent-diff" class="log diff">—</pre>
+  <h3>Log</h3>
+  <pre id="agent-log" class="log"></pre>
 </section>
 
 <script src="/app.js"></script>

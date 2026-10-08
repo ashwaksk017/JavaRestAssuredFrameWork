@@ -215,6 +215,12 @@ CHECKS = [
           "a script reading a response from a shared setup flow finds it by "
           "step name, and an absent last path parameter is the author's "
           "empty one -- amex_backbook ran 0 of 18 on a random guest id"),
+    Check("agent-loop",
+          [PY, "tools/agent/test_loop.py"],
+          "the workbench agent stays inside its write paths, is undone "
+          "when it does not, and pushes only an approved job to its own "
+          "branch after a secret scan -- this is the code that decides "
+          "what reaches a public repository"),
     Check("suite-vocab-isolation",
           [PY, "tools/ra_converter/test_suite_vocab_isolation.py"],
           "a suite's chain methods live on its OWN steps class -- they were "

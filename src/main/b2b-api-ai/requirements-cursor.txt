@@ -1,0 +1,6 @@
+# What the Cursor agent paths need, and nothing else does:
+#   tools/agent/loop.py           (workbench tab 3)
+#   tools/ra_converter --cursor-assist
+#   tools/autofix/propose.py --agent cursor
+# tools/agent/loop.py installs this itself on first use.
+cursor-sdk

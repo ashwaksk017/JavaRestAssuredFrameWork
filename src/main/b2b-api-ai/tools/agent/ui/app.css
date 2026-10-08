@@ -86,11 +86,23 @@ pre.doc { max-height: 24rem; min-height: 5rem; color: #cdd3e1; }
   border-radius: 8px; padding: .7rem .9rem; margin: .8rem 0; font-size: .87rem;
 }
 .danger ul { margin: .4rem 0 0 1.1rem; padding: 0; }
-.notbuilt {
-  border: 1px dashed var(--line); border-radius: 10px; padding: 1rem 1.2rem;
-  color: var(--dim); background: #141722; max-width: 68ch;
-}
-.notbuilt h3 { margin-top: 0; color: var(--warn); }
-.notbuilt code { color: var(--ink); }
-.notbuilt ul { margin: .5rem 0 .8rem 1.1rem; padding: 0; }
-.notbuilt li { margin: .3rem 0; }
+
+
+
+
+
+/* tab 3 */
+.steps { margin: 0 0 1rem 1.2rem; padding: 0; max-width: 60rem; line-height: 1.5; }
+.steps li { margin-bottom: .35rem; }
+.review { margin: 1rem 0; padding: .8rem 1rem; border: 1px solid #2c3550;
+          border-radius: 6px; }
+.badge { display: inline-block; padding: .15rem .6rem; border-radius: 999px;
+         font-size: .8rem; font-weight: 600; text-transform: uppercase;
+         letter-spacing: .04em; margin-right: .6rem;
+         background: #2c3550; color: #c9d4f0; }
+.badge.pending-review { background: #f0b429; color: #1a1300; }
+.badge.pushed { background: #2f9e5b; color: #04180c; }
+.badge.rejected, .badge.verify-failed, .badge.push-failed {
+  background: #c94c4c; color: #1c0505; }
+.diff { max-height: 32rem; }
+button:disabled { opacity: .45; cursor: not-allowed; }

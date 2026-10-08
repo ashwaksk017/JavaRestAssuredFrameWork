@@ -82,6 +82,29 @@ RUNNABLES = {
         "label": "Audit the token chain",
         "options": {"--config": "path", "--root": "path"},
     },
+    # Tab 3. Four fixed sub-commands of one script; the page chooses which
+    # and names the job, nothing else. `agent-push` is the only runnable
+    # that reaches the network, and it refuses without --confirm <job>.
+    "agent-setup": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "loop.py"), "setup"],
+        "label": "Check Cursor: SDK, key, git",
+        "options": {"--job": "text"},
+    },
+    "agent-generate": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "loop.py"), "generate"],
+        "label": "Cursor writes the test, then it is verified",
+        "options": {"--job": "text"},
+    },
+    "agent-push": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "loop.py"), "push"],
+        "label": "Approve: commit to a branch and push it",
+        "options": {"--job": "text", "--confirm": "text"},
+    },
+    "agent-discard": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "loop.py"), "discard"],
+        "label": "Discard what the agent wrote",
+        "options": {"--job": "text"},
+    },
 }
 
 _RUNNING: dict = {}
@@ -275,7 +298,8 @@ def read_artifact(job: str, name: str) -> str:
     The name is checked against a list rather than joined, so a job's
     directory cannot be used to read arbitrary files through the API.
     """
-    allowed = {"brief.md", "plan.md", "intake.json", "locate.json"}
+    allowed = {"brief.md", "plan.md", "intake.json", "locate.json",
+               "proposed.diff", "review.json"}
     if name not in allowed:
         raise ValueError(f"{name!r} is not a readable artifact. "
                          f"Known: {', '.join(sorted(allowed))}")

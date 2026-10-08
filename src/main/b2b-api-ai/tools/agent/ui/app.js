@@ -236,3 +236,86 @@ for (const [btn, runnable] of [["run-keys", "audit-service-keys"],
     } catch (e) { setState($("convert-state"), "bad", e.message); }
   };
 }
+
+// ---- tab 3: the agent loop --------------------------------------------
+// The state shown here is review.json in the job directory, written by
+// tools/agent/loop.py. The page decides nothing: the push button is
+// enabled only when that file says "pending-review", and the server-side
+// command refuses anything else whatever the page sends.
+const REVIEW_TEXT = {
+  "none": "No agent run for this job yet.",
+  "generating": "Cursor is working…",
+  "rejected": "Rejected — the agent broke a rule and its changes were undone.",
+  "verify-failed": "Did not verify. The files are still in the working tree.",
+  "pending-review": "PENDING REVIEW — read the diff, then approve or discard.",
+  "pushed": "Pushed.",
+  "push-failed": "Committed locally, but the push failed. Approve again to retry.",
+  "discarded": "Discarded.",
+};
+
+async function refreshReview() {
+  let review = { state: "none" };
+  try {
+    const r = await api(
+      `/api/artifact?job=${encodeURIComponent(job())}&name=review.json`);
+    if (r.text) review = JSON.parse(r.text);
+  } catch { /* no review yet */ }
+  const state = review.state || "none";
+  $("review-box").hidden = false;
+  const badge = $("review-badge");
+  badge.textContent = state.replace("-", " ");
+  badge.className = `badge ${state}`;
+  let detail = REVIEW_TEXT[state] || state;
+  if (review.reason) detail += " " + review.reason;
+  if (review.branch) detail += ` Branch: ${review.branch}.`;
+  $("review-detail").textContent = detail;
+  const canPush = state === "pending-review" || state === "push-failed";
+  $("agent-push").disabled = !canPush;
+  $("agent-discard").disabled =
+    !(state === "pending-review" || state === "verify-failed");
+
+  const f = review.files || {};
+  const lines = [];
+  for (const p of f.created || []) lines.push(`new       ${p}`);
+  for (const p of f.modified || []) lines.push(`modified  ${p}`);
+  $("agent-files").textContent = lines.join("\n") || "—";
+  const steps = (review.verify || {}).steps || [];
+  $("agent-verify").textContent = steps.length
+    ? steps.map((s) => `${s.rc === 0 ? "ok  " : "FAIL"} ${s.name}` +
+                       (s.rc === 0 ? "" : `\n${s.tail}`)).join("\n")
+    : "—";
+  if (f.created || f.modified) await showArtifact("proposed.diff", $("agent-diff"));
+  else $("agent-diff").textContent = "—";
+}
+
+function runAgent(runnable, options) {
+  return post("/api/start", { job: job(), runnable, options })
+    .then(() => follow(runnable, $("agent-log"), $("agent-state"), refreshReview))
+    .catch((e) => setState($("agent-state"), "bad", e.message));
+}
+
+$("agent-setup").onclick = () => runAgent("agent-setup", { "--job": job() });
+$("agent-generate").onclick = () => {
+  if (!confirm("Cursor will write files under tests/jira/ and csv/manual/ " +
+               "for job \"" + job() + "\". Nothing is committed. Continue?")) return;
+  runAgent("agent-generate", { "--job": job() });
+};
+$("agent-stop").onclick = async () => {
+  try { await post("/api/stop", { job: job(), runnable: "agent-generate" }); }
+  catch (e) { setState($("agent-state"), "bad", e.message); }
+};
+$("agent-refresh").onclick = refreshReview;
+$("agent-discard").onclick = () => {
+  if (!confirm("Remove the files the agent created and restore the ones it " +
+               "changed?")) return;
+  runAgent("agent-discard", { "--job": job() });
+};
+$("agent-push").onclick = () => {
+  const j = job();
+  if (!confirm("Approve and push?\n\nThis commits the reviewed files to " +
+               "branch agent/" + j + " and pushes that branch to origin. " +
+               "The repository is public. main is not touched.")) return;
+  runAgent("agent-push", { "--job": j, "--confirm": j });
+};
+document.querySelector('.tabs button[data-tab="agent"]')
+  .addEventListener("click", refreshReview);

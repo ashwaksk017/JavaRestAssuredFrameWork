@@ -1,0 +1,19 @@
+{
+  "write_roots": [
+    "src/test/java/com/hi/api/tests/jira/",
+    "src/test/resources/csv/manual/"
+  ],
+  "generated_roots": [
+    "src/main/java/com/hi/api/support/",
+    "src/main/java/com/hi/api/rest/clients/",
+    "src/test/java/com/hi/api/tests/imported/",
+    "src/test/java/com/hi/api/tests/classic/",
+    "src/main/resources/templates/"
+  ],
+  "compile": ["mvn", "-q", "-DskipTests", "test-compile"],
+  "checks": [["tools/check_no_duplicate_methods.py"]],
+  "repair_attempts": 1,
+  "branch_prefix": "agent/",
+  "remote": "origin",
+  "protected_branches": ["main", "master"]
+}
