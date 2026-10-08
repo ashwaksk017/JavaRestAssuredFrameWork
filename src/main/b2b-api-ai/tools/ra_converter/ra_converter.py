@@ -654,6 +654,52 @@ def _sibling_path_param_expr(case, step, param, known_response_steps=None):
     return None
 
 
+_STEP_PROP_REF_RX = re.compile(r"\$\{([^#}]+)#([^#}]+)\}")
+
+
+def _later_sibling_path_param_expr(case, step, param):
+    """The ${Step#field} a LATER step of the case uses for path param
+    `param`, when that property is already written by the time `step`
+    runs; None otherwise.
+
+        http_request_200_1      POST /guests/{guestId}/businesses
+        accountDetails          PropertiesDetails.accountID = response.accountId
+        http_request_200_2      GET  /businesses/2000173362          <- baked
+        http_request_200_update PUT  /businesses/${PropertiesDetails#accountID}
+
+    No earlier step names `accountId`, so the baked id fell to the last
+    resort, Properties.accountId -- which DataGenInput fills with a RANDOM
+    number. The read went to an account that never existed (404) while the
+    id the case had just created sat in ctx, used by the very next call.
+
+    Only a property an earlier Groovy of this case writes qualifies: a
+    reference whose value does not exist yet would send an empty segment.
+    """
+    steps = list(getattr(case, "steps", None) or [])
+    idx = next((i for i, s in enumerate(steps) if s is step), None)
+    if idx is None:
+        return None
+    try:
+        import groovy_translator as _gt
+    except Exception:
+        return None
+    written = set()
+    for s in steps[:idx]:
+        if isinstance(s, GroovyStep):
+            for st, fld, _e in _gt._find_setproperty_targets(getattr(s, "script", "") or ""):
+                written.add((st, fld))
+    for s in steps[idx + 1:]:
+        if not isinstance(s, RestStep):
+            continue
+        value = (getattr(s, "path_params", None) or {}).get(param)
+        if not value:
+            continue
+        m = _STEP_PROP_REF_RX.fullmatch(value.strip())
+        if m and (m.group(1).strip(), m.group(2).strip()) in written:
+            return value
+    return None
+
+
 def _should_rewrite_hardcoded_path_id(param: str, expr: str, step) -> bool:
     """True when a baked numeric path id should become Properties.<param>.
 
@@ -9568,6 +9614,8 @@ public interface ImportedRestClient {{
                 expr = (_sibling_path_param_expr(
                             self._current_case_obj, step, p,
                             self.response_var_by_step)
+                        or _later_sibling_path_param_expr(
+                            self._current_case_obj, step, p)
                         or "${#TestCase#Properties." + p + "}")
                 self.ledger.add_preflight_finding(
                     "INFO", "hardcoded-path-id-rewritten",

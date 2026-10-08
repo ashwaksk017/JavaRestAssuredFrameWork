@@ -206,6 +206,10 @@ CHECKS = [
           "a script that sets no random field does not regenerate the "
           "identity -- GenNewDomain replaced the enrolled guest id mid-case "
           "and every later /guests/{id}/ call answered 403"),
+    Check("later-sibling-path-id",
+          [PY, "tools/ra_converter/test_later_sibling_path_id.py"],
+          "a baked path id takes the id a later step of the case uses when "
+          "it is already written -- it fell to a random account id (404)"),
     Check("suite-vocab-isolation",
           [PY, "tools/ra_converter/test_suite_vocab_isolation.py"],
           "a suite's chain methods live on its OWN steps class -- they were "
