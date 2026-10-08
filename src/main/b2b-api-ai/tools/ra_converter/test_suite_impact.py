@@ -187,6 +187,160 @@ def test_suite_names_follow_the_converter():
     assert si._suite_of("EADkafkaevents") == "eadkafkaevents"
 
 
+# --- recorded on every convert -------------------------------------------
+
+def _xml(root, name="alpha.xml", text="<project/>"):
+    path = os.path.join(root, name)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    return path
+
+
+def _reconvert(root, hooks=None, csv=None):
+    """Rewrite part of the suite's output in place, as a reconvert would."""
+    if hooks is not None:
+        with open(os.path.join(root, SUPPORT, "alpha", "cases", "AlphaHooks1.java"),
+                  "w", encoding="utf-8") as fh:
+            fh.write("public final class AlphaHooks1 {\n\n%s}\n" % "".join(hooks))
+    if csv is not None:
+        with open(os.path.join(root, CSV, "alpha", "getX.csv"), "w",
+                  encoding="utf-8") as fh:
+            fh.write(csv)
+
+
+def test_the_first_convert_is_a_baseline_not_unchanged():
+    """Nothing to compare with is not the same as nothing changed, and the
+    report must not say the second when it means the first."""
+    root = _tree(BASE_SPECS, BASE_HOOKS, BASE_PHASES)
+    try:
+        rep = si.record_convert(root, {"alpha": _xml(root)})
+        assert rep["suites"]["alpha"]["status"] == "baseline", rep
+        assert os.path.isfile(os.path.join(root, "_audit", "fingerprints", "alpha.json"))
+        assert os.path.isfile(os.path.join(root, "_audit", "suite_impact.json"))
+        text = "\n".join(si.render_report(rep))
+        assert "1 with no previous convert" in text and "MOVED" not in text, text
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_a_second_identical_convert_is_unchanged():
+    root = _tree(BASE_SPECS, BASE_HOOKS, BASE_PHASES)
+    try:
+        xml = _xml(root)
+        si.record_convert(root, {"alpha": xml})
+        rep = si.record_convert(root, {"alpha": xml})
+        assert rep["suites"]["alpha"]["status"] == "unchanged", rep
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_a_moved_suite_is_reported_with_what_moved():
+    root = _tree(BASE_SPECS, BASE_HOOKS, BASE_PHASES)
+    try:
+        xml = _xml(root)
+        si.record_convert(root, {"alpha": xml})
+        _reconvert(root, hooks=[_hook(1, "read", 'ctx.put("k", "DIFFERENT");')],
+                   csv="id,x\n1,b\n")
+        rep = si.record_convert(root, {"alpha": xml})
+        e = rep["suites"]["alpha"]
+        assert e["status"] == "moved", rep
+        assert e["input_changed"] is False and e["converter_changed"] is False
+        text = "\n".join(si.render_report(rep))
+        assert "MOVED  alpha" in text and "1 csv" in text, text
+        assert "hook bodies: 1 gone, 1 new" in text, text
+        # same converter, same XML, different output: say so, do not guess
+        assert "NEITHER the converter NOR its XML changed" in text, text
+        # and the NEXT convert compares against this one, not the first
+        again = si.record_convert(root, {"alpha": xml})
+        assert again["suites"]["alpha"]["status"] == "unchanged", again
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_the_report_says_whether_the_xml_or_the_options_changed():
+    root = _tree(BASE_SPECS, BASE_HOOKS, BASE_PHASES)
+    try:
+        xml = _xml(root)
+        si.record_convert(root, {"alpha": xml},
+                          extra={"mode": "phase", "data_dir": False})
+        _xml(root, text="<project><edited/></project>")
+        _reconvert(root, csv="id,x\n1,b\n")
+        rep = si.record_convert(root, {"alpha": xml},
+                                extra={"mode": "phase", "data_dir": True})
+        e = rep["suites"]["alpha"]
+        assert e["input_changed"] is True, e
+        assert e["options_changed"] == ["data_dir"], e
+        text = "\n".join(si.render_report(rep))
+        assert "its XML changed" in text and "options changed (data_dir)" in text, text
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_one_suite_moving_does_not_mark_the_other():
+    extra = {SUPPORT + "/beta/cases/BetaSpecs1.java":
+             "public final class BetaSpecs1 {\n" + _spec(1, "B") + "}\n"}
+    root = _tree(BASE_SPECS, BASE_HOOKS, BASE_PHASES, extra=extra)
+    try:
+        xmls = {"alpha": _xml(root), "beta": _xml(root, "beta.xml")}
+        si.record_convert(root, xmls)
+        _reconvert(root, csv="id,x\n1,b\n")
+        rep = si.record_convert(root, xmls)
+        assert rep["suites"]["alpha"]["status"] == "moved"
+        assert rep["suites"]["beta"]["status"] == "unchanged"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_a_fingerprint_holds_hashes_never_content():
+    """The output carries request bodies and data rows; the fingerprint is
+    kept beside the audit and must not become a second copy of them."""
+    root = _tree(BASE_SPECS, BASE_HOOKS, BASE_PHASES,
+                 csv_rows="id,email\n1,someone@example.test\n")
+    try:
+        si.record_convert(root, {"alpha": _xml(root)})
+        with open(os.path.join(root, "_audit", "fingerprints", "alpha.json"),
+                  encoding="utf-8") as fh:
+            raw = fh.read()
+        assert "someone@example.test" not in raw and "ctx.put" not in raw, raw[:300]
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_line_endings_alone_are_not_a_change():
+    a = _tree(BASE_SPECS, BASE_HOOKS, BASE_PHASES)
+    b = _tree(BASE_SPECS, BASE_HOOKS, BASE_PHASES)
+    try:
+        path = os.path.join(b, SUPPORT, "alpha", "cases", "GetXTestPhases.java")
+        with open(path, "rb") as fh:
+            data = fh.read().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+        with open(path, "wb") as fh:
+            fh.write(data)
+        assert not si.compare_suite(a, b, "alpha")["moved"]
+    finally:
+        shutil.rmtree(a, ignore_errors=True)
+        shutil.rmtree(b, ignore_errors=True)
+
+
+def test_the_converter_hash_ignores_tests_and_follows_sources():
+    d = tempfile.mkdtemp(prefix="sirev")
+    try:
+        os.makedirs(os.path.join(d, "framework"))
+        for name, text in (("ra_converter.py", "A"), ("test_x.py", "T"),
+                           ("framework/CtxFields.java", "J")):
+            with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                fh.write(text)
+        r0 = si.converter_rev(d)
+        with open(os.path.join(d, "test_x.py"), "w", encoding="utf-8") as fh:
+            fh.write("a new test is not a converter change")
+        assert si.converter_rev(d) == r0
+        with open(os.path.join(d, "framework", "CtxFields.java"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("J2")
+        assert si.converter_rev(d) != r0, "a bundled framework edit must count"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 if __name__ == "__main__":
     passed = 0
     for name, fn in sorted(list(globals().items())):

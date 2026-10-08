@@ -323,19 +323,29 @@ python tools/check_near_miss_producers.py    # does a value exist under ANOTHER 
 python tools/check_request_schemas.py        # does the body match the OpenAPI contract?
 ```
 
-`suite_impact.py` is the one to run BEFORE committing a converter change:
-
-```bash
-# the suite the fix is for, plus a few it must not affect
-python tools/suite_impact.py --suites eadkafkaevents,mfrstage,amexbackbook --expect eadkafkaevents
-```
-
-It converts those suites with the committed converter and with your working
-tree, and lists which ones moved. Each suite has its own generated classes,
+**What else did my change move?** Each suite has its own generated classes,
 so a convert cannot break another suite -- but they still share one
 converter, and a rule written for one suite's Groovy fires on every suite's.
-A suite in that list you did not mean to touch is the finding. Opt-in, not
-in the gate: it converts everything named twice.
+Nothing fails when that happens. Two places answer it, and neither is a
+separate tool to remember:
+
+* **Every convert says so.** It fingerprints each suite it wrote and
+  compares with that suite's previous convert (`_audit/fingerprints/`,
+  hashes only). The last lines of the run list the suites that MOVED and
+  whether the converter or the XML changed; `verify_all` repeats them under
+  `[LAST CONVERT]`. Nothing is converted twice.
+* **Before converting your tree**, ask the gate:
+
+  ```bash
+  # the suite the fix is for, plus a few it must not affect
+  python tools/verify_all.py --impact eadkafkaevents,mfrstage,amexbackbook --impact-expect eadkafkaevents
+  ```
+
+  It converts those suites with the converter at HEAD and with your working
+  tree, in scratch copies, and fails if a suite outside `--impact-expect`
+  moved. Asked for, never run by default: it converts each named suite twice.
+
+A suite in either list that you did not mean to touch is the finding.
 
 `check_near_miss_producers` is the one to reach for first when something
 resolves to `null`. It answers the question the others cannot: *there is a

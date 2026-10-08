@@ -19462,6 +19462,9 @@ SUITE_VOCAB_MARKER = "ra_converter-suite-vocab: 1"
 # nothing about what the shared base still owes it.
 _SUITES_THIS_RUN: set = set()
 
+# suite -> the XML it is being converted from, for the impact report.
+_SUITE_XML_THIS_RUN: dict = {}
+
 # suite -> (phase vocabulary, phase + verify vocabulary) its steps base was
 # written with. Read back by _assert_suite_vocab_is_complete.
 _SUITE_VOCAB_EMITTED: dict = {}
@@ -20978,12 +20981,58 @@ def _main_dispatch(args):
             and not getattr(args, "bootstrap", False)
             and not getattr(args, "keep_dead_props", False)):
         _run_prune_dead_props(args)
+    # After the prune, so the fingerprint is of the tree as it is LEFT, CSVs
+    # included -- and before the closing summary, so it is the last thing
+    # said about what this run changed.
+    if (rc == 0
+            and not getattr(args, "diagrams_only", False)
+            and not getattr(args, "bootstrap", False)):
+        _report_suite_impact(args)
     # The last word: where the tree is, and whether it is there. Compare
     # this against the path in any "required files are missing" build
     # error -- if they differ, the convert wrote somewhere else.
     if rc == 0 and not getattr(args, "diagrams_only", False):
         _report_generated_tree(args)
     return rc
+
+
+def _report_suite_impact(args) -> None:
+    """Say which of the suites just converted came out DIFFERENT.
+
+    Every suite has its own generated classes now, so a convert of one
+    cannot break another. They still share this converter: a rule written
+    for one suite's Groovy fires on every suite's, and when it does
+    nothing fails -- the other suite converts, compiles, and sends a
+    different request. Until now the only way to see that was to diff two
+    trees by hand.
+
+    So each convert fingerprints what it wrote per suite and compares it
+    with what that suite's previous convert left in _audit/fingerprints/.
+    Hashes only, two small files per suite, nothing converted twice.
+
+    Advisory, like the prune: the tree is already written and correct, and
+    a report that cannot be produced must not fail the convert that
+    produced it.
+    """
+    try:
+        _here = os.path.dirname(os.path.abspath(__file__))
+        if _here not in sys.path:
+            sys.path.insert(0, _here)
+        import suite_impact
+        out = getattr(args, "output", None) or "."
+        if not _SUITE_XML_THIS_RUN:
+            return
+        report = suite_impact.record_convert(
+            out, dict(_SUITE_XML_THIS_RUN),
+            extra={"mode": ("classic" if _CLASSIC else
+                            "phase" if _PHASE_SPECS else "text"),
+                   "data_dir": bool(getattr(args, "data_dir", None))})
+        for line in suite_impact.render_report(report, "[ra_converter]"):
+            print(line)
+        print("[ra_converter]   recorded in " + suite_impact.REPORT_REL)
+    except Exception as exc:        # a report must never fail the convert
+        print(f"[ra_converter] suite impact not recorded "
+              f"(tree is still valid): {exc}")
 
 
 def _run_prune_dead_props(args) -> None:
@@ -21824,6 +21873,7 @@ def _run_convert(args):
     _WORKBOOK_CELLS_UNTRANSLATED.clear()
     suite_name = args.suite_name or _default_suite_name(args.input)
     _SUITES_THIS_RUN.add(suite_name)
+    _SUITE_XML_THIS_RUN[suite_name] = args.input
     print(f"[ra_converter] suite: {suite_name}  "
           f"(namespaces test packages / CSVs / templates / testng / audit / flows)")
 

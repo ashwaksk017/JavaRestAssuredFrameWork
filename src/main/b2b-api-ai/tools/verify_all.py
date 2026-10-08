@@ -182,7 +182,7 @@ CHECKS = [
           "the run, so converting one XML removed the methods 28 others "
           "call; the shared class must be the same whoever wrote it"),
     Check("suite-impact-rules",
-          [PY, "tools/test_suite_impact.py"],
+          [PY, "tools/ra_converter/test_suite_impact.py"],
           "the suite-impact comparison reports a real change and ignores "
           "renumbering -- spec numbers are positional, so a text diff calls "
           "the whole suite changed every time and the one real change is "
@@ -445,6 +445,17 @@ def main() -> int:
                     help="treat failures recorded in tools/autofix/baseline.json "
                          "as known artifacts and exit 0 for them. OFF by default, "
                          "so the exit code keeps meaning exactly what it always has.")
+    ap.add_argument("--impact", metavar="SUITES",
+                    help="ALSO convert these comma-separated suites twice -- "
+                         "with the converter at HEAD and with the working "
+                         "tree, in scratch copies -- and list the ones whose "
+                         "generated output differs. Nothing in this tree is "
+                         "touched. Asked for, never run by default: it "
+                         "converts every named suite twice. Use `all` for "
+                         "every input XML (slow).")
+    ap.add_argument("--impact-expect", metavar="SUITES", default="",
+                    help="with --impact: the suites the change is MEANT to "
+                         "move. Any other suite that moves fails the run.")
     args = ap.parse_args()
 
     if (args.json or args.baseline) and _fr is None:
@@ -492,6 +503,25 @@ def main() -> int:
 
     failed, accepted, skipped, records = [], [], [], []
     _shown_group = None
+    _impact_failed = False
+    if args.impact:
+        # Run FIRST and printed in full: its answer is a list of suites, not
+        # a pass/fail, and it is the slow part -- better to wait for it
+        # before the checks than to scroll past them looking for it.
+        cmd = [PY, os.path.join("tools", "ra_converter", "suite_impact.py")]
+        cmd += (["--all"] if args.impact.strip().lower() == "all"
+                else ["--suites", args.impact])
+        if args.impact_expect:
+            cmd += ["--expect", args.impact_expect, "--fail-on-unexpected"]
+        print("  -- SUITE IMPACT " + "-" * 40)
+        print("  what the working tree's converter changes, measured in "
+              "scratch copies\n")
+        # The child writes to the same stream. Unflushed, a redirected run
+        # shows its output ABOVE this heading and the heading above nothing.
+        sys.stdout.flush()
+        _rc = subprocess.run(cmd, cwd=ROOT).returncode
+        _impact_failed = _rc != 0
+        print()
     for c in selected:
         _g = group_of(c)
         if _g != _shown_group:
@@ -666,9 +696,41 @@ def main() -> int:
               "the tree. Expect phase names to MOVE on that run, and do "
               "not read the difference as a regression.")
 
+    def _last_convert_impact_notice() -> None:
+        """Which suites the LAST convert changed, as that convert recorded it.
+
+        The suites share one converter, so a rule written for one suite's
+        Groovy fires on every suite's -- and nothing fails when it does.
+        Every convert fingerprints what it wrote per suite and compares it
+        with that suite's previous convert; this repeats the result, so a
+        reader of the gate sees what moved without scrolling a convert log.
+
+        Read-only and defensive: this file IS the gate, and a report that
+        is missing, old or malformed must not change what it says.
+        """
+        path = os.path.join(ROOT, "_audit", "suite_impact.json")
+        if not os.path.isfile(path):
+            return
+        try:
+            import json as _json
+            with open(path, encoding="utf-8") as fh:
+                report = _json.load(fh)
+            sys.path.insert(0, os.path.join(ROOT, "tools", "ra_converter"))
+            import suite_impact as _si
+            lines = _si.render_report(report, "[LAST CONVERT]")
+        except Exception:
+            return
+        if lines:
+            print()
+            print("\n".join(lines))
+            print("[LAST CONVERT]   (at %s; to measure a change BEFORE "
+                  "converting your tree: --impact <suites>)"
+                  % report.get("at", "?"))
+
     def _skip_notice() -> None:
         _partial_convert_notice()
         _catalog_rebuild_notice()
+        _last_convert_impact_notice()
         if args.full:
             return
         names = [c.name for c in CHECKS if c.full_only]
@@ -687,7 +749,12 @@ def main() -> int:
         print("\nAll checks passed."
               + (f" ({'; '.join(extra)})" if extra else ""))
         _skip_notice()
-        return 1 if odd else 0
+        if _impact_failed:
+            # Every check passed and the run still fails: a suite outside
+            # --impact-expect moved, or a scratch convert did not finish.
+            # That is what --impact was asked to find.
+            print("\n--impact FAILED: see SUITE IMPACT at the top of this run.")
+        return 1 if (odd or _impact_failed) else 0
 
     print(f"\n{len(failed)} check(s) FAILED\n")
     for c, out, rec in failed:
