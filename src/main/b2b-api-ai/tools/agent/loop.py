@@ -105,6 +105,7 @@ def _load(name: str, path: str):
 
 intake = _load("loop_intake", os.path.join(HERE, "intake.py"))
 patches = _load("loop_patches", os.path.join(HERE, "patches.py"))
+cursor_call = _load("loop_cursor_call", os.path.join(HERE, "cursor_call.py"))
 ROOT = intake.ROOT
 POLICY_FILE = os.path.join(HERE, "policy.json")
 REQUIREMENTS = "requirements-cursor.txt"
@@ -427,19 +428,21 @@ def cursor_config(root: str):
     return ca, cfg
 
 
-def call_cursor(prompt: str, root: str) -> dict:
+def call_cursor(prompt: str, root: str, on_event=None) -> dict:
+    """One prompt to Cursor in this repository. See cursor_call.py for why
+    it is a session with streamed progress rather than one blocking call."""
     ca, cfg = cursor_config(root)
-    if not cfg.api_key:
-        raise RuntimeError(
-            "no Cursor API key. Set the CURSOR_API_KEY environment variable, "
-            "or copy tools/ra_converter/cursor_agent.json.example to "
-            "cursor_agent.json (gitignored) and put the key in `apiKey`.")
+    redact = lambda s: ca.redact_for_log(str(s), cfg.api_key)
     try:
-        out = ca._sdk_prompt(prompt, cfg)
-    except Exception as e:                               # noqa: BLE001
-        raise RuntimeError(ca.redact_for_log(str(e), cfg.api_key)) from e
-    out["result"] = ca.redact_for_log(str(out.get("result") or ""), cfg.api_key)
-    out["model"] = cfg.model
+        out = cursor_call.run(prompt, ca, cfg,
+                              on_event=(lambda line: on_event(redact(line)))
+                              if on_event else None)
+    except cursor_call.CursorCallError as e:
+        msg = redact(e)
+        if e.details:
+            msg += "\n" + redact(e.details)
+        raise RuntimeError(msg) from e
+    out["result"] = redact(out.get("result") or "")
     return out
 
 
@@ -1093,6 +1096,16 @@ def cmd_setup(job_dir: str, root: str) -> int:
         return 1
     say(f" ok  Cursor API key found ({len(cfg.api_key)} characters), "
         f"model {cfg.model}")
+    # Start the SDK's local bridge now. It is the part that fails on a new
+    # machine (antivirus, a blocked Node binary), and finding that out here
+    # costs nothing; finding it out in the middle of a run costs the run.
+    ok, why = cursor_call.warm_up(_ca)
+    if ok is False:
+        say(f"FAIL the Cursor bridge did not start: {why}. On Windows, allow "
+            f"the cursor-sdk bridge through antivirus and check that Node "
+            f"is not blocked.")
+        return 1
+    say(f" ok  Cursor bridge {why}" if ok else f" ..  Cursor bridge {why}")
     rc, out = git(root, "rev-parse", "--is-inside-work-tree")
     if rc != 0:
         say(f"FAIL not a git work tree: {out.strip()[:200]}")
@@ -1146,7 +1159,8 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         except RuntimeError as e:
             say(f"FAIL {e}")
             return 1
-    call = agent or (lambda prompt: call_cursor(prompt, root))
+    call = agent or (lambda prompt: call_cursor(
+        prompt, root, on_event=lambda line: clog.write("  cursor: " + line)))
     private = config_secrets(os.path.join(
         root, "src", "main", "resources", "program_configuration.json"))
     clog = CursorLog(job_dir, secret, [v for v, why in private.items()

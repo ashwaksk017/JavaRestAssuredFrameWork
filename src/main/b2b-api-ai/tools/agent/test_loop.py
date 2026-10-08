@@ -1116,6 +1116,9 @@ class TheRealCursorPath(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
         had = "cursor_sdk" in sys.modules
         sys.modules.setdefault("cursor_sdk", types.ModuleType("cursor_sdk"))
+        warm = loop.cursor_call.warm_up
+        loop.cursor_call.warm_up = lambda ca: (True, "started")
+        self.addCleanup(setattr, loop.cursor_call, "warm_up", warm)
         old = os.environ.pop("CURSOR_API_KEY", None)
         orig = loop.cursor_config
         def no_key(root):
@@ -1135,6 +1138,177 @@ class TheRealCursorPath(unittest.TestCase):
                 os.environ["CURSOR_API_KEY"] = old
             if not had:
                 sys.modules.pop("cursor_sdk", None)
+
+
+class FakeSdk:
+    """A stand-in for cursor_sdk with the surface cursor_call.py uses."""
+
+    def __init__(self, messages=(), status="finished", result="done", raise_on_create=None,
+                 with_create=True):
+        outer = self
+        self.options = None
+        self.sent = []
+        self.closed = False
+
+        class CursorAgentError(Exception):
+            pass
+
+        class Run:
+            def messages(self_inner):
+                return iter(messages)
+
+            def wait(self_inner):
+                return types.SimpleNamespace(status=status, result=result, id="run-7")
+
+            def supports(self_inner, what):
+                return False
+
+        class Session:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *exc):
+                outer.closed = True
+                return False
+
+            def send(self_inner, prompt):
+                outer.sent.append(prompt)
+                return Run()
+
+        class Agent:
+            pass
+
+        def create(options):
+            outer.options = options
+            if raise_on_create == "startup":
+                raise CursorAgentError("401 invalid api key")
+            if raise_on_create:
+                raise raise_on_create
+            return Session()
+
+        if with_create:
+            Agent.create = staticmethod(create)
+        self.module = types.ModuleType("cursor_sdk")
+        self.module.Agent = Agent
+        self.module.AgentOptions = lambda **kw: types.SimpleNamespace(**kw)
+        self.module.LocalAgentOptions = lambda **kw: types.SimpleNamespace(**kw)
+        self.module.CursorAgentError = CursorAgentError
+
+
+class CallingCursor(unittest.TestCase):
+    """The call itself, against a fake SDK: what is sent, what is reported
+    while it runs, and how each kind of failure reads."""
+
+    def setUp(self):
+        self.saved = {k: sys.modules.get(k) for k in ("cursor_sdk",)}
+        self.ca = types.SimpleNamespace(
+            _patch_cursor_sdk_bridge_for_windows=lambda: None,
+            _sdk_prompt=lambda prompt, cfg: {"status": "finished", "result": "old path", "id": "p1"})
+        self.cfg = types.SimpleNamespace(api_key="key_abc", model="composer-2.5",
+                                         cwd=os.path.abspath("."))
+        self._patch = loop.cursor_call.patch_bridge
+        loop.cursor_call.patch_bridge = lambda ca: None
+
+    def tearDown(self):
+        loop.cursor_call.patch_bridge = self._patch
+        for k, v in self.saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+    def use(self, fake):
+        sys.modules["cursor_sdk"] = fake.module
+        return fake
+
+    def test_it_runs_in_agent_mode_in_one_directory_and_closes_the_session(self):
+        fake = self.use(FakeSdk())
+        out = loop.cursor_call.run("write the test", self.ca, self.cfg)
+        self.assertEqual(fake.options.mode, "agent", "plan mode would change nothing")
+        self.assertIsInstance(fake.options.local.cwd, str, "a list here crashes inside the SDK")
+        self.assertEqual(fake.options.api_key, "key_abc")
+        self.assertEqual(fake.sent, ["write the test"])
+        self.assertTrue(fake.closed)
+        self.assertEqual((out["result"], out["id"], out["transport"]), ("done", "run-7", "session"))
+
+    def test_progress_is_reported_while_the_agent_works(self):
+        msgs = [types.SimpleNamespace(type="status", status="running", message=""),
+                types.SimpleNamespace(type="tool_call", name="edit_file", status="completed", result="ok"),
+                types.SimpleNamespace(type="tool_call", name="run_terminal", status="error", result="denied"),
+                types.SimpleNamespace(type="thinking")]
+        self.use(FakeSdk(messages=msgs))
+        seen = []
+        loop.cursor_call.run("p", self.ca, self.cfg, on_event=seen.append)
+        self.assertIn("status running", seen)
+        self.assertIn("tool edit_file completed", seen)
+        self.assertIn("tool run_terminal error: denied", seen)
+        self.assertEqual(len(seen), 4, "sent + three describable messages; the fourth has no line")
+
+    def test_a_run_that_never_started_says_so(self):
+        self.use(FakeSdk(raise_on_create="startup"))
+        with self.assertRaises(loop.cursor_call.CursorCallError) as got:
+            loop.cursor_call.run("p", self.ca, self.cfg)
+        self.assertEqual(got.exception.kind, "startup")
+        self.assertIn("did not start", str(got.exception))
+        self.assertIn("not the prompt", str(got.exception))
+
+    def test_a_run_that_failed_half_way_says_that_instead(self):
+        msgs = [types.SimpleNamespace(type="tool_call", name="edit_file", status="error", result="disk full")]
+        self.use(FakeSdk(messages=msgs, status="error", result="partial"))
+        with self.assertRaises(loop.cursor_call.CursorCallError) as got:
+            loop.cursor_call.run("p", self.ca, self.cfg)
+        self.assertEqual(got.exception.kind, "run")
+        self.assertEqual(got.exception.run_id, "run-7")
+        self.assertIn("disk full", got.exception.details)
+
+    def test_an_sdk_without_sessions_falls_back_to_the_single_call(self):
+        self.use(FakeSdk(with_create=False))
+        seen = []
+        out = loop.cursor_call.run("p", self.ca, self.cfg, on_event=seen.append)
+        self.assertEqual((out["result"], out["transport"]), ("old path", "prompt"))
+        self.assertTrue(any("no Agent.create" in s for s in seen))
+
+    def test_no_key_is_a_setup_problem_before_anything_is_imported(self):
+        self.cfg.api_key = ""
+        with self.assertRaises(loop.cursor_call.CursorCallError) as got:
+            loop.cursor_call.run("p", self.ca, self.cfg)
+        self.assertEqual(got.exception.kind, "setup")
+
+    def test_the_loop_writes_progress_to_the_cursor_log_and_redacts_the_key(self):
+        msgs = [types.SimpleNamespace(type="tool_call", name="edit_file", status="error",
+                                      result="could not use key_abc")]
+        self.use(FakeSdk(messages=msgs, result="I used key_abc"))
+        orig = loop.cursor_config
+        loop.cursor_config = lambda root: (types.SimpleNamespace(
+            redact_for_log=lambda text, key: str(text).replace(key, "***"),
+            _patch_cursor_sdk_bridge_for_windows=lambda: None), self.cfg)
+        try:
+            seen = []
+            out = loop.call_cursor("p", ".", on_event=seen.append)
+        finally:
+            loop.cursor_config = orig
+        self.assertEqual(out["result"], "I used ***")
+        self.assertIn("tool edit_file error: could not use ***", seen)
+
+    def test_the_bridge_is_given_time_on_windows(self):
+        self.assertGreaterEqual(loop.cursor_call.WINDOWS_BRIDGE_TIMEOUT, 90)
+
+    def test_warm_up_reports_a_bridge_that_will_not_start(self):
+        client = types.ModuleType("cursor_sdk._client")
+        def boom():
+            raise OSError("bridge binary blocked")
+        client._default_client = boom
+        sys.modules["cursor_sdk"] = types.ModuleType("cursor_sdk")
+        sys.modules["cursor_sdk._client"] = client
+        try:
+            self.assertEqual(loop.cursor_call.warm_up(self.ca), (False, "bridge binary blocked"))
+            client._default_client = lambda: object()
+            self.assertEqual(loop.cursor_call.warm_up(self.ca), (True, "started"))
+            del client._default_client
+            ok, why = loop.cursor_call.warm_up(self.ca)
+            self.assertIsNone(ok, "an SDK without the entry point is 'not checked', not a failure")
+        finally:
+            sys.modules.pop("cursor_sdk._client", None)
 
 
 class SdkBootstrap(unittest.TestCase):

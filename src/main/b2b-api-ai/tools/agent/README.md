@@ -252,7 +252,17 @@ discard. The API key is never written to it.
   `.example` beside it). The same file and the same lookup the converter
   uses, so there is one key in one place.
 
-**Check Cursor setup** runs both checks without calling the agent.
+**Check Cursor setup** runs both checks without calling the agent, and
+also starts the SDK's local bridge once. The bridge is what fails on a
+new machine (antivirus scanning the bundled Node binary, a blocked
+executable), and it is cheaper to learn that here than in the middle of
+a run.
+
+While Cursor works, the Cursor log shows it: one `cursor:` line per
+status change and per finished tool call. A failure says which kind it
+was -- *did not start* (key, network, bridge) or *started but did not
+finish* (prompt size, timeout) -- because the fixes are different. The
+call is in `tools/agent/cursor_call.py`.
 
 #### What is enforced, and where
 
