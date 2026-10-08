@@ -282,6 +282,48 @@ The auth section separates **OBSERVED** (what the Authorization header
 actually carried) from **INFERRED** (what ctx held). They are not the same:
 a token in ctx can still be missing from the request.
 
+
+### Comparing a run with the runs before it
+
+The digest is one run. After a run, keep it and see what moved:
+
+```
+python tools/failure_history.py record --label "after the token fix"
+```
+
+It prints which failures are **new**, which tests are **failing
+differently** (same test, another signature: the fix worked and exposed
+the next problem), which are unchanged, and which are **no longer
+failing** -- never "fixed", because the digest lists failures, not what
+ran, and a run of one suite makes every other suite's failures vanish.
+It says so when the two runs executed a different number of tests.
+
+For each signature it says whether exactly that signature failed in an
+earlier run. When you find out what one was, write it down:
+
+```
+python tools/failure_history.py note <signature id> "owner and member shared an email in the CSV"
+```
+
+The note is shown whenever that signature comes back. A signature never
+seen before may be shown as **RESEMBLES** an earlier one, with what the
+two share (exception, status code, path) and that one's note. That is a
+pointer to read, not a diagnosis.
+
+A run is dated by its digest file, so the same failures after another
+run are a later run, and the same file recorded twice is one. Two limits
+come from the digest itself. It is written once, when the first `<test>`
+block of the suite file finishes: a suite file with several blocks is
+digested up to the first, so a low count deserves a look at the suite
+file before a "no longer failing" is believed. And "seen before" means
+the same signature exactly; the digest masks long ids, addresses and
+timestamps but not a short number, a date or a name, so the same failure
+can come back as a new signature -- which is what RESEMBLES is for.
+
+Snapshots and notes are kept in `.failure-history/`, which git ignores.
+`list` shows the recorded runs; `show <id>` every run a signature failed
+in.
+
 ---
 
 ## 8. Safety rules — do not break these

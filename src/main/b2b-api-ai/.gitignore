@@ -157,3 +157,8 @@ tools/ra_converter/fluent_catalog.json
 # Approved workbench changes to converted Java (tools/agent/patches.py).
 # Generated code: local to the machine, like the tree it patches.
 .agent-patches/
+
+# One snapshot of the failures per test run, and notes on what they
+# turned out to be (tools/failure_history.py). Not under target/: mvn clean
+# would take the history with it. Notes are free text, so it is not tracked.
+.failure-history/

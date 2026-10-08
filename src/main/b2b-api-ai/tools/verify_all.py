@@ -221,6 +221,12 @@ CHECKS = [
           "when it does not, and pushes only an approved job to its own "
           "branch after a secret scan -- this is the code that decides "
           "what reaches a public repository"),
+    Check("failure-history",
+          [PY, "tools/test_failure_history.py"],
+          "a run is compared with the runs before it without over-claiming: "
+          "a failure that is gone is not called fixed, and a new signature "
+          "that resembles an old one is a pointer with its reasons, not a "
+          "diagnosis"),
     Check("agent-history",
           [PY, "tools/agent/test_history.py"],
           "earlier work on a story is found by its exact key -- ABC-1 is "
