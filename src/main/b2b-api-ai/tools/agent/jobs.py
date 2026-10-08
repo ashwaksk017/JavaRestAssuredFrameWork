@@ -72,6 +72,12 @@ RUNNABLES = {
         "options": {"--job": "text", "--index": "path",
                     "--rebuild-index": "flag"},
     },
+    # No options: the host and the token are the configured ones.
+    "jira-verify": {
+        "argv": [PY, "-B", os.path.join("tools", "jira", "search.py"), "verify"],
+        "label": "Check the Jira token",
+        "options": {},
+    },
     "audit-service-keys": {
         "argv": [PY, "-B", os.path.join("tools", "audit_service_keys.py")],
         "label": "Audit service keys",

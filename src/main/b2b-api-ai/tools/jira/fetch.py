@@ -47,6 +47,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 import projectconfig  # noqa: E402
+import safehttp  # noqa: E402
 
 ROOT = projectconfig.ROOT
 DEFAULT_API_PATH = "/rest/api/2"
@@ -239,7 +240,9 @@ def _urllib_transport(url: str, token: str, timeout: int) -> dict:
         f"   timeout: {timeout}s")
     t0 = time.time()
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        # Not urlopen: it follows a redirect to any host and takes the
+        # Authorization header along. See safehttp.py.
+        with safehttp.open(req, timeout) as r:
             raw = r.read()
             ms = int((time.time() - t0) * 1000)
             say(f"     {r.status} {r.reason}  {_human(len(raw))} in {ms} ms")
@@ -253,6 +256,10 @@ def _urllib_transport(url: str, token: str, timeout: int) -> dict:
             pass
         say(f"     {e.code} {e.reason} after {ms} ms")
         raise RuntimeError(f"Jira returned {e.code} {e.reason}. {body}") from None
+    except safehttp.Redirected as e:
+        say(f"     {e}")
+        raise RuntimeError(f"Jira {e}. Put the address Jira actually answers "
+                           f"on in jira_config.base_urls.") from None
     except urllib.error.URLError as e:
         ms = int((time.time() - t0) * 1000)
         say(f"     unreachable after {ms} ms: {e.reason}")
@@ -464,7 +471,9 @@ def _download(url: str, token: str, timeout: int) -> bytes:
     req = urllib.request.Request(url, method="GET")
     if token:
         req.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    # An attachment that redirects to another host (a media store) is
+    # reported as failed rather than fetched with the token attached.
+    with safehttp.open(req, timeout) as r:
         return r.read()
 
 

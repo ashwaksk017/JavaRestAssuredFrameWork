@@ -297,6 +297,63 @@ rule is indistinguishable from a requirement once it is in a test.
 
 ---
 
+### Questions about more than one story
+
+`fetch.py` reads one story. `tools/jira/search.py` reads lists, with the
+same host and token and the same rule that neither can be given on the
+command line:
+
+```
+python tools/jira/search.py verify
+python tools/jira/search.py versions    --project ABC
+python tools/jira/search.py fix-version --project ABC --version 6.02 --compare 6.01
+python tools/jira/search.py tests       --project ABC
+python tools/jira/search.py search      --jql "project = ABC AND labels = api"
+python tools/jira/search.py paste       "<whatever is on the clipboard>"
+```
+
+- **verify** asks Jira who the token belongs to. Run it first when a
+  story "does not exist": an expired token and a missing story look the
+  same from `fetch.py`. The workbench has the same check as a button.
+- **versions** lists a project's versions newest first, ordered by the
+  number in the name (`4.10` after `4.9`), because `releaseDate` is
+  often not set.
+- **fix-version** lists what a release holds; with `--compare` it also
+  says what is only in one of the two.
+- **tests** lists the issues of type `Test` a project has -- what Xray
+  already holds -- so a new test can be checked against them. It reads
+  the list only, not each test's steps.
+
+- **paste** takes what people actually copy -- a key, several keys, the
+  address of a story, the address of a Jira search or saved filter, or a
+  query -- works out which it is, and lists it. An address on a host
+  that is not in `jira_config.base_urls` is refused; the request always
+  goes to the configured host. Text that is none of those is refused
+  rather than searched for. The workbench's link box uses the same
+  reading: a query pasted there is named as a query, with this command
+  to list it.
+
+Results are written under `target/jira/search/` (ignored by git).
+
+A list from Jira is paged, and an issue edited while the pages are read
+can come back twice while another is never seen. The command prints
+`INCOMPLETE` with the reason when the number of distinct issues read is
+not what Jira said the query holds, or that number changed between
+pages; a comparison built on such a list is marked `NOT RELIABLE`. Run
+it again. `LIMIT` means the query holds more than `--max` (default 500).
+All three exit 1, so a script is told what a reader is.
+
+A redirect to another host is refused, here and in `fetch.py`: the
+token is sent to the configured address and nowhere a server points.
+If Jira answers on a different address (http redirecting to https, a
+context path), put that address in `base_urls`. An `http://` base URL
+works and is warned about on every run. `jira_config.api_path` is
+optional (default `/rest/api/2`).
+
+It uses the search endpoint that Server and Data Centre have. Jira Cloud
+replaced that endpoint; against Cloud the command reports the refusal.
+None of this has been run against a live Jira.
+
 ## 3. Read the packet
 
 `packet.md` opens with the only line that can stop everything:

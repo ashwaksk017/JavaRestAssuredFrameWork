@@ -57,6 +57,39 @@ class Classify(unittest.TestCase):
 
     def test_nonsense(self):
         self.assertEqual(intake.classify("notalink"), intake.UNKNOWN)
+        self.assertEqual(intake.classify("the status in the response is wrong"),
+                         intake.UNKNOWN)
+
+    def test_several_stories_and_other_story_addresses_are_jira(self):
+        for link in ("B2B-1, B2B-2",
+                     "https://jira.example.com/projects/B2B/issues/B2B-9",
+                     "https://jira.example.com/secure/RapidBoard.jspa?selectedIssue=B2B-9"):
+            self.assertEqual(intake.classify(link), intake.JIRA, link)
+
+    def test_a_query_or_a_search_address_is_a_list_not_a_story(self):
+        for link in ("project = B2B AND labels = api",
+                     "https://jira.example.com/issues/?jql=project%20%3D%20B2B",
+                     "https://jira.example.com/issues/?filter=10400"):
+            self.assertEqual(intake.classify(link), intake.JIRA_QUERY, link)
+
+    def test_what_was_jira_before_is_still_jira(self):
+        for link in ("jira.example.com/browse/B2B-1",
+                     "https://jira.example.com/browse/B2B-1.",
+                     "<https://jira.example.com/browse/B2B-1>",
+                     "see https://jira.example.com/browse/B2B-1",
+                     "https://jira.example.com/browse/B2B-1 (the login story)"):
+            self.assertEqual(intake.classify(link), intake.JIRA, link)
+
+    def test_a_line_that_cannot_be_read_is_unknown_not_a_lost_job(self):
+        self.assertEqual(intake.classify("https://[bad/x"), intake.UNKNOWN)
+
+    def test_a_wiki_address_with_a_story_key_in_it_is_the_wikis(self):
+        for link in ("https://wiki.example.com/pages/viewpage.action?pageId=123&selectedIssue=B2B-1",):
+            self.assertEqual(intake.classify(link), intake.CONFLUENCE, link)
+
+    def test_a_wiki_page_titled_like_a_key_is_still_confluence_or_unknown(self):
+        self.assertNotEqual(
+            intake.classify("https://wiki.example.com/display/SP/Release-12"), intake.JIRA)
         self.assertEqual(intake.classify(""), intake.UNKNOWN)
 
 

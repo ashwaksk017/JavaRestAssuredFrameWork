@@ -105,6 +105,13 @@ $("run-locate").onclick = async () => {
   } catch (e) { setState($("new-state"), "bad", e.message); }
 };
 
+$("run-jira-verify").onclick = async () => {
+  try {
+    await post("/api/start", { job: job(), runnable: "jira-verify", options: {} });
+    follow("jira-verify", $("new-log"), $("new-state"));
+  } catch (e) { setState($("new-state"), "bad", e.message); }
+};
+
 // ---- tab 1, second half: design the API tests ------------------------
 // A chosen file is read here, in the browser, into its box: what is sent
 // is what is on screen, and there is no upload route to guard.

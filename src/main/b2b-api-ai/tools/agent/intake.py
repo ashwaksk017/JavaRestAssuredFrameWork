@@ -73,30 +73,48 @@ _CONF = os.path.join(TOOLS, "confluence")
 sys.path.insert(0, _JIRA)          # extract.py imports its siblings
 projectconfig = _load("agent_projectconfig", os.path.join(_JIRA, "projectconfig.py"))
 jira_extract = _load("agent_jira_extract", os.path.join(_JIRA, "extract.py"))
+jira_query = _load("agent_jira_query", os.path.join(_JIRA, "query.py"))
 sys.path.insert(0, _CONF)
 conf_pageref = _load("agent_conf_pageref", os.path.join(_CONF, "pageref.py"))
 conf_fetch = _load("agent_conf_fetch", os.path.join(_CONF, "fetch.py"))
 
 ROOT = projectconfig.ROOT
 
-_JIRA_KEY_RX = re.compile(r"^[A-Za-z][A-Za-z0-9_]+-\d+$")
-_JIRA_BROWSE_RX = re.compile(r"/browse/[A-Z][A-Z0-9_]+-\d+", re.I)
-
-JIRA, CONFLUENCE, UNKNOWN = "jira", "confluence", "unknown"
+JIRA, JIRA_QUERY, CONFLUENCE, UNKNOWN = "jira", "jira-query", "confluence", "unknown"
+_JIRA_BROWSE_RX = re.compile(r"/browse/[A-Z][A-Z0-9_]+-[0-9]+", re.I)
 
 
 def classify(link: str) -> str:
-    """Which fetcher a pasted link belongs to."""
+    """Which fetcher a pasted link belongs to.
+
+    Stories -- one key, several, or the address of one -- are JIRA. A
+    JQL query, or the address of a Jira search or saved filter, is
+    JIRA_QUERY: a list of stories, which is a different question and is
+    not answered here. What each one IS comes from tools/jira/query.py.
+    """
     s = (link or "").strip()
     if not s:
         return UNKNOWN
-    if _JIRA_KEY_RX.match(s):
+    try:
+        what = jira_query.parse(s)
+    except Exception:                                    # noqa: BLE001
+        what = {"kind": jira_query.NONE}    # one bad line must not lose the job
+    ref, _why = conf_pageref.parse(s)
+    confluence = (ref is not None and ref.kind in ("id", "title", "tiny")
+                  and "://" in s)
+    # A bare key, or keys, is Jira. An ADDRESS that the wiki reader
+    # recognises is the wiki's even when a story key appears in it
+    # (`.../pages/123/browse/ABC-1`, `?selectedIssue=ABC-1` on a page).
+    if what["kind"] == jira_query.KEYS and not (confluence and what.get("hosts")):
         return JIRA
+    if confluence:
+        return CONFLUENCE
+    # As before this module used query.py: an address with /browse/KEY
+    # anywhere in the line, whatever is written around it.
     if _JIRA_BROWSE_RX.search(s):
         return JIRA
-    ref, _why = conf_pageref.parse(s)
-    if ref is not None and ref.kind in ("id", "title", "tiny") and "://" in s:
-        return CONFLUENCE
+    if what["kind"] == jira_query.JQL:
+        return JIRA_QUERY
     return UNKNOWN
 
 
@@ -216,6 +234,16 @@ def build(job: str, text: str = "", links=None, root: str = "",
                              "reason": "run tools/jira/run.py for this story; "
                                        "its packet is the input here"})
             notes.append(f"{link}: a Jira story -- use tools/jira/run.py")
+        elif kind == JIRA_QUERY:
+            # A query names many stories. This stage reads one request to
+            # automate; which of a release's stories that is, is a
+            # person's choice, made from the list.
+            gathered.append({"link": link, "kind": JIRA_QUERY, "ok": False,
+                             "reason": "a Jira query, not a story: list what it "
+                                       "holds with `python tools/jira/search.py "
+                                       "paste`, then give the story here"})
+            notes.append(f"{link[:80]}: a Jira query -- list it with "
+                         f"tools/jira/search.py paste, then paste the story")
         else:
             gathered.append({"link": link, "kind": UNKNOWN, "ok": False,
                              "reason": "not a Jira key or a Confluence page link"})

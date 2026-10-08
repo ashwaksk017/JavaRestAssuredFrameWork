@@ -274,11 +274,11 @@ class TheRealTransport(unittest.TestCase):
 
     def _run(self, fake_urlopen, verbose=True):
         import urllib.request
-        real_open, real_verbose = urllib.request.urlopen, fetch.VERBOSE
+        real_open, real_verbose = fetch.safehttp.open, fetch.VERBOSE
         buf = io.StringIO()
         real_stdout, sys.stdout = sys.stdout, buf
         try:
-            urllib.request.urlopen = fake_urlopen
+            fetch.safehttp.open = fake_urlopen
             fetch.VERBOSE = verbose
             try:
                 out = fetch._urllib_transport(
@@ -288,7 +288,7 @@ class TheRealTransport(unittest.TestCase):
                 out, err = None, str(e)
         finally:
             sys.stdout = real_stdout
-            urllib.request.urlopen = real_open
+            fetch.safehttp.open = real_open
             fetch.VERBOSE = real_verbose
         return out, err, buf.getvalue()
 
@@ -313,17 +313,17 @@ class TheRealTransport(unittest.TestCase):
             return self._Resp(b"{}")
 
         import urllib.request
-        real_open, real_verbose = urllib.request.urlopen, fetch.VERBOSE
+        real_open, real_verbose = fetch.safehttp.open, fetch.VERBOSE
         buf = io.StringIO()
         real_stdout, sys.stdout = sys.stdout, buf
         try:
-            urllib.request.urlopen = fake
+            fetch.safehttp.open = fake
             fetch.VERBOSE = True
             fetch._urllib_transport(
                 "https://jira.example.com/rest/api/2/issue/A-1", secret, 30)
         finally:
             sys.stdout = real_stdout
-            urllib.request.urlopen = real_open
+            fetch.safehttp.open = real_open
             fetch.VERBOSE = real_verbose
         log = buf.getvalue()
 
