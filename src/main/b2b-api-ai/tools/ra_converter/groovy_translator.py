@@ -597,6 +597,64 @@ def collect_and_pick_fields(script: str) -> list:
             if _pick_publication(expr, picks) is not None]
 
 
+_FN_STEP_RX = re.compile(
+    r"""def\s+(\w+)\s*=\s*testRunner\.testCase\.getTestStepByName\(\s*["']([^"']+)["']\s*\)""")
+_FN_RESP_RX = re.compile(
+    r"""def\s+(\w+)\s*=\s*(\w+)\.getPropertyValue\(\s*["']Response["']\s*\)""")
+_FN_PARSE_RX = re.compile(
+    r"""def\s+(\w+)\s*=\s*(?:\w+|new\s+JsonSlurper\(\))\.parseText\(\s*(\w+)\s*\)""")
+_FN_FIND_RX = re.compile(
+    r"""def\s+(\w+)\s*=\s*(\w+)\.find\s*\{\s*it\s*!=\s*null\s*\}""")
+_FN_ELVIS_RX = re.compile(
+    r"""def\s+(\w+)\s*=\s*(\w+)\s*\?:\s*(["'])((?:(?!\3).)*)\3""")
+
+
+def first_non_null_blocks(script: str) -> list:
+    """`list.find { it != null } ?: "default"` over a field of the events
+    another step read, stored in a property.
+
+        def testStep = testRunner.testCase.getTestStepByName("Get_Partition_details_get_200")
+        def response = testStep.getPropertyValue("Response")
+        def responseJson = jsonSlurper.parseText(response)
+        def otp_pw = responseJson.body.emailRequest.trigger_properties.otp_pw
+        def firstNonNullOtp = otp_pw.find { it != null }
+        def otp_pwValue = firstNonNullOtp ?: "Default Value"
+        props.setPropertyValue("totpCode", otp_pwValue)
+
+    The response is a list of events, so the GPath spreads: one `otp_pw`
+    per event. The translation extracted the path into a key of its own
+    and never wrote `Properties.totpCode` -- the confirmation step then
+    posted the passcode saved in the datasheet and got "TOTP code is
+    invalid". 24 steps.
+
+    Returns ``[{source_step, path, default, target, field, value_var}]``.
+    """
+    live = "\n".join(l for l in (script or "").splitlines()
+                     if not l.strip().startswith("//"))
+    if ".find" not in live:
+        return []
+    step_vars = {m.group(1): m.group(2) for m in _FN_STEP_RX.finditer(live)}
+    resp_vars = {m.group(1): step_vars.get(m.group(2)) for m in _FN_RESP_RX.finditer(live)}
+    json_vars = {m.group(1): resp_vars.get(m.group(2)) for m in _FN_PARSE_RX.finditer(live)}
+    firsts = {m.group(1): m.group(2) for m in _FN_FIND_RX.finditer(live)}
+    out = []
+    for m in _FN_ELVIS_RX.finditer(live):
+        value_var, first_var, default = m.group(1), m.group(2), m.group(4)
+        list_var = firsts.get(first_var)
+        if not list_var:
+            continue
+        d = re.search(r"^[ \t]*def\s+%s\s*=\s*(\w+)\.([A-Za-z_][\w.]*)[ \t]*$"
+                      % re.escape(list_var), live, re.M)
+        if not d or not json_vars.get(d.group(1)):
+            continue
+        for target, field, expr in _find_setproperty_targets(live):
+            if _bare_setproperty_expr(expr) == value_var:
+                out.append({"source_step": json_vars[d.group(1)], "path": d.group(2),
+                            "default": default, "target": target, "field": field,
+                            "value_var": value_var})
+    return out
+
+
 _CP_EXPAND_RX = re.compile(
     r"""def\s+(\w+)\s*=\s*context\.expand\(\s*['"]\$\{([^#}'"]+)#Response\}['"]\s*\)""")
 _CP_PARSE_RX = re.compile(
@@ -3900,6 +3958,26 @@ def translate(script: str, response_var_by_step: dict[str, str],
                 if flat is not None:
                     return flat
         return None
+
+    # ---- first non-null value across the events a step read
+    for _fn in first_non_null_blocks(script):
+        _src = _fn["source_step"]
+        _rv = (response_var_by_step or {}).get(_src) or (response_var_by_step or {}).get(
+            re.sub(r"[^A-Za-z0-9_]", "_", _src))
+        _json = (f'com.hi.api.rest.utilities.RestUtilities.getResponseAsString({_rv})'
+                 if _rv else
+                 'TestSupport.ctxGet(ctx, "%s_Response")' % re.sub(r"[^A-Za-z0-9_]", "_", _src))
+        if not _should_emit_setproperty(last_setproperty, _fn["target"], _fn["field"],
+                                        _fn["value_var"]):
+            continue
+        lines.append(f'// [translated] first non-null `{_fn["path"]}` among the events '
+                     f'{_src} read -> {_fn["target"]}.{_fn["field"]}')
+        lines.append(
+            f'TestSupport.putExtracted(ctx, "{_ctx_key(_fn["target"], _fn["field"])}", '
+            f'com.hi.api.rest.utilities.KafkaPartitions.firstNonNull({_json}, '
+            f'{_java_string_literal(_fn["path"])}, {_java_string_literal(_fn["default"])}));')
+        _mark("first_non_null_of_events")
+        consumed = True
 
     # ---- JDBC read that COLLECTS a column and PICKS one entry at random.
     # Emitted before the generic eachRow loop, which then skips these calls

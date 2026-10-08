@@ -132,6 +132,53 @@ def test_both_listings_being_the_same_step_is_not_a_comparison():
     assert gt.compare_partitions_spec(s) is None
 
 
+# --- the passcode read from the events -----------------------------------
+
+OTP = """import groovy.json.JsonSlurper
+def testStep = testRunner.testCase.getTestStepByName("Get_Partition_details_get_200")
+def response = testStep.getPropertyValue("Response")
+def jsonSlurper = new JsonSlurper()
+def responseJson = jsonSlurper.parseText(response)
+def otp_pw = responseJson.body.emailRequest.trigger_properties.otp_pw
+def firstNonNullOtp = otp_pw.find { it != null }
+def otp_pwValue = firstNonNullOtp ?: "Default Value"
+def PropertiesPropertyVal = testRunner.testCase.getTestStepByName("Properties")
+PropertiesPropertyVal.setPropertyValue("totpCode", otp_pwValue)
+"""
+
+
+def test_the_first_non_null_passcode_reaches_the_property():
+    """The script picks the one event that carries `otp_pw` and stores it as
+    Properties.totpCode. The translation extracted the path into a key of
+    its own and never wrote the property: the confirmation step posted the
+    passcode saved in the datasheet -- "TOTP code is invalid". 24 steps."""
+    assert gt.first_non_null_blocks(OTP) == [{
+        "source_step": "Get_Partition_details_get_200",
+        "path": "body.emailRequest.trigger_properties.otp_pw",
+        "default": "Default Value", "target": "Properties", "field": "totpCode",
+        "value_var": "otp_pwValue"}]
+    lines, meta = gt.translate(OTP, {"Get_Partition_details_get_200": "evRes"}, "GroovyScriptToExtraTOTP")
+    put = [l for l in lines if 'putExtracted(ctx, "Properties.totpCode"' in l]
+    assert len(put) == 1, lines
+    assert ('KafkaPartitions.firstNonNull(com.hi.api.rest.utilities.RestUtilities'
+            '.getResponseAsString(evRes), "body.emailRequest.trigger_properties.otp_pw", '
+            '"Default Value")') in put[0], put[0]
+    assert "first_non_null_of_events" in meta["patterns_matched"]
+
+
+def test_without_a_response_variable_the_saved_body_is_read():
+    lines, _ = gt.translate(OTP, {}, "GroovyScriptToExtraTOTP")
+    put = [l for l in lines if 'putExtracted(ctx, "Properties.totpCode"' in l]
+    assert 'TestSupport.ctxGet(ctx, "Get_Partition_details_get_200_Response")' in put[0]
+
+
+def test_a_find_over_something_else_is_left_alone():
+    s = OTP.replace("def otp_pw = responseJson.body.emailRequest.trigger_properties.otp_pw",
+                    "def otp_pw = someOtherList")
+    assert gt.first_non_null_blocks(s) == []
+    assert gt.first_non_null_blocks(OTP.replace(".find { it != null }", ".find { it > 3 }")) == []
+
+
 # --- the waits ------------------------------------------------------------
 
 def _rest(name, verb, path):

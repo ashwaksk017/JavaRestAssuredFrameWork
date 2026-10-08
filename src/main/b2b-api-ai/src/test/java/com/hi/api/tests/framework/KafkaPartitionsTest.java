@@ -98,6 +98,23 @@ public class KafkaPartitionsTest {
     }
 
     @Test(groups = {"unit"})
+    @Story("First non-null value across events")
+    @Description("Three events, one carries the passcode: that one is returned. None -> the script's default. A bad body -> the default, not an exception.")
+    public void firstNonNull_acrossEvents() {
+        String events = "[{\"body\":{\"emailRequest\":{\"trigger_properties\":{\"otp_pw\":null}}}},"
+                + "{\"body\":{\"programAccount\":{\"accountId\":1}}},"
+                + "{\"body\":{\"emailRequest\":{\"trigger_properties\":{\"otp_pw\":\"481516\"}}}}]";
+        String path = "body.emailRequest.trigger_properties.otp_pw";
+        Assert.assertEquals(KafkaPartitions.firstNonNull(events, path, "Default Value"), "481516");
+        Assert.assertEquals(KafkaPartitions.firstNonNull("[{\"body\":{}}]", path, "Default Value"), "Default Value");
+        Assert.assertEquals(KafkaPartitions.firstNonNull("", path, "Default Value"), "Default Value");
+        Assert.assertEquals(KafkaPartitions.firstNonNull("not json", path, "Default Value"), "Default Value");
+        // a numeric passcode is returned as its text
+        Assert.assertEquals(KafkaPartitions.firstNonNull(
+                "[{\"body\":{\"emailRequest\":{\"trigger_properties\":{\"otp_pw\":123456}}}}]", path, "x"), "123456");
+    }
+
+    @Test(groups = {"unit"})
     @Story("Expect no event")
     @Description("The variant that asserts nothing moved: passes on identical listings, fails when one moved, and stores the count.")
     public void expectNoDifference() {

@@ -159,6 +159,37 @@ public final class KafkaPartitions {
         ImportedScenario.putExtracted(ctx, target + ".partitionId", String.valueOf(d.count));
     }
 
+    /**
+     * The first non-null value of one field across the events a step read:
+     * Groovy's {@code events.path.to.field.find { it != null } ?: dflt}.
+     *
+     * <p>The body is a list of events, so the path spreads -- one value per
+     * event. Used for the one-time passcode in the delivered-email event,
+     * which only one of the events read carries.</p>
+     *
+     * @return the value as text, or {@code dflt} when no event has one
+     */
+    public static String firstNonNull(String eventsJson, String path, String dflt) {
+        if (eventsJson == null || eventsJson.trim().isEmpty() || path == null) {
+            return dflt;
+        }
+        try {
+            Object got = JsonPath.from(eventsJson).get(path);
+            if (got instanceof List) {
+                for (Object v : (List<?>) got) {
+                    if (v != null && !String.valueOf(v).isEmpty()) {
+                        return String.valueOf(v);
+                    }
+                }
+                return dflt;
+            }
+            return got == null || String.valueOf(got).isEmpty() ? dflt : String.valueOf(got);
+        } catch (RuntimeException e) {
+            LOG.warn(" .. [kafka] could not read `{}` from the events: {}", path, e.getMessage());
+            return dflt;
+        }
+    }
+
     private static List<Map<String, Object>> rows(String json) {
         if (json == null || json.trim().isEmpty() || !json.trim().startsWith("[")) {
             return null;
