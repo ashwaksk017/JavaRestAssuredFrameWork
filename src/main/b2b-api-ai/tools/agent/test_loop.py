@@ -1085,6 +1085,58 @@ class TheStoreIsNotAWayOut(Repo):
         self.assertNotIn(b"\n", merged.replace(b"\r\n", b""), "CRLF like the converter's file")
 
 
+class TheRealCursorPath(unittest.TestCase):
+    """Everything else here uses a fake agent. These run the code a real
+    run goes through first, short of calling Cursor -- the part that
+    failed the first time the page was used."""
+
+    def test_the_converters_cursor_helper_loads(self):
+        ca = loop.cursor_assist()
+        self.assertTrue(hasattr(ca, "_sdk_prompt"))
+        self.assertTrue(hasattr(ca, "redact_for_log"))
+
+    def test_the_key_and_model_are_read_from_its_config(self):
+        old = os.environ.get("CURSOR_API_KEY")
+        os.environ["CURSOR_API_KEY"] = "key_from_the_environment"
+        try:
+            _ca, cfg = loop.cursor_config(loop.ROOT)
+        finally:
+            if old is None:
+                del os.environ["CURSOR_API_KEY"]
+            else:
+                os.environ["CURSOR_API_KEY"] = old
+        self.assertEqual(cfg.api_key, "key_from_the_environment")
+        self.assertEqual(cfg.cwd, loop.ROOT)
+        self.assertTrue(cfg.model)
+
+    def test_setup_runs_to_a_verdict_instead_of_a_traceback(self):
+        """With the SDK import faked and no key, setup must end in its own
+        FAIL line (exit 1), not an exception."""
+        d = tempfile.mkdtemp(prefix="looptest_setup_")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        had = "cursor_sdk" in sys.modules
+        sys.modules.setdefault("cursor_sdk", types.ModuleType("cursor_sdk"))
+        old = os.environ.pop("CURSOR_API_KEY", None)
+        orig = loop.cursor_config
+        def no_key(root):
+            ca, cfg = orig(root)
+            cfg.api_key = ""
+            return ca, cfg
+        loop.cursor_config = no_key
+        try:
+            self.assertEqual(loop.cmd_setup(d, loop.ROOT), 1)
+            loop.cursor_config = orig
+            os.environ["CURSOR_API_KEY"] = "key_for_this_test"
+            self.assertEqual(loop.cmd_setup(d, loop.ROOT), 0)
+        finally:
+            loop.cursor_config = orig
+            os.environ.pop("CURSOR_API_KEY", None)
+            if old is not None:
+                os.environ["CURSOR_API_KEY"] = old
+            if not had:
+                sys.modules.pop("cursor_sdk", None)
+
+
 class SdkBootstrap(unittest.TestCase):
     def test_an_installed_sdk_is_left_alone(self):
         sys.modules["cursor_sdk"] = types.ModuleType("cursor_sdk")

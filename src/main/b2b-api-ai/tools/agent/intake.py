@@ -53,7 +53,14 @@ def _load(name: str, path: str):
     if spec is None or spec.loader is None:  # pragma: no cover
         raise SystemExit(f"cannot load {path}")
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    # Registered before it runs: a @dataclass under postponed annotations
+    # looks its own module up in sys.modules while it is being defined.
+    sys.modules[name] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
     return mod
 
 

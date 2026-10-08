@@ -84,9 +84,22 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def _load(name: str, path: str):
+    """Load a module from a file path.
+
+    It is put in `sys.modules` BEFORE it runs. A module that declares a
+    `@dataclass` under `from __future__ import annotations` looks itself
+    up there while it is being defined; cursor_assist.py does, and without
+    this `setup` died with "'NoneType' object has no attribute '__dict__'"
+    the first time it was run for real.
+    """
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    sys.modules[name] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
     return mod
 
 
