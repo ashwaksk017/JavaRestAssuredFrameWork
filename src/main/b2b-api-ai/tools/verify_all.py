@@ -196,6 +196,11 @@ CHECKS = [
           "the partition whose offset moved is computed from this run's two "
           "listings, and the waits beside them really wait -- 169 steps "
           "read a partition and offset saved by an old ReadyAPI run"),
+    Check("request-level-headers",
+          [PY, "tools/ra_converter/test_request_level_headers.py"],
+          "a request header whose value is a project property is kept and "
+          "resolved from config -- content-language was dropped, and every "
+          "enroll with a non-Latin name answered 400"),
     Check("suite-vocab-isolation",
           [PY, "tools/ra_converter/test_suite_vocab_isolation.py"],
           "a suite's chain methods live on its OWN steps class -- they were "

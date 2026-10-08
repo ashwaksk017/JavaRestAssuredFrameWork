@@ -356,11 +356,16 @@ def _request_level_headers(req_el) -> dict:
             if not k or k.lower() == "content-type":
                 continue
             v = _html.unescape(v)
-            if "${#Project#" in v or "${#Global#" in v or "${#Env#" in v:
-                # One step reads ${#Project#content-language}, a property
-                # the project never defines: ReadyAPI sent it empty. A
-                # literal "#content-language#" on the wire would not be.
-                continue
+            # `content-language: ${#Project#content-language}` is KEPT. It
+            # used to be dropped here on the belief that the project never
+            # defines the property -- but a suite export does not contain
+            # project properties at all, so their absence says nothing. The
+            # 24 steps that carry it post names in a non-Latin script, and
+            # without the header the API answers 400 "Transliteration failed
+            # for locale" (21 calls in one run). The reference resolves from
+            # config like any other project property; when the key is unset
+            # the runtime omits the header rather than sending a
+            # placeholder (RestStep.resolveHeaders).
             out[k] = v
     return out
 
@@ -7719,6 +7724,15 @@ class Emitter:
                 return False
             self.client_takes_extra_headers[(op_name, path)] = any(
                 _has_extra_headers(s) for (_, s) in occurrences)
+            # The renderer below looks these flags up under the EFFECTIVE
+            # name. For a generic op ("Method 1") that is the step name, so
+            # the lookup missed: the header flag fell to False and the
+            # query flag to whatever the first occurrence happened to
+            # declare. The dispatch class reads the op key and DID see the
+            # header -- and called an overload the client never declared.
+            if effective_op != op_name:
+                for _flags in (self.client_takes_query, self.client_takes_extra_headers):
+                    _flags.setdefault((effective_op, path), _flags[(op_name, path)])
             java_method = self._render_client_method(effective_op, path, step, override_name=java_name)
             methods.append(java_method)
 
