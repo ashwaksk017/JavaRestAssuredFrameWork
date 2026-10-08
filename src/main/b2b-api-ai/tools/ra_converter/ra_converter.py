@@ -707,6 +707,45 @@ def _delay_guards_negative_assertion(delay_step, case) -> bool:
                 return True
     return False
 
+def _is_partition_listing(step) -> bool:
+    """`GET /topics/{topic}/partitions` -- the offset snapshot a Kafka case
+    takes before and after the call under test."""
+    if not isinstance(step, RestStep):
+        return False
+    if (getattr(step, "http_method", "") or "").upper() not in ("GET", ""):
+        return False
+    path = (getattr(step, "resource_path", "") or "").split("?")[0].rstrip("/")
+    return path.endswith("/partitions") and "/topics/" in path
+
+
+def _delay_guards_offset_snapshot(delay_step, case) -> bool:
+    """True when the next REST step after this Delay lists a topic's
+    partitions.
+
+        (earlier calls)  -> Delay 5s -> Partition_before
+        (call under test)-> Delay 2s -> Partition_after -> ComparePartitions
+
+    Both waits exist so the listing is taken at rest: the first lets the
+    events of EARLIER calls land before the "before" snapshot, the second
+    lets this call's event land before the "after" one. A deferred delay
+    never sleeps here -- the listing answers 200 at once, so no later step
+    has a failed expectation to spend the wait on. The snapshot is then
+    taken mid-flight: "after" equals "before" (no partition moved), or
+    "before" misses an earlier event and the offset points at that one
+    instead of this call's.
+    """
+    if case is None or not getattr(case, "steps", None):
+        return False
+    try:
+        idx = case.steps.index(delay_step)
+    except ValueError:
+        return False
+    for st in case.steps[idx + 1:]:
+        if isinstance(st, RestStep):
+            return _is_partition_listing(st)
+    return False
+
+
 def _infer_http_method(method_name: str, resource_path: str, body: str, step_name: str) -> str:
     """SoapUI's XML doesn't attribute HTTP verb on the step element in
     suite-only exports; infer from the operation name / body presence.
@@ -8358,6 +8397,25 @@ public interface ImportedRestClient {{
 
         return None
 
+    def _partition_cursor_fields(self, step) -> set:
+        """`partitionId` / `endOffset` when an earlier ComparePartitions in
+        this case writes them to `step`; else empty."""
+        case = getattr(self, "_current_case_obj", None)
+        if case is None or not getattr(case, "steps", None):
+            return set()
+        try:
+            import groovy_translator as _gt
+        except Exception:
+            return set()
+        for s in case.steps:
+            if s is step:
+                break
+            if isinstance(s, GroovyStep):
+                spec = _gt.compare_partitions_spec(getattr(s, "script", "") or "")
+                if spec and spec["target"] == step.step_name:
+                    return {"partitionId"} if spec["expect_none"] else {"partitionId", "endOffset"}
+        return set()
+
     def _fields_written_before(self, props_step) -> tuple:
         """Fields of ``props_step`` that a Groovy EARLIER in the same
         case writes, and the names of those Groovy steps.
@@ -8438,7 +8496,29 @@ public interface ImportedRestClient {{
                            if p and val]
             _keep = [p for p in _xml_fields if p not in _written]
             _live = [p for p in _xml_fields if p in _written]
-            if has_values and _live:
+            # A partition cursor is never seeded, not even if-absent. The
+            # translated ComparePartitions leaves it EMPTY when no partition
+            # moved, and an empty value is exactly what if-absent refills --
+            # with the offset saved by the author's last ReadyAPI run, which
+            # sends the next step to read somebody else's event.
+            _cursor = self._partition_cursor_fields(step)
+            if _cursor:
+                _dropped = [p for p in _live if p in _cursor]
+                _live = [p for p in _live if p not in _cursor]
+                if _dropped:
+                    lines.append(
+                        f'// [properties step] {step.step_name} -- '
+                        f'{", ".join(sorted(_dropped))} come from ComparePartitions '
+                        f'on this run; the saved values are never seeded')
+            if has_values and _cursor and not _live:
+                # Name the remaining fields: a seed with no field list
+                # takes every column under the prefix, the cursor included.
+                if _keep:
+                    lines.append(
+                        f'CtxFields.seedFromRow(ctx, row, '
+                        f'"{_jlit(step.step_name)}.", '
+                        + ", ".join(f'"{_jlit(p)}"' for p in _keep) + ');')
+            elif has_values and _live:
                 # If-absent, not skip: a STUBBED writer publishes nothing,
                 # ctx then has no value, and the saved one is seeded as
                 # before. A live writer wins; a missing one changes nothing.
@@ -8757,6 +8837,12 @@ public interface ImportedRestClient {{
             if _delay_guards_negative_assertion(step, self._current_case_obj):
                 lines.append(
                     f'// [delay step] guards a negative assertion -- real sleep, not deferred')
+                lines.append(
+                    f'com.hi.api.retry.Poller.delayStrict({step.delay_ms}L, "{_jlit(step.step_name)}");')
+            elif _delay_guards_offset_snapshot(step, self._current_case_obj):
+                lines.append(
+                    f'// [delay step] precedes a partition listing -- real sleep, so the '
+                    f'offsets are read at rest')
                 lines.append(
                     f'com.hi.api.retry.Poller.delayStrict({step.delay_ms}L, "{_jlit(step.step_name)}");')
             else:

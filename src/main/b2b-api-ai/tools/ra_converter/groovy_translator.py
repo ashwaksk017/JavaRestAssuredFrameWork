@@ -597,6 +597,78 @@ def collect_and_pick_fields(script: str) -> list:
             if _pick_publication(expr, picks) is not None]
 
 
+_CP_EXPAND_RX = re.compile(
+    r"""def\s+(\w+)\s*=\s*context\.expand\(\s*['"]\$\{([^#}'"]+)#Response\}['"]\s*\)""")
+_CP_PARSE_RX = re.compile(
+    r"""(\w+)\s*=\s*new\s+JsonSlurper\(\)\.parseText\(\s*(\w+)\s*\)""")
+_CP_LOOP_RX = re.compile(
+    r"""if\s*\(\s*(\w+)\[i\]\.get\(\s*["']endOffset["']\s*\)\s*!=\s*(\w+)\[i\]\.get\(\s*["']endOffset["']\s*\)\s*\)""")
+
+
+def compare_partitions_spec(script: str) -> dict | None:
+    """The ComparePartitions script, reduced to what varies between copies.
+
+        def partBeforeResponse = context.expand('${Partition_before_http_request_200#Response}')
+        def partAfterResponse  = context.expand('${Partition_after_http_request_200#Response}')
+        Map beforeMap = new JsonSlurper().parseText(partBeforeResponse) as Map
+        Map afterMap  = new JsonSlurper().parseText(partAfterResponse) as Map
+        for (...) { if (beforeMap[i].get("endOffset") != afterMap[i].get("endOffset")) {
+            endOffset = beforeMap[i].get("endOffset"); partitionId = beforeMap[i].get("partitionId")
+            diffNum++ } }
+        def diffPropStep = testRunner.testCase.getTestStepByName("difference")
+        diffPropStep.setPropertyValue("partitionId", partitionId.toString())
+        diffPropStep.setPropertyValue("endOffset", endOffset.toString())
+
+    169 steps in four suites, in three variants: as above; with
+    `endOffset = endOffset + 1` before the store; and one that asserts
+    `diffNum == 0` and stores the count. None was translated -- the loop is
+    not a shape any recogniser knows -- so the partition and offset came
+    from the datasheet, i.e. from the author's last ReadyAPI run.
+
+    Returns ``{before, after, target, offset_add, expect_none}`` or None.
+    Every part must be found; a script that only resembles this is left to
+    the generic translation.
+    """
+    live = "\n".join(l for l in (script or "").splitlines()
+                     if not l.strip().startswith("//"))
+    if "endOffset" not in live or "partitionId" not in live:
+        return None
+    expands = {m.group(1): m.group(2).strip() for m in _CP_EXPAND_RX.finditer(live)}
+    parsed = {m.group(1): m.group(2) for m in _CP_PARSE_RX.finditer(live)}
+    loop = _CP_LOOP_RX.search(live)
+    if not loop:
+        return None
+    before = expands.get(parsed.get(loop.group(1), ""))
+    after = expands.get(parsed.get(loop.group(2), ""))
+    if not before or not after or before == after:
+        return None
+    # The offset and id must come from the BEFORE listing, as in every copy.
+    b = re.escape(loop.group(1))
+    if not re.search(r"endOffset\s*=\s*%s\[i\]\.get\(\s*[\"']endOffset[\"']\s*\)" % b, live):
+        return None
+    if not re.search(r"partitionId\s*=\s*%s\[i\]\.get\(\s*[\"']partitionId[\"']\s*\)" % b, live):
+        return None
+    targets = _find_setproperty_targets(live)
+    steps = {s for s, _f, _e in targets}
+    if len(steps) != 1:
+        return None
+    target = steps.pop()
+    by_field = {f: _bare_setproperty_expr(e) for _s, f, e in targets}
+    m_assert = re.search(r"^\s*assert\s+diffNum\s*==\s*(\d+)\s*$", live, re.M)
+    if by_field == {"partitionId": "diffNum"} and m_assert and m_assert.group(1) == "0":
+        return {"before": before, "after": after, "target": target,
+                "offset_add": 0, "expect_none": True}
+    if set(by_field) != {"partitionId", "endOffset"}:
+        return None
+    if by_field["partitionId"] != "partitionId" or by_field["endOffset"] != "endOffset":
+        return None
+    if m_assert:
+        return None                 # an expected count we do not model
+    add = re.search(r"^\s*endOffset\s*=\s*endOffset\s*\+\s*(\d+)\s*$", live, re.M)
+    return {"before": before, "after": after, "target": target,
+            "offset_add": int(add.group(1)) if add else 0, "expect_none": False}
+
+
 def _join_plus_continuation(rhs: str, script: str, end: int) -> str:
     """``rhs`` with the lines its trailing ``+`` continues onto.
 
@@ -2073,6 +2145,27 @@ def translate(script: str, response_var_by_step: dict[str, str],
             f'com.hi.api.rest.utilities.RestUtilities'
             f'.extractRatePlanRoomTypePairs(ctx, {resp_var}, "{ns}");')
         patterns_matched.append("room_rate_plan_pairs")
+        consumed = True
+
+    # ---- ComparePartitions: which partition's end offset moved
+    elif compare_partitions_spec(script) is not None:
+        _cp_spec = compare_partitions_spec(script)
+        # Same key the `def x = context.expand('${Step#Response}')` binding reads.
+        _cp_key = lambda s: re.sub(r"[^A-Za-z0-9_]", "_", s) + "_Response"
+        _before = f'TestSupport.ctxGet(ctx, "{_cp_key(_cp_spec["before"])}")'
+        _after = f'TestSupport.ctxGet(ctx, "{_cp_key(_cp_spec["after"])}")'
+        lines.append('// [translated] ComparePartitions -- the partition whose end '
+                     'offset moved between the two listings')
+        if _cp_spec["expect_none"]:
+            lines.append(
+                'com.hi.api.rest.utilities.KafkaPartitions.expectNoDifference('
+                f'ctx, softAssert, "{_cp_spec["target"]}", {_before}, {_after});')
+        else:
+            lines.append(
+                'com.hi.api.rest.utilities.KafkaPartitions.publishDifference('
+                f'ctx, softAssert, "{_cp_spec["target"]}", {_before}, {_after}, '
+                f'{_cp_spec["offset_add"]}L);')
+        patterns_matched.append("compare_partitions")
         consumed = True
 
     # ---- cleanUp_difference: null out partitionId / endOffset

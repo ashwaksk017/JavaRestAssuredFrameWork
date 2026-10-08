@@ -69,6 +69,7 @@
             <class name="com.hi.api.tests.framework.RestStepTest"/>
             <class name="com.hi.api.tests.framework.RetryAnalyzerTest"/>
             <class name="com.hi.api.tests.framework.FlowStoppedTest"/>
+            <class name="com.hi.api.tests.framework.KafkaPartitionsTest"/>
         </classes>
     </test>
 </suite>
