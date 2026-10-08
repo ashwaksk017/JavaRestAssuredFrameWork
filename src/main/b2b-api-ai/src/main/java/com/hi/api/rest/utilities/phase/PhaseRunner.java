@@ -66,13 +66,16 @@ public final class PhaseRunner {
         String url = resolvedPath(spec, c);
         if (trailingParamIsAuthorEmpty(spec, c)) {
             step.allowAuthorEmptyTrailingSegment();
+            url = withoutEmptyTrailingSegment(url);
         }
-        switch (spec.verb) {
-            case "GET":    res = step.get(url, exchange); break;
-            case "PUT":    res = step.put(url, exchange); break;
-            case "PATCH":  res = step.patch(url, exchange); break;
-            case "DELETE": res = step.delete(url, exchange); break;
-            default:       res = step.post(url, exchange); break;
+        if (trailingParamIsAuthorEmpty(spec, c)) {
+            // The generated client builds the wire URL from the arguments;
+            // tell the route filler the empty tail is the author's.
+            final String sendUrl = url;
+            res = com.hi.api.rest.ApiRoutes.withAuthorEmptyTail(
+                    () -> send(spec.verb, step, sendUrl, exchange));
+        } else {
+            res = send(spec.verb, step, url, exchange);
         }
         c.record(spec.step, res);
 
@@ -134,6 +137,17 @@ public final class PhaseRunner {
         return res;
     }
 
+    private static Response send(String verb, RestStep step, String url,
+                                 RestStep.Exchange exchange) throws Exception {
+        switch (verb) {
+            case "GET":    return step.get(url, exchange);
+            case "PUT":    return step.put(url, exchange);
+            case "PATCH":  return step.patch(url, exchange);
+            case "DELETE": return step.delete(url, exchange);
+            default:       return step.post(url, exchange);
+        }
+    }
+
     /** Test seam: the resolved URL without sending anything. */
     public static String resolvedPathForTest(PhaseSpec spec, PhaseContext c) {
         return resolvedPath(spec, c);
@@ -158,6 +172,27 @@ public final class PhaseRunner {
             params++;
         }
         return params > 0 && spec.arg(params - 1).authorEmpty(c);
+    }
+
+    /**
+     * Drop the slash an author-empty last parameter leaves behind.
+     *
+     * <p>{@code .../partneraccounts/{partneraccount}} with the parameter saved
+     * empty is recorded by ReadyAPI as {@code .../partneraccounts}: it drops
+     * the empty segment together with its slash. Substituting "" keeps the
+     * slash, and the API answers 404 for {@code .../partneraccounts/}.</p>
+     */
+    public static String withoutEmptyTrailingSegment(String url) {
+        if (url == null) {
+            return null;
+        }
+        int q = url.indexOf('?');
+        String path = q >= 0 ? url.substring(0, q) : url;
+        String rest = q >= 0 ? url.substring(q) : "";
+        while (path.length() > 1 && path.endsWith("/")) {
+            path = path.substring(0, path.length() - 1);
+        }
+        return path + rest;
     }
 
     /** The path template with every {@code {param}} replaced by its resolved Ref, in order. */

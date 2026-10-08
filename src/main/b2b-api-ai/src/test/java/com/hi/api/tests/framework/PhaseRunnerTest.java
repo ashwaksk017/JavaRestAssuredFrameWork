@@ -174,6 +174,51 @@ public class PhaseRunnerTest {
     }
 
     @Test(groups = {"unit", "guards"})
+    @Story("An empty last path parameter goes together with its slash")
+    @Description("""
+            ReadyAPI records .../partneraccounts/{partneraccount} with the
+            parameter empty as .../partneraccounts. Filling in "" kept the
+            slash and the API answered 404 for .../partneraccounts/.
+            """)
+    public void emptyLastParameterTakesItsSlashWithIt() throws Exception {
+        final String t = "/businesses/{accountId}/partneraccounts/{partneraccount}";
+        // What the generated client does with its arguments, as the phase runs it.
+        Map<String, String> ctx = new LinkedHashMap<>();
+        ctx.put("PropertiesaccountID.accountID", "2");
+        PhaseContext c = context(ctx, new LinkedHashMap<>(), new SoftAssert());
+        final String[] wire = new String[1];
+        PhaseSpec spec = PhaseSpec.phase("post_create_partneraccount")
+                .post(t)
+                .args(Ref.ctx("PropertiesaccountID.accountID"),
+                      Ref.row("path_post_create_partneraccount_partneraccount", ""))
+                .expect(201)
+                .build();
+        PhaseRunner.run(spec, c, (b, q, h) -> {
+            wire[0] = com.hi.api.rest.ApiRoutes.fill(t, "accountId", "2", "partneraccount", "");
+            return json(201, "{}");
+        });
+        Assert.assertEquals(wire[0], "/businesses/2/partneraccounts");
+
+        // NEGATIVE CONTROLS. Outside such a phase nothing changes: an id an
+        // extract failed to supply keeps its slash and still looks broken.
+        Assert.assertEquals(com.hi.api.rest.ApiRoutes.fill(t, "accountId", "2", "partneraccount", ""),
+                "/businesses/2/partneraccounts/");
+        // Inside one: a value is kept, an empty id in the MIDDLE is not
+        // papered over, a template written with a trailing slash keeps it.
+        Assert.assertEquals(com.hi.api.rest.ApiRoutes.withAuthorEmptyTail(() ->
+                com.hi.api.rest.ApiRoutes.fill(t, "accountId", "2", "partneraccount", "77")),
+                "/businesses/2/partneraccounts/77");
+        Assert.assertEquals(com.hi.api.rest.ApiRoutes.withAuthorEmptyTail(() ->
+                com.hi.api.rest.ApiRoutes.fill(t, "accountId", "", "partneraccount", "77")),
+                "/businesses//partneraccounts/77");
+        Assert.assertEquals(com.hi.api.rest.ApiRoutes.withAuthorEmptyTail(() ->
+                com.hi.api.rest.ApiRoutes.fill("/businesses/{accountId}/", "accountId", "2")),
+                "/businesses/2/");
+        Assert.assertEquals(PhaseRunner.withoutEmptyTrailingSegment("/a/b/?x=1"), "/a/b?x=1");
+        Assert.assertEquals(PhaseRunner.withoutEmptyTrailingSegment("/"), "/");
+    }
+
+    @Test(groups = {"unit", "guards"})
     @Story("NEGATIVE CONTROL: an id that an extract failed to supply still stops the step")
     public void emptyTrailingIdFromAnExtractStillFailsFast() throws Exception {
         PhaseContext c = context(new LinkedHashMap<>(), new LinkedHashMap<>(), new SoftAssert());

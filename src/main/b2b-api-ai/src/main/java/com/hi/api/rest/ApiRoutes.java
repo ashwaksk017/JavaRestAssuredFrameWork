@@ -64,7 +64,35 @@ public final class ApiRoutes {
                 out = out.replace("{" + name + "}", value);
             }
         }
+        // An AUTHOR-EMPTY last parameter goes together with its slash.
+        // `.../partneraccounts/{partneraccount}` saved with the parameter
+        // empty is recorded by ReadyAPI as `.../partneraccounts`; filling in
+        // "" left `.../partneraccounts/`, which the API answers 404.
+        //
+        // Only while the caller says the emptiness is the author's
+        // (PhaseRunner, from the step's own Ref). An id that an extract
+        // failed to supply keeps its slash, as before: that request is a
+        // broken one and must look like one.
+        if (Boolean.TRUE.equals(AUTHOR_EMPTY_TAIL.get())
+                && mapped.endsWith("}") && out.length() > 1 && out.endsWith("/")) {
+            out = out.substring(0, out.length() - 1);
+        }
         return out;
+    }
+
+    private static final ThreadLocal<Boolean> AUTHOR_EMPTY_TAIL = new ThreadLocal<>();
+
+    /**
+     * Runs {@code call} with "the last path parameter is empty on purpose"
+     * in effect for this thread. See {@link #fill}.
+     */
+    public static <T> T withAuthorEmptyTail(java.util.concurrent.Callable<T> call) throws Exception {
+        AUTHOR_EMPTY_TAIL.set(Boolean.TRUE);
+        try {
+            return call.call();
+        } finally {
+            AUTHOR_EMPTY_TAIL.remove();
+        }
     }
 
     /** Templates observed this JVM (for drift checks / diagnostics). */
