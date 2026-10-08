@@ -249,6 +249,8 @@ const REVIEW_TEXT = {
   "verify-failed": "Did not verify. The files are still in the working tree.",
   "pending-review": "PENDING REVIEW — read the diff, then approve or discard.",
   "pushed": "Pushed.",
+  "approved-local": "Approved. The converted files stay on this machine; the " +
+                    "change is saved as converted.patch in the job folder.",
   "push-failed": "Committed locally, but the push failed. Approve again to retry.",
   "discarded": "Discarded.",
 };
@@ -271,6 +273,13 @@ async function refreshReview() {
   $("review-detail").textContent = detail;
   const canPush = state === "pending-review" || state === "push-failed";
   $("agent-push").disabled = !canPush;
+  // What approving DOES depends on the scope the job ran with.
+  $("agent-push").textContent = review.pushable === false
+    ? "Approve (keep on this machine)" : "Approve & push";
+  $("agent-push").dataset.pushable = String(review.pushable !== false);
+  if (review.scope) detail += ` Scope: ${review.scope}` +
+                              (review.suite ? ` (${review.suite}).` : ".");
+  $("review-detail").textContent = detail;
   $("agent-discard").disabled =
     !(state === "pending-review" || state === "verify-failed");
 
@@ -288,23 +297,76 @@ async function refreshReview() {
   else $("agent-diff").textContent = "—";
 }
 
+// The cursor log is its own file (cursor.log), appended to across runs.
+// Read it by byte offset like any other log, on its own timer, so it
+// keeps moving while a long Cursor call is in flight.
+let cursorOffset = 0;
+let cursorTimer = null;
+async function pollCursorLog(reset) {
+  if (reset) { cursorOffset = 0; $("cursor-log").textContent = ""; }
+  try {
+    const chunk = await api(
+      `/api/log?job=${encodeURIComponent(job())}&runnable=cursor&offset=${cursorOffset}`);
+    if (chunk.restarted) $("cursor-log").textContent = "";
+    if (chunk.text) {
+      cursorOffset = chunk.offset;
+      $("cursor-log").textContent += chunk.text;
+      $("cursor-log").scrollTop = $("cursor-log").scrollHeight;
+    }
+  } catch { /* no cursor log for this job yet */ }
+}
+function watchCursorLog() {
+  clearInterval(cursorTimer);
+  pollCursorLog(true);
+  cursorTimer = setInterval(() => pollCursorLog(false), 1500);
+}
+
 function runAgent(runnable, options) {
   return post("/api/start", { job: job(), runnable, options })
-    .then(() => follow(runnable, $("agent-log"), $("agent-state"), refreshReview))
+    .then(() => follow(runnable, $("agent-log"), $("agent-state"), () => {
+      refreshReview();
+      pollCursorLog(false);
+    }))
     .catch((e) => setState($("agent-state"), "bad", e.message));
 }
 
+const SCOPE_NOTE = {
+  "new-test": "Tracked files. Approve commits them to branch agent/<job> and pushes it.",
+  "converted": "Generated files are gitignored: approve keeps them on THIS machine " +
+               "and saves a patch. A reconvert of the suite overwrites them.",
+  "converter": "Tracked files. The whole gate runs before and after; a check that " +
+               "passed before must still pass. Approve pushes branch agent/<job>.",
+};
+function scopeChanged() {
+  const s = $("agent-scope").value;
+  $("agent-suite-field").hidden = s !== "converted";
+  $("agent-scope-note").textContent = SCOPE_NOTE[s] || "";
+}
+$("agent-scope").onchange = scopeChanged;
+scopeChanged();
+
 $("agent-setup").onclick = () => runAgent("agent-setup", { "--job": job() });
 $("agent-generate").onclick = () => {
-  if (!confirm("Cursor will write files under tests/jira/ and csv/manual/ " +
-               "for job \"" + job() + "\". Nothing is committed. Continue?")) return;
-  runAgent("agent-generate", { "--job": job() });
+  const scope = $("agent-scope").value;
+  const suite = $("agent-suite").value.trim();
+  if (scope === "converted" && !suite) {
+    setState($("agent-state"), "bad", "name the suite Cursor may change");
+    return;
+  }
+  const what = scope === "converted" ? `the converted files of suite "${suite}"`
+             : scope === "converter" ? "the converter and its runtime"
+             : "tests/jira/ and csv/manual/";
+  if (!confirm(`Cursor will change ${what} for job "${job()}". ` +
+               "Nothing is committed. Continue?")) return;
+  const options = { "--job": job(), "--scope": scope };
+  if (scope === "converted") options["--suite"] = suite;
+  runAgent("agent-generate", options);
 };
 $("agent-stop").onclick = async () => {
   try { await post("/api/stop", { job: job(), runnable: "agent-generate" }); }
   catch (e) { setState($("agent-state"), "bad", e.message); }
 };
-$("agent-refresh").onclick = refreshReview;
+$("agent-refresh").onclick = () => { refreshReview(); pollCursorLog(true); };
 $("agent-discard").onclick = () => {
   if (!confirm("Remove the files the agent created and restore the ones it " +
                "changed?")) return;
@@ -312,10 +374,17 @@ $("agent-discard").onclick = () => {
 };
 $("agent-push").onclick = () => {
   const j = job();
-  if (!confirm("Approve and push?\n\nThis commits the reviewed files to " +
-               "branch agent/" + j + " and pushes that branch to origin. " +
-               "The repository is public. main is not touched.")) return;
-  runAgent("agent-push", { "--job": j, "--confirm": j });
+  const pushes = $("agent-push").dataset.pushable !== "false";
+  const msg = pushes
+    ? "Approve and push?\n\nThis commits the reviewed files to branch agent/" +
+      j + " and pushes that branch to origin. The repository is public. " +
+      "main is not touched."
+    : "Approve?\n\nThe converted files stay as Cursor left them, on this " +
+      "machine only. Nothing is committed or pushed. A reconvert of the " +
+      "suite will overwrite them; the change is saved as converted.patch.";
+  if (!confirm(msg)) return;
+  runAgent("agent-approve", { "--job": j, "--confirm": j });
 };
 document.querySelector('.tabs button[data-tab="agent"]')
-  .addEventListener("click", refreshReview);
+  .addEventListener("click", () => { refreshReview(); watchCursorLog(); });
+$("job").addEventListener("change", () => { refreshReview(); pollCursorLog(true); });

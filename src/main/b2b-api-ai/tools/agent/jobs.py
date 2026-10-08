@@ -82,9 +82,10 @@ RUNNABLES = {
         "label": "Audit the token chain",
         "options": {"--config": "path", "--root": "path"},
     },
-    # Tab 3. Four fixed sub-commands of one script; the page chooses which
-    # and names the job, nothing else. `agent-push` is the only runnable
-    # that reaches the network, and it refuses without --confirm <job>.
+    # Tab 3. Fixed sub-commands of one script; the page chooses which,
+    # names the job, and for `generate` picks a scope the script itself
+    # validates. `agent-approve` is the only runnable that can reach the
+    # network, and it refuses without --confirm <job>.
     "agent-setup": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "loop.py"), "setup"],
         "label": "Check Cursor: SDK, key, git",
@@ -92,12 +93,12 @@ RUNNABLES = {
     },
     "agent-generate": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "loop.py"), "generate"],
-        "label": "Cursor writes the test, then it is verified",
-        "options": {"--job": "text"},
+        "label": "Cursor makes the change, then it is verified",
+        "options": {"--job": "text", "--scope": "text", "--suite": "text"},
     },
-    "agent-push": {
-        "argv": [PY, "-B", os.path.join("tools", "agent", "loop.py"), "push"],
-        "label": "Approve: commit to a branch and push it",
+    "agent-approve": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "loop.py"), "approve"],
+        "label": "Approve: push a branch, or keep converted Java locally",
         "options": {"--job": "text", "--confirm": "text"},
     },
     "agent-discard": {
@@ -164,15 +165,28 @@ def job_dir(job: str) -> str:
     return intake.job_dir(job)
 
 
+# Logs that are not a runnable's own output but may be read like one.
+EXTRA_LOGS = {"cursor"}       # cursor.log: the conversation with Cursor
+
+
+def _known(runnable: str) -> str:
+    """`runnable` becomes part of a file name, and it arrives from a query
+    string. Only declared names: `../x` must not pick another file."""
+    if runnable not in RUNNABLES and runnable not in EXTRA_LOGS:
+        raise ValueError(f"unknown runnable {runnable!r}")
+    return runnable
+
+
 def status_path(job: str, runnable: str) -> str:
-    return os.path.join(job_dir(job), f"{runnable}.status.json")
+    return os.path.join(job_dir(job), f"{_known(runnable)}.status.json")
 
 
 def log_path(job: str, runnable: str) -> str:
-    return os.path.join(job_dir(job), f"{runnable}.log")
+    return os.path.join(job_dir(job), f"{_known(runnable)}.log")
 
 
 def read_status(job: str, runnable: str) -> dict:
+    _known(runnable)
     try:
         with io.open(status_path(job, runnable), encoding="utf-8") as fh:
             return json.load(fh)

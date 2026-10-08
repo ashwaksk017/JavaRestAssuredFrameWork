@@ -105,9 +105,24 @@ class LogReading(unittest.TestCase):
         self.assertEqual(again["text"], "second run\n")
 
     def test_a_missing_log_is_empty_not_an_error(self):
-        r = jobs.read_log("j", "nothing-ran", 0)
+        # a real runnable that has not run for this job
+        r = jobs.read_log("j", "audit-token-chain", 0)
         self.assertEqual(r["text"], "")
         self.assertFalse(r["restarted"])
+
+    def test_the_cursor_log_is_readable_like_a_run_log(self):
+        """cursor.log is not a runnable's output, but tab 3 follows it."""
+        r = jobs.read_log("j", "cursor", 0)
+        self.assertEqual(r["text"], "")
+
+    def test_a_name_that_is_not_declared_cannot_pick_a_file(self):
+        """The name becomes part of a file name and comes from a query
+        string: `../other-job/convert` must not read another job's log."""
+        for bad in ("nothing-ran", "../j2/convert", "..\\j2\\convert", ""):
+            with self.assertRaises(ValueError):
+                jobs.read_log("j", bad, 0)
+            with self.assertRaises(ValueError):
+                jobs.read_status("j", bad)
 
 
 class StatusTellsTheTruth(unittest.TestCase):

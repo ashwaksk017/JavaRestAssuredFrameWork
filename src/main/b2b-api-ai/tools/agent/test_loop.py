@@ -30,6 +30,8 @@ _spec.loader.exec_module(loop)
 
 JIRA = "src/test/java/com/hi/api/tests/jira/"
 GEN = "src/main/java/com/hi/api/support/"
+IMPORTED = "src/test/java/com/hi/api/tests/imported/"
+CSV = "src/test/resources/csv/"
 OK = lambda: {"ok": True, "steps": [{"name": "compile", "rc": 0, "tail": ""}]}
 
 
@@ -55,11 +57,16 @@ class Repo(unittest.TestCase):
         sh(self.root, "config", "user.email", "t@example.com")
         sh(self.root, "config", "user.name", "t")
         sh(self.root, "config", "core.autocrlf", "false")
-        write(self.root, ".gitignore", "target/\n" + GEN + "\n")
+        write(self.root, ".gitignore", "target/\n" + GEN + "\n" + IMPORTED + "\n"
+              + CSV + "*\n!" + CSV + "manual/\n")
         write(self.root, "README.md", "hello\n")
         write(self.root, JIRA + "ExistingTest.java", "class ExistingTest {}\n")
         write(self.root, "src/main/java/Framework.java", "class Framework {}\n")
         write(self.root, GEN + "goal/Hooks.java", "class Hooks {}\n")   # ignored
+        write(self.root, GEN + "amex/Hooks.java", "class Hooks { int amex; }\n")
+        write(self.root, IMPORTED + "amex/AmexTest.java", "class AmexTest {}\n")
+        write(self.root, CSV + "amex/a.csv", "h\n1\n")
+        write(self.root, "tools/ra_converter/ra_converter.py", "X = 1\n")
         sh(self.root, "add", "-A")
         sh(self.root, "commit", "-q", "-m", "base")
         self.job = os.path.join(self.root, "target", "agent", "job1")
@@ -68,9 +75,13 @@ class Repo(unittest.TestCase):
         write(self.root, "target/agent/job1/brief.md", "# brief\nPOST /x expect 201\n")
         self.policy = loop.load_policy(os.path.join(self.root, "no-policy.json"))
 
-    def generate(self, agent, verifier=OK):
-        return loop.cmd_generate(self.job, self.root, self.policy,
+    def generate(self, agent, verifier=OK, scope="new-test", suite=""):
+        return loop.cmd_generate(self.job, self.root, self.policy, scope, suite,
                                  agent=agent, verifier=verifier)
+
+    def cursor_log(self):
+        with io.open(os.path.join(self.job, "cursor.log"), encoding="utf-8") as fh:
+            return fh.read()
 
     def state(self):
         return loop.read_review(self.job)
@@ -151,7 +162,7 @@ class OutsideThePaths(Repo):
             return {"result": ""}
         self.assertEqual(self.generate(agent), 1)
         reason = self.state()["reason"]
-        self.assertIn("generated tree", reason)
+        self.assertIn("generated file(s) outside this scope", reason)
         self.assertIn("reconvert goal", reason)
         self.assertFalse(os.path.isfile(os.path.join(self.root, JIRA + "NewTest.java")),
                          "the rest of the attempt is still undone")
@@ -213,11 +224,11 @@ class VerifyAndRepair(Repo):
             return {"result": ""}
         self.assertEqual(self.generate(agent, bad), 1)
         self.assertEqual(self.state()["state"], "verify-failed")
-        self.assertEqual(loop.cmd_push(self.job, self.root, self.policy, "job1", "job1"), 1)
+        self.assertEqual(loop.cmd_approve(self.job, self.root, self.policy, "job1", "job1"), 1)
 
     def test_a_missing_compiler_is_a_failure_not_a_pass(self):
-        policy = dict(self.policy, compile=["definitely-not-a-real-compiler"], checks=[])
-        got = loop.run_verify(self.root, policy)
+        scope = {"compile": ["definitely-not-a-real-compiler"], "checks": []}
+        got = loop.run_verify(self.root, scope)
         self.assertFalse(got["ok"])
         self.assertIn("not on PATH", got["steps"][0]["tail"])
 
@@ -251,8 +262,8 @@ class Push(Repo):
         self.assertEqual(self.generate(agent), 0)
 
     def push(self, confirm="job1", config=""):
-        return loop.cmd_push(self.job, self.root, self.policy, "job1", confirm,
-                             config_path=config or os.path.join(self.root, "none.json"))
+        return loop.cmd_approve(self.job, self.root, self.policy, "job1", confirm,
+                                config_path=config or os.path.join(self.root, "none.json"))
 
     def test_an_approved_job_goes_to_its_own_branch_never_main(self):
         self.pending()
@@ -311,6 +322,156 @@ class Push(Repo):
         self.assertEqual(loop.scan_secrets('-String t = "tok_abcdefghijklmnop";\n',
                                            {"tok_abcdefghijklmnop": "token"}), [],
                          "a removed line is not a leak")
+
+
+class ConvertedScope(Repo):
+    """Cursor edits what the converter produced for ONE suite. git cannot
+    see those files, so the diff, the undo and the limits all come from a
+    copy taken before the run."""
+
+    def edit_amex(self, _prompt):
+        write(self.root, GEN + "amex/Hooks.java", "class Hooks { int amex; int fixed; }\n")
+        write(self.root, IMPORTED + "amex/AmexTest.java", "class AmexTest { /* fixed */ }\n")
+        return {"result": "fixed the hook", "status": "finished", "id": "run-1"}
+
+    def test_an_edit_inside_the_suite_is_held_for_review_with_a_real_diff(self):
+        self.assertEqual(self.generate(self.edit_amex, scope="converted", suite="amex"), 0)
+        r = self.state()
+        self.assertEqual(r["state"], "pending-review")
+        self.assertFalse(r["pushable"])
+        self.assertEqual(sorted(r["files"]["modified"]),
+                         [GEN + "amex/Hooks.java", IMPORTED + "amex/AmexTest.java"])
+        with io.open(os.path.join(self.job, "proposed.diff"), encoding="utf-8") as fh:
+            diff = fh.read()
+        self.assertIn("-class Hooks { int amex; }", diff)
+        self.assertIn("+class Hooks { int amex; int fixed; }", diff)
+
+    def test_another_suites_files_are_out_of_scope(self):
+        def agent(_prompt):
+            write(self.root, GEN + "amex/Hooks.java", "class Hooks { int ok; }\n")
+            write(self.root, GEN + "goal/Hooks.java", "class Hooks { int not_yours; }\n")
+            return {"result": ""}
+        self.assertEqual(self.generate(agent, scope="converted", suite="amex"), 1)
+        self.assertIn("reconvert goal", self.state()["reason"])
+        with io.open(os.path.join(self.root, GEN + "amex/Hooks.java")) as fh:
+            self.assertEqual(fh.read(), "class Hooks { int amex; }\n",
+                             "the in-scope edit of the failed attempt is undone")
+
+    def test_tracked_code_is_out_of_scope_for_a_converted_job(self):
+        def agent(_prompt):
+            write(self.root, GEN + "amex/Hooks.java", "class Hooks { int ok; }\n")
+            write(self.root, "tools/ra_converter/ra_converter.py", "X = 2\n")
+            return {"result": ""}
+        self.assertEqual(self.generate(agent, scope="converted", suite="amex"), 1)
+        self.assertEqual(self.status(), "")
+
+    def test_deleting_a_generated_file_is_refused_and_it_comes_back(self):
+        def agent(_prompt):
+            os.remove(os.path.join(self.root, CSV + "amex/a.csv"))
+            return {"result": ""}
+        self.assertEqual(self.generate(agent, scope="converted", suite="amex"), 1)
+        self.assertTrue(os.path.isfile(os.path.join(self.root, CSV + "amex/a.csv")))
+
+    def test_discard_puts_the_generated_files_back(self):
+        self.assertEqual(self.generate(self.edit_amex, scope="converted", suite="amex"), 0)
+        self.assertEqual(loop.cmd_discard(self.job, self.root), 0)
+        with io.open(os.path.join(self.root, GEN + "amex/Hooks.java")) as fh:
+            self.assertEqual(fh.read(), "class Hooks { int amex; }\n")
+
+    def test_approve_keeps_them_locally_and_never_commits(self):
+        self.assertEqual(self.generate(self.edit_amex, scope="converted", suite="amex"), 0)
+        head = sh(self.root, "rev-parse", "HEAD")
+        self.assertEqual(loop.cmd_approve(self.job, self.root, self.policy, "job1", "job1"), 0)
+        self.assertEqual(self.state()["state"], "approved-local")
+        self.assertEqual(sh(self.root, "rev-parse", "HEAD"), head)
+        self.assertEqual(sh(self.root, "branch", "--list", "agent/*"), "")
+        self.assertTrue(os.path.isfile(os.path.join(self.job, "converted.patch")))
+        with io.open(os.path.join(self.root, GEN + "amex/Hooks.java")) as fh:
+            self.assertIn("fixed", fh.read(), "the approved edit stays in place")
+
+    def test_a_suite_is_required_and_must_exist(self):
+        called = []
+        agent = lambda p: called.append(1) or {"result": ""}
+        self.assertEqual(self.generate(agent, scope="converted", suite=""), 1)
+        self.assertEqual(self.generate(agent, scope="converted", suite="nosuchsuite"), 1)
+        self.assertEqual(self.generate(agent, scope="converted", suite="../etc"), 1)
+        self.assertEqual(called, [])
+
+
+class ConverterScope(Repo):
+    def test_the_converter_is_writable_and_a_test_path_is_not(self):
+        def good(_prompt):
+            write(self.root, "tools/ra_converter/ra_converter.py", "X = 2\n")
+            return {"result": ""}
+        self.assertEqual(self.generate(good, scope="converter"), 0)
+        self.assertEqual(self.state()["files"]["modified"],
+                         ["tools/ra_converter/ra_converter.py"])
+        self.assertTrue(self.state()["pushable"])
+
+    def test_a_converter_job_may_not_edit_generated_output(self):
+        """The rule the converter work has always had: fix the emitter,
+        never the copy it generated."""
+        def agent(_prompt):
+            write(self.root, "tools/ra_converter/ra_converter.py", "X = 2\n")
+            write(self.root, GEN + "amex/Hooks.java", "class Hooks { int patched; }\n")
+            return {"result": ""}
+        self.assertEqual(self.generate(agent, scope="converter"), 1)
+        self.assertEqual(self.status(), "")
+
+    def test_the_gate_fails_the_job_only_on_a_NEW_failing_check(self):
+        scope = {"compile": [], "checks": [], "gate": True}
+        after = {"old-known": "python a.py", "freshly-broken": "python b.py"}
+        orig = loop.gate_failures
+        loop.gate_failures = lambda root, out, runner=None: dict(after)
+        try:
+            same = loop.run_verify(self.root, scope, gate_before=dict(after))
+            worse = loop.run_verify(self.root, scope, gate_before={"old-known": ""})
+        finally:
+            loop.gate_failures = orig
+        self.assertTrue(same["ok"], "what already failed is not the agent's doing")
+        self.assertFalse(worse["ok"])
+        self.assertIn("NEW failing check: freshly-broken", worse["steps"][-1]["tail"])
+        self.assertNotIn("NEW failing check: old-known", worse["steps"][-1]["tail"])
+
+    def test_an_unknown_scope_is_refused(self):
+        self.assertEqual(self.generate(lambda p: {"result": ""}, scope="everything"), 1)
+
+
+class TheCursorLog(Repo):
+    def test_it_records_the_conversation_and_the_verdict(self):
+        def agent(_prompt):
+            write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
+            return {"result": "I created NewTest.java", "status": "finished",
+                    "id": "run-42", "model": "composer-2.5"}
+        self.assertEqual(self.generate(agent), 0)
+        log = self.cursor_log()
+        for expected in ("scope=new-test", "may write:", "create POST /x",
+                         "I created NewTest.java", "run id=run-42",
+                         "created   " + JIRA + "NewTest.java",
+                         "verify ok", "PENDING REVIEW"):
+            self.assertIn(expected, log)
+
+    def test_a_rejection_and_its_undo_are_in_it(self):
+        def agent(_prompt):
+            write(self.root, "stray.txt", "x\n")
+            return {"result": "oops"}
+        self.assertEqual(self.generate(agent), 1)
+        log = self.cursor_log()
+        self.assertIn("REJECTED: files changed outside the allowed paths", log)
+        self.assertIn("undo: removed stray.txt", log)
+
+    def test_it_is_appended_to_not_replaced(self):
+        self.generate(lambda p: {"result": "first"})
+        self.generate(lambda p: {"result": "second"})
+        log = self.cursor_log()
+        self.assertIn("first", log)
+        self.assertIn("second", log)
+
+    def test_the_key_never_reaches_it(self):
+        clog = loop.CursorLog(self.job, secret="key_SUPERSECRET123")
+        clog.block("answer", "the agent echoed key_SUPERSECRET123 back")
+        self.assertNotIn("SUPERSECRET", self.cursor_log())
+        self.assertIn("<redacted>", self.cursor_log())
 
 
 class SdkBootstrap(unittest.TestCase):

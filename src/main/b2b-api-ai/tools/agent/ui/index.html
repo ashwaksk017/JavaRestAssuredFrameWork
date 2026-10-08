@@ -82,25 +82,33 @@ Expect 201.'></textarea>
 <!-- ───────────────────────────── tab 3 ───────────────────────────── -->
 <section id="tab-agent" class="tab" role="tabpanel" hidden>
   <p class="lede">
-    Takes the plan from tab 1 and lets the agent act on it. This is the
-    only tab that writes code.
+    Takes the plan from tab 1 and has Cursor act on it. This is the only
+    tab that writes code. Choose what Cursor may change — it is held to
+    that, and anything else fails the job and is put back.
   </p>
-  <ol class="steps">
-    <li><strong>Generate</strong> — Cursor reads this job's
-        <code>brief.md</code> and <code>plan.md</code> and writes the test.
-        It may only write under <code>tests/jira/</code> and
-        <code>csv/manual/</code>; anything else fails the job and is put
-        back. The result is compiled and checked.</li>
-    <li><strong>Review</strong> — read the diff below. Nothing is committed
-        and nothing has left this machine.</li>
-    <li><strong>Approve &amp; push</strong> — scans the diff for secrets,
-        commits to branch <code>agent/&lt;job&gt;</code> and pushes that
-        branch. Never <code>main</code>.</li>
-  </ol>
+
+  <div class="form">
+    <div class="field req">
+      <label for="agent-scope">What may Cursor change?</label>
+      <select id="agent-scope">
+        <option value="new-test">A new hand-written test — tests/jira/, csv/manual/</option>
+        <option value="converted">Converted Java of one suite — after a convert</option>
+        <option value="converter">The converter itself, and the runtime under it</option>
+      </select>
+      <small id="agent-scope-note"></small>
+    </div>
+    <div class="field" id="agent-suite-field" hidden>
+      <label for="agent-suite">Suite</label>
+      <input id="agent-suite" type="text" spellcheck="false"
+             placeholder="amexbackbook">
+      <small>The lower-case suite directory under <code>support/</code>.
+             Cursor is limited to this suite's generated files.</small>
+    </div>
+  </div>
 
   <div class="row">
     <button id="agent-setup">Check Cursor setup</button>
-    <button id="agent-generate" class="go">Generate with Cursor</button>
+    <button id="agent-generate" class="go">Run Cursor</button>
     <button id="agent-stop">Stop</button>
     <button id="agent-refresh">Refresh</button>
     <span id="agent-state" class="state"></span>
@@ -110,7 +118,7 @@ Expect 201.'></textarea>
     <span id="review-badge" class="badge"></span>
     <span id="review-detail"></span>
     <div class="row">
-      <button id="agent-push" class="go" disabled>Approve &amp; push</button>
+      <button id="agent-push" class="go" disabled>Approve</button>
       <button id="agent-discard" disabled>Discard</button>
     </div>
   </div>
@@ -121,7 +129,9 @@ Expect 201.'></textarea>
   </div>
   <h3>proposed.diff</h3>
   <pre id="agent-diff" class="log diff">—</pre>
-  <h3>Log</h3>
+  <h3>Cursor log <span class="hint">what was asked, what it answered, what it changed</span></h3>
+  <pre id="cursor-log" class="log cursor"></pre>
+  <h3>Command log</h3>
   <pre id="agent-log" class="log"></pre>
 </section>
 

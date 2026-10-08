@@ -1,41 +1,60 @@
-"""Tab 3: let Cursor write the test a plan describes, then hold it for review.
+"""Tab 3: let Cursor change the code a plan describes, then hold it for review.
 
     python tools/agent/loop.py setup    --job <job>
-    python tools/agent/loop.py generate --job <job>
-    python tools/agent/loop.py push     --job <job> --confirm <job>
+    python tools/agent/loop.py generate --job <job> --scope new-test
+    python tools/agent/loop.py generate --job <job> --scope converted --suite <suite>
+    python tools/agent/loop.py generate --job <job> --scope converter
+    python tools/agent/loop.py approve  --job <job> --confirm <job>
     python tools/agent/loop.py discard  --job <job>
 
-    generate:  brief.md + plan.md  ->  Cursor writes  ->  guardrails  ->
-               compile + checks (one repair attempt)  ->  PENDING REVIEW
-    push:      secret scan  ->  branch agent/<job>  ->  commit  ->  push
+THREE SCOPES -- what Cursor may write is chosen per job, never guessed
+---------------------------------------------------------------------
+new-test    a hand-written test: tests/jira/ and csv/manual/. Tracked.
+            Approve = commit to branch agent/<job> and push it.
+converted   the Java, templates and CSVs the converter produced for ONE
+            suite. Gitignored, so approve cannot push them: it keeps them
+            on this machine and saves converted.patch in the job folder.
+            A reconvert of that suite overwrites them.
+converter   the converter itself and the hand-maintained runtime under
+            it. Tracked. Verified by the whole gate. Approve = branch +
+            push.
 
-Nothing is committed and nothing leaves the machine until `push`, and
-`push` only runs on a job a person has looked at: the page shows the diff
-and the button is the review.
+    generate:  brief.md + plan.md  ->  Cursor  ->  guardrails  ->
+               verify (one repair attempt)  ->  PENDING REVIEW
+    approve:   new-test / converter: secret scan -> branch -> commit -> push
+               converted:            kept locally, patch saved
 
 THE GUARDRAILS ARE CODE, NOT PROMPT
 -----------------------------------
 The prompt tells the agent where it may write. That is advisory. What is
-enforced is checked AFTER the agent returns, against the working tree:
+enforced is checked AFTER the agent returns, against the files on disk:
 
-* a changed path outside `policy.json: write_roots` fails the job and is
-  put back the way it was;
-* a deleted file fails the job and is restored -- this pipeline does not
-  delete in v1;
-* a change inside the GENERATED tree (converter output, gitignored) fails
-  the job. It cannot be put back -- git does not track it -- so the job
-  says which suite to reconvert. Those files could not be reviewed or
-  pushed either, which is why they are not a write root;
+* a changed path outside the scope's write roots fails the job;
+* a deleted file fails the job -- this pipeline does not delete;
 * a moved HEAD or a switched branch fails the job: the agent commits
   nothing, this tool does.
 
-The repository is PUBLIC. `push` scans the staged diff for credentials
-and for every host and secret value in the gitignored
+On a failure everything is put back: tracked files from git (or from the
+copy taken of your own uncommitted version), and the suite's generated
+files from the copy taken before the run. The one thing that cannot be
+put back is a generated file OUTSIDE the suite in scope -- nothing copied
+it -- so the job names the suite to reconvert.
+
+THE CURSOR LOG
+--------------
+Everything said to Cursor and everything it answered goes to
+`target/agent/<job>/cursor.log`, separate from the command log: which
+scope, which model, how long, the run id, the answer, the files it
+changed and the verdict on them. The API key is never written.
+
+The repository is PUBLIC. A push scans the diff for credentials and for
+every host and secret value in the gitignored
 `program_configuration.json`, and refuses rather than warns.
 """
 from __future__ import annotations
 
 import argparse
+import difflib
 import hashlib
 import importlib
 import importlib.util
@@ -46,6 +65,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -63,24 +83,74 @@ ROOT = intake.ROOT
 POLICY_FILE = os.path.join(HERE, "policy.json")
 REQUIREMENTS = "requirements-cursor.txt"
 
+_MVN = ["mvn", "-q", "-DskipTests", "test-compile"]
+
 DEFAULT_POLICY = {
-    # The only places the agent may create or modify a file. Tracked
-    # paths only: a gitignored file cannot be reviewed or pushed.
-    "write_roots": [
-        "src/test/java/com/hi/api/tests/jira/",
-        "src/test/resources/csv/manual/",
-    ],
     # Converter output. Gitignored, so git cannot see a change here; these
-    # are stat-snapshotted around the agent run instead.
+    # are watched by size+mtime around the agent run instead.
     "generated_roots": [
         "src/main/java/com/hi/api/support/",
         "src/main/java/com/hi/api/rest/clients/",
         "src/test/java/com/hi/api/tests/imported/",
         "src/test/java/com/hi/api/tests/classic/",
         "src/main/resources/templates/",
+        "src/test/resources/csv/",
     ],
-    "compile": ["mvn", "-q", "-DskipTests", "test-compile"],
-    "checks": [["tools/check_no_duplicate_methods.py"]],
+    # Tracked paths that sit inside a generated root.
+    "generated_exclude": ["src/test/resources/csv/manual/"],
+    "scopes": {
+        "new-test": {
+            "label": "A new hand-written test",
+            "write_roots": ["src/test/java/com/hi/api/tests/jira/",
+                            "src/test/resources/csv/manual/"],
+            "pushable": True,
+            "compile": _MVN,
+            "checks": [["tools/check_no_duplicate_methods.py"]],
+            "skill": ".cursor/skills/jira-to-restassured/SKILL.md",
+        },
+        "converted": {
+            "label": "Converted Java of one suite (stays on this machine)",
+            "needs_suite": True,
+            # {suite} is the lower-case suite directory, {Suite} its
+            # capitalised form (the client class name).
+            "write_roots": [
+                "src/main/java/com/hi/api/support/{suite}/",
+                "src/test/java/com/hi/api/tests/imported/{suite}/",
+                "src/main/resources/templates/{suite}/",
+                "src/test/resources/csv/{suite}/",
+                "src/main/java/com/hi/api/rest/clients/{Suite}Client.java",
+            ],
+            "pushable": False,
+            "compile": _MVN,
+            "checks": [["tools/check_no_duplicate_methods.py"]],
+            "skill": ".cursor/skills/converted-app-environment/SKILL.md",
+        },
+        "converter": {
+            "label": "The converter and the runtime under it",
+            "write_roots": [
+                "tools/ra_converter/",
+                "tools/verify_all.py",
+                "src/main/java/com/hi/api/rest/utilities/",
+                "src/main/java/com/hi/api/rest/ApiRoutes.java",
+                "src/main/java/com/hi/api/retry/",
+                "src/main/java/com/hi/api/config/",
+                "src/main/java/com/hi/api/data/",
+                "src/main/java/com/hi/api/db/",
+                "src/test/java/com/hi/api/tests/framework/",
+                "src/test/resources/testng-guards.xml",
+                "CreateTestCase.md",
+            ],
+            "pushable": True,
+            "compile": _MVN,
+            "checks": [],
+            # The whole gate, run BEFORE the agent and again after it. The
+            # change verifies when no check that passed before fails
+            # after. (A plain pass/fail would never pass on a tree that
+            # already has known failures -- a partly converted one does.)
+            "gate": True,
+            "skill": ".cursor/skills/readyapi-restassured-migration/SKILL.md",
+        },
+    },
     "repair_attempts": 1,
     "branch_prefix": "agent/",
     "remote": "origin",
@@ -88,7 +158,9 @@ DEFAULT_POLICY = {
 }
 
 STATES = ("none", "generating", "rejected", "verify-failed",
-          "pending-review", "pushed", "push-failed", "discarded")
+          "pending-review", "pushed", "push-failed", "approved-local",
+          "discarded")
+_SUITE_RX = re.compile(r"^[a-z0-9_]{1,80}$")
 
 
 def _now() -> str:
@@ -99,17 +171,84 @@ def say(msg: str) -> None:
     print(msg, flush=True)
 
 
+# ---- the cursor log --------------------------------------------------
+
+class CursorLog:
+    """Append-only record of the conversation with Cursor for one job."""
+
+    def __init__(self, job_dir: str, secret: str = ""):
+        self.path = os.path.join(job_dir, "cursor.log")
+        self.secret = secret or ""
+        os.makedirs(job_dir, exist_ok=True)
+
+    def write(self, text: str = "") -> None:
+        if self.secret and self.secret in text:
+            text = text.replace(self.secret, "<redacted>")
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with io.open(self.path, "a", encoding="utf-8") as fh:
+            for line in (text.splitlines() or [""]):
+                fh.write(f"{stamp}  {line}\n")
+
+    def block(self, title: str, body: str, cap: int = 20000) -> None:
+        self.write(f"----- {title} -----")
+        body = body or "(empty)"
+        if len(body) > cap:
+            body = body[:cap] + f"\n... ({len(body) - cap} more characters)"
+        self.write(body)
+        self.write(f"----- end {title} -----")
+
+
 # ---- policy and state ------------------------------------------------
+
+def _norm(roots) -> list:
+    out = []
+    for r in roots:
+        r = r.replace("\\", "/")
+        # A directory root ends in "/"; a single file is kept as it is.
+        out.append(r if r.endswith("/") or "." in r.rsplit("/", 1)[-1] else r + "/")
+    return out
+
 
 def load_policy(path: str = "") -> dict:
     policy = json.loads(json.dumps(DEFAULT_POLICY))
     p = path or POLICY_FILE
     if os.path.isfile(p):
         with io.open(p, encoding="utf-8") as fh:
-            policy.update(json.load(fh) or {})
-    for key in ("write_roots", "generated_roots"):
-        policy[key] = [r.replace("\\", "/").rstrip("/") + "/" for r in policy[key]]
+            loaded = json.load(fh) or {}
+        scopes = loaded.pop("scopes", None) or {}
+        policy.update(loaded)
+        for name, spec in scopes.items():
+            policy["scopes"].setdefault(name, {}).update(spec)
+    policy["generated_roots"] = _norm(policy["generated_roots"])
+    policy["generated_exclude"] = _norm(policy.get("generated_exclude") or [])
+    for spec in policy["scopes"].values():
+        spec["write_roots"] = _norm(spec.get("write_roots") or [])
     return policy
+
+
+def resolve_scope(policy: dict, scope: str, suite: str, root: str) -> dict:
+    """The chosen scope with {suite} filled in. Raises ValueError with a
+    message for the page when the choice is not usable."""
+    spec = policy["scopes"].get(scope)
+    if spec is None:
+        raise ValueError(f"unknown scope {scope!r}. Known: "
+                         f"{', '.join(sorted(policy['scopes']))}")
+    out = dict(spec, name=scope, suite="")
+    if spec.get("needs_suite"):
+        suite = (suite or "").strip().lower()
+        if not _SUITE_RX.match(suite):
+            raise ValueError(
+                f"scope `{scope}` needs --suite: the lower-case suite "
+                f"directory, e.g. amexbackbook. Got {suite!r}.")
+        cap = suite[:1].upper() + suite[1:]
+        roots = [r.replace("{suite}", suite).replace("{Suite}", cap)
+                 for r in spec["write_roots"]]
+        if not any(os.path.exists(os.path.join(root, r)) for r in roots):
+            raise ValueError(
+                f"suite `{suite}` has no converted files here (looked for "
+                f"{roots[0]}). Convert it first, or check the name.")
+        out.update(write_roots=roots, suite=suite)
+    return out
 
 
 def review_path(job_dir: str) -> str:
@@ -201,6 +340,7 @@ def call_cursor(prompt: str, root: str) -> dict:
     except Exception as e:                               # noqa: BLE001
         raise RuntimeError(ca.redact_for_log(str(e), cfg.api_key)) from e
     out["result"] = ca.redact_for_log(str(out.get("result") or ""), cfg.api_key)
+    out["model"] = cfg.model
     return out
 
 
@@ -260,6 +400,11 @@ def head(root: str) -> tuple:
     return commit.strip(), branch.strip()
 
 
+def in_roots(rel: str, roots) -> bool:
+    rel = rel.replace("\\", "/")
+    return any(rel == r or (r.endswith("/") and rel.startswith(r)) for r in roots)
+
+
 def snapshot_generated(root: str, policy: dict) -> dict:
     """(size, mtime) of every file in the generated tree. git cannot see
     these, so this is the only way to notice the agent touched one."""
@@ -269,18 +414,19 @@ def snapshot_generated(root: str, policy: dict) -> dict:
         for dirpath, _dirs, files in os.walk(base):
             for name in files:
                 p = os.path.join(dirpath, name)
+                rel = os.path.relpath(p, root).replace("\\", "/")
+                if in_roots(rel, policy["generated_exclude"]):
+                    continue
                 try:
                     st = os.stat(p)
                 except OSError:
                     continue
-                snap[os.path.relpath(p, root).replace("\\", "/")] = (
-                    st.st_size, st.st_mtime_ns)
+                snap[rel] = (st.st_size, st.st_mtime_ns)
     return snap
 
 
 def backup(root: str, paths, dest: str) -> None:
-    """Copy files that were ALREADY changed before the agent ran, so a
-    violation can put back exactly what was there, not just HEAD."""
+    """Copy files so a violation can put back exactly what was there."""
     shutil.rmtree(dest, ignore_errors=True)
     for rel in paths:
         src = os.path.join(root, rel)
@@ -290,27 +436,19 @@ def backup(root: str, paths, dest: str) -> None:
             shutil.copy2(src, out)
 
 
-def in_roots(rel: str, roots) -> bool:
-    rel = rel.replace("\\", "/")
-    return any(rel.startswith(r) for r in roots)
-
-
-def classify(before: dict, after: dict, policy: dict) -> dict:
-    """What the agent did, from two `dirty_paths` snapshots."""
+def classify_tracked(before: dict, after: dict, roots) -> dict:
+    """What changed among the paths git can see."""
     out = {"created": [], "modified": [], "deleted": [], "outside": []}
     for rel in sorted(set(before) | set(after)):
         b, a = before.get(rel, "absent"), after.get(rel, "absent")
         if b == a:
             continue
-        if not in_roots(rel, policy["write_roots"]):
+        if not in_roots(rel, roots):
             out["outside"].append(rel)
         elif a is None:
             out["deleted"].append(rel)
         elif rel not in before:
-            # Untracked now and absent before: the agent created it. A
-            # tracked file it edited also appears here for the first time,
-            # which `git ls-files` tells apart below.
-            out["created"].append(rel)
+            out["created"].append(rel)      # or a clean tracked file, see below
         else:
             out["modified"].append(rel)
     return out
@@ -327,8 +465,24 @@ def split_created(root: str, changes: dict) -> dict:
     return changes
 
 
-def restore(root: str, rels, before: dict, backup_dir: str) -> list:
-    """Put each path back to what it was before the agent ran."""
+def classify_generated(before: dict, after: dict, roots) -> dict:
+    """What changed in the generated tree, from two stat snapshots."""
+    out = {"created": [], "modified": [], "deleted": [], "outside": []}
+    for rel in sorted(set(before) | set(after)):
+        if before.get(rel) == after.get(rel):
+            continue
+        if not in_roots(rel, roots):
+            out["outside"].append(rel)
+        elif rel not in after:
+            out["deleted"].append(rel)
+        elif rel not in before:
+            out["created"].append(rel)
+        else:
+            out["modified"].append(rel)
+    return out
+
+
+def restore_tracked(root: str, rels, before: dict, backup_dir: str) -> list:
     notes = []
     for rel in rels:
         full = os.path.join(root, rel)
@@ -349,9 +503,21 @@ def restore(root: str, rels, before: dict, backup_dir: str) -> list:
     return notes
 
 
-def generated_changes(before: dict, after: dict) -> list:
-    return sorted(p for p in set(before) | set(after)
-                  if before.get(p) != after.get(p))
+def restore_generated(root: str, rels, backup_dir: str) -> list:
+    """Generated files: from the copy taken before the run, or -- when the
+    agent created the file -- removed."""
+    notes = []
+    for rel in rels:
+        full = os.path.join(root, rel)
+        saved = os.path.join(backup_dir, rel)
+        if os.path.isfile(saved):
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            shutil.copy2(saved, full)
+            notes.append(f"restored {rel}")
+        elif os.path.isfile(full):
+            os.remove(full)
+            notes.append(f"removed {rel} (created by the agent)")
+    return notes
 
 
 # ---- the prompt ------------------------------------------------------
@@ -364,25 +530,49 @@ def _read(path: str, cap: int = 60000) -> str:
         return ""
 
 
-def build_prompt(job_dir: str, policy: dict, repair: str = "") -> str:
+_SCOPE_BRIEFING = {
+    "new-test": (
+        "You are writing an API test in this repository's own framework "
+        "(Java 17, REST Assured, TestNG). Read CreateTestCase.md for how a "
+        "hand-written test is laid out."),
+    "converted": (
+        "You are changing Java that the ReadyAPI converter already "
+        "generated for suite `{suite}` (Java 17, REST Assured, TestNG). "
+        "Make the smallest change that does what the plan asks; keep the "
+        "generated structure (Specs, Hooks, Phases, Steps, CSV columns) "
+        "and its naming. These files are overwritten by the next convert "
+        "of this suite, so do not restructure them."),
+    "converter": (
+        "You are changing the ReadyAPI-to-REST-Assured converter "
+        "(tools/ra_converter, Python) or the hand-maintained Java runtime "
+        "under it. Fix the emitter, never a generated copy. A bundled "
+        "file under tools/ra_converter/framework/ carries a "
+        "`ra_converter-framework-rev: N` line: bump it and update the "
+        "matching hash in tools/ra_converter/test_converter_fixes.py when "
+        "you edit one. Add or extend a test_*.py for the change and "
+        "register a new one in tools/verify_all.py."),
+}
+
+
+def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "") -> str:
     brief = _read(os.path.join(job_dir, "brief.md"))
     plan = _read(os.path.join(job_dir, "plan.md"))
-    roots = "\n".join(f"  - {r}**" for r in policy["write_roots"])
-    gen = "\n".join(f"  - {r}**" for r in policy["generated_roots"])
+    roots = "\n".join(f"  - {r}{'**' if r.endswith('/') else ''}"
+                      for r in scope["write_roots"])
+    gen = "\n".join(f"  - {r}**" for r in policy["generated_roots"]
+                    if not in_roots(r, scope["write_roots"]))
+    briefing = _SCOPE_BRIEFING.get(scope["name"], _SCOPE_BRIEFING["new-test"])
     parts = [
-        "You are writing an API test in this repository's own framework "
-        "(Java 17, REST Assured, TestNG). Follow the skill at "
-        ".cursor/skills/jira-to-restassured/SKILL.md and the app skill it "
-        "points to; read CreateTestCase.md for how a hand-written test is "
-        "laid out.",
+        briefing.replace("{suite}", scope.get("suite") or ""),
+        f"Follow the skill at {scope.get('skill') or '.cursor/skills/'} "
+        f"and any app skill it points to.",
         "",
         "WHERE YOU MAY WRITE -- this is enforced after you finish, and a "
         "single file outside it fails the whole job and is reverted:",
         roots,
         "",
-        "NEVER touch (converter output, regenerated on every convert):",
-        gen,
-        "  - src/test/resources/csv/<suite>/** other than csv/manual/",
+        "NEVER touch:",
+        gen + ("\n  (other than the paths listed above)" if scope["name"] == "converted" else ""),
         "",
         "Do not delete any file. Do not run git commit, git push, git "
         "checkout or git reset -- this tool commits, after a person has "
@@ -391,14 +581,12 @@ def build_prompt(job_dir: str, policy: dict, repair: str = "") -> str:
         "a file: read it through Config at run time. The repository is "
         "public.",
         "",
-        "Act on the plan below. For a request the plan marks UPDATE, "
-        "change the existing test it names only if that file is inside "
-        "the paths above; otherwise write a new test and say so. For one "
-        "it marks UPSTREAM or STOP, write nothing for it and say why.",
+        "Act on the plan below. For a request the plan marks UPSTREAM or "
+        "STOP, write nothing for it and say why.",
         "",
         "When you finish, reply with: the files you created or changed, "
-        "one line each on what the test asserts, and anything in the "
-        "plan you could not do.",
+        "one line each on what changed and why, and anything in the plan "
+        "you could not do.",
         "",
         "===== brief.md =====",
         brief or "(empty)",
@@ -415,18 +603,39 @@ def build_prompt(job_dir: str, policy: dict, repair: str = "") -> str:
 
 # ---- verify ----------------------------------------------------------
 
-def run_verify(root: str, policy: dict, runner=None) -> dict:
-    """Compile, then the repository checks. {ok, steps:[{name, rc, tail}]}."""
+def gate_failures(root: str, out_json: str, runner=None) -> dict:
+    """Run the gate; {check name: how to reproduce} for every failing check."""
+    run = runner or (lambda argv: subprocess.run(
+        argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT))
+    try:
+        os.remove(out_json)
+    except OSError:
+        pass
+    run([sys.executable, "-B", os.path.join("tools", "verify_all.py"),
+         "--json", out_json])
+    try:
+        with io.open(out_json, encoding="utf-8") as fh:
+            checks = json.load(fh).get("checks") or []
+    except (OSError, ValueError) as e:
+        raise RuntimeError(f"the gate produced no result file ({e}). Run "
+                           f"`python tools/verify_all.py` by hand to see why.")
+    return {c.get("name", "?"): c.get("repro", "") for c in checks
+            if c.get("status") == "fail"}
+
+
+def run_verify(root: str, scope: dict, runner=None, gate_before=None,
+               gate_json: str = "") -> dict:
+    """Compile, then the scope's checks. {ok, steps:[{name, rc, tail}]}."""
     run = runner or (lambda argv: subprocess.run(
         argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT))
     steps = []
-    compile_cmd = list(policy.get("compile") or [])
+    compile_cmd = list(scope.get("compile") or [])
     if compile_cmd:
         exe = shutil.which(compile_cmd[0])
         if not exe:
             steps.append({"name": "compile", "rc": 127,
                           "tail": f"`{compile_cmd[0]}` is not on PATH. The "
-                                  f"test cannot be called verified without "
+                                  f"change cannot be called verified without "
                                   f"a compile."})
             return {"ok": False, "steps": steps}
         say(f" .. verify: {' '.join(compile_cmd)}")
@@ -435,12 +644,29 @@ def run_verify(root: str, policy: dict, runner=None) -> dict:
                       "tail": _tail(r.stdout)})
         if r.returncode != 0:
             return {"ok": False, "steps": steps}
-    for check in policy.get("checks") or []:
+    for check in scope.get("checks") or []:
         say(f" .. verify: python {' '.join(check)}")
         r = run([sys.executable, "-B"] + list(check))
-        steps.append({"name": check[0], "rc": r.returncode,
+        steps.append({"name": " ".join(check), "rc": r.returncode,
                       "tail": _tail(r.stdout)})
         if r.returncode != 0:
+            return {"ok": False, "steps": steps}
+    if scope.get("gate"):
+        say(" .. verify: the gate (python tools/verify_all.py), compared "
+            "with the run taken before the agent")
+        try:
+            after = gate_failures(root, gate_json, runner)
+        except RuntimeError as e:
+            steps.append({"name": "gate", "rc": 1, "tail": str(e)})
+            return {"ok": False, "steps": steps}
+        new = {n: r for n, r in after.items() if n not in (gate_before or {})}
+        tail = "\n".join(f"NEW failing check: {n}\n    {r}" for n, r in sorted(new.items()))
+        known = sorted(set(after) - set(new))
+        if known:
+            tail += ("\n" if tail else "") + "already failing before the change: " + ", ".join(known)
+        steps.append({"name": "gate: no check that passed before fails now",
+                      "rc": 1 if new else 0, "tail": tail})
+        if new:
             return {"ok": False, "steps": steps}
     return {"ok": True, "steps": steps}
 
@@ -541,33 +767,57 @@ def cmd_setup(job_dir: str, root: str) -> int:
         say(f"FAIL not a git work tree: {out.strip()[:200]}")
         return 1
     say(" ok  git work tree")
+    CursorLog(job_dir, cfg.api_key).write(
+        f"setup ok: cursor-sdk {how}, model {cfg.model}")
     return 0
 
 
-def cmd_generate(job_dir: str, root: str, policy: dict, agent=None,
-                 verifier=None) -> int:
-    """Cursor writes; the tree is checked; the result is held for review."""
+def cmd_generate(job_dir: str, root: str, policy: dict, scope_name: str = "new-test",
+                 suite: str = "", agent=None, verifier=None) -> int:
+    """Cursor writes; the files are checked; the result is held for review."""
     prior = read_review(job_dir)
     if prior.get("state") == "pending-review":
         say("FAIL this job already has changes waiting for review. Approve "
-            "and push them, or discard them, before generating again.")
+            "them or discard them before generating again.")
         return 1
     if not _read(os.path.join(job_dir, "plan.md")).strip():
         say("FAIL no plan.md for this job. Run tab 1 (read it, then locate) "
             "first: the plan is what the agent is asked to act on.")
         return 1
+    try:
+        scope = resolve_scope(policy, scope_name, suite, root)
+    except ValueError as e:
+        say(f"FAIL {e}")
+        return 1
+    secret = ""
     if agent is None:
         try:
             ensure_sdk(root)
+            secret = cursor_config(root)[1].api_key
         except RuntimeError as e:
             say(f"FAIL {e}")
             return 1
     call = agent or (lambda prompt: call_cursor(prompt, root))
-    verify = verifier or (lambda: run_verify(root, policy))
+    clog = CursorLog(job_dir, secret)
+    roots = scope["write_roots"]
+    gate_before = {}
+    if verifier is None and scope.get("gate"):
+        say(" .. running the gate once BEFORE the agent, to know what "
+            "already fails (a minute or two)")
+        try:
+            gate_before = gate_failures(root, os.path.join(job_dir, "gate-before.json"))
+        except RuntimeError as e:
+            say(f"FAIL {e}")
+            return 1
+        say(f" .. {len(gate_before)} check(s) fail before the change: "
+            + (", ".join(sorted(gate_before)) or "none"))
+    verify = verifier or (lambda: run_verify(
+        root, scope, gate_before=gate_before,
+        gate_json=os.path.join(job_dir, "gate-after.json")))
 
     commit, branch = head(root)
     before = dirty_paths(root)
-    stale = [p for p in before if in_roots(p, policy["write_roots"])]
+    stale = [p for p in before if in_roots(p, roots)]
     if stale:
         say("FAIL there are uncommitted changes inside the paths the agent "
             "writes to. Commit or remove them first -- otherwise its work "
@@ -577,117 +827,169 @@ def cmd_generate(job_dir: str, root: str, policy: dict, agent=None,
     backup_dir = os.path.join(job_dir, "pre")
     backup(root, before, backup_dir)
     gen_before = snapshot_generated(root, policy)
+    # The generated files this scope may change, copied so they can be
+    # diffed and put back. Only the suite in scope: a few megabytes.
+    gen_backup = os.path.join(job_dir, "pre-generated")
+    backup(root, [p for p in gen_before if in_roots(p, roots)], gen_backup)
+
     review = write_review(job_dir, {
-        "state": "generating", "base_commit": commit, "base_branch": branch,
-        "started": _now()})
+        "state": "generating", "scope": scope["name"], "suite": scope["suite"],
+        "pushable": bool(scope.get("pushable")), "base_commit": commit,
+        "base_branch": branch, "started": _now()})
+    clog.write("=" * 72)
+    clog.write(f"generate  job={os.path.basename(job_dir)}  scope={scope['name']}"
+               + (f"  suite={scope['suite']}" if scope["suite"] else "")
+               + f"  base={branch}@{commit[:8]}")
+    clog.write("may write: " + ", ".join(roots))
+
+    def undo() -> list:
+        after = dirty_paths(root)
+        touched = [p for p in sorted(set(before) | set(after))
+                   if before.get(p, "absent") != after.get(p, "absent")]
+        notes = restore_tracked(root, touched, before, backup_dir)
+        g = classify_generated(gen_before, snapshot_generated(root, policy), roots)
+        notes += restore_generated(
+            root, g["created"] + g["modified"] + g["deleted"], gen_backup)
+        return notes
+
+    def reject(reason: str, restore: bool = True) -> int:
+        if restore:
+            for note in undo():
+                say(f" .. {note}")
+                clog.write(f"undo: {note}")
+        clog.write(f"REJECTED: {reason}")
+        write_review(job_dir, dict(review, state="rejected", reason=reason))
+        return 1
 
     attempts = 1 + max(0, int(policy.get("repair_attempts", 1)))
     repair = ""
-    result = {}
     for attempt in range(1, attempts + 1):
-        say(f" .. calling Cursor (attempt {attempt} of {attempts})")
-        prompt = build_prompt(job_dir, policy, repair)
+        say(f" .. calling Cursor (attempt {attempt} of {attempts}) -- "
+            f"the conversation is in cursor.log")
+        prompt = build_prompt(job_dir, policy, scope, repair)
         with io.open(os.path.join(job_dir, f"agent-prompt-{attempt}.txt"),
                      "w", encoding="utf-8") as fh:
             fh.write(prompt)
+        clog.write(f"attempt {attempt} of {attempts}: prompt {len(prompt)} "
+                   f"characters (agent-prompt-{attempt}.txt)")
+        clog.block("prompt", prompt, cap=6000)
+        started = time.time()
         try:
             answer = call(prompt)
         except Exception as e:                           # noqa: BLE001
             say(f"FAIL Cursor call failed: {e}")
-            _undo_everything(root, before, backup_dir, policy)
-            write_review(job_dir, dict(review, state="rejected",
-                                       reason=f"Cursor call failed: {e}"))
-            return 1
+            clog.write(f"call FAILED after {time.time() - started:.1f}s: {e}")
+            return reject(f"Cursor call failed: {e}")
+        text = str(answer.get("result") or "")
         with io.open(os.path.join(job_dir, f"agent-answer-{attempt}.md"),
                      "w", encoding="utf-8") as fh:
-            fh.write(str(answer.get("result") or ""))
+            fh.write(text)
+        clog.write(f"answered in {time.time() - started:.1f}s  "
+                   f"status={answer.get('status', '')}  "
+                   f"run id={answer.get('id', '')}  "
+                   f"model={answer.get('model', '')}")
+        clog.block("answer", text)
         say(" .. Cursor finished; checking what it changed")
 
-        problems = []
         commit_now, branch_now = head(root)
         if (commit_now, branch_now) != (commit, branch):
+            msg = (f"HEAD moved ({branch}@{commit[:8]} -> {branch_now}@"
+                   f"{commit_now[:8]}). The agent must not commit or switch "
+                   f"branches. Nothing was reverted for this: check `git "
+                   f"reflog` and put the branch back by hand.")
+            say(f"FAIL {msg}")
+            return reject(msg, restore=False)
+
+        tracked = split_created(root, classify_tracked(before, dirty_paths(root), roots))
+        gen = classify_generated(gen_before, snapshot_generated(root, policy), roots)
+        changes = {k: sorted(tracked[k] + gen[k]) for k in
+                   ("created", "modified", "deleted")}
+        clog.write(f"changed: {len(changes['created'])} created, "
+                   f"{len(changes['modified'])} modified, "
+                   f"{len(changes['deleted'])} deleted, "
+                   f"{len(tracked['outside']) + len(gen['outside'])} outside")
+        for kind in ("created", "modified", "deleted"):
+            for p in changes[kind]:
+                clog.write(f"  {kind:9s} {p}")
+
+        problems = []
+        if gen["outside"]:
+            suites = sorted({_suite_of(p) for p in gen["outside"]} - {""})
             problems.append(
-                f"HEAD moved ({branch}@{commit[:8]} -> {branch_now}@"
-                f"{commit_now[:8]}). The agent must not commit or switch "
-                f"branches. Nothing was reverted for this: check `git "
-                f"reflog` and put the branch back by hand.")
-        gen_changed = generated_changes(gen_before, snapshot_generated(root, policy))
-        if gen_changed:
-            suites = sorted({_suite_of(p) for p in gen_changed} - {""})
-            problems.append(
-                f"{len(gen_changed)} file(s) in the generated tree were "
-                f"changed, e.g. {gen_changed[0]}. git does not track them, "
-                f"so they cannot be put back: reconvert "
+                f"{len(gen['outside'])} generated file(s) outside this "
+                f"scope were changed, e.g. {gen['outside'][0]}. Nothing "
+                f"copied them, so they cannot be put back: reconvert "
                 f"{', '.join(suites) or 'the affected suite'}.")
-        changes = split_created(root, classify(before, dirty_paths(root), policy))
-        if changes["outside"]:
+        if tracked["outside"]:
             problems.append("files changed outside the allowed paths: "
-                            + ", ".join(changes["outside"][:10]))
+                            + ", ".join(tracked["outside"][:10]))
         if changes["deleted"]:
             problems.append("files deleted (this pipeline does not delete): "
                             + ", ".join(changes["deleted"][:10]))
         if problems:
             for p in problems:
                 say(f"FAIL {p}")
-            for note in _undo_everything(root, before, backup_dir, policy):
-                say(f" .. {note}")
-            write_review(job_dir, dict(review, state="rejected",
-                                       reason=" | ".join(problems)))
-            return 1
+            return reject(" | ".join(problems))
         if not changes["created"] and not changes["modified"]:
             say("FAIL the agent changed no file. Its answer is in "
-                f"agent-answer-{attempt}.md -- it usually says why.")
-            write_review(job_dir, dict(review, state="rejected",
-                                       reason="the agent changed no file"))
-            return 1
+                "cursor.log -- it usually says why.")
+            return reject("the agent changed no file", restore=False)
 
-        files = changes["created"] + changes["modified"]
         say(f" ok  {len(changes['created'])} created, "
             f"{len(changes['modified'])} modified, all inside the allowed paths")
+        generated = sorted(gen["created"] + gen["modified"])
         result = verify()
-        _write_diff(root, job_dir, changes)
-        review = dict(review, files=changes, verify=result,
+        for step in result["steps"]:
+            clog.write(f"verify {'ok  ' if step['rc'] == 0 else 'FAIL'} {step['name']}")
+        _write_diff(root, job_dir, changes, generated, gen_backup)
+        files = changes["created"] + changes["modified"]
+        review = dict(review, files={k: changes[k] for k in ("created", "modified")},
+                      generated=generated, verify=result,
                       hashes={f: _sha(os.path.join(root, f)) for f in files})
         if result["ok"]:
             say(" ok  verified")
             write_review(job_dir, dict(review, state="pending-review"))
+            clog.write("PENDING REVIEW")
             say("PENDING REVIEW -- read proposed.diff. Nothing is committed "
                 "and nothing has left this machine.")
             return 0
         failed = result["steps"][-1]
         say(f"FAIL verify step `{failed['name']}` exited {failed['rc']}")
+        clog.block(f"verify output: {failed['name']}", failed["tail"], cap=8000)
         repair = f"$ {failed['name']}\n{failed['tail']}"
         # The repair attempt edits the files just written. `before` stays
         # the ORIGINAL snapshot, so the next classification still covers
         # everything the agent has done since the job started.
     write_review(job_dir, dict(review, state="verify-failed"))
-    say("VERIFY FAILED after the repair attempt. The files are still in the "
-        "working tree so you can look at them; `discard` removes them.")
+    clog.write("VERIFY FAILED after the repair attempt")
+    say("VERIFY FAILED after the repair attempt. The files are still in "
+        "place so you can look at them; `discard` puts them back.")
     return 1
 
 
 def _suite_of(rel: str) -> str:
-    m = re.search(r"/(?:support|imported|classic|templates)/([^/]+)/", "/" + rel)
+    m = re.search(r"/(?:support|imported|classic|templates|csv)/([^/]+)/", "/" + rel)
     return m.group(1) if m else ""
 
 
-def _undo_everything(root: str, before: dict, backup_dir: str, policy: dict) -> list:
-    """Put back every path the agent touched that git can see."""
-    after = dirty_paths(root)
-    touched = [p for p in sorted(set(before) | set(after))
-               if before.get(p, "absent") != after.get(p, "absent")]
-    return restore(root, touched, before, backup_dir)
-
-
-def _write_diff(root: str, job_dir: str, changes: dict) -> str:
-    """proposed.diff: tracked edits as git sees them, new files in full."""
+def _write_diff(root: str, job_dir: str, changes: dict, generated=(),
+                gen_backup: str = "") -> str:
+    """proposed.diff. Tracked edits as git sees them; new files in full;
+    generated files against the copy taken before the run."""
+    generated = set(generated)
     chunks = []
-    if changes["modified"]:
-        _, out = git(root, "diff", "--", *changes["modified"])
+    tracked_mod = [p for p in changes["modified"] if p not in generated]
+    if tracked_mod:
+        _, out = git(root, "diff", "--", *tracked_mod)
         chunks.append(out)
+    for rel in changes["modified"]:
+        if rel in generated:
+            old = _read(os.path.join(gen_backup, rel), 2_000_000).splitlines()
+            new = _read(os.path.join(root, rel), 2_000_000).splitlines()
+            chunks.append("\n".join(difflib.unified_diff(
+                old, new, f"a/{rel}", f"b/{rel}", lineterm="")) + "\n")
     for rel in changes["created"]:
-        body = _read(os.path.join(root, rel), 400000)
-        lines = body.splitlines()
+        lines = _read(os.path.join(root, rel), 400000).splitlines()
         chunks.append(f"diff --git a/{rel} b/{rel}\nnew file\n--- /dev/null\n"
                       f"+++ b/{rel}\n@@ -0,0 +1,{len(lines)} @@\n"
                       + "\n".join("+" + l for l in lines) + "\n")
@@ -704,36 +1006,64 @@ def cmd_discard(job_dir: str, root: str) -> int:
         say(f"FAIL nothing to discard (state: {review.get('state')})")
         return 1
     files = review.get("files") or {}
+    generated = set(review.get("generated") or [])
+    gen_backup = os.path.join(job_dir, "pre-generated")
     for rel in files.get("created") or []:
         full = os.path.join(root, rel)
         if os.path.isfile(full):
             os.remove(full)
             say(f" .. removed {rel}")
     for rel in files.get("modified") or []:
+        if rel in generated:
+            for note in restore_generated(root, [rel], gen_backup):
+                say(f" .. {note}")
+            continue
         rc, out = git(root, "checkout", "--", rel)
         say(f" .. restored {rel}" if rc == 0
             else f" .. COULD NOT restore {rel}: {out.strip()[:120]}")
     write_review(job_dir, dict(review, state="discarded"))
+    CursorLog(job_dir).write("DISCARDED by the reviewer")
     say("discarded")
     return 0
 
 
-def cmd_push(job_dir: str, root: str, policy: dict, job: str, confirm: str,
-             config_path: str = "") -> int:
-    """Branch, commit and push what a person has reviewed. Never main."""
+def cmd_approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
+                config_path: str = "") -> int:
+    """The review button. A pushable scope is committed to its own branch
+    and pushed; converted Java is kept locally with a saved patch."""
     review = read_review(job_dir)
     if review.get("state") not in ("pending-review", "push-failed"):
         say(f"FAIL this job is not waiting for review (state: "
-            f"{review.get('state')}). Only a pending review can be pushed.")
+            f"{review.get('state')}). Only a pending review can be approved.")
         return 1
     if confirm != job:
-        say("FAIL push needs --confirm with the job id: it is the approval.")
+        say("FAIL approve needs --confirm with the job id: it is the approval.")
         return 1
     files = (review.get("files") or {})
     paths = list(files.get("created") or []) + list(files.get("modified") or [])
     if not paths:
         say("FAIL the review lists no files.")
         return 1
+    clog = CursorLog(job_dir)
+    generated = review.get("generated") or []
+    gen_backup = os.path.join(job_dir, "pre-generated")
+    diff = _write_diff(root, job_dir, files, generated, gen_backup)
+
+    if not review.get("pushable", True):
+        patch = os.path.join(job_dir, "converted.patch")
+        with io.open(patch, "w", encoding="utf-8") as fh:
+            fh.write(diff)
+        write_review(job_dir, dict(review, state="approved-local",
+                                   approved=_now(), patch="converted.patch"))
+        clog.write(f"APPROVED (kept locally): {len(paths)} file(s), "
+                   f"patch saved as converted.patch")
+        say(f"APPROVED -- {len(paths)} converted file(s) kept on this "
+            f"machine. They are gitignored, so nothing was committed or "
+            f"pushed. A reconvert of `{review.get('suite')}` will overwrite "
+            f"them; the change is saved as "
+            f"target/agent/{job}/converted.patch.")
+        return 0
+
     branch = policy["branch_prefix"] + job
     if branch in policy["protected_branches"] or not policy["branch_prefix"]:
         say(f"FAIL refusing to push to `{branch}`.")
@@ -743,9 +1073,8 @@ def cmd_push(job_dir: str, root: str, policy: dict, job: str, confirm: str,
         say("FAIL detached HEAD: check out a branch first.")
         return 1
 
-    # Scan BEFORE anything is committed: what is scanned is what is in the
-    # working tree now, which may have been edited since the review.
-    diff = _write_diff(root, job_dir, files)
+    # Scan BEFORE anything is committed: what is scanned is what is on
+    # disk now, which may have been edited since the review.
     known = config_secrets(config_path or os.path.join(
         root, "src", "main", "resources", "program_configuration.json"))
     findings = scan_secrets(diff, known)
@@ -754,6 +1083,7 @@ def cmd_push(job_dir: str, root: str, policy: dict, job: str, confirm: str,
             f"committed. This repository is public.")
         for line, why in findings[:20]:
             say(f"   {why}: {line}")
+        clog.write(f"push REFUSED: secret scan, {len(findings)} finding(s)")
         write_review(job_dir, dict(review, state="pending-review",
                                    scan=[w for _l, w in findings]))
         return 1
@@ -766,6 +1096,7 @@ def cmd_push(job_dir: str, root: str, policy: dict, job: str, confirm: str,
             say("FAIL push failed again:\n" + out.strip()[-400:])
             return 1
         write_review(job_dir, dict(review, state="pushed", pushed=_now()))
+        clog.write(f"PUSHED {branch}")
         say(f"PUSHED {branch} to {policy['remote']}.")
         return 0
     rc, out = git(root, "checkout", "-b", branch)
@@ -777,7 +1108,7 @@ def cmd_push(job_dir: str, root: str, policy: dict, job: str, confirm: str,
         rc, out = git(root, "add", "--", *paths)
         if rc != 0:
             raise RuntimeError(f"git add failed: {out.strip()[:200]}")
-        subject = f"test(agent): {job}"
+        subject = f"{'fix' if review.get('scope') == 'converter' else 'test'}(agent): {job}"
         body = _commit_body(job_dir, files)
         rc, out = git(root, "commit", "-m", subject, "-m", body, "--", *paths)
         if rc != 0:
@@ -789,11 +1120,13 @@ def cmd_push(job_dir: str, root: str, policy: dict, job: str, confirm: str,
             write_review(job_dir, dict(review, state="push-failed", branch=branch,
                                        commit=sha.strip(),
                                        reason=out.strip()[-400:]))
+            clog.write(f"push FAILED; commit {sha.strip()[:8]} kept on {branch}")
             say(f"FAIL push failed; the commit is kept on local branch "
                 f"{branch}:\n{out.strip()[-400:]}")
             return 1
         write_review(job_dir, dict(review, state="pushed", branch=branch,
                                    commit=sha.strip(), pushed=_now()))
+        clog.write(f"APPROVED and PUSHED {branch} ({sha.strip()[:8]})")
         say(f"PUSHED {branch} to {policy['remote']}. Open a pull request "
             f"from it; nothing was pushed to {base}.")
         return 0
@@ -816,8 +1149,11 @@ def _commit_body(job_dir: str, files: dict) -> str:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("command", choices=("setup", "generate", "push", "discard"))
+    ap.add_argument("command",
+                    choices=("setup", "generate", "approve", "push", "discard"))
     ap.add_argument("--job", required=True)
+    ap.add_argument("--scope", default="new-test")
+    ap.add_argument("--suite", default="")
     ap.add_argument("--confirm", default="")
     args = ap.parse_args(argv)
     job_dir = intake.job_dir(args.job)
@@ -826,10 +1162,11 @@ def main(argv=None) -> int:
     if args.command == "setup":
         return cmd_setup(job_dir, ROOT)
     if args.command == "generate":
-        return cmd_generate(job_dir, ROOT, policy)
+        return cmd_generate(job_dir, ROOT, policy, args.scope, args.suite)
     if args.command == "discard":
         return cmd_discard(job_dir, ROOT)
-    return cmd_push(job_dir, ROOT, policy, intake.safe_job(args.job), args.confirm)
+    return cmd_approve(job_dir, ROOT, policy, intake.safe_job(args.job),
+                       args.confirm)
 
 
 if __name__ == "__main__":

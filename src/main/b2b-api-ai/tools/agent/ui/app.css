@@ -106,3 +106,7 @@ pre.doc { max-height: 24rem; min-height: 5rem; color: #cdd3e1; }
   background: #c94c4c; color: #1c0505; }
 .diff { max-height: 32rem; }
 button:disabled { opacity: .45; cursor: not-allowed; }
+.badge.approved-local { background: #2f9e5b; color: #04180c; }
+.log.cursor { max-height: 22rem; border-left: 3px solid #6c8cff; }
+select { width: 100%; padding: .45rem .5rem; background: #0f1220; color: inherit;
+         border: 1px solid #2c3550; border-radius: 6px; font: inherit; }
