@@ -52,6 +52,7 @@
                  and RestStepTest pinned a generated template by content
                  hash. A guard nobody runs is not a guard. -->
             <class name="com.hi.api.tests.data.MultiSourceDataProviderTest"/>
+            <class name="com.hi.api.tests.framework.AuthorDomainSurvivesRegenTest"/>
             <class name="com.hi.api.tests.framework.ConfigBeatsDerivedAliasTest"/>
             <class name="com.hi.api.tests.framework.CtxFieldsTest"/>
             <class name="com.hi.api.tests.framework.FailureDigestFieldPairingTest"/>

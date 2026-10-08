@@ -2450,7 +2450,7 @@ _FRAMEWORK_REVS = {
     "AvailabilitySearch.java": (3, "240175ece3b7a192"),
     "CtxFields.java": (13, "2588ae60b828fec4"),
     "IdentityVocabulary.java": (2, "f2faba88c0f4a21f"),
-    "ImportedScenario.java": (29, "ec27641c7fa4f436"),
+    "ImportedScenario.java": (30, "24ae57c41c7f47e2"),
     "ImportedTemplates.java": (3, "69ed930f09be446a"),
     "ImportedTestdataCleanup.java": (4, "f7cff51999fd99a3"),
     "TestThreadState.java": (3, "03c9b17a164928af"),

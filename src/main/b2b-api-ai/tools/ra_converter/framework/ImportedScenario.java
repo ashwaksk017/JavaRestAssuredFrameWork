@@ -1,6 +1,6 @@
 package com.hi.api.support;
 
-// ra_converter-framework-rev: 29
+// ra_converter-framework-rev: 30
 // Bumped whenever this bundled file changes. The converter
 // SKIPS author-editable files that already exist, so without a
 // revision it cannot tell an author's edit from a copy left by
@@ -1288,6 +1288,8 @@ public final class ImportedScenario {
             String updatedEmail = "bh" + extraUname + "jff@" + frozen;
             CtxFields.putBothCases(ctx, "Properties", "updatedemail", updatedEmail);
             CtxFields.putBothCases(ctx, "Properties", "updatedmailAddress", updatedEmail);
+        } else {
+            regenNamedEmailsWithoutFrozenDomain(ctx, row, domain, csvDomain);
         }
         regenNumberedDomains(ctx, row);
         bindEmailsToSavedDomains(ctx, row);
@@ -1303,6 +1305,85 @@ public final class ImportedScenario {
             LOG.info(" .. [regen] Properties.Domain kept as the script's literal: {}", authorDomain);
         }
         mirrorRowSpellings(ctx, row, before);
+    }
+
+    /** The three emails the frozen-domain branch owns, by the name the row uses. */
+    private static final String[] FROZEN_BRANCH_EMAILS =
+            {"hardcodedemail", "updatedemail", "updatedmailAddress"};
+
+    /**
+     * {@code hardcodedemail} / {@code updatedemail} / {@code updatedmailAddress}
+     * for a case that is NOT built on the frozen domain.
+     *
+     * <p>These three are "named" identity keys, so the two generic passes
+     * ({@link #regenRowShapedIdentity}, {@link #alignPackEmailsToIdentity})
+     * skip them on the grounds that the named block above already decided
+     * them. It did -- but only inside {@code if (hasFrozenDomain)}. For a
+     * case whose domain the script typed, or one that draws a fresh domain,
+     * nothing wrote them at all, and the generator pack's value survived on
+     * whatever domain the pack happened to pick.</p>
+     *
+     * <p>leadspace_attestation_suite builds its owner as
+     * {@code generatedUser + "@" + "apollomessenger.com"} and posts
+     * {@code emailDomains: ["apollomessenger.com"]}. The request went out
+     * with {@code ...@thetustingroup.com} and was refused 400/503 "Email
+     * address domain must match an allowed domain within program account"
+     * -- nine tests. In all 27 cases of that suite ReadyAPI's saved owner
+     * email sits on one of the case's own email domains.</p>
+     *
+     * <p>The row decides, exactly as it does for every other saved email:</p>
+     * <ul>
+     *   <li>saved on the case's identity domain -> fresh local part on the
+     *       identity domain as regenerated (or as the script pinned it);</li>
+     *   <li>saved on another domain -> that domain is the author's, kept
+     *       verbatim, fresh local part;</li>
+     *   <li>not saved, but the pack generated one -> the identity domain,
+     *       which is where ReadyAPI builds every pack email.</li>
+     * </ul>
+     * A key neither saved nor generated is not invented.
+     *
+     * <p>And a key the script never writes is not touched. Then ctx holds
+     * exactly the row's saved value -- the Properties seed put it there --
+     * and that value is an address the author typed, possibly because the
+     * test needs THAT address. Only a value the generator pack replaced is
+     * known to be per-run data.</p>
+     */
+    static void regenNamedEmailsWithoutFrozenDomain(Map<String, String> ctx,
+                                                    Map<String, String> row,
+                                                    String domain, String csvDomain) {
+        if (ctx == null || domain == null || domain.isEmpty()) {
+            return;
+        }
+        java.util.List<String> used = new java.util.ArrayList<>();
+        for (Map.Entry<String, String> e : ctx.entrySet()) {
+            if (e.getKey() != null && e.getKey().startsWith("Properties.")
+                    && e.getValue() != null && e.getValue().indexOf('@') > 0) {
+                used.add(e.getValue());
+            }
+        }
+        for (String field : FROZEN_BRANCH_EMAILS) {
+            String flipped = CtxFields.flipFirst(field);
+            String saved = firstNonBlank(row, "Properties." + field, "Properties." + flipped);
+            String current = firstNonBlank(ctx, "Properties." + field, "Properties." + flipped);
+            if (saved != null && current != null
+                    && saved.trim().equalsIgnoreCase(current.trim())) {
+                continue;                   // the author's own address, as seeded
+            }
+            int at = saved == null ? -1 : saved.trim().lastIndexOf('@');
+            String target;
+            if (at > 0 && at < saved.trim().length() - 1) {
+                String savedDom = saved.trim().substring(at + 1);
+                target = sameDomainOrLabel(normalizeDomain(savedDom), normalizeDomain(csvDomain))
+                        ? domain : savedDom;
+            } else if (current != null && current.lastIndexOf('@') > 0) {
+                target = domain;
+            } else {
+                continue;
+            }
+            String fresh = distinctEmail(target, used.toArray(new String[0]));
+            used.add(fresh);
+            CtxFields.putBothCases(ctx, "Properties", field, fresh);
+        }
     }
 
     /**
