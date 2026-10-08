@@ -175,6 +175,12 @@ CHECKS = [
           "LocalDate a GString reads is in ctx before the SQL that uses it "
           "-- both emitted nothing, passed the convert, and sent a stale "
           "OTP and a literal `#olderDate#` at run time"),
+    Check("db-collect-and-pick",
+          [PY, "tools/ra_converter/test_db_collect_and_pick.py"],
+          "a script that reads a list from the database and picks one entry "
+          "reads the database, runs before the setup script that uses the "
+          "pick, and hands the pick on -- the read was a comment reported "
+          "FULL, and the script that needed it had been hoisted ahead of it"),
     Check("suite-vocab-isolation",
           [PY, "tools/ra_converter/test_suite_vocab_isolation.py"],
           "a suite's chain methods live on its OWN steps class -- they were "

@@ -472,6 +472,131 @@ def _unformatted_local_date_vars(script: str) -> list:
     return out
 
 
+def _matching_brace(text: str, open_pos: int) -> int:
+    """Index of the `}` closing the `{` at `open_pos`, or -1. Strings skipped."""
+    depth, i, n, in_str = 0, open_pos, len(text), None
+    while i < n:
+        ch = text[i]
+        if in_str:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == in_str:
+                in_str = None
+        elif ch in ("'", '"'):
+            in_str = ch
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
+
+
+_TRIPLE_DEF_RX = re.compile(
+    r'^[ \t]*def\s+(\w+)\s*=\s*"""(.*?)"""', re.M | re.S)
+_PLAIN_DEF_RX = re.compile(
+    r"^[ \t]*def\s+(\w+)\s*=\s*([\"'])((?:(?!\2).)*)\2[ \t]*;?[ \t]*$", re.M)
+_EMPTY_LIST_RX = re.compile(r"^[ \t]*def\s+(\w+)\s*=\s*\[\s*\][ \t]*;?[ \t]*$", re.M)
+
+
+def collect_and_pick_blocks(script: str) -> list:
+    """`sql.eachRow` loops that COLLECT a column into a list a later line
+    picks one entry from.
+
+        def query = (a triple-quoted string)
+                    SELECT value FROM segment.account_rules
+                    WHERE reason = 'managed_domain';
+        def domains = []
+        sql.eachRow(query) { row ->
+            if (row.value) { domains.add(row.value.toString().trim()) }
+        }
+        def randomDomain = domains[new Random().nextInt(domains.size())]
+        props.setPropertyValue("managed_email_domain", randomDomain)
+
+    The eachRow recogniser knows one closure shape, `outer = row.field`,
+    and one way to find the query, a single-line `def`. This is neither:
+    the query is triple-quoted and the closure appends. So the step emitted
+    a hand-wire comment, the database was never read, and the property kept
+    whatever value the datasheet had saved from somebody's last ReadyAPI
+    run -- while the script's whole job is to pick a value that is in the
+    table TODAY.
+
+    Returns ``[{query_var, sql, column, list_var, pick_var}]``. Only a
+    block whose every part is found is returned; anything less stays with
+    the existing recogniser and its comment.
+    """
+    live = "\n".join(l for l in (script or "").splitlines()
+                     if not l.strip().startswith("//"))
+    queries = {m.group(1): m.group(2) for m in _TRIPLE_DEF_RX.finditer(live)}
+    for m in _PLAIN_DEF_RX.finditer(live):
+        queries.setdefault(m.group(1), m.group(3))
+    lists = set(_EMPTY_LIST_RX.findall(live))
+    out = []
+    for m in re.finditer(r"sql\.eachRow\(\s*(\w+)\s*\)\s*\{", live):
+        qvar = m.group(1)
+        sql = queries.get(qvar)
+        if sql is None or "$" in sql or "#" in sql:
+            continue                    # interpolated: not a constant query
+        close = _matching_brace(live, m.end() - 1)
+        if close < 0:
+            continue
+        head = re.match(r"\s*(\w+)\s*->", live[m.end():close])
+        if not head:
+            continue
+        row_var = head.group(1)
+        body = live[m.end() + head.end():close]
+        add = re.search(r"\b(\w+)\.add\(", body) or re.search(r"\b(\w+)\s*<<", body)
+        if not add or add.group(1) not in lists:
+            continue
+        list_var = add.group(1)
+        cols = set(re.findall(r"\b%s\.(\w+)\b" % re.escape(row_var), body)) \
+            - {"toString", "trim"}
+        if len(cols) != 1:
+            continue                    # which column is collected is not certain
+        lv = re.escape(list_var)
+        pick = re.search(
+            r"^[ \t]*(?:def|String)\s+(\w+)\s*=\s*%s\s*(?:\[|\.get\(\s*)\s*"
+            r"(?:new\s+Random\s*\(\s*\)|\w+)\s*\.nextInt\(\s*%s\.size\(\)\s*\)\s*[\])]"
+            % (lv, lv), live[close:], re.M)
+        if not pick:
+            continue
+        clean = re.sub(r"\s+", " ", sql).strip().rstrip(";").strip()
+        if not re.match(r"(?i)select\b", clean):
+            continue
+        out.append({"query_var": qvar, "sql": clean, "column": cols.pop(),
+                    "list_var": list_var, "pick_var": pick.group(1)})
+    return out
+
+
+_PICK_SUFFIX_RX = re.compile(r"""^(\w+)\s*\+\s*(["'])((?:(?!\2).)*)\2$""")
+
+
+def _pick_publication(expr: str, picks) -> str | None:
+    """Java for `setPropertyValue(field, <expr>)` when `<expr>` is a pick,
+    or a pick with a literal appended (`randomDomain + ".com"`). None for
+    anything else: a value built some other way is not this block's to
+    publish."""
+    bare = _bare_setproperty_expr(expr)
+    if bare in picks:
+        return bare
+    m = _PICK_SUFFIX_RX.match((expr or "").strip())
+    if m and m.group(1) in picks:
+        return "%s + %s" % (m.group(1), _java_string_literal(m.group(3)))
+    return None
+
+
+def collect_and_pick_fields(script: str) -> list:
+    """`(step, field)` each collect-and-pick block publishes."""
+    picks = {b["pick_var"] for b in collect_and_pick_blocks(script)}
+    if not picks:
+        return []
+    return [(step, field) for step, field, expr in _find_setproperty_targets(script)
+            if _pick_publication(expr, picks) is not None]
+
+
 def _join_plus_continuation(rhs: str, script: str, end: int) -> str:
     """``rhs`` with the lines its trailing ``+`` continues onto.
 
@@ -820,6 +945,7 @@ def _var_backed_publications(script: str) -> dict:
     literals = {m.group(1): m.group(3) for m in _VAR_LITERAL_RX.finditer(script)
                 if m.group(3)}
     computed = _computed_var_expressions(script)
+    from_ctx = _ctx_sourced_vars(script)
     last = _last_nonempty_setproperty(script)
     for step, field, expr in _find_setproperty_targets(script):
         var = _bare_setproperty_expr(expr)
@@ -834,6 +960,47 @@ def _var_backed_publications(script: str) -> dict:
             out[(step, field)] = '"%s"' % _java_escape(literals[var])
         elif var in computed:
             out[(step, field)] = computed[var]
+        elif var in from_ctx and field.lower() == "domain":
+            # Domain only. It is the one field the regeneration rebuilds
+            # the whole identity on; publishing every expanded property
+            # verbatim would also freeze the emails and usernames a script
+            # derives from saved values, which are per-run data.
+            out[(step, field)] = from_ctx[var]
+    return out
+
+
+_EXPAND_PROP_RX = re.compile(
+    r"""^[ \t]*def\s+(\w+)\s*=\s*context\.expand\(\s*(['"])\$\{([^#}'"]+)#([^}'"#]+)\}\2\s*\)[ \t]*;?[ \t]*$""",
+    re.M)
+_ALIAS_DEF_RX = re.compile(r"^[ \t]*def\s+(\w+)\s*=\s*(\w+)[ \t]*;?[ \t]*$", re.M)
+
+
+def _ctx_sourced_vars(script: str) -> dict:
+    """Variables that ARE a step property, read with context.expand:
+    ``{var: java expression reading it from ctx}``.
+
+        def managedDomain = context.expand('${Properties#managed_email_domain}')
+        def generatedDomain = managedDomain
+        props.setPropertyValue("Domain", generatedDomain)
+
+    The property is one the script does NOT write itself -- an earlier step
+    published it (here, a pick from the database). A property the script
+    writes and then reads back is the script's own data and is excluded:
+    it has no value in ctx yet at the point this would be read.
+
+    One alias hop is followed (`def a = b`), because that is the shape the
+    suites use; a longer chain is left alone.
+    """
+    wrote = {f for _s, f, _e in _find_setproperty_targets(script)}
+    out: dict = {}
+    for m in _EXPAND_PROP_RX.finditer(script):
+        var, step, field = m.group(1), m.group(3).strip(), m.group(4).strip()
+        if step.startswith("#") or field in wrote:
+            continue
+        out[var] = 'TestSupport.ctxGet(ctx, "%s")' % _java_escape(_ctx_key(step, field))
+    for m in _ALIAS_DEF_RX.finditer(script):
+        if m.group(2) in out and m.group(1) not in out:
+            out[m.group(1)] = out[m.group(2)]
     return out
 
 
@@ -2491,6 +2658,19 @@ def translate(script: str, response_var_by_step: dict[str, str],
             lines.append('    // [translated] setPropertyValue(<key>, <var>) '
                          '-- literal or list pick, not random data')
             for (step, field), expr in sorted(var_pubs.items()):
+                if expr.startswith("TestSupport.ctxGet("):
+                    # An earlier step's value. If that step published
+                    # nothing (database not read), write nothing: a blank
+                    # here would hide the saved value the Properties step
+                    # seeds right after.
+                    lines.append('    {')
+                    lines.append(f'        String __earlier = {expr};')
+                    lines.append('        if (__earlier != null && !__earlier.trim().isEmpty()) {')
+                    lines.append(
+                        f'            TestSupport.putExtracted(ctx, "{step}.{field}", __earlier.trim());')
+                    lines.append('        }')
+                    lines.append('    }')
+                    continue
                 lines.append(
                     f'    TestSupport.putExtracted(ctx, "{step}.{field}", {expr});')
             _mark("var_backed_setproperty")
@@ -2502,7 +2682,8 @@ def translate(script: str, response_var_by_step: dict[str, str],
         _dom_literal = any(
             s_ == "Properties" and f_.lower() == "domain"
             for (s_, f_) in list(lit_uncond) + list(lit_envcond)) or any(
-            s_ == "Properties" and f_.lower() == "domain" and e_.startswith('"')
+            s_ == "Properties" and f_.lower() == "domain"
+            and (e_.startswith('"') or e_.startswith("TestSupport.ctxGet("))
             for (s_, f_), e_ in var_pubs.items())
         if _dom_literal:
             lines.append('    ImportedScenario.pinAuthorDomain(ctx);')
@@ -3615,6 +3796,67 @@ def translate(script: str, response_var_by_step: dict[str, str],
                     return flat
         return None
 
+    # ---- JDBC read that COLLECTS a column and PICKS one entry at random.
+    # Emitted before the generic eachRow loop, which then skips these calls
+    # instead of leaving its hand-wire comment for them.
+    _collect_pick_done: set = set()
+    for _cp in collect_and_pick_blocks(script):
+        _pv, _col = _cp["pick_var"], _cp["column"]
+        _pubs = [(s_, f_, _pick_publication(e_, {_pv}))
+                 for s_, f_, e_ in _find_setproperty_targets(script)
+                 if _pick_publication(e_, {_pv}) is not None
+                 and _should_emit_setproperty(last_setproperty, s_, f_, e_)]
+        _collect_pick_done.add(_cp["query_var"])
+        lines.extend([
+            f'// [translated] JDBC eachRow -> collect `{_col}`, pick one at random',
+            '{',
+            f'    String {_pv} = "";',
+            '    LOG.info(" .. jdbc Db.isConfigured={} dbUrl={}", Db.isConfigured(), '
+            'com.hi.api.config.Config.get("db.url", com.hi.api.config.Config.get("DB_URL", "<unset>")));',
+            '    if (Db.isConfigured()) {',
+            '        try {',
+            f'            String __jdbcSql = {_java_string_literal(_cp["sql"])};',
+            '            String __jdbcReason = com.hi.api.db.Db.unsafeSqlReasonForQuery(__jdbcSql);',
+            '            if (__jdbcReason != null) {',
+            '                LOG.warn(" .. jdbc SKIPPED ({}): {}", __jdbcReason, __jdbcSql);',
+            '            } else {',
+            '                LOG.info(" .. jdbc eachRow SQL: {}", __jdbcSql);',
+            '                java.util.List<String> __picked = new java.util.ArrayList<>();',
+            '                java.util.List<java.util.Map<String, Object>> __rows = Db.queryAll(__jdbcSql);',
+            '                if (__rows != null) {',
+            '                    for (java.util.Map<String, Object> __row : __rows) {',
+            f'                        Object __v = __row.get("{_col}");',
+            '                        if (__v != null && !String.valueOf(__v).trim().isEmpty()) {',
+            '                            __picked.add(String.valueOf(__v).trim());',
+            '                        }',
+            '                    }',
+            '                }',
+            f'                LOG.info(" .. jdbc eachRow collected {{}} value(s) of `{_col}`", __picked.size());',
+            '                if (!__picked.isEmpty()) {',
+            f'                    {_pv} = __picked.get(new java.util.Random().nextInt(__picked.size()));',
+            '                }',
+            '            }',
+            '        } catch (Exception __jdbcEx) {',
+            '            LOG.warn("JDBC eachRow failed: {}", __jdbcEx.getMessage());',
+            '        }',
+            '    } else {',
+            '        LOG.warn("Skipping JDBC eachRow step (Db not configured -- set db.url + db.user + '
+            'db.password in program_configuration.json OR DB_URL/DB_USER/DB_PASSWORD env vars)");',
+            '    }',
+            f'    if ({_pv}.isEmpty()) {{',
+            # The script throws here. A test must not go on to use last
+            # run's saved value as if it had just been read.
+            f'        LOG.warn(" .. nothing picked for `{_pv}` (no rows, or the database was not read) '
+            f'-- the ReadyAPI script fails here; the saved datasheet value is all that is left");',
+            '    } else {',
+            f'        LOG.info(" .. jdbc picked {_pv}={{}}", {_pv});',
+        ])
+        for _s, _f, _jexpr in _pubs:
+            lines.append(f'        TestSupport.putExtracted(ctx, "{_ctx_key(_s, _f)}", {_jexpr});')
+        lines.extend(['    }', '}'])
+        _mark("jdbc_eachRow_collect_pick")
+        consumed = True
+
     for groups, args_body in _balanced_arg_call(
             script, r"sql\.eachRow\("):
         # sql.eachRow(<query>) { <row_var> -> <body> }
@@ -3622,8 +3864,15 @@ def translate(script: str, response_var_by_step: dict[str, str],
         # The closure body follows: `{ <row_var> -> ... }`. Find it by
         # locating the exact call in the script and walking past it.
         query_expr = args_body.strip()
+        if query_expr in _collect_pick_done:
+            continue
         raw_sql = _resolve_query_arg_to_sql(query_expr)
         if raw_sql is None:
+            # Say so in the audit too. This used to be reported FULL as long
+            # as ANY recogniser had fired on the script -- a triple-quoted
+            # string was enough -- while the read the step exists for was a
+            # comment.
+            coverage_override = "PARTIAL"
             preview = query_expr[:80].replace("\\", "\\\\").replace('"', '\\"')
             lines.append(
                 f'// [jdbc] sql.eachRow(...) query `{preview}` is a Groovy '

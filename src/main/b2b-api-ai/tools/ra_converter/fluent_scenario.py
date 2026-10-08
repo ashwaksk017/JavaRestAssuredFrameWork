@@ -510,6 +510,51 @@ def assign_fluent_name(step, phase: str | None) -> str | None:
     return phase_name
 
 
+def _keep_feeding_db_steps_in_setup(tagged: list) -> list:
+    """Leave a DB script in the setup when a LATER setup step reads what it
+    publishes.
+
+    Every `_start` group is gathered into the bootstrap, wherever it sat.
+    A DB-only script gets a name of its own, so it leaves the setup and
+    becomes a phase -- and the setup steps that FOLLOWED it in ReadyAPI are
+    then hoisted ahead of it:
+
+        ReadyAPI : GroovyScript_accountRules -> DataGenInput -> enroll ...
+        emitted  : bootstrap{ ..., DataGenInput } -> dbRead...() -> enroll ...
+
+    GroovyScript_accountRules picks a managed domain from the database and
+    DataGenInput builds the identity on it. Run the other way round,
+    DataGenInput reads a property nobody has written yet.
+
+    Only a step whose pick a later `_start` step actually reads is kept
+    back. 138 cases have a DB script ahead of more setup; in 120 of them it
+    is a cleanup or an update nothing in the setup depends on, and those
+    keep their own phase exactly as before.
+    """
+    try:
+        import groovy_translator as _gt
+    except Exception:            # the translator is optional to this module
+        return tagged
+    out = list(tagged)
+    for i, (name, step) in enumerate(tagged):
+        if name == "_start" or type(step).__name__ != "GroovyStep":
+            continue
+        try:
+            fields = _gt.collect_and_pick_fields(getattr(step, "script", "") or "")
+        except Exception:
+            fields = []
+        if not fields:
+            continue
+        for later_name, later in tagged[i + 1:]:
+            if later_name != "_start" or type(later).__name__ != "GroovyStep":
+                continue
+            text = getattr(later, "script", "") or ""
+            if any(("${%s#%s}" % (s, f)) in text for s, f in fields):
+                out[i] = ("_start", step)
+                break
+    return out
+
+
 def group_flow_and_verify(steps: list, phase_of) -> tuple[list, list]:
     """Split steps into fluent groups; peel trailing GET+assert groups as verifies.
 
@@ -532,6 +577,8 @@ def group_flow_and_verify(steps: list, phase_of) -> tuple[list, list]:
             name = last_fluent
         last_fluent = name
         tagged.append((name, step))
+
+    tagged = _keep_feeding_db_steps_in_setup(tagged)
 
     groups: list[tuple[str, list]] = []
     for name, step in tagged:
