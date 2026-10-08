@@ -597,6 +597,51 @@ def collect_and_pick_fields(script: str) -> list:
             if _pick_publication(expr, picks) is not None]
 
 
+_ALLOWED_SPLIT_RX = re.compile(
+    r"""def\s+(\w+)\s*=\s*context\.expand\(\s*['"]\$\{#Project#ALLOWED_DOMAINS\}['"]\s*\)\s*\.split\(\s*['"],['"]\s*\)""")
+_ALLOWED_PICK_RX = re.compile(
+    r"""def\s+(\w+)\s*=\s*(\w+)\[\s*new\s+Random\(\)\.nextInt\(\s*(\w+)\.length\s*(?:-\s*1\s*)?\)\s*\]""")
+
+
+def _allowed_domain_pick_publications(script: str) -> dict:
+    """``{(step, field): java}`` for a property set to one entry of the
+    project's ALLOWED_DOMAINS list.
+
+        def allowedDomains = context.expand('${#Project#ALLOWED_DOMAINS}').split(',')
+        def allowedDomain  = allowedDomains[new Random().nextInt(allowedDomains.length-1)]
+        def generatedDomain = allowedDomain
+        props.setPropertyValue("Domain", generatedDomain)
+
+    Only for a step OTHER than `Properties`: on the identity step the
+    generator pack already draws the domain from the same list and builds
+    the emails on it. CtxFields.allowedDomainOrRandom makes the same pick
+    the Groovy does (the last entry is never chosen).
+    """
+    live = "\n".join(l for l in (script or "").splitlines()
+                     if not l.strip().startswith("//"))
+    arrays = set(_ALLOWED_SPLIT_RX.findall(live))
+    if not arrays:
+        return {}
+    picks = {m.group(1) for m in _ALLOWED_PICK_RX.finditer(live)
+             if m.group(2) in arrays and m.group(3) == m.group(2)}
+    for m in _ALLOWED_DEF_ALIAS_RX.finditer(live):
+        if m.group(2) in picks:
+            picks.add(m.group(1))
+    out = {}
+    last = _last_nonempty_setproperty(live)
+    for step, field, expr in _find_setproperty_targets(live):
+        if step == "Properties" or _bare_setproperty_expr(expr) not in picks:
+            continue
+        if last.get((step, field)) is not None and \
+                _bare_setproperty_expr(last[(step, field)]) not in picks:
+            continue
+        out[(step, field)] = "CtxFields.allowedDomainOrRandom()"
+    return out
+
+
+_ALLOWED_DEF_ALIAS_RX = re.compile(r"^[ \t]*def\s+(\w+)\s*=\s*(\w+)[ \t]*;?[ \t]*$", re.M)
+
+
 _FN_STEP_RX = re.compile(
     r"""def\s+(\w+)\s*=\s*testRunner\.testCase\.getTestStepByName\(\s*["']([^"']+)["']\s*\)""")
 _FN_RESP_RX = re.compile(
@@ -2793,7 +2838,32 @@ def translate(script: str, response_var_by_step: dict[str, str],
             if t in literal_fields:
                 continue
             extras.append(t)
-        if extras:
+        # A script that sets NO random field does not regenerate the identity.
+        #
+        #   GenNewDomain:  Properties2.Domain   = one of ALLOWED_DOMAINS
+        #                  Properties2.topicenv = "programaccounts-stg"
+        #
+        # It defines `generator` (copied from DataGenInput) and never uses it
+        # for a property, yet `def generator` + `setPropertyValue` was enough
+        # to emit generateStandard(ctx, "Properties") here -- mid-case, after
+        # the guest was enrolled and the account created. That replaced
+        # Properties.guestID with a random number, and every later call on
+        # /guests/{guestId}/... answered 403. Properties2.Domain itself was
+        # never written.
+        _all_set = {(s_, f_) for s_, f_, _e in _find_setproperty_targets(script)}
+        _dom_picks = _allowed_domain_pick_publications(script)
+        _explained = (set(lit_uncond) | set(lit_envcond) | set(var_pubs)
+                      | set(_dom_picks))
+        _no_random = (bool(_all_set)
+                      and "Properties" not in {s_ for s_, _f in _all_set}
+                      and _all_set <= _explained)
+        if _no_random:
+            lines.append('    // no random field is set: the identity is left as it is')
+            for (s_, f_), _expr in sorted(_dom_picks.items()):
+                lines.append(f'    TestSupport.putExtracted(ctx, "{_ctx_key(s_, f_)}", {_expr});')
+            if _dom_picks:
+                _mark("allowed_domain_pick")
+        elif extras:
             extra_lits = ", ".join(f'"{t}"' for t in extras)
             lines.append(
                 f'    CtxFields.generateStandard(ctx, "Properties", {extra_lits});')

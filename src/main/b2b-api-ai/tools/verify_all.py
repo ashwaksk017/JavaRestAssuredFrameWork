@@ -201,6 +201,11 @@ CHECKS = [
           "a request header whose value is a project property is kept and "
           "resolved from config -- content-language was dropped, and every "
           "enroll with a non-Latin name answered 400"),
+    Check("domain-only-script",
+          [PY, "tools/ra_converter/test_domain_only_script.py"],
+          "a script that sets no random field does not regenerate the "
+          "identity -- GenNewDomain replaced the enrolled guest id mid-case "
+          "and every later /guests/{id}/ call answered 403"),
     Check("suite-vocab-isolation",
           [PY, "tools/ra_converter/test_suite_vocab_isolation.py"],
           "a suite's chain methods live on its OWN steps class -- they were "
