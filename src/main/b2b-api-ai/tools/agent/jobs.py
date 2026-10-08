@@ -125,6 +125,9 @@ RUNNABLES = {
 EXCLUSIVE = {"convert", "agent-generate", "agent-approve", "agent-discard",
              "agent-reapply"}
 
+# The only options that may be given more than once.
+REPEATABLE = {"--link"}
+
 _RUNNING: dict = {}
 _LOCK = threading.Lock()
 
@@ -169,6 +172,8 @@ def build_argv(runnable: str, options: dict) -> list:
             if value:
                 argv.append(name)
             continue
+        if isinstance(value, list) and name not in REPEATABLE:
+            raise ValueError(f"{name} takes one value")
         values = value if isinstance(value, list) else [value]
         for v in values:
             if v is None or str(v).strip() == "":
@@ -237,6 +242,15 @@ def read_log(job: str, runnable: str, offset: int = 0) -> dict:
 
 def start(job: str, runnable: str, options: dict) -> dict:
     """Launch a runnable. Returns immediately; the log grows on disk."""
+    options = dict(options or {})
+    spec = RUNNABLES.get(runnable) or {}
+    if "--job" in (spec.get("options") or {}):
+        # The job a command acts on is the job it was started FOR. Taking
+        # `--job` from the caller let one request name two: logged and
+        # locked as one job, run against another.
+        options["--job"] = job
+        if "--confirm" in options and options["--confirm"] != job:
+            raise ValueError("--confirm must be the id of the job being approved")
     argv = build_argv(runnable, options)      # validates before any mkdir
     out = job_dir(job)                        # validates the job id
     os.makedirs(out, exist_ok=True)

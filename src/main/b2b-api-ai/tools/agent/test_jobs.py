@@ -125,6 +125,20 @@ class LogReading(unittest.TestCase):
                 jobs.read_status("j", bad)
 
 
+class TheJobIsTheJob(unittest.TestCase):
+    """One request must not be logged as one job and run against another."""
+
+    def test_an_option_cannot_be_repeated(self):
+        with self.assertRaises(ValueError):
+            jobs.build_argv("agent-approve", {"--job": ["scratch", "victim"]})
+        argv = jobs.build_argv("intake", {"--link": ["a", "b"]})
+        self.assertEqual(argv.count("--link"), 2, "--link is the one repeatable option")
+
+    def test_confirm_must_name_the_job_in_the_request(self):
+        with self.assertRaises(ValueError):
+            jobs.start("scratch", "agent-approve", {"--job": "victim", "--confirm": "victim"})
+
+
 class OneWriterAtATime(unittest.TestCase):
     """A convert during an agent run would look like the agent rewriting
     every suite; the page must not be able to start both."""

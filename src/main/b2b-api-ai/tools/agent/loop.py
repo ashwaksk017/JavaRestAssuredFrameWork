@@ -267,8 +267,8 @@ class CursorLog:
 
     def write(self, text: str = "") -> None:
         for s in self.secrets:
-            if s in text:
-                text = text.replace(s, "<redacted>")
+            if s.lower() in text.lower():
+                text = re.sub(re.escape(s), "<redacted>", text, flags=re.I)
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with io.open(self.path, "a", encoding="utf-8") as fh:
             for line in (text.splitlines() or [""]):
@@ -372,7 +372,8 @@ def ensure_sdk(root: str = "", pip=None) -> str:
     except ImportError:
         pass
     req = os.path.join(root or ROOT, REQUIREMENTS)
-    argv = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check"]
+    argv = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
+            "--no-input"]
     argv += ["-r", req] if os.path.isfile(req) else ["cursor-sdk"]
     say(f" .. cursor-sdk is not installed -- installing: {' '.join(argv[1:])}")
     run = pip or (lambda a: subprocess.run(
@@ -431,10 +432,30 @@ def call_cursor(prompt: str, root: str) -> dict:
 
 # ---- the working tree ------------------------------------------------
 
-def git(root: str, *args: str) -> tuple:
+def git(root: str, *args: str, env: dict = None) -> tuple:
+    full = dict(os.environ, **env) if env else None
     r = subprocess.run(["git", *args], cwd=root, stdout=subprocess.PIPE,
-                       stderr=subprocess.STDOUT)
+                       stderr=subprocess.STDOUT, env=full)
     return r.returncode, r.stdout.decode("utf-8", errors="replace")
+
+
+def top_level(root: str) -> str:
+    rc, out = git(root, "rev-parse", "--show-toplevel")
+    return os.path.normpath(out.strip()) if rc == 0 and out.strip() else root
+
+
+def _rel(root: str, top: str, top_rel: str) -> str:
+    """A path git reports (relative to the repository top) as a path
+    relative to `root`. Starts with ../ when it is outside the project."""
+    return os.path.relpath(os.path.join(top, top_rel), root).replace("\\", "/")
+
+
+def in_head(root: str, rel: str) -> bool:
+    """Is this path in the last commit? `git ls-files` would also say yes
+    for a file the agent merely STAGED, which is how a new file used to be
+    mistaken for an edit of an old one."""
+    rc, _ = git(root, "cat-file", "-e", "HEAD:./" + rel)
+    return rc == 0
 
 
 def repo_prefix(root: str) -> str:
@@ -452,13 +473,17 @@ def _sha(path: str):
 
 
 def dirty_paths(root: str) -> dict:
-    """Every tracked-and-changed or untracked path under `root`:
-    {relative path: content hash or None when the file is gone}."""
-    rc, out = git(root, "status", "--porcelain=v1", "-z",
-                  "--untracked-files=all", "--", ".")
+    """Every changed-or-untracked path in the WHOLE repository:
+    {path relative to `root`: content hash, or None when the file is gone}.
+
+    The repository's top level is above the project directory. Asking
+    about `.` only would leave a file the agent wrote one level up
+    unseen, so the question is asked from the top.
+    """
+    top = top_level(root)
+    rc, out = git(top, "status", "--porcelain=v1", "-z", "--untracked-files=all")
     if rc != 0:
         raise RuntimeError(f"git status failed: {out.strip()[:300]}")
-    prefix = repo_prefix(root)
     found = {}
     fields = out.split("\0")
     i = 0
@@ -471,12 +496,67 @@ def dirty_paths(root: str) -> dict:
         if code[0] in "RC":          # rename/copy: the next field is the source
             src = fields[i] if i < len(fields) else ""
             i += 1
-            if src.startswith(prefix):
-                found[src[len(prefix):]] = _sha(os.path.join(root, src[len(prefix):]))
-        if path.startswith(prefix):
-            rel = path[len(prefix):]
-            found[rel] = _sha(os.path.join(root, rel))
+            if src:
+                found[_rel(root, top, src)] = _sha(os.path.join(top, src))
+        found[_rel(root, top, path)] = _sha(os.path.join(top, path))
     return found
+
+
+def hidden_flags(root: str) -> set:
+    """Tracked files marked assume-unchanged / skip-worktree. git stops
+    reporting edits to those, so setting the flag hides a change."""
+    top = top_level(root)
+    rc, out = git(top, "ls-files", "-v", "-z")
+    return {_rel(root, top, e[2:]) for e in out.split("\0")
+            if len(e) > 2 and (e[0].islower() or e[0] == "S")} if rc == 0 else set()
+
+
+def ignored_entries(root: str) -> set:
+    """What git currently ignores, as it reports it (whole directories
+    collapse to one entry). A NEW entry after the agent ran is a file or
+    folder it created that git will not show -- for instance a directory
+    with its own `.gitignore` containing `*`."""
+    top = top_level(root)
+    rc, out = git(top, "status", "--porcelain=v1", "-z", "--ignored",
+                  "--untracked-files=normal")
+    return {_rel(root, top, e[3:]) for e in out.split("\0")
+            if e.startswith("!! ")} if rc == 0 else set()
+
+
+def git_internals(root: str) -> dict:
+    """Bytes of the files inside .git that change what a commit or a push
+    DOES: config (remote URL, hooksPath), hooks, the local exclude list."""
+    rc, out = git(root, "rev-parse", "--absolute-git-dir")
+    gdir = out.strip()
+    snap = {}
+    if rc != 0 or not gdir:
+        return snap
+    for rel in ("config", os.path.join("info", "exclude")):
+        snap[os.path.join(gdir, rel)] = _bytes(os.path.join(gdir, rel))
+    hooks = os.path.join(gdir, "hooks")
+    if os.path.isdir(hooks):
+        for name in sorted(os.listdir(hooks)):
+            if not name.endswith(".sample"):
+                snap[os.path.join(hooks, name)] = _bytes(os.path.join(hooks, name))
+    snap["<hooks>"] = hooks
+    return snap
+
+
+def restore_git_internals(before: dict) -> list:
+    """Put .git files back; returns the ones that had been changed."""
+    changed = []
+    hooks = before.get("<hooks>") or ""
+    now = set()
+    if hooks and os.path.isdir(hooks):
+        now = {os.path.join(hooks, n) for n in os.listdir(hooks)
+               if not n.endswith(".sample")}
+    for path in sorted(set(k for k in before if k != "<hooks>") | now):
+        was = before.get(path)
+        if _bytes(path) != was:
+            changed.append(os.path.basename(os.path.dirname(path)) + "/"
+                           + os.path.basename(path))
+            _put_bytes(path, was)
+    return changed
 
 
 def head(root: str) -> tuple:
@@ -491,8 +571,10 @@ def in_roots(rel: str, roots) -> bool:
 
 
 def snapshot_generated(root: str, policy: dict) -> dict:
-    """(size, mtime) of every file in the generated tree. git cannot see
-    these, so this is the only way to notice the agent touched one."""
+    """(size, content hash) of every file in the generated tree. git cannot
+    see these, so this is the only way to notice the agent touched one --
+    and it is a HASH, not a timestamp: a write that keeps the size and
+    resets the mtime would otherwise pass unseen."""
     snap = {}
     for gen in policy["generated_roots"]:
         base = os.path.join(root, gen)
@@ -502,12 +584,16 @@ def snapshot_generated(root: str, policy: dict) -> dict:
                 rel = os.path.relpath(p, root).replace("\\", "/")
                 if in_roots(rel, policy["generated_exclude"]):
                     continue
-                try:
-                    st = os.stat(p)
-                except OSError:
-                    continue
-                snap[rel] = (st.st_size, st.st_mtime_ns)
+                digest = _sha(p)
+                if digest is not None:
+                    snap[rel] = (os.path.getsize(p), digest)
     return snap
+
+
+def _bk(rel: str) -> str:
+    """Where a path is kept inside a backup folder. A path above the
+    project (`../../x`) must not climb out of the folder."""
+    return rel.replace("\\", "/").replace("../", "__up__/")
 
 
 def backup(root: str, paths, dest: str) -> None:
@@ -516,7 +602,7 @@ def backup(root: str, paths, dest: str) -> None:
     for rel in paths:
         src = os.path.join(root, rel)
         if os.path.isfile(src):
-            out = os.path.join(dest, rel)
+            out = os.path.join(dest, _bk(rel))
             os.makedirs(os.path.dirname(out), exist_ok=True)
             shutil.copy2(src, out)
 
@@ -540,11 +626,12 @@ def classify_tracked(before: dict, after: dict, roots) -> dict:
 
 
 def split_created(root: str, changes: dict) -> dict:
-    """Move tracked files out of `created`: they were clean, now edited."""
+    """Move files that exist in HEAD out of `created`: they were clean, now
+    edited. Decided against the last COMMIT, not the index -- a file the
+    agent created and staged is still a new file."""
     still_new = []
     for rel in changes["created"]:
-        rc, _ = git(root, "ls-files", "--error-unmatch", "--", rel)
-        (changes["modified"] if rc == 0 else still_new).append(rel)
+        (changes["modified"] if in_head(root, rel) else still_new).append(rel)
     changes["created"] = still_new
     changes["modified"].sort()
     return changes
@@ -571,19 +658,20 @@ def restore_tracked(root: str, rels, before: dict, backup_dir: str) -> list:
     notes = []
     for rel in rels:
         full = os.path.join(root, rel)
-        saved = os.path.join(backup_dir, rel)
+        saved = os.path.join(backup_dir, _bk(rel))
         if os.path.isfile(saved):                 # was already changed: exact copy
             os.makedirs(os.path.dirname(full), exist_ok=True)
             shutil.copy2(saved, full)
             notes.append(f"restored {rel} (your earlier uncommitted version)")
-            continue
-        rc, _ = git(root, "ls-files", "--error-unmatch", "--", rel)
-        if rc == 0:                               # tracked and was clean
-            rc2, out = git(root, "checkout", "--", rel)
+        elif in_head(root, rel):                  # committed and was clean
+            # From HEAD, index included: the agent may have staged its edit.
+            rc2, out = git(root, "checkout", "HEAD", "--", rel)
             notes.append(f"restored {rel}" if rc2 == 0
                          else f"COULD NOT restore {rel}: {out.strip()[:120]}")
-        elif rel not in before and os.path.isfile(full):   # the agent made it
-            os.remove(full)
+        elif rel not in before:                   # the agent made it
+            git(root, "rm", "--cached", "-q", "--ignore-unmatch", "--", rel)
+            if os.path.isfile(full):
+                os.remove(full)
             notes.append(f"removed {rel} (created by the agent)")
     return notes
 
@@ -882,24 +970,46 @@ def _tail(raw, lines: int = 60) -> str:
 _SECRET_RX = [
     ("private key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
     ("bearer token", re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/-]{24,}")),
+    ("basic credentials", re.compile(r"(?i)\bbasic\s+[A-Za-z0-9+/]{16,}={0,2}")),
     ("JWT", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,}")),
     ("AWS access key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
-    ("JDBC URL with a host", re.compile(r"(?i)jdbc:[a-z0-9]+://[a-z0-9.-]+\.[a-z]{2,}")),
-    ("credential assignment", re.compile(
-        r"""(?ix)\b(pass(word|wd)?|secret|api[_-]?key|client[_-]?secret|token)\b
-            \s*[:=]\s*["'][^"'\s${}#]{8,}["']""")),
+    ("JDBC URL with a host", re.compile(
+        r"(?i)jdbc:[a-z0-9:]+(?://|@)[a-z0-9.-]+\.[a-z0-9]{2,}")),
 ]
+# name = "value" where the NAME says credential. No word boundary before
+# the keyword: `dbPassword`, `accessToken` and `API_TOKEN` are the usual
+# spellings.
+_ASSIGN_RX = re.compile(
+    r"""(?ix)(pass(word|wd)?|secret|api[_-]?key|token)\w*["']?
+        \s*(?:[:=]|,)\s*["']([^"'\s]{6,})["']""")
 _SECRET_KEY_RX = re.compile(
     r"(?i)(pass|secret|token|key|assertion|credential|c_sec|c_id|client_id)")
+# Config keys that contain one of those words but name a route or an
+# identifier, not a secret.
+_NOT_SECRET_KEY_RX = re.compile(
+    r"(?i)(route|end_?point|path|url|uri|project_?key|issue_?key|_name$|header$)")
 _HOST_RX = re.compile(r"(?i)\b(?:https?://)?((?:[a-z0-9-]+\.)+[a-z]{2,})\b")
+_IP_RX = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 _PUBLIC_HOSTS = ("example.com", "example.org", "localhost", "w3.org",
                  "apache.org", "github.com", "testng.org", "rest-assured.io")
 
 
+def _looks_like_a_secret(value: str) -> bool:
+    """A quoted value next to a credential-ish name. `password =
+    "invalid-password"` and `token = "access_token"` are ordinary test
+    code; a real secret is long or mixes in digits."""
+    if value.startswith(("${", "#", "@", "<")) or value.endswith(("}", "#")):
+        return False                      # a placeholder, resolved at run time
+    if value.startswith("/"):
+        return False                      # a route: `tokenPath = "/oauth2/v1/token"`
+    return len(value) >= 24 or (any(c.isdigit() for c in value)
+                                and any(c.isalpha() for c in value))
+
+
 def config_secrets(config_path: str) -> dict:
     """Values from the gitignored config that must never reach a commit:
-    {value: why}. Hosts wherever they appear, and any value stored under a
-    key that names a credential."""
+    {value: why}. Hosts and IP addresses wherever they appear, and any
+    value stored under a key that names a credential."""
     out = {}
     try:
         with io.open(config_path, encoding="utf-8") as fh:
@@ -920,8 +1030,11 @@ def config_secrets(config_path: str) -> dict:
                 host = m.group(1).lower()
                 if not host.endswith(_PUBLIC_HOSTS) and len(host) >= 8:
                     out[host] = f"host from program_configuration.json ({key})"
-            if _SECRET_KEY_RX.search(key) and len(val) >= 8 \
-                    and not val.startswith(("${", "#")):
+            for m in _IP_RX.finditer(val):
+                if not m.group(0).startswith(("127.", "0.")):
+                    out[m.group(0)] = f"address from program_configuration.json ({key})"
+            if (_SECRET_KEY_RX.search(key) and not _NOT_SECRET_KEY_RX.search(key)
+                    and len(val) >= 6 and not val.startswith(("${", "#", "/"))):
                 out[val] = f"value of `{key}` in program_configuration.json"
 
     walk(data)
@@ -940,9 +1053,13 @@ def scan_secrets(diff: str, known: dict = None) -> list:
         for label, rx in _SECRET_RX:
             if rx.search(line):
                 findings.append((line.strip()[:120], label))
+        for m in _ASSIGN_RX.finditer(line):
+            if _looks_like_a_secret(m.group(3)):
+                findings.append((line.strip()[:120], "credential assignment"))
         for value, why in known.items():
             if value.lower() in low:
-                findings.append((line.strip()[:120].replace(value, "<redacted>"), why))
+                findings.append((re.sub(re.escape(value), "<redacted>",
+                                        line.strip()[:120], flags=re.I), why))
     return findings
 
 
@@ -1047,6 +1164,9 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
 
     commit, branch = head(root)
     before = dirty_paths(root)
+    flags_before = hidden_flags(root)
+    ignored_before = ignored_entries(root)
+    git_before = git_internals(root)
     stale = [p for p in before if in_roots(p, roots)]
     if stale:
         say("FAIL there are uncommitted changes inside the paths the agent "
@@ -1140,12 +1260,29 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                    f"branches. Nothing was reverted for this: check `git "
                    f"reflog` and put the branch back by hand.")
             say(f"FAIL {msg}")
+            review = dict(review, needs_discard=True)
             return reject(msg, restore=False)
 
         tampered = [p for p, was in protected.items()
                     if _bytes(os.path.join(root, p)) != was]
         for p in tampered:
             _put_bytes(os.path.join(root, p), protected[p])
+        # Things that change what git SHOWS or DOES, checked before the
+        # tree is read, because they decide what that reading can see.
+        git_changed = restore_git_internals(git_before)
+        newly_hidden = sorted(hidden_flags(root) - flags_before)
+        if newly_hidden:
+            git(root, "update-index", "--no-assume-unchanged",
+                "--no-skip-worktree", "--", *newly_hidden)
+        new_ignored = sorted(p for p in ignored_entries(root) - ignored_before
+                             if not in_roots(p, roots)
+                             and not in_roots(p.rstrip("/") + "/", roots))
+        for p in new_ignored:
+            full = os.path.join(root, p)
+            if os.path.isdir(full):
+                shutil.rmtree(full, ignore_errors=True)
+            elif os.path.isfile(full):
+                os.remove(full)
         tracked = split_created(root, classify_tracked(before, dirty_paths(root), roots))
         gen = classify_generated(gen_before, snapshot_generated(root, policy), roots)
         changes = {k: sorted(tracked[k] + gen[k]) for k in
@@ -1159,6 +1296,19 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                 clog.write(f"  {kind:9s} {p}")
 
         problems = []
+        if git_changed:
+            problems.append(
+                "files inside .git were changed (they decide what a commit "
+                "or a push does) and have been put back: " + ", ".join(git_changed))
+        if newly_hidden:
+            problems.append(
+                "files were marked so that git stops reporting changes to "
+                "them (assume-unchanged / skip-worktree); the marks were "
+                "removed: " + ", ".join(newly_hidden[:10]))
+        if new_ignored:
+            problems.append(
+                "files or folders git ignores were created outside the "
+                "allowed paths and have been removed: " + ", ".join(new_ignored[:10]))
         if tampered:
             problems.append(
                 "credential/config file(s) were changed and have been put "
@@ -1290,7 +1440,10 @@ def _write_diff(root: str, job_dir: str, changes: dict, generated=(),
     chunks = []
     tracked_mod = [p for p in changes["modified"] if p not in generated]
     if tracked_mod:
-        _, out = git(root, "diff", "--", *tracked_mod)
+        # Against HEAD, not the index: a change the agent STAGED shows as
+        # no difference between index and working tree, and an empty diff
+        # here is an empty review and an empty secret scan.
+        _, out = git(root, "diff", "HEAD", "--", *tracked_mod)
         chunks.append(out)
     for rel in changes["modified"]:
         if rel in generated:
@@ -1321,6 +1474,11 @@ def cmd_discard(job_dir: str, root: str) -> int:
 
 
 def _discard(job_dir: str, root: str, review: dict) -> int:
+    if review.get("state") == "rejected" and review.get("needs_discard"):
+        review = dict(review, state="generating")     # same recovery path
+        say(" .. this run was rejected WITHOUT being undone (the branch or "
+            "HEAD had moved). The branch is not touched here -- check `git "
+            "reflog` -- but the files are put back.")
     if review.get("state") == "generating":
         # The run was stopped or died: no list of files was ever written.
         say(" .. the last run did not finish; putting back everything "
@@ -1339,6 +1497,8 @@ def _discard(job_dir: str, root: str, review: dict) -> int:
     gen_backup = os.path.join(job_dir, "pre-generated")
     for rel in files.get("created") or []:
         full = os.path.join(root, rel)
+        if rel not in generated:
+            git(root, "rm", "--cached", "-q", "--ignore-unmatch", "--", rel)
         if os.path.isfile(full):
             os.remove(full)
             say(f" .. removed {rel}")
@@ -1347,7 +1507,7 @@ def _discard(job_dir: str, root: str, review: dict) -> int:
             for note in restore_generated(root, [rel], gen_backup):
                 say(f" .. {note}")
             continue
-        rc, out = git(root, "checkout", "--", rel)
+        rc, out = git(root, "checkout", "HEAD", "--", rel)
         say(f" .. restored {rel}" if rc == 0
             else f" .. COULD NOT restore {rel}: {out.strip()[:120]}")
     write_review(job_dir, dict(review, state="discarded"))
@@ -1386,7 +1546,29 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
     clog = CursorLog(job_dir)
     generated = review.get("generated") or []
     gen_backup = os.path.join(job_dir, "pre-generated")
+    # review.json is a file on disk; do not take its word for where the
+    # paths are. Every one must still be inside the scope it was run with.
+    try:
+        scope = resolve_scope(policy, review.get("scope") or "new-test",
+                              review.get("suite") or "", root)
+    except ValueError as e:
+        say(f"FAIL {e}")
+        return 1
+    stray = [p for p in paths if not in_roots(p, scope["write_roots"])]
+    if stray:
+        say("FAIL the review lists files outside its scope: " + ", ".join(stray[:5]))
+        return 1
     diff = _write_diff(root, job_dir, files, generated, gen_backup)
+    # What is approved must be what was shown. If a file changed since the
+    # diff was produced, show the new diff and ask again.
+    now = {f: _sha(os.path.join(root, f)) for f in paths}
+    if review.get("state") == "pending-review" and now != (review.get("hashes") or now):
+        changed = sorted(f for f in paths if now[f] != (review.get("hashes") or {}).get(f))
+        write_review(job_dir, dict(review, hashes=now))
+        say("FAIL the files changed after the diff you reviewed was made: "
+            + ", ".join(changed[:10]) + ". proposed.diff has been rewritten -- "
+            "read it again, then approve.")
+        return 1
 
     if not review.get("pushable", True):
         patch = os.path.join(job_dir, "converted.patch")
@@ -1414,95 +1596,137 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
     if branch in policy["protected_branches"] or not policy["branch_prefix"]:
         say(f"FAIL refusing to push to `{branch}`.")
         return 1
+    remote = policy["remote"]
     _commit, base = head(root)
     if base == "HEAD":
         say("FAIL detached HEAD: check out a branch first.")
         return 1
+    # No hooks: a hook is code in .git that this tool did not write.
+    nohooks = os.path.join(job_dir, "no-hooks")
+    os.makedirs(nohooks, exist_ok=True)
+    ref = f"refs/heads/{branch}"
 
-    # Scan BEFORE anything is committed: what is scanned is what is on
-    # disk now, which may have been edited since the review.
+    if review.get("state") == "push-failed" and review.get("branch") == branch:
+        # The commit already exists on the local branch; only the push is owed.
+        rc, out = git(root, "-c", f"core.hooksPath={nohooks}", "push", "--no-verify",
+                      remote, f"{ref}:{ref}")
+        if rc != 0:
+            say("FAIL push failed again:\n" + out.strip()[-400:])
+            return 1
+        write_review(job_dir, dict(review, state="pushed", pushed=_now()))
+        clog.write(f"PUSHED {branch}")
+        say(f"PUSHED {branch} to {remote}.")
+        return 0
+
+    # The commit is built on what the REMOTE already has, not on the local
+    # branch: local commits that were never pushed are not this job's to
+    # publish. No checkout, no change to the working tree or the index.
+    upstream = f"refs/remotes/{remote}/{base}"
+    rc, _ = git(root, "rev-parse", "--verify", "-q", upstream)
+    if rc != 0:
+        say(f"FAIL {remote}/{base} is not known here, so there is nothing to "
+            f"base the branch on. Push `{base}` once (or `git fetch {remote}`) "
+            f"and approve again.")
+        return 1
+    _, ahead = git(root, "rev-list", "--count", f"{upstream}..HEAD")
+    ahead = int(ahead.strip() or 0)
+    if ahead:
+        mixed = [p for p in files.get("modified") or []
+                 if git(root, "diff", "--quiet", upstream, "HEAD", "--", p)[0] != 0]
+        if mixed:
+            say(f"FAIL `{base}` has {ahead} commit(s) that are not on {remote}, "
+                f"and they also change file(s) this job changed: "
+                + ", ".join(mixed[:10]) + ". Pushing the job would publish "
+                "those too. Push your commits first, then approve.")
+            return 1
+        say(f" .. `{base}` is {ahead} commit(s) ahead of {remote}; the job's "
+            f"branch is built on {remote}/{base} and does NOT include them")
+    if git(root, "rev-parse", "--verify", "-q", ref)[0] == 0:
+        say(f"FAIL branch {branch} already exists. If it is left from an "
+            f"earlier job, delete it or use a new job id.")
+        return 1
+
+    index = os.path.join(job_dir, "push.index")
+    try:
+        os.remove(index)
+    except OSError:
+        pass
+    env = {"GIT_INDEX_FILE": index}
+    steps = (("read-tree", upstream), ("add", "--", *paths))
+    for args in steps:
+        rc, out = git(root, *args, env=env)
+        if rc != 0:
+            say(f"FAIL git {args[0]} failed: {out.strip()[:300]}")
+            return 1
+    rc, tree = git(root, "write-tree", env=env)
+    if rc != 0:
+        say(f"FAIL git write-tree failed: {tree.strip()[:300]}")
+        return 1
+    subject = f"{'fix' if review.get('scope') == 'converter' else 'test'}(agent): {job}"
+    body = _commit_body(job_dir, files)
+    rc, sha = git(root, "commit-tree", tree.strip(), "-p", upstream,
+                  "-m", subject, "-m", body)
+    sha = sha.strip()
+    if rc != 0:
+        say(f"FAIL the commit could not be created: {sha[:300]}")
+        return 1
+
+    # Scan exactly what would be published: the commit against the remote
+    # branch, plus its message. Nothing points at the commit yet.
+    _, pushed_diff = git(root, "diff", upstream, sha)
+    message = "".join("+" + l + "\n" for l in (subject + "\n" + body).splitlines())
     known = config_secrets(config_path or os.path.join(
         root, "src", "main", "resources", "program_configuration.json"))
-    # A new file is scanned WHOLE, straight from disk: the diff shown for
-    # review is capped in size, and a scan must not be.
-    whole = "".join(
-        "+" + line + "\n"
-        for rel in files.get("created") or []
-        for line in _read(os.path.join(root, rel), 50_000_000).splitlines())
-    findings = scan_secrets(diff + "\n" + whole, known)
-    seen, unique = set(), []
-    for item in findings:
+    findings, seen = [], set()
+    for item in scan_secrets(pushed_diff + "\n" + message, known):
         if item not in seen:
             seen.add(item)
-            unique.append(item)
-    findings = unique
+            findings.append(item)
     if findings:
         say(f"FAIL secret scan: {len(findings)} finding(s). Nothing was "
-            f"committed. This repository is public.")
+            f"pushed and no branch was created. This repository is public.")
         for line, why in findings[:20]:
             say(f"   {why}: {line}")
         clog.write(f"push REFUSED: secret scan, {len(findings)} finding(s)")
         write_review(job_dir, dict(review, state="pending-review",
                                    scan=[w for _l, w in findings]))
         return 1
-    say(f" ok  secret scan clean ({len(known)} configured value(s) checked)")
+    _, names = git(root, "diff", "--name-only", upstream, sha)
+    say(f" ok  secret scan clean ({len(known)} configured value(s) checked); "
+        f"{len(names.split())} file(s) in the commit")
 
-    if review.get("state") == "push-failed" and review.get("branch") == branch:
-        # The commit already exists on the local branch; only the push is owed.
-        rc, out = git(root, "push", "-u", policy["remote"], branch)
-        if rc != 0:
-            say("FAIL push failed again:\n" + out.strip()[-400:])
-            return 1
-        write_review(job_dir, dict(review, state="pushed", pushed=_now()))
-        clog.write(f"PUSHED {branch}")
-        say(f"PUSHED {branch} to {policy['remote']}.")
-        return 0
-    rc, out = git(root, "checkout", "-b", branch)
+    rc, out = git(root, "update-ref", ref, sha)
     if rc != 0:
-        say(f"FAIL could not create branch {branch}: {out.strip()[:200]}. If "
-            f"it is left from an earlier job, delete it or use a new job id.")
+        say(f"FAIL could not create branch {branch}: {out.strip()[:200]}")
         return 1
-    try:
-        rc, out = git(root, "add", "--", *paths)
-        if rc != 0:
-            raise RuntimeError(f"git add failed: {out.strip()[:200]}")
-        subject = f"{'fix' if review.get('scope') == 'converter' else 'test'}(agent): {job}"
-        body = _commit_body(job_dir, files)
-        rc, out = git(root, "commit", "-m", subject, "-m", body, "--", *paths)
-        if rc != 0:
-            raise RuntimeError(f"git commit failed: {out.strip()[:300]}")
-        _, sha = git(root, "rev-parse", "HEAD")
-        say(f" ok  committed {sha.strip()[:8]} on {branch}")
-        rc, out = git(root, "push", "-u", policy["remote"], branch)
-        if rc != 0:
-            write_review(job_dir, dict(review, state="push-failed", branch=branch,
-                                       commit=sha.strip(),
-                                       reason=out.strip()[-400:]))
-            clog.write(f"push FAILED; commit {sha.strip()[:8]} kept on {branch}")
-            say(f"FAIL push failed; the commit is kept on local branch "
-                f"{branch}:\n{out.strip()[-400:]}")
-            return 1
-        write_review(job_dir, dict(review, state="pushed", branch=branch,
-                                   commit=sha.strip(), pushed=_now()))
-        clog.write(f"APPROVED and PUSHED {branch} ({sha.strip()[:8]})")
-        say(f"PUSHED {branch} to {policy['remote']}. Open a pull request "
-            f"from it; nothing was pushed to {base}.")
-        return 0
-    except RuntimeError as e:
-        say(f"FAIL {e}")
+    say(f" ok  committed {sha[:8]} on {branch} (based on {remote}/{base})")
+    rc, out = git(root, "-c", f"core.hooksPath={nohooks}", "push", "--no-verify",
+                  remote, f"{ref}:{ref}")
+    if rc != 0:
+        write_review(job_dir, dict(review, state="push-failed", branch=branch,
+                                   commit=sha, reason=out.strip()[-400:]))
+        clog.write(f"push FAILED; commit {sha[:8]} kept on {branch}")
+        say(f"FAIL push failed; the commit is kept on local branch "
+            f"{branch}:\n{out.strip()[-400:]}")
         return 1
-    finally:
-        rc, out = git(root, "checkout", base)
-        if rc != 0:
-            say(f"WARN could not switch back to {base}: {out.strip()[:200]}")
+    write_review(job_dir, dict(review, state="pushed", branch=branch,
+                               commit=sha, pushed=_now()))
+    clog.write(f"APPROVED and PUSHED {branch} ({sha[:8]})")
+    say(f"PUSHED {branch} to {remote}. Open a pull request from it; nothing "
+        f"was pushed to {base}. Your checkout was not switched, so the files "
+        f"are still in your working tree as uncommitted changes -- they come "
+        f"back through the pull request.")
+    return 0
 
 
 def _commit_body(job_dir: str, files: dict) -> str:
-    brief = _read(os.path.join(job_dir, "brief.md"), 1500).strip()
+    """Only the file list. The pasted story is NOT quoted here: it can
+    carry an internal URL or a customer name, and a commit message is
+    published with the commit."""
     listed = "\n".join(f"- {p}" for p in
                        (files.get("created") or []) + (files.get("modified") or []))
-    return (f"Written by the Cursor agent from the workbench plan and "
-            f"approved at review.\n\n{listed}\n\n{brief}").strip()
+    return ("Written by the Cursor agent from the workbench plan and "
+            "approved at review.\n\n" + listed).strip()
 
 
 def main(argv=None) -> int:

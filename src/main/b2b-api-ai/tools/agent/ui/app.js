@@ -30,12 +30,14 @@ document.querySelectorAll(".tabs button").forEach((b) => {
 // One poller per (job, runnable). It appends only what is new, so a long
 // convert does not re-render its whole log every second.
 function follow(runnable, logEl, stateEl, onDone) {
+  // The job is read ONCE. Re-reading the text box every tick would switch
+  // this poller to another job's log if the box is edited mid-run.
+  const j = job();
   let offset = 0;
   logEl.textContent = "";
   setState(stateEl, "run", "running…");
   const tick = async () => {
     try {
-      const j = job();
       const chunk = await api(
         `/api/log?job=${encodeURIComponent(j)}&runnable=${runnable}&offset=${offset}`);
       if (chunk.text) {
@@ -245,7 +247,7 @@ for (const [btn, runnable] of [["run-keys", "audit-service-keys"],
 const REVIEW_TEXT = {
   "none": "No agent run for this job yet.",
   "generating": "Cursor is working… (if the run was stopped or died, Discard puts everything back)",
-  "rejected": "Rejected — the agent broke a rule and its changes were undone.",
+  "rejected": "Rejected — the agent broke a rule.",
   "verify-failed": "Did not verify. The files are still in the working tree.",
   "pending-review": "PENDING REVIEW — read the diff, then approve or discard.",
   "pushed": "Pushed.",
@@ -258,9 +260,14 @@ const REVIEW_TEXT = {
 
 async function refreshReview() {
   let review = { state: "none" };
+  const shown = job();
+  // The buttons act on the job whose review is on screen, not on whatever
+  // is typed in the box when they are clicked.
+  $("agent-push").dataset.job = shown;
+  $("agent-discard").dataset.job = shown;
   try {
     const r = await api(
-      `/api/artifact?job=${encodeURIComponent(job())}&name=review.json`);
+      `/api/artifact?job=${encodeURIComponent(shown)}&name=review.json`);
     if (r.text) review = JSON.parse(r.text);
   } catch { /* no review yet */ }
   const state = review.state || "none";
@@ -281,7 +288,11 @@ async function refreshReview() {
   if (review.scope) detail += ` Scope: ${review.scope}` +
                               (review.suite ? ` (${review.suite}).` : ".");
   $("review-detail").textContent = detail;
-  $("agent-discard").disabled =
+  if (state === "rejected")
+    detail += review.needs_discard
+      ? " Its changes were NOT undone — use Discard." : " Its changes were undone.";
+  $("review-detail").textContent = detail;
+  $("agent-discard").disabled = !(review.needs_discard) &&
     !(state === "pending-review" || state === "verify-failed" ||
       state === "generating");   // a stopped run: discard puts it all back
 
@@ -380,11 +391,20 @@ $("agent-reapply").onclick = () => {
   runAgent("agent-reapply", { "--suite": suite });
 };
 $("agent-discard").onclick = () => {
+  if (!sameJobOrRefresh($("agent-discard"))) return;
   if (!confirm("Remove the files the agent created and restore the ones it " +
                "changed?")) return;
   runAgent("agent-discard", { "--job": job() });
 };
+function sameJobOrRefresh(btn) {
+  if (btn.dataset.job === job()) return true;
+  setState($("agent-state"), "bad",
+           "the job id changed since this review was loaded — refreshed, check it again");
+  refreshReview();
+  return false;
+}
 $("agent-push").onclick = () => {
+  if (!sameJobOrRefresh($("agent-push"))) return;
   const j = job();
   const pushes = $("agent-push").dataset.pushable !== "false";
   const msg = pushes

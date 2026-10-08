@@ -58,7 +58,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 STORE_DIR = ".agent-patches"
 _SUITE_RX = re.compile(r"^[a-z0-9_]{1,80}$")
-_ID_RX = re.compile(r"^[A-Za-z0-9._-]{1,120}$")
+# NNN-<job>. The digits are required: without them `..` matches, and
+# `forget --id ..` would remove the whole store.
+_ID_RX = re.compile(r"^\d{3,}-[A-Za-z0-9_][A-Za-z0-9._-]{0,100}$")
 
 # The only places a stored change may write, for suite {suite}.
 SUITE_ROOTS = (
@@ -175,17 +177,29 @@ def _same(a: bytes, b: bytes) -> bool:
 
 
 def merge3(base: bytes, after: bytes, now: bytes):
-    """(merged bytes, clean?) -- `git merge-file` on three versions."""
+    """(merged bytes, clean?) -- `git merge-file` on three versions.
+
+    Line endings are taken out of the comparison first. A convert on
+    Windows writes CRLF and an editor may save LF; left in, every line
+    differs on one side and every merge is a conflict. The result gets
+    the ending the converter's current file uses.
+    """
+    crlf = b"\r\n" in now
+    lf = lambda b: b.replace(b"\r\n", b"\n")
     tmp = tempfile.mkdtemp(prefix="agentmerge_")
     try:
         paths = {}
         for name, data in (("now", now), ("base", base), ("after", after)):
             paths[name] = os.path.join(tmp, name)
-            _write(paths[name], data)
-        r = subprocess.run(
-            ["git", "merge-file", "-p", "--diff3", paths["now"], paths["base"],
-             paths["after"]], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        return r.stdout, r.returncode == 0
+            _write(paths[name], lf(data))
+        try:
+            r = subprocess.run(
+                ["git", "merge-file", "-p", "--diff3", paths["now"], paths["base"],
+                 paths["after"]], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except OSError:
+            return now, False               # no git: nothing can be merged
+        merged = r.stdout.replace(b"\n", b"\r\n") if crlf else r.stdout
+        return merged, r.returncode == 0
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

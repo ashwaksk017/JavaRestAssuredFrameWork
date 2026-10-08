@@ -192,6 +192,31 @@ after, so a tree that already has known failures can still be worked on.
 Each run is one Cursor call, plus one repair call if the result does not
 verify (the compiler or gate output is handed back).
 
+#### What Approve & push publishes
+
+- **Only the job's files, on top of what the remote already has.** The
+  commit is built on `origin/<your branch>`, not on your local branch, so
+  local commits you have not pushed are **not** published with it. If
+  those unpushed commits changed one of the same files, approve is
+  refused -- push them first.
+- **Your checkout is not touched.** No branch switch, no change to the
+  index or the working tree. The files stay where Cursor left them, as
+  uncommitted changes; they come back through the pull request.
+- **What is scanned is what is pushed**: the commit against the remote
+  branch, plus the commit message. The pasted story is not quoted in the
+  message.
+- **No hooks run**, and the push goes to the branch `agent/<job>` only.
+- **What you approve is what you saw.** If a file changed after the diff
+  was produced, approve stops, rewrites `proposed.diff`, and asks again.
+
+One run at a time: a convert, an agent run, an approve, a discard and a
+re-apply all work on the same files, so the page (and a lock file, for
+the command line) refuses to start a second while one is going.
+
+A run that was stopped or died can still be undone: **Discard** puts
+back everything changed since it started. A run that ended
+"verify failed" has to be discarded before the job is run again.
+
 #### The Cursor log
 
 Everything about the conversation with Cursor is in its own log,
@@ -239,7 +264,10 @@ The prompt says the same things, but a prompt is advice.
 | writes only inside the chosen scope | job fails, every touched file is put back -- tracked files from git or from the copy of your own uncommitted version, generated files from the copy of the generated tree taken before the run |
 | no deletes | job fails, the file is restored |
 | another suite's generated files, or the ones every suite shares | job fails and they are put back; the message names whose they were |
-| the agent does not commit or switch branch | job fails |
+| the agent does not commit or switch branch | job fails; Discard puts the files back (the branch is yours to restore) |
+| nothing inside `.git` changes (hooks, config, exclude) | job fails, the files are put back |
+| no file is hidden from git (assume-unchanged, skip-worktree, a folder that ignores itself) | job fails, the mark or the folder is removed |
+| `program_configuration.json` / `cursor_agent.json` unchanged | job fails, put back from memory |
 | no uncommitted work of yours inside the write paths before a run | run refused, agent not called |
 | approve only from `pending-review`, with `--confirm <job>` | refused |
 | no credential, and no host or secret value from `program_configuration.json`, in a diff that is pushed | push refused before any commit |

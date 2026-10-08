@@ -814,6 +814,277 @@ class StoredChangesInOrder(Repo):
         self.assertEqual(self.ids(), ["002-two", "003-three"])
 
 
+class WhatGitWouldNotShow(Repo):
+    """Ways a change can be made so that a plain `git status` in the
+    project folder does not report it. Each must still fail the job."""
+
+    def new_test(self):
+        write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
+
+    def test_a_staged_new_file_is_still_a_new_file_with_a_full_diff(self):
+        """`git add` made a new file look tracked, and the diff against the
+        index empty -- an empty review and an empty secret scan."""
+        def agent(_prompt):
+            write(self.root, JIRA + "NewTest.java", 'class NewTest { String p = "x"; }\n')
+            sh(self.root, "add", JIRA + "NewTest.java")
+            return {"result": ""}
+        self.assertEqual(self.generate(agent), 0)
+        self.assertEqual(self.state()["files"]["created"], [JIRA + "NewTest.java"])
+        with io.open(os.path.join(self.job, "proposed.diff"), encoding="utf-8") as fh:
+            self.assertIn('+class NewTest { String p = "x"; }', fh.read())
+
+    def test_a_staged_edit_shows_in_the_diff_and_discard_undoes_it(self):
+        def agent(_prompt):
+            write(self.root, JIRA + "ExistingTest.java", "class ExistingTest { int staged; }\n")
+            sh(self.root, "add", JIRA + "ExistingTest.java")
+            return {"result": ""}
+        self.assertEqual(self.generate(agent), 0)
+        with io.open(os.path.join(self.job, "proposed.diff"), encoding="utf-8") as fh:
+            self.assertIn("+class ExistingTest { int staged; }", fh.read())
+        self.assertEqual(loop.cmd_discard(self.job, self.root), 0)
+        self.assertEqual(self.status(), "")
+
+    def test_a_file_marked_assume_unchanged_is_found(self):
+        def agent(_prompt):
+            self.new_test()
+            sh(self.root, "update-index", "--assume-unchanged", "src/main/java/Framework.java")
+            write(self.root, "src/main/java/Framework.java", "class Framework { /* hidden */ }\n")
+            return {"result": ""}
+        self.assertEqual(self.generate(agent), 1)
+        self.assertIn("assume-unchanged", self.state()["reason"])
+        self.assertEqual(self.status(), "", "the mark is removed and the file restored")
+        self.assertEqual(loop.hidden_flags(self.root), set())
+
+    def test_a_folder_that_ignores_itself_is_found_and_removed(self):
+        def agent(_prompt):
+            self.new_test()
+            write(self.root, "src/main/java/sneaky/.gitignore", "*\n")
+            write(self.root, "src/main/java/sneaky/Evil.java", "class Evil {}\n")
+            return {"result": ""}
+        self.assertEqual(self.generate(agent), 1)
+        self.assertIn("git ignores", self.state()["reason"])
+        self.assertFalse(os.path.exists(os.path.join(self.root, "src/main/java/sneaky")))
+
+    def test_a_hook_or_a_config_change_inside_dot_git_is_put_back(self):
+        hook = os.path.join(self.root, ".git", "hooks", "pre-commit")
+        config = os.path.join(self.root, ".git", "config")
+        before = io.open(config, "rb").read()
+        def agent(_prompt):
+            self.new_test()
+            write(self.root, ".git/hooks/pre-commit", "#!/bin/sh\ngit add -f target/leak.txt\n")
+            sh(self.root, "config", "remote.origin.url", "https://elsewhere.example.com/x.git")
+            return {"result": ""}
+        self.assertEqual(self.generate(agent), 1)
+        self.assertIn("inside .git", self.state()["reason"])
+        self.assertFalse(os.path.exists(hook))
+        self.assertEqual(io.open(config, "rb").read(), before)
+
+    def test_a_same_size_write_with_the_old_timestamp_is_still_seen(self):
+        """Size and mtime were the whole check; both can be kept."""
+        target = os.path.join(self.root, GEN + "goal/Hooks.java")
+        def agent(_prompt):
+            self.new_test()
+            st = os.stat(target)
+            with io.open(target, "w", newline="") as fh:
+                fh.write("class Hookz {}\n")            # same length as before
+            os.utime(target, ns=(st.st_atime_ns, st.st_mtime_ns))
+            return {"result": ""}
+        self.assertEqual(self.generate(agent), 1)
+        self.assertEqual(io.open(target).read(), "class Hooks {}\n")
+
+    def test_a_rejection_that_could_not_undo_can_be_discarded(self):
+        def agent(_prompt):
+            self.new_test()
+            write(self.root, "README.md", "changed\n")
+            sh(self.root, "add", "-A")
+            sh(self.root, "commit", "-q", "-m", "agent went rogue")
+            write(self.root, "stray.txt", "left behind\n")
+            return {"result": ""}
+        self.assertEqual(self.generate(agent), 1)
+        self.assertTrue(self.state()["needs_discard"])
+        self.assertEqual(loop.cmd_discard(self.job, self.root), 0)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "stray.txt")))
+
+
+class AProjectBelowTheRepositoryTop(unittest.TestCase):
+    """The real layout: the git top level is three folders above the
+    project. A file written up there is outside `.`."""
+
+    def test_a_file_above_the_project_folder_is_seen_and_removed(self):
+        top = tempfile.mkdtemp(prefix="looptest_top_")
+        self.addCleanup(shutil.rmtree, top, ignore_errors=True)
+        sh(top, "init", "-q", "-b", "main")
+        sh(top, "config", "user.email", "t@example.com")
+        sh(top, "config", "user.name", "t")
+        root = os.path.join(top, "src", "main", "proj")
+        write(top, ".gitignore", "target/\n")
+        write(top, "TOP.md", "top\n")
+        write(root, JIRA + "ExistingTest.java", "class ExistingTest {}\n")
+        sh(top, "add", "-A")
+        sh(top, "commit", "-q", "-m", "base")
+        job = os.path.join(root, "target", "agent", "job1")
+        write(root, "target/agent/job1/plan.md", "# plan\n")
+        policy = loop.load_policy(os.path.join(root, "none.json"))
+
+        def agent(_prompt):
+            write(root, JIRA + "NewTest.java", "class NewTest {}\n")
+            write(top, "TOP.md", "edited above the project\n")
+            write(top, "ABOVE.txt", "new above the project\n")
+            return {"result": ""}
+        rc = loop.cmd_generate(job, root, policy, agent=agent, verifier=OK)
+        self.assertEqual(rc, 1)
+        self.assertIn("outside the allowed paths", loop.read_review(job)["reason"])
+        self.assertEqual(io.open(os.path.join(top, "TOP.md")).read(), "top\n")
+        self.assertFalse(os.path.exists(os.path.join(top, "ABOVE.txt")))
+        self.assertEqual(sh(top, "status", "--porcelain"), "")
+
+        def good(_prompt):
+            write(root, JIRA + "NewTest.java", "class NewTest {}\n")
+            return {"result": ""}
+        write(root, "target/agent/job2/plan.md", "# plan\n")
+        job2 = os.path.join(root, "target", "agent", "job2")
+        self.assertEqual(loop.cmd_generate(job2, root, policy, agent=good, verifier=OK), 0,
+                         "NEGATIVE CONTROL: an in-scope change in a nested project still passes")
+
+
+class WhatApprovePublishes(Push):
+    def test_local_commits_that_were_never_pushed_are_not_published(self):
+        write(self.root, "private-notes.md", "not for the remote\n")
+        sh(self.root, "add", "-A")
+        sh(self.root, "commit", "-q", "-m", "local only, not pushed")
+        self.pending()
+        self.assertEqual(self.push(), 0)
+        files = sh(self.remote, "ls-tree", "-r", "--name-only", "agent/job1")
+        self.assertNotIn("private-notes.md", files)
+        self.assertIn(JIRA + "NewTest.java", files)
+        self.assertEqual(sh(self.remote, "rev-list", "--count", "main..agent/job1"), "1")
+
+    def test_it_is_refused_when_the_unpushed_commits_touch_the_same_file(self):
+        write(self.root, JIRA + "ExistingTest.java", "class ExistingTest { int local; }\n")
+        sh(self.root, "commit", "-q", "-am", "local only")
+        def agent(_prompt):
+            write(self.root, JIRA + "ExistingTest.java", "class ExistingTest { int local; int agent; }\n")
+            return {"result": ""}
+        self.assertEqual(self.generate(agent), 0)
+        self.assertEqual(self.push(), 1)
+        self.assertEqual(sh(self.remote, "branch", "--list", "agent/*"), "")
+
+    def test_the_pasted_story_is_not_in_the_commit_message(self):
+        write(self.root, "target/agent/job1/brief.md",
+              "# brief\nSee https://jira.internal.corp.test/browse/SECRET-1\n")
+        self.pending()
+        self.assertEqual(self.push(), 0)
+        msg = sh(self.remote, "log", "-1", "--format=%B", "agent/job1")
+        self.assertNotIn("internal.corp.test", msg)
+        self.assertIn(JIRA + "NewTest.java", msg)
+
+    def test_a_staged_file_with_a_credential_cannot_be_pushed(self):
+        def agent(_prompt):
+            write(self.root, JIRA + "NewTest.java",
+                  'class NewTest { String password = "hunter2-very-secret"; }\n')
+            sh(self.root, "add", JIRA + "NewTest.java")
+            return {"result": ""}
+        self.assertEqual(self.generate(agent), 0)
+        self.assertEqual(self.push(), 1)
+        self.assertEqual(sh(self.remote, "branch", "--list", "agent/*"), "")
+        self.assertEqual(sh(self.root, "branch", "--list", "agent/*"), "")
+
+    def test_the_checkout_and_the_working_tree_are_left_alone(self):
+        write(self.root, "README.md", "my unsaved work\n")
+        self.pending()
+        self.assertEqual(self.push(), 0)
+        self.assertEqual(sh(self.root, "rev-parse", "--abbrev-ref", "HEAD"), "main")
+        self.assertTrue(os.path.isfile(os.path.join(self.root, JIRA + "NewTest.java")),
+                        "the new test does not vanish from the working tree")
+        self.assertEqual(io.open(os.path.join(self.root, "README.md")).read(), "my unsaved work\n")
+
+    def test_a_file_edited_after_the_review_needs_a_second_look(self):
+        self.pending()
+        write(self.root, JIRA + "NewTest.java", "class NewTest { /* edited after review */ }\n")
+        self.assertEqual(self.push(), 1)
+        self.assertEqual(sh(self.remote, "branch", "--list", "agent/*"), "")
+        with io.open(os.path.join(self.job, "proposed.diff"), encoding="utf-8") as fh:
+            self.assertIn("edited after review", fh.read())
+        self.assertEqual(self.push(), 0, "approved again, now that the diff is current")
+
+    def test_a_review_file_pointing_outside_its_scope_is_refused(self):
+        self.pending()
+        r = self.state()
+        r["files"]["created"].append("README.md")
+        loop.write_review(self.job, r)
+        self.assertEqual(self.push(), 1)
+
+    def test_no_hook_runs_on_the_way_out(self):
+        self.pending()
+        write(self.root, ".git/hooks/pre-push", "#!/bin/sh\nexit 1\n")
+        write(self.root, ".git/hooks/pre-commit", "#!/bin/sh\nexit 1\n")
+        self.assertEqual(self.push(), 0)
+
+
+class TheSecretScan(unittest.TestCase):
+    def found(self, line, known=None):
+        return bool(loop.scan_secrets("+" + line + "\n", known or {}))
+
+    def test_the_usual_spellings_of_a_credential_name(self):
+        for line in ('String dbPassword = "Pr0d-s3cret!";',
+                     'String accessToken = "a1b2c3d4e5f6g7";',
+                     'API_TOKEN = "zz99yy88xx77";',
+                     'headers.put("password", "Pr0d-s3cret!");',
+                     'given().header("Authorization", "Basic dXNlcjpwYXNzd29yZDEyMw==");',
+                     'String u = "jdbc:oracle:thin:@db.internal.test:1521/x";'):
+            self.assertTrue(self.found(line), line)
+
+    def test_ordinary_test_code_is_not_blocked(self):
+        """NEGATIVE CONTROL: a scan that cries wolf gets switched off."""
+        for line in ('String token = "access_token";',
+                     'String password = "invalid-password";',
+                     'String password = "${#Project#password}";',
+                     'String t = Config.get("jira_config.token", "");',
+                     'String tokenPath = "/oauth2/v1/token";'):
+            self.assertFalse(self.found(line), line)
+
+    def test_config_values_hosts_addresses_and_routes(self):
+        cfg = os.path.join(tempfile.mkdtemp(prefix="looptest_cfg_"), "c.json")
+        with io.open(cfg, "w") as fh:
+            json.dump({"baseUrl": "https://Api.Internal-Stage.corp.test/v2",
+                       "db": {"host": "10.20.30.40"},
+                       "token_route": "/oauth2/v1/token",
+                       "jira_config": {"token": "ABC#1234xyz"}}, fh)
+        known = loop.config_secrets(cfg)
+        self.assertTrue(self.found('String u = "https://API.internal-stage.CORP.test/x";', known))
+        self.assertTrue(self.found('String h = "10.20.30.40";', known))
+        self.assertTrue(self.found('String t = "abc#1234XYZ";', known), "case does not hide it")
+        self.assertFalse(self.found('String r = "/oauth2/v1/token";', known),
+                         "a route is not a secret")
+
+    def test_the_cursor_log_redacts_whatever_the_case(self):
+        d = tempfile.mkdtemp(prefix="looptest_log_")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        loop.CursorLog(d, secrets=["ABC#1234xyz"]).write("the agent printed abc#1234XYZ here")
+        with io.open(os.path.join(d, "cursor.log"), encoding="utf-8") as fh:
+            self.assertNotIn("1234", fh.read())
+
+
+class TheStoreIsNotAWayOut(Repo):
+    def test_forget_cannot_be_pointed_at_the_store_itself(self):
+        write(self.root, ".agent-patches/amex/001-j/manifest.json", "{}")
+        write(self.root, ".agent-patches/goal/001-j/manifest.json", "{}")
+        for bad in ("..", ".", "../goal", "001-j/..", ""):
+            with self.assertRaises(ValueError):
+                loop.patches.forget(self.root, "amex", bad)
+        self.assertTrue(os.path.isdir(os.path.join(self.root, ".agent-patches", "goal")))
+
+    def test_line_endings_alone_do_not_make_a_conflict(self):
+        base = b"class A {\r\n    int a;\r\n    int b;\r\n    int c;\r\n    int d;\r\n}\r\n"
+        after = base.replace(b"\r\n", b"\n").replace(b"int d;", b"int d; // approved")
+        now = base.replace(b"int a;", b"int a; // converter")
+        merged, clean = loop.patches.merge3(base, after, now)
+        self.assertTrue(clean)
+        self.assertIn(b"// approved", merged)
+        self.assertIn(b"// converter", merged)
+        self.assertNotIn(b"\n", merged.replace(b"\r\n", b""), "CRLF like the converter's file")
+
+
 class SdkBootstrap(unittest.TestCase):
     def test_an_installed_sdk_is_left_alone(self):
         sys.modules["cursor_sdk"] = types.ModuleType("cursor_sdk")
@@ -826,6 +1097,11 @@ class SdkBootstrap(unittest.TestCase):
 
     def test_a_missing_sdk_is_installed_once(self):
         sys.modules.pop("cursor_sdk", None)
+        try:
+            import cursor_sdk  # noqa: F401
+            self.skipTest("cursor-sdk is really installed here")
+        except ImportError:
+            pass
         def pip(argv):
             self.assertIn("pip", argv)
             self.assertIn("install", argv)
