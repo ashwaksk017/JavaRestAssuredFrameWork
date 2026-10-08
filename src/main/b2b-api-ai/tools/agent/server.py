@@ -214,26 +214,24 @@ class Handler(BaseHTTPRequestHandler):
         return jobs.start(job, "intake", options)
 
     def _design(self, body: dict) -> dict:
-        """Pasted material goes into the job directory; the command is
-        given only the files that were actually filled in. A box left
+        """Pasted material goes into the job directory under fixed names,
+        which is where the command looks; it is given no path. A box left
         empty removes its file, so an earlier run's specification is not
         used again without anyone seeing it."""
         job = body.get("job", "")
         out = jobs.job_dir(job)                 # validates the id
         os.makedirs(out, exist_ok=True)
         options = {"--job": job}
-        for field, option in (("swagger", "--swagger-file"),
-                              ("requirements", "--requirements-file"),
-                              ("notes", "--notes-file")):
+        for field in ("swagger", "requirements", "notes"):
             path = os.path.join(out, f"design-{field}.txt")
             text = body.get(field) or ""
             if str(text).strip():
                 with io.open(path, "w", encoding="utf-8") as fh:
                     fh.write(str(text))
-                options[option] = path
             elif os.path.isfile(path):
                 os.remove(path)
-        for field, option in (("service", "--service"), ("speed", "--speed")):
+        for field, option in (("service", "--service"), ("speed", "--speed"),
+                              ("mode", "--mode")):
             if str(body.get(field) or "").strip():
                 options[option] = str(body[field]).strip()
         return jobs.start(job, "agent-design", options)

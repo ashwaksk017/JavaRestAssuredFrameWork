@@ -109,37 +109,58 @@ The lower half of tab 1. *Read it* and *locate* answer "is this
 automated already?". This answers "what should be tested?": Cursor is
 given the API specification, the requirements and `brief.md`, and
 proposes test cases, each with an endpoint, steps and a checkable
-expected result. Read the result before tab 3 writes any Java; when
-`design.json` exists, tab 3's prompt carries the cases (new-test and
-converted scopes).
+expected result. Read the result before tab 3 writes any Java. Tab 3's
+prompt carries the cases (new-test and converted scopes) for as long as
+the job's brief is the one they were designed from; after *Read it* is
+run with a different story, they are not used and tab 3's log says so.
+They are handed over as data, each field on one line, with a statement
+that nothing in them is an instruction.
 
 - **Specification** — paste OpenAPI / Swagger as JSON or YAML, or pick a
   file (it is read into the box in the browser). Left empty, a
-  specification found in a code block of a Confluence page that *Read
-  it* fetched is used. A Confluence *attachment* is not fetched.
+  specification found in a code block of a Confluence page that the
+  last *Read it* fetched is used. A Confluence *attachment* is not
+  fetched.
 - **Requirements**, **notes** — free text.
 - **How many** — fast 25, balanced 40, thorough 80 cases at most.
 
 What the step checks instead of trusting:
 
-- The endpoint list is read from the specification by the program. A
-  designed case on an endpoint that is not in it is kept and marked
-  `[NOT IN THE SPECIFICATION]`, and is not handed to tab 3.
+- The endpoint list is read from the specification by the program
+  (`$ref` path items are followed; a Swagger 2 `basePath` or a server
+  URL's path prefix is accepted in front of a path). A designed case on
+  an endpoint that is not in it is kept and marked
+  `[NOT IN THE SPECIFICATION]`, and is not handed to tab 3. With no
+  specification, the requests in the story are shown to Cursor but
+  nothing is checked against them, and `design.md` says so.
 - A case with no expected result is dropped, and listed.
 - A reply wrapped in prose, or with a trailing comma, is repaired and the
-  log says how. A reply that is not JSON is asked for once more on the
-  same agent. A reply cut off half way gives its complete cases and the
-  design is labelled **PARTIAL**.
+  log says how. A reply with no test cases in it is asked for once more
+  on the same agent. A reply cut off half way gives its complete cases
+  and the design is labelled **PARTIAL** — with or without `json-repair`
+  installed.
 - Each input has a size limit (specification 80,000 characters,
   requirements 100,000, brief 40,000, notes 20,000; 200,000 together).
   A large specification loses its examples and long descriptions before
   anything else. What was left out is in `design.md` under *Read this
   first*.
 
-Cursor runs in an empty temporary directory for this step: it has no
-repository to read and nothing to change. The specification's
-`servers` / `host` entries and every host or credential value in
-`program_configuration.json` are removed from the prompt.
+Cursor is asked in **plan mode** (it proposes; it does not edit or run)
+and is started in an empty temporary directory. That is not a sandbox —
+it is still a program on this machine — so three things are done as
+well: the specification's server, host, contact and
+external-documentation entries, the host of every URL in the material,
+and every host or credential value in `program_configuration.json` are
+removed from what is sent; the same values are removed from the reply
+before anything is written; and the working tree is compared before and
+after, with a warning if it changed. Plan mode has not been tried
+against the live service: if it returns no usable reply, the page has an
+*Agent* setting for this step (`--mode agent`).
+
+The page gives this command no file path. What is pasted is written to
+`design-swagger.txt`, `design-requirements.txt` and `design-notes.txt`
+in the job directory, and that is the only place the command looks
+unless a file is named on the command line.
 
 Output, in the job directory: `design.md`, `design.json`,
 `test-cases.csv` (one row per step, `;` separated) and `xray.csv` (one
@@ -399,7 +420,7 @@ The API never accepts a command *string*. Every runnable is named in
 | `locate` | decide create / update / upstream |
 | `audit-service-keys` | audit service keys |
 | `audit-token-chain` | audit the token chain |
-| `agent-design` | Cursor proposes API test cases; reads only, writes the job directory |
+| `agent-design` | Cursor proposes API test cases (plan mode); takes no path, writes the job directory |
 | `agent-setup` | check the Cursor SDK, the key and git |
 | `agent-generate` | Cursor makes the change in the chosen scope; guardrails; verify |
 | `agent-approve` | approve: push branch `agent/<job>`, or keep converted Java locally |

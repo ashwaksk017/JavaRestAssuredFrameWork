@@ -30,12 +30,20 @@ WHAT IS CHECKED HERE RATHER THAN TRUSTED
 * Each input has a size limit. What was left out is reported; nothing is
   shortened silently.
 
-Cursor is run in an EMPTY temporary directory: this step reads nothing
-from the repository and has nothing to write to.
+Cursor is asked in PLAN mode (it proposes, it does not edit or run) and
+is started in an empty temporary directory. That is a starting point,
+not a sandbox: it is still a program on this machine. So the reply is
+not trusted either -- host and credential values of the private
+configuration are removed from it before anything is written, and the
+working tree is compared before and after; a difference is reported.
 
-The specification's `servers` / `host` entries and every host or
-credential value found in the private configuration are removed from
-the prompt. Test design does not need them.
+Removed from the prompt, because test design needs none of it: the
+specification's server, host, contact and external-documentation
+entries at every level, the host of every URL anywhere in the material,
+and every host or credential value found in the private configuration.
+
+`design.json` records which brief it was designed from. Tab 3 uses the
+cases only while the job's brief is still that one.
 
 Came from the sibling test-case generator (aimanualtc): the idea, the
 size limits, the speed presets and the CSV layout. Its prompts are not
@@ -57,6 +65,7 @@ import re
 import sys
 import tempfile
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -81,11 +90,16 @@ TEMPLATE = os.path.join(HERE, "prompts", "api_test_design.md")
 
 # Characters, not tokens: a limit a person can check with a text editor.
 SECTION_LIMITS = {"swagger": 80_000, "requirements": 100_000,
-                  "story": 40_000, "notes": 20_000}
+                  "story": 40_000, "notes": 20_000, "endpoints": 30_000}
 TOTAL_LIMIT = 200_000
 SPEEDS = {"fast": 25, "balanced": 40, "thorough": 80}
 VERBS = ("get", "post", "put", "patch", "delete", "head", "options")
 ARTIFACTS = ("design.json", "design.md", "test-cases.csv", "xray.csv")
+MODES = ("plan", "agent")
+# What the page pasted, written by the server next to the job's other files.
+PASTED = {"swagger": "design-swagger.txt", "requirements": "design-requirements.txt",
+          "notes": "design-notes.txt"}
+CASE_KEYS = ("test_cases", "testCases", "testcases", "cases", "tests")
 
 JSON_ONLY = (
     "Your reply could not be read as JSON. Reply again with ONLY the JSON "
@@ -131,13 +145,30 @@ def read_spec(text: str) -> tuple:
     return data, how
 
 
+def _path_item(spec: dict, item) -> dict:
+    """A path item, following a local `$ref` (a document split into
+    `components.pathItems` writes every path that way)."""
+    for _ in range(4):
+        if not isinstance(item, dict) or not isinstance(item.get("$ref"), str):
+            break
+        ref = item["$ref"]
+        if not ref.startswith("#/"):
+            return {}
+        node = spec
+        for part in ref[2:].split("/"):
+            part = part.replace("~1", "/").replace("~0", "~")
+            node = node.get(part) if isinstance(node, dict) else None
+            if node is None:
+                return {}
+        item = node
+    return item if isinstance(item, dict) else {}
+
+
 def endpoints_of(spec: dict) -> list:
     """["VERB /path -- summary", ...] in the order the specification has them."""
     out = []
     for path, item in (spec.get("paths") or {}).items():
-        if not isinstance(item, dict):
-            continue
-        for verb, op in item.items():
+        for verb, op in _path_item(spec, item).items():
             if str(verb).lower() not in VERBS:
                 continue
             summary = ""
@@ -148,48 +179,100 @@ def endpoints_of(spec: dict) -> list:
     return out
 
 
+def base_paths(spec: dict) -> list:
+    """Path prefixes the specification puts in front of every path:
+    Swagger 2 `basePath`, and the path part of an OpenAPI 3 server URL.
+    A case written as `/v1/groups` is the endpoint `/groups`."""
+    found = []
+    if isinstance(spec.get("basePath"), str):
+        found.append(spec["basePath"])
+    for server in spec.get("servers") or []:
+        url = server.get("url") if isinstance(server, dict) else None
+        if isinstance(url, str):
+            found.append(urlparse(url).path if "://" in url else url)
+    out = []
+    for p in found:
+        p = "/" + p.strip("/")
+        if p != "/" and p not in out:
+            out.append(p)
+    return out
+
+
+def match_lines(endpoints: list, prefixes: list) -> list:
+    """Every way an endpoint of the specification may be written."""
+    out = list(endpoints)
+    for line in endpoints:
+        head = line.split(" -- ")[0]
+        verb, _, path = head.partition(" ")
+        out += [f"{verb} {p}{path}" for p in prefixes]
+    return out
+
+
 _PARAM_RX = re.compile(r"\{[^/}]*\}|:[A-Za-z_][A-Za-z0-9_]*")
 
 
 def endpoint_key(line: str) -> str:
-    """`post /a/{id}/ -- text` and `POST /a/{propId}` are the same endpoint."""
-    head = (line or "").split(" -- ")[0].strip()
+    """`post /a/{id}/ -- text`, `` `POST /a/{propId}` `` and
+    `POST https://host/a/{x}` are the same endpoint. "" when the text is
+    not a verb and a path."""
+    head = (line or "").split(" -- ")[0].strip().strip("`'\"").strip()
     parts = head.split(None, 1)
-    if len(parts) != 2 or parts[0].lower() not in VERBS or not parts[1].startswith("/"):
+    if len(parts) != 2 or parts[0].lower() not in VERBS:
         return ""
-    verb, path = parts[0].upper(), parts[1].split("?")[0].strip()
-    path = _PARAM_RX.sub("{}", path).rstrip("/") or "/"
-    return f"{verb} {path}"
+    path = parts[1].strip().strip("`'\"")
+    if "://" in path:
+        path = urlparse(path.split("?")[0]).path or "/"
+    if not path.startswith("/"):
+        return ""
+    path = _PARAM_RX.sub("{}", path.split("?")[0].strip()).rstrip("/") or "/"
+    return f"{parts[0].upper()} {path}"
 
 
-def _strip(node, drop_examples: bool, shorten: int):
+# Keys that hold a host, a person or a link, wherever they appear.
+_HOST_KEYS = ("servers", "host", "externalDocs", "contact", "termsOfService")
+# Maps whose KEYS are names the author chose. A schema property called
+# `host` or `example` is part of the contract, not one of the above.
+_NAME_MAPS = ("properties", "patternProperties", "schemas", "definitions",
+              "parameters", "responses", "headers", "requestBodies",
+              "securitySchemes", "securityDefinitions", "callbacks", "links",
+              "paths", "pathItems")
+
+
+def _strip(node, drop_examples: bool, shorten: int, dropped: list, names: bool = False):
+    """`names`: the keys of THIS mapping are author-chosen names."""
     if isinstance(node, dict):
         out = {}
         for k, v in node.items():
             key = str(k)
-            if drop_examples and (key in ("example", "examples") or key.startswith("x-")):
-                continue
-            if shorten and key == "description" and isinstance(v, str) and len(v) > shorten:
-                v = v[:shorten].rstrip() + " ..."
-            out[k] = _strip(v, drop_examples, shorten)
+            if not names:
+                if key in _HOST_KEYS:
+                    dropped.append(key)
+                    continue
+                if drop_examples and (key in ("example", "examples") or key.startswith("x-")):
+                    continue
+                if shorten and key == "description" and isinstance(v, str) and len(v) > shorten:
+                    v = v[:shorten].rstrip() + " ..."
+            out[k] = _strip(v, drop_examples, shorten, dropped,
+                            names=(not names and key in _NAME_MAPS and isinstance(v, dict)))
         return out
     if isinstance(node, list):
-        return [_strip(v, drop_examples, shorten) for v in node]
+        return [_strip(v, drop_examples, shorten, dropped) for v in node]
     return node
 
 
 def spec_text(spec: dict, limit: int) -> tuple:
     """The specification as it is sent, and what was done to make it fit.
 
-    `servers`, `host` and `basePath`-less host data are dropped always:
-    they are where the host names are, and a test design needs none.
-    Then, only as far as needed: indentation, examples and vendor
-    extensions, long descriptions.
+    Server, host, contact and external-documentation entries are dropped
+    always and at every level: they are where the host names are, and a
+    test design needs none. Then, only as far as needed: indentation,
+    examples and vendor extensions, long descriptions.
     """
-    notes = []
-    body = {k: v for k, v in spec.items() if k not in ("servers", "host")}
-    if len(body) != len(spec):
-        notes.append("the specification's server/host entries were not sent")
+    notes, dropped = [], []
+    body = _strip(spec, False, 0, dropped)
+    if dropped:
+        notes.append("the specification's " + ", ".join(sorted(set(dropped)))
+                     + " entries were not sent")
     dump = lambda node, pretty: json.dumps(
         node, ensure_ascii=False, default=str,
         indent=1 if pretty else None,
@@ -200,13 +283,13 @@ def spec_text(spec: dict, limit: int) -> tuple:
     text = dump(body, False)
     if len(text) <= limit:
         return text, notes
-    body = _strip(body, True, 0)
+    body = _strip(body, True, 0, [])
     text = dump(body, False)
     notes.append("examples and x- extensions were left out of the "
                  "specification to fit the prompt")
     if len(text) <= limit:
         return text, notes
-    body = _strip(body, True, 160)
+    body = _strip(body, True, 160, [])
     text = dump(body, False)
     notes.append("descriptions in the specification were shortened to 160 characters")
     return text, notes
@@ -217,18 +300,28 @@ _FENCE_RX = re.compile(r"```[A-Za-z0-9_-]*[ \t]*\r?\n(.*?)```", re.S)
 
 def find_spec(job_dir: str) -> tuple:
     """(text, where) for a specification already in the job directory:
-    a code block on a Confluence page intake fetched, or the pasted text
-    itself. ("", "") when there is none."""
+    a code block on a Confluence page the LAST intake fetched, or the
+    pasted text itself. ("", "") when there is none.
+
+    Only the directories intake.json lists are read. `sources/` keeps
+    the pages of earlier runs of the same job, and a specification from
+    a previous story is worse than none.
+    """
     best = ("", "")
-    sources = os.path.join(job_dir, "sources")
-    for base, _dirs, files in os.walk(sources):
-        for name in sorted(files):
-            if not name.endswith(".md"):
-                continue
-            page = _read(os.path.join(base, name))
+    try:
+        links = json.loads(_read(os.path.join(job_dir, "intake.json")) or "{}").get("links") or []
+    except ValueError:
+        links = []
+    for link in links:
+        if not (isinstance(link, dict) and link.get("ok") and link.get("dir")):
+            continue
+        base = os.path.join(job_dir, "sources", os.path.basename(str(link["dir"])))
+        for name in sorted(link.get("files") or []):
+            path = os.path.join(base, os.path.basename(str(name)))
+            page = _read(path)
             for block in [m.group(1) for m in _FENCE_RX.finditer(page)] + [page]:
                 if len(block) > len(best[0]) and read_spec(block)[0] is not None:
-                    rel = os.path.relpath(os.path.join(base, name), job_dir)
+                    rel = os.path.relpath(path, job_dir)
                     best = (block, f"a code block in {rel.replace(os.sep, '/')}")
     pasted = _read(os.path.join(job_dir, "pasted.txt"))
     if len(pasted) > len(best[0]) and read_spec(pasted)[0] is not None:
@@ -277,6 +370,23 @@ def render(template: str, values: dict) -> str:
     return _SLOT_RX.sub(lambda m: str(values.get(m.group(1), m.group(0))), template)
 
 
+_URL_HOST_RX = re.compile(r"""(https?://)([^/\s"'<>`)\]]+)""", re.I)
+
+
+def hide_hosts(text: str) -> tuple:
+    """`https://anything/path` -> `https://host.invalid/path`."""
+    count = 0
+
+    def swap(m):
+        nonlocal count
+        if m.group(2).lower() == "host.invalid":
+            return m.group(0)
+        count += 1
+        return m.group(1) + "host.invalid"
+
+    return _URL_HOST_RX.sub(swap, text), count
+
+
 def redact(text: str, private: dict) -> tuple:
     """Remove the private configuration's hosts and credential values."""
     hits = 0
@@ -290,13 +400,46 @@ def redact(text: str, private: dict) -> tuple:
 
 # ---- what came back ---------------------------------------------------
 
+def _norm_key(k) -> str:
+    return re.sub(r"[\s_\-]", "", str(k)).lower()
+
+
 def _first(d: dict, *names):
-    lowered = {str(k).lower().replace(" ", "_"): v for k, v in d.items()}
+    """`expected_result`, `Expected Result` and `expectedResult` are one key."""
+    have = {_norm_key(k): v for k, v in d.items()}
     for n in names:
-        v = lowered.get(n)
+        v = have.get(_norm_key(n))
         if v not in (None, "", [], {}):
             return v
     return ""
+
+
+def cases_in(data):
+    """The list of cases in a parsed reply, under any name it is known by."""
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        got = _first(data, *CASE_KEYS)
+        if isinstance(got, list):
+            return got
+    return None
+
+
+def read_reply(text: str, partial: bool = False) -> tuple:
+    """(data, how) when the reply holds at least one case object; else
+    ValueError. An object that parses but carries no cases is NOT a
+    usable reply: asked for again, never accepted."""
+    last = ValueError("no test cases in the reply")
+    for key in (CASE_KEYS if partial else ("",)):
+        try:
+            data, how = jsonfix.loads(text, partial_key=key, list_key="test_cases")
+        except ValueError as e:
+            last = e
+            continue
+        cases = cases_in(data)
+        if cases and any(isinstance(c, dict) for c in cases):
+            return data, how
+    raise last
 
 
 def _text(v) -> str:
@@ -324,6 +467,10 @@ def _steps(case: dict) -> list:
                 "expected": _text(_first(s, "expected", "expected_result", "result"))}
         if step["action"] or step["expected"]:
             out.append(step)
+    # Steps given as plain sentences with ONE expected result for the case.
+    whole = _text(_first(case, "expected", "expected_result"))
+    if out and whole and not any(s["expected"] for s in out):
+        out[-1]["expected"] = whole
     return out
 
 
@@ -347,8 +494,8 @@ def normalise(raw_cases, known_endpoints=(), max_cases: int = 0) -> tuple:
                             f"expected result and was dropped")
             continue
         refs = _first(raw, "requirement_refs", "br_refs", "requirement", "requirements")
-        if isinstance(refs, str):
-            refs = [refs]
+        if not isinstance(refs, (list, tuple)):
+            refs = [refs] if refs not in (None, "") else []
         endpoint = _text(_first(raw, "endpoint", "api", "operation"))
         case = {
             "id": _text(_first(raw, "id", "testid", "test_id")),
@@ -469,25 +616,35 @@ def clear_outputs(out_dir: str) -> None:
 
 # ---- the run ----------------------------------------------------------
 
-def call_cursor(prompt: str, root: str, on_event, followup) -> dict:
-    """Cursor, in an empty directory: nothing to read, nothing to change."""
+def call_cursor(prompt: str, root: str, on_event, followup, mode: str = "plan") -> dict:
+    """Cursor, in plan mode, started in an empty directory."""
     ca, cfg = loop.cursor_config(root)
     hide = lambda s: ca.redact_for_log(str(s), cfg.api_key)
-    with tempfile.TemporaryDirectory(prefix="b2b-design-") as empty:
+    # The SDK's child process can still hold the directory when this
+    # block ends. A failed clean-up must not cost a reply already paid for.
+    with tempfile.TemporaryDirectory(prefix="b2b-design-",
+                                     ignore_cleanup_errors=True) as empty:
         cfg.cwd = empty
         try:
             out = loop.cursor_call.run(prompt, ca, cfg,
                                        on_event=lambda line: on_event(hide(line)),
-                                       followup=followup)
+                                       followup=followup, mode=mode)
         except loop.cursor_call.CursorCallError as e:
             raise RuntimeError(hide(e) + ("\n" + hide(e.details) if e.details else "")) from e
     out["result"] = hide(out.get("result") or "")
     return out
 
 
+def _tree_state(root: str):
+    try:
+        return loop.dirty_paths(root), loop.head(root)
+    except Exception:                                    # noqa: BLE001
+        return None
+
+
 def design(job: str, service: str = "", swagger: str = "", requirements: str = "",
            notes: str = "", speed: str = "balanced", root: str = "",
-           agent=None) -> int:
+           agent=None, mode: str = "plan") -> int:
     """Run the step. `agent(prompt, followup) -> {"result": text}` replaces
     Cursor in the tests."""
     root = root or ROOT
@@ -497,6 +654,9 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
     if speed not in SPEEDS:
         say(f"FAIL unknown speed {speed!r}. Known: {', '.join(SPEEDS)}")
         return 1
+    if mode not in MODES:
+        say(f"FAIL unknown mode {mode!r}. Known: {', '.join(MODES)}")
+        return 1
     max_cases = SPEEDS[speed]
     warnings = []
 
@@ -504,21 +664,34 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
     if not swagger.strip():
         swagger, where = find_spec(out_dir)
     spec, how = read_spec(swagger)
-    endpoints, swagger_sent = [], swagger
+    endpoints, known, source, swagger_sent = [], [], "none", swagger
     if spec is not None:
         endpoints = endpoints_of(spec)
+        prefixes = base_paths(spec)
+        known = match_lines(endpoints, prefixes)
+        source = "specification"
         swagger_sent, notes_ = spec_text(spec, SECTION_LIMITS["swagger"])
         warnings += notes_
-        say(f" ok  specification ({how}, {where}): {len(endpoints)} endpoint(s)")
+        say(f" ok  specification ({how}, {where}): {len(endpoints)} endpoint(s)"
+            + (f", base path {', '.join(prefixes)}" if prefixes else ""))
+        if not endpoints:
+            warnings.append("the specification has a `paths` section but no "
+                            "endpoint could be read from it; the endpoints of "
+                            "the designed cases were NOT checked")
     elif swagger.strip():
         warnings.append(f"the specification could not be read as a "
-                        f"specification ({how}); it was sent as text and "
-                        f"the endpoints of the designed cases were NOT checked")
+                        f"specification ({how}); it was sent as text, the "
+                        f"endpoints of the designed cases were NOT checked, "
+                        f"and only the hosts of URLs were removed from it")
         say(f" ..  specification: {how}; sent as text, endpoints not checked")
     else:
         say(" ..  no specification given or found in this job")
 
     story = _read(os.path.join(out_dir, "brief.md"))
+    listed = "\n".join(endpoints)
+    if spec is not None and base_paths(spec):
+        listed = (f"(every path below is served under {', '.join(base_paths(spec))}; "
+                  f"write the path as listed, without it)\n" + listed)
     if not endpoints:
         try:
             got = json.loads(_read(os.path.join(out_dir, "intake.json")) or "{}")
@@ -526,8 +699,18 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
             got = {}
         endpoints = [f"{r.get('verb', '').upper()} {r.get('raw_path', '')}"
                      for r in got.get("requests") or []
-                     if r.get("verb") and r.get("raw_path")]
+                     if isinstance(r, dict) and r.get("verb") and r.get("raw_path")]
         if endpoints:
+            # Requests as somebody sent them: real values where the
+            # contract has a parameter. Useful to the designer, useless
+            # as a list to hold its answer to.
+            source = "intake requests"
+            listed = ("(there is no specification. These are the requests in "
+                      "the story, with real values in their paths. Use the "
+                      "same paths, writing {name} where a value stands.)\n"
+                      + "\n".join(endpoints))
+            warnings.append("there was no specification: the endpoints of the "
+                            "designed cases were NOT checked against a contract")
             say(f" ok  {len(endpoints)} endpoint(s) taken from the requests intake read")
     if not (swagger.strip() or requirements.strip() or endpoints):
         say("FAIL nothing to design from. Give a specification or "
@@ -536,7 +719,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         return 1
 
     sections, cut = fit({"swagger": swagger_sent, "requirements": requirements,
-                         "story": story, "notes": notes})
+                         "story": story, "notes": notes, "endpoints": listed})
     warnings += cut
     for line in cut:
         say(f" ..  {line}")
@@ -544,7 +727,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
     prompt = render(_read(TEMPLATE), {
         "service": service.strip() or job,
         "max_cases": max_cases,
-        "endpoints": "\n".join(endpoints) if endpoints else
+        "endpoints": sections["endpoints"] or
                      "(none could be read. Name an endpoint only as the "
                      "material itself writes it.)",
         "swagger": sections["swagger"] or empty,
@@ -558,6 +741,13 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
     if hidden:
         say(f" ..  {hidden} host or credential value(s) from the private "
             f"configuration were removed from the prompt")
+        # The agent copies endpoints from the prompt. If a private value
+        # happens to be a path segment, the copied form must still match.
+        known += [redact(line, private)[0] for line in known]
+    prompt, hosts = hide_hosts(prompt)
+    if hosts:
+        say(f" ..  the host of {hosts} URL(s) in the material was replaced "
+            f"with host.invalid")
 
     secret = ""
     if agent is None:
@@ -577,33 +767,50 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
     def followup(text: str):
         first["text"] = text
         try:
-            jsonfix.loads(text)
+            read_reply(text)
             return None
         except ValueError:
             return JSON_ONLY
 
-    say(f" ..  asking Cursor ({len(prompt)} characters); progress is in the Cursor log")
+    before = _tree_state(root) if agent is None else None
+    say(f" ..  asking Cursor ({len(prompt)} characters, {mode} mode); "
+        f"progress is in the Cursor log")
     try:
         if agent is not None:
             got = agent(prompt, followup)
         else:
             got = call_cursor(prompt, root,
-                              lambda line: clog.write("  cursor: " + line), followup)
+                              lambda line: clog.write("  cursor: " + line), followup, mode)
     except RuntimeError as e:
         clog.write(f"FAILED: {e}")
         say(f"FAIL {e}")
         return 1
-    reply = str(got.get("result") or "")
+    if before is not None and _tree_state(root) != before:
+        msg = ("files in the repository changed while the design ran. This "
+               "step asks Cursor to change nothing: look at `git status` "
+               "before going on.")
+        warnings.append(msg)
+        clog.write("WARNING: " + msg)
+        say(f"WARN {msg}")
+    # What comes back is as untrusted as what went in: the agent is a
+    # program on this machine and may have read more than it was sent.
+    reply, leaked = redact(str(got.get("result") or ""), private)
+    if first.get("text") is not None:
+        first["text"] = redact(str(first["text"]), private)[0]
+    if leaked:
+        warnings.append(f"{leaked} host or credential value(s) of the private "
+                        f"configuration were in Cursor's reply and were removed")
+        say(f"WARN {leaked} private value(s) were in the reply and were removed")
     clog.block("reply", reply)
 
     # The last reply read whole; else the complete cases of whichever
     # reply has any. `first` is the answer before the "JSON only" turn.
     data, parsed = None, ""
     candidates = [reply] + ([first["text"]] if first.get("text") not in (None, reply) else [])
-    for partial in ("", "test_cases"):
+    for partial in (False, True):
         for text in candidates:
             try:
-                data, parsed = jsonfix.loads(text, partial_key=partial)
+                data, parsed = read_reply(text, partial)
                 break
             except ValueError:
                 continue
@@ -613,6 +820,8 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         say("FAIL Cursor answered, but no test cases could be read from the "
             "reply. It is in the Cursor log.")
         return 1
+    if isinstance(data, list):
+        data = {"test_cases": data}
     is_partial = parsed.startswith("partial")
     if parsed != "as written":
         say(f" ..  the reply was read after a repair: {parsed}")
@@ -621,7 +830,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
                         "complete test cases are here. Run again with speed "
                         "'fast', or with less material.")
 
-    cases, more = normalise(data.get("test_cases"), endpoints, max_cases)
+    cases, more = normalise(cases_in(data), known, max_cases)
     warnings += more
     if not cases:
         for w in more[:8]:
@@ -638,8 +847,11 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         "parsed": parsed,
         "partial": is_partial,
         "summary": _text(data.get("summary")),
+        "mode": mode if agent is None else "",
+        "brief": loop.brief_fingerprint(out_dir),
         "endpoints": endpoints,
-        "endpoints_checked": bool(endpoints),
+        "endpoint_source": source,
+        "endpoints_checked": bool(known),
         "test_cases": cases,
         "open_questions": [_text(q) for q in questions if _text(q)]
                           if isinstance(questions, list) else [],
@@ -663,6 +875,9 @@ def main(argv=None) -> int:
     ap.add_argument("--requirements-file", default="")
     ap.add_argument("--notes-file", default="")
     ap.add_argument("--speed", default="balanced")
+    ap.add_argument("--mode", default="plan",
+                    help="plan (default): Cursor proposes and changes nothing. "
+                         "agent: only if plan mode gives no usable reply.")
     a = ap.parse_args(argv)
     for flag, path in (("--swagger-file", a.swagger_file),
                        ("--requirements-file", a.requirements_file),
@@ -671,8 +886,14 @@ def main(argv=None) -> int:
             say(f"FAIL {flag}: {path} is not a file")
             return 1
     try:
-        return design(a.job, a.service, _read(a.swagger_file),
-                      _read(a.requirements_file), _read(a.notes_file), a.speed)
+        out_dir = loop.intake.job_dir(a.job)
+        # No file named: what the page pasted for this job, if anything.
+        # The server removes these when a box is left empty.
+        given = {"swagger": a.swagger_file, "requirements": a.requirements_file,
+                 "notes": a.notes_file}
+        text = {k: _read(v or os.path.join(out_dir, PASTED[k])) for k, v in given.items()}
+        return design(a.job, a.service, text["swagger"], text["requirements"],
+                      text["notes"], a.speed, mode=a.mode)
     except ValueError as e:                   # an unusable job id
         say(f"FAIL {e}")
         return 1

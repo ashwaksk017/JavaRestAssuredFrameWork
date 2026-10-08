@@ -12,7 +12,11 @@ Raises ValueError when nothing recognisable is there. It never returns a
 guess: a partial result is only what was actually parsed, and is
 labelled "partial".
 
-`json-repair` is used when it is installed and is not required.
+`json-repair` is used when it is installed and is not required. It is
+only given a reply whose brackets all close. Given a reply that was cut
+off, it closes the brackets itself and hands back a last item with half
+its fields, labelled as repaired -- which is the guess this module
+exists not to make. A cut-off reply goes to the partial path instead.
 """
 from __future__ import annotations
 
@@ -97,10 +101,40 @@ def partial_array(text: str, key: str) -> list:
     return out
 
 
-def loads(text: str, partial_key: str = "") -> tuple:
-    """(object, how it was obtained). See the module docstring."""
+def complete(body: str) -> bool:
+    """Every bracket opened in `body` is closed, in order."""
+    start = body.find("{")
+    return start != -1 and _matching(body, start) != -1
+
+
+def _as_list(text: str):
+    """The reply when it is a bare array of objects, else None."""
+    for source in (text, strip_fences(text)):
+        s = source.strip()
+        if not s.startswith("["):
+            continue
+        for _how, attempt in _repairs(s):
+            try:
+                data = json.loads(attempt)
+            except ValueError:
+                continue
+            if isinstance(data, list) and any(isinstance(x, dict) for x in data):
+                return data
+    return None
+
+
+def loads(text: str, partial_key: str = "", list_key: str = "") -> tuple:
+    """(object, how it was obtained). See the module docstring.
+
+    `list_key`: a reply that is a bare array of objects is returned as
+    `{list_key: [...]}` instead of being refused.
+    """
     if not (text or "").strip():
         raise ValueError("the reply is empty")
+    if list_key:
+        items = _as_list(text)
+        if items is not None:
+            return {list_key: items}, "a bare list, as written"
     candidates = []
     for label, source in (("", text), ("code fence removed; ", strip_fences(text))):
         body = outer_object(source)
@@ -115,6 +149,8 @@ def loads(text: str, partial_key: str = "") -> tuple:
             if isinstance(data, dict):
                 return data, label + how
     for label, body in candidates:
+        if not complete(body) or not complete(text[text.find("{"):]):
+            continue                        # cut off: see the docstring
         try:
             import json_repair
             data = json_repair.loads(body)

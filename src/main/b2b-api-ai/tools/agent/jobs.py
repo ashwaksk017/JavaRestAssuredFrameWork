@@ -82,15 +82,16 @@ RUNNABLES = {
         "label": "Audit the token chain",
         "options": {"--config": "path", "--root": "path"},
     },
-    # Reads only, and writes only the job directory: Cursor runs in an
-    # empty temporary directory. The three files are written by the
-    # server from what was pasted (see /api/design).
+    # Writes only the job directory. It takes NO file path: what it reads
+    # is what the server wrote into the job directory from the page (see
+    # /api/design). A path option here was a way to have any file of the
+    # repository -- the private configuration included -- sent to Cursor
+    # and copied into a log this API serves.
     "agent-design": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "design.py")],
-        "label": "Design the API test cases (Cursor, read-only)",
+        "label": "Design the API test cases (Cursor, plan mode)",
         "options": {"--job": "text", "--service": "text", "--speed": "text",
-                    "--swagger-file": "path", "--requirements-file": "path",
-                    "--notes-file": "path"},
+                    "--mode": "text"},
     },
     # Tab 3. Fixed sub-commands of one script; the page chooses which,
     # names the job, and for `generate` picks a scope the script itself

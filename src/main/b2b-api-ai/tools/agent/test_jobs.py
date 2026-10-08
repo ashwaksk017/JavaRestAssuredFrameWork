@@ -27,13 +27,20 @@ _spec.loader.exec_module(jobs)
 class ArgvIsNeverFreeText(unittest.TestCase):
     """A UI that posted a command string would be a remote shell."""
 
-    def test_the_design_step_takes_files_inside_the_repository_only(self):
-        inside = os.path.join(jobs.ROOT, "target", "agent", "j", "design-swagger.txt")
+    def test_the_design_step_is_given_no_file_path_at_all(self):
+        """A path confined to the repository still reaches the private
+        configuration and the Cursor key file. Whatever the step is
+        pointed at is sent to Cursor and copied into a log this API
+        serves, so the page may not point it at anything."""
         argv = jobs.build_argv("agent-design", {"--job": "j", "--speed": "fast",
-                                                "--swagger-file": inside})
-        self.assertEqual(argv[-1], os.path.realpath(inside))
-        with self.assertRaises(ValueError):
-            jobs.build_argv("agent-design", {"--swagger-file": "../../../etc/passwd"})
+                                                "--mode": "plan"})
+        self.assertEqual(argv[-6:], ["--job", "j", "--speed", "fast", "--mode", "plan"])
+        for option in ("--swagger-file", "--requirements-file", "--notes-file"):
+            with self.assertRaises(ValueError):
+                jobs.build_argv("agent-design", {option: os.path.join(
+                    "src", "main", "resources", "program_configuration.json")})
+        self.assertFalse([k for k, v in jobs.RUNNABLES["agent-design"]["options"].items()
+                          if v == "path"])
         self.assertNotIn("agent-design", jobs.EXCLUSIVE,
                          "it writes no tracked or generated file")
 

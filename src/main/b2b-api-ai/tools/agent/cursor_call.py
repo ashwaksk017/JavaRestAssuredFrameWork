@@ -147,7 +147,7 @@ def _conversation_text(run) -> str:
         return ""
 
 
-def run(prompt: str, ca, cfg, on_event=None, followup=None) -> dict:
+def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent") -> dict:
     """Send one prompt; return {status, result, id, model, transport}.
 
     Raises CursorCallError. `on_event(line)` is called for each status
@@ -157,6 +157,10 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None) -> dict:
     when the first answer is not usable (for instance "reply with only
     the JSON object"). The agent still has the whole first exchange, so
     this costs one short turn instead of a full re-run. It is asked once.
+    If that second turn fails, the first answer is what is returned.
+
+    `mode` is "agent" (it edits and runs things) or "plan" (it proposes
+    and changes nothing) -- the two the SDK declares.
     """
     emit = on_event or (lambda line: None)
     if not getattr(cfg, "api_key", ""):
@@ -186,7 +190,7 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None) -> dict:
     diagnostics: list = []
     started = time.time()
     try:
-        options = AgentOptions(api_key=cfg.api_key, model=cfg.model, mode="agent",
+        options = AgentOptions(api_key=cfg.api_key, model=cfg.model, mode=mode,
                                local=LocalAgentOptions(cwd=cwd))
         with Agent.create(options) as agent:
             run_ = agent.send(prompt)
@@ -205,15 +209,19 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None) -> dict:
             again = followup(str(text)) if followup else None
             if again and str(getattr(result, "status", "")).lower() != "error":
                 emit("the first answer was not usable; asking once more on the same agent")
-                second = agent.send(again)
-                for message in second.messages():
-                    line = describe(message)
-                    if line:
-                        emit(line)
-                result2 = second.wait()
-                text2 = getattr(result2, "result", None) or "" or _conversation_text(second)
-                if str(text2).strip() and str(getattr(result2, "status", "")).lower() != "error":
-                    result, text = result2, text2
+                try:
+                    second = agent.send(again)
+                    for message in second.messages():
+                        line = describe(message)
+                        if line:
+                            emit(line)
+                    result2 = second.wait()
+                    text2 = getattr(result2, "result", None) or _conversation_text(second)
+                    if str(text2).strip() and str(getattr(result2, "status", "")).lower() != "error":
+                        result, text = result2, text2
+                except Exception as e:                   # noqa: BLE001
+                    emit(f"the second turn failed ({type(e).__name__}: {e}); "
+                         f"keeping the first answer")
     except CursorCallError:
         raise
     except Exception as e:                               # noqa: BLE001

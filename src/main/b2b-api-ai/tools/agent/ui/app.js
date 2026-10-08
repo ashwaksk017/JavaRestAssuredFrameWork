@@ -116,10 +116,15 @@ for (const [picker, box] of [["design-swagger-file", "design-swagger"],
   };
 }
 
-async function showDesign() {
-  const j = job();
-  await showArtifact("design.md", $("design-doc"));
-  const have = $("design-doc").textContent !== "—";
+// `j` is the job the run was started for, not whatever the box holds now.
+async function showDesign(j) {
+  j = j || job();
+  let have = false;
+  try {
+    const r = await api(`/api/artifact?job=${encodeURIComponent(j)}&name=design.md`);
+    $("design-doc").textContent = r.text || "—";
+    have = Boolean(r.text);
+  } catch (e) { $("design-doc").textContent = e.message; }
   for (const [id, name] of [["dl-design", "design.md"], ["dl-cases", "test-cases.csv"],
                             ["dl-xray", "xray.csv"]]) {
     $(id).hidden = !have;
@@ -128,11 +133,17 @@ async function showDesign() {
 }
 
 let designCursorTimer = null;
-function followDesignCursorLog(j) {
+// cursor.log is appended to across runs. This pane shows THIS run: it
+// starts at the end the file has now, not at the beginning.
+async function followDesignCursorLog(j) {
   let offset = 0;
   const el = $("design-cursor-log");
   el.textContent = "";
   clearInterval(designCursorTimer);
+  try {
+    offset = (await api(
+      `/api/log?job=${encodeURIComponent(j)}&runnable=cursor&offset=0`)).offset || 0;
+  } catch { /* no cursor log yet: start at 0 */ }
   const read = async () => {
     try {
       const chunk = await api(
@@ -151,21 +162,27 @@ function followDesignCursorLog(j) {
 $("run-design").onclick = async () => {
   try {
     const j = job();
-    await post("/api/design", {
+    const stopCursorLog = await followDesignCursorLog(j);
+    try {
+      await post("/api/design", {
       job: j,
       service: $("design-service").value.trim(),
       speed: $("design-speed").value,
+      mode: $("design-mode").value,
       swagger: $("design-swagger").value,
       requirements: $("design-requirements").value,
       notes: $("design-notes").value,
-    });
-    const stopCursorLog = followDesignCursorLog(j);
+      });
+    } catch (e) { stopCursorLog(); throw e; }
     follow("agent-design", $("design-log"), $("design-state"), () => {
       stopCursorLog();
-      showDesign();
+      showDesign(j);
     });
   } catch (e) { setState($("design-state"), "bad", e.message); }
 };
+// A design made earlier is still this job's design after a refresh.
+showDesign();
+$("job").addEventListener("change", () => showDesign());
 $("stop-design").onclick = async () => {
   try { await post("/api/stop", { job: job(), runnable: "agent-design" }); }
   catch (e) { setState($("design-state"), "bad", e.message); }
