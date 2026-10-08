@@ -811,6 +811,29 @@ def suite_briefing(root: str, policy: dict, scope: dict, cap: int = 120) -> str:
     return "\n".join(lines)
 
 
+def designed_cases(job_dir: str, cap: int = 20000) -> str:
+    """The cases design.py wrote for this job, one line per step, or "".
+    A case on an endpoint the specification does not have is left out."""
+    try:
+        with io.open(os.path.join(job_dir, "design.json"), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return ""
+    lines = []
+    for c in data.get("test_cases") or []:
+        if not isinstance(c, dict) or c.get("endpoint_in_spec") is False:
+            continue
+        lines.append(f"{c.get('id')} [{c.get('type')}, {c.get('priority')}] "
+                     f"{c.get('endpoint')} -- {c.get('title')}")
+        for s in c.get("steps") or []:
+            given = f" | data: {s.get('data')}" if s.get("data") else ""
+            lines.append(f"    do: {s.get('action')}{given} | expect: {s.get('expected')}")
+    text = "\n".join(lines)
+    if len(text) > cap:
+        text = text[:cap] + "\n[... the rest is in design.md ...]"
+    return text
+
+
 def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
                  root: str = "") -> str:
     brief = _read(os.path.join(job_dir, "brief.md"))
@@ -854,6 +877,15 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
         "===== plan.md =====",
         plan or "(empty)",
     ]
+    designed = designed_cases(job_dir)
+    if designed and scope["name"] != "converter":
+        parts += ["", "===== TEST CASES DESIGNED FOR THIS JOB (design.md) =====",
+                  "A person reviewed these. Implement the ones that belong "
+                  "to the requests the plan tells you to act on; each "
+                  "`expect` is an assertion to write. Skip one you cannot "
+                  "automate here and say which and why. Test data is "
+                  "described, not given: take real values from Config or a "
+                  "CSV column, never invent one.", "", designed]
     if repair:
         parts += ["", "===== YOUR PREVIOUS ATTEMPT DID NOT VERIFY =====",
                   "Fix only what this output reports, within the same "

@@ -56,6 +56,51 @@ Expect 201.'></textarea>
   </div>
   <h3>Log</h3>
   <pre id="new-log" class="log"></pre>
+
+  <h2 class="part">Design the API tests <span class="hint">optional — what should be tested, before any code</span></h2>
+  <p class="lede">
+    Cursor reads the API specification, the requirements and the brief
+    above, and proposes test cases with steps and expected results. It
+    runs in an empty directory and writes nothing but the design files
+    of this job. Read the result before tab 3 implements it.
+  </p>
+  <div class="form">
+    <div class="field">
+      <label for="design-service">Service name</label>
+      <input id="design-service" type="text" spellcheck="false" placeholder="group-rates">
+    </div>
+    <div class="field">
+      <label for="design-speed">How many cases</label>
+      <select id="design-speed">
+        <option value="fast">Fast — at most 25</option>
+        <option value="balanced" selected>Balanced — at most 40</option>
+        <option value="thorough">Thorough — at most 80</option>
+      </select>
+    </div>
+  </div>
+  <label for="design-swagger">API specification <span class="hint">OpenAPI / Swagger, JSON or YAML. Leave empty to use one found on a Confluence page read above.</span></label>
+  <textarea id="design-swagger" rows="6" spellcheck="false"></textarea>
+  <input type="file" id="design-swagger-file" accept=".json,.yaml,.yml,.txt">
+  <label for="design-requirements">Requirements <span class="hint">BRD text, acceptance criteria</span></label>
+  <textarea id="design-requirements" rows="5" spellcheck="false"></textarea>
+  <input type="file" id="design-requirements-file" accept=".txt,.md">
+  <label for="design-notes">Notes for the designer <span class="hint">what to focus on, what to leave out</span></label>
+  <textarea id="design-notes" rows="2" spellcheck="false"></textarea>
+
+  <div class="row">
+    <button id="run-design" class="go">Design the tests</button>
+    <button id="stop-design">Stop</button>
+    <a id="dl-design" class="dl" hidden>design.md</a>
+    <a id="dl-cases" class="dl" hidden>test-cases.csv</a>
+    <a id="dl-xray" class="dl" hidden>xray.csv</a>
+    <span id="design-state" class="state"></span>
+  </div>
+  <h3>design.md</h3>
+  <pre id="design-doc" class="doc">—</pre>
+  <div class="split">
+    <div><h3>Command log</h3><pre id="design-log" class="log"></pre></div>
+    <div><h3>Cursor log</h3><pre id="design-cursor-log" class="log cursor"></pre></div>
+  </div>
 </section>
 
 <!-- ───────────────────────────── tab 2 ───────────────────────────── -->

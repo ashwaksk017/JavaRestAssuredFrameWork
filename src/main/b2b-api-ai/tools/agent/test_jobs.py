@@ -27,6 +27,23 @@ _spec.loader.exec_module(jobs)
 class ArgvIsNeverFreeText(unittest.TestCase):
     """A UI that posted a command string would be a remote shell."""
 
+    def test_the_design_step_takes_files_inside_the_repository_only(self):
+        inside = os.path.join(jobs.ROOT, "target", "agent", "j", "design-swagger.txt")
+        argv = jobs.build_argv("agent-design", {"--job": "j", "--speed": "fast",
+                                                "--swagger-file": inside})
+        self.assertEqual(argv[-1], os.path.realpath(inside))
+        with self.assertRaises(ValueError):
+            jobs.build_argv("agent-design", {"--swagger-file": "../../../etc/passwd"})
+        self.assertNotIn("agent-design", jobs.EXCLUSIVE,
+                         "it writes no tracked or generated file")
+
+    def test_design_files_can_be_read_back_and_nothing_else_new(self):
+        for name in ("design.md", "design.json", "test-cases.csv", "xray.csv"):
+            self.assertEqual(jobs.read_artifact("no-such-job-here", name), "")
+        for name in ("design-swagger.txt", "cursor.log", "../design.md"):
+            with self.assertRaises(ValueError):
+                jobs.read_artifact("no-such-job-here", name)
+
     def test_a_declared_option_is_accepted(self):
         argv = jobs.build_argv("convert", {"--classic": True,
                                            "--suite-name": "goal"})

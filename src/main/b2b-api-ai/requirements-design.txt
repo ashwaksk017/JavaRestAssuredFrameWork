@@ -1,0 +1,4 @@
+# Optional. tools/agent/design.py (workbench: design the API tests) works
+# without either; see tools/agent/README.md for what each one adds.
+PyYAML
+json-repair

@@ -105,6 +105,72 @@ $("run-locate").onclick = async () => {
   } catch (e) { setState($("new-state"), "bad", e.message); }
 };
 
+// ---- tab 1, second half: design the API tests ------------------------
+// A chosen file is read here, in the browser, into its box: what is sent
+// is what is on screen, and there is no upload route to guard.
+for (const [picker, box] of [["design-swagger-file", "design-swagger"],
+                             ["design-requirements-file", "design-requirements"]]) {
+  $(picker).onchange = async () => {
+    const f = $(picker).files[0];
+    if (f) $(box).value = await f.text();
+  };
+}
+
+async function showDesign() {
+  const j = job();
+  await showArtifact("design.md", $("design-doc"));
+  const have = $("design-doc").textContent !== "—";
+  for (const [id, name] of [["dl-design", "design.md"], ["dl-cases", "test-cases.csv"],
+                            ["dl-xray", "xray.csv"]]) {
+    $(id).hidden = !have;
+    $(id).href = `/api/download?job=${encodeURIComponent(j)}&name=${name}`;
+  }
+}
+
+let designCursorTimer = null;
+function followDesignCursorLog(j) {
+  let offset = 0;
+  const el = $("design-cursor-log");
+  el.textContent = "";
+  clearInterval(designCursorTimer);
+  const read = async () => {
+    try {
+      const chunk = await api(
+        `/api/log?job=${encodeURIComponent(j)}&runnable=cursor&offset=${offset}`);
+      if (chunk.text) {
+        offset = chunk.offset;
+        el.textContent += chunk.text;
+        el.scrollTop = el.scrollHeight;
+      }
+    } catch { /* no cursor log yet */ }
+  };
+  designCursorTimer = setInterval(read, 1500);
+  return () => { clearInterval(designCursorTimer); read(); };
+}
+
+$("run-design").onclick = async () => {
+  try {
+    const j = job();
+    await post("/api/design", {
+      job: j,
+      service: $("design-service").value.trim(),
+      speed: $("design-speed").value,
+      swagger: $("design-swagger").value,
+      requirements: $("design-requirements").value,
+      notes: $("design-notes").value,
+    });
+    const stopCursorLog = followDesignCursorLog(j);
+    follow("agent-design", $("design-log"), $("design-state"), () => {
+      stopCursorLog();
+      showDesign();
+    });
+  } catch (e) { setState($("design-state"), "bad", e.message); }
+};
+$("stop-design").onclick = async () => {
+  try { await post("/api/stop", { job: job(), runnable: "agent-design" }); }
+  catch (e) { setState($("design-state"), "bad", e.message); }
+};
+
 // ---- tab 2: a form built from what the runnable DECLARES -------------
 // Not a hand-written list: the server is the source of truth for which
 // options exist, so the form cannot drift from the CLI.

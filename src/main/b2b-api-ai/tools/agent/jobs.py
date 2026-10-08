@@ -82,6 +82,16 @@ RUNNABLES = {
         "label": "Audit the token chain",
         "options": {"--config": "path", "--root": "path"},
     },
+    # Reads only, and writes only the job directory: Cursor runs in an
+    # empty temporary directory. The three files are written by the
+    # server from what was pasted (see /api/design).
+    "agent-design": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "design.py")],
+        "label": "Design the API test cases (Cursor, read-only)",
+        "options": {"--job": "text", "--service": "text", "--speed": "text",
+                    "--swagger-file": "path", "--requirements-file": "path",
+                    "--notes-file": "path"},
+    },
     # Tab 3. Fixed sub-commands of one script; the page chooses which,
     # names the job, and for `generate` picks a scope the script itself
     # validates. `agent-approve` is the only runnable that can reach the
@@ -352,7 +362,8 @@ def read_artifact(job: str, name: str) -> str:
     directory cannot be used to read arbitrary files through the API.
     """
     allowed = {"brief.md", "plan.md", "intake.json", "locate.json",
-               "proposed.diff", "review.json"}
+               "proposed.diff", "review.json",
+               "design.json", "design.md", "test-cases.csv", "xray.csv"}
     if name not in allowed:
         raise ValueError(f"{name!r} is not a readable artifact. "
                          f"Known: {', '.join(sorted(allowed))}")

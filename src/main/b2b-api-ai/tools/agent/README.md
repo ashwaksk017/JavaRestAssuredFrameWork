@@ -103,6 +103,64 @@ Two things it needs before links will work:
   python tools/agent/locate.py --job <job> --rebuild-index
   ```
 
+#### Design the API tests (optional)
+
+The lower half of tab 1. *Read it* and *locate* answer "is this
+automated already?". This answers "what should be tested?": Cursor is
+given the API specification, the requirements and `brief.md`, and
+proposes test cases, each with an endpoint, steps and a checkable
+expected result. Read the result before tab 3 writes any Java; when
+`design.json` exists, tab 3's prompt carries the cases (new-test and
+converted scopes).
+
+- **Specification** — paste OpenAPI / Swagger as JSON or YAML, or pick a
+  file (it is read into the box in the browser). Left empty, a
+  specification found in a code block of a Confluence page that *Read
+  it* fetched is used. A Confluence *attachment* is not fetched.
+- **Requirements**, **notes** — free text.
+- **How many** — fast 25, balanced 40, thorough 80 cases at most.
+
+What the step checks instead of trusting:
+
+- The endpoint list is read from the specification by the program. A
+  designed case on an endpoint that is not in it is kept and marked
+  `[NOT IN THE SPECIFICATION]`, and is not handed to tab 3.
+- A case with no expected result is dropped, and listed.
+- A reply wrapped in prose, or with a trailing comma, is repaired and the
+  log says how. A reply that is not JSON is asked for once more on the
+  same agent. A reply cut off half way gives its complete cases and the
+  design is labelled **PARTIAL**.
+- Each input has a size limit (specification 80,000 characters,
+  requirements 100,000, brief 40,000, notes 20,000; 200,000 together).
+  A large specification loses its examples and long descriptions before
+  anything else. What was left out is in `design.md` under *Read this
+  first*.
+
+Cursor runs in an empty temporary directory for this step: it has no
+repository to read and nothing to change. The specification's
+`servers` / `host` entries and every host or credential value in
+`program_configuration.json` are removed from the prompt.
+
+Output, in the job directory: `design.md`, `design.json`,
+`test-cases.csv` (one row per step, `;` separated) and `xray.csv` (one
+row per step grouped by `TCID`, laid out for Xray's Test Case Importer
+— map the columns in its wizard; this layout has not been tried
+against a live Jira). The page links to all but the JSON.
+
+Two packages make it better and neither is required:
+
+```
+python -m pip install -r requirements-design.txt
+```
+
+`PyYAML` reads a YAML specification (without it YAML is sent as text and
+the endpoint check is skipped, and the log says so). `json-repair`
+recovers more kinds of damaged reply.
+
+```
+python tools/agent/design.py --job <job> --service <name> --swagger-file spec.yaml --requirements-file brd.txt --speed fast
+```
+
 ### Tab 2 — Convert ReadyAPI
 
 A form over the converter's CLI. Every flag the command line takes is
@@ -308,7 +366,11 @@ target/agent/<job>/
   locate.json            the matching evidence behind that verdict
   <runnable>.log         full output of each command
   <runnable>.status.json state, exit code, and the argv it ran
-  cursor.log             tab 3: the conversation with Cursor, appended across runs
+  design-*.txt           design: the specification, requirements and notes as pasted
+  design.md / .json      design: the proposed test cases, and what was left out
+  test-cases.csv         design: one row per step
+  xray.csv               design: the same, grouped for Xray's importer
+  cursor.log             the conversation with Cursor (design and tab 3), appended across runs
   review.json            tab 3: state, scope, the files changed, verify result
   proposed.diff          tab 3: what is waiting for review
   converted.patch        tab 3: an approved change to converted Java, as a diff to read
@@ -321,8 +383,8 @@ target/agent/<job>/
 
 The page polls the log by byte offset, so a long convert streams and a
 refresh picks up where it left off. The UI will only read back
-`brief.md`, `plan.md`, `intake.json`, `locate.json`, `review.json` and
-`proposed.diff` — a job directory
+`brief.md`, `plan.md`, `intake.json`, `locate.json`, `review.json`,
+`proposed.diff` and the four design files — a job directory
 cannot be used to read arbitrary files through the API.
 
 ## What it is allowed to run
@@ -337,6 +399,7 @@ The API never accepts a command *string*. Every runnable is named in
 | `locate` | decide create / update / upstream |
 | `audit-service-keys` | audit service keys |
 | `audit-token-chain` | audit the token chain |
+| `agent-design` | Cursor proposes API test cases; reads only, writes the job directory |
 | `agent-setup` | check the Cursor SDK, the key and git |
 | `agent-generate` | Cursor makes the change in the chosen scope; guardrails; verify |
 | `agent-approve` | approve: push branch `agent/<job>`, or keep converted Java locally |
@@ -368,6 +431,7 @@ python tools/agent/test_intake.py
 python tools/agent/test_jobs.py
 python tools/agent/test_locate.py
 python tools/agent/test_loop.py
+python tools/agent/test_design.py
 ```
 
 `test_loop.py` is in the gate (`verify_all`, check `agent-loop`): it is

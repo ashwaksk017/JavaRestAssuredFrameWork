@@ -221,6 +221,12 @@ CHECKS = [
           "when it does not, and pushes only an approved job to its own "
           "branch after a secret scan -- this is the code that decides "
           "what reaches a public repository"),
+    Check("agent-design",
+          [PY, "tools/agent/test_design.py"],
+          "the API test design step: the endpoint list comes from the "
+          "specification and not from the agent, a damaged or cut-off "
+          "reply is read without guessing, and private hosts and "
+          "credentials stay out of the prompt"),
     Check("suite-vocab-isolation",
           [PY, "tools/ra_converter/test_suite_vocab_isolation.py"],
           "a suite's chain methods live on its OWN steps class -- they were "

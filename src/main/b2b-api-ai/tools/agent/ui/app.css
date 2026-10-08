@@ -110,3 +110,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .log.cursor { max-height: 22rem; border-left: 3px solid #6c8cff; }
 select { width: 100%; padding: .45rem .5rem; background: #0f1220; color: inherit;
          border: 1px solid #2c3550; border-radius: 6px; font: inherit; }
+h2.part { margin: 2.2rem 0 .4rem; padding-top: 1.2rem; font-size: 1.05rem;
+          border-top: 1px solid var(--line); }
+a.dl { color: #9db4ff; font-size: .85rem; }
+input[type=file] { margin: .3rem 0 .2rem; color: var(--dim); font-size: .8rem; }

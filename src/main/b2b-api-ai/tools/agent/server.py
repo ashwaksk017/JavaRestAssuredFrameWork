@@ -39,7 +39,9 @@ _spec.loader.exec_module(jobs)
 
 ROOT = jobs.ROOT
 UI_DIR = os.path.join(HERE, "ui")
-MAX_BODY = 2 * 1024 * 1024
+MAX_BODY = 8 * 1024 * 1024       # an OpenAPI document is pasted whole
+DOWNLOADS = {"design.md": "text/markdown", "design.json": "application/json",
+             "test-cases.csv": "text/csv", "xray.csv": "text/csv"}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -148,11 +150,31 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/artifact":
                 return self._json({"text": jobs.read_artifact(
                     q.get("job", ""), q.get("name", ""))})
+            if u.path == "/api/download":
+                return self._download(q.get("job", ""), q.get("name", ""))
             return self._json({"error": "no such route"}, 404)
         except PermissionError as e:
             return self._fail(e, 403)
         except Exception as e:                           # noqa: BLE001
             return self._fail(e)
+
+    def _download(self, job: str, name: str) -> None:
+        """A design artifact as a file. The same allowlist as /api/artifact,
+        narrowed to the four a person takes away."""
+        if name not in DOWNLOADS:
+            raise ValueError(f"{name!r} cannot be downloaded")
+        text = jobs.read_artifact(job, name)
+        if not text:
+            return self._json({"error": f"{name} does not exist for this job"}, 404)
+        body = text.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", DOWNLOADS[name] + "; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Disposition",
+                         f'attachment; filename="{jobs.intake.safe_job(job)}-{name}"')
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_POST(self):                                   # noqa: N802
         u = urlparse(self.path)
@@ -170,6 +192,8 @@ class Handler(BaseHTTPRequestHandler):
                 # Pasted text goes in a file rather than on a command
                 # line: argv has a length limit and a story does not.
                 return self._json(self._intake(body))
+            if u.path == "/api/design":
+                return self._json(self._design(body))
             return self._json({"error": "no such route"}, 404)
         except PermissionError as e:
             return self._fail(e, 403)
@@ -188,6 +212,31 @@ class Handler(BaseHTTPRequestHandler):
         if links:
             options["--link"] = links
         return jobs.start(job, "intake", options)
+
+    def _design(self, body: dict) -> dict:
+        """Pasted material goes into the job directory; the command is
+        given only the files that were actually filled in. A box left
+        empty removes its file, so an earlier run's specification is not
+        used again without anyone seeing it."""
+        job = body.get("job", "")
+        out = jobs.job_dir(job)                 # validates the id
+        os.makedirs(out, exist_ok=True)
+        options = {"--job": job}
+        for field, option in (("swagger", "--swagger-file"),
+                              ("requirements", "--requirements-file"),
+                              ("notes", "--notes-file")):
+            path = os.path.join(out, f"design-{field}.txt")
+            text = body.get(field) or ""
+            if str(text).strip():
+                with io.open(path, "w", encoding="utf-8") as fh:
+                    fh.write(str(text))
+                options[option] = path
+            elif os.path.isfile(path):
+                os.remove(path)
+        for field, option in (("service", "--service"), ("speed", "--speed")):
+            if str(body.get(field) or "").strip():
+                options[option] = str(body[field]).strip()
+        return jobs.start(job, "agent-design", options)
 
     def _file(self, name: str, ctype: str) -> None:
         p = os.path.join(UI_DIR, name)

@@ -147,11 +147,16 @@ def _conversation_text(run) -> str:
         return ""
 
 
-def run(prompt: str, ca, cfg, on_event=None) -> dict:
+def run(prompt: str, ca, cfg, on_event=None, followup=None) -> dict:
     """Send one prompt; return {status, result, id, model, transport}.
 
     Raises CursorCallError. `on_event(line)` is called for each status
     change and tool call while the agent works.
+
+    `followup(text)` may return a second prompt to send on the SAME agent
+    when the first answer is not usable (for instance "reply with only
+    the JSON object"). The agent still has the whole first exchange, so
+    this costs one short turn instead of a full re-run. It is asked once.
     """
     emit = on_event or (lambda line: None)
     if not getattr(cfg, "api_key", ""):
@@ -197,6 +202,18 @@ def run(prompt: str, ca, cfg, on_event=None) -> dict:
             text = getattr(result, "result", None) or ""
             if not str(text).strip():
                 text = _conversation_text(run_)
+            again = followup(str(text)) if followup else None
+            if again and str(getattr(result, "status", "")).lower() != "error":
+                emit("the first answer was not usable; asking once more on the same agent")
+                second = agent.send(again)
+                for message in second.messages():
+                    line = describe(message)
+                    if line:
+                        emit(line)
+                result2 = second.wait()
+                text2 = getattr(result2, "result", None) or "" or _conversation_text(second)
+                if str(text2).strip() and str(getattr(result2, "status", "")).lower() != "error":
+                    result, text = result2, text2
     except CursorCallError:
         raise
     except Exception as e:                               # noqa: BLE001
