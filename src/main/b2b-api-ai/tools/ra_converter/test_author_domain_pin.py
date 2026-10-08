@@ -10,8 +10,8 @@ enroll replaced it with a fresh random domain: the run showed
 `websiteDomain=hwrelo.com` for that case.
 
 The hook now calls `ImportedScenario.pinAuthorDomain(ctx)` after it
-publishes a literal Domain. A list pick (`blockFreeEmailList[rand]`) is
-deliberately NOT pinned: which entry is the domain is decided per run.
+publishes a literal Domain, or one picked from a list the author typed
+(`blockFreeEmailList[rand]`): this run's pick is pinned.
 
     python tools/ra_converter/test_author_domain_pin.py
 """
@@ -74,10 +74,18 @@ def test_a_literal_held_in_a_variable_is_pinned():
     assert PIN in java
 
 
-def test_a_list_pick_is_not_pinned():
+def test_a_pick_from_a_list_the_author_typed_is_pinned():
+    """This used to assert the opposite ("which entry is the domain is
+    decided per run"). The amex run showed what that costs:
+    B2B-4100_amex_backbook_freelist_pan_expire picks a free-mail domain from
+    `blockFreeEmailList` and expects the create to be REFUSED (400). Unpinned,
+    the regen replaced the pick with an allowed domain (`laafd.com` in the
+    log) and the create answered 200. The values in the list are typed by
+    the author exactly as a literal is; this run's pick is what is pinned."""
     java = _java(LIST_PICK)
     assert "FakeData.oneOf(" in java, "fixture no longer exercises a list pick"
-    assert PIN not in java
+    assert PIN in java
+    assert java.index("FakeData.oneOf(") < java.index(PIN)
 
 
 def test_a_generated_domain_is_not_pinned():

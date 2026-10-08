@@ -9586,6 +9586,18 @@ public interface ImportedRestClient {{
         for p in path_param_names:
             # Look up in step.path_params for the ${...} expression, then translate
             expr = step.path_params.get(p, f'${{Properties#{p}}}')
+            # The LAST template parameter with NO entry in the step at all.
+            # `GET .../partneraccounts/{partneraccount}` is saved that way
+            # in 10 of the 16 amex steps (the other 6 carry it as ""), and
+            # ReadyAPI records both as `.../partneraccounts`. The default
+            # above invented a Properties.partneraccount nothing writes: it
+            # resolved empty, the broken-path guard threw, and nine tests
+            # ended there. Absent means what the saved "" means -- the
+            # author left it empty -- so it takes the same path.
+            if (p not in step.path_params and path_param_names
+                    and p == path_param_names[-1]
+                    and step.resource_path.rstrip().endswith("{" + p + "}")):
+                expr = ""
             # Analogous rewrite to _placeholder_hardcoded_ids for request
             # bodies: if the SoapUI author baked a stale 6+ digit id
             # literal into the URL path (`/guests/567456/...`), swap it

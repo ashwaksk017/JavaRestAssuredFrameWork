@@ -84,7 +84,20 @@ def _java_time_type_for(pattern: str) -> str:
 def _resp_var_for(step_name: str, ctx: dict) -> str:
     """Lookup the Response variable that holds a given step's response."""
     m = ctx.get("response_var_by_step", {})
-    return m.get(step_name, f"/* unknown_response_for_{step_name} */ null")
+    if step_name in m:
+        return m[step_name]
+    # No variable in scope -- the step ran somewhere this code cannot see,
+    # typically inside a shared setup flow (SetupHelper.flow_A enrolls the
+    # guest; the script reading `guestId` from that response is emitted in
+    # the case's bootstrap hook). This used to emit `null`: the extract
+    # returned "", PropertiesGuestId.guestId was never written, and the
+    # case went on with DataGenInput's random number as its guest --
+    # 404 on every /guests/{guestId}/... call (nine amex tests).
+    #
+    # The runtime keeps every response of the test by step name, so ask it.
+    # A step that really did not run still yields null, as before.
+    recorded = re.sub(r"[^A-Za-z0-9_]", "_", step_name)
+    return f'com.hi.api.rest.utilities.LastExchange.of("{recorded}")'
 
 
 def _ctx_key(step_name: str, field: str) -> str:
@@ -2923,14 +2936,20 @@ def translate(script: str, response_var_by_step: dict[str, str],
             _mark("var_backed_setproperty")
         # A Domain the author TYPED is the test's subject, not test data.
         # The pre-request identity regen would replace it with a fresh
-        # domain; mark it so the regen keeps it. A list pick is not marked:
-        # which entry is "the" domain is decided per run, and the regen
-        # already follows the saved row for those.
+        # domain; mark it so the regen keeps it.
         _dom_literal = any(
             s_ == "Properties" and f_.lower() == "domain"
             for (s_, f_) in list(lit_uncond) + list(lit_envcond)) or any(
             s_ == "Properties" and f_.lower() == "domain"
-            and e_.startswith('"')
+            # ... or PICKED from a list the author typed:
+            #   def blockFreeEmailList = ["gmail.com","yahoo.com", ...]
+            #   Domain = blockFreeEmailList[randomizer.nextInt(...)]
+            # Those values are the case's subject too (a free-mail domain
+            # the API must refuse). Unpinned, the regen swapped the pick for
+            # an allowed domain and the create that expects 400 got 200.
+            # 7 cases; this run's pick is what gets pinned.
+            and (e_.startswith('"')
+                 or e_.startswith("com.hi.api.data.FakeData.oneOf("))
             for (s_, f_), e_ in var_pubs.items())
         if _dom_literal:
             lines.append('    ImportedScenario.pinAuthorDomain(ctx);')

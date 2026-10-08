@@ -210,6 +210,11 @@ CHECKS = [
           [PY, "tools/ra_converter/test_later_sibling_path_id.py"],
           "a baked path id takes the id a later step of the case uses when "
           "it is already written -- it fell to a random account id (404)"),
+    Check("response-lookup-absent-param",
+          [PY, "tools/ra_converter/test_response_lookup_and_absent_param.py"],
+          "a script reading a response from a shared setup flow finds it by "
+          "step name, and an absent last path parameter is the author's "
+          "empty one -- amex_backbook ran 0 of 18 on a random guest id"),
     Check("suite-vocab-isolation",
           [PY, "tools/ra_converter/test_suite_vocab_isolation.py"],
           "a suite's chain methods live on its OWN steps class -- they were "
