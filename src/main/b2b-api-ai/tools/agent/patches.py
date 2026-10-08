@@ -138,7 +138,12 @@ def save(root: str, suite: str, job: str, created, modified, base_dir: str) -> s
     if bad:
         raise ValueError(f"not files of suite {suite}: {', '.join(bad[:5])}")
     sdir = _suite_dir(root, suite)
-    seq = 1 + len([n for n in (os.listdir(sdir) if os.path.isdir(sdir) else [])])
+    # Highest number in use plus one -- not a count: after `forget 001`
+    # a count would hand out 002 again, and order is what re-apply uses.
+    used = [int(m.group(1)) for m in
+            (re.match(r"^(\d+)-", n) for n in
+             (os.listdir(sdir) if os.path.isdir(sdir) else [])) if m]
+    seq = 1 + max(used, default=0)
     entry = f"{seq:03d}-{job}"
     if not _ID_RX.match(entry):
         raise ValueError(f"unusable entry id {entry!r}")
@@ -193,6 +198,10 @@ def reapply(root: str, suite: str, only: str = "") -> dict:
     as the converter wrote it.
     """
     out = {"applied": [], "already": [], "conflicts": [], "refused": []}
+    # A file one stored change could not be applied to. Later changes to
+    # the same file were made ON TOP of that one, so merging them alone
+    # would put half a sequence into the file.
+    blocked = set()
     for e in entries(root, suite):
         if only and e["id"] != only:
             continue
@@ -202,44 +211,56 @@ def reapply(root: str, suite: str, only: str = "") -> dict:
             if not belongs(rel, suite):
                 out["refused"].append(tag + "  (not a file of this suite)")
                 continue
-            after = _read(os.path.join(e["dir"], "after", rel))
-            if after is None:
-                out["refused"].append(tag + "  (the stored copy is missing)")
-                continue
-            target = os.path.join(root, rel)
-            now = _read(target)
-            if now is not None and _same(now, after):
-                out["already"].append(tag)
-                continue
-            if rel in m.get("created", []):
-                if now is None:
-                    _write(target, after)
-                    out["applied"].append(tag)
-                else:
-                    out["conflicts"].append(
-                        tag + "  (the converter now writes a file of this name)")
-                continue
-            base = _read(os.path.join(e["dir"], "base", rel))
-            if now is None:
+            if rel in blocked:
                 out["conflicts"].append(
-                    tag + "  (the converter no longer writes this file)")
-            elif base is not None and _same(now, base):
-                _write(target, after)
-                out["applied"].append(tag)
-            elif base is None:
-                out["conflicts"].append(tag + "  (no stored base to merge from)")
-            else:
-                merged, clean = merge3(base, after, now)
-                if clean:
-                    _write(target, merged)
-                    out["applied"].append(tag + "  (merged with the converter's new output)")
-                else:
-                    out["conflicts"].append(
-                        tag + "  (overlaps what the converter changed; the "
-                              "approved version is "
-                        + os.path.join(STORE_DIR, suite, e["id"], "after", rel).replace("\\", "/")
-                        + ")")
+                    tag + "  (not applied: an earlier stored change to this "
+                          "file did not apply, and this one builds on it)")
+                continue
+            before_count = len(out["conflicts"])
+            _apply_one(root, suite, e, rel, tag, out)
+            if len(out["conflicts"]) > before_count:
+                blocked.add(rel)
     return out
+
+
+def _apply_one(root: str, suite: str, e: dict, rel: str, tag: str, out: dict) -> None:
+    """Put ONE stored file back, or record why not."""
+    m = e["manifest"]
+    after = _read(os.path.join(e["dir"], "after", rel))
+    if after is None:
+        out["refused"].append(tag + "  (the stored copy is missing)")
+        return
+    target = os.path.join(root, rel)
+    now = _read(target)
+    if now is not None and _same(now, after):
+        out["already"].append(tag)
+        return
+    if rel in m.get("created", []):
+        if now is None:
+            _write(target, after)
+            out["applied"].append(tag)
+        else:
+            out["conflicts"].append(
+                tag + "  (the converter now writes a file of this name)")
+        return
+    base = _read(os.path.join(e["dir"], "base", rel))
+    if now is None:
+        out["conflicts"].append(tag + "  (the converter no longer writes this file)")
+    elif base is None:
+        out["conflicts"].append(tag + "  (no stored base to merge from)")
+    elif _same(now, base):
+        _write(target, after)
+        out["applied"].append(tag)
+    else:
+        merged, clean = merge3(base, after, now)
+        if clean:
+            _write(target, merged)
+            out["applied"].append(tag + "  (merged with the converter's new output)")
+        else:
+            approved = os.path.join(STORE_DIR, suite, e["id"], "after", rel).replace("\\", "/")
+            out["conflicts"].append(
+                tag + "  (overlaps what the converter changed; the approved "
+                      "version is " + approved + ")")
 
 
 def report(suite: str, result: dict) -> str:

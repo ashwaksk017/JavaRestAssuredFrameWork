@@ -244,7 +244,7 @@ for (const [btn, runnable] of [["run-keys", "audit-service-keys"],
 // command refuses anything else whatever the page sends.
 const REVIEW_TEXT = {
   "none": "No agent run for this job yet.",
-  "generating": "Cursor is working…",
+  "generating": "Cursor is working… (if the run was stopped or died, Discard puts everything back)",
   "rejected": "Rejected — the agent broke a rule and its changes were undone.",
   "verify-failed": "Did not verify. The files are still in the working tree.",
   "pending-review": "PENDING REVIEW — read the diff, then approve or discard.",
@@ -282,7 +282,8 @@ async function refreshReview() {
                               (review.suite ? ` (${review.suite}).` : ".");
   $("review-detail").textContent = detail;
   $("agent-discard").disabled =
-    !(state === "pending-review" || state === "verify-failed");
+    !(state === "pending-review" || state === "verify-failed" ||
+      state === "generating");   // a stopped run: discard puts it all back
 
   const f = review.files || {};
   const lines = [];

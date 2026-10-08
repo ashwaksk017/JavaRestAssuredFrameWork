@@ -118,6 +118,13 @@ RUNNABLES = {
     },
 }
 
+# Runnables that write the working tree or judge it by what changed. A
+# convert during an agent run would look like the agent rewriting every
+# suite; an agent run during a convert would "put back" half-written
+# files.
+EXCLUSIVE = {"convert", "agent-generate", "agent-approve", "agent-discard",
+             "agent-reapply"}
+
 _RUNNING: dict = {}
 _LOCK = threading.Lock()
 
@@ -242,6 +249,14 @@ def start(job: str, runnable: str, options: dict) -> dict:
                 f"{runnable} is already running for job {job!r}. Wait for it "
                 f"or start a different job -- two converts into one output "
                 f"would interleave their writes.")
+        if runnable in EXCLUSIVE:
+            for (other_job, other), proc in _RUNNING.items():
+                if other in EXCLUSIVE and proc.poll() is None:
+                    raise RuntimeError(
+                        f"{other} is running for job {other_job!r}. It "
+                        f"rewrites or checks the same files this would, so "
+                        f"only one of convert / agent run / approve / "
+                        f"discard / re-apply runs at a time. Wait for it.")
 
     status = {"state": "running", "runnable": runnable, "job": job,
               "argv": argv[2:], "started": _now()}

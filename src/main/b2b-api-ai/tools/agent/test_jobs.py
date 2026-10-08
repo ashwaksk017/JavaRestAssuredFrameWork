@@ -125,6 +125,33 @@ class LogReading(unittest.TestCase):
                 jobs.read_status("j", bad)
 
 
+class OneWriterAtATime(unittest.TestCase):
+    """A convert during an agent run would look like the agent rewriting
+    every suite; the page must not be able to start both."""
+
+    class Live:
+        def poll(self):
+            return None
+
+    def tearDown(self):
+        jobs._RUNNING.clear()
+
+    def test_an_agent_run_blocks_a_convert_and_the_other_way_round(self):
+        jobs._RUNNING[("job1", "agent-generate")] = self.Live()
+        with self.assertRaises(RuntimeError) as got:
+            jobs.start("job2", "convert", {})
+        self.assertIn("only one of convert", str(got.exception))
+        jobs._RUNNING.clear()
+        jobs._RUNNING[("job1", "convert")] = self.Live()
+        with self.assertRaises(RuntimeError):
+            jobs.start("job2", "agent-approve", {"--job": "job2", "--confirm": "job2"})
+
+    def test_reading_and_planning_are_not_blocked(self):
+        self.assertNotIn("intake", jobs.EXCLUSIVE)
+        self.assertNotIn("locate", jobs.EXCLUSIVE)
+        self.assertNotIn("agent-setup", jobs.EXCLUSIVE)
+
+
 class StatusTellsTheTruth(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()

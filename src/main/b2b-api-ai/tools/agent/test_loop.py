@@ -616,6 +616,204 @@ class TheCursorLog(Repo):
         self.assertIn("<redacted>", self.cursor_log())
 
 
+class OneJobAtATime(Repo):
+    def test_a_second_job_is_refused_while_one_holds_the_tree(self):
+        called = []
+        with loop.RepoLock(self.root, "generate, job other"):
+            rc = self.generate(lambda p: called.append(1) or {"result": ""})
+        self.assertEqual(rc, 1)
+        self.assertEqual(called, [], "the agent must not be called")
+
+    def test_the_lock_goes_with_the_job(self):
+        with loop.RepoLock(self.root, "x"):
+            pass
+        def agent(_prompt):
+            write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
+            return {"result": ""}
+        self.assertEqual(self.generate(agent), 0)
+
+
+class AnUnfinishedRun(Repo):
+    """Stopped from the page, or the process died: no file list was ever
+    written, so discard works from what was saved before the agent ran."""
+
+    def crash(self, scope="new-test", suite=""):
+        def agent(_prompt):
+            write(self.root, JIRA + "Half.java", "class Half {\n")
+            write(self.root, GEN + "amex/Hooks.java", "class Hooks { int half; }\n")
+            write(self.root, "README.md", "half an edit\n")
+            raise KeyboardInterrupt()           # what a kill looks like
+        with self.assertRaises(KeyboardInterrupt):
+            self.generate(agent, scope=scope, suite=suite)
+
+    def test_discard_puts_everything_back(self):
+        self.crash()
+        self.assertEqual(self.state()["state"], "generating")
+        self.assertEqual(loop.cmd_discard(self.job, self.root), 0)
+        self.assertEqual(self.status(), "")
+        with io.open(os.path.join(self.root, GEN + "amex/Hooks.java")) as fh:
+            self.assertEqual(fh.read(), "class Hooks { int amex; }\n")
+        self.assertEqual(self.state()["state"], "discarded")
+
+    def test_it_cannot_be_run_again_on_top_of_the_leftovers(self):
+        self.crash()
+        called = []
+        self.assertEqual(self.generate(lambda p: called.append(1) or {"result": ""}), 1)
+        self.assertEqual(called, [])
+
+    def test_a_failed_verify_must_be_discarded_before_another_run(self):
+        """Otherwise the next run copies the FAILED edit as 'how it was'."""
+        bad = lambda: {"ok": False, "steps": [{"name": "compile", "rc": 1, "tail": "x"}]}
+        def agent(_prompt):
+            write(self.root, GEN + "amex/Hooks.java", "class Hooks { int broken; }\n")
+            return {"result": ""}
+        self.assertEqual(self.generate(agent, bad, scope="converted", suite="amex"), 1)
+        called = []
+        again = self.generate(lambda p: called.append(1) or {"result": ""},
+                              scope="converted", suite="amex")
+        self.assertEqual((again, called), (1, []))
+        self.assertEqual(loop.cmd_discard(self.job, self.root), 0)
+        with io.open(os.path.join(self.root, GEN + "amex/Hooks.java")) as fh:
+            self.assertEqual(fh.read(), "class Hooks { int amex; }\n")
+
+
+class ATreeThatAlreadyFails(unittest.TestCase):
+    """Verify must judge the agent's change, not the state of the tree."""
+
+    OUT = (b"[ERROR] /C:/repo/src/test/java/com/hi/api/tests/manual/GoalShop.java:[251,23] cannot find symbol\n"
+           b"[ERROR] /C:/repo/src/test/java/com/hi/api/tests/jira/NewTest.java:[3,5] ';' expected\n")
+
+    def verify(self, before):
+        scope = {"compile": [sys.executable], "checks": []}
+        failing = lambda argv: types.SimpleNamespace(returncode=1, stdout=self.OUT)
+        return loop.run_verify(".", scope, runner=failing, compile_before=before)
+
+    def test_the_failing_files_are_read_from_the_output(self):
+        self.assertEqual(loop.compile_error_files(self.OUT), {
+            "src/test/java/com/hi/api/tests/manual/GoalShop.java",
+            "src/test/java/com/hi/api/tests/jira/NewTest.java"})
+
+    def test_what_failed_before_does_not_fail_the_job(self):
+        both = loop.compile_error_files(self.OUT)
+        got = self.verify(both)
+        self.assertTrue(got["ok"], got)
+        self.assertIn("did not compile BEFORE", got["steps"][0]["tail"])
+
+    def test_a_new_failing_file_does(self):
+        got = self.verify({"src/test/java/com/hi/api/tests/manual/GoalShop.java"})
+        self.assertFalse(got["ok"])
+        self.assertIn("NEW files with errors: src/test/java/com/hi/api/tests/jira/NewTest.java",
+                      got["steps"][0]["tail"])
+
+    def test_a_tree_that_compiled_before_gets_no_allowance(self):
+        self.assertFalse(self.verify(None)["ok"])
+
+    def test_an_unreadable_failure_is_a_failure(self):
+        """NEGATIVE CONTROL: if no file can be read from the output, 'no
+        new file' proves nothing."""
+        scope = {"compile": [sys.executable], "checks": []}
+        opaque = lambda argv: types.SimpleNamespace(returncode=1, stdout=b"BUILD FAILURE\n")
+        self.assertFalse(loop.run_verify(".", scope, runner=opaque, compile_before={"x.java"})["ok"])
+
+
+class CredentialFiles(Repo):
+    CFG = "src/main/resources/program_configuration.json"
+
+    def setUp(self):
+        super().setUp()
+        with io.open(os.path.join(self.root, ".gitignore"), "a") as fh:
+            fh.write(self.CFG + "\n")
+        sh(self.root, "commit", "-q", "-am", "ignore config")
+        write(self.root, self.CFG, json.dumps({"jira_config": {"token": "tok_abcdefghijklmnop"}}))
+
+    def test_a_change_to_the_private_config_is_seen_and_put_back(self):
+        """git ignores it and it is not generated code: nothing else here
+        would notice."""
+        original = io.open(os.path.join(self.root, self.CFG)).read()
+        def agent(_prompt):
+            write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
+            write(self.root, self.CFG, json.dumps({"jira_config": {"token": "replaced"}}))
+            return {"result": ""}
+        self.assertEqual(self.generate(agent), 1)
+        self.assertIn("credential/config file(s) were changed", self.state()["reason"])
+        self.assertEqual(io.open(os.path.join(self.root, self.CFG)).read(), original)
+        self.assertFalse(os.path.exists(os.path.join(self.job, "pre", self.CFG)),
+                         "the credentials are not copied into the job folder")
+
+    def test_a_secret_the_agent_quotes_is_not_written_to_the_cursor_log(self):
+        def agent(_prompt):
+            write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
+            return {"result": "I read the token tok_abcdefghijklmnop from the config"}
+        self.assertEqual(self.generate(agent), 0)
+        self.assertNotIn("tok_abcdefghijklmnop", self.cursor_log())
+        self.assertIn("I read the token <redacted>", self.cursor_log())
+
+    def test_a_secret_far_into_a_new_file_still_stops_the_push(self):
+        """The diff shown for review is capped; the scan is not."""
+        remote = tempfile.mkdtemp(prefix="looptest_remote_")
+        self.addCleanup(shutil.rmtree, remote, ignore_errors=True)
+        sh(remote, "init", "-q", "--bare")
+        sh(self.root, "remote", "add", "origin", remote)
+        filler = "// padding line to push the next one past the review cap\n" * 9000
+        def agent(_prompt):
+            write(self.root, JIRA + "Big.java",
+                  filler + 'class Big { String t = "tok_abcdefghijklmnop"; }\n')
+            return {"result": ""}
+        self.assertEqual(self.generate(agent), 0)
+        self.assertGreater(len(filler), 400000)
+        rc = loop.cmd_approve(self.job, self.root, self.policy, "job1", "job1",
+                              config_path=os.path.join(self.root, self.CFG))
+        self.assertEqual(rc, 1)
+        self.assertEqual(sh(remote, "branch", "--list"), "")
+
+
+class StoredChangesInOrder(Repo):
+    HOOK = GEN + "amex/Hooks.java"
+    V0 = "class Hooks {\n    int a;\n    int b;\n    int c;\n}\n"
+
+    def approve(self, job, text):
+        d = os.path.join(self.root, "target", "agent", job)
+        os.makedirs(d, exist_ok=True)
+        write(self.root, f"target/agent/{job}/plan.md", "# plan\n")
+        def agent(_prompt):
+            write(self.root, self.HOOK, text)
+            return {"result": ""}
+        self.assertEqual(loop.cmd_generate(d, self.root, self.policy, "converted", "amex",
+                                           agent=agent, verifier=OK), 0)
+        self.assertEqual(loop.cmd_approve(d, self.root, self.policy, job, job), 0)
+
+    def setUp(self):
+        super().setUp()
+        write(self.root, self.HOOK, self.V0)
+        self.approve("one", self.V0.replace("int c;", "int c; // first"))
+        self.approve("two", self.V0.replace("int c;", "int c; // first, then second"))
+
+    def ids(self):
+        return [e["id"] for e in loop.patches.entries(self.root, "amex")]
+
+    def test_two_changes_to_one_file_come_back_in_order(self):
+        write(self.root, self.HOOK, self.V0)                 # a reconvert
+        r = loop.patches.reapply(self.root, "amex")
+        self.assertEqual(r["conflicts"], [], r)
+        with io.open(os.path.join(self.root, self.HOOK)) as fh:
+            self.assertIn("// first, then second", fh.read())
+
+    def test_when_the_first_cannot_apply_the_second_is_held_back_too(self):
+        clash = self.V0.replace("int c;", "long c; // the converter changed this line")
+        write(self.root, self.HOOK, clash)
+        r = loop.patches.reapply(self.root, "amex")
+        self.assertEqual(len(r["conflicts"]), 2, r)
+        self.assertIn("builds on it", r["conflicts"][1])
+        with io.open(os.path.join(self.root, self.HOOK)) as fh:
+            self.assertEqual(fh.read(), clash, "half a sequence is not applied")
+
+    def test_numbers_are_not_reused_after_one_is_forgotten(self):
+        self.assertEqual(self.ids(), ["001-one", "002-two"])
+        loop.patches.forget(self.root, "amex", "001-one")
+        self.approve("three", self.V0.replace("int a;", "int a; // third"))
+        self.assertEqual(self.ids(), ["002-two", "003-three"])
+
+
 class SdkBootstrap(unittest.TestCase):
     def test_an_installed_sdk_is_left_alone(self):
         sys.modules["cursor_sdk"] = types.ModuleType("cursor_sdk")

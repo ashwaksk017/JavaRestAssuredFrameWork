@@ -82,6 +82,10 @@
       "skill": ".cursor/skills/readyapi-restassured-migration/SKILL.md"
     }
   },
+  "protected_files": [
+    "src/main/resources/program_configuration.json",
+    "tools/ra_converter/cursor_agent.json"
+  ],
   "repair_attempts": 1,
   "branch_prefix": "agent/",
   "remote": "origin",

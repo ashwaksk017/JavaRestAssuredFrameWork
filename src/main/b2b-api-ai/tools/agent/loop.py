@@ -164,6 +164,14 @@ DEFAULT_POLICY = {
             "skill": ".cursor/skills/readyapi-restassured-migration/SKILL.md",
         },
     },
+    # Gitignored files that are NOT generated code: git cannot see a change
+    # to them and the generated-tree watch does not cover them. They hold
+    # credentials, so they are watched and put back from memory (never
+    # copied into the job folder).
+    "protected_files": [
+        "src/main/resources/program_configuration.json",
+        "tools/ra_converter/cursor_agent.json",
+    ],
     "repair_attempts": 1,
     "branch_prefix": "agent/",
     "remote": "origin",
@@ -184,19 +192,83 @@ def say(msg: str) -> None:
     print(msg, flush=True)
 
 
+# ---- one agent job at a time -----------------------------------------
+
+class RepoLock:
+    """One generate / approve / discard at a time in this working tree.
+
+    Two jobs running together would each see the other's edits as its
+    own agent's violations and "put back" files the other is still
+    writing. The lock is an OS lock on a file, so it disappears with the
+    process: a crashed job cannot leave the tree locked.
+    """
+
+    def __init__(self, root: str, what: str):
+        self.path = os.path.join(root, "target", "agent", ".lock")
+        self.what = what
+        self.fh = None
+
+    def __enter__(self):
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        self.fh = io.open(self.path, "a+", encoding="utf-8")
+        try:
+            if os.name == "nt":
+                import msvcrt
+                self.fh.seek(0)
+                msvcrt.locking(self.fh.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            holder = ""
+            try:
+                with io.open(self.path + ".info", encoding="utf-8") as fh:
+                    holder = fh.read().strip()
+            except OSError:
+                pass
+            self.fh.close()
+            self.fh = None
+            raise RuntimeError(
+                "another agent job is running in this working tree"
+                + (f" ({holder})" if holder else "")
+                + ". Wait for it to finish: two at once would undo each "
+                  "other's files.")
+        try:
+            with io.open(self.path + ".info", "w", encoding="utf-8") as fh:
+                fh.write(f"{self.what}, pid {os.getpid()}, since {_now()}")
+        except OSError:
+            pass
+        return self
+
+    def __exit__(self, *exc):
+        if self.fh is not None:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    self.fh.seek(0)
+                    msvcrt.locking(self.fh.fileno(), msvcrt.LK_UNLCK, 1)
+                self.fh.close()
+            except OSError:
+                pass
+        return False
+
+
 # ---- the cursor log --------------------------------------------------
 
 class CursorLog:
     """Append-only record of the conversation with Cursor for one job."""
 
-    def __init__(self, job_dir: str, secret: str = ""):
+    def __init__(self, job_dir: str, secret: str = "", secrets=()):
         self.path = os.path.join(job_dir, "cursor.log")
-        self.secret = secret or ""
+        # The Cursor key, plus every credential VALUE in the private
+        # config: an agent that read the config may quote it back.
+        self.secrets = [s for s in [secret or "", *secrets] if s and len(s) >= 6]
         os.makedirs(job_dir, exist_ok=True)
 
     def write(self, text: str = "") -> None:
-        if self.secret and self.secret in text:
-            text = text.replace(self.secret, "<redacted>")
+        for s in self.secrets:
+            if s in text:
+                text = text.replace(s, "<redacted>")
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with io.open(self.path, "a", encoding="utf-8") as fh:
             for line in (text.splitlines() or [""]):
@@ -707,8 +779,36 @@ def gate_failures(root: str, out_json: str, runner=None) -> dict:
             if c.get("status") == "fail"}
 
 
+_JAVA_ERR_RX = re.compile(r"ERROR.*?((?:src|tools)[\\/][^\s:\[\]]+\.java)")
+
+
+def compile_error_files(output) -> set:
+    """The .java files a failed compile names, as repo-relative paths."""
+    text = output.decode("utf-8", errors="replace") if isinstance(output, bytes) else (output or "")
+    return {m.group(1).replace("\\", "/") for m in _JAVA_ERR_RX.finditer(text)}
+
+
+def compile_baseline(root: str, scope: dict, runner=None):
+    """What already fails to compile BEFORE the agent runs.
+
+    None when the tree compiles (or there is no compile step); otherwise
+    the set of files with errors. A partly converted tree does not
+    compile -- a hand-written test may reference a suite that is not
+    converted here -- and without this every job on it would end
+    "verify failed" for an error the agent had nothing to do with.
+    """
+    cmd = list(scope.get("compile") or [])
+    exe = shutil.which(cmd[0]) if cmd else None
+    if not exe:
+        return None
+    run = runner or (lambda argv: subprocess.run(
+        argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT))
+    r = run([exe] + cmd[1:])
+    return None if r.returncode == 0 else compile_error_files(r.stdout)
+
+
 def run_verify(root: str, scope: dict, runner=None, gate_before=None,
-               gate_json: str = "") -> dict:
+               gate_json: str = "", compile_before=None) -> dict:
     """Compile, then the scope's checks. {ok, steps:[{name, rc, tail}]}."""
     run = runner or (lambda argv: subprocess.run(
         argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT))
@@ -724,10 +824,27 @@ def run_verify(root: str, scope: dict, runner=None, gate_before=None,
             return {"ok": False, "steps": steps}
         say(f" .. verify: {' '.join(compile_cmd)}")
         r = run([exe] + compile_cmd[1:])
-        steps.append({"name": "compile", "rc": r.returncode,
-                      "tail": _tail(r.stdout)})
-        if r.returncode != 0:
-            return {"ok": False, "steps": steps}
+        if r.returncode != 0 and compile_before is not None:
+            # The tree did not compile before either. Fail only for a file
+            # that compiled then and does not now.
+            now = compile_error_files(r.stdout)
+            new = sorted(now - set(compile_before))
+            note = ("the tree did not compile BEFORE the change either ("
+                    + (", ".join(sorted(compile_before)[:5]) or "errors without a file name")
+                    + "). ")
+            if new or not now:
+                steps.append({"name": "compile", "rc": r.returncode,
+                              "tail": note + "NEW files with errors: "
+                                      + (", ".join(new) or "(could not be read from the output)")
+                                      + "\n" + _tail(r.stdout)})
+                return {"ok": False, "steps": steps}
+            steps.append({"name": "compile: no file that compiled before fails now",
+                          "rc": 0, "tail": note + "No new file fails."})
+        else:
+            steps.append({"name": "compile", "rc": r.returncode,
+                          "tail": _tail(r.stdout)})
+            if r.returncode != 0:
+                return {"ok": False, "steps": steps}
     for check in scope.get("checks") or []:
         say(f" .. verify: python {' '.join(check)}")
         r = run([sys.executable, "-B"] + list(check))
@@ -864,6 +981,24 @@ def cmd_generate(job_dir: str, root: str, policy: dict, scope_name: str = "new-t
         say("FAIL this job already has changes waiting for review. Approve "
             "them or discard them before generating again.")
         return 1
+    if prior.get("state") in ("verify-failed", "generating"):
+        # Its edits are still in the files. Running again would copy THOSE
+        # as "the way things were", and a later discard or stored change
+        # would be built on the failed attempt.
+        say(f"FAIL the last run of this job ended `{prior.get('state')}` and "
+            f"its changes are still in place. Discard them first.")
+        return 1
+    try:
+        with RepoLock(root, f"generate, job {os.path.basename(job_dir)}"):
+            return _generate(job_dir, root, policy, scope_name, suite,
+                             agent, verifier)
+    except RuntimeError as e:
+        say(f"FAIL {e}")
+        return 1
+
+
+def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
+              suite: str, agent, verifier) -> int:
     if not _read(os.path.join(job_dir, "plan.md")).strip():
         say("FAIL no plan.md for this job. Run tab 1 (read it, then locate) "
             "first: the plan is what the agent is asked to act on.")
@@ -882,8 +1017,19 @@ def cmd_generate(job_dir: str, root: str, policy: dict, scope_name: str = "new-t
             say(f"FAIL {e}")
             return 1
     call = agent or (lambda prompt: call_cursor(prompt, root))
-    clog = CursorLog(job_dir, secret)
+    private = config_secrets(os.path.join(
+        root, "src", "main", "resources", "program_configuration.json"))
+    clog = CursorLog(job_dir, secret, [v for v, why in private.items()
+                                       if why.startswith("value of")])
     roots = scope["write_roots"]
+    compile_before = None
+    if verifier is None and scope.get("compile"):
+        say(" .. compiling once BEFORE the agent, to know what already fails")
+        compile_before = compile_baseline(root, scope)
+        if compile_before is not None:
+            say(f" .. the tree does not compile before the change "
+                f"({len(compile_before)} file(s) with errors); only a NEW "
+                f"failing file will fail this job")
     gate_before = {}
     if verifier is None and scope.get("gate"):
         say(" .. running the gate once BEFORE the agent, to know what "
@@ -896,7 +1042,7 @@ def cmd_generate(job_dir: str, root: str, policy: dict, scope_name: str = "new-t
         say(f" .. {len(gate_before)} check(s) fail before the change: "
             + (", ".join(sorted(gate_before)) or "none"))
     verify = verifier or (lambda: run_verify(
-        root, scope, gate_before=gate_before,
+        root, scope, gate_before=gate_before, compile_before=compile_before,
         gate_json=os.path.join(job_dir, "gate-after.json")))
 
     commit, branch = head(root)
@@ -920,6 +1066,12 @@ def cmd_generate(job_dir: str, root: str, policy: dict, scope_name: str = "new-t
     say(f" .. copying the generated tree ({len(gen_before)} files) so "
         f"anything touched can be put back")
     backup(root, gen_before, gen_backup)
+    # Written BEFORE the agent is called: if this process is stopped or
+    # dies mid-run, `discard` can still put everything back from it.
+    with io.open(os.path.join(job_dir, "pre-state.json"), "w", encoding="utf-8") as fh:
+        json.dump({"before": before, "generated": gen_before, "roots": roots}, fh)
+    protected = {p: _bytes(os.path.join(root, p))
+                 for p in policy.get("protected_files") or []}
 
     review = write_review(job_dir, {
         "state": "generating", "scope": scope["name"], "suite": scope["suite"],
@@ -990,6 +1142,10 @@ def cmd_generate(job_dir: str, root: str, policy: dict, scope_name: str = "new-t
             say(f"FAIL {msg}")
             return reject(msg, restore=False)
 
+        tampered = [p for p, was in protected.items()
+                    if _bytes(os.path.join(root, p)) != was]
+        for p in tampered:
+            _put_bytes(os.path.join(root, p), protected[p])
         tracked = split_created(root, classify_tracked(before, dirty_paths(root), roots))
         gen = classify_generated(gen_before, snapshot_generated(root, policy), roots)
         changes = {k: sorted(tracked[k] + gen[k]) for k in
@@ -1003,6 +1159,10 @@ def cmd_generate(job_dir: str, root: str, policy: dict, scope_name: str = "new-t
                 clog.write(f"  {kind:9s} {p}")
 
         problems = []
+        if tampered:
+            problems.append(
+                "credential/config file(s) were changed and have been put "
+                "back: " + ", ".join(tampered))
         if gen["outside"]:
             suites = sorted({_suite_of(p) for p in gen["outside"]} - {""})
             whose = (f"suite(s) {', '.join(suites)}" if suites
@@ -1062,6 +1222,46 @@ def cmd_generate(job_dir: str, root: str, policy: dict, scope_name: str = "new-t
     return 1
 
 
+def _bytes(path: str):
+    try:
+        with io.open(path, "rb") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def _put_bytes(path: str, data) -> None:
+    if data is None:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with io.open(path, "wb") as fh:
+        fh.write(data)
+
+
+def undo_from_pre_state(root: str, job_dir: str, policy: dict) -> list:
+    """Put back everything changed since a run started, from what the run
+    saved before it called the agent. For a job that was stopped or died."""
+    try:
+        with io.open(os.path.join(job_dir, "pre-state.json"), encoding="utf-8") as fh:
+            pre = json.load(fh)
+    except (OSError, ValueError):
+        return ["no saved pre-run state for this job: nothing can be put back "
+                "automatically"]
+    before = pre.get("before") or {}
+    gen_before = {k: tuple(v) for k, v in (pre.get("generated") or {}).items()}
+    after = dirty_paths(root)
+    touched = [p for p in sorted(set(before) | set(after))
+               if before.get(p, "absent") != after.get(p, "absent")]
+    notes = restore_tracked(root, touched, before, os.path.join(job_dir, "pre"))
+    g = classify_generated(gen_before, snapshot_generated(root, policy), [])
+    notes += restore_generated(root, g["outside"], os.path.join(job_dir, "pre-generated"))
+    return notes or ["nothing had been changed"]
+
+
 def _prune_backup(gen_backup: str, keep) -> None:
     """Keep only the copies of files the accepted run changed: they are
     what the diff, a discard and the stored patch need."""
@@ -1112,6 +1312,25 @@ def _write_diff(root: str, job_dir: str, changes: dict, generated=(),
 
 def cmd_discard(job_dir: str, root: str) -> int:
     review = read_review(job_dir)
+    try:
+        with RepoLock(root, f"discard, job {os.path.basename(job_dir)}"):
+            return _discard(job_dir, root, review)
+    except RuntimeError as e:
+        say(f"FAIL {e}")
+        return 1
+
+
+def _discard(job_dir: str, root: str, review: dict) -> int:
+    if review.get("state") == "generating":
+        # The run was stopped or died: no list of files was ever written.
+        say(" .. the last run did not finish; putting back everything "
+            "changed since it started")
+        for note in undo_from_pre_state(root, job_dir, load_policy()):
+            say(f" .. {note}")
+        write_review(job_dir, dict(review, state="discarded"))
+        CursorLog(job_dir).write("DISCARDED an unfinished run")
+        say("discarded")
+        return 0
     if review.get("state") not in ("pending-review", "verify-failed"):
         say(f"FAIL nothing to discard (state: {review.get('state')})")
         return 1
@@ -1141,6 +1360,16 @@ def cmd_approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
                 config_path: str = "") -> int:
     """The review button. A pushable scope is committed to its own branch
     and pushed; converted Java is kept locally with a saved patch."""
+    try:
+        with RepoLock(root, f"approve, job {job}"):
+            return _approve(job_dir, root, policy, job, confirm, config_path)
+    except RuntimeError as e:
+        say(f"FAIL {e}")
+        return 1
+
+
+def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
+             config_path: str = "") -> int:
     review = read_review(job_dir)
     if review.get("state") not in ("pending-review", "push-failed"):
         say(f"FAIL this job is not waiting for review (state: "
@@ -1194,7 +1423,19 @@ def cmd_approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
     # disk now, which may have been edited since the review.
     known = config_secrets(config_path or os.path.join(
         root, "src", "main", "resources", "program_configuration.json"))
-    findings = scan_secrets(diff, known)
+    # A new file is scanned WHOLE, straight from disk: the diff shown for
+    # review is capped in size, and a scan must not be.
+    whole = "".join(
+        "+" + line + "\n"
+        for rel in files.get("created") or []
+        for line in _read(os.path.join(root, rel), 50_000_000).splitlines())
+    findings = scan_secrets(diff + "\n" + whole, known)
+    seen, unique = set(), []
+    for item in findings:
+        if item not in seen:
+            seen.add(item)
+            unique.append(item)
+    findings = unique
     if findings:
         say(f"FAIL secret scan: {len(findings)} finding(s). Nothing was "
             f"committed. This repository is public.")
