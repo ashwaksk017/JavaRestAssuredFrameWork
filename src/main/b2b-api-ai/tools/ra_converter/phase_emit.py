@@ -135,6 +135,8 @@ _EXTRACT_WHOLE = re.compile(
     r'^\s*(?:TestSupport|ImportedScenario)\.putExtracted\(ctx,\s*"((?:[^"\\]|\\.)*)",\s*'
     r'(?:com\.hi\.api\.rest\.utilities\.)?RestUtilities\.getResponseAsString\((\w+)\)\);\s*$')
 _A_EQ = re.compile(r'^\s*ResponseAsserts\.jsonEquals\(softAssert,\s*(\w+),\s*ctx,\s*row,\s*"((?:[^"\\]|\\.)*)",\s*"((?:[^"\\]|\\.)*)",\s*"((?:[^"\\]|\\.)*)"\);\s*$')
+# jsonEquals with the EXACT expected-value column as a last argument.
+_A_EQ_AT = re.compile(r'^\s*ResponseAsserts\.jsonEqualsAt\(softAssert,\s*(\w+),\s*ctx,\s*row,\s*"((?:[^"\\]|\\.)*)",\s*"((?:[^"\\]|\\.)*)",\s*"((?:[^"\\]|\\.)*)",\s*"(\w+)"\);\s*$')
 _A_TREE = re.compile(r'^\s*ResponseAsserts\.jsonTreeEquals\(softAssert,\s*(\w+),\s*ctx,\s*row,\s*"((?:[^"\\]|\\.)*)",\s*"((?:[^"\\]|\\.)*)",\s*"((?:[^"\\]|\\.)*)"\);\s*$')
 _A_EXISTS = re.compile(r'^\s*ResponseAsserts\.jsonExists\(softAssert,\s*(\w+),\s*row,\s*"((?:[^"\\]|\\.)*)",\s*"((?:[^"\\]|\\.)*)"\);\s*$')
 _A_ABSENT = re.compile(r'^\s*ResponseAsserts\.jsonAbsent\(softAssert,\s*(\w+),\s*"((?:[^"\\]|\\.)*)"\);\s*$')
@@ -184,6 +186,10 @@ def split_rest_body(lines: list[str], res_var: str, step_sid: str) -> Split:
         m = _A_EQ.match(line)
         if m and m.group(1) == res_var and m.group(2) == step_sid:
             out.checks.append(("equals", _unj(m.group(3)), _unj(m.group(4))))
+            continue
+        m = _A_EQ_AT.match(line)
+        if m and m.group(1) == res_var and m.group(2) == step_sid:
+            out.checks.append(("equalsAt:" + m.group(5), _unj(m.group(3)), _unj(m.group(4))))
             continue
         m = _A_TREE.match(line)
         if m and m.group(1) == res_var and m.group(2) == step_sid:
@@ -291,6 +297,9 @@ def spec_builder_java(spec, split: Split, template_java_expr: str | None,
     for kind, path, expected in split.checks:
         if kind == "equals":
             parts.append(f".equals({jstr(path)}, {jstr(expected)})")
+        elif kind.startswith("equalsAt:"):
+            parts.append(f".equalsAt({jstr(kind[len('equalsAt:'):])}, "
+                         f"{jstr(path)}, {jstr(expected)})")
         elif kind == "treeEquals":
             parts.append(f".treeEquals({jstr(path)}, {jstr(expected)})")
         elif kind == "exists":

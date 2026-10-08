@@ -5058,9 +5058,30 @@ def _body_shape_key(step: "RestStep") -> str:
         return "-"
     translated, _ = soapui_body_to_placeholders(step.request_body)
     try:
-        return "j:" + _shape_sig(_json.loads(translated))
+        tree = _json.loads(translated)
     except (_json.JSONDecodeError, ValueError):
         return "raw:" + _re.sub(r"\s+", "", translated)[:120]
+    # WHERE the body takes a property is part of its shape.
+    #
+    #   case 1   "emailDomains": [ "peaLCenteR.org" ]
+    #   case 2   "emailDomains": [ "${Properties#Domain}" ]
+    #
+    # Same keys, same leaf types -- so these two shared one @Test. But the
+    # template merge keeps bodies with different placeholder layouts in
+    # separate files (it has to: owner and member enroll differ only in
+    # which Properties slot they read), and a @Test holds ONE template,
+    # cluster[0]'s. Row 2 was sent through row 1's template with cells that
+    # belong to its own: `"emailDomains": [null]`, `"country": null`, a
+    # 400 the ReadyAPI case never sees. 20 methods in 7 suites.
+    #
+    # A dimension may leave this key only when a CSV cell can carry it. A
+    # literal can. Which leaf is a placeholder cannot.
+    ph = _placeholder_map(tree)
+    if not ph:
+        return "j:" + _shape_sig(tree)
+    import hashlib as _hashlib
+    return ("j:" + _shape_sig(tree) + "|ph:"
+            + _hashlib.sha1(repr(ph).encode("utf-8")).hexdigest()[:10])
 
 
 _EXPANDABLE_RX = re.compile(r"\$\{[^}]+\}")
@@ -10387,9 +10408,17 @@ public interface ImportedRestClient {{
                              or (_eq[0] == "'" and _eq[-1] == "'"))
                         and not _eq[1:-1].startswith(("{", "["))):
                     _eq = _eq[1:-1]
+                # The column THIS element's expected value was written to.
+                # The runtime used to look it up by the path's last segment,
+                # and one assertion can hold several elements ending in the
+                # same name (`confidence` for the external match and for
+                # each internal match): it took the lowest-numbered column
+                # for all of them, so three of four were compared against
+                # another element's expected value.
                 lines.append(
-                    f'ResponseAsserts.jsonEquals(softAssert, {response_var}, ctx, row, '
-                    f'"{sanitize_identifier(step_name)}", "{_jlit(jpath)}", "{_jlit(_eq)}");')
+                    f'ResponseAsserts.jsonEqualsAt(softAssert, {response_var}, ctx, row, '
+                    f'"{sanitize_identifier(step_name)}", "{_jlit(jpath)}", "{_jlit(_eq)}", '
+                    f'"{col_name}");')
         return (lines, "FULL")
 
     def _render_data_and_metadata_assertion(self, a: Assertion, response_var: str,

@@ -282,6 +282,61 @@ public class ResponseAssertsTest {
     }
 
     @Test(groups = {"unit"})
+    @Story("An element is compared against its own column")
+    @Description("Four elements end in `confidence`; each has a numbered column. The search by name took the lowest for all four.")
+    public void jsonEqualsAt_usesTheElementsOwnColumn() {
+        String step = "http_request_200_1";
+        Map<String, String> row = new HashMap<>();
+        row.put("expected_" + step + "_msgcontent_2_confidence", "medium");
+        row.put("expected_" + step + "_msgcontent_5_confidence", "high");
+        row.put("expected_" + step + "_msgcontent_7_confidence", "veryLow");
+        Response res = json(200, "{\"externalMatch\":{\"attestation\":{\"confidence\":\"medium\"}},"
+                + "\"internalMatch\":[{\"attestation\":{\"confidence\":\"high\"}},"
+                + "{\"attestation\":{\"confidence\":\"veryLow\"}}]}");
+
+        SoftAssert sa = new SoftAssert();
+        ResponseAsserts.jsonEqualsAt(sa, res, new HashMap<>(), row, step,
+                "externalMatch.attestation.confidence", "x", "expected_" + step + "_msgcontent_2_confidence");
+        ResponseAsserts.jsonEqualsAt(sa, res, new HashMap<>(), row, step,
+                "internalMatch[0].attestation.confidence", "x", "expected_" + step + "_msgcontent_5_confidence");
+        ResponseAsserts.jsonEqualsAt(sa, res, new HashMap<>(), row, step,
+                "internalMatch[1].attestation.confidence", "x", "expected_" + step + "_msgcontent_7_confidence");
+        assertSoftPass(sa);
+
+        // NEGATIVE CONTROL: the search by name compares internalMatch[0]
+        // ("high") against column 2 ("medium") -- the failure this fixes.
+        SoftAssert byName = new SoftAssert();
+        ResponseAsserts.jsonEquals(byName, res, new HashMap<>(), row, step,
+                "internalMatch[0].attestation.confidence", "x");
+        Assert.expectThrows(AssertionError.class, byName::assertAll);
+    }
+
+    @Test(groups = {"unit"})
+    @Story("An element is compared against its own column")
+    @Description("An empty cell in the element's own column means this case does not assert it; a row without the column falls back to the search by name.")
+    public void jsonEqualsAt_emptyCellSkips_missingColumnFallsBack() {
+        String step = "http_request_200_1";
+        Response res = json(200, "{\"a\":{\"confidence\":\"high\"}}");
+
+        Map<String, String> blank = new HashMap<>();
+        blank.put("expected_" + step + "_msgcontent_5_confidence", "");
+        blank.put("expected_" + step + "_msgcontent_2_confidence", "medium");   // a sibling's
+        SoftAssert skipped = new SoftAssert();
+        ResponseAsserts.jsonEqualsAt(skipped, res, new HashMap<>(), blank, step,
+                "a.confidence", "medium", "expected_" + step + "_msgcontent_5_confidence");
+        assertSoftPass(skipped);
+
+        Map<String, String> older = new HashMap<>();
+        older.put("expected_" + step + "_msgcontent_confidence", "high");
+        SoftAssert fallback = new SoftAssert();
+        ResponseAsserts.jsonEqualsAt(fallback, res, new HashMap<>(), older, step,
+                "a.confidence", "x", "expected_" + step + "_msgcontent_5_confidence");
+        ResponseAsserts.jsonEqualsAt(fallback, res, new HashMap<>(), older, step,
+                "a.confidence", "x", null);
+        assertSoftPass(fallback);
+    }
+
+    @Test(groups = {"unit"})
     @Story("jsonExists CSV false asserts absence")
     @Description("expected_<step>_exists_<suffix>=false is ReadyAPI content=false: path must be absent.")
     public void jsonExists_csvFalse_assertsAbsent() {

@@ -278,6 +278,38 @@ public final class ResponseAsserts {
     }
 
     /**
+     * {@link #jsonEquals} for a check that knows its own column.
+     *
+     * <p>One MessageContent assertion can hold several elements whose paths
+     * end in the same name -- {@code externalMatch.attestation.confidence},
+     * {@code internalMatch[0].attestation.confidence}, and so on. Each has a
+     * numbered column of its own, but {@link #msgContentColumn} can only
+     * search by that last name: it took the lowest-numbered match for all of
+     * them and logged a warning. Three checks in four then compared against
+     * another element's expected value.</p>
+     *
+     * <p>The converter knows which column it wrote each element to, and
+     * passes it here. A row without that column (a tree converted earlier, a
+     * hand-written sheet) falls back to the search, exactly as before.</p>
+     */
+    public static void jsonEqualsAt(SoftAssert softAssert, Response res,
+                                    Map<String, String> ctx, Map<String, String> row,
+                                    String step, String jsonPath, String defaultExpected,
+                                    String column) {
+        if (column == null || column.isEmpty() || row == null || !row.containsKey(column)) {
+            jsonEquals(softAssert, res, ctx, row, step, jsonPath, defaultExpected);
+            return;
+        }
+        if (softAssert == null || res == null) return;
+        String colJson = "expected_" + step + "_jsonpath_" + columnSuffix(jsonPath);
+        if (rowSaysSkip(row, colJson, column)) {
+            return;
+        }
+        String expected = resolvedCsvOrDefault(ctx, row, defaultExpected, colJson, column);
+        valueInResponse(softAssert, res, expected, jsonPath, "JsonPath Match: " + jsonPath);
+    }
+
+    /**
      * True when a value is still a raw placeholder after resolution.
      *
      * <p>Whole-value match only. A legitimate expectation can CONTAIN a hash

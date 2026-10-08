@@ -45,11 +45,18 @@ public final class PhaseSpec {
         public final Kind kind;
         public final String jsonPath;
         public final String expected;   // SoapUI literal; the CSV column wins at runtime
+        /** The exact expected-value column, when the converter knows it; else null. */
+        public final String column;
 
         Check(Kind kind, String jsonPath, String expected) {
+            this(kind, jsonPath, expected, null);
+        }
+
+        Check(Kind kind, String jsonPath, String expected, String column) {
             this.kind = kind;
             this.jsonPath = jsonPath;
             this.expected = expected == null ? "" : expected;
+            this.column = column;
         }
     }
 
@@ -231,6 +238,12 @@ public final class PhaseSpec {
 
         public Builder equals(String jsonPath, String expected) {
             checks.add(new Check(Check.Kind.EQUALS, jsonPath, expected));
+            return this;
+        }
+
+        /** {@link #equals} for a check whose expected value lives in a known column. */
+        public Builder equalsAt(String column, String jsonPath, String expected) {
+            checks.add(new Check(Check.Kind.EQUALS, jsonPath, expected, column));
             return this;
         }
 

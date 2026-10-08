@@ -181,6 +181,16 @@ CHECKS = [
           "reads the database, runs before the setup script that uses the "
           "pick, and hands the pick on -- the read was a comment reported "
           "FULL, and the script that needed it had been hoisted ahead of it"),
+    Check("jdbc-literal-bind",
+          [PY, "tools/ra_converter/test_jdbc_literal_bind.py"],
+          "a bind parameter that is a literal in the same script reaches the "
+          "SQL -- it became a ctx reference nothing publishes, resolved to "
+          "`null`, and the start-of-test cleanup was skipped every run"),
+    Check("cluster-placeholder-layout",
+          [PY, "tools/ra_converter/test_cluster_placeholder_layout.py"],
+          "cases share a @Test only when their bodies take properties at "
+          "the same places -- a row was sent through another case's "
+          "template and its own cells, as `null`, in 20 methods"),
     Check("suite-vocab-isolation",
           [PY, "tools/ra_converter/test_suite_vocab_isolation.py"],
           "a suite's chain methods live on its OWN steps class -- they were "

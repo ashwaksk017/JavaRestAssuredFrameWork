@@ -32,6 +32,41 @@ def test_verify9_splits_into_four_checks_and_nothing_else():
     assert sp.extracts == [] and sp.leftover == []
 
 
+def test_an_equality_check_carries_its_own_expected_value_column():
+    """One MessageContent assertion can hold several elements ending in the
+    same name; each has a numbered column. The check must name ITS column,
+    or the runtime takes the lowest-numbered one for all of them."""
+    step = "http_request_200_1"
+    lines = [
+        '        ResponseAsserts.jsonEqualsAt(softAssert, r, ctx, row, "%s", '
+        '"externalMatch.attestation.confidence", "medium", '
+        '"expected_%s_msgcontent_2_confidence");' % (step, step),
+        '        ResponseAsserts.jsonEqualsAt(softAssert, r, ctx, row, "%s", '
+        '"internalMatch[0].attestation.confidence", "high", '
+        '"expected_%s_msgcontent_5_confidence");' % (step, step),
+        '        ResponseAsserts.jsonEquals(softAssert, r, ctx, row, "%s", "status", "ok");' % step,
+    ]
+    sp = pe.split_rest_body(lines, "r", step)
+    assert sp.checks == [
+        ("equalsAt:expected_%s_msgcontent_2_confidence" % step,
+         "externalMatch.attestation.confidence", "medium"),
+        ("equalsAt:expected_%s_msgcontent_5_confidence" % step,
+         "internalMatch[0].attestation.confidence", "high"),
+        ("equals", "status", "ok"),
+    ], sp.checks
+    spec = pm.PhaseSpec(
+        suite="s", case="c", step_name=step, sid=step, verb="GET",
+        path="/x", client_method="readX", receiver="client",
+        template_expr=None, regen=False, expected_status=200, query=(),
+        path_args=(), token_expr='""',
+        engine_id=pe.engine_id("readX", 0, False, False, False),
+        path_refs=(), token_ref=("ctx", "tokenId.GeneratedTokenID"))
+    j = pe.spec_builder_java(spec, sp, None, {}, None, indent=0)
+    assert ('.equalsAt("expected_%s_msgcontent_5_confidence", '
+            '"internalMatch[0].attestation.confidence", "high")' % step) in j, j
+    assert '.equals("status", "ok")' in j
+
+
 def test_lines_outside_the_closed_set_go_to_the_hook():
     lines = _body("runVerifyVerify9") + [
         "        // [groovy] DataGenInput -- auto-translated",

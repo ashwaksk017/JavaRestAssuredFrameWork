@@ -149,6 +149,10 @@ def _normalise_asserts(body: str) -> list[tuple]:
         # helpers take (.., stepName, jsonPath[, expected]) or (.., jsonPath)
         if kind in ("jsonAbsent",):
             found.append((kind, args[-1], ""))
+        elif kind == "jsonEqualsAt" and len(args) >= 4:
+            # jsonEquals plus the expected-value column as a last argument;
+            # the same check as far as a duplicate report is concerned.
+            found.append(("jsonEquals", args[-3], args[-2]))
         elif kind in ("jsonEquals", "valueInResponse", "jsonTreeEquals") and len(args) >= 3:
             found.append((kind, args[-2], args[-1]))
         else:

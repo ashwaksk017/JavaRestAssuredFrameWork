@@ -86,7 +86,8 @@ public final class PhaseRunner {
         for (PhaseSpec.Check k : spec.checks) {
             switch (k.kind) {
                 case EQUALS:
-                    ResponseAsserts.jsonEquals(c.softAssert, res, c.ctx, c.row, spec.step, k.jsonPath, k.expected);
+                    ResponseAsserts.jsonEqualsAt(c.softAssert, res, c.ctx, c.row, spec.step,
+                            k.jsonPath, k.expected, k.column);
                     break;
                 case EXISTS:
                     ResponseAsserts.jsonExists(c.softAssert, res, c.row, spec.step, k.jsonPath);

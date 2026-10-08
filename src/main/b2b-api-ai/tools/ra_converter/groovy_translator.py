@@ -3193,8 +3193,10 @@ def translate(script: str, response_var_by_step: dict[str, str],
                     else:
                         idents_for_substitute.append("")  # placeholder-of-nothing
             if idents_for_substitute:
+                _lit_names = _literal_groovy_locals(script)
                 idents_shown = ", ".join(
-                    f"#{n}#" if n else "?" for n in idents_for_substitute)
+                    (n + " (literal in the script)" if n in _lit_names
+                     else f"#{n}#") if n else "?" for n in idents_for_substitute)
                 lines.append(
                     f'// [jdbc] params list contains Groovy identifiers '
                     f'(`{preview_p}`); rewriting `?` bind placeholders '
@@ -3310,7 +3312,17 @@ def translate(script: str, response_var_by_step: dict[str, str],
                     name = idents_for_substitute[i]
                     if not name:
                         return "?"  # non-identifier slot; can't refify
+                    if name in _bind_literals:
+                        # `def emailDomain = "zaxbys.com"` bound with
+                        # `[emailDomain]`: the value is in the script.
+                        # Nothing publishes a local, so `#emailDomain#`
+                        # resolved to the text `null` at run time and the
+                        # statement was skipped -- a cleanup that never
+                        # cleaned, every run.
+                        return "'" + _bind_literals[name].replace("'", "''") + "'"
                     return f"'#{name}#'"
+                _bind_literals = {k: v for k, v in _literal_groovy_locals(script).items()
+                                  if not any(c in v for c in "#$?\\")}
                 raw_q = re.sub(r"\?", _sub_qmark, raw_q)
             # Same rewrite as every other JDBC path. This used to be
             # an inline copy of _normalize_jdbc_query -- identical
