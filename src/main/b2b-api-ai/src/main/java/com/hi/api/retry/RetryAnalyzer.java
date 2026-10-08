@@ -58,16 +58,17 @@ public class RetryAnalyzer implements IRetryAnalyzer {
         int max = Config.retryMaxCount();
         String k = key(result);
         if (settledRejection(result)) {
-            // The server refused what this test sends; it sends the same
+            // The same refusal twice running: this test sends the same
             // thing every time. Counter to max so the listeners count this
             // attempt as the terminal failure it is.
             ATTEMPTS_BY_KEY.put(k, Math.max(max, 0));
-            System.err.printf("[Retry] %s.%s -- not retried: %s%n",
+            System.err.printf("[Retry] %s.%s -- not retried again: %s%n",
                     result.getTestClass().getRealClass().getSimpleName(),
                     result.getMethod().getMethodName(),
-                    "a rejected write does not change by running the test again");
+                    "the server refused the same write the same way twice");
             return false;
         }
+        rememberRejection(result);
         int attempts = ATTEMPTS_BY_KEY.getOrDefault(k, 0);
         if (attempts < max) {
             attempts++;
@@ -96,27 +97,63 @@ public class RetryAnalyzer implements IRetryAnalyzer {
         return ATTEMPTS_BY_KEY.getOrDefault(key(result), 0) < max;
     }
 
+    /** The refusal a test's PREVIOUS attempt ended on: {signature, that attempt's start time}. */
+    private static final Map<String, Object[]> LAST_REJECTION = new ConcurrentHashMap<>();
+
     /**
-     * Did the test end on a write the server refused for a reason another
-     * attempt cannot change? See {@link FlowStopped#worthRetrying}.
-     * {@code test.retryRejectedWrite=true} retries those too.
+     * Did this attempt end on the SAME refused write, refused the same
+     * way, as the attempt before it?
+     *
+     * <p>One refusal proves little: an enroll answered "Username is not
+     * unique" collided on a random value, and the next attempt draws a
+     * new one (it passed on attempt 2 in the run this was measured on).
+     * The same step refused with the same message twice running is the
+     * server rejecting what the test sends -- a third attempt gets a
+     * third copy of the answer.</p>
+     *
+     * <p>Rejections that may clear on their own (5xx, 401/403, 408, 409,
+     * 429, known-temporary 400s) are never settled; see
+     * {@link FlowStopped#worthRetrying}. {@code test.retryRejectedWrite=true}
+     * switches the rule off.</p>
      */
     static boolean settledRejection(ITestResult result) {
         Throwable t = result == null ? null : result.getThrowable();
         if (!(t instanceof FlowStopped) || ((FlowStopped) t).worthRetrying()) {
             return false;
         }
-        return !Config.getBool("test.retryRejectedWrite", false);
+        if (Config.getBool("test.retryRejectedWrite", false)) {
+            return false;
+        }
+        Object[] last = LAST_REJECTION.get(key(result));
+        // A different attempt (by start time) with the same signature. The
+        // start time keeps this from matching the entry THIS attempt wrote,
+        // whichever of retry() and the listeners runs first.
+        return last != null
+                && ((FlowStopped) t).signature().equals(last[0])
+                && !Long.valueOf(result.getStartMillis()).equals(last[1]);
+    }
+
+    private static void rememberRejection(ITestResult result) {
+        Throwable t = result.getThrowable();
+        if (t instanceof FlowStopped && !((FlowStopped) t).worthRetrying()) {
+            if (LAST_REJECTION.size() > MAX_ENTRIES) {
+                LAST_REJECTION.clear();
+            }
+            LAST_REJECTION.put(key(result),
+                    new Object[] {((FlowStopped) t).signature(), result.getStartMillis()});
+        }
     }
 
     /** Drop the per-invocation counter after a terminal pass/fail. */
     public static void clearAttempts(ITestResult result) {
         if (result == null) return;
         ATTEMPTS_BY_KEY.remove(key(result));
+        LAST_REJECTION.remove(key(result));
     }
 
     /** Test hook. */
     public static void resetAttempts() {
         ATTEMPTS_BY_KEY.clear();
+        LAST_REJECTION.clear();
     }
 }

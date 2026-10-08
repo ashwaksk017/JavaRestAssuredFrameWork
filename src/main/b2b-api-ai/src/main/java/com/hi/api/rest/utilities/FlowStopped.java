@@ -35,12 +35,25 @@ public final class FlowStopped extends AssertionError {
     private final String step;
     private final int status;
     private final boolean transientRejection;
+    private final String signature;
 
-    private FlowStopped(String message, String step, int status, boolean transientRejection) {
+    private FlowStopped(String message, String step, int status, boolean transientRejection,
+                        String serverSaid) {
         super(message);
         this.step = step;
         this.status = status;
         this.transientRejection = transientRejection;
+        // Ids and timestamps differ between attempts; the reason does not.
+        this.signature = step + "|" + status + "|"
+                + (serverSaid == null ? "" : serverSaid.replaceAll("[0-9]+", "#"));
+    }
+
+    /**
+     * What was refused and why, without the values that change per attempt:
+     * the same string for two attempts refused the same way.
+     */
+    public String signature() {
+        return signature;
     }
 
     public String step() {
@@ -56,9 +69,13 @@ public final class FlowStopped extends AssertionError {
      *
      * <p>A 5xx, a timeout or a throttle may clear. A conflict (409) may too:
      * the retry regenerates the identity it collided on. So may a 401/403,
-     * which the retry meets with a fresh token. A 400, 404, 415 or 422 is
-     * the server refusing what this test sends, and it sends the same thing
-     * every time.</p>
+     * which the retry meets with a fresh token. Those are always retried.</p>
+     *
+     * <p>A 400, 404, 415 or 422 is USUALLY the server refusing what this
+     * test sends -- but not always (a 400 "Username is not unique" is a
+     * collision on a random value). So one such refusal is still retried;
+     * the retry analyzer stops only when the next attempt is refused at the
+     * same step with the same message. See {@link #signature}.</p>
      *
      * <p>Except a rejection the framework already knows to be temporary
      * ("Member status is invalid" while an activation settles): that one
@@ -139,7 +156,7 @@ public final class FlowStopped extends AssertionError {
                 + stepName + " was rejected, so the steps after it have nothing to act on"
                 + " (test.stopAfterRejectedWrite=false runs them anyway)."
                 + (body.isEmpty() ? "" : " Server said: " + body),
-                stepName, actual, RestUtilities.isTransientResponse(res));
+                stepName, actual, RestUtilities.isTransientResponse(res), body);
     }
 
     private static String cap(String s) {

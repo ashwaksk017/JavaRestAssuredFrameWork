@@ -173,39 +173,68 @@ public class FlowStoppedTest {
 
     @Test(groups = {"unit"})
     @Story("A refusal is not retried")
-    @Description("The retry analyzer declines a test that ended on a settled rejection, and reports no retries remaining so the listeners count it once.")
-    public void retryAnalyzer_declinesASettledRejection() throws Exception {
+    @Description("One refusal is retried (it may be a collision on a random value); the SAME refusal on the next attempt is not, and the listeners then see no retries remaining.")
+    public void retryAnalyzer_stopsWhenTheSameRefusalRepeats() throws Exception {
         System.setProperty("wholeTestRetry", "2");
-        ITestResult refused = result(stop(400));
-        Assert.assertFalse(RetryAnalyzer.moreRetriesRemain(refused));
-        Assert.assertFalse(new RetryAnalyzer().retry(refused));
-        Assert.assertFalse(RetryAnalyzer.moreRetriesRemain(refused));
+        RetryAnalyzer ra = new RetryAnalyzer();
 
-        // NEGATIVE CONTROLS: everything else keeps its retries.
-        // (409, not 503: a 503 is first re-sent for 15 s inside the step.)
-        RetryAnalyzer.resetAttempts();      // the stubs share one identity
-        ITestResult conflict = result(stop(409));
-        Assert.assertTrue(RetryAnalyzer.moreRetriesRemain(conflict));
-        Assert.assertTrue(new RetryAnalyzer().retry(conflict));
+        ITestResult first = result(stop(400, DOMAIN_400), 1_000L);
+        Assert.assertTrue(RetryAnalyzer.moreRetriesRemain(first), "before retry()");
+        Assert.assertTrue(ra.retry(first), "a first refusal gets another attempt");
+        Assert.assertTrue(RetryAnalyzer.moreRetriesRemain(first), "after retry(), same attempt");
+
+        ITestResult second = result(stop(400, DOMAIN_400), 2_000L);
+        Assert.assertFalse(RetryAnalyzer.moreRetriesRemain(second), "before retry()");
+        Assert.assertFalse(ra.retry(second), "the same refusal twice is settled");
+        Assert.assertFalse(RetryAnalyzer.moreRetriesRemain(second), "after retry()");
+    }
+
+    @Test(groups = {"unit"})
+    @Story("A refusal is not retried")
+    @Description("NEGATIVE CONTROLS: a DIFFERENT refusal on the next attempt, a refusal that may clear, an ordinary failure, and the switch all keep their retries. Ids in the server's message do not make two refusals different.")
+    public void retryAnalyzer_keepsEveryOtherRetry() throws Exception {
+        System.setProperty("wholeTestRetry", "2");
+        RetryAnalyzer ra = new RetryAnalyzer();
+
+        // "Username is not unique" then a different reason: both retried.
+        Assert.assertTrue(ra.retry(result(stop(400, "{\"message\":\"Username is not unique.\"}"), 1L)));
+        Assert.assertTrue(ra.retry(result(stop(400, DOMAIN_400), 2L)));
         RetryAnalyzer.resetAttempts();
-        ITestResult other = result(new AssertionError("JsonPath Match: status"));
-        Assert.assertTrue(new RetryAnalyzer().retry(other));
+
+        // The same reason with different ids IS the same refusal.
+        Assert.assertEquals(stop(404, "{\"message\":\"account 2000510893 not found\"}").signature(),
+                stop(404, "{\"message\":\"account 2000510901 not found\"}").signature());
+
+        // A conflict may clear on a fresh identity: never settled.
+        Assert.assertTrue(ra.retry(result(stop(409, "{}"), 1L)));
+        Assert.assertTrue(ra.retry(result(stop(409, "{}"), 2L)));
         RetryAnalyzer.resetAttempts();
+
+        ITestResult other = result(new AssertionError("JsonPath Match: status"), 1L);
+        Assert.assertTrue(ra.retry(other));
+        Assert.assertTrue(ra.retry(result(new AssertionError("JsonPath Match: status"), 2L)));
+        RetryAnalyzer.resetAttempts();
+
         System.setProperty("test.retryRejectedWrite", "true");
-        Assert.assertTrue(new RetryAnalyzer().retry(refused));
+        Assert.assertTrue(ra.retry(result(stop(400, DOMAIN_400), 1L)));
+        Assert.assertTrue(ra.retry(result(stop(400, DOMAIN_400), 2L)));
     }
 
     private static FlowStopped stop(int status) throws Exception {
+        return stop(status, "{}");
+    }
+
+    private static FlowStopped stop(int status, String body) throws Exception {
         try {
             post(new HashMap<>(), new SoftAssert(), "http_request_200_1", 200,
-                    json(status, "{}"), new AtomicInteger());
+                    json(status, body), new AtomicInteger());
         } catch (FlowStopped s) {
             return s;
         }
         throw new AssertionError("HTTP " + status + " did not stop the flow");
     }
 
-    private static ITestResult result(Throwable thrown) {
+    private static ITestResult result(Throwable thrown, long startMillis) {
         ClassLoader cl = FlowStoppedTest.class.getClassLoader();
         ITestClass testClass = (ITestClass) Proxy.newProxyInstance(
                 cl, new Class<?>[] {ITestClass.class}, (p, m, a) ->
@@ -220,6 +249,7 @@ public class FlowStoppedTest {
                         case "getMethod": return method;
                         case "getParameters": return new Object[0];
                         case "getThrowable": return thrown;
+                        case "getStartMillis": return startMillis;
                         default: return null;
                     }
                 });
