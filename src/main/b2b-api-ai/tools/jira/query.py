@@ -29,7 +29,12 @@ reason, and the caller says so instead of searching for something.
 What that cannot tell apart: a short remark that happens to BE a whole
 query (`status = 200`, `flag is null`). Those are queries. Jira answers
 them with "field does not exist", which is a better answer than a
-guess made here.
+guess made here. Two shapes are held more tightly, because English is
+full of them: `x was y` and `x changed ...` are a query only for the
+fields Jira keeps a history of (status, assignee, priority, ...), so
+"login was broken on monday" is not one; and an ORDER BY with nothing
+before it is not a query at all -- it would list every issue the token
+can see.
 
 A query is returned exactly as written. Splitting a paste on commas to
 look for keys and joining it back would turn `project in (A, B)` into
@@ -61,8 +66,13 @@ _HAS_URL_RX = re.compile(r"(?i)\bhttps?://")
 _TOKEN_RX = re.compile(
     r'\s*(?:(?P<str>"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\')'
     r"|(?P<op>!=|>=|<=|!~|=|~|>|<)"
+    r"|(?P<sym>&&|\|\||!)"               # JQL's other spellings of and, or, not
     r"|(?P<punct>[(),])"
-    r"|(?P<word>[^\s(),=!~<>\"']+))")
+    r"|(?P<word>[^\s(),=!~<>\"'&|;]+))")
+_SYMBOL_WORDS = {"&&": "and", "||": "or", "!": "not"}
+# WAS and CHANGED work on the fields Jira keeps a history of, and only those.
+_HISTORY_FIELDS = {"status", "assignee", "priority", "reporter", "resolution",
+                   "fixversion", "type", "issuetype"}
 _CONNECTIVES = {"and", "or"}
 _RESERVED = _CONNECTIVES | {"not", "in", "is", "was", "changed", "order", "by",
                             "empty", "null"}
@@ -77,7 +87,10 @@ def _tokens(text: str):
         if not m or m.end() == pos:
             return None                     # an unclosed quote, a stray character
         kind = m.lastgroup
-        out.append((kind, m.group(kind)))
+        value = m.group(kind)
+        if kind == "sym":
+            kind, value = "word", _SYMBOL_WORDS[value]
+        out.append((kind, value))
         pos = m.end()
     return out
 
@@ -111,9 +124,9 @@ class _Parser:
         return False
 
     def query(self) -> bool:
-        if not self.word("order"):
-            if not self.or_expr():
-                return False
+        # An ordering alone is every issue the token can see, in some order.
+        if self.word("order") or not self.or_expr():
+            return False
         if self.take_word("order"):
             if not (self.take_word("by") and self.order_field()):
                 return False
@@ -159,7 +172,10 @@ class _Parser:
         if kind == "str":
             self.i += 1
             return True
-        if kind != "word" or value.lower() in _RESERVED:
+        # `assignee = EMPTY`, `labels in (EMPTY, a)`: the two keywords that
+        # are also values.
+        if kind != "word" or (value.lower() in _RESERVED
+                              and value.lower() not in ("empty", "null")):
             return False
         self.i += 1
         if self.peek() == ("punct", "("):            # a function: openSprints()
@@ -192,8 +208,12 @@ class _Parser:
         return True
 
     def clause(self) -> bool:
+        named = self.peek()[1]
         if not self.field():
             return False
+        if self.word("was", "changed") and \
+                str(named).strip("\"'").lower() not in _HISTORY_FIELDS:
+            return False                    # "login was broken", "we changed"
         if self.take("op"):
             return self.value()
         if self.take_word("not"):
@@ -229,7 +249,13 @@ def is_jql(text: str) -> bool:
     for kind, value in tokens:
         depth += (value == "(") - (value == ")") if kind == "punct" else 0
         deepest = max(deepest, depth)
-    if deepest > 40 or sum(1 for k, v in tokens if k == "word" and v.lower() == "not") > 40:
+    # Only a NOT that opens a clause nests; `x not in (..)` and `is not
+    # empty` are operators, and a long query has dozens of them.
+    chained = longest = 0
+    for kind, value in tokens:
+        chained = chained + 1 if (kind == "word" and value.lower() == "not") else 0
+        longest = max(longest, chained)
+    if deepest > 40 or longest > 40:
         return False                        # nobody pastes that; a parser recurses on it
     try:
         return _Parser(tokens).query()
@@ -312,6 +338,16 @@ def parse(text: str) -> dict:
     if not raw:
         return _result(NONE, why="nothing was pasted")
     if _URL_RX.match(_clean_url(raw)):
+        # `https://a/browse/X-1;https://b/browse/X-2` has no space in it and
+        # reads as ONE address whose path contains the second. The second
+        # host would never be reported, and the first story would vanish.
+        starts = [m.start() for m in _HAS_URL_RX.finditer(raw)]
+        if len(starts) > 1:
+            pieces = [raw[a:b].rstrip(",;") for a, b in zip(starts, starts[1:] + [len(raw)])]
+            return _result(NONE, hosts=[h for p in pieces
+                                        for h in _from_url(_clean_url(p))["hosts"]],
+                           why="several addresses run together: put a space or a "
+                               "new line between them")
         return _from_url(_clean_url(raw))
 
     tokens = [t for t in re.split(r"[\s,;]+", raw) if t]
@@ -349,8 +385,11 @@ def parse(text: str) -> dict:
                            "address, or the query, on its own")
     if len(raw) > MAX_JQL:
         return _result(NONE, why=f"the query is over {MAX_JQL} characters")
-    if is_jql(raw):
-        return _result(JQL, jql=raw)
+    # A `;` after the last clause ends a statement in other languages and
+    # means nothing here; left on, it would end up in front of ORDER BY.
+    query = raw.rstrip().rstrip(";").rstrip()
+    if is_jql(query):
+        return _result(JQL, jql=query)
     return _result(NONE, why="neither story keys nor a query: a query is "
                              "clauses of field, operator and value, like "
                              "`project = ABC AND labels = api`")

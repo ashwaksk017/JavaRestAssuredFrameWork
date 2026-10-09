@@ -67,7 +67,7 @@ class Queries(unittest.TestCase):
                     "status not in (Done, Closed)", "assignee is EMPTY", "resolution IS NOT EMPTY",
                     "cf[10010] = 5", '"Epic Link" = ABC-1', "status changed to Done",
                     "status was in (Open)", "(project = ABC OR project = XYZ)",
-                    "order by created", "created >= -7d", "issuekey in (ABC-1, ABC-2)"):
+                    "created >= -7d", "issuekey in (ABC-1, ABC-2)"):
             self.assertEqual(query.parse(jql)["kind"], query.JQL, jql)
 
     def test_functions_history_and_negation_are_queries(self):
@@ -93,8 +93,33 @@ class Queries(unittest.TestCase):
             self.assertEqual(query.parse(text)["kind"], query.NONE, text)
 
     def test_a_remark_that_is_a_whole_query_is_a_query_and_that_is_documented(self):
-        for text in ("status = 200", "flag is null", "order by phone"):
+        for text in ("status = 200", "flag is null"):
             self.assertTrue(query.is_jql(text), text)
+
+    def test_english_that_reads_like_history_or_an_ordering_is_not_a_query(self):
+        for text in ("login was broken on monday", "it was done before lunch",
+                     "he was not happy", "we changed", "it changed from one to two",
+                     "order by me, you", "order by created", "ORDER BY created DESC, key ASC"):
+            self.assertFalse(query.is_jql(text), text)
+        for jql in ("status was Done", "assignee was currentUser()", "status changed",
+                    '"Status" was "In Progress"', "fixVersion changed after -1w",
+                    "project = ABC order by created"):
+            self.assertTrue(query.is_jql(jql), jql)
+
+    def test_the_spellings_jira_also_accepts(self):
+        for jql in ("assignee = EMPTY", "assignee != EMPTY", "labels = null",
+                    "status in (EMPTY)", "assignee in (EMPTY, jdoe)",
+                    "status = Done && labels = a", "status = Done || labels = a",
+                    "!status = Done", "project = ABC AND !(labels = a)",
+                    " AND ".join(f"f{n} not in (a, b)" for n in range(60)),
+                    " AND ".join(f"f{n} is not empty" for n in range(60))):
+            self.assertTrue(query.is_jql(jql), jql[:60])
+
+    def test_a_trailing_semicolon_is_not_part_of_the_query(self):
+        r = query.parse("project = ABC ORDER BY created DESC;")
+        self.assertEqual((r["kind"], r["jql"]), (query.JQL, "project = ABC ORDER BY created DESC"))
+        self.assertEqual(query.parse("project = ABC;")["jql"], "project = ABC")
+        self.assertEqual(query.parse("project = ABC; DROP")["kind"], query.NONE)
 
     def test_hostile_nesting_is_refused_quickly_not_recursed_into(self):
         import time
@@ -164,6 +189,16 @@ class Neither(unittest.TestCase):
                      f"({J}/browse/ABC-1)"):
             r = query.parse(text)
             self.assertEqual((r["kind"], r["keys"], r["host"]), (query.KEYS, ["ABC-1"], J), text)
+
+    def test_addresses_run_together_are_refused_with_every_host_named(self):
+        r = query.parse(f"{J}/browse/ABC-2;https://evil.example/browse/ABC-3")
+        self.assertEqual(r["kind"], query.NONE)
+        self.assertEqual(r["hosts"], ["https://evil.example", J])
+        self.assertIn("run together", r["why"])
+        r = query.parse(f"{J}/browse/ABC-1,{J}/browse/ABC-2")
+        self.assertEqual((r["kind"], r["hosts"]), (query.NONE, [J]))
+        r = query.parse(f"{J}/browse/ABC-1, {J}/browse/ABC-2")
+        self.assertEqual(r["keys"], ["ABC-1", "ABC-2"], "with a space they are two addresses")
 
     def test_every_host_in_a_paste_is_reported_even_when_nothing_else_is(self):
         r = query.parse("https://evil.example/x project = ABC")

@@ -284,6 +284,79 @@ class ARunThatTimedOut(Repo):
         self.assertIn("wrote again afterwards", r["reason"])
         self.assertEqual(self.status(), "")
 
+    def test_a_failed_call_is_swept_for_what_undo_does_not_look_at(self):
+        """A run that timed out can have done everything a finished one
+        can. The credential file, a hook, a hidden file: all checked on
+        the finished path, and none on this one until now."""
+        cfg = "src/main/resources/program_configuration.json"
+        write(self.root, cfg, '{"pat": "the-real-one"}\n')
+        self.policy["protected_files"] = [cfg]
+
+        def agent(_prompt):
+            write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
+            write(self.root, cfg, '{"pat": "swapped"}\n')
+            write(self.root, ".git/hooks/pre-push", "#!/bin/sh\ncurl evil\n")
+            raise loop.CursorFailed("Cursor did not finish within 2700s", "timeout", True)
+        self.assertEqual(self.generate(agent), 1)
+        with io.open(os.path.join(self.root, cfg), encoding="utf-8") as fh:
+            self.assertIn("the-real-one", fh.read())
+        self.assertFalse(os.path.isfile(os.path.join(self.root, ".git", "hooks", "pre-push")))
+        r = self.state()
+        self.assertTrue(r["needs_discard"])
+        self.assertIn("credential/config file(s) were changed", r["reason"])
+        self.assertIn("files inside .git were changed", r["reason"])
+
+    def test_a_commit_made_before_the_call_failed_is_reported_not_hidden(self):
+        def agent(_prompt):
+            write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
+            sh(self.root, "add", "-A")
+            sh(self.root, "commit", "-q", "-m", "sneaky")
+            raise loop.CursorFailed("the agent started but did not finish", "run")
+        self.assertEqual(self.generate(agent), 1)
+        r = self.state()
+        self.assertTrue(r["needs_discard"])
+        self.assertIn("HEAD moved while it ran", r["reason"])
+
+    def test_the_users_own_uncommitted_delete_is_not_read_as_the_run_writing_again(self):
+        os.remove(os.path.join(self.root, "README.md"))
+
+        def agent(_prompt):
+            write(self.root, "README.md", "recreated by the agent\n")
+            raise loop.CursorFailed("Cursor did not finish within 2700s", "timeout", True)
+        self.assertEqual(self.generate(agent), 1)
+        r = self.state()
+        self.assertNotIn("wrote again afterwards", r["reason"])
+        self.assertFalse(r.get("needs_discard"))
+
+    def test_a_settle_time_that_is_not_a_number_does_not_crash_the_job(self):
+        self.policy["timeout_settle_seconds"] = "0s"
+        self.assertEqual(self.generate(self.stuck(cancelled=True)), 1)
+        self.assertEqual(self.state()["state"], "rejected")
+
+    def test_a_rejected_run_lists_no_files_that_are_no_longer_there(self):
+        calls = []
+
+        def agent(_prompt):
+            calls.append(1)
+            if len(calls) == 1:
+                write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
+                return {"result": "wrote it"}
+            raise loop.CursorFailed("Cursor did not finish within 2700s", "timeout", True)
+        failing = lambda: {"ok": False, "steps": [
+            {"name": "compile", "rc": 1, "tail": "error"}]}
+        self.assertEqual(self.generate(agent, verifier=failing), 1)
+        r = self.state()
+        self.assertEqual(len(calls), 2, "the repair attempt is the one that timed out")
+        self.assertNotIn("files", r)
+        self.assertFalse(os.path.isfile(os.path.join(self.job, "proposed.diff")))
+
+    def test_discard_still_works_a_second_time_for_a_run_never_confirmed_stopped(self):
+        self.assertEqual(self.generate(self.stuck(cancelled=False)), 1)
+        self.assertEqual(loop.cmd_discard(self.job, self.root), 0)
+        write(self.root, JIRA + "LateTest.java", "class LateTest {}\n")   # the zombie again
+        self.assertEqual(loop.cmd_discard(self.job, self.root), 0)
+        self.assertEqual(self.status(), "")
+
     def test_any_other_failure_is_handled_as_before(self):
         def agent(_prompt):
             write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")

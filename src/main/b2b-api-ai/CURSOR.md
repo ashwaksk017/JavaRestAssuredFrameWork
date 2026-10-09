@@ -293,7 +293,7 @@ python tools/failure_history.py record --label "after the token fix"
 
 It prints which failures are **new**, which tests are **failing
 differently** (same test, another signature: the fix worked and exposed
-the next problem), which are unchanged, and which are **no longer
+the next problem), how many are unchanged, and which are **no longer
 failing** -- never "fixed", because the digest lists failures, not what
 ran, and a run of one suite makes every other suite's failures vanish.
 It says so when the two runs executed a different number of tests.
@@ -311,7 +311,9 @@ two share (exception, status code, path) and that one's note. That is a
 pointer to read, not a diagnosis.
 
 A run is dated by its digest file, so the same failures after another
-run are a later run, and the same file recorded twice is one. Two limits
+run are a later run, and the same file recorded twice is one. It is
+compared with the run before it in time, so a saved digest recorded
+later (`--digest`) is compared with what came before it. Two limits
 come from the digest itself. It is written once, when the first `<test>`
 block of the suite file finishes: a suite file with several blocks is
 digested up to the first, so a low count deserves a look at the suite

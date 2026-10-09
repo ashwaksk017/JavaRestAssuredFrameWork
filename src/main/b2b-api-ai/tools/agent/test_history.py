@@ -95,6 +95,20 @@ class WhichStories(Repo):
                            "TLS-1.2, RFC-7231, COVID-19. Story: BOOK-41")
         self.assertEqual(self.keys(), [("BOOK-41", "text")])
 
+    def test_a_pasted_request_does_not_fill_the_list_with_part_numbers(self):
+        self.intake(pasted=(
+            "Story BOOK-41: a booker can add a room.\n"
+            "curl -X POST https://h/rooms -H 'X-Trace: AB12-34' -d '{\"sku\": \"SKU-100\"}'\n"
+            "Authorization: Bearer OAUTH2-1\n"
+            "{\"po\": \"PO-12345\", \"period\": \"Q3-2024\", \"fy\": \"FY-2025\"}\n"
+            "Uses SHA256-99 and TLS1-3 and AES256-128; ERROR-404 on MON-12. See BOOK-41 and BOOK-7.\n"))
+        self.assertEqual(self.keys(), [("BOOK-41", "text"), ("BOOK-7", "text")])
+
+    def test_the_story_named_most_comes_first_when_there_are_too_many(self):
+        self.intake(pasted=" ".join(f"PART-{n}" for n in range(30))
+                           + "\nThe story is BOOK-41. BOOK-41 again. And BOOK-41.")
+        self.assertEqual(self.keys()[0], ("BOOK-41", "text"))
+
     def test_with_a_story_link_only_its_project_counts_in_the_text(self):
         self.intake([("ABC-1", "jira")], "relates to ABC-2 and to OTHER-5 and PROJ-9")
         self.assertEqual(self.keys(), [("ABC-1", "link"), ("ABC-2", "text")])
@@ -194,7 +208,39 @@ class WhatTheRepositoryKnows(Repo):
         h = history.build(self.job, self.root, budget=0)
         self.assertTrue(h["unreadable"])
         self.assertFalse(h["found"])
-        self.assertIn("incomplete", "\n".join(history.render(h)))
+        text = "\n".join(history.render(h))
+        self.assertIn("incomplete", text)
+        self.assertNotIn("No commit message on any branch", text,
+                         "not a flat 'nothing' right after 'could not look'")
+
+    def test_a_story_that_could_not_be_looked_up_is_not_shown_as_nothing_found(self):
+        self.commit("BOOK-1 x", {"src/test/java/A.java": "// BOOK-1"})
+        self.intake(pasted="BOOK-1 and BOOK-2")
+        real = history._git
+        history._git = lambda root, args, clock, ok_codes=(0,): \
+            (False, "") if any("BOOK-2" in a for a in args) else real(root, args, clock, ok_codes)
+        try:
+            text = "\n".join(history.render(history.build(self.job, self.root)))
+        finally:
+            history._git = real
+        self.assertIn("**BOOK-2** (named in the pasted text): NOT LOOKED UP", text)
+        self.assertIn("BOOK-1 x", text)
+
+    def test_a_command_that_hangs_is_ended_with_everything_it_started(self):
+        import time
+        t0 = time.time()
+        code, out = history._run([sys.executable, "-c",
+                                  "import subprocess, sys; "
+                                  "subprocess.run([sys.executable, '-c', 'import time; time.sleep(30)'])"],
+                                 self.root, 1.0)
+        self.assertIsNone(code)
+        self.assertLess(time.time() - t0, 15, "the grandchild did not keep the pipe open")
+
+    def test_a_commit_on_a_detached_head_is_found(self):
+        self.commit("base", {"a.txt": "1"})
+        sh(self.root, "checkout", "-q", "--detach")
+        self.commit("BOOK-9 made with no branch", {"b.txt": "1"})
+        self.assertEqual(self.subjects("BOOK-9"), ["BOOK-9 made with no branch"])
 
     def test_nothing_is_changed_by_looking(self):
         self.commit("BOOK-12 x", {"src/test/java/A.java": "// BOOK-12"})

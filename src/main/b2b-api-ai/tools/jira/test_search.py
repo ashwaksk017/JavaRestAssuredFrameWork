@@ -262,6 +262,26 @@ class Search(unittest.TestCase):
         self.assertEqual(search.connect({"base_urls": ["https://j.example"], "pat": "t",
                                          "timeout_seconds": "-3"}, "")["timeout"], 30)
 
+    def test_the_notes_about_a_search_say_what_happened(self):
+        class Wobble(Jira):
+            def __call__(self, method, url, token, timeout, body=None):
+                self.calls.append((method, url, token, body))
+                at = body["startAt"]
+                return {"issues": [issue(n) for n in range(at, min(at + 100, 250))],
+                        "total": [250, 251, 250][min(len(self.calls) - 1, 2)]}
+        r = search.search(CONN, "project = ABC", transport=Wobble())
+        self.assertFalse(r["complete"])
+        self.assertIn("250 on the first page, 251 on a later one", r["why_incomplete"])
+        r = search.search(CONN, "project = ABC",
+                          transport=lambda *a, **k: {"issues": [issue(1), issue(2)]})
+        self.assertEqual(r["page_size"], search.PAGE_SIZE,
+                         "two issues and no total is not a page size of two")
+
+    def test_a_backslash_outside_a_quoted_value_is_refused_in_an_extra_condition(self):
+        with self.assertRaises(search.Refused):
+            search.contained('a = \\" ) OR (project = OTHER) OR (b = "z\\""')
+        self.assertEqual(search.contained('summary ~ "a \\" b"'), 'summary ~ "a \\" b"')
+
     def test_a_limit_below_one_is_refused(self):
         for bad in (0, -5):
             with self.assertRaises(search.Refused):
@@ -446,7 +466,29 @@ class TheCommand(unittest.TestCase):
         finally:
             search.connect = orig
         self.assertEqual((rc, jira.calls), (2, []))
-        self.assertIn("searches go to https://jira.example.com", out.getvalue())
+        self.assertIn("searches only go to https://jira.example.com", out.getvalue())
+
+    def test_the_same_host_written_another_way_is_the_same_host(self):
+        for text in ("https://jira.example.com:443/browse/ABC-1",
+                     "https://JIRA.example.com./browse/ABC-1"):
+            jira = Jira([issue(1)])
+            rc, out, _ = self.run_main(["paste", text], jira)
+            self.assertEqual((rc, len(jira.calls)), (0, 1), text)
+
+    def test_a_refused_paste_does_not_print_a_user_name_or_password_it_carried(self):
+        jira = Jira([issue(1)])
+        rc, out, _ = self.run_main(["paste", "https://user:s3cret@evil.example/browse/ABC-1"], jira)
+        self.assertEqual((rc, jira.calls), (2, []))
+        self.assertNotIn("s3cret", out)
+        self.assertIn("https://evil.example", out)
+        rc, out, _ = self.run_main(["paste", "https://user:s3cret@jira.example.com/browse/ABC-1"], jira)
+        self.assertEqual((rc, jira.calls), (2, []))
+        self.assertNotIn("s3cret", out)
+
+    def test_an_ordering_alone_is_not_searched(self):
+        jira = Jira([issue(1)])
+        rc, out, _ = self.run_main(["paste", "order by created"], jira)
+        self.assertEqual((rc, jira.calls), (2, []))
 
     def test_a_summary_the_console_cannot_print_does_not_cost_the_result(self):
         class Narrow(io.TextIOWrapper):

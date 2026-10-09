@@ -53,6 +53,9 @@ function follow(runnable, logEl, stateEl, onDone) {
       if (onDone) onDone(st);
     } catch (e) {
       setState(stateEl, "bad", e.message);
+      // Whoever started this is waiting to tidy up (a timer, a disabled
+      // button). The run's own state is unknown; say so, do not hang.
+      if (onDone) onDone({ state: "unknown" });
     }
   };
   tick();
@@ -167,11 +170,17 @@ async function followDesignCursorLog(j) {
 }
 
 $("run-design").onclick = async () => {
+  const button = $("run-design");
+  // One at a time: a second click used to wipe the Cursor pane of the run
+  // already going, fail with "already running", and stop the pane's timer.
+  button.disabled = true;
+  let stopCursorLog = () => {};
   try {
     const j = job();
-    const stopCursorLog = await followDesignCursorLog(j);
-    try {
-      await post("/api/design", {
+    // Where the Cursor log ends NOW, read before the run starts, so the
+    // pane shows this run and nothing is lost between start and first poll.
+    stopCursorLog = await followDesignCursorLog(j);
+    await post("/api/design", {
       job: j,
       service: $("design-service").value.trim(),
       speed: $("design-speed").value,
@@ -180,15 +189,19 @@ $("run-design").onclick = async () => {
       swagger: $("design-swagger").value,
       requirements: $("design-requirements").value,
       notes: $("design-notes").value,
-      });
-    } catch (e) { stopCursorLog(); throw e; }
+    });
     follow("agent-design", $("design-log"), $("design-state"), () => {
       stopCursorLog();
       showDesign(j);
       // One run. Left ticked, every later click would pay again in silence.
       $("design-fresh").checked = false;
+      button.disabled = false;
     });
-  } catch (e) { setState($("design-state"), "bad", e.message); }
+  } catch (e) {
+    stopCursorLog();
+    button.disabled = false;
+    setState($("design-state"), "bad", e.message);
+  }
 };
 // A design made earlier is still this job's design after a refresh.
 showDesign();

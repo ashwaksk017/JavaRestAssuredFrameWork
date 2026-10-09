@@ -95,6 +95,8 @@ def classify(link: str) -> str:
     s = (link or "").strip()
     if not s:
         return UNKNOWN
+    if len(re.findall(r"(?i)\bhttps?://", s)) > 1:
+        return UNKNOWN          # one link a line: which of two was meant is a guess
     try:
         what = jira_query.parse(s)
     except Exception:                                    # noqa: BLE001
@@ -231,9 +233,9 @@ def build(job: str, text: str = "", links=None, root: str = "",
             # re-running half of it from inside this stage would give
             # two answers to the same question.
             gathered.append({"link": link, "kind": JIRA, "ok": False,
-                             "reason": "run tools/jira/run.py for this story; "
-                                       "its packet is the input here"})
-            notes.append(f"{link}: a Jira story -- use tools/jira/run.py")
+                             "reason": "run tools/jira/run.py for this story (one "
+                                       "story at a time); its packet is the input here"})
+            notes.append(f"{link}: Jira -- use tools/jira/run.py, one story at a time")
         elif kind == JIRA_QUERY:
             # A query names many stories. This stage reads one request to
             # automate; which of a release's stories that is, is a

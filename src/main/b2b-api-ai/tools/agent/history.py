@@ -25,14 +25,18 @@ can legitimately need a second test. A person reads it.
 WHERE THE KEYS COME FROM
 ------------------------
 From the links of the last intake that are Jira stories, and from keys
-written out in the pasted text. A pasted curl command is full of things
-shaped like a key -- `UTF-8`, `SHA-256`, `ISO-8601` -- so a key from the
-text counts only when its project is one a story LINK names, or, with no
-link, when it is not one of the well-known names of that shape. Each key
-is shown with where it came from.
+written out in the pasted text, in capitals as Jira writes them. A
+pasted request is full of things shaped like a key -- `UTF-8`,
+`SHA-256`, `ISO-8601`, `SKU-100` -- so a key from the text counts only
+when its project is one a story LINK names. With no link there is less
+to go on: lines that are part of a request (a curl command, a header, a
+URL, JSON) are not read for keys at all, well-known names of that shape
+are left out, and what remains is taken most-mentioned first. Each key
+is shown with where it came from, so a wrong one is seen for what it is.
 
 `ABC-1` does not match `ABC-12` or `XABC-1`, in a commit or in a file:
-the same boundary rule for both. Upper and lower case are the same key.
+the same boundary rule for both. In commits and files, upper and lower
+case are the same key.
 
 Read-only: `git log` and `git grep`, nothing that changes a ref, the
 index or the working tree. No diff is read -- subjects and file names
@@ -83,7 +87,26 @@ NOT_PROJECTS = frozenset("""
     COVID CVE CWE UTC GMT EST CST PST IEEE ANSI ECMA ASCII CP WINDOWS WIN LATIN
     BASE HS RS ES PS EC ED X OAUTH IPV IP TCP UDP US EU EN DE FR UK ID V VER
     VERSION JDK JAVA PYTHON NODE ES6 HTML CSS XML JSON YAML API REST SOAP GRPC
+    ERR ERROR CODE ROOM PO SKU FY Q H S EC OAUTH P ES RS HS PS
+    MON TUE WED THU FRI SAT SUN JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC
     S A B C D E F G H T P Q R N M K L J I O U W Y Z""".split())
+# A line that is part of a request rather than of a sentence about one.
+_REQUEST_LINE_RX = re.compile(
+    r"""(?ix) \bcurl\b | ://
+        | ^\s*-{1,2}[A-Za-z]            # -H, --data
+        | ^\s*[{}\[\]]                  # JSON
+        | "\s*:                         # "field": value
+        | ^\s*[A-Za-z][A-Za-z0-9-]*:\s*\S+/\S   # Header: type/subtype
+        | ^\s*(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+/ """)
+
+
+_CUE_RX = re.compile(r"(?i)\b(?:story|stories|ticket|jira|issue|epic|bug|defect)\b")
+
+
+def _not_a_project(project: str) -> bool:
+    """`SHA256`, `TLS1`, `OAUTH2` are `SHA`, `TLS`, `OAUTH` with a version."""
+    return project in NOT_PROJECTS or project.rstrip("0123456789") in NOT_PROJECTS \
+        or not project.rstrip("0123456789_")
 
 
 def _load(name: str, path: str):
@@ -139,11 +162,19 @@ def story_keys(job_dir: str) -> dict:
             else:                # an address inside a sentence: its /browse/KEY
                 linked += [k.upper() for k in _BROWSE_RX.findall(text)]
     projects = {k.split("-")[0] for k in linked}
-    written = []
-    for k in _KEY_RX.findall(_read(os.path.join(job_dir, "pasted.txt"))):
-        project = k.split("-")[0]
-        if (project in projects) if projects else (project not in NOT_PROJECTS):
-            written.append(k)
+    counts = {}
+    for line in _read(os.path.join(job_dir, "pasted.txt")).splitlines():
+        # ...unless the line itself says it is talking about a story.
+        if not projects and _REQUEST_LINE_RX.search(line) and not _CUE_RX.search(line):
+            continue
+        for k in _KEY_RX.findall(line):
+            project = k.split("-")[0]
+            if (project in projects) if projects else not _not_a_project(project):
+                counts[k] = counts.get(k, 0) + 1
+    # Most-mentioned first (dicts keep first-seen order for ties): the
+    # story is named more often than a stray part number, and the limit
+    # below must not be spent on the strays.
+    written = sorted(counts, key=lambda k: -counts[k])
     out, seen = [], set()
     for key, source in [(k, "link") for k in linked] + [(k, "text") for k in written]:
         if _SAFE_KEY_RX.match(key) and key not in seen:
@@ -160,6 +191,37 @@ class _Clock:
         return self.end - time.monotonic()
 
 
+def _run(argv: list, cwd: str, wait: float) -> tuple:
+    """(return code or None on timeout, stdout). The whole process TREE is
+    ended on timeout: on Windows `git` is often a launcher that starts the
+    real git, and killing the launcher leaves the child holding the pipe,
+    so a plain subprocess timeout returns only when the child does."""
+    flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
+    proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            encoding="utf-8", errors="replace", creationflags=flags)
+    try:
+        out, _ = proc.communicate(timeout=wait)
+        return proc.returncode, out or ""
+    except subprocess.TimeoutExpired:
+        if os.name == "nt":
+            try:
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               stdin=subprocess.DEVNULL, timeout=10)
+            except (OSError, subprocess.SubprocessError):
+                pass
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        try:
+            proc.communicate(timeout=3)
+        except (subprocess.SubprocessError, OSError, ValueError):
+            pass
+        return None, ""
+
+
 def _git(root: str, args: list, clock: _Clock, ok_codes=(0,)) -> tuple:
     """(ok, stdout). Never raises: no git, not a repository, a timeout and
     an exhausted budget are all "could not be read"."""
@@ -167,13 +229,11 @@ def _git(root: str, args: list, clock: _Clock, ok_codes=(0,)) -> tuple:
     if wait <= 0:
         return False, ""
     try:
-        done = subprocess.run(
-            ["git", "-c", "core.quotepath=off", "-c", "grep.fullName=false", *args],
-            cwd=root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            timeout=wait, encoding="utf-8", errors="replace")
-    except (OSError, subprocess.SubprocessError):
+        code, out = _run(["git", "-c", "core.quotepath=off", "-c", "grep.fullName=false",
+                          *args], root, wait)
+    except (OSError, subprocess.SubprocessError, ValueError):
         return False, ""
-    return done.returncode in ok_codes, done.stdout or ""
+    return code in ok_codes, out
 
 
 def commits_for(root: str, key: str, clock: _Clock = None, limit: int = MAX_COMMITS):
@@ -190,7 +250,8 @@ def commits_for(root: str, key: str, clock: _Clock = None, limit: int = MAX_COMM
     # list no files and say what their parents already said). NUL starts a
     # record: a commit message cannot contain one, so a subject cannot
     # forge a second commit. --relative: paths as seen from the project.
-    ok, out = _git(root, ["log", "--branches", "--remotes", "--no-merges", "-E", "-i",
+    # HEAD as well: a commit made on a detached HEAD is on no branch.
+    ok, out = _git(root, ["log", "HEAD", "--branches", "--remotes", "--no-merges", "-E", "-i",
                           f"--grep={pattern}", f"--max-count={limit + 1}",
                           "--date=short", "--name-only", "--relative",
                           "--format=%x00%h%x1f%ad%x1f%s"], clock)
@@ -241,12 +302,12 @@ def build(job_dir: str, root: str, budget: float = BUDGET) -> dict:
     for item in named["keys"]:
         commits = commits_for(root, item["key"], clock)
         files = files_naming(root, item["key"], clock)
-        if commits is None or files is None:
-            unreadable = True
+        missed = commits is None or files is None
+        unreadable = unreadable or missed
         commits, more_c = commits or ([], 0)
         files, more_f = files or ([], 0)
         stories.append(dict(item, commits=commits, more_commits=more_c,
-                            files=files, more_files=more_f))
+                            files=files, more_files=more_f, unreadable=missed))
     return {"keys": [i["key"] for i in named["keys"]], "stories": stories,
             "dropped_keys": named["dropped"], "unreadable": unreadable,
             "found": any(s["commits"] or s["files"] for s in stories)}
@@ -269,8 +330,13 @@ def render(history: dict) -> list:
         lines += [f"{history['dropped_keys']} more story key(s) were named and "
                   f"not looked up (the first {MAX_KEYS} are).", ""]
     if not history.get("found"):
-        lines += [f"No commit message on any branch, and no test file that git "
-                  f"does not ignore, mentions {', '.join(history['keys'])}.", ""]
+        if history.get("unreadable"):
+            # "Nothing found" after "could not look" is two answers.
+            lines += [f"Nothing was found for {', '.join(history['keys'])} in "
+                      f"what could be read.", ""]
+        else:
+            lines += [f"No commit message on any branch, and no test file that git "
+                      f"does not ignore, mentions {', '.join(history['keys'])}.", ""]
         return lines
     lines += ["Evidence, not a decision: read it before accepting a `CREATE` "
               "above. A commit that names a story may have automated it "
@@ -280,9 +346,13 @@ def render(history: dict) -> list:
     for s in history["stories"]:
         origin = " (named in the pasted text)" if s.get("source") == "text" else ""
         if not (s["commits"] or s["files"]):
-            lines += [f"- **{s['key']}**{origin}: nothing found", ""]
+            lines += [f"- **{s['key']}**{origin}: "
+                      + ("NOT LOOKED UP (git could not be read for it)"
+                         if s.get("unreadable") else "nothing found"), ""]
             continue
-        lines.append(f"- **{s['key']}**{origin}")
+        lines.append(f"- **{s['key']}**{origin}"
+                     + (" -- incomplete: part of this could not be read"
+                        if s.get("unreadable") else ""))
         for rel in s["files"]:
             lines.append(f"    - mentioned now in '{rel}'")
         if s.get("more_files"):

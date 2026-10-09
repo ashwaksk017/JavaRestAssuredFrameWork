@@ -344,6 +344,7 @@ def search(conn: dict, jql: str, fields: list = None, max_results: int = DEFAULT
     fields = list(fields or LIST_FIELDS)
     issues, seen, duplicates, read, unidentified = [], set(), 0, 0, 0
     total, first_total, moved, why, page_cap = None, None, False, "", PAGE_SIZE
+    other_total = None
     # Every turn either adds an issue not seen before or ends the walk,
     # so this is bounded by `wanted` whatever the server does: page sizes
     # smaller than asked, the same page for ever, a total that is a lie.
@@ -360,13 +361,13 @@ def search(conn: dict, jql: str, fields: list = None, max_results: int = DEFAULT
             if first_total is None:
                 first_total = total
             elif total != first_total:
-                moved = True
+                moved, other_total = True, total
         batch = [i for i in (page.get("issues") or []) if isinstance(i, dict)]
         if on_page:
             on_page(read, len(batch), total)
         if not batch:
             break
-        if len(batch) < size and (total is None or read + len(batch) < total):
+        if len(batch) < size and total is not None and read + len(batch) < total:
             page_cap = min(page_cap, len(batch))
         read += len(batch)
         fresh = 0
@@ -389,8 +390,9 @@ def search(conn: dict, jql: str, fields: list = None, max_results: int = DEFAULT
         why = "Jira did not say how many issues the query holds"
     elif moved:
         why = (f"the number of issues the query holds changed while the "
-               f"pages were read (from {first_total} to {total}), so some "
-               f"were read from a list that had shifted. Run it again.")
+               f"pages were read ({first_total} on the first page, "
+               f"{other_total} on a later one), so some were read from a "
+               f"list that had shifted. Run it again.")
     elif unidentified:
         why = (f"{unidentified} issue(s) came back with neither a key nor "
                f"an id and were left out")
@@ -483,6 +485,10 @@ def contained(extra: str) -> str:
     bare = _QUOTED_RX.sub('""', extra)
     if bare.count('"') % 2 or bare.count("'") % 2:
         raise Refused("the extra condition has an unclosed quote")
+    if "\\" in bare:
+        # Outside a quoted value a backslash can make the next quote or
+        # bracket mean something else to Jira than it does to this count.
+        raise Refused("the extra condition has a backslash outside a quoted value")
     depth = 0
     for ch in bare:
         depth += ch == "("
@@ -616,10 +622,22 @@ def main(argv=None, transport=None) -> int:
             # A second approved Jira is approved for fetch.py, which goes
             # where the address says; a search here would answer a paste
             # from that one with results from this one.
+            mine = safehttp._origin(conn["base"])
             for host in what["hosts"]:
-                allowed, why = fetch.host_allowed(host, [conn["base"]])
-                if not allowed:
-                    raise Refused(f"{why} (searches go to {conn['base']})")
+                try:
+                    theirs = safehttp._origin(host)
+                except safehttp.Redirected:
+                    theirs = None
+                # Scheme, host and port, with the default port and a
+                # trailing dot counted as the same place. Printed without
+                # any user:password@ the paste carried.
+                if theirs is None or (theirs[0], theirs[1].rstrip("."), theirs[2]) != \
+                        (mine[0], mine[1].rstrip("."), mine[2]):
+                    shown = f"{theirs[0]}://{theirs[1]}" if theirs else "an unreadable address"
+                    raise Refused(f"that paste names {shown}; searches only go to "
+                                  f"{conn['base']}, the first of jira_config.base_urls")
+                if "@" in host:
+                    raise Refused("that address carries a user name; paste it without")
             if what["kind"] == pasted.NONE:
                 raise Refused(what["why"])
             if what["kind"] == pasted.KEYS:

@@ -1349,14 +1349,73 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             gen_backup)
         return notes
 
-    def reject(reason: str, restore: bool = True) -> int:
+    def reject(reason: str, restore: bool = True, undone: bool = False) -> int:
         if restore:
             for note in undo():
                 say(f" .. {note}")
                 clog.write(f"undo: {note}")
         clog.write(f"REJECTED: {reason}")
-        write_review(job_dir, dict(review, state="rejected", reason=reason))
+        final = dict(review, state="rejected", reason=reason)
+        if restore or undone:
+            # What an earlier attempt listed is no longer in the tree. Left
+            # in, the page shows files and a diff for things that are gone.
+            for stale in ("files", "generated", "hashes", "verify"):
+                final.pop(stale, None)
+            try:
+                os.remove(os.path.join(job_dir, "proposed.diff"))
+            except OSError:
+                pass
+        write_review(job_dir, final)
         return 1
+
+    def sweep() -> tuple:
+        """Put back what undo() does not look at, after a call that FAILED.
+
+        A run that timed out or errored may still have done everything a
+        finished one could: rewritten the credential file, added a hook
+        under .git, hidden a file from git, made a folder that ignores
+        itself, committed. The finished path checks all of that before it
+        reads the tree. A failed one went straight to undo(), which reads
+        only the tree -- and the page said "its changes were undone".
+
+        Returns (HEAD moved?, [what was found and put back]).
+        """
+        found = []
+        commit_now, branch_now = head(root)
+        moved = (commit_now, branch_now) != (commit, branch)
+        tampered = [p for p, was in protected.items()
+                    if _bytes(os.path.join(root, p)) != was]
+        for p in tampered:
+            _put_bytes(os.path.join(root, p), protected[p])
+        if tampered:
+            found.append("credential/config file(s) were changed and have been "
+                         "put back: " + ", ".join(tampered))
+        git_changed = restore_git_internals(git_before)
+        if git_changed:
+            found.append("files inside .git were changed and have been put back: "
+                         + ", ".join(git_changed))
+        newly_hidden = sorted(hidden_flags(root) - flags_before)
+        if newly_hidden:
+            git(root, "update-index", "--no-assume-unchanged",
+                "--no-skip-worktree", "--", *newly_hidden)
+            found.append("files were marked so that git stops reporting changes "
+                         "to them; the marks were removed: " + ", ".join(newly_hidden[:10]))
+        new_ignored = sorted(p for p in ignored_entries(root) - ignored_before
+                             if not in_roots(p, roots)
+                             and not in_roots(p.rstrip("/") + "/", roots))
+        for p in new_ignored:
+            full = os.path.join(root, p)
+            if os.path.isdir(full):
+                shutil.rmtree(full, ignore_errors=True)
+            elif os.path.isfile(full):
+                os.remove(full)
+        if new_ignored:
+            found.append("files or folders git ignores were created outside the "
+                         "allowed paths and have been removed: " + ", ".join(new_ignored[:10]))
+        return moved, found
+
+    def tree_now() -> tuple:
+        return dirty_paths(root), snapshot_generated(root, policy)
 
     attempts = 1 + max(0, int(policy.get("repair_attempts", 1)))
     repair = ""
@@ -1376,20 +1435,38 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         except Exception as e:                           # noqa: BLE001
             say(f"FAIL Cursor call failed: {e}")
             clog.write(f"call FAILED after {time.time() - started:.1f}s: {e}")
+            # A call that failed is not a call that did nothing. Everything
+            # the finished path checks before trusting the tree is checked
+            # here too, and anything it finds is said.
+            reason = f"Cursor call failed: {e}"
+            moved, found = sweep()
+            for note in undo():
+                say(f" .. {note}")
+                clog.write(f"undo: {note}")
+            alive = False
             if getattr(e, "kind", "") == "timeout":
                 # Nobody is waiting for this run any more, but it may not
-                # have stopped. Put the tree back, wait, and look again: a
-                # run that is still writing must leave a job that can be
-                # discarded, not one that says "rejected, nothing to do".
+                # have stopped. Wait, and look again: a run that is still
+                # writing must leave a job that can be discarded, not one
+                # that says "rejected, nothing to do". What is compared is
+                # the tree before and after the wait -- not whether undo()
+                # had something to say, which it can for other reasons.
+                settled = tree_now()
+                try:
+                    wait = float(policy.get("timeout_settle_seconds", 5))
+                except (TypeError, ValueError):
+                    wait = 5.0
+                time.sleep(min(60.0, max(0.0, wait)))
+                waited = tree_now()
+                moved2, found2 = sweep()
+                moved, found = moved or moved2, found + found2
+                # Put back again whatever is there: a write that landed
+                # WHILE the first putting-back ran is in `settled` already.
                 for note in undo():
-                    say(f" .. {note}")
-                    clog.write(f"undo: {note}")
-                time.sleep(max(0.0, float(policy.get("timeout_settle_seconds", 5))))
-                late = undo()
-                alive = bool(late) or not getattr(e, "cancelled", False)
-                reason = f"Cursor call failed: {e}"
+                    clog.write(f"undo (after waiting): {note}")
+                late = waited != settled or tree_now() != waited or bool(found2)
+                alive = late or not getattr(e, "cancelled", False)
                 if alive:
-                    review = dict(review, needs_discard=True)
                     reason += (
                         " The tree was put back, but the run "
                         + ("wrote again afterwards" if late else
@@ -1397,9 +1474,17 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                         + ". End the Cursor bridge process (cursor-sdk-bridge / "
                           "node) if it is still running, then use Discard: it "
                           "puts back anything written after this.")
-                    say(f"WARN {reason}")
-                return reject(reason, restore=False)
-            return reject(f"Cursor call failed: {e}")
+            if found:
+                reason += " Besides the files it wrote: " + "; ".join(found) + "."
+            if moved:
+                reason += (" HEAD moved while it ran: the agent committed or "
+                           "switched branch. That was NOT reverted -- check `git "
+                           "reflog` and put the branch back by hand.")
+            if alive or moved or found:
+                # Discard runs the same putting-back from the saved state.
+                review = dict(review, needs_discard=True)
+                say(f"WARN {reason}")
+            return reject(reason, restore=False, undone=True)
         text = str(answer.get("result") or "")
         with io.open(os.path.join(job_dir, f"agent-answer-{attempt}.md"),
                      "w", encoding="utf-8") as fh:
@@ -1632,7 +1717,9 @@ def cmd_discard(job_dir: str, root: str) -> int:
 
 
 def _discard(job_dir: str, root: str, review: dict) -> int:
-    if review.get("state") == "rejected" and review.get("needs_discard"):
+    # `discarded` too: a run that was never confirmed stopped can write
+    # again after the first Discard, and the button must still work then.
+    if review.get("state") in ("rejected", "discarded") and review.get("needs_discard"):
         review = dict(review, state="generating")     # same recovery path
         say(" .. this run was rejected and may have left changes behind (it "
             "timed out and could not be confirmed stopped, or the branch or "

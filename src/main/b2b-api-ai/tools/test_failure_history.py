@@ -21,6 +21,12 @@ sys.path.insert(0, HERE)
 import failure_history as fh  # noqa: E402
 
 REFUSED = "FlowStopped | POST /accounts/<*>/members answered 403 Forbidden: not the owner"
+# The shapes the framework really writes (FlowStopped.java, ResponseAsserts.java).
+STOPPED_403 = ("FlowStopped | expected status for Create Booking expected [200] but found [403] "
+               "-- flow stopped here: POST Create Booking was rejected, so the steps after it "
+               "have nothing to act on (test.stopAfterRejectedWrite=f...")
+STOPPED_500 = STOPPED_403.replace("Create Booking", "Create Account").replace("[403]", "[500]")
+ASSERT_403 = "AssertionError | expected status for Create Booking expected [200] but found [403]"
 TIMEOUT = "AssertionError | status after polling GET /accounts/<*>/status: expected [ACTIVE] but found [PENDING]"
 PLAIN = "AssertionError | <*> expected [true] but found [false]"
 
@@ -156,6 +162,49 @@ class Comparing(Store):
         again, _, fresh = fh.record(self.root, text, written=1_767_312_000)
         self.assertFalse(fresh, "the same FILE recorded twice is still one run")
 
+    def test_an_older_digest_recorded_later_is_compared_with_what_came_before_it(self):
+        day = 86_400
+        fh.record(self.root, digest(("A.monday", "-", PLAIN)), written=10 * day)
+        fh.record(self.root, digest(("A.friday", "-", PLAIN)), written=14 * day)
+        old = digest(("A.wednesday", "-", REFUSED))
+        snap, prev, fresh = fh.record(self.root, old, written=12 * day, own_run=False)
+        self.assertTrue(fresh)
+        self.assertEqual(prev["failures"][0]["test"], "A.monday",
+                         "the run before Wednesday is Monday, not Friday")
+        out = "\n".join(fh.report(self.root, snap, prev))
+        self.assertIn("NEW (not failing before): 1", out)
+        for _ in range(3):
+            again, prev2, fresh = fh.record(self.root, old, written=12 * day, own_run=False)
+            self.assertFalse(fresh, "recording it again is not another run")
+            self.assertEqual(prev2["failures"][0]["test"], "A.monday")
+        self.assertEqual(len(fh.snapshots(self.root)), 3)
+
+    def test_a_snapshot_from_before_runs_were_dated_still_stops_a_duplicate(self):
+        text = digest(("A.one", "-", PLAIN))
+        fh.record(self.root, text, now="20260101T000000Z")           # no `written`
+        _, _, fresh = fh.record(self.root, text, written=1_767_312_000)
+        self.assertFalse(fresh)
+
+    def test_a_digest_given_by_path_is_not_judged_by_this_projects_test_report(self):
+        d = os.path.join(self.root, "target", "surefire-reports")
+        os.makedirs(d)
+        with io.open(os.path.join(d, "TEST-TestSuite.xml"), "w", encoding="utf-8") as f:
+            f.write('<testsuite name="x" tests="477">')
+        snap, prev, _ = fh.record(self.root, digest(("A.one", "-", PLAIN)),
+                                  written=1_000_000, own_run=False)
+        self.assertEqual((snap["tests_run"], snap["report_gap"]), (None, None))
+        out = "\n".join(fh.report(self.root, snap, prev))
+        self.assertNotIn("left over", out)
+        self.assertNotIn("477", out)
+
+    def test_a_hand_edited_notes_file_does_not_break_a_report(self):
+        snap, prev, _ = self.run_of(("A.one", "-", REFUSED))
+        with io.open(os.path.join(self.root, fh.STORE, "notes.json"), "w", encoding="utf-8") as f:
+            json.dump({fh.signature_id(REFUSED): "just a string", "x": {"no": "text"},
+                       "y": {"text": "kept"}}, f)
+        self.assertEqual(fh.notes(self.root), {"y": {"text": "kept"}})
+        self.assertNotIn("NOTE (", "\n".join(fh.report(self.root, snap, prev)))
+
     def test_a_digest_that_lost_rows_says_so(self):
         text = digest(("A.one", "-", PLAIN), ("B.two", "-", REFUSED)).replace(
             "B.two\t-\t" + REFUSED, "B.two\t-")           # cut off mid-line
@@ -258,6 +307,26 @@ class SeenBefore(Store):
         self.assertIn("path /accounts/{}/members", shared)
         self.assertIn("status 403", shared)
 
+    def test_the_frameworks_own_signatures_are_told_apart_by_step_and_returned_status(self):
+        f = fh.facets(STOPPED_403)
+        self.assertEqual((f["step"], f["status"], f["exception"]),
+                         ({"create booking"}, {"403"}, set()),
+                         "the status that came back; not the 200 every step expects")
+        self.assertNotIn("stopped", f["words"], "FlowStopped's fixed sentence is not wording")
+        self.assertEqual(fh.resemblance(STOPPED_403, STOPPED_500), (0.0, []),
+                         "two refusals of different steps with different answers")
+        score, shared = fh.resemblance(STOPPED_403, ASSERT_403)
+        self.assertGreaterEqual(score, 0.9, "the same refusal, seen by the step and by the assertion")
+        self.assertIn("step create booking", shared)
+        opposite = "AssertionError | expected status for Lookup expected [404] but found [200]"
+        expects_200 = "AssertionError | expected status for Search expected [200] but found [404]"
+        self.assertEqual(fh.resemblance(opposite, expects_200)[0], 0.0)
+
+    def test_the_generated_multi_code_assertion_has_a_status(self):
+        sig = ("AssertionError | status for Get Rates in ['200', '206', '204'] but got 404 "
+               "expected [true] but found [false]")
+        self.assertEqual(fh.facets(sig)["status"], {"404"})
+
     def test_wording_alone_is_not_a_resemblance(self):
         a = "FlowStopped | POST /a/<*>/b answered 409 Conflict: username is not unique"
         b = "IllegalStateException | the username is not unique in the fixture table"
@@ -267,7 +336,9 @@ class SeenBefore(Store):
         f = fh.facets("FlowStopped | POST /accounts/12345/members/<*> answered 403 after 1.5s")
         self.assertEqual(f["status"], {"403"})
         self.assertEqual(f["path"], {"/accounts/{}/members/{}"})
-        self.assertEqual(f["exception"], {"FlowStopped"})
+        self.assertEqual(f["exception"], set(), "FlowStopped says a write was refused, not which")
+        self.assertEqual(fh.facets("SocketTimeoutException | Read timed out")["exception"],
+                         {"SocketTimeoutException"})
         self.assertNotIn("the", f["words"])
         self.assertNotIn("flowstopped", f["words"], "a class name is not wording")
         self.assertEqual(fh.facets("x | took 1.500 seconds, 20260101")["status"], set())
@@ -276,7 +347,7 @@ class SeenBefore(Store):
         self.assertEqual(fh.facets("AssertionError | x")["exception"], set(),
                          "a class every failure has says nothing about this one")
         self.assertEqual(fh.facets("AssertionError | status expected [201] but found [409]")["status"],
-                         {"201", "409"})
+                         {"409"})
 
 
 class TheCommand(Store):

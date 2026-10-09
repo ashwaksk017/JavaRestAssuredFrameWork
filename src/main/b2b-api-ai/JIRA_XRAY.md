@@ -326,10 +326,11 @@ python tools/jira/search.py paste       "<whatever is on the clipboard>"
 
 - **paste** takes what people actually copy -- a key, several keys, the
   address of a story, the address of a Jira search or saved filter, or a
-  query -- works out which it is, and lists it. An address on a host
-  that is not in `jira_config.base_urls` is refused; the request always
-  goes to the configured host. Text that is none of those is refused
-  rather than searched for. The workbench's link box uses the same
+  query -- works out which it is, and lists it. Searches go to ONE
+  Jira, the first of `jira_config.base_urls`; an address on any other
+  host is refused, including a second approved one (use `fetch.py` for a
+  story there). Text that is none of those is refused rather than
+  searched for, and so is an ORDER BY with nothing before it. The workbench's link box uses the same
   reading: a query pasted there is named as a query, with this command
   to list it.
 

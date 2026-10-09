@@ -345,7 +345,10 @@ class ThePrompt(unittest.TestCase):
         out, notes = design.fit({"story": "s" * 500, "notes": "n" * 50},
                                 {"story": 100, "notes": 100}, total=10_000)
         self.assertTrue(out["story"].startswith("s" * 100))
-        self.assertIn("400 more characters were left out", out["story"])
+        self.assertIn("the rest was left out to fit the prompt", out["story"])
+        longer, _ = design.fit({"story": "s" * 100 + "x" * 9000}, {"story": 100}, total=10_000)
+        self.assertEqual(longer["story"], out["story"],
+                         "text that is not sent does not change what is sent")
         self.assertEqual(out["notes"], "n" * 50)
         self.assertEqual(len(notes), 1)
 
@@ -798,6 +801,54 @@ class Run(unittest.TestCase):
         self.assertEqual(json.loads(self.read("design.json"))["test_cases"][0]["title"],
                          "asked again")
         self.assertIn("can no longer be read", self.read("cursor.log"))
+
+    def test_fresh_forgets_the_parts_it_never_reached_too(self):
+        self.small_limit(4000)
+        spec = json.dumps(big_spec(12))
+        ok = lambda prompt, followup: {"result": reply(case(endpoint="GET /things0/{id}"))}
+        self.run_design(ok, swagger=spec, fresh=False)
+        self.assertGreater(len(self.cached()), 2)
+        n = []
+
+        def stops_at_two(prompt, followup):
+            n.append(1)
+            if len(n) == 2:
+                raise loop.CursorFailed("Cursor did not finish within 900s", "timeout", True)
+            return {"result": reply(case(endpoint="GET /things0/{id}"))}
+        self.run_design(stops_at_two, swagger=spec, fresh=True)
+        self.assertEqual(len(self.cached()), 1, "only the part this run finished")
+
+    def test_a_reply_only_about_endpoints_the_specification_lacks_is_not_kept(self):
+        self.assertEqual(self.run_design(self.agent(reply(case(endpoint="DELETE /nowhere"))),
+                                         fresh=False), 0)
+        self.assertEqual(self.cached(), [])
+
+    def test_the_design_is_stamped_with_the_brief_it_was_made_from(self):
+        os.makedirs(self.out)
+        brief = os.path.join(self.out, "brief.md")
+        with io.open(brief, "w", encoding="utf-8") as fh:
+            fh.write("# Intake\nthe first story\n")
+        was = loop.brief_fingerprint(self.out)
+
+        def slow(prompt, followup):
+            with io.open(brief, "w", encoding="utf-8") as fh:     # "Read it" runs meanwhile
+                fh.write("# Intake\nanother story altogether\n")
+            return {"result": reply(case())}
+        self.run_design(slow)
+        self.assertEqual(json.loads(self.read("design.json"))["brief"], was)
+        self.assertEqual(loop.designed_cases(self.out)[0], "",
+                         "tab 3 does not take cases designed from the story before")
+
+    def test_a_single_call_that_fails_still_ends_in_its_own_fail_line(self):
+        def boom(prompt, followup):
+            raise loop.CursorFailed("Cursor did not finish within 900s", "timeout", False)
+        import contextlib
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = self.run_design(boom)
+        self.assertEqual(rc, 1)
+        self.assertIn("FAIL Cursor did not finish within 900s", out.getvalue())
+        self.assertNotIn("no part of the design", out.getvalue())
 
     def test_fresh_forgets_the_old_answer_even_when_the_new_one_is_not_kept(self):
         self.run_design(self.agent(reply(case(title="old"))), fresh=False)
@@ -1254,6 +1305,21 @@ class AskingAgainOnTheSameAgent(unittest.TestCase):
             self.call(None, deadline_seconds=30)
         self.assertEqual(got.exception.kind, "run")
         self.assertIn("bridge gone", str(got.exception))
+
+    def test_an_interrupt_while_waiting_is_not_held_until_the_limit(self):
+        import _thread
+        import threading
+        import time
+        release = threading.Event()
+        self.addCleanup(release.set)
+        cancelled = []
+        threading.Timer(0.3, _thread.interrupt_main).start()
+        t0 = time.time()
+        with self.assertRaises(KeyboardInterrupt):
+            loop.cursor_call.bounded(lambda: release.wait(20), 15,
+                                     on_timeout=lambda: cancelled.append(True))
+        self.assertLess(time.time() - t0, 5, "not after the 15 second limit")
+        self.assertEqual(cancelled, [True], "and the run is still asked to stop")
 
     def test_a_cancel_that_hangs_does_not_hang_the_caller(self):
         import threading

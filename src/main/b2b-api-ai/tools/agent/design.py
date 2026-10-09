@@ -63,9 +63,11 @@ changes nothing: text past a size limit, the layout of a specification's
 JSON, the date the story was read.) Each part of a large specification
 is kept as soon as it is read, so a run that stops half way does not pay
 for its finished parts again. A reply that was cut off, had to be asked
-for twice, or gave no usable case is never kept; a kept reply that can
-no longer be read is asked for again. `--fresh` asks again and forgets
-what was kept for that question.
+for twice, or gave no case that can be used -- none at all, or none on
+an endpoint the specification has -- is never kept; a kept reply that
+can no longer be read is asked for again. `--fresh` forgets every reply
+kept for the job and asks. A run answered entirely from kept replies
+needs neither the Cursor SDK nor a key.
 
 Cursor is asked in PLAN mode (it proposes, it does not edit or run) and
 is started in an empty temporary directory. That is a starting point,
@@ -480,8 +482,10 @@ def find_spec(job_dir: str) -> tuple:
 # ---- the prompt -------------------------------------------------------
 
 def _cut(text: str, limit: int) -> str:
-    left = len(text) - limit
-    return text[:limit].rstrip() + f"\n[... {left} more characters were left out to fit the prompt ...]"
+    # The marker does not say HOW MUCH was left out: that number would make
+    # text the agent never sees part of the prompt, and so of the cache
+    # key. The amount is in the warnings.
+    return text[:limit].rstrip() + "\n[... the rest was left out to fit the prompt ...]"
 
 
 def fit(sections: dict, limits: dict = None, total: int = TOTAL_LIMIT) -> tuple:
@@ -807,6 +811,24 @@ def cache_get(out_dir: str, key: str):
     return hit
 
 
+def cache_clear(out_dir: str) -> int:
+    """Forget every kept reply of this job. Returns how many there were."""
+    d = os.path.join(out_dir, CACHE_DIR)
+    n = 0
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return 0
+    for name in names:
+        if name.endswith((".json", ".tmp")):
+            try:
+                os.remove(os.path.join(d, name))
+                n += name.endswith(".json")
+            except OSError:
+                pass
+    return n
+
+
 def cache_drop(out_dir: str, key: str) -> None:
     try:
         os.remove(os.path.join(out_dir, CACHE_DIR, key + ".json"))
@@ -942,6 +964,10 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
     # of the story, and it would make every re-read a new question.
     story = "\n".join(l for l in _read(os.path.join(out_dir, "brief.md")).splitlines()
                       if not l.startswith("- at:"))
+    # The brief this design is made FROM, taken now. "Read it" can be run
+    # again while a fifteen-minute design is in flight; stamped at the
+    # end, the design would claim the new story.
+    designed_from = loop.brief_fingerprint(out_dir)
     listed = "\n".join(endpoints)
     if spec is not None and base_paths(spec):
         listed = (f"(every path below is served under {', '.join(base_paths(spec))}; "
@@ -999,13 +1025,33 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
     secret, asked_model = "", ""
     if agent is None:
         try:
-            loop.ensure_sdk(root)
             _cfg = loop.cursor_config(root)[1]
             secret, asked_model = _cfg.api_key, str(getattr(_cfg, "model", "") or "")
-        except RuntimeError as e:
-            say(f"FAIL {e}")
+        except Exception as e:                           # noqa: BLE001
+            say(f"FAIL the Cursor configuration could not be read ({type(e).__name__})")
             return 1
+    sdk_ready = []
+
+    def need_cursor() -> None:
+        """Only when a call is really about to be made: a run answered
+        from kept replies needs no SDK and no key."""
+        if sdk_ready:
+            return
+        try:
+            loop.ensure_sdk(root)
+        except RuntimeError as e:
+            raise loop.CursorFailed(str(e), "setup") from e
+        if not secret:
+            raise loop.CursorFailed(
+                "no Cursor API key. Set CURSOR_API_KEY, or put it in "
+                "tools/ra_converter/cursor_agent.json (gitignored).", "setup")
+        sdk_ready.append(True)
+
     reused = []
+    if fresh:
+        forgotten = cache_clear(out_dir)
+        if forgotten:
+            say(f" ..  --fresh: {forgotten} kept reply(ies) for this job were forgotten")
     clog = loop.CursorLog(out_dir, secret, list(private))
     clog.write(f"===== design the API tests: job {job}, speed {speed} "
                f"(at most {max_cases}), {len(parts)} call(s) =====")
@@ -1036,8 +1082,6 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
                 return JSON_ONLY
 
         key = cache_key(prompt, mode, asked_model)
-        if fresh:
-            cache_drop(out_dir, key)       # a new answer replaces it, or nothing does
         hit = None if fresh else cache_get(out_dir, key)
         if hit:
             try:
@@ -1066,6 +1110,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
             if agent is not None:
                 got = agent(prompt, followup)
             else:
+                need_cursor()
                 got = call_cursor(prompt, root, lambda line: clog.write("  cursor: " + line),
                                   followup, mode, deadline)
         # What comes back is as untrusted as what went in: the agent is a
@@ -1101,6 +1146,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
                            "from the reply. It is in the Cursor log.")
 
     raw, how_read, failed, summaries, questions, model = [], [], [], [], [], ""
+    fatal = ""
     is_partial = False
     for n, paths in enumerate(parts, 1):
         if len(parts) == 1:
@@ -1146,8 +1192,11 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         except RuntimeError as e:
             clog.write(f"FAILED{' ' + label if label else ''}: {e}")
             if len(parts) == 1:
-                say(f"FAIL {e}")
-                return 1
+                # Not `return`: what follows the loop checks whether the
+                # repository changed and what leaked, and a call that
+                # FAILED is the one most worth checking.
+                fatal = str(e)
+                break
             first_line = str(e).strip().splitlines()[0] if str(e).strip() else "failed"
             failed.append(f"{label} ({len(paths)} path(s), from `{paths[0]}`) "
                           f"produced nothing: {first_line}")
@@ -1175,7 +1224,10 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         # Kept now, not at the end: a run stopped during part 4 has paid
         # for parts 1 to 3. And only when THIS reply gave a usable case --
         # one whose cases are all dropped is not worth repeating.
-        if keep and normalise(got_cases, known)[0]:
+        # ...nor one whose cases are all on endpoints the specification
+        # does not have: tab 3 is handed none of those.
+        if keep and any(c.get("endpoint_in_spec") is not False
+                        for c in normalise(got_cases, known)[0]):
             cache_put(out_dir, *keep)
         raw += got_cases
         how_read.append(how)
@@ -1207,7 +1259,8 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
     if not raw:
         for line in failed:
             say(f" ..  {line}")
-        say("FAIL no part of the design produced a test case.")
+        say(f"FAIL {fatal}" if fatal else
+            "FAIL no part of the design produced a test case.")
         return 1
 
     parsed = "; ".join(dict.fromkeys(how_read))
@@ -1251,7 +1304,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         "failed_parts": failed,
         "summary": " ".join(dict.fromkeys(summaries)),
         "mode": mode if agent is None else "",
-        "brief": loop.brief_fingerprint(out_dir),
+        "brief": designed_from,
         "endpoints": endpoints,
         "endpoint_source": source,
         "endpoints_checked": bool(known),

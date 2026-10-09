@@ -198,8 +198,15 @@ def bounded(work, seconds, on_timeout=None):
 
     th = threading.Thread(target=target, name="cursor-call", daemon=True)
     th.start()
+    # In slices: on Windows one long join() is not interrupted by Ctrl+C
+    # until it expires, which here is up to 45 minutes.
+    end = time.monotonic() + seconds
     try:
-        th.join(seconds)
+        while th.is_alive():
+            left = end - time.monotonic()
+            if left <= 0:
+                break
+            th.join(min(0.5, left))
     except BaseException:                   # Ctrl+C while waiting: still cancel
         if on_timeout:
             on_timeout()

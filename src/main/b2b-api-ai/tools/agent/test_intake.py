@@ -80,6 +80,13 @@ class Classify(unittest.TestCase):
                      "https://jira.example.com/browse/B2B-1 (the login story)"):
             self.assertEqual(intake.classify(link), intake.JIRA, link)
 
+    def test_two_addresses_on_one_line_are_not_guessed_between(self):
+        self.assertEqual(intake.classify(
+            "https://jira.example.com/browse/B2B-1 https://wiki.example.com/x/AbCd"),
+            intake.UNKNOWN)
+        self.assertEqual(intake.classify("it was good"), intake.UNKNOWN)
+        self.assertEqual(intake.classify("order by created"), intake.UNKNOWN)
+
     def test_a_line_that_cannot_be_read_is_unknown_not_a_lost_job(self):
         self.assertEqual(intake.classify("https://[bad/x"), intake.UNKNOWN)
 

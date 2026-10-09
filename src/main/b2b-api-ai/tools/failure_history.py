@@ -37,16 +37,22 @@ WHAT IT WILL NOT CLAIM
   signature, and then the same failure reads as a new one. That is why
   a new signature is checked for a RESEMBLANCE as well.
 * A resemblance is the closest earlier signature that fails the same
-  WAY: the same specific exception, the same status code where one is
-  reported, the same path. It is shown with what the two share and its
-  score. Wording alone never makes one, and neither does a class every
-  failure has (`AssertionError`). It is a pointer to read, never a
+  WAY: at the same step, with the same status code RETURNED (the one
+  that was expected is not evidence -- nearly every step expects 200),
+  with the same specific exception, on the same path when one is given.
+  It is shown with what the two share and its score. Wording alone never
+  makes one, and neither does a class that says only THAT a test failed
+  (`AssertionError`, `FlowStopped`). It is a pointer to read, never a
   diagnosis: two failures can read alike and fail for different reasons.
   Scoring is counting shared facets, so a score can always be explained.
 * A run is dated by its digest file, not by when `record` was typed, and
-  the same failures on a later date are a later run. When the digest is
-  much older or newer than the test report beside it, that is said: one
-  of the two is left over from another run.
+  the same failures on a later date are a later run. It is compared with
+  the run before it IN TIME, so a saved digest from last week recorded
+  today is compared with what came before last week, not with yesterday.
+  When the digest is much older or newer than the test report beside it,
+  that is said: one of the two is left over from another run. For a
+  digest given with `--digest`, the test report beside this project's
+  last run says nothing about it and is not consulted.
 
 WHAT IT CANNOT SEE, because the digest does not have it
 -------------------------------------------------------
@@ -98,9 +104,15 @@ MAX_ROWS = 40                 # lines printed per group
 # A status code is a number SAID to be one: "answered 403", "status ...
 # [403]", "HTTP 403". A bare 443 is a port, 300 a wait, 120 a row count.
 _STATUS_SAID_RX = re.compile(
-    r"(?i)(?:answered|returned|responded(?:\s+with)?|http(?:/[0-9.]+)?|status(?:\s+code)?)"
-    r"\s*[:=]?\s*\[?([1-5][0-9]{2})(?![0-9.])")
-_STATUS_ASSERT_RX = re.compile(r"(?i)(?:expected|found)\s*\[([1-5][0-9]{2})\]")
+    r"(?i)(?:answered|returned|responded(?:\s+with)?|but\s+got|http(?:/[0-9.]+)?"
+    r"|status(?:\s+code)?)\s*[:=]?\s*\[?([1-5][0-9]{2})(?![0-9.])")
+# The status that came BACK. `expected [200]` is what the test hoped for.
+_STATUS_ASSERT_RX = re.compile(r"(?i)found\s*\[([1-5][0-9]{2})\]")
+# "expected status for <step> expected [..]": how both the status assertion
+# and FlowStopped name the step. Real signatures carry the step, not a path.
+_STEP_RX = re.compile(r"(?i)\bstatus for (.+?) expected \[")
+# FlowStopped's own sentence, the same in every one of them.
+_BOILERPLATE_RX = re.compile(r"(?is)\s--\sflow stopped here:.*?(?=\sServer said:|$)")
 # A path starts with a segment that has a letter in it. `12/31/2026` is a date.
 _PATH_RX = re.compile(r"(?<![A-Za-z0-9.:])/[A-Za-z][A-Za-z0-9{}_.-]*"
                       r"(?:/(?:<\*>|[A-Za-z0-9{}_.-]+))+")
@@ -108,7 +120,8 @@ _EXC_RX = re.compile(r"\b[A-Z][A-Za-z0-9_]*(?:Exception|Error|Fault|Stopped)\b")
 _WORD_RX = re.compile(r"[A-Za-z][A-Za-z_]{2,}")
 # Classes that say a test failed, not how.
 GENERIC = frozenset({"AssertionError", "RuntimeException", "Exception", "Error",
-                     "IllegalStateException", "SoftAssertError", "TestException"})
+                     "IllegalStateException", "SoftAssertError", "TestException",
+                     "FlowStopped"})
 _STOP = frozenset("""the and but for not was were with that this from have has had
     are its expected found true false null got did does should could would into
     than then when what which while your our their there here""".split())
@@ -225,12 +238,17 @@ def snapshots(root: str, suite: str = "") -> list:
 
 
 def notes(root: str) -> dict:
+    """{signature id: {text, signature, at}}. An entry that is not that
+    shape -- the file is plain JSON and can be edited -- is left out."""
     try:
         with io.open(os.path.join(store_dir(root), "notes.json"), encoding="utf-8") as fh:
             data = json.load(fh)
-        return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items()
+            if isinstance(v, dict) and isinstance(v.get("text"), str) and v["text"].strip()}
 
 
 def _write_json(path: str, payload) -> None:
@@ -246,26 +264,40 @@ def _write_json(path: str, payload) -> None:
             pass
 
 
+def _before(snaps: list, at: str, file: str = "~") -> list:
+    """The snapshots that come before (at, file) in time."""
+    return [s for s in snaps if (s["at"], s["_file"]) < (at, file)]
+
+
 def record(root: str, digest_text: str, label: str = "", now: str = "",
-           written: float = None) -> tuple:
-    """(snapshot, previous snapshot or None, was it new).
+           written: float = None, own_run: bool = True) -> tuple:
+    """(snapshot, the snapshot before it in time or None, was it new).
 
     `written` is when the digest file was written (its mtime). It dates
     the run, and it is what tells two runs with identical failures apart
     from one run recorded twice: the digest carries no date of its own.
+    `own_run` is false for a digest that is not this project's last run;
+    the test report in target/ then says nothing about it.
     """
     parsed = parse_digest(digest_text)
     sha = hashlib.sha1(digest_text.encode("utf-8")).hexdigest()
     stamp = int(written) if written else None
     earlier = snapshots(root, parsed["suite"])
-    if earlier and earlier[-1].get("digest") == sha and earlier[-1].get("written") == stamp:
-        return earlier[-1], (earlier[-2] if len(earlier) > 1 else None), False
+    for old in earlier:
+        # ANY recorded run, not only the newest: an older digest recorded
+        # again must not become a new run each time. A snapshot with no
+        # date of writing (or a digest with none) is matched on content.
+        same_time = old.get("written") == stamp or old.get("written") is None or stamp is None
+        if old.get("digest") == sha and same_time:
+            before = _before(earlier, old["at"], old["_file"])
+            return old, (before[-1] if before else None), False
     if not now:
         when = datetime.fromtimestamp(stamp, timezone.utc) if stamp else datetime.now(timezone.utc)
         now = when.strftime("%Y%m%dT%H%M%SZ")
-    report_at = _mtime(os.path.join(root, SUREFIRE))
+    report_at = _mtime(os.path.join(root, SUREFIRE)) if own_run else None
     snap = {"suite": parsed["suite"], "at": now, "label": label.strip()[:120],
-            "digest": sha, "written": stamp, "tests_run": tests_run(root),
+            "digest": sha, "written": stamp,
+            "tests_run": tests_run(root) if own_run else None,
             "said": parsed["said"],
             "report_gap": (round(abs(report_at - written)) if report_at and written else None),
             "failures": parsed["failures"]}
@@ -288,7 +320,8 @@ def record(root: str, digest_text: str, label: str = "", now: str = "",
             os.remove(os.path.join(d, old["_file"]))
         except OSError:
             pass
-    return snap, (earlier[-1] if earlier else None), True
+    before = _before(earlier, now, name)
+    return snap, (before[-1] if before else None), True
 
 
 # ---- comparing ----------------------------------------------------------------
@@ -325,8 +358,9 @@ _FACETS = {}
 def facets(signature: str) -> dict:
     """What makes a way of failing recognisable, as sets.
 
+    step       the step the status assertion or FlowStopped names
+    status     the status code that came back, where the signature says
     exception  the specific classes it names; never the generic ones
-    status     numbers the signature SAYS are status codes
     path       request paths, with ids and masked values as {}
     words      the rest of its wording
     """
@@ -343,12 +377,15 @@ def facets(signature: str) -> dict:
         p = "/".join("{}" if re.fullmatch(r"[0-9]+|[0-9a-f-]{16,}", seg) else seg
                      for seg in p.split("/"))
         paths.add(p.rstrip(".,;:"))
-    text = _PATH_RX.sub(" ", signature)
+    steps = {re.sub(r"\s+", " ", s).strip().lower() for s in _STEP_RX.findall(signature)}
+    text = _BOILERPLATE_RX.sub(" ", _PATH_RX.sub(" ", signature))
     status = set(_STATUS_SAID_RX.findall(text))
     if re.search(r"(?i)\bstatus\b", text):
         status |= set(_STATUS_ASSERT_RX.findall(text))
-    got = {"exception": exceptions - GENERIC, "status": status, "path": paths,
-           "words": {w.lower() for w in _WORD_RX.findall(text)} - _STOP
+    step_words = {w.lower() for s in steps for w in _WORD_RX.findall(s)}
+    got = {"step": steps - {""}, "status": status, "exception": exceptions - GENERIC,
+           "path": paths,
+           "words": {w.lower() for w in _WORD_RX.findall(text)} - _STOP - step_words
                     - {e.lower() for e in exceptions}}
     if len(_FACETS) < 50_000:
         _FACETS[signature] = got
@@ -356,7 +393,8 @@ def facets(signature: str) -> dict:
 
 
 # How the failure fails counts for more than how its message is worded.
-_WEIGHTS = {"path": 0.35, "status": 0.30, "exception": 0.20, "words": 0.15}
+_WEIGHTS = {"step": 0.30, "status": 0.25, "path": 0.20, "exception": 0.15, "words": 0.10}
+DISTINCTIVE = ("step", "status", "path", "exception")
 
 
 def _overlap(a: set, b: set, both: bool = False):
@@ -374,12 +412,12 @@ def resemblance(a: str, b: str) -> tuple:
     messages are not credited for both lacking a status code, and a
     failure reported by a step (`FlowStopped`) is not penalised against
     the same failure reported by an assertion, which names no class of
-    its own. A resemblance needs one of path, status or exception in
-    common: the same wording is how a message reads, not how the test
-    failed.
+    its own. A resemblance needs a step, a returned status, a path or a
+    specific exception in common: the same wording is how a message
+    reads, not how the test failed.
     """
     fa, fb = facets(a), facets(b)
-    if not any(fa[n] & fb[n] for n in ("exception", "status", "path")):
+    if not any(fa[n] & fb[n] for n in DISTINCTIVE):
         return 0.0, []
     score = weight = 0.0
     shared = []
@@ -417,9 +455,8 @@ def _flat(text: str, cap: int = 150) -> str:
 
 def report(root: str, current: dict, previous) -> list:
     """The comparison, as lines."""
-    earlier = [s for s in snapshots(root, current["suite"])
-               if s.get("_file") != current.get("_file")
-               and (s["at"], s["_file"]) <= (current["at"], current.get("_file", "~"))]
+    earlier = _before(snapshots(root, current["suite"]), current["at"],
+                      current.get("_file", "~"))
     kept = notes(root)
     now = _by_test(current)
     lines = [f"suite {current['suite']}: {len(now)} failing (test, row) pair(s), "
@@ -556,12 +593,14 @@ def main(argv=None, root: str = "") -> int:
             except OSError:
                 raise Unusable(f"{a.digest} is not there. It is written when a test "
                                f"run finishes; run the tests first.") from None
-            snap, previous, fresh = record(root, text, a.label, written=_mtime(path))
+            own = os.path.normcase(os.path.abspath(path)) == \
+                os.path.normcase(os.path.abspath(os.path.join(root, DIGEST)))
+            snap, previous, fresh = record(root, text, a.label, written=_mtime(path),
+                                           own_run=own)
             if not fresh:
                 say(f"this digest was already recorded ({snap['at']}); nothing new "
                     f"was kept. Run the tests again for a new one.")
-            if os.path.normcase(os.path.abspath(path)) != \
-                    os.path.normcase(os.path.abspath(os.path.join(root, DIGEST))):
+            if not own:
                 say(f"NOTE recorded from {a.digest}, not from this project's last run")
             for line in report(root, snap, previous):
                 say(line)
@@ -607,7 +646,8 @@ def main(argv=None, root: str = "") -> int:
         say(f"refused: {e}")
         return 2
     except Exception as e:                               # noqa: BLE001
-        say(f"FAIL unexpected {type(e).__name__} in failure_history.py: {e}")
+        say(f"FAIL unexpected {type(e).__name__} in failure_history.py "
+            f"(line {e.__traceback__.tb_lineno if e.__traceback__ else '?'})")
         return 1
 
 
