@@ -129,12 +129,42 @@ class Refused(RuntimeError):
 
 # ---- the connection ----------------------------------------------------
 
+_MOCK_MODULE = []
+
+
+def mock():
+    """tools/agent/mock.py: the stand-in Jira, and the switch that says
+    whether it is in use. Loaded on first use."""
+    if not _MOCK_MODULE:
+        import importlib.util
+        path = os.path.join(os.path.dirname(HERE), "agent", "mock.py")
+        spec = importlib.util.spec_from_file_location("jira_search_mock", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _MOCK_MODULE.append(mod)
+    return _MOCK_MODULE[0]
+
+
+def mock_jira() -> bool:
+    """Is the stand-in Jira switched on (tools/agent/mock.json)?"""
+    try:
+        return mock().on("jira")
+    except Exception as e:                               # noqa: BLE001
+        raise Refused(str(e)) from None
+
+
 def connect(cfg: dict = None, note: str = "") -> dict:
     """{base, token, timeout, api} from jira_config, or Refused.
 
     The base is the FIRST approved base url. There is deliberately no
     way to pass another.
+
+    With the mock Jira switched on, and no configuration handed in, this
+    is the mock's connection: no jira_config, host or token is read, and
+    every request made with it is answered on this machine.
     """
+    if cfg is None and mock_jira():
+        return dict(mock().CONN)
     if cfg is None:
         cfg, note = projectconfig.section("jira_config")
     if not cfg:
@@ -253,9 +283,16 @@ def _error_text(status: int, reason: str, body: str) -> str:
 
 
 def _call(conn: dict, method: str, path: str, body=None, transport=None):
-    fn = transport or _urllib_transport
-    return fn(method, f"{conn['base']}{conn['api']}{path}", conn["token"],
-              conn["timeout"], body)
+    # A connection made by the mock is answered by the mock, whatever
+    # else happens: it has no host to send anything to.
+    fn = transport or (mock().jira_transport if conn.get("mock") else _urllib_transport)
+    try:
+        return fn(method, f"{conn['base']}{conn['api']}{path}", conn["token"],
+                  conn["timeout"], body)
+    except Exception as e:                               # noqa: BLE001
+        if conn.get("mock") and type(e).__name__ == "Unsupported":
+            raise JiraError(400, str(e)) from None       # as Jira refuses bad JQL
+        raise
 
 
 # ---- credential check ---------------------------------------------------
@@ -535,6 +572,9 @@ def job_result_path(job: str) -> str:
     return os.path.join(ROOT, "target", "agent", j, JOB_RESULT)
 
 
+_MOCKED = []          # non-empty once this process has connected to the mock Jira
+
+
 def tell(job: str, payload: dict) -> None:
     """Write the result for the page. Best effort: the console output and
     the file under target/jira/search/ are the result; this is a copy."""
@@ -544,7 +584,8 @@ def tell(job: str, payload: dict) -> None:
         path = job_result_path(job)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = f"{path}.{os.getpid()}.tmp"
-        payload = dict(payload, at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        payload = dict(payload, mock=bool(_MOCKED),
+                       at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
         with io.open(tmp, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, ensure_ascii=False)
         os.replace(tmp, path)
@@ -564,8 +605,12 @@ def _safe(name: str) -> str:
 
 def write(name: str, payload: dict) -> str:
     """target/jira/search/<name>.json -- under target/, which is ignored."""
-    path = os.path.join(_out_dir(), _safe(name) + ".json")
-    payload = dict(payload, at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    # A result from the stand-in has its own name and says what it is:
+    # it must not replace, or be read as, the real one of the same name.
+    mocked = bool(_MOCKED)
+    path = os.path.join(_out_dir(), ("MOCK-" if mocked else "") + _safe(name) + ".json")
+    payload = dict(payload, mock=mocked,
+                   at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
     with io.open(path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2, ensure_ascii=False)
     return os.path.relpath(path, ROOT).replace(os.sep, "/")
@@ -649,8 +694,13 @@ def main(argv=None, transport=None) -> int:
             except OSError:
                 pass
         conn = connect()
-        say(f"jira : {conn['base']}{conn['api']}  (token: header, "
-            f"{len(conn['token'])} chars)")
+        if conn.get("mock"):
+            _MOCKED.append(True)
+            say("MOCK JIRA: answered from sample data on this machine; no Jira is "
+                "contacted. (\"jira\": false in tools/agent/mock.json for the real one.)")
+        else:
+            say(f"jira : {conn['base']}{conn['api']}  (token: header, "
+                f"{len(conn['token'])} chars)")
         if conn.get("cleartext"):
             say("WARN the base URL is http://: the token is sent unencrypted. "
                 "Use the https:// address in jira_config.base_urls.")
@@ -690,7 +740,9 @@ def main(argv=None, transport=None) -> int:
             except safehttp.Redirected:
                 raise Refused("jira_config.base_urls[0] has a port that is not "
                               "a port") from None
-            for host in what["hosts"]:
+            # The stand-in has no host of its own; an address is taken
+            # for the keys or the query in it.
+            for host in ([] if conn.get("mock") else what["hosts"]):
                 try:
                     theirs = safehttp._origin(host)
                 except safehttp.Redirected:

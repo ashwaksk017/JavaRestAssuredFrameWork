@@ -10,6 +10,9 @@ does -- the checks made on the working tree after it returns.
 """
 from __future__ import annotations
 
+import os as _os
+_os.environ["WORKBENCH_MOCK"] = "0"      # these tests are about the real paths
+
 import importlib.util
 import io
 import json

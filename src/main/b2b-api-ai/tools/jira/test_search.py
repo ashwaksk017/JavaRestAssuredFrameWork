@@ -6,6 +6,9 @@ No test here reaches a network: the transport is a function.
 """
 from __future__ import annotations
 
+import os as _os
+_os.environ["WORKBENCH_MOCK"] = "0"      # these tests are about the real paths
+
 import io
 import json
 import os

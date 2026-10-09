@@ -275,6 +275,20 @@ def build_argv(runnable: str, options: dict) -> list:
     return argv
 
 
+def mock_state() -> dict:
+    """{"jira": bool, "cursor": bool, "error": str} from tools/agent/mock.json.
+    An unreadable file is reported, and counted as "on": the page then
+    shows its banner rather than letting anyone think the services are
+    real when nobody can tell."""
+    spec = importlib.util.spec_from_file_location("jobs_mock", os.path.join(HERE, "mock.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    try:
+        return dict(mod.switches(), error="")
+    except mod.MockConfigError as e:
+        return {"jira": True, "cursor": True, "error": str(e)}
+
+
 # The file each of these commands writes for the page, in the job
 # directory. It is removed BEFORE the command starts: a command that dies
 # before it can write -- a bad argument, a crash, Stop -- must leave no

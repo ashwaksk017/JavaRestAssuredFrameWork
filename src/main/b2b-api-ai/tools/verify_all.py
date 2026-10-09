@@ -227,6 +227,12 @@ CHECKS = [
           "a failure that is gone is not called fixed, and a new signature "
           "that resembles an old one is a pointer with its reasons, not a "
           "diagnosis"),
+    Check("agent-mock",
+          [PY, "tools/agent/test_mock.py"],
+          "the stand-ins for Jira and Cursor answer like the services and "
+          "never pass for them: a switch that is neither true nor false is "
+          "an error, every mock result says so, and what a mock agent wrote "
+          "cannot be approved"),
     Check("agent-defects",
           [PY, "tools/agent/test_defects.py"],
           "defect triage suggests only from the team's own list, accounts for "

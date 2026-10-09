@@ -22,6 +22,33 @@ const post = (path, payload) =>
   api(path, { method: "POST", headers: { "Content-Type": "application/json" },
               body: JSON.stringify(payload) });
 
+// ---- mock mode -------------------------------------------------------
+// When Jira or Cursor is a stand-in (tools/agent/mock.json), the page says
+// so on every tab, for as long as it is so. Asked again every few seconds:
+// the file can be edited while the page is open, and a banner that
+// outlives the switch is as wrong as one that is missing.
+async function showMockBanner() {
+  const bar = $("mock-banner");
+  let m;
+  try { m = await api("/api/mock"); }
+  catch (e) { m = { jira: true, cursor: true, error: `the server did not say (${e.message}).` }; }
+  const which = [m.jira ? "Jira" : "", m.cursor ? "Cursor" : ""].filter(Boolean);
+  bar.className = "mockbar" + (m.error ? " broken" : "");
+  if (m.error) {
+    bar.replaceChildren(el("strong", { text: "MOCK SETTINGS CANNOT BE READ" }),
+      ` — ${m.error} Until it is fixed, treat everything here as not real.`);
+  } else if (which.length) {
+    bar.replaceChildren(el("strong", { text: "MOCK MODE" }),
+      ` — ${which.join(" and ")} ${which.length > 1 ? "are" : "is"} simulated on this machine. ` +
+      `Nothing on the ${[m.jira ? "Jira and Defects tabs" : "", m.cursor ? "Design, Suggest and Run Cursor buttons" : ""].filter(Boolean).join(", or from the ")} ` +
+      `reaches the real ${which.join(" or ")}. To use the real one, set it to `,
+      el("code", { text: "false" }), " in ", el("code", { text: "tools/agent/mock.json" }),
+      ". Confluence links, the converter (and its own Cursor assist) and git are never simulated.");
+  }
+  bar.hidden = !(m.error || which.length);
+}
+setInterval(showMockBanner, 5000);
+
 // ---- tabs ------------------------------------------------------------
 // The tab is also in the address (#jira, #failures), so a tab can be
 // linked to and a refresh stays where it was.
@@ -403,10 +430,12 @@ async function refreshReview() {
   badge.textContent = state.replace("-", " ");
   badge.className = `badge ${state}`;
   let detail = REVIEW_TEXT[state] || state;
+  if (review.mock) detail = "MOCK RUN — written by the stand-in for Cursor; it cannot be " +
+                            "approved, only discarded. " + detail;
   if (review.reason) detail += " " + review.reason;
   if (review.branch) detail += ` Branch: ${review.branch}.`;
   $("review-detail").textContent = detail;
-  const canPush = state === "pending-review" || state === "push-failed";
+  const canPush = (state === "pending-review" || state === "push-failed") && !review.mock;
   $("agent-push").disabled = !canPush;
   // What approving DOES depends on the scope the job ran with.
   $("agent-push").textContent = review.pushable === false
@@ -724,6 +753,7 @@ function renderJira(r) {
   const box = $("jira-result");
   box.replaceChildren();
   if (!r || !r.kind) return;
+  if (r.mock) box.append(banner("warn", "MOCK — sample data from this machine, not from Jira."));
   if (r.kind === "error") {
     box.append(banner("bad", (r.refused ? "Refused — " : "Failed — ") + (r.message || "")));
     return;
@@ -803,7 +833,8 @@ function flagClass(flag) {
 
 function defectRow(d, r) {
   const suggested = el("div", {},
-    d.suggested ? el("div", { text: d.suggested + (d.confidence ? `  (${d.confidence})` : "") }) : null,
+    d.suggested ? el("div", { text: d.suggested + (d.confidence ? `  (${d.confidence})` : "") +
+                                    (d.suggested_by === "mock" ? "  — MOCK" : "") }) : null,
     d.said ? el("small", { text: `it answered: ${d.said}` }) : null,
     d.flag ? el("span", { class: flagClass(d.flag), text: d.flag }) : null);
   const why = el("div", {}, d.why || "", d.evidence ? el("small", { text: `"${d.evidence}"` }) : null);
@@ -818,7 +849,9 @@ function defectRow(d, r) {
     // an allowed reason -- and otherwise on nothing. Not on the first
     // reason of the list: a careless click would write a value nobody chose.
     const reasons = r.reasons || [];
-    const start = reasons.includes(d.suggested) ? d.suggested
+    // ...and not on a stand-in's keyword match when the Jira is real.
+    const offered = d.suggested_by === "mock" && !r.mock_jira ? "" : d.suggested;
+    const start = reasons.includes(offered) ? offered
                 : reasons.includes(d.current) ? d.current : "";
     const pick = el("select", {},
       el("option", { value: "", text: "choose…" }),
@@ -831,7 +864,9 @@ function defectRow(d, r) {
         if (!reason) { setState($("defects-state"), "bad", `choose a reason for ${d.key}`); return; }
         if (!confirm(`Change Jira?\n\n${d.key}: ${oneLine(r.field.name)}\n` +
                      `from: ${oneLine(d.current) || "(empty)"}\nto:   ${oneLine(reason)}\n\n` +
-                     "This writes to Jira now. It is one field of one bug.")) return;
+                     (r.mock_jira
+                       ? "MOCK: this changes a file on this machine. No Jira is contacted."
+                       : "This writes to Jira now. It is one field of one bug."))) return;
         runTool("defects-apply", { "--key": d.key, "--reason": reason, "--confirm-key": d.key }, defectUi);
       } } }),
       d.applied ? el("small", { text: d.applied.ok === true
@@ -854,6 +889,10 @@ function renderDefects(r) {
     return;
   }
   if (r.kind !== "defects") return;
+  if (r.mock_jira || r.mock_cursor) box.append(banner("warn",
+    "MOCK — " + [r.mock_jira ? "the defects are sample data, and a write changes only a file on this machine" : "",
+                 r.mock_cursor ? "the suggested reasons are a keyword match, not Cursor" : ""]
+      .filter(Boolean).join("; ") + "."));
   if (r.message) box.append(banner(r.ok === false ? "bad" : "ok", r.message));
   box.append(
     el("div", { class: "meta", text:
@@ -990,6 +1029,8 @@ onTab.failures = async () => {
   const data = await showResult(j, failUi);
   if (j === job() && !(data && data.kind === "record")) $("fail-result").replaceChildren();
 };
+
+showMockBanner();
 
 // Whatever tab the address names, open it -- after every tab above has
 // said what it does when opened.

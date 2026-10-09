@@ -140,6 +140,10 @@ class Handler(BaseHTTPRequestHandler):
                                    for k, v in jobs.RUNNABLES.items()})
             if u.path == "/api/jobs":
                 return self._json(jobs.list_jobs())
+            if u.path == "/api/mock":
+                # Which services are stand-ins right now. Read on every
+                # request: the file can be edited while the page is open.
+                return self._json(jobs.mock_state())
             if u.path == "/api/status":
                 return self._json(jobs.read_status(q.get("job", ""),
                                                    q.get("runnable", "")))

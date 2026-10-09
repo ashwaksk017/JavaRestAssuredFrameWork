@@ -76,6 +76,66 @@ otherwise have made the request on your behalf:
 That closes the drive-by path. It does not make the server safe to
 expose.
 
+## Mock mode: try it before it touches anything
+
+The workbench talks to two services nobody wants to meet for the first
+time by pressing a button: a Jira that holds real tickets, and Cursor,
+which costs money and writes code. `tools/agent/mock.json` has one
+switch for each:
+
+```
+{
+  "jira": true,
+  "cursor": true
+}
+```
+
+With a switch `true`, the workbench answers from sample data on this
+machine. The buttons, the commands, the checks and the results are the
+same; nothing leaves the machine. Set it to `false` and the same button
+reaches the real service. Nothing else has to change, and no restart is
+needed: each command reads the file when it starts.
+
+| switch | `true` | `false` |
+|---|---|---|
+| `jira` | The **Jira** and **Defects** tabs use a sample project (three releases, stories, bugs, tests) under whatever project key you type. No `jira_config`, host or token is needed. **Write to Jira** changes `target/agent/mock-jira.json` and nothing else. | The Jira in `program_configuration.json`, with its token. |
+| `cursor` | **Design the tests** returns two cases per endpoint; **Suggest reasons** is a keyword match; **Run Cursor** writes one placeholder test so the checks, the review and Discard can be tried. No SDK, no key, no cost. | Cursor, with the key in `cursor_agent.json`. |
+
+While a switch is on:
+
+- the page shows a **MOCK MODE** banner on every tab;
+- every command says MOCK in its log, every result carries
+  `"mock": true`, and sample summaries start with `[MOCK]`;
+- a mock agent run **cannot be approved** -- only discarded -- whatever
+  the switch says by then, so a placeholder never reaches a branch;
+- what the sample Jira returns is saved under `target/jira/search/` with
+  `MOCK-` in front of its name, so it never replaces a real result;
+- a reason the mock Cursor suggested is **not written to a real bug**:
+  with `"jira": false, "cursor": true` the page does not pre-select it
+  and **Write to Jira** refuses it. A reason you choose yourself is yours
+  to write;
+- the sample Jira answers only the queries the workbench sends (project,
+  keys, issue type, fix version, "has a reason"). Any other JQL is
+  refused rather than answered with everything;
+- the file must hold exactly the two switches, each exactly `true` or
+  `false`. A misspelt or missing switch, an extra one, or any other
+  value is an error: the page says the settings cannot be read, and
+  commands refuse rather than guess. Only deleting the file altogether
+  means "everything real".
+
+**Not simulated**, whatever the switches say: Confluence links on the
+New test case tab are fetched for real; `tools/jira/fetch.py` and
+`run.py` (a single story, from a console) use the real Jira; the
+converter and its own Cursor assist; the tests and the Failures tab;
+and git. As shipped both switches are `true`, so a fresh copy is safe to
+click through. **Switch a service to `false` when you are ready to use
+the real one**, and load again: what was loaded from the sample data is
+not carried over to the real service.
+
+For one process, the environment variable `WORKBENCH_MOCK` overrides
+the file: `0` turns every switch off (the tests run that way), `1` turns
+every switch on. Any other value is an error.
+
 ## The tabs
 
 ### New test case
@@ -693,6 +753,8 @@ python tools/agent/test_locate.py
 python tools/agent/test_loop.py
 python tools/agent/test_design.py
 python tools/agent/test_history.py
+python tools/agent/test_defects.py
+python tools/agent/test_mock.py
 python tools/agent/check_ui.py
 ```
 

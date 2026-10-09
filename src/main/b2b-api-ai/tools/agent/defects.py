@@ -194,8 +194,19 @@ class Refused(RuntimeError):
 
 # ---- settings -------------------------------------------------------------
 
-def settings(cfg: dict = None) -> dict:
-    """{field, reasons, issue_type, write_back, max} from jira_config.defects."""
+def settings(cfg: dict = None, mocked=None) -> dict:
+    """{field, reasons, issue_type, write_back} from jira_config.defects.
+
+    `mocked`: whether the connection in use is the stand-in's. Passed by
+    the commands, which decide ONCE -- from the connection they hold --
+    so that the switch being edited between two reads cannot pair the
+    mock's settings (writing on) with the real Jira.
+    """
+    if cfg is None and (search.mock_jira() if mocked is None else mocked):
+        # The mock Jira has its own field and reasons, and writing to it
+        # is on: it changes a file under target/, and trying the whole
+        # flow is what the mock is for.
+        return dict(search.mock().defects_settings())
     if cfg is None:
         cfg, _note = search.projectconfig.section("jira_config")
     d = (cfg or {}).get("defects")
@@ -279,6 +290,18 @@ class JobLock:
         return False
 
 
+def same_jira(state: dict, mocked: bool) -> None:
+    """The defects were loaded from one Jira -- the real one, or the
+    stand-in -- and may only be acted on against that one. `ABC-101` in
+    the sample data and `ABC-101` in a real project are different bugs:
+    a reason picked for one must never be written to the other."""
+    if bool(state.get("mock_jira")) != bool(mocked):
+        was, now = (("the MOCK Jira", "the real Jira") if state.get("mock_jira")
+                    else ("the real Jira", "the MOCK Jira"))
+        raise Refused(f"these defects were loaded from {was}, and the switch in "
+                      f"tools/agent/mock.json now says {now}. Load the defects again.")
+
+
 def read_state(job: str) -> dict:
     try:
         with io.open(os.path.join(job_dir(job), STATE), encoding="utf-8") as fh:
@@ -309,7 +332,8 @@ def tell_error(job: str, message: str, refused: bool) -> None:
             state = read_state(job)
         except Refused:
             _write_json(os.path.join(job_dir(job), RESULT),
-                        {"kind": "error", "refused": refused, "message": message})
+                        {"kind": "error", "refused": refused, "message": message,
+                         "mock_jira": bool(search._MOCKED)})
             return
         shown = dict(state, kind="defects", ok=False, refused=refused,
                      message=("Refused — " if refused else "Failed — ") + message
@@ -470,14 +494,14 @@ def find_precedents(defects: list, pool: list) -> None:
 def cmd_load(job: str, text: str = "", project: str = "", version: str = "",
              limit: int = DEFAULT_MAX, transport=None, cfg: dict = None,
              conn: dict = None) -> dict:
-    opts = settings(cfg)
     conn = conn or search.connect()
+    opts = settings(cfg, mocked=bool(conn.get("mock")))
     if int(limit) < 1:
         raise Refused("the limit must be at least 1")
     limit = min(int(limit), HARD_MAX)
     if text.strip():
         what = pasted.parse(text)
-        if what["hosts"]:
+        if what["hosts"] and not conn.get("mock"):
             try:
                 mine = search.safehttp._origin(conn["base"])
                 theirs_all = [search.safehttp._origin(h) for h in what["hosts"]]
@@ -558,6 +582,7 @@ def cmd_load(job: str, text: str = "", project: str = "", version: str = "",
              "source": {k: found[k] for k in ("jql", "total", "read", "limit", "limited",
                                               "complete", "why_incomplete", "duplicates")},
              "earlier_read": len(pool), "suggested_at": "", "warnings": warnings,
+             "mock_jira": bool(conn.get("mock")), "mock_cursor": False,
              "defects": defects}
     replaced = ""
     try:
@@ -603,7 +628,7 @@ def build_prompt(batch: list, reasons: list) -> str:
                          defects="\n\n".join(blocks))
 
 
-def take_reply(batch: list, data, reasons: list) -> None:
+def take_reply(batch: list, data, reasons: list, by: str = "cursor") -> None:
     """Put the reply on the bugs it was asked about. Strictly."""
     entries = data.get("defects") if isinstance(data, dict) else data
     by_key = {}
@@ -614,7 +639,8 @@ def take_reply(batch: list, data, reasons: list) -> None:
     loose = {r.lower(): r for r in reasons}
     for d in batch:
         e = by_key.get(d["key"])
-        d.update(suggested="", confidence="", why="", evidence="", said="", reviewed=False)
+        d.update(suggested="", confidence="", why="", evidence="", said="", reviewed=False,
+                 suggested_by=by)
         if e is None:
             d["flag"] = "NOT REVIEWED"
             d["why"] = "the reply left this defect out"
@@ -645,6 +671,7 @@ def take_reply(batch: list, data, reasons: list) -> None:
 def cmd_suggest(job: str, keys: list = None, agent=None, root: str = "") -> dict:
     root = root or ROOT
     state = read_state(job)
+    same_jira(state, search.mock_jira())
     reasons = state.get("reasons") or []
     if not reasons:
         raise Refused("there is no list of reasons to choose from. Set "
@@ -655,6 +682,15 @@ def cmd_suggest(job: str, keys: list = None, agent=None, root: str = "") -> dict
     private = loop.config_secrets(os.path.join(
         root, "src", "main", "resources", "program_configuration.json"))
     secret = ""
+    by = "cursor"
+    if agent is None:
+        try:
+            if loop.mock_cursor():
+                agent, by = loop.mock.cursor, "mock"
+                say("MOCK CURSOR: reasons below are a keyword match by the "
+                    "workbench's stand-in. Cursor is not called.")
+        except RuntimeError as e:
+            raise Refused(str(e)) from None
     if agent is None:
         try:
             loop.ensure_sdk(root)
@@ -710,8 +746,12 @@ def cmd_suggest(job: str, keys: list = None, agent=None, root: str = "") -> dict
                                  why="not asked: an earlier batch failed in a way that would repeat")
                 break
             continue
-        take_reply(batch, data, reasons)
+        take_reply(batch, data, reasons, by)
     state["suggested_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # From the rows, not remembered: a later real answer for some of them
+    # must not leave everything labelled mock, nor the reverse.
+    state["mock_cursor"] = any(d.get("suggested_by") == "mock" and d.get("reviewed")
+                               for d in state["defects"])
     state["suggest_failures"] = failed
     done = sum(1 for d in wanted if d["reviewed"])
     save(job, state, f"{done} of {len(wanted)} defect(s) reviewed", ok=not failed)
@@ -735,7 +775,8 @@ def _log_write(job: str, line: str) -> bool:
 def cmd_apply(job: str, key: str, reason: str, confirm: str, transport=None,
               cfg: dict = None, conn: dict = None) -> dict:
     key = (key or "").strip().upper()
-    opts = settings(cfg)
+    conn = conn or search.connect()
+    opts = settings(cfg, mocked=bool(conn.get("mock")))
     if not opts["write_back"]:
         raise Refused("writing to Jira is off. It is on only when "
                       "jira_config.defects.write_back is exactly true.")
@@ -755,7 +796,15 @@ def cmd_apply(job: str, key: str, reason: str, confirm: str, transport=None,
         raise Refused(f"{key} is a {target.get('type') or 'issue of unknown type'}, not a "
                       f"{opts['issue_type']}. Reasons are written to {opts['issue_type']} "
                       f"issues only.")
-    conn = conn or search.connect()
+    same_jira(state, bool(conn.get("mock")))
+    if not conn.get("mock") and target.get("suggested_by") == "mock" \
+            and reason == target.get("suggested"):
+        # A keyword match by the stand-in, sitting in the box the page
+        # offers. It is not a suggestion anybody made about a real bug.
+        raise Refused(f"{reason!r} is what the MOCK Cursor put against {key} -- a keyword "
+                      f"match, not a judgement. Ask for suggestions again with "
+                      f"\"cursor\": false in tools/agent/mock.json, or load the defects "
+                      f"again and choose the reason yourself.")
     # The field the configuration names NOW. What the job's file says was
     # true when it was loaded, and the file is only a file.
     field = resolve_field(conn, opts["field"], transport)

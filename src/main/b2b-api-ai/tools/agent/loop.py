@@ -106,6 +106,16 @@ def _load(name: str, path: str):
 intake = _load("loop_intake", os.path.join(HERE, "intake.py"))
 patches = _load("loop_patches", os.path.join(HERE, "patches.py"))
 cursor_call = _load("loop_cursor_call", os.path.join(HERE, "cursor_call.py"))
+mock = _load("loop_mock", os.path.join(HERE, "mock.py"))
+
+
+def mock_cursor() -> bool:
+    """Is the stand-in Cursor switched on (tools/agent/mock.json)? A file
+    that says neither true nor false is an error, never a guess."""
+    try:
+        return mock.on("cursor")
+    except mock.MockConfigError as e:
+        raise RuntimeError(str(e)) from None
 ROOT = intake.ROOT
 POLICY_FILE = os.path.join(HERE, "policy.json")
 REQUIREMENTS = "requirements-cursor.txt"
@@ -923,6 +933,11 @@ def designed_cases(job_dir: str, cap: int = 20000) -> tuple:
         cases = data["test_cases"]
     except (OSError, ValueError, KeyError, TypeError):
         return "", "design.json could not be read; the designed cases were not used"
+    if data.get("mock"):
+        # Two cases per endpoint from the stand-in. Never handed to an
+        # agent as what somebody proposed should be tested.
+        return "", ("the design of this job is a MOCK (tools/agent/mock.json); it "
+                    "is not used. Design again with \"cursor\": false.")
     if data.get("brief", "") != brief_fingerprint(job_dir):
         return "", ("the design was made from a different brief than this job "
                     "has now; the designed cases were NOT used. Design again.")
@@ -1234,6 +1249,23 @@ def scan_secrets(diff: str, known: dict = None) -> list:
 
 def cmd_setup(job_dir: str, root: str) -> int:
     try:
+        mocked = mock_cursor()
+    except RuntimeError as e:
+        say(f"FAIL {e}")
+        return 1
+    if mocked:
+        say("MOCK CURSOR is switched on (tools/agent/mock.json): Cursor is not "
+            "installed, asked for a key, or called. Run Cursor will write one "
+            "placeholder test so the checks, the review and Discard can be tried; "
+            "it cannot be approved.")
+        rc, out = git(root, "rev-parse", "--is-inside-work-tree")
+        if rc != 0:
+            say(f"FAIL not a git work tree: {out.strip()[:200]}")
+            return 1
+        say(" ok  git work tree")
+        say(" ..  set \"cursor\": false in tools/agent/mock.json to check the real Cursor")
+        return 0
+    try:
         how = ensure_sdk(root)
         say(f" ok  cursor-sdk {how}")
     except RuntimeError as e:
@@ -1303,6 +1335,20 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         say(f"FAIL {e}")
         return 1
     secret = ""
+    mocked = False
+    if agent is None:
+        try:
+            mocked = mock_cursor()
+        except RuntimeError as e:
+            say(f"FAIL {e}")
+            return 1
+    if mocked:
+        agent = mock.loop_agent(root) if scope_name == "new-test" else (
+            lambda prompt: {"result": "MOCK AGENT: nothing was changed. The mock only "
+                                      "writes its placeholder for the new-test scope.",
+                            "status": "finished", "id": "mock", "model": "mock"})
+        say("MOCK CURSOR: Cursor is not called. A placeholder test is written so the "
+            "checks and the review can be tried. It cannot be approved; use Discard.")
     if agent is None:
         try:
             ensure_sdk(root)
@@ -1377,6 +1423,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
 
     review = write_review(job_dir, {
         "state": "generating", "scope": scope["name"], "suite": scope["suite"],
+        "mock": mocked,
         "pushable": bool(scope.get("pushable")), "base_commit": commit,
         "base_branch": branch, "started": _now()})
     clog.write("=" * 72)
@@ -1869,6 +1916,14 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
     if review.get("state") not in ("pending-review", "push-failed"):
         say(f"FAIL this job is not waiting for review (state: "
             f"{review.get('state')}). Only a pending review can be approved.")
+        return 1
+    if review.get("mock"):
+        # Whatever the switch says NOW: what is waiting was written by the
+        # stand-in, and a placeholder must not reach a branch or a store.
+        say("FAIL this run was made by the MOCK agent: what it wrote is a "
+            "placeholder, and nothing is committed, pushed or stored for it. "
+            "Use Discard. For a real run set \"cursor\": false in "
+            "tools/agent/mock.json and run Cursor again.")
         return 1
     if confirm != job:
         say("FAIL approve needs --confirm with the job id: it is the approval.")

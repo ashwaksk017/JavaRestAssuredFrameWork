@@ -725,7 +725,12 @@ def write_outputs(out_dir: str, design: dict) -> None:
               ["TCID", "Summary", "Description", "Priority", "Labels",
                "Action", "Data", "Expected Result"], xray)
 
-    md = [f"# API test design: {design['service'] or design['job']}", "",
+    md = [f"# API test design: {design['service'] or design['job']}", ""]
+    if design.get("mock"):
+        md += ["**MOCK. This is not a design.** It was produced by the workbench's "
+               "stand-in for Cursor (tools/agent/mock.json), two cases per endpoint, "
+               "so the flow can be tried.", ""]
+    md += [
           f"- job: {design['job']}", f"- at: {design['at']}",
           f"- test cases: {len(cases)}"
           + (" (PARTIAL: a reply was cut off, or a part of the API "
@@ -811,8 +816,9 @@ def cache_get(out_dir: str, key: str):
     return hit
 
 
-def cache_clear(out_dir: str) -> int:
-    """Forget every kept reply of this job. Returns how many there were."""
+def cache_clear(out_dir: str, only_model: str = "") -> int:
+    """Forget every kept reply of this job -- or, with `only_model`, only
+    the ones that model gave. Returns how many were forgotten."""
     d = os.path.join(out_dir, CACHE_DIR)
     n = 0
     try:
@@ -820,12 +826,20 @@ def cache_clear(out_dir: str) -> int:
     except OSError:
         return 0
     for name in names:
-        if name.endswith((".json", ".tmp")):
+        if not name.endswith((".json", ".tmp")):
+            continue
+        if only_model and name.endswith(".json"):
             try:
-                os.remove(os.path.join(d, name))
-                n += name.endswith(".json")
-            except OSError:
-                pass
+                with io.open(os.path.join(d, name), encoding="utf-8") as fh:
+                    if json.load(fh).get("model") != only_model:
+                        continue
+            except (OSError, ValueError, AttributeError):
+                continue
+        try:
+            os.remove(os.path.join(d, name))
+            n += name.endswith(".json")
+        except OSError:
+            pass
     return n
 
 
@@ -1023,6 +1037,20 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
     known += [redact(line, private)[0] for line in known]
 
     secret, asked_model = "", ""
+    mocked = False
+    if agent is None:
+        try:
+            mocked = loop.mock_cursor()
+        except RuntimeError as e:
+            say(f"FAIL {e}")
+            return 1
+    if mocked:
+        # Its own cache key too: a stand-in's answer is never handed back
+        # later as what Cursor said.
+        agent, asked_model = loop.mock.cursor, "mock"
+        say("MOCK CURSOR: the design below comes from the workbench's stand-in, "
+            "two cases per endpoint, to show the flow. Cursor is not called. "
+            "(\"cursor\": false in tools/agent/mock.json for a real design.)")
     if agent is None:
         try:
             _cfg = loop.cursor_config(root)[1]
@@ -1058,7 +1086,9 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
             except loop.CursorFailed as e:
                 say(f"FAIL {e}")
                 return 1
-        forgotten = cache_clear(out_dir)
+        # The stand-in forgets only what the stand-in said: "Ask again" in
+        # mock mode must not throw away replies Cursor was paid for.
+        forgotten = cache_clear(out_dir, only_model="mock" if mocked else "")
         if forgotten:
             say(f" ..  --fresh: {forgotten} kept reply(ies) for this job were forgotten")
     clog = loop.CursorLog(out_dir, secret, list(private))
@@ -1313,6 +1343,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         "failed_parts": failed,
         "summary": " ".join(dict.fromkeys(summaries)),
         "mode": mode if agent is None else "",
+        "mock": mocked,
         "brief": designed_from,
         "endpoints": endpoints,
         "endpoint_source": source,

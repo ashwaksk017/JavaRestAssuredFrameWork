@@ -19,6 +19,13 @@ WHAT IS REAL AND WHAT IS NOT
 * One command goes through the server itself, to prove that path:
   `failures-list`, which only reads.
 
+* Mock mode is checked the way it is used: a second server is started
+  with the stand-ins switched ON, and the commands are run THROUGH it --
+  the token check, versions, a release comparison, loading defects,
+  suggesting reasons, writing one back, and a test design -- with the
+  page loaded after each. That part is end to end with nothing replaced:
+  it is exactly what pressing the buttons does in mock mode.
+
 So this never touches a live Jira, and never writes this project's
 `.failure-history/`. It does not CLICK: a button's request is checked
 by sending the same request, and the page by loading it. A dead click
@@ -131,6 +138,9 @@ def main() -> int:
         finally:
             sys.stdout = old
 
+    # The page is checked with the stand-ins OFF: what is shown is what the
+    # real paths produce. Mock mode has its own section further down.
+    os.environ["WORKBENCH_MOCK"] = "0"
     srv = subprocess.Popen([sys.executable, "-B", os.path.join("tools", "agent", "server.py"),
                             "--port", str(port)], cwd=ROOT,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -411,6 +421,106 @@ def main() -> int:
         check("tab 1 still has its buttons", 'id="run-intake"' in html and 'id="run-design"' in html)
         html = page.dom("agent")
         check("tab 3 still opens", 'id="tab-agent" class="tab" role="tabpanel" hidden' not in html)
+        check("the title, and no mock banner while the stand-ins are off",
+              "<h1>AI Enabled Test WorkBench</h1>" in html
+              and 'id="mock-banner" class="mockbar" hidden' in html)
+
+        # ---- mock mode, through a server that has it switched on ----------------
+        srv.terminate()
+        store = os.path.join(ROOT, "target", "agent", "mock-jira.json")
+        kept = None
+        if os.path.isfile(store):                 # somebody's own mock writes: put back after
+            with io.open(store, encoding="utf-8") as fh:
+                kept = fh.read()
+            os.remove(store)
+        os.environ["WORKBENCH_MOCK"] = "1"
+        port2 = free_port()
+        srv = subprocess.Popen([sys.executable, "-B", os.path.join("tools", "agent", "server.py"),
+                                "--port", str(port2)], cwd=ROOT,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        mocked = Page(browser, f"http://127.0.0.1:{port2}")
+        try:
+            for _ in range(80):
+                try:
+                    mocked.call("/api/jobs")
+                    break
+                except Exception:                        # noqa: BLE001
+                    time.sleep(0.25)
+
+            def press(runnable, options, route="/api/start", extra=None):
+                body = dict({"job": JOB}, **(extra or {}))
+                if route == "/api/start":
+                    body.update(runnable=runnable, options=options)
+                code, _ = mocked.call(route, body)
+                state = {}
+                for _ in range(240):
+                    state = mocked.call(f"/api/status?job={JOB}&runnable={runnable}")[1]
+                    if state.get("state") != "running":
+                        break
+                    time.sleep(0.25)
+                return code, state.get("exit_code")
+
+            check("mock mode: the page is told", mocked.call("/api/mock")[1]
+                  == {"jira": True, "cursor": True, "error": ""})
+            html = mocked.dom("jira")
+            check("mock mode: every tab carries the banner",
+                  "MOCK MODE" in html and "Jira and Cursor are simulated" in html
+                  and 'id="mock-banner" class="mockbar" hidden' not in html)
+
+            code, rc = press("jira-verify", {})
+            html = mocked.dom("jira")
+            check("mock mode: Check the token works with no token, and says MOCK",
+                  rc == 0 and "MOCK USER" in html and "sample data from this machine" in html)
+            code, rc = press("jira-versions", {"--project": "ABC"})
+            html = mocked.dom("jira")
+            check("mock mode: Versions", rc == 0 and "Versions of ABC" in html
+                  and html.index("Release 2.0") < html.index("Release 1.0"))
+            code, rc = press("jira-release", {"--project": "ABC", "--version": "Release 2.0",
+                                              "--compare": "Release 1.1"})
+            html = mocked.dom("jira")
+            check("mock mode: What is in this version, compared with another",
+                  rc == 0 and "Only in Release 2.0" in html and "Only in Release 1.1" in html
+                  and "ABC-5" in html)
+
+            code, rc = press("defects-load", {"--project": "ABC", "--version": "Release 2.0"})
+            html = mocked.dom("defects")
+            check("mock mode: Load defects", rc == 0 and "ABC-101" in html and "ABC-150" in html
+                  and "the defects are sample data" in html)
+            code, rc = press("defects-suggest", {})
+            html = mocked.dom("defects")
+            check("mock mode: Suggest reasons, without Cursor",
+                  rc == 0 and "DIFFERS from the current reason" in html
+                  and "a keyword match, not Cursor" in html)
+            code, rc = press("defects-apply", {"--key": "ABC-101", "--reason": "Code defect",
+                                               "--confirm-key": "ABC-101"})
+            html = mocked.dom("defects")
+            written = {}
+            if os.path.isfile(store):
+                with io.open(store, encoding="utf-8") as fh:
+                    written = json.load(fh)
+            check("mock mode: Write to Jira changes a file on this machine and nothing else",
+                  rc == 0 and written == {"ABC-101": {"value": "Code defect"}}
+                  and "is now 'Code defect'" in html, f"rc={rc} store={written}")
+
+            spec = json.dumps({"openapi": "3.0.1", "paths": {
+                "/groups/{id}/rates": {"get": {"summary": "List"}, "post": {"summary": "Create"}}}})
+            code, rc = press("agent-design", None, route="/api/design",
+                             extra={"swagger": spec, "service": "rates", "speed": "fast"})
+            html = mocked.dom("new")
+            check("mock mode: Design the tests, without Cursor",
+                  rc == 0 and "MOCK. This is not a design." in html
+                  and "[MOCK] POST /groups/{id}/rates succeeds" in html, f"rc={rc}")
+            code, rc = press("agent-setup", {})
+            check("mock mode: Check Cursor setup needs no SDK and no key", rc == 0)
+        finally:
+            try:
+                os.remove(store)
+            except OSError:
+                pass
+            if kept is not None:
+                with io.open(store, "w", encoding="utf-8") as fh:
+                    fh.write(kept)
+            os.environ["WORKBENCH_MOCK"] = "0"
         check("a field the page hid stays hidden (the Suite box, for a new test)",
               'id="agent-suite-field" hidden' in html or 'id="agent-suite-field" hidden=""' in html)
     finally:
