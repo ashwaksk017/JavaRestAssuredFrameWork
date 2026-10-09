@@ -38,13 +38,15 @@ async function showMockBanner() {
     bar.replaceChildren(el("strong", { text: "MOCK SETTINGS CANNOT BE READ" }),
       ` — ${m.error} Until it is fixed, treat everything here as not real.`);
   } else if (which.length) {
+    // Two words. Which service only when it is not both; the rest is in
+    // the tooltip and the README.
     bar.replaceChildren(el("strong", { text: "MOCK MODE" }),
-      ` — ${which.join(" and ")} ${which.length > 1 ? "are" : "is"} simulated on this machine. ` +
-      `Nothing on the ${[m.jira ? "Jira and Defects tabs" : "", m.cursor ? "Design, Suggest and Run Cursor buttons" : ""].filter(Boolean).join(", or from the ")} ` +
-      `reaches the real ${which.join(" or ")}. To use the real one, set it to `,
-      el("code", { text: "false" }), " in ", el("code", { text: "tools/agent/mock.json" }),
-      ". Confluence links, the converter (and its own Cursor assist) and git are never simulated.");
+      which.length === 1 ? ` — ${which[0]} only` : "");
+    bar.title = `${which.join(" and ")} ${which.length > 1 ? "are" : "is"} simulated on this ` +
+      "machine. To use the real one, set it to false in tools/agent/mock.json. Confluence " +
+      "links, the converter (and its own Cursor assist) and git are never simulated.";
   }
+  if (m.error || !which.length) bar.removeAttribute("title");
   bar.hidden = !(m.error || which.length);
 }
 setInterval(showMockBanner, 5000);

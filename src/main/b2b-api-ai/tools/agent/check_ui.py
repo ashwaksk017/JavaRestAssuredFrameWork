@@ -464,7 +464,7 @@ def main() -> int:
                   == {"jira": True, "cursor": True, "error": ""})
             html = mocked.dom("jira")
             check("mock mode: every tab carries the banner",
-                  "MOCK MODE" in html and "Jira and Cursor are simulated" in html
+                  "<strong>MOCK MODE</strong></div>" in html
                   and 'id="mock-banner" class="mockbar" hidden' not in html)
 
             code, rc = press("jira-verify", {})
