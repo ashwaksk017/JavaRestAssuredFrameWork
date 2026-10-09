@@ -44,6 +44,66 @@ class ArgvIsNeverFreeText(unittest.TestCase):
         self.assertNotIn("agent-design", jobs.EXCLUSIVE,
                          "it writes no tracked or generated file")
 
+    def test_the_jira_and_failures_tabs_can_send_no_host_token_or_path(self):
+        """What the page can send is a project key, a version, a type, a
+        limit, a query, a label, a signature id and a note."""
+        tabs = [r for r in jobs.RUNNABLES if r.startswith(("jira-", "failures-"))]
+        self.assertEqual(sorted(tabs), ["failures-list", "failures-note", "failures-record",
+                                        "failures-show", "jira-paste", "jira-release",
+                                        "jira-tests", "jira-verify", "jira-versions"])
+        for name in tabs:
+            options = jobs.RUNNABLES[name]["options"]
+            self.assertFalse([k for k, v in options.items() if v == "path"], name)
+            self.assertIn("--job", options, name)
+            self.assertNotIn(name, jobs.EXCLUSIVE, name)
+            for bad in ("--base", "--url", "--host", "--token", "--pat", "--digest",
+                        "--config", "--name"):
+                with self.assertRaises(ValueError, msg=(name, bad)):
+                    jobs.build_argv(name, {bad: "x"})
+
+    def test_what_is_typed_reaches_the_command_as_one_argument_never_a_shell_line(self):
+        text = 'project = ABC AND summary ~ "a b" ; rm -rf / && echo $(whoami) `id`'
+        argv = jobs.build_argv("jira-paste", {"--job": "j", "--text": text})
+        self.assertEqual(argv[-2:], ["--text", text])
+        argv = jobs.build_argv("failures-note", {"--job": "j", "--id": "0123456789",
+                                                 "--text": "it's \"quoted\" & <b>bold</b>"})
+        self.assertEqual(argv[-1], "it's \"quoted\" & <b>bold</b>")
+
+    def test_a_value_that_begins_with_a_dash_is_still_a_value(self):
+        """`--text -flaky` reads to argparse as an option called -flaky and
+        a --text with nothing after it."""
+        argv = jobs.build_argv("failures-note", {"--id": "0123456789", "--text": "-flaky on CI"})
+        self.assertEqual(argv[-1], "--text=-flaky on CI")
+        argv = jobs.build_argv("jira-paste", {"--text": "--max"})
+        self.assertEqual(argv[-1], "--text=--max")
+        self.assertNotIn("--max", argv)
+        argv = jobs.build_argv("jira-release", {"--project": "ABC", "--version": "6.02"})
+        self.assertEqual(argv[-4:], ["--project", "ABC", "--version", "6.02"],
+                         "an ordinary value is passed as before")
+
+    def test_the_last_commands_result_is_gone_before_the_next_command_starts(self):
+        root = tempfile.mkdtemp(prefix="jobstest_res_")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        orig = jobs.job_dir
+        jobs.job_dir = lambda job: os.path.join(root, job)
+        self.addCleanup(setattr, jobs, "job_dir", orig)
+        os.makedirs(os.path.join(root, "j"))
+        for name in ("jira-result.json", "failures-result.json", "plan.md"):
+            with io.open(os.path.join(root, "j", name), "w") as fh:
+                fh.write("{}")
+        jobs.clear_result("j", "jira-tests")
+        self.assertEqual(sorted(os.listdir(os.path.join(root, "j"))),
+                         ["failures-result.json", "plan.md"])
+        jobs.clear_result("j", "failures-note")
+        self.assertEqual(os.listdir(os.path.join(root, "j")), ["plan.md"])
+        jobs.clear_result("j", "convert")              # nothing of its own to clear
+        jobs.clear_result("never-made", "jira-verify")  # and no error when there is none
+        self.assertEqual(os.listdir(os.path.join(root, "j")), ["plan.md"])
+
+    def test_the_two_result_files_can_be_read_back(self):
+        for name in ("jira-result.json", "failures-result.json"):
+            self.assertEqual(jobs.read_artifact("no-such-job-here", name), "")
+
     def test_design_files_can_be_read_back_and_nothing_else_new(self):
         for name in ("design.md", "design.json", "test-cases.csv", "xray.csv"):
             self.assertEqual(jobs.read_artifact("no-such-job-here", name), "")

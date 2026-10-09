@@ -76,8 +76,16 @@ The resemblance scoring is the idea of a sibling tool's defect
 fingerprint (facets and two questions: "same kind?" and "fails the same
 way?"). Its weights were tuned on one team's tickets and are not used.
 
-Stdlib only. Reads the digest and the surefire summary; writes only
-`.failure-history/`.
+FOR THE WORKBENCH PAGE
+----------------------
+With `--job J` every command also writes what it found to
+`target/agent/J/failures-result.json` -- the comparison as data, built
+by `analyse()`, which is also what the console report is printed from.
+The page and the console therefore cannot disagree: there is one
+analysis and two ways of showing it.
+
+Stdlib only. Reads the digest and the surefire summary; writes
+`.failure-history/` and, with `--job`, that one file.
 """
 from __future__ import annotations
 
@@ -460,59 +468,50 @@ def _flat(text: str, cap: int = 150) -> str:
     return s[:cap] + (" ..." if len(s) > cap else "")
 
 
-def report(root: str, current: dict, previous) -> list:
-    """The comparison, as lines."""
+def analyse(root: str, current: dict, previous) -> dict:
+    """The comparison, as data. `report()` prints it; the page shows it."""
     earlier = _before(snapshots(root, current["suite"]), current["at"],
                       current.get("_file", "~"))
     kept = notes(root)
     now = _by_test(current)
-    lines = [f"suite {current['suite']}: {len(now)} failing (test, row) pair(s), "
-             f"{len(set(now.values()))} distinct signature(s)"
-             + (f", {current['tests_run']} test(s) run" if current.get("tests_run") else "")]
+    out = {"suite": current["suite"], "at": current["at"],
+           "label": current.get("label", ""), "failing": len(now),
+           "distinct": len(set(now.values())), "tests_run": current.get("tests_run"),
+           "warnings": [], "previous": None, "notes": [], "groups": None,
+           "signatures": []}
     said = current.get("said")
     if isinstance(said, int) and said != len(now):
-        lines.append(f"  WARN the digest's own header says {said} failing pair(s) and "
-                     f"{len(now)} could be read from it. The ones not read will "
-                     f"look like they stopped failing.")
+        out["warnings"].append(
+            f"the digest's own header says {said} failing pair(s) and "
+            f"{len(now)} could be read from it. The ones not read will "
+            f"look like they stopped failing.")
     gap = current.get("report_gap")
     if isinstance(gap, (int, float)) and gap > STALE_SECONDS:
-        lines.append(f"  WARN the digest and the test report beside it were written "
-                     f"{int(gap)} seconds apart: one of them is left over from "
-                     f"another run. If the last run stopped before its tests, this "
-                     f"is the run before it.")
-    if previous is None:
-        lines += ["", "This is the first recorded run of this suite: nothing to "
-                      "compare with yet."]
-    else:
+        out["warnings"].append(
+            f"the digest and the test report beside it were written "
+            f"{int(gap)} seconds apart: one of them is left over from "
+            f"another run. If the last run stopped before its tests, this "
+            f"is the run before it.")
+    if previous is not None:
         d = compare(current, previous)
-        lines += ["", f"compared with the run of {previous['at']}"
-                      + (f" ({previous['label']})" if previous.get("label") else "") + ":"]
+        out["previous"] = {"at": previous["at"], "label": previous.get("label", "")}
         if d["ran_now"] and d["ran_before"] and d["ran_now"] != d["ran_before"]:
-            lines.append(f"  NOTE the two runs executed a different number of tests "
-                         f"({d['ran_before']} then, {d['ran_now']} now). A failure "
-                         f"that is gone may simply not have run.")
+            out["notes"].append(
+                f"the two runs executed a different number of tests "
+                f"({d['ran_before']} then, {d['ran_now']} now). A failure "
+                f"that is gone may simply not have run.")
         elif not (d["ran_now"] and d["ran_before"]):
-            lines.append("  NOTE how many tests each run executed is not known, so "
-                         "a failure that is gone may simply not have run.")
+            out["notes"].append(
+                "how many tests each run executed is not known, so "
+                "a failure that is gone may simply not have run.")
         before = _by_test(previous)
-        for title, key in (("NEW (not failing before)", "new"),
-                           ("FAILING DIFFERENTLY (same test, another signature)", "changed"),
-                           ("still failing the same way", "same"),
-                           ("no longer failing (passed, or did not run)", "gone")):
-            rows = d[key]
-            lines.append(f"  {title}: {len(rows)}")
-            show = rows if key != "same" else []
-            for test, row in show[:MAX_ROWS]:
-                lines.append("      " + (f"{test} [{row}]" if row and row != "-" else test))
-                if key == "gone":
-                    continue
-                if key == "changed":
-                    lines.append(f"          was: {_flat(before[(test, row)])}")
-                lines.append(f"          now: {_flat(now[(test, row)])}")
-            if len(show) > MAX_ROWS:
-                lines.append(f"      ... and {len(show) - MAX_ROWS} more")
-
-    lines += ["", "signatures in this run:"]
+        row = lambda k, **more: dict({"test": k[0], "row": k[1]}, **more)
+        out["groups"] = {
+            "new": [row(k, now=now[k]) for k in d["new"]],
+            "changed": [row(k, was=before[k], now=now[k]) for k in d["changed"]],
+            "same": [row(k) for k in d["same"]],
+            "gone": [row(k) for k in d["gone"]],
+        }
     # One pass over the history: which runs each signature failed in.
     runs_of = {}
     for s in earlier:
@@ -525,25 +524,129 @@ def report(root: str, current: dict, previous) -> list:
         counts[sig] = counts.get(sig, 0) + 1
     for sig, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
         sid = signature_id(sig)
-        lines.append(f"  [{sid}] {n} failure(s)  {_flat(sig)}")
         runs = runs_of.get(sig) or []
-        if runs:
-            lines.append(f"      seen in {len(runs)} earlier run(s), first {runs[0]}, "
-                         f"last {runs[-1]}")
-        else:
-            lines.append("      not seen in any earlier run")
+        entry = {"id": sid, "count": n, "signature": sig, "runs": len(runs),
+                 "first": runs[0] if runs else "", "last": runs[-1] if runs else "",
+                 "resembles": None,
+                 "note": ({"text": kept[sid]["text"], "at": str(kept[sid].get("at", ""))}
+                          if kept.get(sid) else None)}
+        if not runs:
             score, other, shared = closest(sig, known)
             if other:
-                lines.append(f"      RESEMBLES [{signature_id(other)}] ({int(score * 100)}%: "
-                             f"{'; '.join(shared)}) -- a pointer, not a diagnosis:")
-                lines.append(f"          {_flat(other)}")
-                if kept.get(signature_id(other)):
-                    lines.append(f"          its note: {_flat(kept[signature_id(other)]['text'], 300)}")
-        if kept.get(sid):
-            lines.append(f"      NOTE ({kept[sid].get('at', '')}): {_flat(kept[sid]['text'], 300)}")
-    if not counts:
+                oid = signature_id(other)
+                entry["resembles"] = {
+                    "id": oid, "score": score, "shared": shared, "signature": other,
+                    "note": kept[oid]["text"] if kept.get(oid) else ""}
+        out["signatures"].append(entry)
+    return out
+
+
+_GROUP_TITLES = (("NEW (not failing before)", "new"),
+                 ("FAILING DIFFERENTLY (same test, another signature)", "changed"),
+                 ("still failing the same way", "same"),
+                 ("no longer failing (passed, or did not run)", "gone"))
+
+
+def render(a: dict) -> list:
+    """An analysis as the lines the console prints."""
+    lines = [f"suite {a['suite']}: {a['failing']} failing (test, row) pair(s), "
+             f"{a['distinct']} distinct signature(s)"
+             + (f", {a['tests_run']} test(s) run" if a.get("tests_run") else "")]
+    lines += [f"  WARN {w}" for w in a["warnings"]]
+    if a["previous"] is None:
+        lines += ["", "This is the first recorded run of this suite: nothing to "
+                      "compare with yet."]
+    else:
+        lines += ["", f"compared with the run of {a['previous']['at']}"
+                      + (f" ({a['previous']['label']})" if a["previous"].get("label") else "")
+                      + ":"]
+        lines += [f"  NOTE {n}" for n in a["notes"]]
+        for title, key in _GROUP_TITLES:
+            rows = a["groups"][key]
+            lines.append(f"  {title}: {len(rows)}")
+            show = rows if key != "same" else []
+            for r in show[:MAX_ROWS]:
+                lines.append("      " + (f"{r['test']} [{r['row']}]"
+                                         if r["row"] and r["row"] != "-" else r["test"]))
+                if key == "gone":
+                    continue
+                if key == "changed":
+                    lines.append(f"          was: {_flat(r['was'])}")
+                lines.append(f"          now: {_flat(r['now'])}")
+            if len(show) > MAX_ROWS:
+                lines.append(f"      ... and {len(show) - MAX_ROWS} more")
+    lines += ["", "signatures in this run:"]
+    for s in a["signatures"]:
+        lines.append(f"  [{s['id']}] {s['count']} failure(s)  {_flat(s['signature'])}")
+        if s["runs"]:
+            lines.append(f"      seen in {s['runs']} earlier run(s), first {s['first']}, "
+                         f"last {s['last']}")
+        else:
+            lines.append("      not seen in any earlier run")
+            r = s["resembles"]
+            if r:
+                lines.append(f"      RESEMBLES [{r['id']}] ({int(r['score'] * 100)}%: "
+                             f"{'; '.join(r['shared'])}) -- a pointer, not a diagnosis:")
+                lines.append(f"          {_flat(r['signature'])}")
+                if r["note"]:
+                    lines.append(f"          its note: {_flat(r['note'], 300)}")
+        if s["note"]:
+            lines.append(f"      NOTE ({s['note']['at']}): {_flat(s['note']['text'], 300)}")
+    if not a["signatures"]:
         lines.append("  (none: nothing failed)")
     return lines
+
+
+def report(root: str, current: dict, previous) -> list:
+    """The comparison, as lines."""
+    return render(analyse(root, current, previous))
+
+
+_JOB_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+JOB_RESULT = "failures-result.json"
+
+
+def job_result_path(root: str, job: str) -> str:
+    """Where the page reads a result, or "" for a job id that may not be
+    used. The id names a directory: letters, digits, dot, dash and
+    underscore. Every use of the path goes through here -- the write AND
+    the removal of the old file, which with an unchecked `../..` deleted
+    a file of that name somewhere else."""
+    j = (job or "").strip()
+    if not _JOB_RX.match(j) or j in (".", ".."):
+        return ""
+    return os.path.join(root, "target", "agent", j, JOB_RESULT)
+
+
+def tell(root: str, job: str, payload: dict) -> None:
+    """Write the result for the workbench page of `job`. Best effort."""
+    path = job_result_path(root, job)
+    if not path:
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        _write_json(path, dict(payload, written=datetime.now(timezone.utc)
+                               .strftime("%Y-%m-%dT%H:%M:%SZ")))
+    except OSError:
+        pass
+
+
+def history_of(root: str, sid: str) -> dict:
+    """Every recorded run a signature failed in."""
+    out = {"id": sid, "signature": "", "runs": [], "note": None}
+    for s in snapshots(root):
+        tests = [f for f in s["failures"] if isinstance(f, dict)
+                 and signature_id(f.get("signature", "")) == sid]
+        if tests:
+            out["signature"] = out["signature"] or tests[0]["signature"]
+            out["runs"].append({"at": s["at"], "suite": s["suite"],
+                                "label": s.get("label", ""),
+                                "tests": [{"test": f["test"], "row": f.get("row", "")}
+                                          for f in tests]})
+    note = notes(root).get(sid)
+    if note:
+        out["note"] = {"text": note["text"], "at": str(note.get("at", ""))}
+    return out
 
 
 def add_note(root: str, sid: str, text: str) -> str:
@@ -585,21 +688,36 @@ def main(argv=None, root: str = "") -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("record", help="keep this run's failures and compare with the last run")
+    parsers = [p]
     p.add_argument("--digest", default=DIGEST, help="default %(default)s")
     p.add_argument("--label", default="", help="a few words about this run")
-    sub.add_parser("list", help="the runs recorded so far")
+    parsers.append(sub.add_parser("list", help="the runs recorded so far"))
     p = sub.add_parser("show", help="every run a signature failed in")
-    p.add_argument("signature")
+    parsers.append(p)
+    p.add_argument("signature", nargs="?", default="")
+    p.add_argument("--id", default="", help="the signature id, as an option")
     p = sub.add_parser("note", help="write down what a signature turned out to be")
-    p.add_argument("signature")
-    p.add_argument("text")
+    parsers.append(p)
+    p.add_argument("signature", nargs="?", default="")
+    p.add_argument("text", nargs="?", default="")
+    p.add_argument("--id", default="", help="the signature id, as an option")
+    p.add_argument("--text", dest="text_option", default="", help="the note, as an option")
+    for p in parsers:
+        p.add_argument("--job", default="",
+                       help="also write the result for the workbench page of this job")
     a = ap.parse_args(argv)
+    job = a.job
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(errors="replace")
         except (AttributeError, ValueError):
             pass
     try:
+        if job_result_path(root, job):
+            try:                            # the last command's result is not this one's
+                os.remove(job_result_path(root, job))
+            except OSError:
+                pass
         if a.cmd == "record":
             path = a.digest if os.path.isabs(a.digest) else os.path.join(root, a.digest)
             try:
@@ -617,52 +735,71 @@ def main(argv=None, root: str = "") -> int:
                     f"was kept. Run the tests again for a new one.")
             if not own:
                 say(f"NOTE recorded from {a.digest}, not from this project's last run")
-            for line in report(root, snap, previous):
+            analysis = analyse(root, snap, previous)
+            for line in render(analysis):
                 say(line)
             say()
             say(f"kept in {STORE}/ (ignored by git). To write down what a signature "
                 f"turned out to be: python tools/failure_history.py note <id> \"...\"")
+            tell(root, job, dict(analysis, kind="record", fresh=fresh, own_run=own))
             return 0
         if a.cmd == "list":
             snaps = snapshots(root)
+            runs = []
             for s in snaps:
                 sigs = len({f.get("signature") for f in s["failures"] if isinstance(f, dict)})
                 say(f"  {s['at']}  {s['suite']:<24} {len(s['failures']):>4} failing, "
                     f"{sigs} signature(s)" + (f"  -- {s['label']}" if s.get("label") else ""))
+                runs.append({"at": s["at"], "suite": s["suite"], "label": s.get("label", ""),
+                             "failing": len(s["failures"]), "distinct": sigs,
+                             "tests_run": s.get("tests_run")})
             say(f"  {len(snaps)} run(s) recorded")
+            tell(root, job, {"kind": "runs", "runs": runs})
             return 0
         if a.cmd == "note":
-            sig = add_note(root, a.signature, a.text)
+            sig = add_note(root, a.id or a.signature, a.text_option or a.text)
             say(f"noted for: {_flat(sig)}")
+            # For the page: the comparison it is showing, read again with
+            # the note in it. READ, not recorded -- saving a note must not
+            # record a run, and must not need the digest to still be there.
+            latest = [s for s in snapshots(root)
+                      if any(isinstance(f, dict) and f.get("signature") == sig
+                             for f in s["failures"])]
+            if latest:
+                snap = latest[-1]
+                before = _before(snapshots(root, snap["suite"]), snap["at"], snap["_file"])
+                tell(root, job, dict(analyse(root, snap, before[-1] if before else None),
+                                     kind="record", noted=signature_id(sig)))
+            else:
+                tell(root, job, {"kind": "noted", "id": signature_id(sig), "signature": sig})
             return 0
-        sid = a.signature.strip().strip("[]").lower()
+        sid = (a.id or a.signature).strip().strip("[]").lower()
         if not re.fullmatch(r"[0-9a-f]{10}", sid):
             raise Unusable("a signature id is the ten characters in [brackets] that "
                            "`record` prints")
-        hits = 0
-        for s in snapshots(root):
-            tests = [f for f in s["failures"] if isinstance(f, dict)
-                     and signature_id(f.get("signature", "")) == sid]
-            if tests:
-                hits += 1
-                say(f"  {s['at']}  {s['suite']}: {len(tests)} failure(s)")
-                for f in tests[:8]:
-                    say(f"      {f['test']}" + (f" [{f['row']}]" if f.get("row") not in ("", "-") else ""))
-                if hits == 1:
-                    say(f"      signature: {_flat(tests[0]['signature'], 300)}")
-        note = notes(root).get(sid)
-        if note:
-            say(f"  NOTE ({note.get('at', '')}): {note['text']}")
-        if not hits:
+        found = history_of(root, sid)
+        for n, run in enumerate(found["runs"]):
+            say(f"  {run['at']}  {run['suite']}: {len(run['tests'])} failure(s)")
+            for f in run["tests"][:8]:
+                say(f"      {f['test']}" + (f" [{f['row']}]" if f.get("row") not in ("", "-") else ""))
+            if n == 0:
+                say(f"      signature: {_flat(found['signature'], 300)}")
+        if found["note"]:
+            say(f"  NOTE ({found['note']['at']}): {found['note']['text']}")
+        tell(root, job, dict(found, kind="show"))
+        if not found["runs"]:
             say(f"  no recorded failure has the signature id {sid}")
             return 1
         return 0
     except Unusable as e:
         say(f"refused: {e}")
+        tell(root, job, {"kind": "error", "refused": True, "message": str(e)})
         return 2
     except Exception as e:                               # noqa: BLE001
         say(f"FAIL unexpected {type(e).__name__} in failure_history.py "
             f"(line {e.__traceback__.tb_lineno if e.__traceback__ else '?'})")
+        tell(root, job, {"kind": "error", "refused": False,
+                         "message": f"unexpected {type(e).__name__}; see the log"})
         return 1
 
 

@@ -57,6 +57,15 @@ The search endpoint is `<api>/search`, the one Server and Data Centre
 have. Jira Cloud replaced it; against Cloud this reports the refusal
 instead of returning nothing.
 
+FOR THE WORKBENCH PAGE
+----------------------
+With `--job J` every command also writes what it found to
+`target/agent/J/jira-result.json`: the same result as the file under
+`target/jira/search/`, with a `kind` the page picks a table by, or the
+refusal or failure as a message. The page shows that file. It decides
+nothing and holds no host or token; a result that is short says so in
+the file exactly as it does on the console.
+
 The idea for the version ordering, the POST search and the duplicate
 check came from a sibling tool (a Jira defect-triage app). Its code is
 not copied: it sent the token to whatever host it was given.
@@ -510,6 +519,37 @@ def usable(result: dict) -> bool:
 
 # ---- output ----------------------------------------------------------------
 
+_JOB_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+JOB_RESULT = "jira-result.json"
+
+
+def job_result_path(job: str) -> str:
+    """Where the page reads a command's result. The job id names a
+    directory and comes from a text box: letters, digits, dot, dash and
+    underscore only, so it cannot leave target/agent/."""
+    j = (job or "").strip()
+    if not _JOB_RX.match(j) or j in (".", ".."):
+        raise Refused(f"unusable job id {job!r}")
+    return os.path.join(ROOT, "target", "agent", j, JOB_RESULT)
+
+
+def tell(job: str, payload: dict) -> None:
+    """Write the result for the page. Best effort: the console output and
+    the file under target/jira/search/ are the result; this is a copy."""
+    if not job:
+        return
+    try:
+        path = job_result_path(job)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        payload = dict(payload, at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        with io.open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False)
+        os.replace(tmp, path)
+    except (OSError, Refused):
+        pass
+
+
 def _out_dir() -> str:
     d = os.path.join(ROOT, "target", "jira", "search")
     os.makedirs(d, exist_ok=True)
@@ -556,29 +596,40 @@ def _rows(issues: list, limit: int = 40) -> None:
 def main(argv=None, transport=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("verify", help="is the Jira token accepted?")
+    parsers = [sub.add_parser("verify", help="is the Jira token accepted?")]
     p = sub.add_parser("versions", help="a project's versions, newest first")
+    parsers.append(p)
     p.add_argument("--project", required=True)
     p.add_argument("--all", action="store_true", help="include archived versions")
     p = sub.add_parser("search", help="every issue a JQL query holds")
+    parsers.append(p)
     p.add_argument("--jql", required=True)
     p.add_argument("--max", type=int, default=DEFAULT_MAX)
     p.add_argument("--name", default="", help="file name for the result")
     p = sub.add_parser("fix-version", help="what is in a release, and what changed")
+    parsers.append(p)
     p.add_argument("--project", required=True)
     p.add_argument("--version", required=True)
     p.add_argument("--compare", default="", help="an earlier version to compare with")
     p.add_argument("--type", default="", help="issue type, e.g. Story")
     p.add_argument("--max", type=int, default=DEFAULT_MAX)
     p = sub.add_parser("paste", help="keys, a query or a Jira address, as pasted")
-    p.add_argument("text")
+    parsers.append(p)
+    p.add_argument("text", nargs="?", default="")
+    p.add_argument("--text", dest="text_option", default="",
+                   help="the same, as an option (what the workbench passes)")
     p.add_argument("--max", type=int, default=DEFAULT_MAX)
     p = sub.add_parser("tests", help="the tests a project already has")
+    parsers.append(p)
     p.add_argument("--project", required=True)
     p.add_argument("--type", default="Test", help="the issue type tests are stored as")
     p.add_argument("--jql", default="", help="a further condition, ANDed on")
     p.add_argument("--max", type=int, default=DEFAULT_MAX)
+    for p in parsers:
+        p.add_argument("--job", default="",
+                       help="also write the result for the workbench page of this job")
     a = ap.parse_args(argv)
+    job = a.job
     # A story summary can hold any character; a Windows console or a pipe
     # often cannot print it. A row that will not print must not cost the run.
     for stream in (sys.stdout, sys.stderr):
@@ -589,6 +640,12 @@ def main(argv=None, transport=None) -> int:
 
     t0 = time.time()
     try:
+        if job:
+            # The last command's result must not be read as this one's.
+            try:
+                os.remove(job_result_path(job))
+            except OSError:
+                pass
         conn = connect()
         say(f"jira : {conn['base']}{conn['api']}  (token: header, "
             f"{len(conn['token'])} chars)")
@@ -601,6 +658,7 @@ def main(argv=None, transport=None) -> int:
         if a.cmd == "verify":
             ok, msg = verify(conn, transport)
             say(f"{' ok ' if ok else 'FAIL'} {msg}")
+            tell(job, {"kind": "verify", "ok": ok, "message": msg})
             return 0 if ok else 1
 
         if a.cmd == "versions":
@@ -611,11 +669,14 @@ def main(argv=None, transport=None) -> int:
                                               v["release_date"]) if x)
                 say(f"    {v['name']:<40} {flags}")
             say(f"  {len(versions)} version(s), newest first by the number in the name")
-            say(f"  written: {write(f'{project_key(a.project)}-versions', {'versions': versions})}")
+            path = write(f'{project_key(a.project)}-versions', {'versions': versions})
+            say(f"  written: {path}")
+            tell(job, {"kind": "versions", "project": project_key(a.project),
+                       "versions": versions, "file": path})
             return 0
 
         if a.cmd == "paste":
-            what = pasted.parse(a.text)
+            what = pasted.parse(a.text_option or a.text)
             # Where the paste says it is from is checked, then ignored:
             # the request goes to the configured host either way.
             # ...and "the configured host" is ONE host, the first base URL.
@@ -656,12 +717,17 @@ def main(argv=None, transport=None) -> int:
             else:
                 jql = what["jql"]
             a.jql, a.name, a.cmd = jql, "paste", "search"
+            a.title = (f"{len(what['keys'])} story key(s)" if what["kind"] == pasted.KEYS
+                       else "the pasted query")
 
         if a.cmd == "search":
             r = search(conn, a.jql, max_results=a.max, transport=transport, on_page=progress)
             report(r)
             rows = [slim(i) for i in r["issues"]]
-            say(f"  written: {write(a.name or 'search', dict(r, issues=rows))}")
+            path = write(a.name or 'search', dict(r, issues=rows))
+            say(f"  written: {path}")
+            tell(job, dict(r, kind="issues", issues=rows, file=path,
+                           title=getattr(a, "title", "") or "the query"))
             _rows(rows)
             return 0 if usable(r) else 1
 
@@ -670,7 +736,10 @@ def main(argv=None, transport=None) -> int:
                        transport=transport, on_page=progress)
             report(r, "tests ")
             rows = [slim(i) for i in r["issues"]]
-            say(f"  written: {write(f'{project_key(a.project)}-tests', dict(r, issues=rows))}")
+            path = write(f'{project_key(a.project)}-tests', dict(r, issues=rows))
+            say(f"  written: {path}")
+            tell(job, dict(r, kind="issues", issues=rows, file=path,
+                           title=f"tests in {project_key(a.project)}"))
             _rows(rows)
             return 0 if usable(r) else 1
 
@@ -699,19 +768,25 @@ def main(argv=None, transport=None) -> int:
                     "just not have been read on the other.")
         else:
             _rows(out["result"]["issues"])
-        say(f"  written: {write(f'{project_key(a.project)}-fixversion-{a.version}', out)}")
+        path = write(f'{project_key(a.project)}-fixversion-{a.version}', out)
+        say(f"  written: {path}")
+        tell(job, dict(out, kind="release", file=path))
         return 0 if ok else 1
     except Refused as e:
         say(f"refused: {e}")
+        tell(job, {"kind": "error", "refused": True, "message": str(e)})
         return 2
     except JiraError as e:
         say(f"FAIL {e}")
+        tell(job, {"kind": "error", "refused": False, "message": str(e)})
         return 1
     except Exception as e:                               # noqa: BLE001
         # No message and no traceback: this output is a log the workbench
         # serves, and an exception text can quote a header.
         say(f"FAIL unexpected {type(e).__name__} in search.py "
             f"(line {e.__traceback__.tb_lineno if e.__traceback__ else '?'})")
+        tell(job, {"kind": "error", "refused": False,
+                   "message": f"unexpected {type(e).__name__}; see the log"})
         return 1
     finally:
         say(f"  ({time.time() - t0:.1f}s)")

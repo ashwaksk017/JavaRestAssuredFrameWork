@@ -116,3 +116,29 @@ a.dl { color: #9db4ff; font-size: .85rem; }
 input[type=file] { margin: .3rem 0 .2rem; color: var(--dim); font-size: .8rem; }
 
 label.inline { display: inline-flex; gap: .35rem; align-items: center; margin: 0; font-weight: 400; }
+.result { margin: 1rem 0; }
+.result:empty { display: none; }
+.result h4 { margin: 1.2rem 0 .4rem; font-size: .95rem; }
+.result table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+.result th, .result td { text-align: left; padding: .3rem .6rem;
+                         border-bottom: 1px solid var(--line); vertical-align: top; }
+.result th { color: var(--dim); font-weight: 600; white-space: nowrap; }
+.result td.nowrap { white-space: nowrap; }
+.result .scroll { max-height: 26rem; overflow: auto; border: 1px solid var(--line);
+                  border-radius: 6px; }
+.banner { padding: .55rem .8rem; border-radius: 6px; margin: .5rem 0;
+          border-left: 3px solid var(--dim); background: var(--panel); }
+.banner.ok { border-left-color: var(--ok); }
+.banner.bad { border-left-color: var(--bad); }
+.banner.warn { border-left-color: var(--warn); }
+.result code, .sig { font-family: ui-monospace, Consolas, monospace; font-size: .82rem;
+                     word-break: break-word; }
+.card { border: 1px solid var(--line); border-radius: 6px; padding: .6rem .8rem;
+        margin: .5rem 0; background: var(--panel); }
+.card .meta { color: var(--dim); font-size: .82rem; margin: .25rem 0; }
+.card .resembles { border-left: 3px solid var(--warn); padding-left: .6rem; margin: .4rem 0; }
+.card .noterow { display: flex; gap: .5rem; margin-top: .45rem; }
+.card .noterow input { flex: 1; }
+.linkish { background: none; border: 0; padding: 0; color: #9db4ff; cursor: pointer;
+           font: inherit; text-decoration: underline; }
+.count { color: var(--dim); font-weight: 400; }

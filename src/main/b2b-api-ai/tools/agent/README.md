@@ -76,7 +76,7 @@ otherwise have made the request on your behalf:
 That closes the drive-by path. It does not make the server safe to
 expose.
 
-## The three tabs
+## The tabs
 
 ### Tab 1 — New test case
 
@@ -444,6 +444,73 @@ python tools/agent/loop.py approve  --job <job> --confirm <job>
 python tools/agent/loop.py discard  --job <job>
 ```
 
+### Tab 4 — Jira
+
+Questions to Jira about more than one story. Read-only: nothing here
+writes to Jira. The address and the token are the ones in
+`program_configuration.json`; the page has no field for either.
+
+- **Paste** a story key, several, the address of a story, the address of
+  a Jira search or saved filter, or a query, and **List it**. The page
+  works out which it is. An address on any host but the configured Jira
+  is refused; text that is none of those is refused rather than searched
+  for.
+- **Check the token** asks Jira who the token belongs to. Do this first
+  when a story "does not exist": an expired token looks the same.
+- **Versions** lists a project's versions, newest first by the number in
+  the name. Click a name to use it as the version.
+- **What is in this version** lists a release; with *Compare with*
+  filled in, it also shows what is only in one of the two, and what is
+  in both.
+- **Existing tests** lists the issues of type `Test` (or the type
+  given) the project has, so a new test can be checked against them.
+
+Every list says how much of it was read. **INCOMPLETE** (an issue moved
+while the pages were read, or Jira stopped early), **LIMIT** (more than
+*At most*) and, for a comparison, **NOT RELIABLE** are shown above the
+list, and the run ends with a non-zero exit. Text from Jira is shown as
+text; nothing from it is run as markup.
+
+The same commands from a console are `python tools/jira/search.py ...`
+(see `JIRA_XRAY.md`). None of this has been run against a live Jira; it
+uses the search endpoint that Server and Data Centre have.
+
+### Tab 5 — Failures
+
+After a test run. **Record the last run and compare** reads
+`target/failure-digest.txt`, keeps one small snapshot of the run in
+`.failure-history/` (which git ignores), and shows:
+
+- **New** — not failing in the run before;
+- **Failing differently** — the same test with another signature: the
+  fix worked and exposed the next problem;
+- **Still failing the same way** (a count);
+- **No longer failing** — never "fixed": the digest lists failures, not
+  what ran, and the page says so when the two runs executed a different
+  number of tests.
+
+Under that, each signature of this run: whether exactly that signature
+failed in an earlier run, and, for one never seen before, the closest
+earlier one it **resembles** — with what the two share and that one's
+note. A pointer, not a diagnosis.
+
+**Save note** writes down what a signature turned out to be; the note
+comes back whenever that signature does. Saving a note records nothing:
+the comparison on screen is read again with the note in it. **Every run it was in** lists
+the runs and tests a signature failed in. **Recorded runs** lists the
+snapshots.
+
+*Record* takes no file from the page: it records this project's last
+run. A saved digest from somewhere else can be recorded from a console
+(`python tools/failure_history.py record --digest ...`).
+
+### Linking to a tab
+
+The tab is in the address: `http://127.0.0.1:8787/#jira`, `#failures`,
+`#agent`, `#convert`, `#new`. `?job=<name>` opens the page on a job:
+`http://127.0.0.1:8787/?job=release-6#jira`. Tabs 4 and 5 show the last
+result of that job when they are opened.
+
 ## Where the state lives
 
 Everything is under `target/agent/<job>/`:
@@ -461,6 +528,8 @@ target/agent/<job>/
   design.md / .json      design: the proposed test cases, and what was left out
   test-cases.csv         design: one row per step
   xray.csv               design: the same, grouped for Xray's importer
+  jira-result.json       tab 4: the last Jira command's result, as the page shows it
+  failures-result.json   tab 5: the last failure-history command's result
   cursor.log             the conversation with Cursor (design and tab 3), appended across runs
   review.json            tab 3: state, scope, the files changed, verify result
   proposed.diff          tab 3: what is waiting for review
@@ -475,7 +544,8 @@ target/agent/<job>/
 The page polls the log by byte offset, so a long convert streams and a
 refresh picks up where it left off. The UI will only read back
 `brief.md`, `plan.md`, `intake.json`, `locate.json`, `review.json`,
-`proposed.diff` and the four design files — a job directory
+`proposed.diff`, the four design files and the two result files of
+tabs 4 and 5 — a job directory
 cannot be used to read arbitrary files through the API.
 
 ## What it is allowed to run
@@ -488,7 +558,15 @@ The API never accepts a command *string*. Every runnable is named in
 | `convert` | convert ReadyAPI suites |
 | `intake` | read the pasted story and links |
 | `locate` | decide create / update / upstream |
-| `jira-verify` | ask Jira whether the configured token is accepted (no options) |
+| `jira-verify` | ask Jira whether the configured token is accepted |
+| `jira-versions` | a project's versions, newest first |
+| `jira-release` | what a release holds, and what changed since another |
+| `jira-tests` | the tests a project already has |
+| `jira-paste` | list what was pasted: keys, a query, or a Jira address |
+| `failures-record` | keep the last run's failures and compare with the run before |
+| `failures-list` | the runs recorded so far |
+| `failures-show` | every run a failure signature appeared in |
+| `failures-note` | write down what a failure turned out to be |
 | `audit-service-keys` | audit service keys |
 | `audit-token-chain` | audit the token chain |
 | `agent-design` | Cursor proposes API test cases (plan mode); takes no path, writes the job directory |
@@ -525,7 +603,16 @@ python tools/agent/test_locate.py
 python tools/agent/test_loop.py
 python tools/agent/test_design.py
 python tools/agent/test_history.py
+python tools/agent/check_ui.py
 ```
+
+`check_ui.py` is the only one that runs the **page**: it starts the real
+server on a spare port, puts real results in a throwaway job, loads
+every tab in a headless Edge or Chrome and checks what the browser ends
+up showing -- including that text from Jira and from test output is
+shown as text. It needs a browser, so it is not in the gate; it reaches
+no live Jira and leaves nothing behind. It loads pages and sends the
+requests the buttons send; it does not click.
 
 `test_loop.py` is in the gate (`verify_all`, check `agent-loop`): it is
 the code that decides what may be pushed. The other three are **not** in

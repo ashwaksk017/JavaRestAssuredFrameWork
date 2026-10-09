@@ -5,6 +5,12 @@
 
 const $ = (id) => document.getElementById(id);
 const job = () => $("job").value.trim();
+// `?job=name` in the address opens the page on that job, so a result can
+// be linked to: http://127.0.0.1:8787/?job=release-6#jira
+(function jobFromAddress() {
+  const j = new URLSearchParams(location.search).get("job") || "";
+  if (/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(j)) $("job").value = j;
+})();
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
@@ -17,12 +23,17 @@ const post = (path, payload) =>
               body: JSON.stringify(payload) });
 
 // ---- tabs ------------------------------------------------------------
+// The tab is also in the address (#jira, #failures), so a tab can be
+// linked to and a refresh stays where it was.
+const onTab = {};                 // tab name -> what to do when it is opened
 document.querySelectorAll(".tabs button").forEach((b) => {
   b.onclick = () => {
     document.querySelectorAll(".tabs button").forEach((x) =>
       x.setAttribute("aria-selected", String(x === b)));
     document.querySelectorAll(".tab").forEach((s) =>
       s.hidden = s.id !== `tab-${b.dataset.tab}`);
+    try { history.replaceState(null, "", `#${b.dataset.tab}`); } catch { /* file:// */ }
+    if (onTab[b.dataset.tab]) onTab[b.dataset.tab]();
   };
 });
 
@@ -548,3 +559,340 @@ $("agent-push").onclick = () => {
 document.querySelector('.tabs button[data-tab="agent"]')
   .addEventListener("click", () => { refreshReview(); watchCursorLog(); });
 $("job").addEventListener("change", () => { refreshReview(); pollCursorLog(true); });
+
+// ---- building what is shown -------------------------------------------
+// Everything from Jira or from a test run is somebody else's text. It is
+// only ever put on the page as TEXT (textContent), never as markup.
+function el(tag, props, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (k === "class") n.className = v;
+    else if (k === "text") n.textContent = v;
+    else if (k === "on") for (const [ev, fn] of Object.entries(v)) n.addEventListener(ev, fn);
+    else n.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) {
+    if (kid === null || kid === undefined || kid === false) continue;
+    n.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+  }
+  return n;
+}
+const banner = (cls, text) => el("div", { class: `banner ${cls}`, text });
+const MAX_TABLE_ROWS = 500;
+function table(headers, rows) {
+  const shown = rows.slice(0, MAX_TABLE_ROWS);
+  const t = el("table", {},
+    el("thead", {}, el("tr", {}, headers.map((h) => el("th", { text: h })))),
+    el("tbody", {}, shown.map((r) => el("tr", {}, r.map((c) =>
+      c instanceof Node ? el("td", {}, c) : el("td", { text: c === null || c === undefined ? "" : String(c) }))))));
+  const box = el("div", { class: "scroll" }, t);
+  // Said BEFORE the list, like every other reason a list is not whole.
+  return rows.length > shown.length
+    ? el("div", {}, banner("warn",
+        `Only the first ${shown.length} of ${rows.length} rows are shown here; ` +
+        `all of them are in the result file.`), box)
+    : box;
+}
+function heading(text, count) {
+  return el("h4", {}, text, count === undefined ? null : el("span", { class: "count", text: `  (${count})` }));
+}
+
+// One command at a time per tab; the buttons say so by being off.
+function busy(selector, on) {
+  document.querySelectorAll(selector).forEach((b) => { b.disabled = on; });
+}
+
+// Run a declared command, follow its log, then show the result FILE it
+// wrote for this job. The page reads the file; it works nothing out.
+async function runTool(runnable, options, ui) {
+  const j = job();
+  busy(ui.buttons, true);
+  // What is on screen is the LAST command's answer. It goes now, so that
+  // a command which fails before it can answer does not appear to have
+  // answered with it.
+  ui.clear();
+  try {
+    await post("/api/start", { job: j, runnable, options });
+    follow(runnable, ui.log, ui.state, async () => {
+      await showResult(j, ui);
+      busy(ui.buttons, false);
+    });
+  } catch (e) {
+    busy(ui.buttons, false);
+    setState(ui.state, "bad", e.message);
+  }
+}
+async function showResult(j, ui) {
+  let data = null;
+  try {
+    const r = await api(`/api/artifact?job=${encodeURIComponent(j)}&name=${ui.artifact}`);
+    if (r.text) data = JSON.parse(r.text);
+  } catch { /* no result yet, or not readable: show nothing rather than a guess */ }
+  // The job box may have been edited while this was being fetched: what
+  // came back belongs to `j`, and is only shown if `j` is still the job.
+  if (j !== job()) return null;
+  if (data) ui.render(data);
+  else ui.clear();                 // this job has no result: not another job's
+  return data;
+}
+// "At most" is a number or it is nothing.
+function atMost(el, stateEl) {
+  const v = el.value.trim();
+  if (v && !/^[0-9]{1,5}$/.test(v)) {
+    setState(stateEl, "bad", '"At most" is a whole number');
+    return null;
+  }
+  return v;
+}
+
+// ---- tab 4: Jira --------------------------------------------------------
+const jiraUi = { buttons: "[data-jira]", log: $("jira-log"), state: $("jira-state"),
+                 artifact: "jira-result.json", render: renderJira,
+                 clear: () => $("jira-result").replaceChildren() };
+
+// null when "At most" is not usable; the caller then starts nothing.
+function jiraOptions(extra) {
+  const o = Object.assign({}, extra);
+  const max = atMost($("jira-max"), $("jira-state"));
+  if (max === null) return null;
+  if (max) o["--max"] = max;
+  return o;
+}
+function needProject() {
+  const p = $("jira-project").value.trim();
+  if (!p) setState($("jira-state"), "bad", "give the project key");
+  return p;
+}
+$("jira-check").onclick = () => runTool("jira-verify", {}, jiraUi);
+$("jira-paste").onclick = () => {
+  const text = $("jira-paste-text").value.trim();
+  if (!text) { setState($("jira-state"), "bad", "nothing was pasted"); return; }
+  const o = jiraOptions({ "--text": text });
+  if (o) runTool("jira-paste", o, jiraUi);
+};
+$("jira-versions").onclick = () => {
+  const p = needProject();
+  if (!p) return;
+  const o = { "--project": p };
+  if ($("jira-all").checked) o["--all"] = true;
+  runTool("jira-versions", o, jiraUi);
+};
+$("jira-release").onclick = () => {
+  const p = needProject();
+  if (!p) return;
+  const v = $("jira-version").value.trim();
+  if (!v) { setState($("jira-state"), "bad", "give the version"); return; }
+  const o = jiraOptions({ "--project": p, "--version": v });
+  if (!o) return;
+  if ($("jira-compare").value.trim()) o["--compare"] = $("jira-compare").value.trim();
+  if ($("jira-type").value.trim()) o["--type"] = $("jira-type").value.trim();
+  runTool("jira-release", o, jiraUi);
+};
+$("jira-tests").onclick = () => {
+  const p = needProject();
+  if (!p) return;
+  const o = jiraOptions({ "--project": p });
+  if (!o) return;
+  if ($("jira-type").value.trim()) o["--type"] = $("jira-type").value.trim();
+  runTool("jira-tests", o, jiraUi);
+};
+
+const issueRows = (issues) => (issues || []).map((i) =>
+  [i.key, i.type, i.status, i.summary, (i.fix_versions || []).join(", "), (i.labels || []).join(", ")]);
+const ISSUE_HEAD = ["Key", "Type", "Status", "Summary", "Fix versions", "Labels"];
+
+// What a list says about itself: how much was read, and every reason it
+// may not be the whole answer. Shown above the list, never below it.
+function listFacts(r) {
+  const out = [];
+  const total = r.total === null || r.total === undefined ? "?" : r.total;
+  out.push(el("div", { class: "meta" }, `${(r.issues || []).length} read of ${total}  ·  `,
+              el("code", { text: r.jql || "" })));
+  if (r.ordered_by_tool) out.push(el("div", { class: "meta",
+    text: "ORDER BY key ASC was added so that paging cannot reshuffle the list." }));
+  if (r.complete === false) out.push(banner("bad", `INCOMPLETE — ${r.why_incomplete || "the list is short"}`));
+  if (r.limited) out.push(banner("warn",
+    `LIMIT — only the first ${r.limit} were read. Raise "At most" or narrow the question.`));
+  if (r.duplicates) out.push(banner("warn",
+    `${r.duplicates} issue(s) came back twice and were kept once.`));
+  if (r.page_size && r.page_size < 100) out.push(el("div", { class: "meta",
+    text: `This Jira returns at most ${r.page_size} issues a page.` }));
+  return out;
+}
+
+function renderJira(r) {
+  const box = $("jira-result");
+  box.replaceChildren();
+  if (!r || !r.kind) return;
+  if (r.kind === "error") {
+    box.append(banner("bad", (r.refused ? "Refused — " : "Failed — ") + (r.message || "")));
+    return;
+  }
+  if (r.kind === "verify") {
+    box.append(banner(r.ok ? "ok" : "bad", (r.ok ? "Token accepted — " : "Token NOT accepted — ") + (r.message || "")));
+    return;
+  }
+  if (r.kind === "versions") {
+    box.append(heading(`Versions of ${r.project}`, (r.versions || []).length),
+      el("div", { class: "meta", text: "Newest first, by the number in the name (release dates are often not set)." }),
+      table(["Version", "State", "Release date"], (r.versions || []).map((v) => [
+        el("button", { class: "linkish", text: v.name, title: "Use as the version",
+                       on: { click: () => { $("jira-version").value = v.name; } } }),
+        (v.released ? "released" : "unreleased") + (v.archived ? ", archived" : ""),
+        v.release_date || ""])));
+  } else if (r.kind === "issues") {
+    box.append(heading(r.title || "Issues", (r.issues || []).length), ...listFacts(r),
+               table(ISSUE_HEAD, issueRows(r.issues)));
+  } else if (r.kind === "release") {
+    const res = r.result || {};
+    box.append(heading(`${r.project} ${r.version}`, (res.issues || []).length), ...listFacts(res));
+    if (r.delta) {
+      const old = r.old || {};
+      box.append(heading(`${r.project} ${r.compared_with}`, (old.issues || []).length), ...listFacts(old));
+      if (r.delta.reliable === false) box.append(banner("bad",
+        "NOT RELIABLE — one of the two lists is incomplete or was cut at the limit, so an issue " +
+        "shown on one side only may just not have been read on the other."));
+      for (const [title, key] of [[`Only in ${r.version}`, "added"],
+                                  [`Only in ${r.compared_with}`, "removed"],
+                                  ["In both", "continuing"]]) {
+        box.append(heading(title, (r.delta[key] || []).length), table(ISSUE_HEAD, issueRows(r.delta[key])));
+      }
+    } else {
+      box.append(table(ISSUE_HEAD, issueRows(res.issues)));
+    }
+  }
+  if (r.file) box.append(el("div", { class: "meta" }, "Also written to ", el("code", { text: r.file })));
+}
+onTab.jira = () => showResult(job(), jiraUi);
+
+// ---- tab 5: Failures -----------------------------------------------------
+// Saving a note does not record a run: the command answers with the
+// comparison read again, the note in it. (It used to be followed by a
+// `record`, which wiped a failed note's error from the page, and after a
+// new test run quietly recorded that run.)
+const failUi = { buttons: "[data-fail]", log: $("fail-log"), state: $("fail-state"),
+                 artifact: "failures-result.json", render: renderFailures,
+                 clear: () => { $("fail-detail").replaceChildren(); } };
+
+$("fail-record").onclick = () => {
+  const o = {};
+  if ($("fail-label").value.trim()) o["--label"] = $("fail-label").value.trim();
+  runTool("failures-record", o, failUi);
+};
+$("fail-list").onclick = () => runTool("failures-list", {}, failUi);
+
+const where = (t) => (t.row && t.row !== "-" ? `${t.test} [${t.row}]` : t.test);
+
+function signatureCard(s) {
+  const input = el("input", { type: "text", spellcheck: "false",
+                              placeholder: "what this turned out to be",
+                              value: s.note ? s.note.text : "" });
+  const card = el("div", { class: "card" },
+    el("div", {}, el("code", { text: `[${s.id}]` }), `  ${s.count} failure(s)`),
+    el("div", { class: "sig", text: s.signature }),
+    el("div", { class: "meta", text: s.runs
+      ? `Seen in ${s.runs} earlier run(s): first ${s.first}, last ${s.last}.`
+      : "Not seen in any earlier run." }));
+  if (s.resembles) {
+    const r = s.resembles;
+    card.append(el("div", { class: "resembles" },
+      el("div", {}, `RESEMBLES `, el("code", { text: `[${r.id}]` }),
+         ` — ${Math.round((r.score || 0) * 100)}%: ${(r.shared || []).join("; ")}. A pointer, not a diagnosis.`),
+      el("div", { class: "sig", text: r.signature }),
+      r.note ? el("div", { class: "meta", text: `Its note: ${r.note}` }) : null));
+  }
+  if (s.note) card.append(el("div", { class: "meta", text: `Note (${s.note.at}): ${s.note.text}` }));
+  card.append(el("div", { class: "noterow" }, input,
+    el("button", { "data-fail": "", text: "Save note", on: { click: () => {
+      const text = input.value.trim();
+      if (!text) { setState($("fail-state"), "bad", "the note is empty"); return; }
+      runTool("failures-note", { "--id": s.id, "--text": text }, failUi);
+    } } }),
+    el("button", { "data-fail": "", text: "Every run it was in", on: { click: () =>
+      runTool("failures-show", { "--id": s.id }, failUi) } })));
+  return card;
+}
+
+function renderFailures(r) {
+  if (!r || !r.kind) return;
+  // The comparison stays on screen while a list of runs or one
+  // signature's history is looked at below it.
+  const main = $("fail-result");
+  const detail = $("fail-detail");
+  if (r.kind === "error") {
+    detail.replaceChildren(banner("bad",
+      (r.refused === false ? "Failed — " : "Refused — ") + (r.message || "")));
+    return;
+  }
+  if (r.kind === "noted") {
+    detail.replaceChildren(banner("ok", `Noted for [${r.id}].`));
+    return;
+  }
+  if (r.kind === "runs") {
+    detail.replaceChildren(heading("Recorded runs", (r.runs || []).length),
+      table(["When", "Suite", "Failing", "Signatures", "Tests run", "About"],
+            (r.runs || []).map((x) => [x.at, x.suite, x.failing, x.distinct,
+                                       x.tests_run === null || x.tests_run === undefined ? "" : x.tests_run,
+                                       x.label || ""])));
+    return;
+  }
+  if (r.kind === "show") {
+    const kids = [heading(`Signature [${r.id}]`, (r.runs || []).length)];
+    if (!(r.runs || []).length) kids.push(banner("warn", "No recorded failure has this signature."));
+    if (r.signature) kids.push(el("div", { class: "sig", text: r.signature }));
+    if (r.note) kids.push(el("div", { class: "meta", text: `Note (${r.note.at}): ${r.note.text}` }));
+    kids.push(table(["When", "Suite", "About", "Failing tests"], (r.runs || []).map((x) =>
+      [x.at, x.suite, x.label || "", (x.tests || []).map(where).join(", ")])));
+    detail.replaceChildren(...kids);
+    return;
+  }
+  if (r.kind !== "record") return;
+  detail.replaceChildren(r.noted ? banner("ok", `Noted for [${r.noted}].`) : "");
+  const kids = [heading(`Suite ${r.suite}`),
+    el("div", { class: "meta", text:
+      `${r.failing} failing (test, row) pair(s), ${r.distinct} distinct signature(s)` +
+      (r.tests_run ? `, ${r.tests_run} test(s) run` : "") + `  ·  run of ${r.at}` +
+      (r.label ? `  ·  ${r.label}` : "") })];
+  if (r.fresh === false) kids.push(banner("warn",
+    "This digest was already recorded; nothing new was kept. Run the tests again for a new one."));
+  for (const w of r.warnings || []) kids.push(banner("bad", w));
+  if (!r.previous) {
+    kids.push(banner("ok", "This is the first recorded run of this suite: nothing to compare with yet."));
+  } else {
+    kids.push(el("div", { class: "meta", text:
+      `Compared with the run of ${r.previous.at}` + (r.previous.label ? ` (${r.previous.label})` : "") }));
+    for (const n of r.notes || []) kids.push(banner("warn", n));
+    const g = r.groups || {};
+    kids.push(heading("New — not failing before", (g.new || []).length));
+    if ((g.new || []).length) kids.push(table(["Test", "Now"], g.new.map((x) => [where(x), x.now])));
+    kids.push(heading("Failing differently — same test, another signature", (g.changed || []).length));
+    if ((g.changed || []).length) kids.push(table(["Test", "Was", "Now"],
+      g.changed.map((x) => [where(x), x.was, x.now])));
+    kids.push(heading("Still failing the same way", (g.same || []).length));
+    kids.push(heading("No longer failing — passed, or did not run", (g.gone || []).length));
+    if ((g.gone || []).length) kids.push(table(["Test"], g.gone.map((x) => [where(x)])));
+  }
+  kids.push(heading("Signatures in this run", (r.signatures || []).length));
+  if (!(r.signatures || []).length) kids.push(banner("ok", "Nothing failed."));
+  for (const s of r.signatures || []) kids.push(signatureCard(s));
+  main.replaceChildren(...kids);
+}
+// Opening the tab, or changing the job, shows THAT job's last result --
+// and nothing, comparison included, when it has none.
+onTab.failures = async () => {
+  const j = job();
+  const data = await showResult(j, failUi);
+  if (j === job() && !(data && data.kind === "record")) $("fail-result").replaceChildren();
+};
+
+// Whatever tab the address names, open it -- after every tab above has
+// said what it does when opened.
+(function openTabFromAddress() {
+  const name = (location.hash || "").replace(/^#/, "");
+  const b = name && document.querySelector(`.tabs button[data-tab="${name.replace(/[^a-z]/g, "")}"]`);
+  if (b) b.click();
+})();
+$("job").addEventListener("change", () => {
+  const open = document.querySelector('.tabs button[aria-selected="true"]');
+  if (open && onTab[open.dataset.tab]) onTab[open.dataset.tab]();
+});

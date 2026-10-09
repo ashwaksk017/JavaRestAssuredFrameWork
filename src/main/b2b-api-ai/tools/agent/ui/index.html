@@ -20,6 +20,8 @@
   <button role="tab" aria-selected="true"  data-tab="new">1 &middot; New test case</button>
   <button role="tab" aria-selected="false" data-tab="convert">2 &middot; Convert ReadyAPI</button>
   <button role="tab" aria-selected="false" data-tab="agent">3 &middot; Agent loop</button>
+  <button role="tab" aria-selected="false" data-tab="jira">4 &middot; Jira</button>
+  <button role="tab" aria-selected="false" data-tab="failures">5 &middot; Failures</button>
 </nav>
 
 <!-- ───────────────────────────── tab 1 ───────────────────────────── -->
@@ -196,6 +198,85 @@ Expect 201.'></textarea>
   <pre id="cursor-log" class="log cursor"></pre>
   <h3>Command log</h3>
   <pre id="agent-log" class="log"></pre>
+</section>
+
+<!-- ───────────────────────────── tab 4 ───────────────────────────── -->
+<section id="tab-jira" class="tab" role="tabpanel" hidden>
+  <p class="lede">
+    Questions to Jira about more than one story. <strong>Read-only</strong>:
+    nothing here writes to Jira. The address and the token are the ones in
+    <code>program_configuration.json</code>; this page cannot name another.
+  </p>
+
+  <label for="jira-paste-text">Paste <span class="hint">a story key, several, the address of a story, the address of a Jira search or saved filter, or a query</span></label>
+  <textarea id="jira-paste-text" rows="3" spellcheck="false"
+    placeholder="ABC-12, ABC-13     or     project = ABC AND labels = api"></textarea>
+  <div class="row">
+    <button id="jira-paste" class="go" data-jira>List it</button>
+    <button id="jira-check" data-jira title="Asks Jira who the configured token belongs to. An expired token otherwise shows up as a story that 'does not exist'.">Check the token</button>
+  </div>
+
+  <h2 class="part">A project and its releases</h2>
+  <div class="form">
+    <div class="field req">
+      <label for="jira-project">Project key</label>
+      <input id="jira-project" type="text" spellcheck="false" placeholder="ABC">
+    </div>
+    <div class="field">
+      <label for="jira-version">Version</label>
+      <input id="jira-version" type="text" spellcheck="false" placeholder="6.02">
+      <small>Click a name in the list of versions to fill this in.</small>
+    </div>
+    <div class="field">
+      <label for="jira-compare">Compare with</label>
+      <input id="jira-compare" type="text" spellcheck="false" placeholder="6.01">
+      <small>An earlier version: what is only in one of the two.</small>
+    </div>
+    <div class="field">
+      <label for="jira-type">Issue type</label>
+      <input id="jira-type" type="text" spellcheck="false" placeholder="Story">
+      <small>Optional. For <em>Existing tests</em> it defaults to <code>Test</code>.</small>
+    </div>
+    <div class="field">
+      <label for="jira-max">At most</label>
+      <input id="jira-max" type="text" spellcheck="false" placeholder="500">
+      <small>A list cut at this number says so.</small>
+    </div>
+  </div>
+  <div class="row">
+    <button id="jira-versions" data-jira>Versions</button>
+    <label class="inline"><input type="checkbox" id="jira-all"> include archived</label>
+    <button id="jira-release" data-jira>What is in this version</button>
+    <button id="jira-tests" data-jira>Existing tests</button>
+    <span id="jira-state" class="state"></span>
+  </div>
+
+  <div id="jira-result" class="result"></div>
+  <h3>Log</h3>
+  <pre id="jira-log" class="log"></pre>
+</section>
+
+<!-- ───────────────────────────── tab 5 ───────────────────────────── -->
+<section id="tab-failures" class="tab" role="tabpanel" hidden>
+  <p class="lede">
+    After a test run: what is <strong>new</strong> since the run before,
+    what fails <strong>differently</strong>, and whether this way of failing
+    has been seen before. Reads <code>target/failure-digest.txt</code>;
+    keeps one small snapshot per run in <code>.failure-history/</code>,
+    which git ignores.
+  </p>
+  <label for="fail-label">A few words about this run <span class="hint">optional — shown beside it in the list of runs</span></label>
+  <input id="fail-label" type="text" spellcheck="false" placeholder="after the token fix">
+  <div class="row">
+    <button id="fail-record" class="go" data-fail>Record the last run and compare</button>
+    <button id="fail-list" data-fail>Recorded runs</button>
+    <span id="fail-state" class="state"></span>
+  </div>
+
+  <div id="fail-result" class="result"></div>
+  <div id="fail-detail" class="result"></div>
+  <h3>Log</h3>
+  <pre id="fail-log" class="log"></pre>
 </section>
 
 <script src="/app.js"></script>

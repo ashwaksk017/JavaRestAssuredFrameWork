@@ -554,6 +554,107 @@ class TheCommand(unittest.TestCase):
         self.assertEqual(search._safe("///"), "result")
 
 
+class WhatThePageIsGiven(unittest.TestCase):
+    """With --job, a command also writes its result where the workbench
+    page reads it. The page shows that file and works nothing out."""
+
+    def setUp(self):
+        import shutil
+        import tempfile
+        self.root = tempfile.mkdtemp(prefix="jirapage_")
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        saved = (search.ROOT, search.connect, search.write)
+        self.addCleanup(lambda: (setattr(search, "ROOT", saved[0]),
+                                 setattr(search, "connect", saved[1]),
+                                 setattr(search, "write", saved[2])))
+        search.ROOT = self.root
+        search.connect = lambda: dict(CONN)
+        search.write = lambda name, payload: f"target/jira/search/{name}.json"
+
+    def run_cmd(self, *argv, transport=None, job="j1"):
+        with redirect_stdout(io.StringIO()):
+            rc = search.main(list(argv) + (["--job", job] if job else []), transport=transport)
+        return rc, self.result(job or "j1")
+
+    def result(self, job):
+        p = os.path.join(self.root, "target", "agent", job, search.JOB_RESULT)
+        if not os.path.isfile(p):
+            return None
+        with io.open(p, encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_each_command_writes_a_result_the_page_can_pick_a_table_by(self):
+        rc, r = self.run_cmd("verify", transport=lambda *a, **k: {"name": "jdoe"})
+        self.assertEqual((rc, r["kind"], r["ok"]), (0, "verify", True))
+        rc, r = self.run_cmd("versions", "--project", "abc",
+                             transport=lambda *a, **k: [{"name": "1.0"}, {"name": "2.0"}])
+        self.assertEqual((r["kind"], r["project"], [v["name"] for v in r["versions"]]),
+                         ("versions", "ABC", ["2.0", "1.0"]))
+        rc, r = self.run_cmd("tests", "--project", "abc", transport=Jira([issue(1), issue(2)]))
+        self.assertEqual((rc, r["kind"], r["title"], len(r["issues"]), r["complete"]),
+                         (0, "issues", "tests in ABC", 2, True))
+        self.assertEqual(sorted(r["issues"][0]), ["fix_versions", "key", "labels", "priority",
+                                                  "status", "summary", "type", "updated"])
+        rc, r = self.run_cmd("paste", "--text", "abc-1, ABC-2", transport=Jira([issue(1)]))
+        self.assertEqual((r["kind"], r["title"]), ("issues", "2 story key(s)"))
+
+    def test_a_short_list_says_so_in_the_file_exactly_as_on_the_console(self):
+        rc, r = self.run_cmd("tests", "--project", "abc", "--max", "10",
+                             transport=Jira([issue(n) for n in range(30)]))
+        self.assertEqual((rc, r["limited"], r["limit"], r["total"]), (1, True, 10, 30))
+        stops = Jira(pages=[[issue(n) for n in range(100)], []], total=5000)
+        rc, r = self.run_cmd("search", "--jql", "project = ABC", transport=stops)
+        self.assertEqual((rc, r["complete"]), (1, False))
+        self.assertIn("stopped returning pages early", r["why_incomplete"])
+
+    def test_a_comparison_carries_both_lists_and_whether_it_can_be_relied_on(self):
+        class Two(Jira):
+            def __call__(self, method, url, token, timeout, body=None):
+                self.issues = [issue(1), issue(2)] if '"6.02"' in body["jql"] else [issue(2), issue(3)]
+                return super().__call__(method, url, token, timeout, body)
+        rc, r = self.run_cmd("fix-version", "--project", "abc", "--version", "6.02",
+                             "--compare", "6.01", transport=Two())
+        self.assertEqual((r["kind"], r["compared_with"], r["delta"]["reliable"]),
+                         ("release", "6.01", True))
+        self.assertEqual([i["key"] for i in r["delta"]["added"]], ["ABC-1"])
+        self.assertEqual(len(r["old"]["issues"]), 2)
+
+    def test_a_refusal_and_a_failure_are_results_too_and_the_old_one_is_gone(self):
+        self.run_cmd("verify", transport=lambda *a, **k: {"name": "jdoe"})
+        rc, r = self.run_cmd("paste", "--text", "https://evil.example/browse/ABC-1",
+                             transport=Jira([issue(1)]))
+        self.assertEqual((rc, r["kind"], r["refused"]), (2, "error", True))
+        self.assertIn("evil.example", r["message"])
+        rc, r = self.run_cmd("tests", "--project", "ABC",
+                             transport=Jira(fail=search.JiraError(401, "Jira returned 401")))
+        self.assertEqual((rc, r["kind"], r["refused"]), (1, "error", False))
+
+        def boom(*a, **k):
+            raise ValueError("Invalid header value b'Bearer tok_1234567890'")
+        rc, r = self.run_cmd("verify", transport=boom)
+        self.assertEqual(r["message"], "unexpected ValueError; see the log")
+
+    def test_the_token_is_never_in_what_the_page_is_given(self):
+        for argv, transport in ((("verify",), lambda *a, **k: {"name": "jdoe"}),
+                                (("tests", "--project", "abc"), Jira([issue(1)])),
+                                (("paste", "--text", "project = ABC"), Jira([issue(1)]))):
+            _, r = self.run_cmd(*argv, transport=transport)
+            self.assertNotIn("tok_1234567890", json.dumps(r), argv)
+
+    def test_a_job_id_that_leaves_the_job_root_is_refused_and_nothing_is_written(self):
+        for bad in ("../x", "a/b", "C:/tmp/x", "..", ""):
+            if bad:
+                with self.assertRaises(search.Refused):
+                    search.job_result_path(bad)
+        rc, _ = self.run_cmd("verify", transport=lambda *a, **k: {"name": "jdoe"}, job="../escape")
+        self.assertEqual(rc, 2)
+        self.assertEqual(os.listdir(self.root), [])
+
+    def test_without_a_job_nothing_extra_is_written(self):
+        rc, _ = self.run_cmd("verify", transport=lambda *a, **k: {"name": "jdoe"}, job="")
+        self.assertEqual((rc, os.listdir(self.root)), (0, []))
+
+
 class TheRealTransport(unittest.TestCase):
     """urllib against two servers on loopback: the one configured, and one
     a redirect points at. Nothing leaves the machine."""

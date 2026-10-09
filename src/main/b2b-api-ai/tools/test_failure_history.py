@@ -394,6 +394,126 @@ class SeenBefore(Store):
                          {"409"})
 
 
+class WhatThePageIsGiven(Store):
+    """With --job the command also writes the comparison as data. The
+    console report is printed FROM that data, so the two cannot differ."""
+
+    def main(self, *argv):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = fh.main(list(argv), root=self.root)
+        return rc, out.getvalue()
+
+    def result(self, job="j1"):
+        p = os.path.join(self.root, "target", "agent", job, fh.JOB_RESULT)
+        if not os.path.isfile(p):
+            return None
+        with io.open(p, encoding="utf-8") as f:
+            return json.load(f)
+
+    def put_digest(self, *failures):
+        os.makedirs(os.path.join(self.root, "target"), exist_ok=True)
+        with io.open(os.path.join(self.root, "target", "failure-digest.txt"), "w",
+                     encoding="utf-8") as f:
+            f.write(digest(*failures))
+
+    def test_the_console_report_is_the_analysis_printed(self):
+        self.run_of(("A.same", "-", PLAIN), ("B.changes", "r1", REFUSED), ("C.goes", "-", PLAIN))
+        fh.add_note(self.root, fh.signature_id(REFUSED), "the token was for another account")
+        near = "FlowStopped | POST /accounts/<*>/members answered 403 Forbidden: role missing"
+        snap, prev, _ = self.run_of(("A.same", "-", PLAIN), ("B.changes", "r1", TIMEOUT),
+                                    ("D.new", "-", near))
+        a = fh.analyse(self.root, snap, prev)
+        self.assertEqual(fh.report(self.root, snap, prev), fh.render(a))
+        g = a["groups"]
+        self.assertEqual(([x["test"] for x in g["new"]], [x["test"] for x in g["changed"]],
+                          [x["test"] for x in g["same"]], [x["test"] for x in g["gone"]]),
+                         (["D.new"], ["B.changes"], ["A.same"], ["C.goes"]))
+        self.assertEqual((g["changed"][0]["was"], g["changed"][0]["now"]), (REFUSED, TIMEOUT))
+        by = {s["signature"]: s for s in a["signatures"]}
+        self.assertEqual(by[PLAIN]["runs"], 1)
+        self.assertEqual(by[near]["resembles"]["id"], fh.signature_id(REFUSED))
+        self.assertEqual(by[near]["resembles"]["note"], "the token was for another account")
+        json.dumps(a)                       # all of it is plain data
+
+    def test_record_note_show_and_list_each_write_a_result(self):
+        self.put_digest(("A.one", "-", REFUSED), ("A.two", "r2", REFUSED))
+        rc, _ = self.main("record", "--label", "first", "--job", "j1")
+        r = self.result()
+        self.assertEqual((rc, r["kind"], r["fresh"], r["own_run"], r["failing"], r["label"]),
+                         (0, "record", True, True, 2, "first"))
+        self.assertIsNone(r["previous"])
+        sid = r["signatures"][0]["id"]
+        os.remove(os.path.join(self.root, "target", "failure-digest.txt"))   # e.g. mvn clean
+        rc, _ = self.main("note", "--id", sid, "--text", "owner and member shared an email",
+                          "--job", "j1")
+        r = self.result()
+        self.assertEqual((rc, r["kind"], r["noted"]), (0, "record", sid),
+                         "the comparison, read again with the note in it")
+        self.assertEqual(r["signatures"][0]["note"]["text"], "owner and member shared an email")
+        self.assertEqual(len(fh.snapshots(self.root)), 1, "saving a note recorded no run")
+        self.put_digest(("A.one", "-", REFUSED), ("A.two", "r2", REFUSED))
+        rc, _ = self.main("show", "--id", sid, "--job", "j1")
+        r = self.result()
+        self.assertEqual((r["kind"], len(r["runs"]), r["note"]["text"]),
+                         ("show", 1, "owner and member shared an email"))
+        self.assertEqual(r["runs"][0]["tests"], [{"test": "A.one", "row": "-"},
+                                                 {"test": "A.two", "row": "r2"}])
+        rc, _ = self.main("list", "--job", "j1")
+        r = self.result()
+        self.assertEqual((r["kind"], r["runs"][0]["failing"], r["runs"][0]["label"]),
+                         ("runs", 2, "first"))
+        rc, _ = self.main("record", "--job", "j1")
+        r = self.result()
+        self.assertEqual((r["fresh"], r["signatures"][0]["note"]["text"]),
+                         (False, "owner and member shared an email"))
+
+    def test_a_refusal_is_a_result_and_the_old_one_is_gone(self):
+        self.put_digest(("A.one", "-", REFUSED))
+        self.main("record", "--job", "j1")
+        rc, _ = self.main("show", "--id", "not-an-id", "--job", "j1")
+        self.assertEqual((rc, self.result()["kind"]), (2, "error"))
+        os.remove(os.path.join(self.root, "target", "failure-digest.txt"))
+        rc, _ = self.main("record", "--job", "j1")
+        self.assertEqual((rc, self.result()["kind"]), (2, "error"))
+        self.assertIn("run the tests first", self.result()["message"])
+
+    def test_a_job_id_that_leaves_the_job_root_deletes_nothing_outside(self):
+        import tempfile
+        victim_dir = tempfile.mkdtemp(prefix="failhist_victim_")
+        self.addCleanup(shutil.rmtree, victim_dir, ignore_errors=True)
+        victim = os.path.join(victim_dir, fh.JOB_RESULT)
+        with io.open(victim, "w") as f:
+            f.write("somebody else's file")
+        self.put_digest(("A.one", "-", REFUSED))
+        rel = os.path.relpath(victim_dir, os.path.join(self.root, "target", "agent"))
+        for job in (rel, victim_dir, "../../../x"):
+            self.main("list", "--job", job)
+            self.main("record", "--job", job)
+        self.assertTrue(os.path.isfile(victim))
+        self.assertEqual(fh.job_result_path(self.root, "../x"), "")
+
+    def test_a_refusal_and_a_failure_are_told_apart(self):
+        self.main("show", "--id", "nope", "--job", "j1")
+        self.assertIs(self.result()["refused"], True)
+
+    def test_a_job_id_that_leaves_the_job_root_writes_nothing_outside(self):
+        self.put_digest(("A.one", "-", REFUSED))
+        self.main("record", "--job", "../../escape")
+        self.assertEqual(sorted(os.listdir(self.root)), [fh.STORE, "target"])
+        self.assertEqual(os.listdir(os.path.join(self.root, "target")), ["failure-digest.txt"])
+        self.assertFalse([n for n in os.listdir(os.path.dirname(self.root)) if n == "escape"])
+
+    def test_the_command_line_still_takes_the_id_and_note_without_options(self):
+        self.put_digest(("A.one", "-", REFUSED))
+        self.main("record")
+        sid = fh.signature_id(REFUSED)
+        self.assertEqual(self.main("note", sid, "typed the old way")[0], 0)
+        rc, out = self.main("show", sid)
+        self.assertEqual(rc, 0)
+        self.assertIn("typed the old way", out)
+
+
 class TheCommand(Store):
     def main(self, *argv):
         out = io.StringIO()

@@ -72,11 +72,59 @@ RUNNABLES = {
         "options": {"--job": "text", "--index": "path",
                     "--rebuild-index": "flag"},
     },
-    # No options: the host and the token are the configured ones.
+    # Tab 4. Read-only questions to the ONE configured Jira. No runnable
+    # here takes a host, a token or a path: what the page can send is a
+    # project key, a version name, an issue type, a limit and a query, and
+    # search.py validates or quotes each of them.
     "jira-verify": {
         "argv": [PY, "-B", os.path.join("tools", "jira", "search.py"), "verify"],
         "label": "Check the Jira token",
-        "options": {},
+        "options": {"--job": "text"},
+    },
+    "jira-versions": {
+        "argv": [PY, "-B", os.path.join("tools", "jira", "search.py"), "versions"],
+        "label": "A project's versions, newest first",
+        "options": {"--job": "text", "--project": "text", "--all": "flag"},
+    },
+    "jira-release": {
+        "argv": [PY, "-B", os.path.join("tools", "jira", "search.py"), "fix-version"],
+        "label": "What a release holds, and what changed since another",
+        "options": {"--job": "text", "--project": "text", "--version": "text",
+                    "--compare": "text", "--type": "text", "--max": "text"},
+    },
+    "jira-tests": {
+        "argv": [PY, "-B", os.path.join("tools", "jira", "search.py"), "tests"],
+        "label": "The tests a project already has",
+        "options": {"--job": "text", "--project": "text", "--type": "text",
+                    "--jql": "text", "--max": "text"},
+    },
+    "jira-paste": {
+        "argv": [PY, "-B", os.path.join("tools", "jira", "search.py"), "paste"],
+        "label": "List what was pasted: keys, a query, or a Jira address",
+        "options": {"--job": "text", "--text": "text", "--max": "text"},
+    },
+    # Tab 5. Reads target/failure-digest.txt, writes .failure-history/
+    # (ignored) and the job directory. `record` takes no path from the
+    # page: it records this project's last run.
+    "failures-record": {
+        "argv": [PY, "-B", os.path.join("tools", "failure_history.py"), "record"],
+        "label": "Keep this run's failures and compare with the run before",
+        "options": {"--job": "text", "--label": "text"},
+    },
+    "failures-list": {
+        "argv": [PY, "-B", os.path.join("tools", "failure_history.py"), "list"],
+        "label": "The runs recorded so far",
+        "options": {"--job": "text"},
+    },
+    "failures-show": {
+        "argv": [PY, "-B", os.path.join("tools", "failure_history.py"), "show"],
+        "label": "Every run a failure signature appeared in",
+        "options": {"--job": "text", "--id": "text"},
+    },
+    "failures-note": {
+        "argv": [PY, "-B", os.path.join("tools", "failure_history.py"), "note"],
+        "label": "Write down what a failure turned out to be",
+        "options": {"--job": "text", "--id": "text", "--text": "text"},
     },
     "audit-service-keys": {
         "argv": [PY, "-B", os.path.join("tools", "audit_service_keys.py")],
@@ -195,9 +243,30 @@ def build_argv(runnable: str, options: dict) -> list:
         for v in values:
             if v is None or str(v).strip() == "":
                 continue
+            if kind != "path" and str(v).lstrip().startswith("-"):
+                # `--text -flaky` reads to the command as an option called
+                # -flaky and no text. Joined with `=`, it is the text.
+                argv.append(f"{name}={v}")
+                continue
             argv.append(name)
             argv.append(confine(str(v)) if kind == "path" else str(v))
     return argv
+
+
+# The file each of these commands writes for the page, in the job
+# directory. It is removed BEFORE the command starts: a command that dies
+# before it can write -- a bad argument, a crash, Stop -- must leave no
+# result, not the previous command's result under this one's exit code.
+RESULT_FILES = {"jira-": "jira-result.json", "failures-": "failures-result.json"}
+
+
+def clear_result(job: str, runnable: str) -> None:
+    for prefix, name in RESULT_FILES.items():
+        if runnable.startswith(prefix):
+            try:
+                os.remove(os.path.join(job_dir(job), name))
+            except OSError:
+                pass
 
 
 def job_dir(job: str) -> str:
@@ -271,6 +340,7 @@ def start(job: str, runnable: str, options: dict) -> dict:
     argv = build_argv(runnable, options)      # validates before any mkdir
     out = job_dir(job)                        # validates the job id
     os.makedirs(out, exist_ok=True)
+    clear_result(job, runnable)
 
     key = (job, runnable)
     with _LOCK:
@@ -370,7 +440,8 @@ def read_artifact(job: str, name: str) -> str:
     """
     allowed = {"brief.md", "plan.md", "intake.json", "locate.json",
                "proposed.diff", "review.json",
-               "design.json", "design.md", "test-cases.csv", "xray.csv"}
+               "design.json", "design.md", "test-cases.csv", "xray.csv",
+               "jira-result.json", "failures-result.json"}
     if name not in allowed:
         raise ValueError(f"{name!r} is not a readable artifact. "
                          f"Known: {', '.join(sorted(allowed))}")
