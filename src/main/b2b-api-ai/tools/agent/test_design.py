@@ -850,6 +850,21 @@ class Run(unittest.TestCase):
         self.assertIn("FAIL Cursor did not finish within 900s", out.getvalue())
         self.assertNotIn("no part of the design", out.getvalue())
 
+    def test_ask_again_forgets_nothing_when_cursor_cannot_be_asked(self):
+        self.run_design(self.agent(reply(case())), fresh=False)
+        self.assertEqual(len(self.cached()), 1)
+        orig = loop.ensure_sdk
+
+        def no_sdk(root=""):
+            raise RuntimeError("cursor-sdk could not be installed automatically")
+        loop.ensure_sdk = no_sdk
+        try:
+            rc = design.design("j1", swagger=json.dumps(SPEC), root=self.root, fresh=True)
+        finally:
+            loop.ensure_sdk = orig
+        self.assertEqual(rc, 1)
+        self.assertEqual(len(self.cached()), 1, "the kept reply is still there")
+
     def test_fresh_forgets_the_old_answer_even_when_the_new_one_is_not_kept(self):
         self.run_design(self.agent(reply(case(title="old"))), fresh=False)
         whole = reply(case(title="new"), case(id="TC-002"))

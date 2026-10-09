@@ -170,7 +170,8 @@ What the step checks instead of trusting:
   specification is kept as soon as it is read, so a run stopped half way
   does not pay for its finished parts again. A reply that was cut off,
   needed a second turn, or gave no usable case is never kept. Tick **Ask
-  again** (`--fresh`) to forget every reply kept for the job and ask;
+  again** (`--fresh`) to forget every reply kept for the job and ask
+  (nothing is forgotten when Cursor cannot be asked: no key, no SDK);
   it unticks itself after the run. A run answered entirely from kept
   replies needs neither the SDK nor a key.
 - Each call to Cursor has a time limit (`cursor_deadline_seconds` in
@@ -183,16 +184,20 @@ What the step checks instead of trusting:
   treated as a call that did nothing. Everything checked after a
   finished run is checked after a failed one: the credential file,
   `.git` (hooks, config), files hidden from git, folders that ignore
-  themselves, a moved HEAD. What is found is put back and named in the
-  reason, and the job is left discardable.
+  themselves. What is found is put back and named in the reason. A
+  moved HEAD -- the agent committed or switched branch -- is NOT put
+  back, after a failed run or a finished one: nothing is reverted, the
+  reason says to reset the branch by hand, and Discard then puts the
+  files back.
 - When a tab 3 call times out, the tree is put back, and after a few
   seconds it is checked again. If the run wrote again, or could not be
   confirmed cancelled, the job is left **discardable**: end the Cursor
   bridge process (`cursor-sdk-bridge` / `node`) in the task manager if
-  it is still there, then **Discard**, which puts back anything written
-  since -- and can be used again if it writes once more. **Stop** ends a
-  job that is still running; it cannot reach a helper process the job
-  left behind.
+  it is still there, **first**, and then **Discard**, which puts back
+  anything written since. Discard works once: it restores the tree as it
+  was before the run, so a second use later would take with it whatever
+  you had done in between. **Stop** ends a job that is still running; it
+  cannot reach a helper process the job left behind.
 - Each input has a size limit (specification 80,000 characters,
   requirements 100,000, brief 40,000, notes 20,000; 200,000 together).
   A large specification loses its examples and long descriptions before

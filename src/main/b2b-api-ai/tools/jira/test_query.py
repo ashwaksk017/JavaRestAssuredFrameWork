@@ -200,6 +200,19 @@ class Neither(unittest.TestCase):
         r = query.parse(f"{J}/browse/ABC-1, {J}/browse/ABC-2")
         self.assertEqual(r["keys"], ["ABC-1", "ABC-2"], "with a space they are two addresses")
 
+    def test_an_address_inside_another_addresss_query_is_part_of_it(self):
+        r = query.parse(f"{J}/secure/RapidBoard.jspa?rapidView=1&selectedIssue=ABC-1"
+                        f"&returnUrl={J}/x")
+        self.assertEqual((r["kind"], r["keys"], r["hosts"]), (query.KEYS, ["ABC-1"], [J]))
+        r = query.parse(f'{J}/issues/?jql=text ~ "https://foo.example.com/x"'.replace(" ", "%20"))
+        self.assertEqual((r["kind"], r["hosts"]), (query.JQL, [J]))
+        self.assertEqual(query.parse(f"{J}/issues/?jql=project%20%3D%20ABC%3B")["jql"],
+                         "project = ABC")
+
+    def test_a_quoted_history_field_with_a_space_is_that_field(self):
+        self.assertTrue(query.is_jql('"Fix Version" was "6.02"'))
+        self.assertFalse(query.is_jql('"Favourite Colour" was blue'))
+
     def test_every_host_in_a_paste_is_reported_even_when_nothing_else_is(self):
         r = query.parse("https://evil.example/x project = ABC")
         self.assertEqual((r["kind"], r["hosts"]), (query.NONE, ["https://evil.example"]))

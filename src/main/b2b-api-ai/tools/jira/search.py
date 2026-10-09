@@ -622,7 +622,11 @@ def main(argv=None, transport=None) -> int:
             # A second approved Jira is approved for fetch.py, which goes
             # where the address says; a search here would answer a paste
             # from that one with results from this one.
-            mine = safehttp._origin(conn["base"])
+            try:
+                mine = safehttp._origin(conn["base"])
+            except safehttp.Redirected:
+                raise Refused("jira_config.base_urls[0] has a port that is not "
+                              "a port") from None
             for host in what["hosts"]:
                 try:
                     theirs = safehttp._origin(host)
@@ -633,7 +637,11 @@ def main(argv=None, transport=None) -> int:
                 # any user:password@ the paste carried.
                 if theirs is None or (theirs[0], theirs[1].rstrip("."), theirs[2]) != \
                         (mine[0], mine[1].rstrip("."), mine[2]):
-                    shown = f"{theirs[0]}://{theirs[1]}" if theirs else "an unreadable address"
+                    name = f"[{theirs[1]}]" if theirs and ":" in theirs[1] else \
+                        (theirs[1] if theirs else "")
+                    shown = (f"{theirs[0]}://{name}"
+                             + (f":{theirs[2]}" if theirs[2] not in (80, 443, None) else "")
+                             ) if theirs else "an unreadable address"
                     raise Refused(f"that paste names {shown}; searches only go to "
                                   f"{conn['base']}, the first of jira_config.base_urls")
                 if "@" in host:

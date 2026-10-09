@@ -179,11 +179,40 @@ class Comparing(Store):
             self.assertEqual(prev2["failures"][0]["test"], "A.monday")
         self.assertEqual(len(fh.snapshots(self.root)), 3)
 
-    def test_a_snapshot_from_before_runs_were_dated_still_stops_a_duplicate(self):
+    def test_the_same_failures_written_at_another_time_are_another_run_always(self):
         text = digest(("A.one", "-", PLAIN))
-        fh.record(self.root, text, now="20260101T000000Z")           # no `written`
+        fh.record(self.root, text, now="20260101T000000Z")           # no date of writing
+        _, _, fresh = fh.record(self.root, text, written=1_767_312_000)
+        self.assertTrue(fresh, "an undated snapshot does not swallow every later run")
         _, _, fresh = fh.record(self.root, text, written=1_767_312_000)
         self.assertFalse(fresh)
+
+    def test_the_run_a_new_one_is_compared_with_is_not_pruned_from_under_it(self):
+        old_keep = fh.KEEP
+        fh.KEEP = 3
+        self.addCleanup(setattr, fh, "KEEP", old_keep)
+        day = 86_400
+        for n, name in ((8, "A.eighth"), (10, "A.tenth"), (11, "A.eleventh")):
+            fh.record(self.root, digest((name, "-", PLAIN)), written=n * day)
+        snap, prev, _ = fh.record(self.root, digest(("A.ninth", "-", REFUSED)), written=9 * day)
+        self.assertEqual(prev["failures"][0]["test"], "A.eighth")
+        kept = [s["failures"][0]["test"] for s in fh.snapshots(self.root)]
+        self.assertIn("A.eighth", kept, "what it is compared with is still there")
+        self.assertIn("A.eleventh", kept, "and so is the newest run")
+        self.assertIn("compared with the run of", "\n".join(fh.report(self.root, snap, prev)))
+
+    def test_writing_a_note_does_not_delete_entries_it_cannot_read(self):
+        self.run_of(("A.one", "-", REFUSED))
+        os.makedirs(os.path.join(self.root, fh.STORE), exist_ok=True)
+        path = os.path.join(self.root, fh.STORE, "notes.json")
+        with io.open(path, "w", encoding="utf-8") as f:
+            json.dump({"_comment": "kept by hand", "abcdef0123": "a plain string"}, f)
+        fh.add_note(self.root, fh.signature_id(REFUSED), "the real one")
+        with io.open(path, encoding="utf-8") as f:
+            saved = json.load(f)
+        self.assertEqual(saved["_comment"], "kept by hand")
+        self.assertEqual(saved["abcdef0123"], "a plain string")
+        self.assertEqual(list(fh.notes(self.root)), [fh.signature_id(REFUSED)])
 
     def test_a_digest_given_by_path_is_not_judged_by_this_projects_test_report(self):
         d = os.path.join(self.root, "target", "surefire-reports")
@@ -321,6 +350,21 @@ class SeenBefore(Store):
         opposite = "AssertionError | expected status for Lookup expected [404] but found [200]"
         expects_200 = "AssertionError | expected status for Search expected [200] but found [404]"
         self.assertEqual(fh.resemblance(opposite, expects_200)[0], 0.0)
+
+    def test_the_same_code_from_a_different_step_is_not_a_resemblance(self):
+        a = "AssertionError | expected status for Create Member expected [200] but found [400]"
+        b = "AssertionError | expected status for Shop Availability expected [200] but found [400]"
+        self.assertLess(fh.resemblance(a, b)[0], fh.RESEMBLES_AT,
+                        "every 400 in the suite would otherwise resemble every other")
+
+    def test_the_list_form_of_the_status_assertion_names_its_step(self):
+        listed = ("AssertionError | expected status for Create Member in [200, 201] but found "
+                  "[400] expected [true] but found [false]")
+        self.assertEqual(fh.facets(listed)["step"], {"create member"})
+        plain = "FlowStopped | expected status for Create Member expected [200] but found [400]"
+        score, shared = fh.resemblance(listed, plain)
+        self.assertGreaterEqual(score, 0.9)
+        self.assertIn("step create member", shared)
 
     def test_the_generated_multi_code_assertion_has_a_status(self):
         sig = ("AssertionError | status for Get Rates in ['200', '206', '204'] but got 404 "

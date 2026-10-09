@@ -110,7 +110,8 @@ _STATUS_SAID_RX = re.compile(
 _STATUS_ASSERT_RX = re.compile(r"(?i)found\s*\[([1-5][0-9]{2})\]")
 # "expected status for <step> expected [..]": how both the status assertion
 # and FlowStopped name the step. Real signatures carry the step, not a path.
-_STEP_RX = re.compile(r"(?i)\bstatus for (.+?) expected \[")
+# ...and the list form: "expected status for <step> in [200, 201] but found".
+_STEP_RX = re.compile(r"(?i)\bstatus for (.+?) (?:expected|in) \[")
 # FlowStopped's own sentence, the same in every one of them.
 _BOILERPLATE_RX = re.compile(r"(?is)\s--\sflow stopped here:.*?(?=\sServer said:|$)")
 # A path starts with a segment that has a letter in it. `12/31/2026` is a date.
@@ -124,6 +125,7 @@ GENERIC = frozenset({"AssertionError", "RuntimeException", "Exception", "Error",
                      "FlowStopped"})
 _STOP = frozenset("""the and but for not was were with that this from have has had
     are its expected found true false null got did does should could would into
+    status
     than then when what which while your our their there here""".split())
 
 
@@ -285,10 +287,10 @@ def record(root: str, digest_text: str, label: str = "", now: str = "",
     earlier = snapshots(root, parsed["suite"])
     for old in earlier:
         # ANY recorded run, not only the newest: an older digest recorded
-        # again must not become a new run each time. A snapshot with no
-        # date of writing (or a digest with none) is matched on content.
-        same_time = old.get("written") == stamp or old.get("written") is None or stamp is None
-        if old.get("digest") == sha and same_time:
+        # again must not become a new run each time. Same content AND
+        # written at the same time; the same failures written at another
+        # time are another run.
+        if old.get("digest") == sha and old.get("written") == stamp:
             before = _before(earlier, old["at"], old["_file"])
             return old, (before[-1] if before else None), False
     if not now:
@@ -315,13 +317,18 @@ def record(root: str, digest_text: str, label: str = "", now: str = "",
     except OSError as e:
         raise Unusable(f"{STORE}/ could not be written ({type(e).__name__})") from None
     snap["_file"] = name
-    for old in earlier[:max(0, len(earlier) + 1 - KEEP)]:
+    before = _before(earlier, now, name)
+    previous = before[-1] if before else None
+    # The oldest go -- but never the run just recorded, and never the one
+    # it is about to be compared with (a digest older than everything
+    # kept would otherwise delete its own comparison).
+    spare = [s for s in earlier if s is not previous]
+    for old in spare[:max(0, len(earlier) + 1 - KEEP)]:
         try:
             os.remove(os.path.join(d, old["_file"]))
         except OSError:
             pass
-    before = _before(earlier, now, name)
-    return snap, (before[-1] if before else None), True
+    return snap, previous, True
 
 
 # ---- comparing ----------------------------------------------------------------
@@ -554,7 +561,15 @@ def add_note(root: str, sid: str, text: str) -> str:
         raise Unusable(f"no recorded failure has the signature id {sid}")
     if not text.strip():
         raise Unusable("the note is empty")
-    all_notes = notes(root)
+    # The file as it is, not the filtered view: an entry this cannot read
+    # is still something a person wrote, and saving must not delete it.
+    try:
+        with io.open(os.path.join(store_dir(root), "notes.json"), encoding="utf-8") as fh:
+            all_notes = json.load(fh)
+        if not isinstance(all_notes, dict):
+            all_notes = {}
+    except (OSError, ValueError):
+        all_notes = {}
     all_notes[sid] = {"text": text.strip()[:2000], "signature": found,
                       "at": datetime.now(timezone.utc).strftime("%Y-%m-%d")}
     try:

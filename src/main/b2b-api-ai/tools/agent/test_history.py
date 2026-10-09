@@ -104,6 +104,18 @@ class WhichStories(Repo):
             "Uses SHA256-99 and TLS1-3 and AES256-128; ERROR-404 on MON-12. See BOOK-41 and BOOK-7.\n"))
         self.assertEqual(self.keys(), [("BOOK-41", "text"), ("BOOK-7", "text")])
 
+    def test_a_line_that_looks_like_a_request_still_gives_up_the_story_it_names(self):
+        for text, want in (
+            ("[BOOK-41] Add booking test", ["BOOK-41"]),
+            ("BOOK-41 https://api.example.com/v1/shop", ["BOOK-41"]),
+            ("BOOK-41: curl below", ["BOOK-41"]),
+            ("Automate it, see https://acme.example.net/browse/BOOK-41 and PART-9", ["BOOK-41"]),
+            ('{"sku": "SKU-100", "ref": "PART-9"}', []),
+            ("P2-14 is the story", ["P2-14"]),
+        ):
+            self.intake(pasted=text)
+            self.assertEqual([k for k, _ in self.keys()], want, text)
+
     def test_the_story_named_most_comes_first_when_there_are_too_many(self):
         self.intake(pasted=" ".join(f"PART-{n}" for n in range(30))
                            + "\nThe story is BOOK-41. BOOK-41 again. And BOOK-41.")
@@ -235,6 +247,16 @@ class WhatTheRepositoryKnows(Repo):
                                  self.root, 1.0)
         self.assertIsNone(code)
         self.assertLess(time.time() - t0, 15, "the grandchild did not keep the pipe open")
+
+    def test_a_repository_with_no_commit_yet_has_nothing_not_an_error(self):
+        self.assertEqual(history.commits_for(self.root, "BOOK-1"), ([], 0))
+        self.intake(pasted="BOOK-1")
+        h = history.build(self.job, self.root)
+        self.assertFalse(h["unreadable"])
+
+    def test_a_file_called_head_does_not_confuse_the_search(self):
+        self.commit("BOOK-9 with a file named HEAD", {"HEAD": "not the ref"})
+        self.assertEqual(self.subjects("BOOK-9"), ["BOOK-9 with a file named HEAD"])
 
     def test_a_commit_on_a_detached_head_is_found(self):
         self.commit("base", {"a.txt": "1"})

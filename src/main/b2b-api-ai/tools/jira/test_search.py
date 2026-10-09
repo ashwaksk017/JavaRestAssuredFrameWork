@@ -485,6 +485,25 @@ class TheCommand(unittest.TestCase):
         self.assertEqual((rc, jira.calls), (2, []))
         self.assertNotIn("s3cret", out)
 
+    def test_a_refusal_for_another_port_shows_the_port(self):
+        jira = Jira([issue(1)])
+        rc, out, _ = self.run_main(["paste", "https://jira.example.com:8443/browse/ABC-1"], jira)
+        self.assertEqual((rc, jira.calls), (2, []))
+        self.assertIn("names https://jira.example.com:8443;", out)
+
+    def test_a_base_url_with_a_port_that_is_not_one_is_a_refusal_not_a_crash(self):
+        orig = search.connect
+        search.connect = lambda: dict(CONN, base="https://jira.example.com:99999")
+        out = io.StringIO()
+        try:
+            with redirect_stdout(out):
+                rc = search.main(["paste", "https://jira.example.com/browse/ABC-1"],
+                                 transport=Jira([issue(1)]))
+        finally:
+            search.connect = orig
+        self.assertEqual(rc, 2)
+        self.assertIn("refused", out.getvalue())
+
     def test_an_ordering_alone_is_not_searched(self):
         jira = Jira([issue(1)])
         rc, out, _ = self.run_main(["paste", "order by created"], jira)

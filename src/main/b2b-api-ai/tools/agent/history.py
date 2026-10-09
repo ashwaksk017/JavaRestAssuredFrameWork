@@ -94,7 +94,7 @@ NOT_PROJECTS = frozenset("""
 _REQUEST_LINE_RX = re.compile(
     r"""(?ix) \bcurl\b | ://
         | ^\s*-{1,2}[A-Za-z]            # -H, --data
-        | ^\s*[{}\[\]]                  # JSON
+        | ^\s*[{\[]\s*(?:"|$) | ^\s*[}\]]      # JSON
         | "\s*:                         # "field": value
         | ^\s*[A-Za-z][A-Za-z0-9-]*:\s*\S+/\S   # Header: type/subtype
         | ^\s*(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+/ """)
@@ -103,9 +103,17 @@ _REQUEST_LINE_RX = re.compile(
 _CUE_RX = re.compile(r"(?i)\b(?:story|stories|ticket|jira|issue|epic|bug|defect)\b")
 
 
+# A key a request line may still give: at its start (`BOOK-41: curl below`,
+# `[BOOK-41] title`), or in a story's own address.
+_LEADING_KEY_RX = re.compile(r"^\s*\[?(" + _KEY + r")\]?(?![A-Za-z0-9_])")
+
+
 def _not_a_project(project: str) -> bool:
-    """`SHA256`, `TLS1`, `OAUTH2` are `SHA`, `TLS`, `OAUTH` with a version."""
-    return project in NOT_PROJECTS or project.rstrip("0123456789") in NOT_PROJECTS \
+    """`SHA256`, `TLS1`, `OAUTH2` are `SHA`, `TLS`, `OAUTH` with a version.
+    Only for a stem of two letters or more: `P2`, `X1`, `S3` are real
+    project keys somewhere, and one letter says too little to rule on."""
+    stem = project.rstrip("0123456789")
+    return project in NOT_PROJECTS or (len(stem) >= 2 and stem in NOT_PROJECTS) \
         or not project.rstrip("0123456789_")
 
 
@@ -164,10 +172,14 @@ def story_keys(job_dir: str) -> dict:
     projects = {k.split("-")[0] for k in linked}
     counts = {}
     for line in _read(os.path.join(job_dir, "pasted.txt")).splitlines():
-        # ...unless the line itself says it is talking about a story.
+        # ...unless the line itself says it is talking about a story. Even
+        # then a request line gives up the key it starts with and the key
+        # of a story address in it; only the rest of the line is not read.
+        found = _KEY_RX.findall(line)
         if not projects and _REQUEST_LINE_RX.search(line) and not _CUE_RX.search(line):
-            continue
-        for k in _KEY_RX.findall(line):
+            found = [m.group(1) for m in [_LEADING_KEY_RX.match(line)] if m] \
+                + [k.upper() for k in _BROWSE_RX.findall(line)]
+        for k in found:
             project = k.split("-")[0]
             if (project in projects) if projects else not _not_a_project(project):
                 counts[k] = counts.get(k, 0) + 1
@@ -196,10 +208,12 @@ def _run(argv: list, cwd: str, wait: float) -> tuple:
     ended on timeout: on Windows `git` is often a launcher that starts the
     real git, and killing the launcher leaves the child holding the pipe,
     so a plain subprocess timeout returns only when the child does."""
-    flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
+    windows = os.name == "nt"
+    flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if windows else 0
     proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                            encoding="utf-8", errors="replace", creationflags=flags)
+                            encoding="utf-8", errors="replace", creationflags=flags,
+                            start_new_session=not windows)
     try:
         out, _ = proc.communicate(timeout=wait)
         return proc.returncode, out or ""
@@ -210,6 +224,12 @@ def _run(argv: list, cwd: str, wait: float) -> tuple:
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                stdin=subprocess.DEVNULL, timeout=10)
             except (OSError, subprocess.SubprocessError):
+                pass
+        else:
+            try:
+                import signal
+                os.killpg(proc.pid, signal.SIGKILL)       # its own session: the group
+            except (OSError, AttributeError):
                 pass
         try:
             proc.kill()
@@ -250,11 +270,15 @@ def commits_for(root: str, key: str, clock: _Clock = None, limit: int = MAX_COMM
     # list no files and say what their parents already said). NUL starts a
     # record: a commit message cannot contain one, so a subject cannot
     # forge a second commit. --relative: paths as seen from the project.
-    # HEAD as well: a commit made on a detached HEAD is on no branch.
-    ok, out = _git(root, ["log", "HEAD", "--branches", "--remotes", "--no-merges", "-E", "-i",
+    # HEAD as well: a commit made on a detached HEAD is on no branch. Only
+    # when there IS one -- in a repository with no commit yet, naming HEAD
+    # is an error, and "nothing found" would read as "could not look".
+    has_head, _ = _git(root, ["rev-parse", "-q", "--verify", "HEAD^{commit}"], clock)
+    ok, out = _git(root, ["log", *(["HEAD"] if has_head else []),
+                          "--branches", "--remotes", "--no-merges", "-E", "-i",
                           f"--grep={pattern}", f"--max-count={limit + 1}",
                           "--date=short", "--name-only", "--relative",
-                          "--format=%x00%h%x1f%ad%x1f%s"], clock)
+                          "--format=%x00%h%x1f%ad%x1f%s", "--"], clock)
     if not ok:
         return None
     commits = []

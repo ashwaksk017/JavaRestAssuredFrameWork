@@ -1049,6 +1049,15 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
 
     reused = []
     if fresh:
+        if agent is None:
+            # Forgetting comes AFTER knowing a new answer can be asked for.
+            # With no key, "Ask again" used to cost every kept reply and
+            # get nothing for them.
+            try:
+                need_cursor()
+            except loop.CursorFailed as e:
+                say(f"FAIL {e}")
+                return 1
         forgotten = cache_clear(out_dir)
         if forgotten:
             say(f" ..  --fresh: {forgotten} kept reply(ies) for this job were forgotten")
@@ -1332,7 +1341,7 @@ def main(argv=None) -> int:
     ap.add_argument("--notes-file", default="")
     ap.add_argument("--speed", default="balanced")
     ap.add_argument("--fresh", action="store_true",
-                    help="ask Cursor even when exactly this was asked before")
+                    help="forget every reply kept for this job, and ask Cursor")
     ap.add_argument("--mode", default="plan",
                     help="plan (default): Cursor proposes and changes nothing. "
                          "agent: only if plan mode gives no usable reply.")

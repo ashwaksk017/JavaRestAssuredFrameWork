@@ -34,6 +34,7 @@ function follow(runnable, logEl, stateEl, onDone) {
   // this poller to another job's log if the box is edited mid-run.
   const j = job();
   let offset = 0;
+  let misses = 0;
   logEl.textContent = "";
   setState(stateEl, "run", "running…");
   const tick = async () => {
@@ -47,12 +48,21 @@ function follow(runnable, logEl, stateEl, onDone) {
       }
       const st = await api(
         `/api/status?job=${encodeURIComponent(j)}&runnable=${runnable}`);
+      misses = 0;
       if (st.state === "running") { setTimeout(tick, 900); return; }
       if (st.state === "done") setState(stateEl, "ok", "finished");
       else setState(stateEl, "bad", `exit ${st.exit_code}`);
       if (onDone) onDone(st);
     } catch (e) {
-      setState(stateEl, "bad", e.message);
+      // One failed request is not the end of the run. Giving up at once
+      // re-enabled buttons while the job was still going.
+      misses += 1;
+      if (misses <= 8) {
+        setState(stateEl, "run", `running… (not reachable just now, retry ${misses})`);
+        setTimeout(tick, 1500);
+        return;
+      }
+      setState(stateEl, "bad", `${e.message} — the run may still be going; refresh to see`);
       // Whoever started this is waiting to tidy up (a timer, a disabled
       // button). The run's own state is unknown; say so, do not hang.
       if (onDone) onDone({ state: "unknown" });

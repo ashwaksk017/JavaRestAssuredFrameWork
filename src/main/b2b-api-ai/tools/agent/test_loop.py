@@ -275,10 +275,36 @@ class ARunThatTimedOut(Repo):
 
     def test_writes_that_arrive_while_settling_are_seen_even_after_a_confirmed_cancel(self):
         import threading
-        self.policy["timeout_settle_seconds"] = 0.8
+        # The write lands well inside the wait, whatever the machine's speed:
+        # the checks before the first putting-back take about a second.
+        self.policy["timeout_settle_seconds"] = 8
         late = lambda: threading.Timer(
-            0.25, lambda: write(self.root, JIRA + "LateTest.java", "class LateTest {}\n")).start()
+            4.0, lambda: write(self.root, JIRA + "LateTest.java", "class LateTest {}\n")).start()
         self.assertEqual(self.generate(self.stuck(cancelled=True, after=late)), 1)
+        r = self.state()
+        self.assertTrue(r["needs_discard"])
+        self.assertIn("wrote again afterwards", r["reason"])
+        self.assertEqual(self.status(), "")
+
+    def test_a_write_during_the_checks_counts_as_the_run_still_writing(self):
+        real = loop.hidden_flags
+
+        def slow_check(root):
+            if not getattr(slow_check, "done", False):
+                slow_check.done = True
+                write(self.root, JIRA + "DuringChecks.java", "class DuringChecks {}\n")
+            return real(root)
+        calls = []
+
+        def agent(_prompt):
+            write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
+            loop.hidden_flags = slow_check          # from now on: inside sweep()
+            calls.append(1)
+            raise loop.CursorFailed("Cursor did not finish within 2700s", "timeout", True)
+        try:
+            self.assertEqual(self.generate(agent), 1)
+        finally:
+            loop.hidden_flags = real
         r = self.state()
         self.assertTrue(r["needs_discard"])
         self.assertIn("wrote again afterwards", r["reason"])
@@ -302,7 +328,8 @@ class ARunThatTimedOut(Repo):
             self.assertIn("the-real-one", fh.read())
         self.assertFalse(os.path.isfile(os.path.join(self.root, ".git", "hooks", "pre-push")))
         r = self.state()
-        self.assertTrue(r["needs_discard"])
+        self.assertFalse(r.get("needs_discard"),
+                         "it was cancelled and everything is back: nothing for Discard to do")
         self.assertIn("credential/config file(s) were changed", r["reason"])
         self.assertIn("files inside .git were changed", r["reason"])
 
@@ -316,6 +343,9 @@ class ARunThatTimedOut(Repo):
         r = self.state()
         self.assertTrue(r["needs_discard"])
         self.assertIn("HEAD moved while it ran", r["reason"])
+        self.assertIn("Nothing was reverted", r["reason"])
+        self.assertTrue(os.path.isfile(os.path.join(self.root, JIRA + "NewTest.java")),
+                        "not 'restored' to the agent's own commit and called put back")
 
     def test_the_users_own_uncommitted_delete_is_not_read_as_the_run_writing_again(self):
         os.remove(os.path.join(self.root, "README.md"))
@@ -350,12 +380,35 @@ class ARunThatTimedOut(Repo):
         self.assertNotIn("files", r)
         self.assertFalse(os.path.isfile(os.path.join(self.job, "proposed.diff")))
 
-    def test_discard_still_works_a_second_time_for_a_run_never_confirmed_stopped(self):
+    def test_discard_is_once_so_it_cannot_take_work_done_afterwards(self):
         self.assertEqual(self.generate(self.stuck(cancelled=False)), 1)
         self.assertEqual(loop.cmd_discard(self.job, self.root), 0)
-        write(self.root, JIRA + "LateTest.java", "class LateTest {}\n")   # the zombie again
-        self.assertEqual(loop.cmd_discard(self.job, self.root), 0)
-        self.assertEqual(self.status(), "")
+        self.assertFalse(self.state().get("needs_discard"), "the button goes off")
+        # The reviewer carries on working.
+        write(self.root, "README.md", "my work, after the discard\n")
+        write(self.root, "src/main/java/Mine.java", "class Mine {}\n")
+        self.assertEqual(loop.cmd_discard(self.job, self.root), 1, "nothing to discard")
+        with io.open(os.path.join(self.root, "README.md"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "my work, after the discard\n")
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "src/main/java/Mine.java")))
+
+    def test_an_ignored_file_that_was_already_there_survives_the_clean_up(self):
+        """git reports a folder as ONE ignored entry once its tracked files
+        are gone. Taking that entry whole took the reviewer's local file."""
+        write(self.root, ".gitignore", "target/\n*.env\n")
+        write(self.root, "data/x.txt", "tracked\n")
+        sh(self.root, "add", "-A")
+        sh(self.root, "commit", "-q", "-m", "data")
+        write(self.root, "data/local.env", "MINE=1\n")           # ignored, the reviewer's
+
+        def agent(_prompt):
+            os.remove(os.path.join(self.root, "data", "x.txt"))
+            write(self.root, "data/planted.env", "AGENT=1\n")
+            raise loop.CursorFailed("the agent started but did not finish", "run")
+        self.assertEqual(self.generate(agent), 1)
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "data", "local.env")))
+        self.assertFalse(os.path.isfile(os.path.join(self.root, "data", "planted.env")))
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "data", "x.txt")))
 
     def test_any_other_failure_is_handled_as_before(self):
         def agent(_prompt):

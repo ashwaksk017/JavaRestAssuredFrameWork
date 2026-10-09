@@ -85,6 +85,9 @@ class Classify(unittest.TestCase):
             "https://jira.example.com/browse/B2B-1 https://wiki.example.com/x/AbCd"),
             intake.UNKNOWN)
         self.assertEqual(intake.classify("it was good"), intake.UNKNOWN)
+        self.assertEqual(
+            intake.classify("https://jira.example.com/browse/B2B-1?returnUrl=https://jira.example.com/x"),
+            intake.JIRA, "an address inside the query string is not a second link")
         self.assertEqual(intake.classify("order by created"), intake.UNKNOWN)
 
     def test_a_line_that_cannot_be_read_is_unknown_not_a_lost_job(self):

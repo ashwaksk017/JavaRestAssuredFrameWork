@@ -60,6 +60,10 @@ _KEY_RX = re.compile(rf"^{_KEY}$")
 _KEY_IN_PATH_RX = re.compile(rf"(?i)/(?:browse|issues)/({_KEY})(?=$|[/?#])")
 _URL_RX = re.compile(r"(?i)^https?://\S+$")
 _HAS_URL_RX = re.compile(r"(?i)\bhttps?://")
+# A second address STARTING after a separator. One inside another address's
+# query string (`?returnUrl=https://...`, `?jql=text ~ "https://..."`) is
+# part of the first.
+_NEXT_URL_RX = re.compile(r"(?i)(?<=[;,)>])<?https?://")
 
 # ---- is the whole text a query? ---------------------------------------
 
@@ -212,7 +216,7 @@ class _Parser:
         if not self.field():
             return False
         if self.word("was", "changed") and \
-                str(named).strip("\"'").lower() not in _HISTORY_FIELDS:
+                re.sub(r"\s+", "", str(named).strip("\"'")).lower() not in _HISTORY_FIELDS:
             return False                    # "login was broken", "we changed"
         if self.take("op"):
             return self.value()
@@ -316,6 +320,7 @@ def _from_url(raw: str) -> dict:
     if jql:
         if len(jql) > MAX_JQL:
             return _result(NONE, hosts=host, why=f"the query in that address is over {MAX_JQL} characters")
+        jql = jql.rstrip().rstrip(";").rstrip()
         if not is_jql(jql):
             return _result(NONE, hosts=host, why="the `jql` in that address is not a query")
         return _result(JQL, jql=jql, hosts=host)
@@ -341,7 +346,7 @@ def parse(text: str) -> dict:
         # `https://a/browse/X-1;https://b/browse/X-2` has no space in it and
         # reads as ONE address whose path contains the second. The second
         # host would never be reported, and the first story would vanish.
-        starts = [m.start() for m in _HAS_URL_RX.finditer(raw)]
+        starts = [0] + [m.start() for m in _NEXT_URL_RX.finditer(raw)]
         if len(starts) > 1:
             pieces = [raw[a:b].rstrip(",;") for a, b in zip(starts, starts[1:] + [len(raw)])]
             return _result(NONE, hosts=[h for p in pieces

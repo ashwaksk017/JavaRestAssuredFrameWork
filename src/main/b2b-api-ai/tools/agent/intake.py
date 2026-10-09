@@ -95,8 +95,10 @@ def classify(link: str) -> str:
     s = (link or "").strip()
     if not s:
         return UNKNOWN
-    if len(re.findall(r"(?i)\bhttps?://", s)) > 1:
-        return UNKNOWN          # one link a line: which of two was meant is a guess
+    # One link a line: which of two was meant is a guess. An address
+    # INSIDE another's query string (`?src=https://...`) is not a second.
+    if len(re.findall(r"(?i)(?:^|[\s;,)>]<?)https?://", s)) > 1:
+        return UNKNOWN
     try:
         what = jira_query.parse(s)
     except Exception:                                    # noqa: BLE001

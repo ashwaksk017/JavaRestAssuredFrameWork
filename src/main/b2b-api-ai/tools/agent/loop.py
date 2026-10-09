@@ -573,6 +573,48 @@ def ignored_entries(root: str) -> set:
             if e.startswith("!! ")} if rc == 0 else set()
 
 
+def remove_new_ignored(root: str, entries, ignored_before) -> list:
+    """Remove files and folders git newly ignores; returns what was removed.
+
+    git reports a folder whose every remaining file is ignored as ONE
+    entry. So a folder that already held somebody's ignored file (a local
+    `.env`) becomes a "new" entry the moment its tracked files are
+    deleted -- and removing the entry removed that file too. A folder is
+    only taken whole when nothing in it was there before; otherwise only
+    the files that are neither tracked nor ignored-before go.
+    """
+    removed = []
+    before = [b.rstrip("/") for b in ignored_before]
+    for p in entries:
+        full = os.path.join(root, p)
+        if os.path.isfile(full):
+            os.remove(full)
+            removed.append(p)
+            continue
+        if not os.path.isdir(full):
+            continue
+        base = p.rstrip("/")
+        mine = [b for b in before if b == base or b.startswith(base + "/")]
+        rc, tracked = git(root, "ls-tree", "-r", "--name-only", "HEAD", "--", base)
+        tracked = {_rel(root, top_level(root), l) for l in tracked.splitlines() if l.strip()} \
+            if rc == 0 else set()
+        if not mine and not tracked:
+            shutil.rmtree(full, ignore_errors=True)
+            removed.append(p)
+            continue
+        for dirpath, _dirs, files in os.walk(full):
+            for name in files:
+                rel = os.path.relpath(os.path.join(dirpath, name), root).replace(os.sep, "/")
+                if rel in tracked or any(rel == b or rel.startswith(b + "/") for b in mine):
+                    continue
+                try:
+                    os.remove(os.path.join(dirpath, name))
+                    removed.append(rel)
+                except OSError:
+                    pass
+    return removed
+
+
 def git_internals(root: str) -> dict:
     """Bytes of the files inside .git that change what a commit or a push
     DOES: config (remote URL, hooksPath), hooks, the local exclude list."""
@@ -1403,12 +1445,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         new_ignored = sorted(p for p in ignored_entries(root) - ignored_before
                              if not in_roots(p, roots)
                              and not in_roots(p.rstrip("/") + "/", roots))
-        for p in new_ignored:
-            full = os.path.join(root, p)
-            if os.path.isdir(full):
-                shutil.rmtree(full, ignore_errors=True)
-            elif os.path.isfile(full):
-                os.remove(full)
+        new_ignored = remove_new_ignored(root, new_ignored, ignored_before)
         if new_ignored:
             found.append("files or folders git ignores were created outside the "
                          "allowed paths and have been removed: " + ", ".join(new_ignored[:10]))
@@ -1439,7 +1476,35 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             # the finished path checks before trusting the tree is checked
             # here too, and anything it finds is said.
             reason = f"Cursor call failed: {e}"
-            moved, found = sweep()
+
+            def checked() -> tuple:
+                # sweep() can meet a file the bridge still holds open. That
+                # must not be why the putting-back below never happens.
+                try:
+                    return sweep()
+                except Exception as x:                   # noqa: BLE001
+                    return False, [f"the checks could not be completed ({type(x).__name__})"]
+
+            at_failure = tree_now()
+            # BEFORE the tree is read: an un-hidden file is one undo() can see.
+            moved, found = checked()
+            if moved:
+                # The same rule as after a finished run: with HEAD somewhere
+                # else, "put the files back" would put back the AGENT's
+                # commit. Nothing is reverted; Discard does that from the
+                # saved state once the branch is where it was.
+                reason += (" HEAD moved while it ran: the agent committed or "
+                           "switched branch. Nothing was reverted for this: check "
+                           "`git reflog`, put the branch back by hand, then use "
+                           "Discard for the files.")
+                if found:
+                    reason += " Also: " + "; ".join(found) + "."
+                review = dict(review, needs_discard=True)
+                say(f"WARN {reason}")
+                return reject(reason, restore=False)
+            # With nothing found, sweep() changed nothing: a tree that
+            # differs already is the run still writing.
+            wrote_during_checks = not found and tree_now() != at_failure
             for note in undo():
                 say(f" .. {note}")
                 clog.write(f"undo: {note}")
@@ -1458,13 +1523,14 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                     wait = 5.0
                 time.sleep(min(60.0, max(0.0, wait)))
                 waited = tree_now()
-                moved2, found2 = sweep()
-                moved, found = moved or moved2, found + found2
+                _, found2 = checked()
+                found += found2
                 # Put back again whatever is there: a write that landed
                 # WHILE the first putting-back ran is in `settled` already.
                 for note in undo():
                     clog.write(f"undo (after waiting): {note}")
-                late = waited != settled or tree_now() != waited or bool(found2)
+                late = (wrote_during_checks or waited != settled
+                        or tree_now() != waited or bool(found2))
                 alive = late or not getattr(e, "cancelled", False)
                 if alive:
                     reason += (
@@ -1472,17 +1538,16 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                         + ("wrote again afterwards" if late else
                            "could not be confirmed stopped")
                         + ". End the Cursor bridge process (cursor-sdk-bridge / "
-                          "node) if it is still running, then use Discard: it "
-                          "puts back anything written after this.")
+                          "node) FIRST if it is still running, then use Discard "
+                          "once: it puts back anything written after this.")
             if found:
                 reason += " Besides the files it wrote: " + "; ".join(found) + "."
-            if moved:
-                reason += (" HEAD moved while it ran: the agent committed or "
-                           "switched branch. That was NOT reverted -- check `git "
-                           "reflog` and put the branch back by hand.")
-            if alive or moved or found:
+            if alive:
                 # Discard runs the same putting-back from the saved state.
+                # Only for this: when the run is known to have stopped, there
+                # is nothing left for a Discard to do but harm.
                 review = dict(review, needs_discard=True)
+            if alive or found:
                 say(f"WARN {reason}")
             return reject(reason, restore=False, undone=True)
         text = str(answer.get("result") or "")
@@ -1520,12 +1585,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         new_ignored = sorted(p for p in ignored_entries(root) - ignored_before
                              if not in_roots(p, roots)
                              and not in_roots(p.rstrip("/") + "/", roots))
-        for p in new_ignored:
-            full = os.path.join(root, p)
-            if os.path.isdir(full):
-                shutil.rmtree(full, ignore_errors=True)
-            elif os.path.isfile(full):
-                os.remove(full)
+        new_ignored = remove_new_ignored(root, new_ignored, ignored_before)
         tracked = split_created(root, classify_tracked(before, dirty_paths(root), roots))
         gen = classify_generated(gen_before, snapshot_generated(root, policy), roots)
         changes = {k: sorted(tracked[k] + gen[k]) for k in
@@ -1717,9 +1777,11 @@ def cmd_discard(job_dir: str, root: str) -> int:
 
 
 def _discard(job_dir: str, root: str, review: dict) -> int:
-    # `discarded` too: a run that was never confirmed stopped can write
-    # again after the first Discard, and the button must still work then.
-    if review.get("state") in ("rejected", "discarded") and review.get("needs_discard"):
+    # Once. What this puts back is the tree as it was BEFORE THE RUN, so a
+    # second use, after the reviewer has carried on working, would take
+    # their work with it. (It was made repeatable for a run that might
+    # still be writing; the answer to that is to end the process first.)
+    if review.get("state") == "rejected" and review.get("needs_discard"):
         review = dict(review, state="generating")     # same recovery path
         say(" .. this run was rejected and may have left changes behind (it "
             "timed out and could not be confirmed stopped, or the branch or "
@@ -1731,7 +1793,7 @@ def _discard(job_dir: str, root: str, review: dict) -> int:
             "changed since it started")
         for note in undo_from_pre_state(root, job_dir, load_policy()):
             say(f" .. {note}")
-        write_review(job_dir, dict(review, state="discarded"))
+        write_review(job_dir, dict(review, state="discarded", needs_discard=False))
         CursorLog(job_dir).write("DISCARDED an unfinished run")
         say("discarded")
         return 0
