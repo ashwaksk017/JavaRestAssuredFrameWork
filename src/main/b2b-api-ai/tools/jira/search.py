@@ -209,6 +209,8 @@ def _urllib_transport(method: str, url: str, token: str, timeout: int, body=None
         # The TYPE only. http.client puts the header it rejected into its
         # message, and the header is the token.
         raise JiraError(0, f"the request to Jira failed ({type(e).__name__})") from None
+    if not raw.strip():
+        return None                         # 204: done, and nothing to say
     try:
         return json.loads(raw.decode("utf-8", "replace"))
     except ValueError:

@@ -47,8 +47,9 @@ class ArgvIsNeverFreeText(unittest.TestCase):
     def test_the_jira_and_failures_tabs_can_send_no_host_token_or_path(self):
         """What the page can send is a project key, a version, a type, a
         limit, a query, a label, a signature id and a note."""
-        tabs = [r for r in jobs.RUNNABLES if r.startswith(("jira-", "failures-"))]
-        self.assertEqual(sorted(tabs), ["failures-list", "failures-note", "failures-record",
+        tabs = [r for r in jobs.RUNNABLES if r.startswith(("jira-", "failures-", "defects-"))]
+        self.assertEqual(sorted(tabs), ["defects-apply", "defects-load", "defects-suggest",
+                                        "failures-list", "failures-note", "failures-record",
                                         "failures-show", "jira-paste", "jira-release",
                                         "jira-tests", "jira-verify", "jira-versions"])
         for name in tabs:
@@ -57,7 +58,7 @@ class ArgvIsNeverFreeText(unittest.TestCase):
             self.assertIn("--job", options, name)
             self.assertNotIn(name, jobs.EXCLUSIVE, name)
             for bad in ("--base", "--url", "--host", "--token", "--pat", "--digest",
-                        "--config", "--name"):
+                        "--config", "--name", "--field", "--write-back"):
                 with self.assertRaises(ValueError, msg=(name, bad)):
                     jobs.build_argv(name, {bad: "x"})
 

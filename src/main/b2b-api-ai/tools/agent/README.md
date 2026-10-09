@@ -475,6 +475,90 @@ The same commands from a console are `python tools/jira/search.py ...`
 (see `JIRA_XRAY.md`). None of this has been run against a live Jira; it
 uses the search endpoint that Server and Data Centre have.
 
+### Defects
+
+For Jira bugs: **why each one happened**. A team keeps a field on its
+bugs for that -- a failure reason, a root cause, whatever it is called
+there -- and this tab helps fill it in and keep it consistent.
+
+- **Load defects** — paste bug keys, a Jira search address or a query,
+  or give a project (and a fix version) to take its bugs. Each bug is
+  shown with the reason it has now, and with the most similar *earlier*
+  bugs that already have a reason, and what that reason was. Similar is
+  counted, not guessed: the words of the summary, exception names,
+  status codes, paths, components and labels two bugs share, and the row
+  says which.
+- **Suggest reasons** — Cursor proposes a reason for each loaded bug from
+  your team's list, with one or two sentences of why and a phrase quoted
+  from the ticket. The page asks before sending. A suggestion is marked
+  **DIFFERS from the current reason**, *agrees*, or *no reason yet*.
+- **Write to Jira** — on a row, with the reason chosen in the box beside
+  it. This button exists only when writing is switched on (below).
+
+What is checked rather than trusted:
+
+- A suggestion must be one of the allowed reasons exactly. Anything else
+  is shown as "the answer was not one of the allowed reasons", with what
+  it said, and is not offered.
+- Every bug sent is accounted for: one the answer leaves out is marked
+  **NOT REVIEWED**.
+- A bug's text is somebody else's writing. It goes to Cursor as
+  material, with URL hosts and every value of the private configuration
+  removed; Cursor is asked in plan mode, from an empty directory; what
+  comes back is redacted again. The page shows all of it as text.
+
+**Configuration.** Nothing about your Jira is in the code. In
+`src/main/resources/program_configuration.json` (gitignored), inside
+`jira_config`:
+
+```
+"defects": {
+  "field": "Failure Reason",
+  "reasons": ["Code defect", "Test data", "Environment"],
+  "issue_type": "Bug",
+  "write_back": false
+}
+```
+
+`field` is required: the field's name as Jira shows it, or its id
+(`customfield_NNNNN`). It must be a custom field; one of Jira's own
+(Summary, Assignee, Status) is refused. `reasons` is optional -- without
+it, the values Jira allows for the field are used. `issue_type` defaults
+to `Bug`.
+
+**Writing to Jira.** Everything else in this workbench only reads Jira.
+This is the one thing that changes it, so:
+
+- it is **off** unless `write_back` is exactly `true` (not `"true"`,
+  not `1`); with it off there is no button, and the command refuses;
+- one field of one bug per click, after a question that shows the bug,
+  the field, the old value and the new one. The box beside the button
+  starts on the suggestion, or on *choose…* when there is none: never on
+  a reason nobody picked;
+- the field is the one the configuration names at the moment of writing,
+  the bug must be one this job loaded and of the configured issue type,
+  and the reason one of the allowed values;
+- the bug is read first. If its reason has changed in Jira since it was
+  loaded, nothing is written and you are asked to load again; a field
+  holding several values is not replaced by one;
+- it goes to the configured Jira only; a redirect is refused;
+- after writing, the bug is read back and the row shows what Jira now
+  holds -- including when Jira accepted the write and did not keep it;
+- a request that left and could not be confirmed (a timeout, a failed
+  read-back) is shown as **SENT, NOT CONFIRMED**, with the bug to check.
+  It is never shown as not having happened;
+- the attempt is written to `defects-applied.log` in the job directory
+  before the request, and the outcome after it.
+
+One defects command runs at a time for a job: a write is refused while
+suggestions are still being fetched.
+
+From a console: `python tools/agent/defects.py load|suggest|apply --job
+<job> ...`. Loading again replaces the list, suggestions included. At
+most 200 bugs are loaded (50 unless *At most* says otherwise); up to 300
+earlier bugs are read for comparison. None of this has been run against
+a live Jira or the real Cursor service.
+
 ### Failures
 
 After a test run. **Record the last run and compare** reads
@@ -508,8 +592,8 @@ run. A saved digest from somewhere else can be recorded from a console
 
 The tab is in the address: `http://127.0.0.1:8787/#jira`, `#failures`,
 `#agent`, `#convert`, `#new`. `?job=<name>` opens the page on a job:
-`http://127.0.0.1:8787/?job=release-6#jira`. the Jira and Failures tabs show the last
-result of that job when they are opened.
+`http://127.0.0.1:8787/?job=release-6#jira`. The Jira, Defects and Failures tabs show
+the last result of that job when they are opened.
 
 ## Where the state lives
 
@@ -529,6 +613,9 @@ target/agent/<job>/
   test-cases.csv         design: one row per step
   xray.csv               design: the same, grouped for Xray's importer
   jira-result.json       the Jira tab: the last Jira command's result, as the page shows it
+  defects.json           the Defects tab: the loaded bugs, their text, the suggestions
+  defects-result.json    the Defects tab: the same without the ticket text, as the page shows it
+  defects-applied.log    the Defects tab: every write to Jira made from this job
   failures-result.json   the Failures tab: the last failure-history command's result
   cursor.log             the conversation with Cursor (design and the Agent loop tab), appended across runs
   review.json            the Agent loop tab: state, scope, the files changed, verify result
@@ -563,6 +650,9 @@ The API never accepts a command *string*. Every runnable is named in
 | `jira-release` | what a release holds, and what changed since another |
 | `jira-tests` | the tests a project already has |
 | `jira-paste` | list what was pasted: keys, a query, or a Jira address |
+| `defects-load` | read defects from Jira, with the reason each has |
+| `defects-suggest` | Cursor proposes a reason for each loaded defect |
+| `defects-apply` | write one reason to one defect in Jira (off unless switched on) |
 | `failures-record` | keep the last run's failures and compare with the run before |
 | `failures-list` | the runs recorded so far |
 | `failures-show` | every run a failure signature appeared in |

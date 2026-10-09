@@ -11,10 +11,11 @@ the page the browser ends up with.
 WHAT IS REAL AND WHAT IS NOT
 * The server, the allowlist, the artifact route, the page and its
   script, the browser: real.
-* The Jira and failure-history commands: real code, run here in this
-  process -- Jira against a stand-in (no network, no token), failure
-  history in a temporary directory. Their result files are then put in
-  the job directory, exactly where the page reads them.
+* The Jira, defect and failure-history commands: real code, run here in
+  this process -- Jira against a stand-in (no network, no token), Cursor
+  as a function that answers, failure history in a temporary directory.
+  Their result files are then put in the job directory, exactly where
+  the page reads them.
 * One command goes through the server itself, to prove that path:
   `failures-list`, which only reads.
 
@@ -60,6 +61,15 @@ def find_browser() -> str:
         if found:
             return found
     return ""
+
+
+def _load_module(name: str, path: str):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def free_port() -> int:
@@ -136,8 +146,9 @@ def main() -> int:
 
         declared = page.call("/api/runnables")[1]
         wanted = ("jira-verify", "jira-versions", "jira-release", "jira-tests", "jira-paste",
-                  "failures-record", "failures-list", "failures-show", "failures-note")
-        check("every command behind tabs 4 and 5 is declared",
+                  "failures-record", "failures-list", "failures-show", "failures-note",
+                  "defects-load", "defects-suggest", "defects-apply")
+        check("every command behind the Jira, Defects and Failures tabs is declared",
               all(r in declared for r in wanted), str([r for r in wanted if r not in declared]))
 
         # ---- what the page may not ask for ---------------------------------
@@ -145,7 +156,9 @@ def main() -> int:
                 ("failures-record", {"--digest": "src/main/resources/program_configuration.json"},
                  "the failures tab cannot name a file"),
                 ("jira-paste", {"--base": "https://evil.example"}, "the Jira tab cannot name a host"),
-                ("jira-verify", {"--token": "x"}, "the Jira tab cannot pass a token")):
+                ("jira-verify", {"--token": "x"}, "the Jira tab cannot pass a token"),
+                ("defects-load", {"--base": "https://evil.example"}, "the Defects tab cannot name a host"),
+                ("defects-apply", {"--field": "summary"}, "the Defects tab cannot choose the field")):
             code, body = page.call("/api/start", {"job": JOB, "runnable": name, "options": options})
             check(label, code == 400 and "does not accept" in body.get("error", ""), str(body))
         code, body = page.call(f"/api/artifact?job={JOB}&name=../../.failure-history/notes.json")
@@ -265,6 +278,109 @@ def main() -> int:
         check("the token is in no result file and nowhere on the page",
               "not-a-real-token-0001" not in raw and "not-a-real-token-0001" not in html)
 
+        # ---- the Defects tab ------------------------------------------------------
+        code, body = page.call("/api/start", {"job": JOB, "runnable": "defects-apply", "options": {
+            "--key": "ABC-1", "--reason": "Code defect", "--confirm-key": "ABC-1"}})
+        state = {}
+        for _ in range(120):
+            state = page.call(f"/api/status?job={JOB}&runnable=defects-apply")[1]
+            if state.get("state") != "running":
+                break
+            time.sleep(0.25)
+        check("a write to Jira asked for out of the blue is refused before any request",
+              code == 200 and state.get("exit_code") == 2, str(state))
+
+        defects = _load_module("check_ui_defects", os.path.join(HERE, "defects.py"))
+        fid = "customfield_10500"
+        reasons = ["Code defect", "Test data", "Environment"]
+
+        def bug(n, summary, reason=None, description=""):
+            return {"key": f"ABC-{n}", "fields": {
+                "summary": summary, "description": description, "status": {"name": "Open"},
+                "issuetype": {"name": "Bug"}, "priority": {"name": "High"},
+                "components": [{"name": "Booking"}], "labels": ["api"],
+                fid: ({"value": reason} if reason else None)}}
+        bugs = {b["key"]: b for b in (
+            bug(1, "Booking fails with 500 <img src=x onerror=alert(2)>", "Test data",
+                "NullPointerException, POST /reservations/create returned 500"),
+            bug(2, "Rate plan missing in shop response"))}
+        earlier = [bug(50, "Booking fails with 500 on create reservation", "Code defect",
+                       "NullPointerException, POST /reservations/create returned 500")]
+
+        def defect_jira(method, url, token, timeout, body=None):
+            path = url.split("/rest/api/2", 1)[1]
+            if path == "/field":
+                return [{"id": fid, "name": "Failure Reason"}]
+            if path.endswith("/editmeta"):
+                return {"fields": {fid: {"schema": {"type": "option"},
+                                         "allowedValues": [{"value": r} for r in reasons]}}}
+            if method == "POST":
+                pool = earlier if "is not EMPTY" in body["jql"] else list(bugs.values())
+                return {"issues": pool[body["startAt"]:body["startAt"] + body["maxResults"]],
+                        "total": len(pool)}
+            key = path.split("/")[2].split("?")[0]
+            if method == "PUT":
+                bugs[key]["fields"][fid] = body["fields"][fid]
+                return None
+            return {"key": key, "fields": {fid: bugs[key]["fields"][fid]}}
+
+        def settings(write_back):
+            return {"base_urls": ["https://jira.example.com"], "pat": "x",
+                    "defects": {"field": "Failure Reason", "reasons": reasons,
+                                "write_back": write_back}}
+        conn = search.connect()
+        defects.ROOT = scratch
+        shown = os.path.join(scratch, "target", "agent", JOB, defects.RESULT)
+
+        def show():
+            shutil.copy(shown, os.path.join(job_dir, defects.RESULT))
+            return page.dom("defects")
+
+        quiet(defects.cmd_load, JOB, text="project = ABC", transport=defect_jira,
+              cfg=settings(False), conn=conn)
+        html = show()
+        check("Defects tab: the loaded bugs, the reason each has, and a similar earlier one",
+              all(s in html for s in ("ABC-1", "ABC-2", "Test data", "ABC-50", "Code defect",
+                                      "exception NullPointerException")))
+        check("Defects tab: writing is OFF and there is no button to write",
+              "Writing to Jira is OFF" in html and "Write to Jira</button>" not in html)
+        check("a bug's summary is shown as text, not run as markup",
+              "<img src=x" not in html and "&lt;img src=x onerror=alert(2)&gt;" in html)
+
+        def cursor(prompt, followup):
+            return {"result": json.dumps({"defects": [
+                {"key": "ABC-1", "reason": "Code defect", "confidence": "high",
+                 "why": "a null pointer in the service", "evidence": "NullPointerException"},
+                {"key": "ABC-2", "reason": "Made up reason", "confidence": "high", "why": "x"}]})}
+        quiet(defects.cmd_suggest, JOB, None, agent=cursor, root=scratch)
+        html = show()
+        check("Defects tab: a suggestion that differs from the current reason is marked",
+              "DIFFERS from the current reason" in html and "a null pointer in the service" in html)
+        check("Defects tab: an answer outside the list is not a suggestion",
+              "the answer was not one of the allowed reasons" in html and "it answered: Made up reason" in html)
+
+        quiet(defects.cmd_load, JOB, text="project = ABC", transport=defect_jira,
+              cfg=settings(True), conn=conn)
+        quiet(defects.cmd_suggest, JOB, None, agent=cursor, root=scratch)
+        html = show()
+        check("Defects tab: with writing switched on, each row can be written, and the page says so",
+              "Writing to Jira is ON" in html and html.count("Write to Jira</button>") == 2)
+        quiet(defects.cmd_apply, JOB, "ABC-1", "Code defect", "ABC-1", transport=defect_jira,
+              cfg=settings(True), conn=conn)
+        html = show()
+        check("Defects tab: a write is read back and shown with what the bug held before",
+              "is now 'Code defect'" in html and "was Test data" in html
+              and "agrees with the current reason" in html)
+        try:
+            quiet(defects.main, ["apply", "--job", JOB, "--key", "ABC-2", "--reason",
+                                 "Environment", "--confirm-key", "ABC-9"], transport=defect_jira)
+        except SystemExit:
+            pass
+        defects.tell_error(JOB, "--confirm must repeat the key of the defect being changed", True)
+        html = show()
+        check("Defects tab: a refused write leaves the table on the page, under the refusal",
+              "Refused — --confirm must repeat the key" in html and "ABC-2" in html)
+
         # ---- a job with no result shows none: not another job's ----------------
         other = page.dom("jira", job="check-ui-no-such-job")
         check("another job's Jira tab is empty",
@@ -295,6 +411,8 @@ def main() -> int:
         check("tab 1 still has its buttons", 'id="run-intake"' in html and 'id="run-design"' in html)
         html = page.dom("agent")
         check("tab 3 still opens", 'id="tab-agent" class="tab" role="tabpanel" hidden' not in html)
+        check("a field the page hid stays hidden (the Suite box, for a new test)",
+              'id="agent-suite-field" hidden' in html or 'id="agent-suite-field" hidden=""' in html)
     finally:
         srv.terminate()
         search.connect, search.ROOT = saved

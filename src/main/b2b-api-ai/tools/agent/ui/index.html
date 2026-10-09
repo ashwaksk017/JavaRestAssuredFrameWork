@@ -25,6 +25,8 @@
     <span class="name">Agent loop</span><span class="what">Cursor writes, you review</span></button>
   <button role="tab" aria-selected="false" data-tab="jira">
     <span class="name">Jira</span><span class="what">stories, releases, tests</span></button>
+  <button role="tab" aria-selected="false" data-tab="defects">
+    <span class="name">Defects</span><span class="what">why each bug happened</span></button>
   <button role="tab" aria-selected="false" data-tab="failures">
     <span class="name">Failures</span><span class="what">this run against the last</span></button>
 </nav>
@@ -259,6 +261,48 @@ Expect 201.'></textarea>
   <div id="jira-result" class="result"></div>
   <h3>Log</h3>
   <pre id="jira-log" class="log"></pre>
+</section>
+
+<!-- ───────────────────────────── defects ─────────────────────────── -->
+<section id="tab-defects" class="tab" role="tabpanel" hidden>
+  <p class="lede">
+    For Jira bugs: the reason each one happened. <strong>Load</strong> reads
+    the bugs and the reason each already has, and finds similar earlier
+    bugs and what reason those were given. <strong>Suggest</strong> has
+    Cursor propose a reason from your team's list, with why, and marks where
+    it disagrees with the current one. Nothing is written to Jira unless you
+    press <em>Write to Jira</em> on a row, and that button only exists when
+    writing has been switched on in the configuration.
+  </p>
+
+  <label for="defects-text">Paste <span class="hint">bug keys, the address of a Jira search, or a query — or use the project fields below</span></label>
+  <textarea id="defects-text" rows="2" spellcheck="false"
+    placeholder="ABC-101, ABC-102     or     project = ABC AND issuetype = Bug AND fixVersion = 6.02"></textarea>
+  <div class="form">
+    <div class="field">
+      <label for="defects-project">Project key</label>
+      <input id="defects-project" type="text" spellcheck="false" placeholder="ABC">
+      <small>Used when nothing is pasted: the project's bugs.</small>
+    </div>
+    <div class="field">
+      <label for="defects-version">Fix version</label>
+      <input id="defects-version" type="text" spellcheck="false" placeholder="6.02">
+    </div>
+    <div class="field">
+      <label for="defects-max">At most</label>
+      <input id="defects-max" type="text" spellcheck="false" placeholder="50">
+      <small>Each bug's text is sent to Cursor when you ask for suggestions. 200 at the very most.</small>
+    </div>
+  </div>
+  <div class="row">
+    <button id="defects-load" class="go" data-defects>Load defects</button>
+    <button id="defects-suggest" data-defects>Suggest reasons</button>
+    <span id="defects-state" class="state"></span>
+  </div>
+
+  <div id="defects-result" class="result"></div>
+  <h3>Log</h3>
+  <pre id="defects-log" class="log"></pre>
 </section>
 
 <!-- ───────────────────────────── tab 5 ───────────────────────────── -->

@@ -765,6 +765,112 @@ function renderJira(r) {
 }
 onTab.jira = () => showResult(job(), jiraUi);
 
+// ---- the Defects tab ------------------------------------------------------
+const defectUi = { buttons: "[data-defects]", log: $("defects-log"), state: $("defects-state"),
+                   artifact: "defects-result.json", render: renderDefects,
+                   clear: () => { $("defects-result").replaceChildren(); defectsShown = null; } };
+let defectsShown = null;          // the last result rendered, for the Suggest button's count
+
+$("defects-load").onclick = () => {
+  const o = {};
+  const text = $("defects-text").value.trim();
+  const project = $("defects-project").value.trim();
+  if (text) o["--text"] = text;
+  else if (project) {
+    o["--project"] = project;
+    if ($("defects-version").value.trim()) o["--version"] = $("defects-version").value.trim();
+  } else { setState($("defects-state"), "bad", "paste keys or a query, or give a project"); return; }
+  const max = atMost($("defects-max"), $("defects-state"));
+  if (max === null) return;
+  if (max) o["--max"] = max;
+  runTool("defects-load", o, defectUi);
+};
+$("defects-suggest").onclick = () => {
+  const n = defectsShown && defectsShown.kind === "defects" ? (defectsShown.defects || []).length : 0;
+  if (!n) { setState($("defects-state"), "bad", "load some defects first"); return; }
+  if (!confirm(`Send the text of ${n} defect(s) to Cursor for a suggested reason?\n\n` +
+               "Summaries, descriptions and recent comments are sent, with host names and the " +
+               "private configuration's values removed. Nothing is written to Jira.")) return;
+  runTool("defects-suggest", {}, defectUi);
+};
+
+function flagClass(flag) {
+  if (/^DIFFERS/.test(flag)) return "flag differs";
+  if (/^agrees/.test(flag)) return "flag agrees";
+  if (/NOT REVIEWED|not one of the allowed/.test(flag)) return "flag unreviewed";
+  return "flag";
+}
+
+function defectRow(d, r) {
+  const suggested = el("div", {},
+    d.suggested ? el("div", { text: d.suggested + (d.confidence ? `  (${d.confidence})` : "") }) : null,
+    d.said ? el("small", { text: `it answered: ${d.said}` }) : null,
+    d.flag ? el("span", { class: flagClass(d.flag), text: d.flag }) : null);
+  const why = el("div", {}, d.why || "", d.evidence ? el("small", { text: `"${d.evidence}"` }) : null);
+  const similar = el("div", {}, (d.precedents || []).map((p) => el("div", {},
+    el("code", { text: p.key }), `: ${p.reason}`,
+    el("small", { text: `${Math.round((p.score || 0) * 100)}% — ${(p.shared || []).join("; ")}` }))));
+  let write;
+  if (!r.write_back) {
+    write = el("small", { text: "writing is off" });
+  } else {
+    // The box starts on the suggestion, or on what the bug has if that is
+    // an allowed reason -- and otherwise on nothing. Not on the first
+    // reason of the list: a careless click would write a value nobody chose.
+    const reasons = r.reasons || [];
+    const start = reasons.includes(d.suggested) ? d.suggested
+                : reasons.includes(d.current) ? d.current : "";
+    const pick = el("select", {},
+      el("option", { value: "", text: "choose…" }),
+      reasons.map((x) => el("option", { value: x, text: x })));
+    pick.value = start;
+    const oneLine = (s) => String(s || "").replace(/\s+/g, " ").trim();
+    write = el("div", { class: "writecell" }, pick,
+      el("button", { "data-defects": "", text: "Write to Jira", on: { click: () => {
+        const reason = pick.value;
+        if (!reason) { setState($("defects-state"), "bad", `choose a reason for ${d.key}`); return; }
+        if (!confirm(`Change Jira?\n\n${d.key}: ${oneLine(r.field.name)}\n` +
+                     `from: ${oneLine(d.current) || "(empty)"}\nto:   ${oneLine(reason)}\n\n` +
+                     "This writes to Jira now. It is one field of one bug.")) return;
+        runTool("defects-apply", { "--key": d.key, "--reason": reason, "--confirm-key": d.key }, defectUi);
+      } } }),
+      d.applied ? el("small", { text: d.applied.ok === true
+        ? `written ${d.applied.at}; was ${d.applied.was || "(empty)"}`
+        : d.applied.ok === null
+          ? `${d.applied.at}: SENT, NOT CONFIRMED — ${d.applied.note || "check this bug in Jira"}`
+          : `write of ${d.applied.at} did not take: Jira holds ${d.applied.holds || "(empty)"}` }) : null);
+  }
+  return [el("code", { text: d.key }), el("div", {}, d.summary, el("small", { text: d.status })),
+          d.current || "", suggested, why, similar, write];
+}
+
+function renderDefects(r) {
+  const box = $("defects-result");
+  box.replaceChildren();
+  defectsShown = r;
+  if (!r || !r.kind) return;
+  if (r.kind === "error") {
+    box.append(banner("bad", (r.refused === false ? "Failed — " : "Refused — ") + (r.message || "")));
+    return;
+  }
+  if (r.kind !== "defects") return;
+  if (r.message) box.append(banner(r.ok === false ? "bad" : "ok", r.message));
+  box.append(
+    el("div", { class: "meta", text:
+      `Field: ${r.field.name}  ·  ${(r.reasons || []).length} reason(s) from ${r.reasons_from}` +
+      `  ·  ${r.earlier_read || 0} earlier defect(s) with a reason read for comparison` }),
+    banner(r.write_back ? "warn" : "ok", r.write_back
+      ? "Writing to Jira is ON for this machine: each Write to Jira button changes one bug, after asking."
+      : "Writing to Jira is OFF. To allow it, set \"write_back\": true in jira_config.defects."));
+  box.append(...listFacts(Object.assign({ issues: r.defects }, r.source)));
+  for (const w of r.warnings || []) box.append(banner("bad", w));
+  for (const f of r.suggest_failures || []) box.append(banner("bad", `No answer for ${f}`));
+  box.append(heading("Defects", (r.defects || []).length),
+    table(["Key", "Summary", "Current reason", "Suggested", "Why", "Similar earlier defects",
+           "Jira"], (r.defects || []).map((d) => defectRow(d, r))));
+}
+onTab.defects = () => showResult(job(), defectUi);
+
 // ---- tab 5: Failures -----------------------------------------------------
 // Saving a note does not record a run: the command answers with the
 // comparison read again, the note in it. (It used to be followed by a

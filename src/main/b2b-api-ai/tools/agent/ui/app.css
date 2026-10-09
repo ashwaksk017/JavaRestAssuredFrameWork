@@ -155,3 +155,14 @@ label.inline { display: inline-flex; gap: .35rem; align-items: center; margin: 0
 .linkish { background: none; border: 0; padding: 0; color: #9db4ff; cursor: pointer;
            font: inherit; text-decoration: underline; }
 .count { color: var(--dim); font-weight: 400; }
+/* `hidden` means hidden. Without this, any rule that sets `display`
+   (.form .field is a flex box) shows an element the page had hidden. */
+[hidden] { display: none !important; }
+.flag { display: inline-block; font-size: .72rem; padding: .05rem .4rem; border-radius: 4px;
+        background: #2c3550; color: #c9d4f0; margin-top: .2rem; }
+.flag.differs { background: var(--warn); color: #1a1300; }
+.flag.agrees { background: #1f4a37; color: #b9f0d6; }
+.flag.unreviewed { background: #5a2a2a; color: #ffd0d0; }
+.writecell { display: flex; flex-direction: column; gap: .3rem; min-width: 11rem; }
+.result td small { color: var(--dim); display: block; margin-top: .15rem; }
+.result td:first-child { white-space: nowrap; }

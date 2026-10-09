@@ -683,7 +683,7 @@ class TheRealTransport(unittest.TestCase):
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
                     self.wfile.write(body)
-                do_GET = do_POST = _serve
+                do_GET = do_POST = do_PUT = _serve
             return H
 
         cls.other = HTTPServer(("127.0.0.1", 0), handler("other", lambda p: (200, {}, b'{"name": "stolen"}')))
@@ -739,6 +739,12 @@ class TheRealTransport(unittest.TestCase):
             self.call("POST", "/rest/api/2/search", {"jql": "project = ABC"})
         self.assertIn("POST", str(got.exception))
         self.assertEqual(len(self.seen), 1)
+
+    def test_a_redirected_write_is_refused_not_resent_as_a_read(self):
+        with self.assertRaises(search.JiraError) as got:
+            self.call("PUT", "/rest/api/2/search", {"fields": {"customfield_1": "x"}})
+        self.assertIn("redirected", str(got.exception))
+        self.assertEqual([s[1] for s in self.seen], ["PUT"], "one request, and it was not followed")
 
     def test_a_sign_in_page_is_a_refused_token_not_an_empty_result(self):
         with self.assertRaises(search.JiraError) as got:

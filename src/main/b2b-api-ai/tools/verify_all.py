@@ -227,6 +227,11 @@ CHECKS = [
           "a failure that is gone is not called fixed, and a new signature "
           "that resembles an old one is a pointer with its reasons, not a "
           "diagnosis"),
+    Check("agent-defects",
+          [PY, "tools/agent/test_defects.py"],
+          "defect triage suggests only from the team's own list, accounts for "
+          "every bug it was asked about, and writes to Jira only when switched "
+          "on, for one loaded bug, one allowed value, with the key repeated"),
     Check("agent-history",
           [PY, "tools/agent/test_history.py"],
           "earlier work on a story is found by its exact key -- ABC-1 is "

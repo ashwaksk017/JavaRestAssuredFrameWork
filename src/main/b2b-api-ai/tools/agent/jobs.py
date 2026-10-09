@@ -103,6 +103,28 @@ RUNNABLES = {
         "label": "List what was pasted: keys, a query, or a Jira address",
         "options": {"--job": "text", "--text": "text", "--max": "text"},
     },
+    # The Defects tab. `load` and `suggest` read. `apply` is the ONE
+    # runnable that changes Jira: one field of one bug, refused by the
+    # script unless jira_config.defects.write_back is exactly true, the
+    # bug was loaded by this job, the reason is an allowed value and
+    # --confirm-key repeats the key. No host, token or path here either.
+    "defects-load": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "defects.py"), "load"],
+        "label": "Read defects from Jira, with the reason each has",
+        "options": {"--job": "text", "--text": "text", "--project": "text",
+                    "--version": "text", "--max": "text"},
+    },
+    "defects-suggest": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "defects.py"), "suggest"],
+        "label": "Cursor proposes a reason for each loaded defect",
+        "options": {"--job": "text", "--keys": "text"},
+    },
+    "defects-apply": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "defects.py"), "apply"],
+        "label": "Write one reason to one defect in Jira",
+        "options": {"--job": "text", "--key": "text", "--reason": "text",
+                    "--confirm-key": "text"},
+    },
     # Tab 5. Reads target/failure-digest.txt, writes .failure-history/
     # (ignored) and the job directory. `record` takes no path from the
     # page: it records this project's last run.
@@ -257,7 +279,8 @@ def build_argv(runnable: str, options: dict) -> list:
 # directory. It is removed BEFORE the command starts: a command that dies
 # before it can write -- a bad argument, a crash, Stop -- must leave no
 # result, not the previous command's result under this one's exit code.
-RESULT_FILES = {"jira-": "jira-result.json", "failures-": "failures-result.json"}
+RESULT_FILES = {"jira-": "jira-result.json", "failures-": "failures-result.json",
+                "defects-": "defects-result.json"}
 
 
 def clear_result(job: str, runnable: str) -> None:
@@ -441,7 +464,7 @@ def read_artifact(job: str, name: str) -> str:
     allowed = {"brief.md", "plan.md", "intake.json", "locate.json",
                "proposed.diff", "review.json",
                "design.json", "design.md", "test-cases.csv", "xray.csv",
-               "jira-result.json", "failures-result.json"}
+               "jira-result.json", "failures-result.json", "defects-result.json"}
     if name not in allowed:
         raise ValueError(f"{name!r} is not a readable artifact. "
                          f"Known: {', '.join(sorted(allowed))}")
