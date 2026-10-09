@@ -387,10 +387,53 @@ class ARunThatTimedOut(Repo):
         # The reviewer carries on working.
         write(self.root, "README.md", "my work, after the discard\n")
         write(self.root, "src/main/java/Mine.java", "class Mine {}\n")
-        self.assertEqual(loop.cmd_discard(self.job, self.root), 1, "nothing to discard")
+        self.assertEqual(loop.cmd_discard(self.job, self.root, self.policy), 1,
+                         "nothing to discard: repeat_discard is off unless set")
         with io.open(os.path.join(self.root, "README.md"), encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "my work, after the discard\n")
         self.assertTrue(os.path.isfile(os.path.join(self.root, "src/main/java/Mine.java")))
+
+    def test_with_the_setting_on_a_run_never_confirmed_stopped_can_be_discarded_again(self):
+        self.policy["repeat_discard"] = True
+        self.assertEqual(self.generate(self.stuck(cancelled=False)), 1)
+        self.assertTrue(self.state()["maybe_alive"])
+        self.assertEqual(loop.cmd_discard(self.job, self.root, self.policy), 0)
+        r = self.state()
+        self.assertEqual((r["state"], r["needs_discard"], r["repeatable"]),
+                         ("discarded", True, True), "the button stays on, as Discard again")
+        write(self.root, JIRA + "LateTest.java", "class LateTest {}\n")     # it wrote again
+        self.assertEqual(loop.cmd_discard(self.job, self.root, self.policy), 0)
+        self.assertEqual(self.status(), "")
+        self.assertEqual(loop.cmd_discard(self.job, self.root, self.policy), 0, "and again")
+
+    def test_the_setting_is_only_for_a_run_that_may_still_be_alive(self):
+        self.policy["repeat_discard"] = True
+        # An ordinary reviewed-and-discarded job:
+        def agent(_prompt):
+            write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
+            return {"result": ""}
+        self.assertEqual(self.generate(agent), 0)
+        self.assertEqual(loop.cmd_discard(self.job, self.root, self.policy), 0)
+        write(self.root, "README.md", "my work\n")
+        self.assertEqual(loop.cmd_discard(self.job, self.root, self.policy), 1)
+        with io.open(os.path.join(self.root, "README.md"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "my work\n")
+        self.assertFalse(self.state().get("repeatable"))
+        sh(self.root, "checkout", "--", "README.md")
+        # A run that timed out but confirmed it had stopped:
+        self.assertEqual(self.generate(self.stuck(cancelled=True)), 1)
+        self.assertFalse(self.state().get("maybe_alive"))
+        self.assertEqual(loop.cmd_discard(self.job, self.root, self.policy), 1)
+
+    def test_only_a_plain_true_turns_the_setting_on(self):
+        for value in ("true", "yes", 1, "on", None, [True]):
+            self.assertFalse(loop.repeat_discard({"repeat_discard": value}), repr(value))
+        self.assertTrue(loop.repeat_discard({"repeat_discard": True}))
+        self.assertFalse(loop.repeat_discard(loop.load_policy()), "off as shipped")
+        self.policy["repeat_discard"] = "true"
+        self.assertEqual(self.generate(self.stuck(cancelled=False)), 1)
+        self.assertEqual(loop.cmd_discard(self.job, self.root, self.policy), 0)
+        self.assertEqual(loop.cmd_discard(self.job, self.root, self.policy), 1)
 
     def test_an_ignored_file_that_was_already_there_survives_the_clean_up(self):
         """git reports a folder as ONE ignored entry once its tracked files

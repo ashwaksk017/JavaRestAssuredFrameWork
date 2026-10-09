@@ -198,6 +198,16 @@ What the step checks instead of trusting:
   was before the run, so a second use later would take with it whatever
   you had done in between. **Stop** ends a job that is still running; it
   cannot reach a helper process the job left behind.
+- Whether Discard may be used again is a setting: `"repeat_discard"` in
+  `policy.json`, `false` by default. Set it to `true` (exactly that; any
+  other value is off) on a machine where a timed-out run's helper
+  process cannot be ended by hand. Then, for a run that was **not
+  confirmed stopped** -- and only for such a run, not after an ordinary
+  discard or a moved HEAD -- the button becomes **Discard again** and
+  keeps working, so what the run writes afterwards can be put back as
+  often as needed. Every use restores the tree as it was before the
+  run: the page asks first and says so, because your own edits since
+  then go with it. Commit or stash your work before using it.
 - Each input has a size limit (specification 80,000 characters,
   requirements 100,000, brief 40,000, notes 20,000; 200,000 together).
   A large specification loses its examples and long descriptions before

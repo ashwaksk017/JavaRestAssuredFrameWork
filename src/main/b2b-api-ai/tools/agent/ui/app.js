@@ -408,6 +408,11 @@ async function refreshReview() {
     detail += review.needs_discard
       ? " Its changes were NOT undone — use Discard." : " Its changes were undone.";
   $("review-detail").textContent = detail;
+  // Set by the tool only when the policy allows a repeat for this job.
+  $("agent-discard").dataset.again =
+    String(state === "discarded" && review.repeatable === true);
+  $("agent-discard").textContent =
+    state === "discarded" && review.repeatable === true ? "Discard again" : "Discard";
   $("agent-discard").disabled = !(review.needs_discard) &&
     !(state === "pending-review" || state === "verify-failed" ||
       state === "generating");   // a stopped run: discard puts it all back
@@ -508,8 +513,15 @@ $("agent-reapply").onclick = () => {
 };
 $("agent-discard").onclick = () => {
   if (!sameJobOrRefresh($("agent-discard"))) return;
-  if (!confirm("Remove the files the agent created and restore the ones it " +
-               "changed?")) return;
+  // A repeat (policy repeat_discard) is not the same question as the first.
+  const again = $("agent-discard").dataset.again === "true";
+  const msg = again
+    ? "Discard AGAIN?\n\nThis puts the working tree back to how it was BEFORE " +
+      "THE RUN. Anything you have changed by hand since then is reverted, " +
+      "and files you have added are removed.\n\nOnly do this if the run is " +
+      "still writing files. End its process first if you can."
+    : "Remove the files the agent created and restore the ones it changed?";
+  if (!confirm(msg)) return;
   runAgent("agent-discard", { "--job": job() });
 };
 function sameJobOrRefresh(btn) {

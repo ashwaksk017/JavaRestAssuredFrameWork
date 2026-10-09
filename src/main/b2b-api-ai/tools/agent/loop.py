@@ -192,6 +192,11 @@ DEFAULT_POLICY = {
     "cursor_deadline_seconds": {"generate": 2700, "design": 900},
     # After a timeout, how long to wait before looking for late writes.
     "timeout_settle_seconds": 5,
+    # May Discard be used AGAIN on a run that was never confirmed stopped?
+    # Off: once, and then the button goes off. On: as often as needed while
+    # that run keeps writing -- and each use puts the tree back to how it
+    # was BEFORE THE RUN, the reviewer's own later work included.
+    "repeat_discard": False,
     "branch_prefix": "agent/",
     "remote": "origin",
     "protected_branches": ["main", "master"],
@@ -1545,8 +1550,10 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             if alive:
                 # Discard runs the same putting-back from the saved state.
                 # Only for this: when the run is known to have stopped, there
-                # is nothing left for a Discard to do but harm.
-                review = dict(review, needs_discard=True)
+                # is nothing left for a Discard to do but harm. `maybe_alive`
+                # is what a REPEATED discard is allowed for (policy
+                # `repeat_discard`); a moved HEAD is not.
+                review = dict(review, needs_discard=True, maybe_alive=True)
             if alive or found:
                 say(f"WARN {reason}")
             return reject(reason, restore=False, undone=True)
@@ -1766,21 +1773,36 @@ def _write_diff(root: str, job_dir: str, changes: dict, generated=(),
     return text
 
 
-def cmd_discard(job_dir: str, root: str) -> int:
+def repeat_discard(policy: dict) -> bool:
+    """Only a plain `true`. A typo ("yes", 1) must not turn on the setting
+    whose cost is somebody's uncommitted work."""
+    return policy.get("repeat_discard") is True
+
+
+def cmd_discard(job_dir: str, root: str, policy: dict = None) -> int:
     review = read_review(job_dir)
     try:
         with RepoLock(root, f"discard, job {os.path.basename(job_dir)}"):
-            return _discard(job_dir, root, review)
+            return _discard(job_dir, root, review, policy)
     except RuntimeError as e:
         say(f"FAIL {e}")
         return 1
 
 
-def _discard(job_dir: str, root: str, review: dict) -> int:
-    # Once. What this puts back is the tree as it was BEFORE THE RUN, so a
-    # second use, after the reviewer has carried on working, would take
-    # their work with it. (It was made repeatable for a run that might
-    # still be writing; the answer to that is to end the process first.)
+def _discard(job_dir: str, root: str, review: dict, policy: dict = None) -> int:
+    policy = load_policy() if policy is None else policy
+    # What this puts back is the tree as it was BEFORE THE RUN, so a second
+    # use, after the reviewer has carried on working, takes their work with
+    # it. So it is once -- unless the policy says otherwise, and then only
+    # for a run that was never confirmed stopped, which is the one case a
+    # second use is for: it wrote again after the first.
+    again = repeat_discard(policy) and bool(review.get("maybe_alive"))
+    if review.get("state") == "discarded" and again:
+        review = dict(review, state="generating")
+        say("WARN discarding AGAIN (policy repeat_discard is on). This puts "
+            "the tree back to how it was before the run"
+            + (f" of {review['at']}" if review.get("at") else "")
+            + " -- including anything changed by hand since then.")
     if review.get("state") == "rejected" and review.get("needs_discard"):
         review = dict(review, state="generating")     # same recovery path
         say(" .. this run was rejected and may have left changes behind (it "
@@ -1791,9 +1813,14 @@ def _discard(job_dir: str, root: str, review: dict) -> int:
         # The run was stopped or died: no list of files was ever written.
         say(" .. the last run did not finish; putting back everything "
             "changed since it started")
-        for note in undo_from_pre_state(root, job_dir, load_policy()):
+        for note in undo_from_pre_state(root, job_dir, policy):
             say(f" .. {note}")
-        write_review(job_dir, dict(review, state="discarded", needs_discard=False))
+        # The button stays on only where a second use is allowed.
+        write_review(job_dir, dict(review, state="discarded", needs_discard=again,
+                                   repeatable=again))
+        if again:
+            say(" .. Discard can be used again for this job while that run "
+                "keeps writing. End its process to make it stop.")
         CursorLog(job_dir).write("DISCARDED an unfinished run")
         say("discarded")
         return 0
@@ -2055,7 +2082,7 @@ def main(argv=None) -> int:
     if args.command == "generate":
         return cmd_generate(job_dir, ROOT, policy, args.scope, args.suite)
     if args.command == "discard":
-        return cmd_discard(job_dir, ROOT)
+        return cmd_discard(job_dir, ROOT, policy)
     if args.command == "reapply":
         return patches.main(["reapply", "--suite", args.suite])
     return cmd_approve(job_dir, ROOT, policy, intake.safe_job(args.job),

@@ -87,6 +87,7 @@
     "tools/ra_converter/cursor_agent.json"
   ],
   "repair_attempts": 1,
+  "repeat_discard": false,
   "cursor_deadline_seconds": {
     "generate": 2700,
     "design": 900
