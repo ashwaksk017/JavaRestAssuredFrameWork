@@ -1294,7 +1294,7 @@ def cmd_generate(job_dir: str, root: str, policy: dict, scope_name: str = "new-t
 def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
               suite: str, agent, verifier) -> int:
     if not _read(os.path.join(job_dir, "plan.md")).strip():
-        say("FAIL no plan.md for this job. Run tab 1 (read it, then locate) "
+        say("FAIL no plan.md for this job. Use the New test case tab (read it, then locate) "
             "first: the plan is what the agent is asked to act on.")
         return 1
     try:

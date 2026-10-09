@@ -475,7 +475,7 @@ def find_spec(job_dir: str) -> tuple:
                     best = (block, f"a code block in {rel.replace(os.sep, '/')}")
     pasted = _read(os.path.join(job_dir, "pasted.txt"))
     if len(pasted) > len(best[0]) and read_spec(pasted)[0] is not None:
-        best = (pasted, "the text pasted in tab 1")
+        best = (pasted, "the text pasted on the New test case tab")
     return best
 
 
@@ -1328,7 +1328,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         say(f" ..  {w}")
     say(f" ok  {len(cases)} test case(s) designed"
         + (" -- PARTIAL" if is_partial else "")
-        + f". Read design.md, then tab 3 can implement them.")
+        + f". Read design.md, then the Agent loop tab can implement them.")
     return 0
 
 

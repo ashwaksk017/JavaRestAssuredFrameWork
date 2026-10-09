@@ -44,7 +44,7 @@ Ctrl-C stops it. Nothing is installed and nothing is left running.
 > prefix, as above.
 
 Requires Python 3.9 or newer (3.11 is what it is run on). The UI itself
-needs no third-party packages; the converter it drives in tab 2 needs
+needs no third-party packages; the converter it drives in the Convert ReadyAPI tab needs
 whatever it normally needs, `openpyxl` included.
 
 ## It is bound to loopback on purpose
@@ -78,7 +78,7 @@ expose.
 
 ## The tabs
 
-### Tab 1 — New test case
+### New test case
 
 Paste a story, request payloads, and Jira or Confluence links. It reads
 them, then decides **create / update / upstream**: whether this is a new
@@ -113,14 +113,14 @@ Two things it needs before links will work:
 
 #### Design the API tests (optional)
 
-The lower half of tab 1. *Read it* and *locate* answer "is this
+The lower half of the New test case tab. *Read it* and *locate* answer "is this
 automated already?". This answers "what should be tested?": Cursor is
 given the API specification, the requirements and `brief.md`, and
 proposes test cases, each with an endpoint, steps and a checkable
-expected result. Read the result before tab 3 writes any Java. Tab 3's
+expected result. Read the result before the Agent loop tab writes any Java. The Agent loop tab's
 prompt carries the cases (new-test and converted scopes) for as long as
 the job's brief is the one they were designed from; after *Read it* is
-run with a different story, they are not used and tab 3's log says so.
+run with a different story, they are not used and the Agent loop tab's log says so.
 They are handed over as data, each field on one line, with a statement
 that nothing in them is an instruction.
 
@@ -138,7 +138,7 @@ What the step checks instead of trusting:
   (`$ref` path items are followed; a Swagger 2 `basePath` or a server
   URL's path prefix is accepted in front of a path). A designed case on
   an endpoint that is not in it is kept and marked
-  `[NOT IN THE SPECIFICATION]`, and is not handed to tab 3. With no
+  `[NOT IN THE SPECIFICATION]`, and is not handed to the Agent loop tab. With no
   specification, the requests in the story are shown to Cursor but
   nothing is checked against them, and `design.md` says so.
 - A case with no expected result is dropped, and listed.
@@ -175,12 +175,12 @@ What the step checks instead of trusting:
   it unticks itself after the run. A run answered entirely from kept
   replies needs neither the SDK nor a key.
 - Each call to Cursor has a time limit (`cursor_deadline_seconds` in
-  `policy.json`: 900 seconds for a design call; 2700 for a tab 3 call,
+  `policy.json`: 900 seconds for a design call; 2700 for an Agent loop tab call,
   per attempt, so twice that with the repair attempt; 0 is no limit, and
   a value that is not a number is the default). A call that does not
   come back is asked to cancel and reported as stuck, instead of the job
   showing "running" until someone kills it.
-- A tab 3 call that fails -- times out, or errors half way -- is not
+- An Agent loop tab call that fails -- times out, or errors half way -- is not
   treated as a call that did nothing. Everything checked after a
   finished run is checked after a failed one: the credential file,
   `.git` (hooks, config), files hidden from git, folders that ignore
@@ -189,7 +189,7 @@ What the step checks instead of trusting:
   back, after a failed run or a finished one: nothing is reverted, the
   reason says to reset the branch by hand, and Discard then puts the
   files back.
-- When a tab 3 call times out, the tree is put back, and after a few
+- When an Agent loop tab call times out, the tree is put back, and after a few
   seconds it is checked again. If the run wrote again, or could not be
   confirmed cancelled, the job is left **discardable**: end the Cursor
   bridge process (`cursor-sdk-bridge` / `node`) in the task manager if
@@ -251,7 +251,7 @@ recovers more kinds of damaged reply.
 python tools/agent/design.py --job <job> --service <name> --swagger-file spec.yaml --requirements-file brd.txt --speed fast
 ```
 
-### Tab 2 — Convert ReadyAPI
+### Convert ReadyAPI
 
 A form over the converter's CLI. Every flag the command line takes is
 here, and the command it builds is shown before it runs, so the page is
@@ -265,9 +265,9 @@ and will run without it. When the suite does read workbooks, leaving it
 out empties every DataSource column, and the run then looks like an API
 problem rather than a missing path, which is why the form says so.
 
-### Tab 3 — Agent loop
+### Agent loop
 
-The only tab that writes code. It takes the plan tab 1 produced and has
+The only tab that writes code. It takes the plan the New test case tab produced and has
 **Cursor** act on it. All Java (and converter) changes go through Cursor;
 this tool decides where it may write, checks what it did, and holds the
 result until a person approves it.
@@ -444,7 +444,7 @@ python tools/agent/loop.py approve  --job <job> --confirm <job>
 python tools/agent/loop.py discard  --job <job>
 ```
 
-### Tab 4 — Jira
+### Jira
 
 Questions to Jira about more than one story. Read-only: nothing here
 writes to Jira. The address and the token are the ones in
@@ -475,7 +475,7 @@ The same commands from a console are `python tools/jira/search.py ...`
 (see `JIRA_XRAY.md`). None of this has been run against a live Jira; it
 uses the search endpoint that Server and Data Centre have.
 
-### Tab 5 — Failures
+### Failures
 
 After a test run. **Record the last run and compare** reads
 `target/failure-digest.txt`, keeps one small snapshot of the run in
@@ -508,7 +508,7 @@ run. A saved digest from somewhere else can be recorded from a console
 
 The tab is in the address: `http://127.0.0.1:8787/#jira`, `#failures`,
 `#agent`, `#convert`, `#new`. `?job=<name>` opens the page on a job:
-`http://127.0.0.1:8787/?job=release-6#jira`. Tabs 4 and 5 show the last
+`http://127.0.0.1:8787/?job=release-6#jira`. the Jira and Failures tabs show the last
 result of that job when they are opened.
 
 ## Where the state lives
@@ -528,24 +528,24 @@ target/agent/<job>/
   design.md / .json      design: the proposed test cases, and what was left out
   test-cases.csv         design: one row per step
   xray.csv               design: the same, grouped for Xray's importer
-  jira-result.json       tab 4: the last Jira command's result, as the page shows it
-  failures-result.json   tab 5: the last failure-history command's result
-  cursor.log             the conversation with Cursor (design and tab 3), appended across runs
-  review.json            tab 3: state, scope, the files changed, verify result
-  proposed.diff          tab 3: what is waiting for review
-  converted.patch        tab 3: an approved change to converted Java, as a diff to read
-  pre-generated/         tab 3: the changed generated files as they were before the run
-  gate-before.json       tab 3 (converter scope): what failed before / after
-  agent-prompt-N.txt     tab 3: exactly what Cursor was asked
-  agent-answer-N.md      tab 3: what it said it did
-  pre/                   tab 3: your uncommitted files as they were before the run
+  jira-result.json       the Jira tab: the last Jira command's result, as the page shows it
+  failures-result.json   the Failures tab: the last failure-history command's result
+  cursor.log             the conversation with Cursor (design and the Agent loop tab), appended across runs
+  review.json            the Agent loop tab: state, scope, the files changed, verify result
+  proposed.diff          the Agent loop tab: what is waiting for review
+  converted.patch        the Agent loop tab: an approved change to converted Java, as a diff to read
+  pre-generated/         the Agent loop tab: the changed generated files as they were before the run
+  gate-before.json       the Agent loop tab (converter scope): what failed before / after
+  agent-prompt-N.txt     the Agent loop tab: exactly what Cursor was asked
+  agent-answer-N.md      the Agent loop tab: what it said it did
+  pre/                   the Agent loop tab: your uncommitted files as they were before the run
 ```
 
 The page polls the log by byte offset, so a long convert streams and a
 refresh picks up where it left off. The UI will only read back
 `brief.md`, `plan.md`, `intake.json`, `locate.json`, `review.json`,
 `proposed.diff`, the four design files and the two result files of
-tabs 4 and 5 — a job directory
+the Jira and Failures tabs — a job directory
 cannot be used to read arbitrary files through the API.
 
 ## What it is allowed to run

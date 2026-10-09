@@ -17,11 +17,16 @@
 </header>
 
 <nav class="tabs" role="tablist">
-  <button role="tab" aria-selected="true"  data-tab="new">1 &middot; New test case</button>
-  <button role="tab" aria-selected="false" data-tab="convert">2 &middot; Convert ReadyAPI</button>
-  <button role="tab" aria-selected="false" data-tab="agent">3 &middot; Agent loop</button>
-  <button role="tab" aria-selected="false" data-tab="jira">4 &middot; Jira</button>
-  <button role="tab" aria-selected="false" data-tab="failures">5 &middot; Failures</button>
+  <button role="tab" aria-selected="true"  data-tab="new">
+    <span class="name">New test case</span><span class="what">read a story, plan, design</span></button>
+  <button role="tab" aria-selected="false" data-tab="convert">
+    <span class="name">Convert ReadyAPI</span><span class="what">run the converter</span></button>
+  <button role="tab" aria-selected="false" data-tab="agent">
+    <span class="name">Agent loop</span><span class="what">Cursor writes, you review</span></button>
+  <button role="tab" aria-selected="false" data-tab="jira">
+    <span class="name">Jira</span><span class="what">stories, releases, tests</span></button>
+  <button role="tab" aria-selected="false" data-tab="failures">
+    <span class="name">Failures</span><span class="what">this run against the last</span></button>
 </nav>
 
 <!-- ───────────────────────────── tab 1 ───────────────────────────── -->
@@ -66,7 +71,7 @@ Expect 201.'></textarea>
     above, and proposes test cases with steps and expected results. It
     is asked in plan mode, from an empty directory; host names and the
     private configuration's values are taken out of what is sent. Read
-    the result before tab 3 implements it.
+    the result before the Agent loop tab implements it.
   </p>
   <div class="form">
     <div class="field">
@@ -139,7 +144,7 @@ Expect 201.'></textarea>
 <!-- ───────────────────────────── tab 3 ───────────────────────────── -->
 <section id="tab-agent" class="tab" role="tabpanel" hidden>
   <p class="lede">
-    Takes the plan from tab 1 and has Cursor act on it. This is the only
+    Takes the plan from the New test case tab and has Cursor act on it. This is the only
     tab that writes code. Choose what Cursor may change — it is held to
     that, and anything else fails the job and is put back.
   </p>
