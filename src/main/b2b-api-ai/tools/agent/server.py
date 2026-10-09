@@ -26,6 +26,7 @@ import importlib.util
 import io
 import json
 import os
+import socket
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -259,7 +260,24 @@ def main(argv=None) -> int:
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args(argv)
 
-    srv = ThreadingHTTPServer((args.host, args.port), Handler)
+    # On Windows the default (SO_REUSEADDR) lets a second server bind a port
+    # an earlier one still holds, and the EARLIER one keeps answering: the
+    # page then talks to old code while the console shows a fresh start.
+    class Server(ThreadingHTTPServer):
+        allow_reuse_address = os.name != "nt"
+
+        def server_bind(self):
+            if os.name == "nt":
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            super().server_bind()
+
+    try:
+        srv = Server((args.host, args.port), Handler)
+    except OSError:
+        print(f"Port {args.port} on {args.host} is already in use -- most likely an "
+              f"earlier workbench server that was never stopped. Stop it first "
+              f"(or pass --port), or the page would keep talking to the old one.")
+        return 1
     print(f"b2b agent UI on http://{args.host}:{args.port}")
     print(f"  repository: {ROOT}")
     print(f"  jobs:       target/agent/<job>/")
