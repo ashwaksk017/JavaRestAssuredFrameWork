@@ -313,9 +313,40 @@ python tools/agent/design.py --job <job> --service <name> --swagger-file spec.ya
 
 ### Convert ReadyAPI
 
-A form over the converter's CLI. Every flag the command line takes is
-here, and the command it builds is shown before it runs, so the page is
-never doing something you cannot reproduce in a terminal.
+Converts ReadyAPI project files into this project. The page shows the
+handful of options a person sets; everything else keeps the converter's
+own default. The command that ran is in the job's status file, so a run
+can always be repeated in a terminal.
+
+**Choosing the files.** Press *Choose Files* and pick one suite XML, or
+several. A browser does not tell a page where a chosen file lives, so the
+page cannot pass the converter a path -- it sends the file. The workbench
+writes it to `target/convert-input/<its own name>` (gitignored) and gives
+the converter that path. The name is kept because the suite is named
+after it. The path is written with forward slashes and is relative to
+this project, so it reads the same on Windows and on a Mac. Choosing
+again replaces what was chosen before; *Remove* forgets it. Only a
+`.xml` that starts like XML is taken, up to 300 MB a file.
+
+| On the page | What it sends |
+|---|---|
+| ReadyAPI project XML | `--input` -- the stored file, or several, comma separated |
+| Workbooks folder | `--data-dir` (see below) |
+| Suite name | `--suite-name`; empty takes it from the file name |
+| Diagrams: As configured / Also render images / Diagrams only | nothing / `--diagram-png` / `--diagrams-only` |
+| Phase specs: On / Off | `--phase-specs` / `--no-phase-specs` |
+| Cursor assist: Off / On | `--no-cursor-assist` / `--cursor-assist`. **On calls the real Cursor**, whatever `mock.json` says |
+| Clean first, Classic mode, Skip self-test | `--clean`, `--classic`, `--skip-self-test` |
+| Verify all afterwards | when the convert finishes cleanly, runs `python tools/verify_all.py` and shows its log under the convert's. Not run after a failed convert, and the page says so |
+
+Not on the page, and left at their defaults: `--package-root`, `--envs`,
+`--config`, `--cursor-config`, `--service-name`, `--diagram-cases`,
+`--max-name-len`, `--bootstrap`, `--skip-dataflow-check`,
+`--keep-dead-props`, `--no-reapply-patches`. `--output` is not shown
+either and is always this project (`.`): the converter's own default is a
+folder called `output`. All of them still work from the command line.
+
+With the job box empty, the Convert tab runs as job `convert`.
 
 `--data-dir` points at the folder of `.xlsx` workbooks the ReadyAPI XML
 names, and is how DataSource columns get real values instead of empty
@@ -767,6 +798,7 @@ The API never accepts a command *string*. Every runnable is named in
 | `failures-note` | write down what a failure turned out to be |
 | `audit-service-keys` | audit service keys |
 | `audit-token-chain` | audit the token chain |
+| `verify-all` | run every check of the gate (`tools/verify_all.py`); takes nothing from the page |
 | `agent-design` | Cursor proposes API test cases (plan mode); takes no path, writes the job directory |
 | `agent-setup` | check the Cursor SDK, the key and git |
 | `agent-generate` | Cursor makes the change in the chosen scope; guardrails; verify |

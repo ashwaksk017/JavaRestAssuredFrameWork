@@ -272,76 +272,89 @@ $("stop-design").onclick = async () => {
   catch (e) { setState($("design-state"), "bad", e.message); }
 };
 
-// ---- tab 2: a form built from what the runnable DECLARES -------------
-// Not a hand-written list: the server is the source of truth for which
-// options exist, so the form cannot drift from the CLI.
-const NOTE = {
-  "--output": "Where the converted tree is written. A mistyped value overwrites a real tree.",
-  "--input": "One XML, a comma-separated list, or a directory. Only the directory form is authoritative.",
-  "--data-dir": "The DataSource workbooks. Optional — a suite with no workbooks needs none. When the suite HAS them, forgetting this is the usual cause of a bad run.",
-  "--clean": "DELETES this suite's previously-generated files first.",
-  "--classic": "Whole-tree: one output holds one mode. Mixing is refused.",
-  "--skip-self-test": "Skips the converter's own unit checks before emitting.",
-};
-// --data-dir is NOT required: the converter does not require it either,
-// and a suite whose ReadyAPI project has no DataSource workbooks has
-// nothing to point it at. It is ADVISED instead -- forgetting it when
-// the suite does read workbooks is still the usual cause of a bad run,
-// so the form says so without refusing to run.
-const REQUIRED = ["--input", "--output"];
-const ADVISED = ["--data-dir"];
-const PRIMARY = ["--input", "--output", "--data-dir", "--package-root",
-                 "--suite-name", "--envs", "--config"];
+// ---- tab 2: convert ---------------------------------------------------
+// The form is written out in index.html: what a person sets is a handful
+// of the converter's options, and the rest keep their defaults. The
+// server still decides what a command may be given (jobs.RUNNABLES).
+//
+// A browser does not tell a page where a chosen file is, so the file is
+// sent to the server, which keeps it under target/convert-input/ and
+// answers with the path the converter is then given.
+let uploaded = [];            // [{name, path, bytes}] as the server holds them
+let uploading = false;
+const convertJob = () => job() || "convert";
+const size = (n) => n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB`
+                  : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} bytes`;
 
-(async function buildConvertForm() {
-  let spec;
-  try { spec = (await api("/api/runnables")).convert; }
-  catch { return; }
-  const form = $("convert-form");
-  const entries = Object.entries(spec.options);
-  const order = (n) => {
-    const i = PRIMARY.indexOf(n);
-    return i < 0 ? 100 + (spec.options[n] === "flag" ? 50 : 0) : i;
-  };
-  entries.sort((a, b) => order(a[0]) - order(b[0]));
-
-  for (const [name, kind] of entries) {
-    const field = document.createElement("div");
-    field.className = `field ${kind === "flag" ? "flag" : ""} ` +
-                      (REQUIRED.includes(name) ? "req" : "") + " " +
-                      (ADVISED.includes(name) ? "advised" : "");
-    const id = `opt${name.replace(/-/g, "_")}`;
-    if (kind === "flag") {
-      const cb = document.createElement("input");
-      cb.type = "checkbox"; cb.id = id; cb.dataset.opt = name;
-      const lb = document.createElement("label");
-      lb.htmlFor = id; lb.textContent = name; lb.style.margin = "0";
-      field.append(cb, lb);
-    } else {
-      const lb = document.createElement("label");
-      lb.htmlFor = id; lb.textContent = name;
-      const inp = document.createElement("input");
-      inp.type = "text"; inp.id = id; inp.dataset.opt = name;
-      inp.spellcheck = false;
-      field.append(lb, inp);
-    }
-    if (NOTE[name]) {
-      const s = document.createElement("small");
-      s.textContent = NOTE[name];
-      field.append(s);
-    }
-    form.append(field);
+function showUploaded(problem) {
+  const box = $("convert-uploaded");
+  if (uploading) { box.replaceChildren(el("div", { text: "Copying…" })); return; }
+  const kids = [];
+  if (problem) kids.push(banner("bad", problem));
+  for (const f of uploaded) {
+    kids.push(el("div", { class: "file" }, el("strong", { text: f.name }),
+                 el("span", { text: size(f.bytes) }), el("code", { text: f.path })));
   }
-  form.addEventListener("input", warn);
-  form.addEventListener("change", warn);
-})();
+  if (uploaded.length) {
+    kids.push(el("button", { type: "button", on: { click: forgetUploads } }, "Remove"));
+  }
+  box.replaceChildren(...kids);
+}
+
+async function forgetUploads() {
+  try { await post("/api/upload-clear", {}); } catch { /* shown as still listed */ }
+  $("convert-files").value = "";
+  await loadUploads();
+}
+
+async function loadUploads(problem) {
+  try { uploaded = (await api("/api/uploads")).files || []; }
+  catch { uploaded = []; }
+  showUploaded(problem);
+  warn();
+}
+
+$("convert-files").onchange = async () => {
+  const files = [...$("convert-files").files];
+  if (!files.length) return;
+  uploading = true;
+  showUploaded();
+  let problem = "";
+  try {
+    // What is listed is what converts: a new choice replaces the old one.
+    await post("/api/upload-clear", {});
+    for (const f of files) {
+      const r = await fetch(`/api/upload?name=${encodeURIComponent(f.name)}`, {
+        method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: f });
+      let body = {};
+      try { body = await r.json(); } catch { /* not JSON: the status says it */ }
+      if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+    }
+  } catch (e) {
+    problem = `Not copied — ${e.message}`;
+    try { await post("/api/upload-clear", {}); } catch { /* listed below if so */ }
+    $("convert-files").value = "";
+  }
+  uploading = false;
+  await loadUploads(problem);
+};
+
+const picked = (name) =>
+  (document.querySelector(`input[name="${name}"]:checked`) || {}).value || "";
 
 function convertOptions() {
   const out = {};
-  document.querySelectorAll("#convert-form [data-opt]").forEach((el) => {
-    if (el.type === "checkbox") { if (el.checked) out[el.dataset.opt] = true; }
-    else if (el.value.trim()) out[el.dataset.opt] = el.value.trim();
+  if (uploaded.length) out["--input"] = uploaded.map((f) => f.path).join(",");
+  document.querySelectorAll("#convert-form [data-opt]").forEach((e) => {
+    if (e.type === "checkbox") { if (e.checked) out[e.dataset.opt] = true; }
+    else if (e.value.trim()) out[e.dataset.opt] = e.value.trim();
   });
+  if (picked("cv-diagrams") === "png") out["--diagram-png"] = true;
+  if (picked("cv-diagrams") === "only") out["--diagrams-only"] = true;
+  if (picked("cv-phase") === "off") out["--no-phase-specs"] = true;
+  else out["--phase-specs"] = true;
+  if (picked("cv-cursor") === "on") out["--cursor-assist"] = true;
+  else out["--no-cursor-assist"] = true;
   return out;
 }
 
@@ -349,58 +362,86 @@ function convertOptions() {
 function warn() {
   const o = convertOptions();
   const msgs = [];
+  if (!o["--input"]) msgs.push("No ReadyAPI project file is chosen yet.");
   if (o["--clean"]) {
-    msgs.push(`<code>--clean</code> deletes the previously-generated files for` +
-      (o["--suite-name"] ? ` suite <code>${esc(o["--suite-name"])}</code>`
-                         : " this suite") +
-      ` under <code>${esc(o["--output"] || "the output directory")}</code>.`);
+    msgs.push("Clean first deletes the previously-generated files of " +
+      (o["--suite-name"] ? `suite ${o["--suite-name"]}` : "this suite") +
+      " before writing.");
   }
   if (o["--classic"]) {
-    msgs.push("<code>--classic</code> is whole-tree. If that output already " +
-              "holds phase-mode suites the converter will refuse, and " +
-              "converting everything classic replaces them.");
+    msgs.push("Classic mode is whole-tree. If this project already holds " +
+              "phase-mode suites the converter will refuse, and converting " +
+              "everything classic replaces them.");
   }
-  for (const r of REQUIRED) {
-    if (!o[r]) msgs.push(`<code>${r}</code> is not set.`);
+  if (o["--cursor-assist"]) {
+    msgs.push("Cursor assist calls the REAL Cursor after the convert, whatever " +
+              "tools/agent/mock.json says. It can cost money and edit files.");
   }
   if (!o["--data-dir"]) {
-    msgs.push("<code>--data-dir</code> is not set. Fine for a suite whose " +
-              "ReadyAPI project has no DataSource workbooks. If it does " +
-              "have them, every DataSource column comes out EMPTY and the " +
-              "run looks like an API problem rather than a missing path.");
+    msgs.push("No workbooks folder is set. Fine for a suite whose ReadyAPI " +
+              "project has no DataSource workbooks. If it does have them, " +
+              "every DataSource column comes out EMPTY and the run looks " +
+              "like an API problem rather than a missing path.");
   }
   const box = $("convert-warnings");
   box.hidden = msgs.length === 0;
-  box.innerHTML = msgs.length ? "<ul><li>" + msgs.join("</li><li>") + "</li></ul>" : "";
+  box.replaceChildren(el("ul", {}, msgs.map((m) => el("li", { text: m }))));
 }
-const esc = (s) => String(s).replace(/[&<>"']/g,
-  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+$("convert-form").addEventListener("input", warn);
+$("convert-form").addEventListener("change", warn);
+loadUploads();
+
+function runVerifyAll(j) {
+  $("verify-block").hidden = false;
+  post("/api/start", { job: j, runnable: "verify-all", options: {} })
+    .then(() => follow("verify-all", $("verify-log"), $("verify-state")))
+    .catch((e) => setState($("verify-state"), "bad", e.message));
+}
 
 $("run-convert").onclick = async () => {
+  if (uploading) { setState($("convert-state"), "bad", "the files are still being copied"); return; }
   const o = convertOptions();
+  if (!o["--input"]) {
+    setState($("convert-state"), "bad", "choose the ReadyAPI project XML to convert first");
+    return;
+  }
   if (o["--clean"] &&
-      !confirm("--clean deletes previously-generated files under the output " +
-               "directory before writing. Continue?")) return;
+      !confirm("Clean first deletes previously-generated files of this suite " +
+               "before writing. Continue?")) return;
+  const j = convertJob();
+  const verifyAfter = $("convert-verify").checked;
+  $("verify-block").hidden = true;
   try {
-    await post("/api/start",
-               { job: job(), runnable: "convert", options: o });
-    follow("convert", $("convert-log"), $("convert-state"));
+    await post("/api/start", { job: j, runnable: "convert", options: o });
+    follow("convert", $("convert-log"), $("convert-state"), (st) => {
+      if (!verifyAfter) return;
+      if (st.state === "done") { runVerifyAll(j); return; }
+      // Checking a tree a failed convert left half-written says nothing
+      // about either. Said, so the tick is not taken for a run.
+      $("verify-block").hidden = false;
+      $("verify-log").textContent = "";
+      setState($("verify-state"), "bad",
+               "not run: the convert did not finish cleanly");
+    });
   } catch (e) { setState($("convert-state"), "bad", e.message); }
 };
 
 $("stop-convert").onclick = async () => {
-  try { await post("/api/stop", { job: job(), runnable: "convert" }); }
-  catch (e) { setState($("convert-state"), "bad", e.message); }
+  try {
+    let stopped = false;
+    for (const runnable of ["convert", "verify-all", "audit-service-keys", "audit-token-chain"]) {
+      const r = await post("/api/stop", { job: convertJob(), runnable });
+      if (r && r.stopped) stopped = true;
+    }
+    if (!stopped) setState($("convert-state"), "", "nothing was running");
+  } catch (e) { setState($("convert-state"), "bad", e.message); }
 };
 
 for (const [btn, runnable] of [["run-keys", "audit-service-keys"],
                                ["run-token", "audit-token-chain"]]) {
   $(btn).onclick = async () => {
-    const o = {};
-    const out = convertOptions()["--output"];
-    if (out) o["--root"] = out;
     try {
-      await post("/api/start", { job: job(), runnable, options: o });
+      await post("/api/start", { job: convertJob(), runnable, options: {} });
       follow(runnable, $("convert-log"), $("convert-state"));
     } catch (e) { setState($("convert-state"), "bad", e.message); }
   };

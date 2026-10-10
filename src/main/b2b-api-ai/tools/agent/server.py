@@ -72,7 +72,7 @@ class Handler(BaseHTTPRequestHandler):
     def _fail(self, exc: Exception, code: int = 400) -> None:
         self._json({"error": str(exc), "kind": type(exc).__name__}, code)
 
-    def _guard(self) -> None:
+    def _guard(self, ctype_wanted: str = "application/json") -> None:
         """Refuse requests a web page could have made on the user's behalf.
 
         This process starts commands that write to the repository, and
@@ -104,9 +104,9 @@ class Handler(BaseHTTPRequestHandler):
                 f"cross-origin request from {origin}. This API starts "
                 f"commands; it answers only its own page.")
         ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip()
-        if ctype.lower() != "application/json":
+        if ctype.lower() != ctype_wanted:
             raise PermissionError(
-                "POST needs Content-Type: application/json. A text/plain "
+                f"POST needs Content-Type: {ctype_wanted}. A text/plain "
                 "body is a simple request that skips the CORS preflight, "
                 "which is exactly how a page on another site would reach "
                 "this.")
@@ -142,6 +142,8 @@ class Handler(BaseHTTPRequestHandler):
                                    for k, v in jobs.RUNNABLES.items()})
             if u.path == "/api/jobs":
                 return self._json(jobs.list_jobs())
+            if u.path == "/api/uploads":
+                return self._json({"files": jobs.list_uploads()})
             if u.path == "/api/mock":
                 # Which services are stand-ins right now. Read on every
                 # request: the file can be edited while the page is open.
@@ -189,8 +191,19 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):                                   # noqa: N802
         u = urlparse(self.path)
         try:
+            if u.path == "/api/upload":
+                # The one route whose body is a file, not JSON. Its content
+                # type is not a "simple" one either, so a page on another
+                # site still cannot send it without a preflight it fails.
+                self._guard("application/octet-stream")
+                q = {k: v[0] for k, v in parse_qs(u.query).items()}
+                return self._json(jobs.save_upload(
+                    q.get("name", ""), self.rfile,
+                    int(self.headers.get("Content-Length") or 0)))
             self._guard()
             body = self._body()
+            if u.path == "/api/upload-clear":
+                return self._json({"removed": jobs.clear_uploads()})
             if u.path == "/api/start":
                 return self._json(jobs.start(body.get("job", ""),
                                              body.get("runnable", ""),

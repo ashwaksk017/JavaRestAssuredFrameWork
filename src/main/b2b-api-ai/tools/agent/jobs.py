@@ -22,6 +22,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -45,9 +46,15 @@ RUNNABLES = {
         "argv": [PY, "-B", os.path.join("tools", "ra_converter",
                                         "ra_converter.py")],
         "label": "Convert ReadyAPI suites",
-        # name -> kind. "path" is resolved and confined to the repo.
+        # name -> kind. "path" is resolved and confined to the repo;
+        # "paths" is several of them, comma separated, each confined.
+        # The page shows only some of these (see ui/index.html); the rest
+        # keep the converter's own defaults, except --output: the
+        # converter's default is a directory called `output`, and this
+        # project is converted into itself.
+        "defaults": {"--output": "."},
         "options": {
-            "--input": "path", "--output": "path", "--data-dir": "path",
+            "--input": "paths", "--output": "path", "--data-dir": "path",
             "--config": "path", "--cursor-config": "path",
             "--package-root": "text", "--service-name": "text",
             "--envs": "text", "--suite-name": "text",
@@ -59,6 +66,13 @@ RUNNABLES = {
             "--bootstrap": "flag", "--skip-dataflow-check": "flag",
             "--keep-dead-props": "flag", "--no-reapply-patches": "flag",
         },
+    },
+    # The whole gate, as `python tools/verify_all.py`. No options: what it
+    # checks is this tree. Offered after a convert.
+    "verify-all": {
+        "argv": [PY, "-B", os.path.join("tools", "verify_all.py")],
+        "label": "Run every check of the gate",
+        "options": {},
     },
     "intake": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "intake.py")],
@@ -218,7 +232,7 @@ RUNNABLES = {
 # suite; an agent run during a convert would "put back" half-written
 # files.
 EXCLUSIVE = {"convert", "agent-generate", "agent-approve", "agent-discard",
-             "agent-reapply"}
+             "agent-reapply", "verify-all"}
 
 # The only options that may be given more than once.
 REPEATABLE = {"--link"}
@@ -257,7 +271,11 @@ def build_argv(runnable: str, options: dict) -> list:
         raise ValueError(f"unknown runnable {runnable!r}. "
                          f"Known: {', '.join(sorted(RUNNABLES))}")
     argv = list(spec["argv"])
-    for name, value in (options or {}).items():
+    options = dict(options or {})
+    for name, value in (spec.get("defaults") or {}).items():
+        if str(options.get(name) or "").strip() == "":
+            options[name] = value
+    for name, value in options.items():
         kind = spec["options"].get(name)
         if kind is None:
             raise ValueError(
@@ -273,6 +291,13 @@ def build_argv(runnable: str, options: dict) -> list:
         for v in values:
             if v is None or str(v).strip() == "":
                 continue
+            if kind == "paths":
+                parts = [p.strip() for p in str(v).split(",") if p.strip()]
+                if not parts:
+                    continue
+                argv.append(name)
+                argv.append(",".join(confine(p) for p in parts))
+                continue
             if kind != "path" and str(v).lstrip().startswith("-"):
                 # `--text -flaky` reads to the command as an option called
                 # -flaky and no text. Joined with `=`, it is the text.
@@ -281,6 +306,106 @@ def build_argv(runnable: str, options: dict) -> list:
             argv.append(name)
             argv.append(confine(str(v)) if kind == "path" else str(v))
     return argv
+
+
+# ---- files chosen on the Convert tab -------------------------------------
+# A browser does not tell a page where a chosen file lives, so the page
+# cannot hand the converter a path. It hands over the file: the bytes are
+# written here, under the gitignored target/, and the converter is given
+# THAT path. The name is kept, because the suite is named after it.
+UPLOAD_DIR = ("target", "convert-input")
+MAX_UPLOAD = 300 * 1024 * 1024
+_UPLOAD_NAME_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()+-]{0,150}\.xml$", re.I)
+_RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)),
+             *(f"lpt{i}" for i in range(1, 10))}
+
+
+def upload_dir() -> str:
+    return os.path.join(ROOT, *UPLOAD_DIR)
+
+
+def upload_name(name: str) -> str:
+    """The file's own name, and nothing of where it came from."""
+    base = str(name or "").replace("\\", "/").rsplit("/", 1)[-1].strip()
+    if (not _UPLOAD_NAME_RX.match(base) or ".." in base
+            or base.rsplit(".", 1)[0].strip(" .").lower() in _RESERVED):
+        raise ValueError(
+            f"{base or name!r} cannot be used as a file name here. A ReadyAPI project "
+            f"file ends in .xml, and its name may hold letters, digits, spaces and "
+            f". _ - ( ) + only.")
+    return base
+
+
+def _upload_entry(name: str) -> dict:
+    # Forward slashes whatever the machine: the same text is a valid path
+    # on Windows, macOS and Linux, and it is relative to the project.
+    return {"name": name, "path": "/".join((*UPLOAD_DIR, name)),
+            "bytes": os.path.getsize(os.path.join(upload_dir(), name))}
+
+
+def list_uploads() -> list:
+    try:
+        names = sorted(n for n in os.listdir(upload_dir())
+                       if _UPLOAD_NAME_RX.match(n)
+                       and os.path.isfile(os.path.join(upload_dir(), n)))
+    except OSError:
+        return []
+    return [_upload_entry(n) for n in names]
+
+
+def clear_uploads() -> int:
+    """Forget what was chosen before. Only files this put there."""
+    n = 0
+    try:
+        names = os.listdir(upload_dir())
+    except OSError:
+        return 0
+    for name in names:
+        p = os.path.join(upload_dir(), name)
+        if os.path.isfile(p) and (_UPLOAD_NAME_RX.match(name) or name.endswith(".part")):
+            try:
+                os.remove(p)
+                n += 1
+            except OSError:
+                pass
+    return n
+
+
+def save_upload(name: str, stream, length: int) -> dict:
+    """Write `length` bytes of `stream` as target/convert-input/<name>."""
+    base = upload_name(name)
+    if length <= 0:
+        raise ValueError(f"{base} is empty")
+    if length > MAX_UPLOAD:
+        raise ValueError(f"{base} is {length:,} bytes; the limit is {MAX_UPLOAD:,}")
+    os.makedirs(upload_dir(), exist_ok=True)
+    dest = os.path.join(upload_dir(), base)
+    tmp = f"{dest}.{os.getpid()}.part"
+    left, head = length, b""
+    try:
+        with io.open(tmp, "wb") as fh:
+            while left > 0:
+                chunk = stream.read(min(left, 1 << 20))
+                if not chunk:
+                    raise ValueError(f"{base} arrived incomplete "
+                                     f"({length - left:,} of {length:,} bytes)")
+                if len(head) < 64:
+                    head += chunk[:64 - len(head)]
+                fh.write(chunk)
+                left -= len(chunk)
+        # Not a parse: only that it is the kind of file it says it is. A
+        # workbook or a zip renamed to .xml is caught here, not an hour
+        # into a convert.
+        start = head[3:] if head.startswith(b"\xef\xbb\xbf") else head
+        if not start.lstrip().startswith(b"<"):
+            raise ValueError(f"{base} does not look like XML (it does not start with `<`)")
+        os.replace(tmp, dest)
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    return _upload_entry(base)
 
 
 def mock_state() -> dict:

@@ -183,3 +183,20 @@ label.inline { display: inline-flex; gap: .35rem; align-items: center; margin: 0
 .writecell { display: flex; flex-direction: column; gap: .3rem; min-width: 11rem; }
 .result td small { color: var(--dim); display: block; margin-top: .15rem; }
 .result td:first-child { white-space: nowrap; }
+
+/* The Convert tab. */
+.row.center { justify-content: center; }
+.form .field.wide { grid-column: 1 / -1; }
+.form fieldset.choice { border: 1px solid var(--line); border-radius: 7px;
+                        padding: .5rem .9rem .7rem; margin: 0; min-width: 0; }
+.form fieldset.choice legend { padding: 0 .4rem; color: var(--dim); font-size: .85rem; }
+.form fieldset.choice label { display: flex; align-items: center; gap: .5rem;
+                              margin: .35rem 0 0; cursor: pointer; }
+.form .field.flag { flex-wrap: wrap; }
+.form .field.flag label { margin: 0; }
+.form .field.flag small { flex-basis: 100%; padding: 0 .6rem .2rem 1.9rem; }
+input[type=file] { padding: .45rem; border: 1px dashed var(--line); border-radius: 7px;
+                   background: #0f121b; color: var(--ink); font: inherit; }
+.uploaded { margin-top: .5rem; font-size: .85rem; }
+.uploaded .file { display: flex; gap: .8rem; align-items: baseline; padding: .15rem 0; }
+.uploaded .file code { color: var(--dim); }

@@ -27,6 +27,68 @@ jobs = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(jobs)
 
 
+class AChosenFileBecomesAPath(unittest.TestCase):
+    """The Convert tab sends a file; the converter is given where it was put."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="jobs_upload_")
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        saved = jobs.ROOT
+        jobs.ROOT = self.root
+        self.addCleanup(setattr, jobs, "ROOT", saved)
+
+    def put(self, name, data=b"<?xml version='1.0'?><con:soapui-project/>", length=None):
+        return jobs.save_upload(name, io.BytesIO(data), len(data) if length is None else length)
+
+    def test_it_is_kept_under_target_with_its_own_name_and_forward_slashes(self):
+        got = self.put("Account Member Regression.xml")
+        self.assertEqual(got, {"name": "Account Member Regression.xml",
+                               "path": "target/convert-input/Account Member Regression.xml",
+                               "bytes": 42})
+        self.assertNotIn("\\", got["path"])
+        there = os.path.join(self.root, "target", "convert-input", "Account Member Regression.xml")
+        self.assertTrue(os.path.isfile(there))
+        argv = jobs.build_argv("convert", {"--input": got["path"]})
+        self.assertEqual(argv[argv.index("--input") + 1], os.path.realpath(there))
+        self.assertEqual(jobs.list_uploads(), [got])
+
+    def test_only_the_name_of_the_file_is_taken_from_what_was_sent(self):
+        self.assertEqual(self.put("C:\\Users\\me\\Desktop\\Suite.xml")["path"],
+                         "target/convert-input/Suite.xml")
+        self.assertEqual(self.put("/home/me/Suite (2).xml")["name"], "Suite (2).xml")
+        for bad in ("", "..xml", ".hidden.xml", "a.txt", "a.xml.exe", "a/../..", "nul.xml",
+                    "COM1.xml", "a\x00.xml", "a;rm.xml", "a$b.xml", "x" * 200 + ".xml",
+                    "program_configuration.json"):
+            with self.assertRaises(ValueError, msg=bad):
+                self.put(bad)
+        self.assertEqual(sorted(os.listdir(os.path.join(self.root, "target", "convert-input"))),
+                         ["Suite (2).xml", "Suite.xml"], "nothing was written anywhere else")
+        self.assertEqual(os.listdir(self.root), ["target"])
+
+    def test_what_is_not_xml_or_did_not_all_arrive_is_not_kept(self):
+        for name, data, length in (("zip.xml", b"PK\x03\x04 not xml", None),
+                                   ("empty.xml", b"", None),
+                                   ("short.xml", b"<a>", 500),
+                                   ("huge.xml", b"<a/>", jobs.MAX_UPLOAD + 1)):
+            with self.assertRaises(ValueError, msg=name):
+                self.put(name, data, length)
+        self.assertEqual(jobs.list_uploads(), [])
+        d = os.path.join(self.root, "target", "convert-input")
+        self.assertEqual(os.listdir(d) if os.path.isdir(d) else [], [], "no part file is left")
+        self.assertEqual(self.put("bom.xml", b"\xef\xbb\xbf  \n<a/>")["bytes"], 10)
+
+    def test_choosing_again_forgets_only_what_was_chosen(self):
+        self.put("A.xml")
+        self.put("B.xml")
+        d = os.path.join(self.root, "target", "convert-input")
+        with io.open(os.path.join(d, "notes.txt"), "w") as fh:
+            fh.write("mine")
+        os.makedirs(os.path.join(d, "sub.xml"))
+        self.assertEqual(jobs.clear_uploads(), 2)
+        self.assertEqual(sorted(os.listdir(d)), ["notes.txt", "sub.xml"])
+        self.assertEqual(jobs.clear_uploads(), 0)
+
+
 class ArgvIsNeverFreeText(unittest.TestCase):
     """A UI that posted a command string would be a remote shell."""
 
@@ -120,6 +182,33 @@ class ArgvIsNeverFreeText(unittest.TestCase):
                                            "--suite-name": "goal"})
         self.assertIn("--classic", argv)
         self.assertIn("goal", argv)
+
+    def test_a_convert_is_written_into_this_project_unless_told_otherwise(self):
+        """The page no longer shows --output. The converter's own default is
+        a directory called `output`; this project is converted into itself."""
+        argv = jobs.build_argv("convert", {"--suite-name": "goal"})
+        self.assertEqual(argv[argv.index("--output") + 1], os.path.realpath(jobs.ROOT))
+        argv = jobs.build_argv("convert", {"--output": "target/elsewhere"})
+        self.assertEqual(argv[argv.index("--output") + 1],
+                         os.path.realpath(os.path.join(jobs.ROOT, "target", "elsewhere")))
+        self.assertEqual(argv.count("--output"), 1)
+
+    def test_several_inputs_are_each_kept_inside_the_project(self):
+        argv = jobs.build_argv("convert", {
+            "--input": "target/convert-input/A.xml, target/convert-input/B b.xml"})
+        got = argv[argv.index("--input") + 1].split(",")
+        base = os.path.realpath(os.path.join(jobs.ROOT, "target", "convert-input"))
+        self.assertEqual(got, [os.path.join(base, "A.xml"), os.path.join(base, "B b.xml")])
+        with self.assertRaises(ValueError):
+            jobs.build_argv("convert", {"--input": "target/convert-input/A.xml,../../x.xml"})
+
+    def test_the_gate_can_be_run_and_takes_nothing_from_the_page(self):
+        self.assertEqual(jobs.RUNNABLES["verify-all"]["options"], {})
+        self.assertEqual(jobs.build_argv("verify-all", {})[-1],
+                         os.path.join("tools", "verify_all.py"))
+        with self.assertRaises(ValueError):
+            jobs.build_argv("verify-all", {"--baseline": True})
+        self.assertIn("verify-all", jobs.EXCLUSIVE, "it judges the tree a convert rewrites")
 
     def test_an_undeclared_option_is_refused(self):
         with self.assertRaises(ValueError) as got:

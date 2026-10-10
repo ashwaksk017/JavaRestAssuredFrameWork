@@ -128,22 +128,87 @@ Expect 201.'></textarea>
 <!-- ───────────────────────────── tab 2 ───────────────────────────── -->
 <section id="tab-convert" class="tab" role="tabpanel" hidden>
   <p class="lede">
-    The converter, with the options you would type on the console. No
-    agent is involved: this runs one known command.
+    Converts ReadyAPI project files into this project. Choose the files,
+    set what you need below, and press Convert. Everything not shown here
+    keeps the converter's own default.
   </p>
-  <div id="convert-form" class="form"></div>
+  <div id="convert-form" class="form">
+    <div class="field req wide">
+      <label for="convert-files">ReadyAPI project XML</label>
+      <input id="convert-files" type="file" accept=".xml,text/xml,application/xml" multiple>
+      <small>One suite file, or several. They are copied to
+        <code>target/convert-input/</code> on this machine and converted from
+        there; choosing again replaces what was chosen before.</small>
+      <div id="convert-uploaded" class="uploaded"></div>
+    </div>
+    <div class="field advised">
+      <label for="opt-data-dir">Workbooks folder <span class="hint">--data-dir</span></label>
+      <input id="opt-data-dir" type="text" spellcheck="false" data-opt="--data-dir">
+      <small>The folder holding the DataSource workbooks, relative to this
+        project. A suite with no workbooks needs none. When the suite HAS
+        them, forgetting this is the usual cause of a bad run.</small>
+    </div>
+    <div class="field">
+      <label for="opt-suite-name">Suite name <span class="hint">--suite-name, optional</span></label>
+      <input id="opt-suite-name" type="text" spellcheck="false" data-opt="--suite-name">
+      <small>Left empty, it is taken from the file's name.</small>
+    </div>
+
+    <fieldset class="field choice">
+      <legend>Diagrams</legend>
+      <label><input type="radio" name="cv-diagrams" value="" checked> As configured</label>
+      <label><input type="radio" name="cv-diagrams" value="png"> Also render images <span class="hint">--diagram-png</span></label>
+      <label><input type="radio" name="cv-diagrams" value="only"> Diagrams only, no Java <span class="hint">--diagrams-only</span></label>
+    </fieldset>
+    <fieldset class="field choice">
+      <legend>Phase specs</legend>
+      <label><input type="radio" name="cv-phase" value="on" checked> On <span class="hint">--phase-specs, the default</span></label>
+      <label><input type="radio" name="cv-phase" value="off"> Off <span class="hint">--no-phase-specs</span></label>
+    </fieldset>
+    <fieldset class="field choice">
+      <legend>Cursor assist</legend>
+      <label><input type="radio" name="cv-cursor" value="off" checked> Off <span class="hint">--no-cursor-assist</span></label>
+      <label><input type="radio" name="cv-cursor" value="on"> On <span class="hint">--cursor-assist: calls the real Cursor</span></label>
+    </fieldset>
+
+    <div class="field flag">
+      <input id="opt-clean" type="checkbox" data-opt="--clean">
+      <label for="opt-clean">Clean first <span class="hint">--clean</span></label>
+      <small>DELETES this suite's previously-generated files first.</small>
+    </div>
+    <div class="field flag">
+      <input id="opt-classic" type="checkbox" data-opt="--classic">
+      <label for="opt-classic">Classic mode <span class="hint">--classic</span></label>
+      <small>Whole-tree: one output holds one mode. Mixing is refused.</small>
+    </div>
+    <div class="field flag">
+      <input id="opt-skip-self-test" type="checkbox" data-opt="--skip-self-test">
+      <label for="opt-skip-self-test">Skip self-test <span class="hint">--skip-self-test</span></label>
+      <small>Skips the converter's own unit checks before emitting.</small>
+    </div>
+    <div class="field flag">
+      <input id="convert-verify" type="checkbox">
+      <label for="convert-verify">Verify all afterwards</label>
+      <small>When the convert finishes, runs every check of the gate
+        (<code>tools/verify_all.py</code>) and shows its log below.</small>
+    </div>
+  </div>
 
   <div class="danger" id="convert-warnings" hidden></div>
 
-  <div class="row">
+  <div class="row center">
     <button id="run-convert" class="go">Convert</button>
     <button id="stop-convert">Stop</button>
     <button id="run-keys">Audit service keys</button>
     <button id="run-token">Audit token chain</button>
-    <span id="convert-state" class="state"></span>
   </div>
+  <div class="row center"><span id="convert-state" class="state"></span></div>
   <h3>Log</h3>
   <pre id="convert-log" class="log"></pre>
+  <div id="verify-block" hidden>
+    <h3>Verify all <span id="verify-state" class="state"></span></h3>
+    <pre id="verify-log" class="log"></pre>
+  </div>
 </section>
 
 <!-- ───────────────────────────── tab 3 ───────────────────────────── -->

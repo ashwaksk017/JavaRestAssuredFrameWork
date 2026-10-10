@@ -45,6 +45,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -416,8 +417,75 @@ def main() -> int:
               state.get("exit_code") == 2 and "stale" not in left, f"{state} {left[:80]}")
 
         # ---- the tabs that were there before ----------------------------------
-        html = page.dom("convert")
-        check("tab 2 still builds its form from the server", 'data-opt="--input"' in html)
+        # ---- the Convert tab: a file is chosen, not a path typed -----------------
+        upload_dir = os.path.join(ROOT, "target", "convert-input")
+        had_uploads = os.path.isdir(upload_dir)
+        aside = None
+        if had_uploads and os.listdir(upload_dir):
+            aside = tempfile.mkdtemp(prefix="check_ui_uploads_")     # somebody's own: put back
+            for n in os.listdir(upload_dir):
+                shutil.move(os.path.join(upload_dir, n), os.path.join(aside, n))
+        try:
+            def send(name, data, ctype="application/octet-stream"):
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/api/upload?name={urllib.parse.quote(name)}",
+                    data=data, headers={"Content-Type": ctype}, method="POST")
+                try:
+                    with urllib.request.urlopen(req, timeout=20) as r:
+                        return r.status, json.loads(r.read().decode())
+                except urllib.error.HTTPError as e:
+                    return e.code, json.loads(e.read().decode() or "{}")
+            code, got = send("Check Ui Suite.xml", b"<?xml version='1.0'?><p/>")
+            check("a chosen file is kept and answered with a path, forward slashes only",
+                  code == 200 and got.get("path") == "target/convert-input/Check Ui Suite.xml",
+                  f"HTTP {code} {got}")
+            code, got = send("x.xml", b"<p/>", "text/plain")
+            check("a file sent the way another site's form could send it is refused", code == 403)
+            code, got = send("../../pom.xml", b"<p/>")
+            check("a name cannot place the file anywhere else",
+                  code == 200 and got.get("path") == "target/convert-input/pom.xml")
+            code, got = send("notes.txt", b"<p/>")
+            check("only a .xml is taken", code != 200 and ".xml" in str(got.get("error")))
+            html = page.dom("convert")
+            # Only the Convert tab's own part of the page: another tab's
+            # help text names some of these options.
+            html = html[html.index('id="tab-convert"'):html.index('id="tab-agent"')]
+            check("the Convert tab lists what was chosen, with where it was put",
+                  "Check Ui Suite.xml" in html
+                  and "target/convert-input/Check Ui Suite.xml" in html)
+            for hidden in ("--output", "--package-root", "--envs", "--config", "--cursor-config",
+                           "--service-name", "--diagram-cases", "--max-name-len", "--bootstrap",
+                           "--skip-dataflow-check", "--keep-dead-props", "--no-reapply-patches"):
+                if f'data-opt="{hidden}"' in html or f">{hidden}<" in html:
+                    check(f"{hidden} is not on the Convert tab", False)
+                    break
+            else:
+                check("the options that keep their defaults are not on the Convert tab", True)
+            check("diagrams, phase specs and Cursor assist are each one choice",
+                  html.count('name="cv-diagrams"') == 3 and html.count('name="cv-phase"') == 2
+                  and html.count('name="cv-cursor"') == 2)
+            check("Verify all is a tick box, and the buttons are in the middle",
+                  'id="convert-verify" type="checkbox"' in html
+                  and 'class="row center"' in html
+                  and html.index('class="row center"') < html.index('id="run-convert"')
+                  < html.index('id="run-token"') < html.index('id="convert-state"'))
+            check("what is still shown is there to be set",
+                  all(f'data-opt="{o}"' in html for o in
+                      ("--data-dir", "--suite-name", "--clean", "--classic", "--skip-self-test")))
+            code, got = page.call("/api/upload-clear", {})
+            check("Remove forgets the chosen files",
+                  code == 200 and got.get("removed") == 2
+                  and page.call("/api/uploads")[1] == {"files": []})
+        finally:
+            for n in (os.listdir(upload_dir) if os.path.isdir(upload_dir) else []):
+                if n.endswith(".xml") and os.path.isfile(os.path.join(upload_dir, n)):
+                    os.remove(os.path.join(upload_dir, n))
+            if aside:
+                for n in os.listdir(aside):
+                    shutil.move(os.path.join(aside, n), os.path.join(upload_dir, n))
+                shutil.rmtree(aside, ignore_errors=True)
+            elif not had_uploads:
+                shutil.rmtree(upload_dir, ignore_errors=True)
         html = page.dom("new")
         check("tab 1 still has its buttons", 'id="run-intake"' in html and 'id="run-design"' in html)
         html = page.dom("agent")
