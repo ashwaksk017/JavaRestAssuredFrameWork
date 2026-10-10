@@ -142,6 +142,7 @@ select { width: 100%; padding: .45rem .5rem; background: #0f1220; color: inherit
 h2.part { margin: 2.2rem 0 .4rem; padding-top: 1.2rem; font-size: 1.05rem;
           border-top: 1px solid var(--line); }
 a.dl { color: #9db4ff; font-size: .85rem; }
+h3 a.dl { text-transform: none; letter-spacing: 0; font-weight: 400; margin-left: .6rem; }
 input[type=file] { margin: .3rem 0 .2rem; color: var(--dim); font-size: .8rem; }
 
 label.inline { display: inline-flex; gap: .35rem; align-items: center; margin: 0; font-weight: 400; }

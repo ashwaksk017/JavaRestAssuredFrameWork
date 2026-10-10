@@ -183,6 +183,14 @@ RUNNABLES = {
         "label": "Cursor makes the change, then it is verified",
         "options": {"--job": "text", "--scope": "text", "--suite": "text"},
     },
+    # Reads the job's proposed.diff and asks Cursor about it, in plan mode
+    # in an empty directory. It changes nothing: not the tree, not the
+    # job's state. No path and no text is taken from the page.
+    "agent-review": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "codereview.py")],
+        "label": "Cursor reads the proposed change and lists what looks wrong",
+        "options": {"--job": "text"},
+    },
     "agent-approve": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "loop.py"), "approve"],
         "label": "Approve: push a branch, or keep converted Java locally",
@@ -294,7 +302,7 @@ def mock_state() -> dict:
 # before it can write -- a bad argument, a crash, Stop -- must leave no
 # result, not the previous command's result under this one's exit code.
 RESULT_FILES = {"jira-": "jira-result.json", "failures-": "failures-result.json",
-                "defects-": "defects-result.json"}
+                "defects-": "defects-result.json", "agent-review": "code-review.json"}
 
 
 def clear_result(job: str, runnable: str) -> None:
@@ -469,6 +477,21 @@ def list_jobs() -> list:
     return out
 
 
+def diff_sha(job: str) -> str:
+    """sha256 of the job's proposed.diff as it is on disk, or "". A review
+    of the change records the same number; when they differ the review is
+    of another diff."""
+    import hashlib
+    h = hashlib.sha256()
+    try:
+        with io.open(os.path.join(job_dir(job), "proposed.diff"), "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError:
+        return ""
+    return h.hexdigest()
+
+
 def read_artifact(job: str, name: str) -> str:
     """One named artifact from a job directory.
 
@@ -478,7 +501,8 @@ def read_artifact(job: str, name: str) -> str:
     allowed = {"brief.md", "plan.md", "intake.json", "locate.json",
                "proposed.diff", "review.json",
                "design.json", "design.md", "test-cases.csv", "xray.csv",
-               "jira-result.json", "failures-result.json", "defects-result.json"}
+               "jira-result.json", "failures-result.json", "defects-result.json",
+               "code-review.json", "code-review.md"}
     if name not in allowed:
         raise ValueError(f"{name!r} is not a readable artifact. "
                          f"Known: {', '.join(sorted(allowed))}")

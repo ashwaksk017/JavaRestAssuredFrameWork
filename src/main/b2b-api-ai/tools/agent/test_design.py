@@ -1123,9 +1123,10 @@ class ThePageCannotPointTheStepAtAFile(unittest.TestCase):
             self.post({"job": "j", "swagger": "S", "fresh": value})
             self.assertEqual("--fresh" in self.started[0][2], expect, repr(value))
 
-    def test_only_the_four_design_files_download(self):
+    def test_only_the_files_a_person_takes_away_download(self):
         self.assertEqual(sorted(self.server.DOWNLOADS),
-                         ["design.json", "design.md", "test-cases.csv", "xray.csv"])
+                         ["code-review.md", "design.json", "design.md", "test-cases.csv",
+                          "xray.csv"])
         with self.assertRaises(ValueError):
             self.server.Handler._download(None, "j", "cursor.log")
 

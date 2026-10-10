@@ -90,7 +90,7 @@ class Page:
     def __init__(self, browser: str, base: str):
         self.browser, self.base = browser, base
 
-    def call(self, path: str, payload=None) -> tuple:
+    def call(self, path: str, payload=None, raw: bool = False) -> tuple:
         req = urllib.request.Request(self.base + path)
         data = None
         if payload is not None:
@@ -98,7 +98,8 @@ class Page:
             req.add_header("Content-Type", "application/json")
         try:
             with urllib.request.urlopen(req, data, timeout=20) as r:
-                return r.status, json.loads(r.read().decode("utf-8", "replace"))
+                text = r.read().decode("utf-8", "replace")
+                return r.status, text if raw else json.loads(text)
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read().decode("utf-8", "replace") or "{}")
 
@@ -512,6 +513,75 @@ def main() -> int:
                   and "[MOCK] POST /groups/{id}/rates succeeds" in html, f"rc={rc}")
             code, rc = press("agent-setup", {})
             check("mock mode: Check Cursor setup needs no SDK and no key", rc == 0)
+
+            # ---- the review of a proposed change -----------------------------
+            # A change waiting for a person, as the Agent loop leaves it. The
+            # review reads these two files and nothing else.
+            def waiting(started):
+                with io.open(os.path.join(job_dir, "review.json"), "w", encoding="utf-8") as fh:
+                    json.dump({"state": "pending-review", "scope": "new-test",
+                               "started": started,
+                               "files": {"created": ["src/test/java/NewTest.java"]}}, fh)
+            with io.open(os.path.join(job_dir, "proposed.diff"), "w", encoding="utf-8") as fh:
+                fh.write("diff --git a/src/test/java/NewTest.java b/src/test/java/NewTest.java\n"
+                         "new file\n--- /dev/null\n+++ b/src/test/java/NewTest.java\n"
+                         "@@ -0,0 +1,4 @@\n+public class NewTest {\n"
+                         "+    @Test(enabled = false)\n+    public void nothing() { }\n+}\n")
+            waiting("2026-10-10T10:00:00Z")
+            html = mocked.dom("agent")
+            check("Review the change is offered for a change that is waiting",
+                  ">Review the change</button>" in html
+                  and 'id="agent-review" disabled' not in html
+                  and f'id="agent-review" data-job="{JOB}"' in html,
+                  "the button is off or missing")
+            code, rc = press("agent-review", {})
+            html = mocked.dom("agent")
+            check("mock mode: Review the change lists a finding at the line the diff gives",
+                  rc == 0 and "[MOCK] the test is switched off" in html
+                  and "src/test/java/NewTest.java:2" in html
+                  and "This is not a review." in html, f"rc={rc}")
+            check("the review's report can be taken away",
+                  'id="dl-review" class="dl" hidden' not in html
+                  and "name=code-review.md" in html)
+            code, body = mocked.call(f"/api/download?job={JOB}&name=code-review.md", raw=True)
+            check("the report is Markdown and says it is a mock",
+                  code == 200 and "# Code review of job" in body and "**MOCK.**" in body,
+                  f"HTTP {code}")
+            check("a review of the change on screen carries no warning that it is not",
+                  "EARLIER run" not in html and "WRITTEN AGAIN" not in html)
+            with io.open(os.path.join(job_dir, "proposed.diff"), "a", encoding="utf-8") as fh:
+                fh.write("--- a/later.txt\n+++ b/later.txt\n@@ -1 +1 @@\n-a\n+b\n")
+            html = mocked.dom("agent")
+            check("a diff written again after the review is said not to be the one read",
+                  "WRITTEN AGAIN" in html
+                  and html.index("WRITTEN AGAIN") < html.index("[MOCK] the test is switched off"))
+            waiting("2026-10-10T11:11:11Z")
+            html = mocked.dom("agent")
+            check("a review of an earlier run says so, above what it found",
+                  "EARLIER run" in html
+                  and html.index("EARLIER run") < html.index("[MOCK] the test is switched off"))
+            with io.open(os.path.join(job_dir, "code-review.json"), "w", encoding="utf-8") as fh:
+                json.dump({"kind": "code-review", "job": JOB, "run_started": "2026-10-10T11:11:11Z",
+                           "mock": False, "message": "1 finding(s).", "failures": [],
+                           "files": [{"file": "a.java", "status": "not reviewed",
+                                      "why": "the reply did not mention this file"}],
+                           "findings": [{"file": "a.java", "line": 3, "where": "added",
+                                         "severity": "high", "category": "bug",
+                                         "title": "<img src=x onerror=alert(1)>",
+                                         "why": "<b>w</b>", "fix": "f", "evidence": "<i>e</i>"}],
+                           "unconfirmed": [], "dropped": 0, "over": 0}, fh)
+            html = mocked.dom("agent")
+            check("what Cursor wrote reaches the page as text, never as markup",
+                  "&lt;img src=x onerror=alert(1)&gt;" in html and "<img src=x" not in html
+                  and "&lt;i&gt;e&lt;/i&gt;" in html)
+            check("files that were not read are said above the findings",
+                  "NOT ALL OF THE CHANGE WAS REVIEWED" in html
+                  and html.index("NOT ALL OF THE CHANGE") < html.index("&lt;img src=x"))
+            for name in ("review.json", "proposed.diff", "code-review.json", "code-review.md"):
+                try:
+                    os.remove(os.path.join(job_dir, name))
+                except OSError:
+                    pass
         finally:
             try:
                 os.remove(store)

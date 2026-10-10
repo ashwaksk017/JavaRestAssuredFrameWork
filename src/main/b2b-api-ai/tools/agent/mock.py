@@ -352,8 +352,47 @@ def _defects_reply(prompt: str) -> str:
     return json.dumps({"defects": out})
 
 
+_REVIEW_FILE_RX = re.compile(
+    r"^----- file \d+ of \d+ \[[0-9a-f]+\]: (.+?) -----\n(.*?)^----- end of file \d+ ",
+    re.M | re.S)
+_REVIEW_WORDS = (
+    ("enabled = false", "low", "assertion", "the test is switched off",
+     "It is compiled and never run, so it can never fail.", "Enable it, or remove it."),
+    ("Thread.sleep", "medium", "bug", "a fixed sleep instead of waiting for the result",
+     "The test is slow when the service is fast and fails when it is slow.",
+     "Poll for the state the test needs."),
+    ("printStackTrace", "medium", "error handling", "a failure is printed and then ignored",
+     "The test carries on and can pass after something went wrong.",
+     "Let the exception fail the test."),
+    ("TODO", "low", "maintainability", "unfinished work left in the change",
+     "Somebody has to find out later what was meant.", "Finish it or take it out."),
+)
+
+
+def _review_reply(prompt: str) -> str:
+    """A keyword match on the added lines of each file. Not a review."""
+    files, findings = [], []
+    for path, body in _REVIEW_FILE_RX.findall(prompt):
+        hit = False
+        for line in body.splitlines():
+            if not line.startswith("+") or line.startswith("+++"):
+                continue
+            for word, sev, cat, title, why, fix in _REVIEW_WORDS:
+                if word in line:
+                    hit = True
+                    findings.append({"file": path, "evidence": line[1:].strip(),
+                                     "severity": sev, "category": cat,
+                                     "title": f"[MOCK] {title}", "why": why, "fix": fix})
+                    break
+        files.append({"file": path, "verdict": "findings" if hit else "ok",
+                      "note": "MOCK: keyword match only"})
+    return json.dumps({"files": files, "findings": findings})
+
+
 def cursor(prompt: str, followup=None) -> dict:
     """The mock Cursor for the steps that ask a question and take JSON back."""
+    if "===== CHANGE UNDER REVIEW =====" in prompt and _REVIEW_FILE_RX.search(prompt):
+        return {"result": _review_reply(prompt), "model": "mock", "status": "finished"}
     if "===== DEFECTS =====" in prompt:
         return {"result": _defects_reply(prompt), "model": "mock", "status": "finished"}
     return {"result": _design_reply(prompt), "model": "mock", "status": "finished"}

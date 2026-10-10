@@ -471,6 +471,83 @@ async function refreshReview() {
     : "—";
   if (f.created || f.modified) await showArtifact("proposed.diff", $("agent-diff"));
   else $("agent-diff").textContent = "—";
+  $("agent-review").disabled = !(state === "pending-review" || state === "verify-failed");
+  $("agent-review").dataset.job = shown;
+  await showCodeReview(shown, review);
+}
+
+// code-review.json, written by tools/agent/codereview.py. Every word in
+// it that came from Cursor or from the change is put on the page as text.
+async function showCodeReview(j, run) {
+  const box = $("agent-codereview");
+  let r = null;
+  let diffNow = "";
+  try {
+    const got = await api(`/api/artifact?job=${encodeURIComponent(j)}&name=code-review.json`);
+    if (got.text) r = JSON.parse(got.text);
+    diffNow = got.diff_sha256 || "";
+  } catch { /* none yet */ }
+  // A review is of one run and one diff. Another run, or the same run's
+  // diff written again (Approve does that when files changed), is not it.
+  const otherRun = r && (run.started || "") !== (r.run_started || "");
+  const otherDiff = r && r.kind === "code-review" && diffNow !== (r.diff_sha256 || "");
+  // A refusal says something about the moment it was made, nothing more.
+  if (r && r.kind !== "code-review" && otherRun) r = null;
+  $("dl-review").hidden = !(r && r.kind === "code-review");
+  $("dl-review").href = `/api/download?job=${encodeURIComponent(j)}&name=code-review.md`;
+  if (!r) { box.replaceChildren(); return; }
+  if (r.kind !== "code-review") {
+    box.replaceChildren(banner("bad", (r.refused ? "Refused — " : "Failed — ") + (r.message || "")));
+    return;
+  }
+  const kids = [];
+  if (r.mock) kids.push(banner("warn", "MOCK. These findings are a keyword match by the " +
+    "stand-in for Cursor (tools/agent/mock.json). This is not a review."));
+  // Said before anything it found.
+  if (otherRun) {
+    kids.push(banner("warn", "This review is of an EARLIER run of this job, not of the " +
+      "change shown below. Review the change again."));
+  } else if (otherDiff) {
+    kids.push(banner("warn", "The change has been WRITTEN AGAIN since this review: the " +
+      "diff below is not the one that was read, and the line numbers may not match. " +
+      "Review the change again."));
+  }
+  const unread = (r.files || []).filter((f) => f.status !== "reviewed");
+  if (unread.length) {
+    kids.push(banner("bad", `NOT ALL OF THE CHANGE WAS REVIEWED — ${unread.length} of ` +
+      `${r.files.length} file(s):`));
+    kids.push(table(["File", "Read", "Why"], unread.map((f) => [f.file, f.status, f.why])));
+  }
+  for (const f of r.failures || []) kids.push(banner("bad", `A question to Cursor failed — ${f}`));
+  kids.push(banner(r.findings.length ? "warn" : "ok", r.message +
+    (r.findings.length ? "" : " No findings is not a sign-off: read the change.")));
+  const row = (x) => [
+    x.severity.toUpperCase(),
+    el("div", {}, el("code", { text: x.line ? `${x.file}:${x.line}` : x.file }),
+       x.where && x.where !== "added"
+         ? el("small", { text: x.where === "removed" ? "a removed line" : "an unchanged line" }) : null,
+       x.matches > 1
+         ? el("small", { text: `the first of ${x.matches} lines that read the same` }) : null),
+    el("div", {}, el("div", { text: x.title }), el("small", { text: `${x.category}. ${x.why}` })),
+    x.evidence ? el("code", { text: x.evidence }) : "",
+    x.fix,
+  ];
+  const cols = ["Severity", "Where", "What", "The line", "Suggested change"];
+  if (r.findings.length) {
+    kids.push(heading("Findings", r.findings.length));
+    kids.push(table(cols, r.findings.map(row)));
+  }
+  if ((r.unconfirmed || []).length) {
+    kids.push(heading("Unconfirmed", r.unconfirmed.length));
+    kids.push(el("small", { text: "The line each of these quotes is not in the change, so it " +
+      "may be about something else, or about nothing." }));
+    kids.push(table(cols, r.unconfirmed.map(row)));
+  }
+  if (r.dropped || r.over) {
+    kids.push(el("small", { text: `Set aside: ${r.dropped || 0} finding(s) that named a file ` +
+      `not in the change or said nothing, ${r.over || 0} beyond the limit for one file.` }));
+  }
+  box.replaceChildren(...kids);
 }
 
 // The cursor log is its own file (cursor.log), appended to across runs.
@@ -497,7 +574,9 @@ function watchCursorLog() {
   cursorTimer = setInterval(() => pollCursorLog(false), 1500);
 }
 
+let agentRunning = "agent-generate";     // what Stop stops
 function runAgent(runnable, options) {
+  if (runnable === "agent-generate" || runnable === "agent-review") agentRunning = runnable;
   return post("/api/start", { job: job(), runnable, options })
     .then(() => follow(runnable, $("agent-log"), $("agent-state"), () => {
       refreshReview();
@@ -540,10 +619,18 @@ $("agent-generate").onclick = () => {
   runAgent("agent-generate", options);
 };
 $("agent-stop").onclick = async () => {
-  try { await post("/api/stop", { job: job(), runnable: "agent-generate" }); }
-  catch (e) { setState($("agent-state"), "bad", e.message); }
+  // The one this page started last: a review can take as long as a run,
+  // and stopping a review must not end a run that is also going.
+  try {
+    const r = await post("/api/stop", { job: job(), runnable: agentRunning });
+    if (r && r.stopped === false) setState($("agent-state"), "", "nothing was running");
+  } catch (e) { setState($("agent-state"), "bad", e.message); }
 };
 $("agent-refresh").onclick = () => { refreshReview(); pollCursorLog(true); };
+$("agent-review").onclick = () => {
+  if (!sameJobOrRefresh($("agent-review"))) return;
+  runAgent("agent-review", { "--job": job() });
+};
 $("agent-patches").onclick = () => {
   const suite = $("agent-suite").value.trim();
   runAgent("agent-patches", suite ? { "--suite": suite } : {});

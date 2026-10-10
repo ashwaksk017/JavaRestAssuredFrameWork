@@ -522,7 +522,10 @@ def render(template: str, values: dict) -> str:
     return _SLOT_RX.sub(lambda m: str(values.get(m.group(1), m.group(0))), template)
 
 
-_URL_HOST_RX = re.compile(r"""(https?://)([^/\s"'<>`)\]]+)""", re.I)
+# No backslash in a host: in JSON or Java source the character after a
+# URL is often the `\` of an escaped quote, and taking it with the host
+# leaves text that no longer parses.
+_URL_HOST_RX = re.compile(r"""(https?://)([^/\s"'<>`)\]\\]+)""", re.I)
 
 
 def hide_hosts(text: str) -> tuple:

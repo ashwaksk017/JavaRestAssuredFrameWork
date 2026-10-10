@@ -90,7 +90,8 @@
   "repeat_discard": false,
   "cursor_deadline_seconds": {
     "generate": 2700,
-    "design": 900
+    "design": 900,
+    "review": 900
   },
   "branch_prefix": "agent/",
   "remote": "origin",

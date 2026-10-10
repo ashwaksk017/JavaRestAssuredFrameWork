@@ -199,7 +199,7 @@ DEFAULT_POLICY = {
     "repair_attempts": 1,
     # One Cursor call may take this long before it is reported as stuck.
     # `generate` is per attempt: with one repair attempt, twice this.
-    "cursor_deadline_seconds": {"generate": 2700, "design": 900},
+    "cursor_deadline_seconds": {"generate": 2700, "design": 900, "review": 900},
     # After a timeout, how long to wait before looking for late writes.
     "timeout_settle_seconds": 5,
     # May Discard be used AGAIN on a run that was never confirmed stopped?
@@ -1166,6 +1166,11 @@ _ASSIGN_RX = re.compile(
         \s*(?:[:=]|,)\s*["']([^"'\s]{6,})["']""")
 _SECRET_KEY_RX = re.compile(
     r"(?i)(pass|secret|token|key|assertion|credential|c_sec|c_id|client_id)")
+# `pat`, `jira_pat`, `jiraPat`, `GITHUB_PAT`: a personal access token, which
+# is what jira_config calls its own. The same letters end `date_pat` and
+# `regex_pat`, so a key of this kind counts only when its VALUE looks like
+# a secret (see _looks_like_a_secret) -- `yyyy-MM-dd` does not.
+_PAT_KEY_RX = re.compile(r"(?:^|[_.\-\s])(?i:pat)$|(?<=[a-z0-9])Pat$|(?<=[A-Za-z0-9])PAT$")
 # Config keys that contain one of those words but name a route or an
 # identifier, not a secret.
 _NOT_SECRET_KEY_RX = re.compile(
@@ -1217,6 +1222,9 @@ def config_secrets(config_path: str) -> dict:
                     out[m.group(0)] = f"address from program_configuration.json ({key})"
             if (_SECRET_KEY_RX.search(key) and not _NOT_SECRET_KEY_RX.search(key)
                     and len(val) >= 6 and not val.startswith(("${", "#", "/"))):
+                out[val] = f"value of `{key}` in program_configuration.json"
+            elif (_PAT_KEY_RX.search(key) and len(val) >= 6
+                  and _looks_like_a_secret(val)):
                 out[val] = f"value of `{key}` in program_configuration.json"
 
     walk(data)
@@ -1814,8 +1822,11 @@ def _write_diff(root: str, job_dir: str, changes: dict, generated=(),
                       f"+++ b/{rel}\n@@ -0,0 +1,{len(lines)} @@\n"
                       + "\n".join("+" + l for l in lines) + "\n")
     text = "\n".join(chunks)
+    # newline="\n": written as it is. In text mode on Windows the `\r\n`
+    # of a CRLF file becomes `\r\r\n`, which reads back as a blank line
+    # after every line of the diff.
     with io.open(os.path.join(job_dir, "proposed.diff"), "w",
-                 encoding="utf-8") as fh:
+                 encoding="utf-8", newline="\n") as fh:
         fh.write(text)
     return text
 

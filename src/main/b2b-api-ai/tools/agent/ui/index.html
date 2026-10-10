@@ -195,8 +195,13 @@ Expect 201.'></textarea>
     <div class="row">
       <button id="agent-push" class="go" disabled>Approve</button>
       <button id="agent-discard" disabled>Discard</button>
+      <button id="agent-review" disabled>Review the change</button>
     </div>
   </div>
+
+  <h3>Code review <span class="hint">Cursor reads the change and lists what looks wrong — advice, it does not block Approve</span>
+    <a id="dl-review" class="dl" hidden>code-review.md</a></h3>
+  <div id="agent-codereview" class="result"></div>
 
   <div class="split">
     <div><h3>Files</h3><pre id="agent-files" class="doc">—</pre></div>

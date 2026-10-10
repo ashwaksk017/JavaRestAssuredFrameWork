@@ -99,7 +99,7 @@ needed: each command reads the file when it starts.
 | switch | `true` | `false` |
 |---|---|---|
 | `jira` | The **Jira** and **Defects** tabs use a sample project (three releases, stories, bugs, tests) under whatever project key you type. No `jira_config`, host or token is needed. **Write to Jira** changes `target/agent/mock-jira.json` and nothing else. | The Jira in `program_configuration.json`, with its token. |
-| `cursor` | **Design the tests** returns two cases per endpoint; **Suggest reasons** is a keyword match; **Run Cursor** writes one placeholder test so the checks, the review and Discard can be tried. No SDK, no key, no cost. | Cursor, with the key in `cursor_agent.json`. |
+| `cursor` | **Design the tests** returns two cases per endpoint; **Suggest reasons** and **Review the change** are keyword matches; **Run Cursor** writes one placeholder test so the checks, the review and Discard can be tried. No SDK, no key, no cost. | Cursor, with the key in `cursor_agent.json`. |
 
 While a switch is on:
 
@@ -493,9 +493,48 @@ The prompt says the same things, but a prompt is advice.
 The scopes are a list in `tools/agent/policy.json`; widen or narrow the
 write paths there.
 
+#### Review the change
+
+**Review the change** asks Cursor to read what it just proposed and list
+what looks wrong, before you approve. It is on whenever a change is
+waiting (PENDING REVIEW or VERIFY FAILED). You give it nothing: it reads
+the job's `proposed.diff`, the same text shown under it.
+
+What comes back is a table -- severity, file and line, what is wrong and
+why, the line itself, a suggested change -- and `code-review.md`, the
+same as a report you can attach to a merge request.
+
+- **It is advice.** It does not change the job and Approve does not look
+  at it. No findings is not a sign-off: the reviewer is a model of the
+  same family as the author, and it sees the diff, not the service.
+- **A finding has to quote a line of the change.** The quote is looked
+  up in the diff; the line number shown is the diff's, not the model's.
+  A finding whose quote is not in the change is listed apart as
+  *Unconfirmed*; one about a file that is not in the change is dropped
+  and counted.
+- **What was not read is said first.** A file counts as read only when
+  the reply gives it a verdict. A file the reply does not mention, a
+  binary file or a change of mode (nothing to read), a part of the diff
+  that does not add up, a file whose diff is too long for one question,
+  whatever is beyond what one review reads (six questions of about
+  40,000 characters), and a reply that was cut off are all listed above
+  the findings as NOT REVIEWED, and the command exits 1.
+- **A review belongs to one run and one diff.** After another Run
+  Cursor, or when Approve has written the diff again because files
+  changed, the page says the review is not of the change on screen.
+- **It does not report style, naming or formatting.** The prompt asks
+  for bugs, tests that assert nothing or the wrong thing, test data that
+  will collide, swallowed failures, and credentials in the change.
+- The diff goes to Cursor with the private configuration's values and
+  the hosts of its URLs removed, fenced as material, in plan mode in an
+  empty directory. Each review is one or more paid Cursor calls; it is a
+  button, never automatic. Its time limit is `review` under
+  `cursor_deadline_seconds` in `policy.json`.
+
 #### From the command line
 
 ```
+python tools/agent/codereview.py    --job <job>
 python tools/agent/loop.py setup    --job <job>
 python tools/agent/loop.py generate --job <job> --scope new-test
 python tools/agent/loop.py generate --job <job> --scope converted --suite amexbackbook
@@ -673,6 +712,7 @@ target/agent/<job>/
   test-cases.csv         design: one row per step
   xray.csv               design: the same, grouped for Xray's importer
   jira-result.json       the Jira tab: the last Jira command's result, as the page shows it
+  code-review.json / .md the Agent loop tab: Cursor's review of the proposed change, and the report
   defects.json           the Defects tab: the loaded bugs, their text, the suggestions
   defects-result.json    the Defects tab: the same without the ticket text, as the page shows it
   defects-applied.log    the Defects tab: every write to Jira made from this job
@@ -722,6 +762,7 @@ The API never accepts a command *string*. Every runnable is named in
 | `agent-design` | Cursor proposes API test cases (plan mode); takes no path, writes the job directory |
 | `agent-setup` | check the Cursor SDK, the key and git |
 | `agent-generate` | Cursor makes the change in the chosen scope; guardrails; verify |
+| `agent-review` | Cursor reads the proposed change and lists what looks wrong; takes no path, changes nothing |
 | `agent-approve` | approve: push branch `agent/<job>`, or keep converted Java locally |
 | `agent-discard` | undo what the agent wrote |
 | `agent-patches` | list the approved changes stored for re-applying |
@@ -754,6 +795,7 @@ python tools/agent/test_loop.py
 python tools/agent/test_design.py
 python tools/agent/test_history.py
 python tools/agent/test_defects.py
+python tools/agent/test_codereview.py
 python tools/agent/test_mock.py
 python tools/agent/check_ui.py
 ```

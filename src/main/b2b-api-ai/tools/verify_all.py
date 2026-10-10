@@ -233,6 +233,12 @@ CHECKS = [
           "never pass for them: a switch that is neither true nor false is "
           "an error, every mock result says so, and what a mock agent wrote "
           "cannot be approved"),
+    Check("agent-codereview",
+          [PY, "tools/agent/test_codereview.py"],
+          "the review of a proposed change reads the diff the loop wrote, "
+          "takes a finding's line number from the diff and not from the "
+          "model, sets aside what quotes no line of the change, and says "
+          "which files were not read"),
     Check("agent-defects",
           [PY, "tools/agent/test_defects.py"],
           "defect triage suggests only from the team's own list, accounts for "

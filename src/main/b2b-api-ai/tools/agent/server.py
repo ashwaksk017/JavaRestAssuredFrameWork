@@ -42,7 +42,8 @@ ROOT = jobs.ROOT
 UI_DIR = os.path.join(HERE, "ui")
 MAX_BODY = 8 * 1024 * 1024       # an OpenAPI document is pasted whole
 DOWNLOADS = {"design.md": "text/markdown", "design.json": "application/json",
-             "test-cases.csv": "text/csv", "xray.csv": "text/csv"}
+             "test-cases.csv": "text/csv", "xray.csv": "text/csv",
+             "code-review.md": "text/markdown"}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -153,8 +154,12 @@ class Handler(BaseHTTPRequestHandler):
                                                 q.get("runnable", ""),
                                                 int(q.get("offset") or 0)))
             if u.path == "/api/artifact":
-                return self._json({"text": jobs.read_artifact(
-                    q.get("job", ""), q.get("name", ""))})
+                out = {"text": jobs.read_artifact(q.get("job", ""), q.get("name", ""))}
+                if q.get("name") == "code-review.json":
+                    # What the review must still be about, for the page to
+                    # say when it is not.
+                    out["diff_sha256"] = jobs.diff_sha(q.get("job", ""))
+                return self._json(out)
             if u.path == "/api/download":
                 return self._download(q.get("job", ""), q.get("name", ""))
             return self._json({"error": "no such route"}, 404)
