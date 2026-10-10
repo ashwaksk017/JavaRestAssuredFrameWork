@@ -513,12 +513,20 @@ same as a report you can attach to a merge request.
   *Unconfirmed*; one about a file that is not in the change is dropped
   and counted.
 - **What was not read is said first.** A file counts as read only when
-  the reply gives it a verdict. A file the reply does not mention, a
-  binary file or a change of mode (nothing to read), a part of the diff
-  that does not add up, a file whose diff is too long for one question,
-  whatever is beyond what one review reads (six questions of about
-  40,000 characters), and a reply that was cut off are all listed above
-  the findings as NOT REVIEWED, and the command exits 1.
+  the reply gives it a verdict of *ok* or *findings*. Listed above the
+  findings as NOT REVIEWED, with the command exiting 1: a file the reply
+  does not mention, or says it *cannot judge* from the change alone; a
+  binary file or a change of mode (nothing to read, or not text); a part
+  of the diff that does not add up; a file whose diff is too long for
+  one question; whatever is beyond what one review reads (six questions
+  of about 40,000 characters); a reply that was cut off. So exit 1 means
+  "part of the change went unread", not "problems were found" -- a
+  review that read everything exits 0 whatever it found.
+- A reply that arrived whole but in JSON that had to be mended is used,
+  with a note saying so.
+- A review that was stopped, or that failed before it could write a
+  result, leaves a line saying nothing was read rather than an empty
+  panel.
 - **A review belongs to one run and one diff.** After another Run
   Cursor, or when Approve has written the diff again because files
   changed, the page says the review is not of the change on screen.

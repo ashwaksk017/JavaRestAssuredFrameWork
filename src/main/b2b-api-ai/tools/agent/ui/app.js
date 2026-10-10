@@ -76,6 +76,13 @@ function follow(runnable, logEl, stateEl, onDone) {
   let offset = 0;
   let misses = 0;
   logEl.textContent = "";
+  // The pane and the label belong to the command started LAST. A command
+  // still running from before (a review that takes minutes, then Approve)
+  // keeps being followed to its end, but no longer writes its log into
+  // another command's, or its exit code over another command's.
+  const mine = {};
+  logEl.followedBy = mine;
+  const owns = () => logEl.followedBy === mine;
   setState(stateEl, "run", "running…");
   const tick = async () => {
     try {
@@ -83,26 +90,30 @@ function follow(runnable, logEl, stateEl, onDone) {
         `/api/log?job=${encodeURIComponent(j)}&runnable=${runnable}&offset=${offset}`);
       if (chunk.text) {
         offset = chunk.offset;
-        logEl.textContent += chunk.text;
-        logEl.scrollTop = logEl.scrollHeight;
+        if (owns()) {
+          logEl.textContent += chunk.text;
+          logEl.scrollTop = logEl.scrollHeight;
+        }
       }
       const st = await api(
         `/api/status?job=${encodeURIComponent(j)}&runnable=${runnable}`);
       misses = 0;
       if (st.state === "running") { setTimeout(tick, 900); return; }
-      if (st.state === "done") setState(stateEl, "ok", "finished");
-      else setState(stateEl, "bad", `exit ${st.exit_code}`);
+      if (owns()) {
+        if (st.state === "done") setState(stateEl, "ok", "finished");
+        else setState(stateEl, "bad", `exit ${st.exit_code}`);
+      }
       if (onDone) onDone(st);
     } catch (e) {
       // One failed request is not the end of the run. Giving up at once
       // re-enabled buttons while the job was still going.
       misses += 1;
       if (misses <= 8) {
-        setState(stateEl, "run", `running… (not reachable just now, retry ${misses})`);
+        if (owns()) setState(stateEl, "run", `running… (not reachable just now, retry ${misses})`);
         setTimeout(tick, 1500);
         return;
       }
-      setState(stateEl, "bad", `${e.message} — the run may still be going; refresh to see`);
+      if (owns()) setState(stateEl, "bad", `${e.message} — the run may still be going; refresh to see`);
       // Whoever started this is waiting to tidy up (a timer, a disabled
       // button). The run's own state is unknown; say so, do not hang.
       if (onDone) onDone({ state: "unknown" });
@@ -480,6 +491,10 @@ async function refreshReview() {
 // it that came from Cursor or from the change is put on the page as text.
 async function showCodeReview(j, run) {
   const box = $("agent-codereview");
+  // Emptied first: whatever goes wrong below, another job's review is not
+  // left standing under this job's change.
+  box.replaceChildren();
+  $("dl-review").hidden = true;
   let r = null;
   let diffNow = "";
   try {
@@ -493,9 +508,23 @@ async function showCodeReview(j, run) {
   const otherDiff = r && r.kind === "code-review" && diffNow !== (r.diff_sha256 || "");
   // A refusal says something about the moment it was made, nothing more.
   if (r && r.kind !== "code-review" && otherRun) r = null;
-  $("dl-review").hidden = !(r && r.kind === "code-review");
+  if (!r) {
+    // No result. If a review was started and ended without one, say so:
+    // an empty box reads as "nothing found".
+    try {
+      const st = await api(`/api/status?job=${encodeURIComponent(j)}&runnable=agent-review`);
+      if (st.state && st.state !== "none" && st.state !== "running" && st.state !== "done") {
+        box.replaceChildren(banner("warn", "The last review did not finish (it was stopped, " +
+          "or it failed before it could write a result). Nothing was read."));
+      }
+    } catch { /* no review was ever started */ }
+    return;
+  }
+  r.findings = r.findings || [];
+  r.unconfirmed = r.unconfirmed || [];
+  r.files = r.files || [];
+  $("dl-review").hidden = r.kind !== "code-review";
   $("dl-review").href = `/api/download?job=${encodeURIComponent(j)}&name=code-review.md`;
-  if (!r) { box.replaceChildren(); return; }
   if (r.kind !== "code-review") {
     box.replaceChildren(banner("bad", (r.refused ? "Refused — " : "Failed — ") + (r.message || "")));
     return;
@@ -504,6 +533,11 @@ async function showCodeReview(j, run) {
   if (r.mock) kids.push(banner("warn", "MOCK. These findings are a keyword match by the " +
     "stand-in for Cursor (tools/agent/mock.json). This is not a review."));
   // Said before anything it found.
+  const waitingNow = run.state === "pending-review" || run.state === "verify-failed";
+  if (!waitingNow && !otherRun) {
+    kids.push(banner("warn", `This review is of a change that is no longer waiting ` +
+      `(the job is ${String(run.state || "none").toUpperCase()}).`));
+  }
   if (otherRun) {
     kids.push(banner("warn", "This review is of an EARLIER run of this job, not of the " +
       "change shown below. Review the change again."));
@@ -519,16 +553,18 @@ async function showCodeReview(j, run) {
     kids.push(table(["File", "Read", "Why"], unread.map((f) => [f.file, f.status, f.why])));
   }
   for (const f of r.failures || []) kids.push(banner("bad", `A question to Cursor failed — ${f}`));
-  kids.push(banner(r.findings.length ? "warn" : "ok", r.message +
+  for (const n of r.notes || []) kids.push(banner("warn", `Note — ${n}`));
+  kids.push(banner(r.findings.length ? "warn" : "ok", (r.message || "") +
     (r.findings.length ? "" : " No findings is not a sign-off: read the change.")));
   const row = (x) => [
-    x.severity.toUpperCase(),
+    String(x.severity || "unrated").toUpperCase(),
     el("div", {}, el("code", { text: x.line ? `${x.file}:${x.line}` : x.file }),
        x.where && x.where !== "added"
          ? el("small", { text: x.where === "removed" ? "a removed line" : "an unchanged line" }) : null,
        x.matches > 1
          ? el("small", { text: `the first of ${x.matches} lines that read the same` }) : null),
-    el("div", {}, el("div", { text: x.title }), el("small", { text: `${x.category}. ${x.why}` })),
+    el("div", {}, el("div", { text: x.title || "" }),
+       el("small", { text: `${x.category || "other"}. ${x.why || ""}` })),
     x.evidence ? el("code", { text: x.evidence }) : "",
     x.fix,
   ];
@@ -621,9 +657,16 @@ $("agent-generate").onclick = () => {
 $("agent-stop").onclick = async () => {
   // The one this page started last: a review can take as long as a run,
   // and stopping a review must not end a run that is also going.
+  // Asked of the server, not remembered: after a reload, or with the job
+  // box changed since, what this page started last is not what is running.
+  const other = agentRunning === "agent-review" ? "agent-generate" : "agent-review";
   try {
-    const r = await post("/api/stop", { job: job(), runnable: agentRunning });
-    if (r && r.stopped === false) setState($("agent-state"), "", "nothing was running");
+    let stopped = false;
+    for (const runnable of [agentRunning, other]) {
+      const r = await post("/api/stop", { job: job(), runnable });
+      if (r && r.stopped) { stopped = true; break; }
+    }
+    if (!stopped) setState($("agent-state"), "", "nothing was running for this job");
   } catch (e) { setState($("agent-state"), "bad", e.message); }
 };
 $("agent-refresh").onclick = () => { refreshReview(); pollCursorLog(true); };

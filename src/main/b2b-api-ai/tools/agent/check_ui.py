@@ -577,7 +577,30 @@ def main() -> int:
             check("files that were not read are said above the findings",
                   "NOT ALL OF THE CHANGE WAS REVIEWED" in html
                   and html.index("NOT ALL OF THE CHANGE") < html.index("&lt;img src=x"))
-            for name in ("review.json", "proposed.diff", "code-review.json", "code-review.md"):
+            # A result with nothing in it (hand-made, or from an older build)
+            # must not stop the page, nor leave the review before it standing.
+            with io.open(os.path.join(job_dir, "code-review.json"), "w", encoding="utf-8") as fh:
+                json.dump({"kind": "code-review", "run_started": "2026-10-10T11:11:11Z"}, fh)
+            html = mocked.dom("agent")
+            check("a result file with fields missing empties the panel instead of breaking it",
+                  "&lt;img src=x" not in html and "No findings is not a sign-off" in html)
+            os.remove(os.path.join(job_dir, "code-review.json"))
+            with io.open(os.path.join(job_dir, "agent-review.status.json"), "w",
+                         encoding="utf-8") as fh:
+                json.dump({"state": "failed", "exit_code": 1}, fh)
+            html = mocked.dom("agent")
+            check("a review that ended without a result says so, not nothing",
+                  "The last review did not finish" in html)
+            press("agent-review", {})
+            with io.open(os.path.join(job_dir, "review.json"), "w", encoding="utf-8") as fh:
+                json.dump({"state": "discarded", "scope": "new-test",
+                           "started": "2026-10-10T11:11:11Z"}, fh)
+            html = mocked.dom("agent")
+            check("after Discard the review says the change is no longer waiting",
+                  "no longer waiting (the job is DISCARDED)" in html
+                  and 'id="agent-review" disabled' in html)
+            for name in ("review.json", "proposed.diff", "code-review.json", "code-review.md",
+                         "agent-review.status.json"):
                 try:
                     os.remove(os.path.join(job_dir, name))
                 except OSError:

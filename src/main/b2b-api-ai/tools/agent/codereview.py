@@ -336,13 +336,15 @@ def split_files(diff: str) -> list:
     for f in files:
         f["file"] = (f["file"] or "").replace("\\", "/")
         f["text"] = "\n".join(f.pop("lines"))
-        seen[f["file"]] = seen.get(f["file"], 0) + 1
-    for f in files:
         if not f["file"]:
             f["file"] = "(a part of the diff with no file name)"
             f["bad"] = "it has no file name"
-        elif seen[f["file"]] > 1:
-            f["bad"] = "the file appears more than once in the diff"
+        # One row per section. Two sections can carry one name -- the same
+        # file twice, or two names that differ only in a value that was
+        # taken out -- and each is still read, and reported, on its own.
+        seen[f["file"]] = seen.get(f["file"], 0) + 1
+        if seen[f["file"]] > 1:
+            f["file"] = f"{f['file']} ({seen[f['file']]})"
     return files
 
 
@@ -352,6 +354,9 @@ def unreadable(f: dict) -> str:
         return f["bad"]
     if not f["hunks"]:
         return "there is nothing to read: a binary file, or a change of mode or name only"
+    text = f["text"]
+    if "\x00" in text or text.count("\ufffd") > max(3, len(text) // 200):
+        return "it is not text (a binary file written out as lines)"
     return ""
 
 
@@ -405,8 +410,10 @@ def locate(f: dict, evidence) -> tuple:
         wants = {want}
         if want[:1] in "+-" and len(_squash(want[1:])) >= 4:
             wants.add(_squash(want[1:]))                 # quoted with its diff marker
+        places = (("removed", "added", "context") if want[:1] == "-"
+                  else ("added", "context", "removed"))
         for exact in (True, False):
-            for where in ("added", "context", "removed"):
+            for where in places:
                 rows = (seen[where] if where != "removed"
                         else [(0, t) for t in seen["removed"]])
                 hits = [no for no, text in rows
@@ -415,7 +422,8 @@ def locate(f: dict, evidence) -> tuple:
                 if hits:
                     return hits[0], where, raw.strip()[:300], len(hits)
         return 0, "", raw.strip()[:300], 0
-    return 0, "", "", 0
+    # Nothing in it long enough to look up. What was quoted is still shown.
+    return 0, "", (str(evidence or "").strip().split("\n")[0].strip())[:300], 0
 
 
 # ---- asking ---------------------------------------------------------------
@@ -472,7 +480,7 @@ def take_reply(batch: list, data) -> dict:
         # Only a verdict the reply GAVE counts as the file having been
         # read. A finding about a file is not one: a reply cut off after
         # its first finding says nothing about the rest of that file.
-        out["verdicts"][f["file"]] = (v if v in VERDICTS else "cannot judge",
+        out["verdicts"][f["file"]] = (v if v in VERDICTS else "no usable verdict",
                                       _text(row.get("note"), 300))
     per_file = {}
     found = data.get("findings") if isinstance(data, dict) else None
@@ -580,7 +588,7 @@ def review(job: str, agent=None, root: str = "") -> dict:
             status[f["file"]]["why"] = (
                 f"the change is larger than one review reads: {len(parts)} parts, "
                 f"and only the first {MAX_BATCHES} are sent")
-    findings, unconfirmed, failures = [], [], []
+    findings, unconfirmed, failures, notes = [], [], [], []
     if too_long:
         failures.append(f"proposed.diff is longer than the {DIFF_BYTES:,} bytes that are "
                         f"read; whatever comes after that was not looked at")
@@ -629,11 +637,17 @@ def review(job: str, agent=None, root: str = "") -> dict:
             if getattr(e, "kind", "") in ("setup", "startup", "timeout"):
                 stop = "not asked: an earlier part failed in a way that would repeat"
             continue
-        if how.startswith("partial") or "json-repair" in how:
-            # What could be read of a damaged reply is kept; that it was
-            # damaged is said, and nothing in it counts as a whole answer.
+        if how.startswith("partial"):
+            # What could be read of a cut-off reply is kept; that it was
+            # cut off is said, and nothing in it counts as a whole answer.
             failures.append(f"{label}: the reply was not whole ({how}); findings may be missing")
             say(f"WARN {failures[-1]}")
+        elif "json-repair" in how:
+            # All of it arrived, in JSON that had to be mended. Said, and
+            # not counted as part of the change going unread.
+            notes.append(f"{label}: the reply was not valid JSON and was repaired before "
+                         f"it was read")
+            say(f"NOTE {notes[-1]}")
         got = take_reply(batch, data)
         findings += got["findings"]
         unconfirmed += got["unconfirmed"]
@@ -648,6 +662,8 @@ def review(job: str, agent=None, root: str = "") -> dict:
             s["note"] = note
             if verdict == "cannot judge":
                 s["why"] = "Cursor said it cannot judge this file from the change alone"
+            elif verdict == "no usable verdict":
+                s["why"] = "the reply named this file without saying ok, findings or cannot judge"
             elif f["unread_lines"]:
                 s["status"] = "partly reviewed"
                 s["why"] = (f"the file's diff is too long for one question; its last "
@@ -666,6 +682,7 @@ def review(job: str, agent=None, root: str = "") -> dict:
         "diff_sha256": diff_sha, "by": by, "mock": by == "mock", "model": model,
         "files": rows, "findings": findings, "unconfirmed": unconfirmed,
         "counts": counts, "dropped": dropped, "over": over, "failures": failures,
+        "notes": notes,
         "whole": whole, "report": REPORT,
         "message": _message(rows, findings, unconfirmed, whole),
     }
@@ -705,13 +722,20 @@ def _md(text) -> str:
     s = s.replace("&", "&amp;")
     s = re.sub(r"([\\`*_{}\[\]<>#|!~])", r"\\\1", s)
     s = s.replace("@", "@" + _ZW).replace("://", ":" + _ZW + "//")
+    # `#12`, `!12`, `$12`, `%name`, `&12`: an issue, a merge request, a
+    # snippet, a milestone, an epic -- made into links after the Markdown
+    # is read, so a backslash in front does not stop them.
+    s = re.sub(r"([#!$%])(?=\w)", lambda m: m.group(1) + _ZW, s)
+    s = re.sub(r"&amp;(?=\d)", "&amp;" + _ZW, s)
+    s = re.sub(r":(?=[a-z0-9_+-]+:)", ":" + _ZW, s)      # :emoji:
     return re.sub(r"(?i)\bwww\.", lambda m: m.group(0)[:-1] + _ZW + ".", s)
 
 
 def _path(p) -> str:
     """A file name in a code span that it cannot close, in a table cell
     it cannot split. A name is whatever the diff says it is."""
-    s = re.sub(r"[\x00-\x1f\x7f]", "?", str(p or ""))
+    # Control characters, and the ones that reorder or break a line.
+    s = re.sub(r"[\x00-\x1f\x7f\u2028\u2029\u202a-\u202e\u2066-\u2069]", "?", str(p or ""))
     for bad, safe in (("`", "'"), ("|", "¦"), ("<", "‹"), (">", "›")):
         s = s.replace(bad, safe)
     return f"`{s}`"
@@ -738,6 +762,8 @@ def report(r: dict) -> str:
         out += [f"- {_path(f['file'])} — {f['status']}: {_md(f['why'])}" for f in unread]
         out += [f"- A question to Cursor failed — {_md(f)}" for f in r["failures"]]
         out += [""]
+    if r.get("notes"):
+        out += [f"- Note — {_md(x)}" for x in r["notes"]] + [""]
 
     def block(x: dict) -> list:
         where = _path(f"{x['file']}:{x['line']}" if x["line"] else x["file"])

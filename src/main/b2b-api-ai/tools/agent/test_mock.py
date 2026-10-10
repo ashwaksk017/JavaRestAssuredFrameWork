@@ -427,6 +427,32 @@ class TheAgentLoopAgainstTheStandIn(Mocked):
             self.assertEqual(loop.cmd_discard(self.job, self.repo, self.policy), 0)
         self.assertFalse(os.path.exists(os.path.join(self.repo, mock.SAMPLE_TEST)))
 
+    def test_the_change_a_run_leaves_can_be_reviewed_as_the_loop_wrote_it(self):
+        """End to end: the diff is the one `generate` wrote, not one made
+        up for a test, and the review leaves the run as it found it."""
+        self.generate()
+        cr = _load("codereview_e2e", os.path.join(HERE, "codereview.py"))
+        with io.open(os.path.join(self.job, "review.json"), encoding="utf-8") as fh:
+            before = fh.read()
+        with redirect_stdout(io.StringIO()):
+            r = cr.review("j1", None, self.repo)
+        want = 1 + mock.SAMPLE_BODY.splitlines().index(
+            next(l for l in mock.SAMPLE_BODY.splitlines() if "enabled = false" in l))
+        self.assertEqual([(f["file"], f["status"], f["why"]) for f in r["files"]],
+                         [(mock.SAMPLE_TEST, "reviewed", "")])
+        self.assertEqual([(x["file"], x["line"], x["where"]) for x in r["findings"]],
+                         [(mock.SAMPLE_TEST, want, "added")])
+        self.assertEqual((r["whole"], r["mock"], r["failures"]), (True, True, []))
+        self.assertEqual(r["run_started"], loop.read_review(self.job)["started"])
+        with io.open(os.path.join(self.job, "review.json"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), before)
+        rc, out = 0, io.StringIO()
+        with redirect_stdout(out):
+            rc = loop.cmd_discard(self.job, self.repo, self.policy)
+        self.assertEqual(rc, 0, out.getvalue())
+        with self.assertRaises(cr.Refused):
+            cr.review("j1", None, self.repo)
+
     def test_the_mock_agent_writes_over_nothing(self):
         path = os.path.join(self.repo, mock.SAMPLE_TEST)
         os.makedirs(os.path.dirname(path))

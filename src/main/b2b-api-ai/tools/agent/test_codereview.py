@@ -360,15 +360,15 @@ class ThePrivateConfiguration(Base):
         not look for it."""
         path = os.path.join(self.root, "cfg.json")
         with io.open(path, "w", encoding="utf-8") as fh:
-            json.dump({"jira_config": {"pat": "abcDEF123456", "jira_pat": "zzzYYY987654",
+            json.dump({"jira_config": {"pat": "abcDEF123456abcDEF", "jira_pat": "zzzYYY987654zzzYYY",
                                        "base_urls": ["https://jira.corp.example.net"],
                                        "pattern": "not-a-secret-1", "path": "/rest/api/2"}}, fh)
         got = loop.config_secrets(path)
-        self.assertIn("abcDEF123456", got)
-        self.assertIn("zzzYYY987654", got)
+        self.assertIn("abcDEF123456abcDEF", got)
+        self.assertIn("zzzYYY987654zzzYYY", got)
         self.assertIn("jira.corp.example.net", got)
         self.assertNotIn("not-a-secret-1", got)
-        self.assertEqual(loop.scan_secrets('+String t = "abcDEF123456";', got)[0][1],
+        self.assertEqual(loop.scan_secrets('+String t = "abcDEF123456abcDEF";', got)[0][1],
                          "value of `pat` in program_configuration.json")
 
 
@@ -488,9 +488,19 @@ class FoundByTheSecondReview(Base):
         self.assertIn("ends in the middle of a hunk",
                       cr.split_files("--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n a\n")[0]["bad"])
 
-    def test_the_same_file_twice_is_not_guessed_at(self):
-        files = cr.split_files(GENERATED + GENERATED)
-        self.assertTrue(all("more than once" in f["bad"] for f in files))
+    def test_two_sections_with_one_name_are_two_rows_each_read_on_its_own(self):
+        """The same file twice, or two names that differ only in a value
+        that was taken out. Neither is merged into the other."""
+        files = cr.split_files(GENERATED + GENERATED.replace("Thread.sleep(5000)", "other()"))
+        self.assertEqual([(f["file"], f["bad"]) for f in files], [(GEN, ""), (GEN + " (2)", "")])
+        self.plant(GENERATED + GENERATED.replace("Thread.sleep(5000)", "other()"))
+        r = self.run_review(lambda p, f: reply([{
+            "file": GEN + " (2)", "evidence": "void pause() throws Exception { other(); }",
+            "title": "second"}], files=(GEN, GEN + " (2)")))
+        self.assertEqual([f["file"] for f in r["files"]], [GEN, GEN + " (2)"])
+        self.assertEqual((r["findings"][0]["file"], r["whole"]), (GEN + " (2)", True))
+        two = cr.split_files("--- a/x\n--- b/y\n@@ -1 +1 @@\n-a\n+b\n@@@ -1 +1 @@@\n")
+        self.assertEqual(two, [], "no name, no hunk that can be read: nothing is invented")
 
     def test_names_git_quotes_or_that_contain_a_space(self):
         diff = ('diff --git "a/src/caf\\303\\251 T.java" "b/src/caf\\303\\251 T.java"\n'
@@ -601,12 +611,111 @@ class FoundByTheSecondReview(Base):
     def test_which_keys_of_the_configuration_hold_a_token(self):
         path = os.path.join(self.root, "cfg.json")
         with io.open(path, "w", encoding="utf-8") as fh:
-            json.dump({"jiraPat": "aaaBBB111222", "GITHUB_PAT": "cccDDD333444",
-                       "jira.pat": "eeeFFF555666", "date_pat": "yyyy-MM-dd",
-                       "regex_pat": "[a-z]+word", "pat": "changeme",
-                       "dispatch": "zzzYYY000111", "format": "qqqWWW222333"}, fh)
+            json.dump({"jiraPat": "aaaBBB111222cccDDD", "GITHUB_PAT": "cccDDD333444+/eee==",
+                       "jira.pat": "eeeFFF555666ggg_HHH-", "git-pat": "NjM1abcdefghijklmnop",
+                       "date_pat": "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
+                       "regex_pat": "^[A-Z]{3}-[0-9]{4}$", "url.pat": "abc123def",
+                       "pat": "changeme", "short_pat": "yyyy-MM-dd",
+                       "dispatch": "zzzYYY000111zzzYYY000", "format": "qqqWWW222333qqqWWW"}, fh)
         got = set(loop.config_secrets(path))
-        self.assertEqual(got, {"aaaBBB111222", "cccDDD333444", "eeeFFF555666"})
+        self.assertEqual(got, {"aaaBBB111222cccDDD", "cccDDD333444+/eee==",
+                               "eeeFFF555666ggg_HHH-", "NjM1abcdefghijklmnop"})
+
+    def test_a_configuration_saved_with_a_byte_order_mark_is_still_read(self):
+        """Read as plain utf-8 it was "not JSON", the answer was "nothing
+        is private", and the change went out with nothing taken out."""
+        os.makedirs(os.path.join(self.root, "src", "main", "resources"))
+        path = os.path.join(self.root, "src", "main", "resources", "program_configuration.json")
+        with io.open(path, "w", encoding="utf-8-sig") as fh:
+            json.dump({"password": "S3cretValue99"}, fh)
+        self.assertIn("S3cretValue99", loop.config_secrets(path))
+        self.plant(DIFF.replace("++ new comment", 'String p = "S3cretValue99";'))
+        seen = []
+        self.run_review(lambda p, f: (seen.append(p), reply())[1])
+        self.assertNotIn("S3cretValue99", seen[0])
+        self.assertIn('String p = "<redacted>";', seen[0])
+
+    def test_a_private_value_is_taken_out_as_it_is_written_inside_a_string(self):
+        private = {'p@ss"w0rd\\x1': "value of `password`"}
+        inside = json.dumps({"why": 'it sends p@ss"w0rd\\x1 in clear'})
+        cleaned, hits = cr.design.redact(inside, private)
+        self.assertNotIn("w0rd", cleaned)
+        self.assertEqual(json.loads(cleaned), {"why": "it sends <redacted> in clear"})
+        self.assertEqual(hits, 1)
+
+    def test_a_file_that_is_not_text_is_not_sent_as_if_it_were(self):
+        self.plant("diff --git a/k.jks b/k.jks\nnew file\n--- /dev/null\n+++ b/k.jks\n"
+                   "@@ -0,0 +1,2 @@\n+\x00\x01\ufffd\ufffd\x00PK\n+\x00\x00\n" + GENERATED)
+        seen = []
+        r = self.run_review(lambda p, f: (seen.append(p), reply(files=("k.jks", GEN)))[1])
+        self.assertEqual((r["files"][0]["status"], r["files"][0]["why"]),
+                         ("not reviewed", "it is not text (a binary file written out as lines)"))
+        self.assertNotIn("k.jks -----", seen[0])
+
+    def test_a_tracked_file_as_git_itself_reports_it(self):
+        """Through loop._write_diff, in a real repository: git's own
+        section, CRLF content, no newline at the end, and a new file."""
+        import subprocess
+        repo = os.path.join(self.root, "repo")
+        os.makedirs(os.path.join(repo, "src"))
+        git = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True,
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        git("init", "-q", "-b", "main")
+        git("config", "user.email", "t@example.com")
+        git("config", "user.name", "t")
+        git("config", "core.autocrlf", "false")
+
+        def put(rel, data: bytes):
+            with io.open(os.path.join(repo, rel), "wb") as fh:
+                fh.write(data)
+        put("src/Crlf.java", b"class Crlf {\r\n  int a = 1;\r\n  int b = 2;\r\n}\r\n")
+        put("src/My File.java", b"class MyFile {\n  int a = 1;\n}")
+        git("add", "-A")
+        git("commit", "-q", "-m", "base")
+        put("src/Crlf.java", b"class Crlf {\r\n  int a = 1;\r\n  int inserted = 9;\r\n  int b = 2;\r\n}\r\n")
+        put("src/My File.java", b"class MyFile {\n  int a = 1;\n\n  int tail = 7;\n}")
+        put("src/New.java", b"class New {\n\n  int n;\n}\n")
+        loop._write_diff(repo, self.job,
+                         {"modified": ["src/Crlf.java", "src/My File.java"],
+                          "created": ["src/New.java"]})
+        text, _sha, _over = cr.read_diff(os.path.join(self.job, "proposed.diff"))
+        files = {f["file"]: f for f in cr.split_files(text)}
+        self.assertEqual(sorted(files), ["src/Crlf.java", "src/My File.java", "src/New.java"])
+        self.assertEqual([f["bad"] for f in files.values()], ["", "", ""])
+        self.assertEqual(cr.locate(files["src/Crlf.java"], "int inserted = 9;")[:2], (3, "added"))
+        self.assertEqual(cr.locate(files["src/Crlf.java"], "int b = 2;")[:2], (4, "context"))
+        self.assertEqual(cr.locate(files["src/My File.java"], "int tail = 7;")[:2], (4, "added"))
+        self.assertEqual(cr.locate(files["src/New.java"], "int n;")[:2], (3, "added"))
+
+    def test_a_quote_given_with_its_minus_sign_is_about_the_removed_line(self):
+        f = cr.split_files("--- a/x\n+++ b/x\n@@ -1,3 +1,2 @@\n assertEquals(a, b);\n"
+                           "-assertEquals(a, b);\n keep();\n")[0]
+        self.assertEqual(cr.locate(f, "-assertEquals(a, b);")[:2], (0, "removed"))
+        self.assertEqual(cr.locate(f, "assertEquals(a, b);")[:2], (1, "context"))
+        self.assertEqual(cr.locate(f, "x =\n}"), (0, "", "x =", 0),
+                         "too short to look up, but what was quoted is still shown")
+
+    def test_a_reply_that_had_to_be_mended_is_noted_not_counted_as_unread(self):
+        saved = cr.jsonfix.loads
+        cr.jsonfix.loads = lambda text, **kw: (json.loads(text), "repaired by json-repair")
+        self.addCleanup(setattr, cr.jsonfix, "loads", saved)
+        r = self.run_review(lambda p, f: reply())
+        self.assertEqual((r["failures"], r["whole"]), ([], True))
+        self.assertIn("was repaired", r["notes"][0])
+        self.assertNotIn("NOT ALL", r["message"])
+        self.assertIn("Note — ", self.read(cr.REPORT))
+
+    def test_a_verdict_that_is_none_of_the_three_is_reported_as_what_it_is(self):
+        r = self.run_review(lambda p, f: reply(verdict="LGTM!"))
+        self.assertTrue(all(f["status"] == "not reviewed" and "without saying" in f["why"]
+                            for f in r["files"]))
+
+    def test_references_a_merge_request_page_would_link_are_broken_up(self):
+        got = cr._md("fixes #123 and !45, see group/project#7 $9 %v1 &42 :smile: R&D 5 % off")
+        for live in ("#1", "!4", "#7", "$9", "%v", "&amp;4", ":smile:"):
+            self.assertNotIn(live, got, live)
+        self.assertIn("R&amp;D 5 % off", got)
+        self.assertEqual(cr._path("a\u202eb\u2028c"), "`a?b?c`")
 
 
 class Declared(unittest.TestCase):

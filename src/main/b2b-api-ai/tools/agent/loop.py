@@ -1169,8 +1169,12 @@ _SECRET_KEY_RX = re.compile(
 # `pat`, `jira_pat`, `jiraPat`, `GITHUB_PAT`: a personal access token, which
 # is what jira_config calls its own. The same letters end `date_pat` and
 # `regex_pat`, so a key of this kind counts only when its VALUE looks like
-# a secret (see _looks_like_a_secret) -- `yyyy-MM-dd` does not.
+# a token (_TOKEN_SHAPE_RX).
 _PAT_KEY_RX = re.compile(r"(?:^|[_.\-\s])(?i:pat)$|(?<=[a-z0-9])Pat$|(?<=[A-Za-z0-9])PAT$")
+# What a token looks like: one run of 16 or more of the characters tokens
+# are made of. `yyyy-MM-dd'T'HH:mm:ss.SSS'Z'` and `^[A-Z]{3}-[0-9]{4}$`
+# are long and mix letters with digits, and are not this.
+_TOKEN_SHAPE_RX = re.compile(r"^[A-Za-z0-9_+/=~-]{16,}$")
 # Config keys that contain one of those words but name a route or an
 # identifier, not a secret.
 _NOT_SECRET_KEY_RX = re.compile(
@@ -1199,7 +1203,10 @@ def config_secrets(config_path: str) -> dict:
     value stored under a key that names a credential."""
     out = {}
     try:
-        with io.open(config_path, encoding="utf-8") as fh:
+        # utf-8-sig: Notepad and PowerShell write a byte-order mark. Read
+        # as plain utf-8 that is "not JSON", and the answer was "nothing
+        # here is private" -- with nothing then removed from any prompt.
+        with io.open(config_path, encoding="utf-8-sig") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
         return out
@@ -1223,8 +1230,7 @@ def config_secrets(config_path: str) -> dict:
             if (_SECRET_KEY_RX.search(key) and not _NOT_SECRET_KEY_RX.search(key)
                     and len(val) >= 6 and not val.startswith(("${", "#", "/"))):
                 out[val] = f"value of `{key}` in program_configuration.json"
-            elif (_PAT_KEY_RX.search(key) and len(val) >= 6
-                  and _looks_like_a_secret(val)):
+            elif _PAT_KEY_RX.search(key) and _TOKEN_SHAPE_RX.match(val):
                 out[val] = f"value of `{key}` in program_configuration.json"
 
     walk(data)
@@ -1973,7 +1979,7 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
 
     if not review.get("pushable", True):
         patch = os.path.join(job_dir, "converted.patch")
-        with io.open(patch, "w", encoding="utf-8") as fh:
+        with io.open(patch, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(diff)
         suite = review.get("suite") or ""
         try:

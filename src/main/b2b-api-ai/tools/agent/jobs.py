@@ -308,10 +308,12 @@ RESULT_FILES = {"jira-": "jira-result.json", "failures-": "failures-result.json"
 def clear_result(job: str, runnable: str) -> None:
     for prefix, name in RESULT_FILES.items():
         if runnable.startswith(prefix):
-            try:
-                os.remove(os.path.join(job_dir(job), name))
-            except OSError:
-                pass
+            # The report goes with the result it is the report of.
+            for each in (name, "code-review.md") if name == "code-review.json" else (name,):
+                try:
+                    os.remove(os.path.join(job_dir(job), each))
+                except OSError:
+                    pass
 
 
 def job_dir(job: str) -> str:

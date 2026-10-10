@@ -548,8 +548,16 @@ def redact(text: str, private: dict) -> tuple:
     for value in sorted(private, key=len, reverse=True):
         if len(value) < 6:
             continue
-        text, n = re.subn(re.escape(value), "<redacted>", text, flags=re.I)
-        hits += n
+        # Also as it is written inside a JSON or Java string: a value with
+        # a quote or a backslash in it appears there escaped, and the
+        # plain form does not match it.
+        forms = [value]
+        escaped = json.dumps(value, ensure_ascii=False)[1:-1]
+        if escaped != value:
+            forms.append(escaped)
+        for form in forms:
+            text, n = re.subn(re.escape(form), "<redacted>", text, flags=re.I)
+            hits += n
     return text, hits
 
 
