@@ -64,6 +64,26 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _diag():
+    """tools/diag.py, once for the whole process: the record of what this
+    command did, kept for finding out what went wrong."""
+    import importlib.util as _ilu
+    if "workbench_diag" not in sys.modules:
+        _spec = _ilu.spec_from_file_location(
+            "workbench_diag", os.path.join(os.path.dirname(HERE), "diag.py"))
+        _mod = _ilu.module_from_spec(_spec)
+        sys.modules["workbench_diag"] = _mod
+        try:
+            _spec.loader.exec_module(_mod)
+        except BaseException:
+            sys.modules.pop("workbench_diag", None)
+            raise
+    return sys.modules["workbench_diag"]
+
+
+diag = _diag()
 TOOLS = os.path.dirname(HERE)
 
 MAX_KEYS = 10
@@ -164,6 +184,7 @@ def story_keys(job_dir: str) -> dict:
             try:
                 what = jira_query.parse(text)
             except Exception:                            # noqa: BLE001
+                diag.trace()
                 what = {"kind": jira_query.NONE}
             if what["kind"] == jira_query.KEYS:
                 linked += what["keys"]
@@ -409,4 +430,4 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(diag.run("history", main))

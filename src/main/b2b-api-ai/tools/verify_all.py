@@ -233,6 +233,11 @@ CHECKS = [
           "never pass for them: a switch that is neither true nor false is "
           "an error, every mock result says so, and what a mock agent wrote "
           "cannot be approved"),
+    Check("diag",
+          [PY, "tools/test_diag.py"],
+          "the diagnostics record keeps the full error a command only names, "
+          "writes no credential, counts a repeated error instead of repeating "
+          "it, and is never the reason a command fails"),
     Check("agent-publish",
           [PY, "tools/agent/test_publish.py"],
           "the two commands that write to Jira and Confluence are off unless "

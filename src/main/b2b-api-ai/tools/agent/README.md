@@ -893,6 +893,54 @@ python tools/agent/publish.py attach --job <job> --key ABC-12 --file manual-test
 python tools/agent/publish.py page   --job <job> --what manual --space QA --parent 12345                                      --title "Booking: manual tests" --confirm "Booking: manual tests"
 ```
 
+### Logs
+
+For finding out what went wrong. Everywhere else the page shows an
+unexpected error only by its kind -- an error's text can quote what was
+being read, and that output is served to the page. The rest is kept here.
+
+- **This job** -- `target/agent/<job>/diagnostics.log`. Every command run
+  for the job: when it started and with what options, how long it took,
+  its exit code, **what it said when it failed** (its own log is written
+  over by the next run; this is not), and the **full traceback of every
+  error**, including the ones a command handled and carried on from.
+  The same error at the same place is written out five times in a run
+  and then counted.
+- **The web server** -- `target/agent/server.log`. Requests that failed,
+  every request that starts or changes something, refusals with their
+  reason, tracebacks of faults in the server, and errors in the page's
+  own script (a button that "does nothing" usually left one here).
+  What the page asks for over and over while it waits is left out.
+
+*Only errors* keeps each line that reports a problem and the lines of its
+traceback.
+
+**Credentials are taken out before a line is written**: every credential
+value in `program_configuration.json`, the Cursor key, and anything
+shaped like `Bearer <token>` or an `Authorization:` header. If the
+configuration cannot be read, the log says so on its first line. Host
+names, issue keys and file paths ARE written -- that is what makes the
+log useful -- so treat these files as you would the job directory: they
+are under the gitignored `target/` and are not for sharing as they are.
+
+Each file rolls over at 2 MB and keeps one earlier copy (`.1`).
+
+| `WORKBENCH_LOG` | |
+|---|---|
+| not set | on |
+| `off` | nothing is written |
+| `debug` | also every request the page makes while polling |
+
+Commands run from a console write to the same job file. The record never
+causes a failure: a log that cannot be written is skipped.
+
+Covered: every command behind the tabs (`intake`, `locate`, `design`,
+`loop`, `codereview`, `defects`, `history`, `patches`, `specsource`,
+`manualtests`, `publish`, `tools/jira/search.py`,
+`tools/failure_history.py`), the command runner and the server. Not
+covered: the converter itself (`tools/ra_converter/`), which keeps its own
+logs under `target/`.
+
 ### Linking to a tab
 
 The tab is in the address: `http://127.0.0.1:8787/#jira`, `#failures`,
@@ -914,6 +962,7 @@ target/agent/<job>/
   <runnable>.status.json state, exit code, and the argv it ran
   design-*.txt           design: the specification, requirements and notes as pasted
   spec/                  design: the specification kept as a file (chosen, or from a Confluence attachment) and where it came from
+  diagnostics.log        Logs: every command run for the job, and the full text of every error
   publish-result.json    Publish: the outcome of the last write (or the refusal of one)
   publish-status.json    Publish: what was switched on and publishable, when last asked
   publish.log            Publish: every write to Jira or Confluence attempted from this job
@@ -993,6 +1042,9 @@ used to write outside the tree.
 
 ## If something looks wrong
 
+- **Anything unexplained** — open the **Logs** tab first. It has the full
+  text of the error the page only named, and what each command said as it
+  failed.
 - **Page loads but every action fails** — check the terminal. A
   `PermissionError` naming `Host`, `Origin` or `Content-Type` is the
   guard above, not a bug.
@@ -1018,6 +1070,7 @@ python tools/agent/test_codereview.py
 python tools/agent/test_specsource.py
 python tools/agent/test_manualtests.py
 python tools/agent/test_publish.py
+python tools/test_diag.py
 python tools/agent/test_mock.py
 python tools/agent/check_ui.py
 ```

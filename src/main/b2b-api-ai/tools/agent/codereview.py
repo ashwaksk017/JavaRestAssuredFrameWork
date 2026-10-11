@@ -59,6 +59,26 @@ from datetime import datetime, timezone
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
+def _diag():
+    """tools/diag.py, once for the whole process: the record of what this
+    command did, kept for finding out what went wrong."""
+    import importlib.util as _ilu
+    if "workbench_diag" not in sys.modules:
+        _spec = _ilu.spec_from_file_location(
+            "workbench_diag", os.path.join(os.path.dirname(HERE), "diag.py"))
+        _mod = _ilu.module_from_spec(_spec)
+        sys.modules["workbench_diag"] = _mod
+        try:
+            _spec.loader.exec_module(_mod)
+        except BaseException:
+            sys.modules.pop("workbench_diag", None)
+            raise
+    return sys.modules["workbench_diag"]
+
+
+diag = _diag()
+
+
 def _load(name: str, path: str):
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
@@ -629,6 +649,7 @@ def review(job: str, agent=None, root: str = "") -> dict:
             data, how = jsonfix.loads(raw, partial_key="findings", list_key="findings")
             data = scrub(data, private)
         except (RuntimeError, ValueError) as e:
+            diag.trace()
             first = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
             failures.append(f"{label}: {first[:200]}")
             say(f"WARN {failures[-1]}")
@@ -846,6 +867,7 @@ def main(argv=None, agent=None) -> int:
         fail(str(e), True)
         return 2
     except Exception as e:                               # noqa: BLE001
+        diag.trace()
         # No message: an exception's text can quote what it was reading.
         say(f"FAIL unexpected {type(e).__name__} in codereview.py "
             f"(line {e.__traceback__.tb_lineno if e.__traceback__ else '?'})")
@@ -865,4 +887,4 @@ def main(argv=None, agent=None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(diag.run("codereview", main))

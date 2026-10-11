@@ -134,7 +134,15 @@ def base_for(ref, allowlist: list, api_path: str = "") -> str:
     """
     host = (ref.base_url or "").rstrip("/")
     if not host:
-        return (str(allowlist[0]).rstrip("/") if allowlist else "")
+        # A bare page id: the first approved Confluence, whole -- unless
+        # the api path already carries its context, as it may for a link.
+        if not allowlist:
+            return ""
+        first = urllib.parse.urlparse(str(allowlist[0]).rstrip("/"))
+        ctx = first.path.rstrip("/")
+        if ctx and api_path and (api_path == ctx or api_path.startswith(ctx + "/")):
+            return f"{first.scheme}://{first.netloc}"
+        return str(allowlist[0]).rstrip("/")
     want = urllib.parse.urlparse(host)
     link_path = urllib.parse.urlparse(getattr(ref, "raw", "") or "").path
     best = ""

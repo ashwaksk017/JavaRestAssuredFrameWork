@@ -42,6 +42,26 @@ import threading
 from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _diag():
+    """tools/diag.py, once for the whole process: the record of what this
+    command did, kept for finding out what went wrong."""
+    import importlib.util as _ilu
+    if "workbench_diag" not in sys.modules:
+        _spec = _ilu.spec_from_file_location(
+            "workbench_diag", os.path.join(os.path.dirname(HERE), "diag.py"))
+        _mod = _ilu.module_from_spec(_spec)
+        sys.modules["workbench_diag"] = _mod
+        try:
+            _spec.loader.exec_module(_mod)
+        except BaseException:
+            sys.modules.pop("workbench_diag", None)
+            raise
+    return sys.modules["workbench_diag"]
+
+
+diag = _diag()
 TOOLS = os.path.dirname(HERE)
 
 
@@ -143,7 +163,7 @@ def store(job_dir: str, name: str, data: bytes, origin: str, root: str = "") -> 
     base = spec_name(name)
     spec, how = check(data, base)
     d = os.path.join(job_dir, design.SPEC_DIR)
-    fresh = old = ""
+    fresh = old = aside = ""
     with _STORE_LOCK:
         try:
             os.makedirs(job_dir, exist_ok=True)
@@ -163,11 +183,19 @@ def store(job_dir: str, name: str, data: bytes, origin: str, root: str = "") -> 
                 os.replace(fresh, d)
             except OSError:
                 if old:
-                    os.replace(old, d)
+                    try:
+                        os.replace(old, d)
+                    except OSError:
+                        aside = os.path.basename(old)    # left where it is; NOT removed
                     old = ""
                 raise
         except OSError as e:
             # Not the message: it carries this machine's full path.
+            if aside:
+                raise Refused(f"{base} could not be kept ({type(e).__name__}), and the "
+                              f"specification kept before could not be put back: it is in "
+                              f"the job directory as {aside}. Nothing is in use until one "
+                              f"is chosen again.") from None
             raise Refused(f"{base} could not be kept ({type(e).__name__}). If the "
                           f"specification kept before is open in another program, close "
                           f"it and try again; it is still the one in use.") from None
@@ -274,6 +302,8 @@ def from_confluence(job_dir: str, link: str, name: str = "", conf=None, conn=Non
         row["endpoints"] = hit[0] if hit else None
         row["note"] = ("could not be told" if any(u.startswith(row["title"] + ": ")
                                                   for u in unknown) else "")
+    for row in listed[MAX_CANDIDATES:]:
+        row["note"] = "not looked at"
     skipped = max(0, len(named) - MAX_CANDIDATES)
     unseen = skipped + len(unknown) + len(odd) + (1 if more else 0)
     if len(good) == 1 and not unseen:
@@ -294,15 +324,17 @@ def from_confluence(job_dir: str, link: str, name: str = "", conf=None, conn=Non
     if skipped:
         why.append(f"{skipped} more were not looked at")
     if odd:
-        why.append(f"{len(odd)} have a name that cannot be used here ({', '.join(odd[:3])})")
+        why.append(f"{len(odd)} with a name that cannot be used here ({', '.join(odd[:3])})")
     if more:
         why.append("the page has more attachments than were listed")
     return {"ok": False, "spec": current(job_dir, root), "candidates": listed,
             "message": (f"{len(good)} of this page's attachments "
                         f"{'is a specification' if len(good) == 1 else 'are specifications'}"
                         + (f"; {'; '.join(why)}" if why else "")
-                        + ". Nothing was taken. Put the name of the one you mean in the "
-                          "attachment box and fetch again.")}
+                        + ". Nothing was taken. "
+                        + ("Put the name of the one you mean in the attachment box and "
+                           "fetch again." if good or unknown or skipped else
+                           "Download the file, rename it and use From a file."))}
 
 
 # ---- command --------------------------------------------------------------
@@ -345,6 +377,7 @@ def main(argv=None, **replace) -> int:
         _write_result(job_dir, {"kind": "error", "refused": True, "message": str(e)})
         return 2
     except Exception as e:                               # noqa: BLE001
+        diag.trace()
         say(f"FAIL unexpected {type(e).__name__} in specsource.py "
             f"(line {e.__traceback__.tb_lineno if e.__traceback__ else '?'})")
         _write_result(job_dir, {"kind": "error", "refused": False,
@@ -359,4 +392,4 @@ def main(argv=None, **replace) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(diag.run("specsource", main))

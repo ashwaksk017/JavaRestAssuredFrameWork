@@ -45,6 +45,26 @@ import sys
 from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _diag():
+    """tools/diag.py, once for the whole process: the record of what this
+    command did, kept for finding out what went wrong."""
+    import importlib.util as _ilu
+    if "workbench_diag" not in sys.modules:
+        _spec = _ilu.spec_from_file_location(
+            "workbench_diag", os.path.join(os.path.dirname(HERE), "diag.py"))
+        _mod = _ilu.module_from_spec(_spec)
+        sys.modules["workbench_diag"] = _mod
+        try:
+            _spec.loader.exec_module(_mod)
+        except BaseException:
+            sys.modules.pop("workbench_diag", None)
+            raise
+    return sys.modules["workbench_diag"]
+
+
+diag = _diag()
 TOOLS = os.path.dirname(HERE)
 
 
@@ -102,6 +122,7 @@ def classify(link: str) -> str:
     try:
         what = jira_query.parse(s)
     except Exception:                                    # noqa: BLE001
+        diag.trace()
         what = {"kind": jira_query.NONE}    # one bad line must not lose the job
     ref, _why = conf_pageref.parse(s)
     confluence = (ref is not None and ref.kind in ("id", "title", "tiny")
@@ -164,6 +185,7 @@ def _requests_from(text: str, source: str) -> list:
                 step.setdefault("expected_status_evidence", evidence)
         return steps
     except Exception as e:  # a malformed paste must not kill the job
+        diag.trace()
         return [{"verb": "", "raw_path": "", "error": str(e),
                  "provenance": f"{source}: could not be read"}]
 
@@ -190,6 +212,7 @@ def gather_confluence(link: str, sources: str, slot: str,
     except SystemExit as e:           # argparse inside a library call
         rc = int(getattr(e, "code", 1) or 1)
     except Exception as e:
+        diag.trace()
         return {"link": link, "kind": CONFLUENCE, "ok": False,
                 "reason": f"{type(e).__name__}: {e}"}
     if rc != 0:
@@ -389,4 +412,4 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(diag.run("intake", main))

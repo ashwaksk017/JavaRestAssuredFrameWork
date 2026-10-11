@@ -55,6 +55,26 @@ import tempfile
 from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _diag():
+    """tools/diag.py, once for the whole process: the record of what this
+    command did, kept for finding out what went wrong."""
+    import importlib.util as _ilu
+    if "workbench_diag" not in sys.modules:
+        _spec = _ilu.spec_from_file_location(
+            "workbench_diag", os.path.join(os.path.dirname(HERE), "diag.py"))
+        _mod = _ilu.module_from_spec(_spec)
+        sys.modules["workbench_diag"] = _mod
+        try:
+            _spec.loader.exec_module(_mod)
+        except BaseException:
+            sys.modules.pop("workbench_diag", None)
+            raise
+    return sys.modules["workbench_diag"]
+
+
+diag = _diag()
 ROOT = os.path.dirname(os.path.dirname(HERE))
 STORE_DIR = ".agent-patches"
 _SUITE_RX = re.compile(r"^[a-z0-9_]{1,80}$")
@@ -310,6 +330,7 @@ def reapply_after_convert(root: str, suite_names) -> int:
                 print(text, flush=True)
             conflicts += len(result["conflicts"]) + len(result["refused"])
         except Exception as e:                           # noqa: BLE001
+            diag.trace()
             print(f"[agent-patches] {suite}: could not re-apply stored "
                   f"changes ({e}). The converted files are as the converter "
                   f"wrote them.", flush=True)
@@ -366,4 +387,4 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(diag.run("patches", main))

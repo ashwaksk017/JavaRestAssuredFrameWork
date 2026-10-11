@@ -36,6 +36,8 @@
     <span class="name">Failures</span><span class="what">this run against the last</span></button>
   <button role="tab" aria-selected="false" data-tab="publish">
     <span class="name">Publish</span><span class="what">to a Jira issue, a Confluence page</span></button>
+  <button role="tab" aria-selected="false" data-tab="logs">
+    <span class="name">Logs</span><span class="what">what ran, and what went wrong</span></button>
 </nav>
 
 <!-- ───────────────────────────── tab 1 ───────────────────────────── -->
@@ -514,6 +516,27 @@ Expect 201.'></textarea>
   <pre id="publish-record" class="doc">—</pre>
   <h3>Command log</h3>
   <pre id="publish-log" class="log"></pre>
+</section>
+
+<!-- ────────────────────────────── logs ────────────────────────────── -->
+<section id="tab-logs" class="tab" role="tabpanel" hidden>
+  <p class="lede">
+    The record kept for finding out what went wrong. Every command run for
+    this job is here with its options, how long it took, its exit code and
+    the <strong>full error</strong> where there was one — the page elsewhere
+    shows only an error's kind. Credentials are taken out before anything
+    is written. Both files are on this machine only, under
+    <code>target/agent/</code>.
+  </p>
+  <div class="row">
+    <button id="logs-refresh">Refresh</button>
+    <label class="inline"><input type="checkbox" id="logs-errors"> only errors and what surrounds them</label>
+    <span id="logs-state" class="state"></span>
+  </div>
+  <h3>This job <span class="hint" id="logs-job-path"></span></h3>
+  <pre id="logs-job" class="log tall">—</pre>
+  <h3>The web server <span class="hint">target/agent/server.log — failed requests, everything that starts or changes something, errors in this page</span></h3>
+  <pre id="logs-server" class="log tall">—</pre>
 </section>
 
 <script src="/app.js"></script>

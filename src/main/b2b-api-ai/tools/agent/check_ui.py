@@ -726,7 +726,7 @@ def main() -> int:
             check("the Manual tests tab lists the file and where it was put",
                   "Booking Rules.md" in html
                   and f"target/agent/{JOB}/docs/Booking Rules.md" in html
-                  and html.count('role="tab"') == 8)
+                  and html.count('role="tab"') == 9)
             code, rc = press("manual-inventory", {"--project": "ABC"})
             html = mocked.dom("manual")
             check("mock mode: Read existing tests, with their steps, and says it is sample data",
@@ -772,7 +772,7 @@ def main() -> int:
                 check("the Publish tab says what is switched on, and that these are stand-ins",
                       rc == 0 and "Attaching to Jira is ON" in html
                       and "Creating Confluence pages is ON for space(s) QA" in html
-                      and "contacts nobody" in html and html.count('role="tab"') == 8, f"rc={rc}")
+                      and "contacts nobody" in html and html.count('role="tab"') == 9, f"rc={rc}")
                 check("only this job's own results are offered, by name",
                       '<option value="manual-tests.md">' in html
                       and '<option value="manual">Manual test cases</option>' in html
@@ -824,6 +824,32 @@ def main() -> int:
                         written = json.load(fh)
                 check("exactly one page was written down by the stand-in",
                       [p.get("title") for p in written] == ["Check UI page"], str(written))
+
+                # ---- the Logs tab: what ran, and what went wrong -----------------
+                code, got = mocked.call("/api/client-error", {
+                    "message": "<img src=x onerror=alert(1)> is not a function",
+                    "source": "app.js", "line": "12", "tab": "publish"})
+                check("a fault in the page's own script is taken down", code == 200 and got.get("noted"))
+                code, got = mocked.call(f"/api/diag?job={JOB}&which=job")
+                record = got.get("text") or ""
+                check("every command run for the job is on record, with how it ended",
+                      "[publish] START attach " in record and "END exit 0" in record
+                      and "[manualtests] START generate" in record, record[-300:])
+                check("what a command said as it refused is kept, though its own log was written over",
+                      "the end of what it said:" in record
+                      and "REFUSED the key must be given twice" in record)
+                code, got = mocked.call("/api/diag?which=server")
+                server_log = got.get("text") or ""
+                check("the server's record has what was started and what was refused, and no polling",
+                      "POST /api/start -> 200" in server_log and "PAGE ERROR on tab publish" in server_log
+                      and "/api/status" not in server_log.split("PAGE ERROR")[-1])
+                code, got = mocked.call(f"/api/diag?job=../../x&which=job")
+                check("the record of a job that cannot exist is not read", code == 400)
+                html = mocked.dom("logs")
+                check("the Logs tab shows both, as text",
+                      "[publish] START" in html and "POST /api/start" in html
+                      and "&lt;img src=x onerror=alert(1)&gt;" in html and "<img src=x" not in html
+                      and f"target/agent/{JOB}/diagnostics.log" in html)
             finally:
                 try:
                     os.remove(conf_store)

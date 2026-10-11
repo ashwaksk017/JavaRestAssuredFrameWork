@@ -47,6 +47,26 @@ import sys
 from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _diag():
+    """tools/diag.py, once for the whole process: the record of what this
+    command did, kept for finding out what went wrong."""
+    import importlib.util as _ilu
+    if "workbench_diag" not in sys.modules:
+        _spec = _ilu.spec_from_file_location(
+            "workbench_diag", os.path.join(os.path.dirname(HERE), "diag.py"))
+        _mod = _ilu.module_from_spec(_spec)
+        sys.modules["workbench_diag"] = _mod
+        try:
+            _spec.loader.exec_module(_mod)
+        except BaseException:
+            sys.modules.pop("workbench_diag", None)
+            raise
+    return sys.modules["workbench_diag"]
+
+
+diag = _diag()
 TOOLS = os.path.dirname(HERE)
 _JIRA = os.path.join(TOOLS, "jira")
 
@@ -103,6 +123,7 @@ try:
     history = _load("locate_history", os.path.join(HERE, "history.py"))
     _HISTORY_ERROR = ""
 except Exception as _e:                                  # noqa: BLE001
+    diag.trace()
     history, _HISTORY_ERROR = None, type(_e).__name__
 
 
@@ -114,6 +135,7 @@ def story_history(out: str, root: str) -> dict:
     try:
         return history.build(out, root)
     except Exception as e:                               # noqa: BLE001
+        diag.trace()
         return {"keys": [], "error": type(e).__name__}
 
 
@@ -451,4 +473,4 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(diag.run("locate", main))

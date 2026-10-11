@@ -592,6 +592,9 @@ $("manual-files").onchange = async () => {
   const problems = [];
   for (const f of files) {
     if (f.size > 20 * 1024 * 1024) { problems.push(`${f.name}: ${size(f.size)}, the limit is 20 MB`); continue; }
+    if (!/\.(txt|md|markdown|csv|json|log|html?|docx|pdf|xlsx)$/i.test(f.name)) {
+      problems.push(`${f.name}: this kind of file is not read`); continue;
+    }
     try {
       const r = await fetch(
         `/api/doc-upload?job=${encodeURIComponent(j)}&name=${encodeURIComponent(f.name)}`,
@@ -838,14 +841,18 @@ function publishBusy(on) {
   for (const id of ["publish-attach", "publish-page", "publish-refresh"]) $(id).disabled = on;
 }
 
-// Ask what is switched on NOW, for the job in the box, and draw from the answer.
-function refreshPublish() {
+// Ask what is switched on NOW, for the job in the box, and draw from the
+// answer. `afterWrite`: this follows a write whose outcome is on screen --
+// the log of that write and the label saying how it ended are left alone.
+function refreshPublish(afterWrite) {
   const j = job();
   publishJob = j;
   fillPublish(null);
-  $("publish-result").replaceChildren();
-  $("publish-record").textContent = "—";
-  $("publish-log").textContent = "";
+  if (!afterWrite) {
+    $("publish-result").replaceChildren();
+    $("publish-record").textContent = "—";
+    $("publish-log").textContent = "";
+  }
   if (!j) { setState($("publish-state"), "bad", "name the job first"); return; }
   publishBusy(true);
   // What is on record is shown at once: the last outcome, the writes made,
@@ -858,13 +865,25 @@ function refreshPublish() {
       fillPublish(was, true);
     }
   });
+  const label = afterWrite ? document.createElement("span") : $("publish-state");
   post("/api/start", { job: j, runnable: "publish-status", options: { "--job": j } })
-    .then(() => follow("publish-status", document.createElement("pre"), $("publish-state"), async () => {
+    .then((begun) => follow("publish-status", document.createElement("pre"), label, async (run) => {
+      // Whatever happens next, the way back is open.
+      $("publish-refresh").disabled = false;
       let st = null;
       try { st = JSON.parse(await publishFile(j, "publish-status.json") || "null"); } catch { st = null; }
       if (j !== job()) return;
-      $("publish-refresh").disabled = false;
-      fillPublish(st && st.kind === "publish-status" && st.job === j ? st : null);
+      // Only the answer THIS run wrote. The file is never cleared, so one
+      // left by an earlier visit is there to be read when this run wrote
+      // nothing -- and it must not be taken for the fresh answer.
+      const fresh = run && run.state === "done" && st && st.kind === "publish-status" &&
+                    st.job === j && String(st.at || "") >= String((begun && begun.started) || "");
+      fillPublish(fresh ? st : null);
+      if (!fresh) {
+        $("publish-status").replaceChildren(banner("bad", "What is switched on could not be " +
+          "found out just now (the check did not finish). Nothing can be published until it " +
+          "has. The Logs tab has the reason."));
+      }
       showPublishResult(j);
     }, j))
     .catch((e) => {
@@ -872,7 +891,7 @@ function refreshPublish() {
       setState($("publish-state"), "bad", e.message);
     });
 }
-$("publish-refresh").onclick = refreshPublish;
+$("publish-refresh").onclick = () => refreshPublish(false);
 
 function runPublish(runnable, options) {
   const j = publishJob;
@@ -880,7 +899,9 @@ function runPublish(runnable, options) {
   post("/api/start", { job: j, runnable, options: Object.assign({ "--job": j }, options) })
     .then(() => follow(runnable, $("publish-log"), $("publish-state"), () => {
       // The outcome first, then what is now switched on and there.
-      showPublishResult(j).then(() => { if (j === job()) refreshPublish(); });
+      showPublishResult(j).then(() => {
+        if (j === job()) refreshPublish(true); else $("publish-refresh").disabled = false;
+      });
     }, j))
     .catch((e) => {
       $("publish-refresh").disabled = false;
@@ -910,6 +931,7 @@ $("publish-attach").onclick = () => {
     `From job ${publishJob}: it attaches ${file} to ${key}, as ${publishJob}-${file}.\n\n` +
     "Type the issue key again to go ahead:");
   if (again === null) return;
+  if (!again.trim()) { setState($("publish-state"), "bad", "nothing was typed, so nothing was written"); return; }
   runPublish("publish-attach", { "--key": key, "--file": file, "--confirm-key": again.trim(),
                                  "--expect": mocked ? "mock" : "real" });
 };
@@ -931,11 +953,67 @@ $("publish-page").onclick = () => {
     `From job ${publishJob}: it creates a new page (${PAGE_NAMES[what] || what}) in ${space} ` +
     `under page ${parent}.\n\nType the title again to go ahead:`);
   if (again === null) return;
+  if (!again.trim()) { setState($("publish-state"), "bad", "nothing was typed, so nothing was written"); return; }
   runPublish("publish-page", { "--what": what, "--space": space, "--parent": parent,
                                "--title": title, "--confirm-title": again.trim(),
                                "--expect": mocked ? "mock" : "real" });
 };
-onTab.publish = refreshPublish;
+onTab.publish = () => refreshPublish(false);
+
+// ---- logs --------------------------------------------------------------
+// The diagnostics kept by tools/diag.py: this job's record, and the web
+// server's. Shown as text. "Only errors" keeps each line that reports one
+// and the lines of its traceback.
+const LOG_ERROR = /\b(HANDLED|CRASH|ERROR|REFUSED|PAGE ERROR|Traceback|exited [1-9-]|-> [45]\d\d)\b/;
+function onlyErrors(text) {
+  const out = [];
+  let keep = 0;
+  for (const line of text.split("\n")) {
+    if (LOG_ERROR.test(line)) keep = 40;
+    else if (/\b(START|END exit|-> [23]\d\d)\b/.test(line)) keep = 0;
+    if (keep > 0) { out.push(line); keep -= 1; }
+  }
+  return out.join("\n");
+}
+async function showLogs() {
+  const j = job();
+  const filter = (text) => ($("logs-errors").checked ? onlyErrors(text) : text) || "—";
+  $("logs-job-path").textContent = j ? `target/agent/${j}/diagnostics.log` : "name the job (top right)";
+  let mine = "", server = "";
+  if (j) {
+    try { mine = (await api(`/api/diag?job=${encodeURIComponent(j)}&which=job`)).text || ""; }
+    catch (e) { mine = `(${e.message})`; }
+  }
+  try { server = (await api(`/api/diag?which=server`)).text || ""; }
+  catch (e) { server = `(${e.message})`; }
+  if (j !== job()) return;
+  for (const [id, text] of [["logs-job", mine], ["logs-server", server]]) {
+    $(id).textContent = filter(text);
+    $(id).scrollTop = $(id).scrollHeight;
+  }
+  setState($("logs-state"), "", `read at ${new Date().toLocaleTimeString()}`);
+}
+$("logs-refresh").onclick = showLogs;
+$("logs-errors").onchange = showLogs;
+onTab.logs = showLogs;
+
+// A fault in this page's own script is otherwise seen by nobody: the
+// button "does nothing". It is sent to the server's log, a bounded number
+// of times per page load.
+let pageErrors = 0;
+function reportPageError(message, source, line) {
+  pageErrors += 1;
+  if (pageErrors > 20) return;
+  const open = document.querySelector('.tabs button[aria-selected="true"]');
+  fetch("/api/client-error", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message: String(message || "").slice(0, 400),
+                           source: String(source || "").split("/").pop().slice(0, 120),
+                           line: String(line || ""), tab: open ? open.dataset.tab : "" }) })
+    .catch(() => { /* the server is not there to be told */ });
+}
+window.addEventListener("error", (e) => reportPageError(e.message, e.filename, e.lineno));
+window.addEventListener("unhandledrejection", (e) =>
+  reportPageError(`unhandled: ${e.reason && e.reason.message ? e.reason.message : e.reason}`, "", ""));
 
 // ---- tab 3: the agent loop --------------------------------------------
 // The state shown here is review.json in the job directory, written by

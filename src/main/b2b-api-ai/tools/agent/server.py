@@ -39,6 +39,8 @@ jobs = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(jobs)
 
 ROOT = jobs.ROOT
+diag = jobs.diag
+_PAGE_ERRORS = [0]               # how many the page has reported to this process
 UI_DIR = os.path.join(HERE, "ui")
 MAX_BODY = 8 * 1024 * 1024       # an OpenAPI document is pasted whole
 DOWNLOADS = {"design.md": "text/markdown", "design.json": "application/json",
@@ -57,6 +59,26 @@ class Handler(BaseHTTPRequestHandler):
         if "--verbose" in sys.argv:
             super().log_message(fmt, *args)
 
+    # ---- the record (target/agent/server.log) ------------------------
+    def send_response(self, code, message=None):
+        self._status = code
+        super().send_response(code, message)
+
+    def _handled(self, method: str, route) -> None:
+        import time as _time
+        started = _time.time()
+        self._status = 0
+        try:
+            route()
+        finally:
+            diag.request(method, self.path, self._status, _time.time() - started, ROOT)
+
+    def do_GET(self):                                    # noqa: N802
+        self._handled("GET", self._get)
+
+    def do_POST(self):                                   # noqa: N802
+        self._handled("POST", self._post)
+
     # ---- plumbing ----------------------------------------------------
     def _send(self, code: int, body: bytes, ctype: str) -> None:
         self.send_response(code)
@@ -74,6 +96,13 @@ class Handler(BaseHTTPRequestHandler):
                    "application/json; charset=utf-8")
 
     def _fail(self, exc: Exception, code: int = 400) -> None:
+        # A refusal (bad input, a guard) is one line. Anything else is a
+        # fault of this program, and its traceback is what finds it.
+        if isinstance(exc, (ValueError, PermissionError, RuntimeError)):
+            diag.server_note(f"REFUSED {self.command} {self.path[:200]}: "
+                             f"{type(exc).__name__}: {str(exc)[:300]}", ROOT)
+        else:
+            diag.server_trace(f"{self.command} {self.path[:200]}", ROOT)
         self._json({"error": str(exc), "kind": type(exc).__name__}, code)
 
     def _guard(self, ctype_wanted: str = "application/json") -> None:
@@ -124,7 +153,7 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(n).decode("utf-8"))
 
     # ---- routes ------------------------------------------------------
-    def do_GET(self):                                    # noqa: N802
+    def _get(self):
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         try:
@@ -150,6 +179,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"files": jobs.list_uploads()})
             if u.path == "/api/spec":
                 return self._json({"spec": jobs.spec_state(q.get("job", ""))})
+            if u.path == "/api/diag":
+                return self._json({"text": jobs.read_diag(
+                    q.get("job", ""), q.get("which", "job"))})
             if u.path == "/api/docs":
                 return self._json({"files": jobs.list_docs(q.get("job", ""))})
             if u.path == "/api/mock":
@@ -196,7 +228,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def do_POST(self):                                   # noqa: N802
+    def _post(self):
         u = urlparse(self.path)
         try:
             if u.path == "/api/upload":
@@ -222,6 +254,17 @@ class Handler(BaseHTTPRequestHandler):
                     int(self.headers.get("Content-Length") or 0))})
             self._guard()
             body = self._body()
+            if u.path == "/api/client-error":
+                # The page's own script failed. Written down, a bounded
+                # number of times: a page stuck in a loop must not fill
+                # the log.
+                _PAGE_ERRORS[0] += 1
+                if _PAGE_ERRORS[0] <= 200:
+                    words = lambda k, n: " ".join(str(body.get(k) or "").split())[:n]
+                    diag.server_note(f"PAGE ERROR on tab {words('tab', 20) or '?'}: "
+                                     f"{words('message', 400)} "
+                                     f"({words('source', 120)}:{words('line', 8)})", ROOT)
+                return self._json({"noted": _PAGE_ERRORS[0] <= 200})
             if u.path == "/api/doc-remove":
                 # One file, by name. "All of them" is not something a
                 # missing field should mean.

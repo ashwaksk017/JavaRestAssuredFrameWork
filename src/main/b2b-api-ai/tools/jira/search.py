@@ -83,6 +83,26 @@ from datetime import datetime, timezone
 from urllib.parse import quote
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _diag():
+    """tools/diag.py, once for the whole process: the record of what this
+    command did, kept for finding out what went wrong."""
+    import importlib.util as _ilu
+    if "workbench_diag" not in sys.modules:
+        _spec = _ilu.spec_from_file_location(
+            "workbench_diag", os.path.join(os.path.dirname(HERE), "diag.py"))
+        _mod = _ilu.module_from_spec(_spec)
+        sys.modules["workbench_diag"] = _mod
+        try:
+            _spec.loader.exec_module(_mod)
+        except BaseException:
+            sys.modules.pop("workbench_diag", None)
+            raise
+    return sys.modules["workbench_diag"]
+
+
+diag = _diag()
 sys.path.insert(0, HERE)
 
 import fetch  # noqa: E402
@@ -150,6 +170,7 @@ def mock_jira() -> bool:
     try:
         return mock().on("jira")
     except Exception as e:                               # noqa: BLE001
+        diag.trace()
         raise Refused(str(e)) from None
 
 
@@ -229,6 +250,7 @@ def _urllib_transport(method: str, url: str, token: str, timeout: int, body=None
         try:
             detail = e.read().decode("utf-8", "replace")
         except Exception:                                # noqa: BLE001
+            diag.trace()
             pass
         raise JiraError(e.code, _error_text(e.code, e.reason, detail)) from None
     except urllib.error.URLError as e:
@@ -236,6 +258,7 @@ def _urllib_transport(method: str, url: str, token: str, timeout: int, body=None
     except (TimeoutError, OSError) as e:
         raise JiraError(0, f"could not reach Jira: {e}") from None
     except Exception as e:                               # noqa: BLE001
+        diag.trace()
         # The TYPE only. http.client puts the header it rejected into its
         # message, and the header is the token.
         raise JiraError(0, f"the request to Jira failed ({type(e).__name__})") from None
@@ -290,6 +313,7 @@ def _call(conn: dict, method: str, path: str, body=None, transport=None):
         return fn(method, f"{conn['base']}{conn['api']}{path}", conn["token"],
                   conn["timeout"], body)
     except Exception as e:                               # noqa: BLE001
+        diag.trace()
         if conn.get("mock") and type(e).__name__ == "Unsupported":
             raise JiraError(400, str(e)) from None       # as Jira refuses bad JQL
         raise
@@ -835,6 +859,7 @@ def main(argv=None, transport=None) -> int:
         tell(job, {"kind": "error", "refused": False, "message": str(e)})
         return 1
     except Exception as e:                               # noqa: BLE001
+        diag.trace()
         # No message and no traceback: this output is a log the workbench
         # serves, and an exception text can quote a header.
         say(f"FAIL unexpected {type(e).__name__} in search.py "
@@ -847,4 +872,4 @@ def main(argv=None, transport=None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(diag.run("jira-search", main))

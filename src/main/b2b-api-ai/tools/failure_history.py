@@ -99,6 +99,26 @@ import sys
 from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _diag():
+    """tools/diag.py, once for the whole process: the record of what this
+    command did, kept for finding out what went wrong."""
+    import importlib.util as _ilu
+    if "workbench_diag" not in sys.modules:
+        _spec = _ilu.spec_from_file_location(
+            "workbench_diag", os.path.join(HERE, "diag.py"))
+        _mod = _ilu.module_from_spec(_spec)
+        sys.modules["workbench_diag"] = _mod
+        try:
+            _spec.loader.exec_module(_mod)
+        except BaseException:
+            sys.modules.pop("workbench_diag", None)
+            raise
+    return sys.modules["workbench_diag"]
+
+
+diag = _diag()
 ROOT = os.path.dirname(HERE)
 STORE = ".failure-history"
 DIGEST = os.path.join("target", "failure-digest.txt")
@@ -796,6 +816,7 @@ def main(argv=None, root: str = "") -> int:
         tell(root, job, {"kind": "error", "refused": True, "message": str(e)})
         return 2
     except Exception as e:                               # noqa: BLE001
+        diag.trace()
         say(f"FAIL unexpected {type(e).__name__} in failure_history.py "
             f"(line {e.__traceback__.tb_lineno if e.__traceback__ else '?'})")
         tell(root, job, {"kind": "error", "refused": False,
@@ -804,4 +825,4 @@ def main(argv=None, root: str = "") -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(diag.run("failure-history", main))

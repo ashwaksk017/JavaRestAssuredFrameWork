@@ -232,9 +232,11 @@ class AttachToAnIssue(Base):
         import urllib.error
         import urllib.request
         guard = pb._NoRedirect()
-        with self.assertRaises(urllib.error.URLError):
+        with self.assertRaises(pb.RedirectedWrite):
             guard.redirect_request(urllib.request.Request("https://jira.example.com/x"),
                                    None, 302, "Found", {}, "https://jira.example.com/y")
+        self.assertTrue([h for h in pb._opener().handlers if isinstance(h, pb._NoRedirect)],
+                        "and it is the one the sender uses")
 
 
 class Confluence:
@@ -599,14 +601,119 @@ class FoundByTheReview(Base):
                          (200, [{"filename": "a.md"}]))
         self.assertEqual(seen[0][1:3], ("Bearer tok_x", "no-check"))
         self.assertEqual(pb.upload(base + "/no", "tok_x", 5, "j1-a.md", b"x", "text/markdown")[0], 403)
-        import urllib.error
-        with self.assertRaises(urllib.error.URLError):
+        with self.assertRaises(pb.RedirectedWrite):
             pb.upload(base + "/redirect", "tok_x", 5, "j1-a.md", b"x", "text/markdown")
         self.assertEqual([s[0] for s in seen], ["/ok", "/no", "/redirect"],
                          "the redirect was not followed: nothing reached /ok a second time")
         status, got = pb.conf_request("POST", base + "/ok", "tok_y", 5, {"a": 1})
         self.assertEqual((status, got), (200, [{"filename": "a.md"}]))
         self.assertEqual(json.loads(seen[-1][3]), {"a": 1})
+
+
+class FoundByTheSecondReview(Base):
+    def test_a_redirect_is_an_answer_and_nothing_was_written(self):
+        """It was reported as "did not answer, MAY have been attached"."""
+        jira = Jira(answer=pb.RedirectedWrite())
+        r = pb.attach("j1", "ABC-12", "manual-tests.md", "ABC-12", self.root, dict(CONN), JCFG,
+                      jira.transport, jira.uploader)
+        self.assertIs(r["ok"], False)
+        self.assertIn("nothing was written", r["message"])
+        self.assertNotIn("MAY", r["message"])
+        self.assertIn("REDIRECTED attach", self.log())
+        conf = Confluence(answer=pb.RedirectedWrite())
+        r = pb.create_page("j1", "manual", "QA", "4242", "T", "T", self.root, CCFG, conf.send, False)
+        self.assertIs(r["ok"], False)
+        self.assertIn("nothing was written", r["message"])
+
+    def test_a_private_value_is_found_as_the_other_writers_leave_it(self):
+        self.config(pat="tok_SECRET_value_1234567", password="p@ss|w<rd`1Z", secret_phrase="two  spaces  here")
+        for text in (pb.mdsafe.code("p@ss|w<rd`1Z"), pb.mdsafe.md("it says two  spaces  here")):
+            self.put("manual-tests.md", text)
+            jira = Jira()
+            with self.assertRaises(pb.Refused, msg=ascii(text)):
+                pb.attach("j1", "ABC-12", "manual-tests.md", "ABC-12", self.root, dict(CONN),
+                          JCFG, jira.transport, jira.uploader)
+            self.assertEqual(jira.sent, [])
+        self.put("manual-tests.md", "clean")
+        conf = Confluence()
+        with self.assertRaises(pb.Refused):                # in the TITLE only
+            pb.create_page("j1", "manual", "QA", "4242", "about tok_SECRET_value_1234567",
+                           "about tok_SECRET_value_1234567", self.root, CCFG, conf.send, False)
+        self.assertEqual(conf.calls, [])
+
+    def test_a_stand_ins_design_or_review_does_not_go_to_the_real_thing_either(self):
+        self.put("design.json", json.dumps({"mock": True, "test_cases": [{"id": "TC-1", "title": "t"}]}))
+        self.put("design.md", "# design")
+        self.put("code-review.json", json.dumps({"kind": "code-review", "mock": True, "findings": []}))
+        self.put("code-review.md", "# review")
+        for name in ("design.md", "code-review.md"):
+            jira = Jira()
+            with self.assertRaises(pb.Refused, msg=name):
+                pb.attach("j1", "ABC-12", name, "ABC-12", self.root, dict(CONN), JCFG,
+                          jira.transport, jira.uploader)
+            self.assertEqual((jira.asked, jira.sent), ([], []))
+        for what in ("design", "review"):
+            conf = Confluence()
+            with self.assertRaises(pb.Refused, msg=what):
+                pb.create_page("j1", what, "QA", "4242", "T", "T", self.root, CCFG, conf.send, False)
+            self.assertEqual(conf.calls, [])
+
+    def test_the_stand_ins_settings_never_reach_a_real_connection(self):
+        """mock.json says mock; the connection in hand is real."""
+        os.environ["WORKBENCH_MOCK"] = "1"
+        self.addCleanup(os.environ.__setitem__, "WORKBENCH_MOCK", "0")
+        jira = Jira()
+        with self.assertRaises(pb.Refused) as got:
+            pb.attach("j1", "ABC-12", "manual-tests.md", "ABC-12", self.root, dict(CONN), {},
+                      jira.transport, jira.uploader)
+        self.assertIn("switched off", str(got.exception))
+        conf = Confluence()
+        with self.assertRaises(pb.Refused):
+            pb.create_page("j1", "manual", "QA", "4242", "T", "T", self.root,
+                           {k: v for k, v in CCFG.items() if k != "publish"}, conf.send, False)
+        self.assertEqual((jira.sent, conf.calls), ([], []))
+
+    def test_an_attachment_of_the_same_name_in_other_capitals_is_the_same_name(self):
+        jira = Jira(attached=["J1-MANUAL-TESTS.MD"])
+        with self.assertRaises(pb.Refused):
+            pb.attach("j1", "ABC-12", "manual-tests.md", "ABC-12", self.root, dict(CONN), JCFG,
+                      jira.transport, jira.uploader)
+        self.assertEqual(jira.sent, [])
+
+    def test_a_page_too_large_is_not_sent(self):
+        big = dict(MANUAL, new_cases=[dict(MANUAL["new_cases"][0], title="x" * 500,
+                                           preconditions="y" * (pb.MAX_PAGE_CHARS + 10))])
+        self.put("manual-result.json", json.dumps(big))
+        conf = Confluence()
+        with self.assertRaises(pb.Refused) as got:
+            pb.create_page("j1", "manual", "QA", "4242", "T", "T", self.root, CCFG, conf.send, False)
+        self.assertIn("the limit is", str(got.exception))
+        self.assertEqual(conf.calls, [])
+
+    def test_the_command_keeps_not_known_when_something_ordinary_goes_wrong_after_the_attempt(self):
+        connect = search.connect
+        search.connect = lambda *a, **k: dict(CONN)
+        self.addCleanup(setattr, search, "connect", connect)
+        section = search.projectconfig.section
+        search.projectconfig.section = lambda name: (JCFG if name == "jira_config" else {}, "")
+        self.addCleanup(setattr, search.projectconfig, "section", section)
+        jira = Jira()
+        real_log = pb._log
+
+        def log_then_fail(job_dir, line):
+            real_log(job_dir, line)
+            if line.startswith("DONE"):
+                raise ValueError("after the write")
+        pb._log = log_then_fail
+        self.addCleanup(setattr, pb, "_log", real_log)
+        with redirect_stdout(io.StringIO()):
+            rc = pb.main(["attach", "--job", "j1", "--key", "ABC-12", "--file", "manual-tests.md",
+                          "--confirm", "ABC-12"], transport=jira.transport, uploader=jira.uploader)
+        self.assertEqual(rc, 1)
+        with io.open(os.path.join(self.job, pb.RESULT), encoding="utf-8") as fh:
+            left = json.load(fh)
+        self.assertEqual((left["kind"], left["ok"]), ("publish", None),
+                         "not overwritten by 'nothing was written'")
 
 
 class MockAndStatus(Base):

@@ -93,6 +93,26 @@ import sys
 from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _diag():
+    """tools/diag.py, once for the whole process: the record of what this
+    command did, kept for finding out what went wrong."""
+    import importlib.util as _ilu
+    if "workbench_diag" not in sys.modules:
+        _spec = _ilu.spec_from_file_location(
+            "workbench_diag", os.path.join(os.path.dirname(HERE), "diag.py"))
+        _mod = _ilu.module_from_spec(_spec)
+        sys.modules["workbench_diag"] = _mod
+        try:
+            _spec.loader.exec_module(_mod)
+        except BaseException:
+            sys.modules.pop("workbench_diag", None)
+            raise
+    return sys.modules["workbench_diag"]
+
+
+diag = _diag()
 TOOLS = os.path.dirname(HERE)
 
 
@@ -731,6 +751,7 @@ def cmd_suggest(job: str, keys: list = None, agent=None, root: str = "") -> dict
             clog.block(f"reply ({label})", reply)
             data, _how = jsonfix.loads(reply, partial_key="defects", list_key="defects")
         except (RuntimeError, ValueError) as e:
+            diag.trace()
             first = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
             failed.append(f"{label} ({', '.join(d['key'] for d in batch[:4])}"
                           f"{' ...' if len(batch) > 4 else ''}): {first[:200]}")
@@ -973,6 +994,7 @@ def main(argv=None, transport=None, agent=None) -> int:
         tell_error(a.job, str(e), False)
         return 1
     except Exception as e:                               # noqa: BLE001
+        diag.trace()
         say(f"FAIL unexpected {type(e).__name__} in defects.py "
             f"(line {e.__traceback__.tb_lineno if e.__traceback__ else '?'})")
         tell_error(a.job, f"unexpected {type(e).__name__}; see the log", False)
@@ -980,4 +1002,4 @@ def main(argv=None, transport=None, agent=None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(diag.run("defects", main))

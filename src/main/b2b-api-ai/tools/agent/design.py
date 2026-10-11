@@ -110,6 +110,26 @@ from urllib.parse import unquote, urlparse
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
+def _diag():
+    """tools/diag.py, once for the whole process: the record of what this
+    command did, kept for finding out what went wrong."""
+    import importlib.util as _ilu
+    if "workbench_diag" not in sys.modules:
+        _spec = _ilu.spec_from_file_location(
+            "workbench_diag", os.path.join(os.path.dirname(HERE), "diag.py"))
+        _mod = _ilu.module_from_spec(_spec)
+        sys.modules["workbench_diag"] = _mod
+        try:
+            _spec.loader.exec_module(_mod)
+        except BaseException:
+            sys.modules.pop("workbench_diag", None)
+            raise
+    return sys.modules["workbench_diag"]
+
+
+diag = _diag()
+
+
 def _load(name: str, path: str):
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
@@ -190,6 +210,7 @@ def read_spec(text: str) -> tuple:
         try:
             data, how = yaml.safe_load(text), "YAML"
         except Exception as e:                           # noqa: BLE001
+            diag.trace()
             return None, f"neither JSON nor YAML ({type(e).__name__})"
     if not isinstance(data, dict) or not isinstance(data.get("paths"), dict):
         return None, f"{how or 'text'} without a `paths` section"
@@ -968,6 +989,7 @@ def _tree_state(root: str):
     try:
         return loop.dirty_paths(root), loop.head(root)
     except Exception:                                    # noqa: BLE001
+        diag.trace()
         return None
 
 
@@ -1106,6 +1128,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
             _cfg = loop.cursor_config(root)[1]
             secret, asked_model = _cfg.api_key, str(getattr(_cfg, "model", "") or "")
         except Exception as e:                           # noqa: BLE001
+            diag.trace()
             say(f"FAIL the Cursor configuration could not be read ({type(e).__name__})")
             return 1
     sdk_ready = []
@@ -1448,4 +1471,4 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(diag.run("design", main))

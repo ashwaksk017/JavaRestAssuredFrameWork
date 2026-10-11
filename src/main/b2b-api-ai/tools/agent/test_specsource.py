@@ -295,7 +295,7 @@ class FoundByTheReview(Base):
         self.assertIn("cannot be used for a file here", str(got.exception))
         out = self.fetch([row("openapi[1].json", SPEC), row("health.json", OTHER)])
         self.assertFalse(out["ok"])
-        self.assertIn("have a name that cannot be used here (openapi[1].json)", out["message"])
+        self.assertIn("with a name that cannot be used here (openapi[1].json)", out["message"])
 
     def test_a_list_that_was_not_all_seen_is_not_called_complete(self):
         out = src.from_confluence(self.job, LINK, "", conf=att, conn={"base": "x", "more": True},
@@ -369,6 +369,65 @@ class FoundByTheReview(Base):
         self.assertIsNone(design.stored_spec(other_job), "another job's file is not this job's")
         self.assertNotIn("/orders", seen[1])
         self.assertEqual(src.current(self.job, self.root)["name"], "orders.json")
+
+
+class FoundByTheSecondReview(Base):
+    def test_when_the_old_one_cannot_be_put_back_it_is_not_then_deleted(self):
+        src.store(self.job, "good.json", SPEC, "x", self.root)
+        real = os.replace
+
+        def failing(a, b):
+            if os.path.basename(a).startswith(("spec.new.", "spec.old.")) and \
+                    os.path.basename(b) == "spec":
+                raise PermissionError(13, "in use")
+            return real(a, b)
+        os.replace = failing
+        try:
+            with self.assertRaises(src.Refused) as got:
+                src.store(self.job, "new.json", OTHER, "y", self.root)
+        finally:
+            os.replace = real
+        left = [n for n in os.listdir(self.job) if n.startswith("spec.old.")]
+        self.assertEqual(len(left), 1, "the earlier specification is still on disk")
+        self.assertIn(left[0], str(got.exception))
+        self.assertNotIn("still the one in use", str(got.exception))
+        self.assertTrue(os.path.isfile(os.path.join(self.job, left[0], "good.json")))
+
+    def test_an_attachment_that_was_not_looked_at_is_not_called_not_a_specification(self):
+        rows = [row(f"s{i}.json", SPEC) for i in range(src.MAX_CANDIDATES + 2)]
+        out = self.fetch(rows)
+        self.assertEqual([c["note"] for c in out["candidates"][-2:]], ["not looked at"] * 2)
+        out = self.fetch([row("openapi[1].json", SPEC), row("notes.json", b'{"a": 1}')])
+        self.assertIn("0 of this page's attachments are specifications", out["message"])
+        self.assertIn("rename it and use From a file", out["message"])
+
+    def test_a_name_with_dots_is_a_name_and_a_climb_is_a_climb(self):
+        conn = att.connect(LINK, CFG)
+        for name in ("v1..2.yaml", "a%20b.json", "caf%C3%A9.json", "a.b.c.json"):
+            self.assertTrue(att.download_url(conn, {"title": name, "download":
+                                                    f"/download/attachments/5/{name}"}), name)
+        for link in ("/download/attachments/../../admin", "/download/./x", "/download/a/%2e%2e/b"):
+            with self.assertRaises(att.Refused, msg=link):
+                att.download_url(conn, {"title": "x", "download": link})
+        with self.assertRaises(att.Refused) as got:
+            att.download_url(conn, {"title": "a;b.json", "download": "/download/attachments/5/a%3Bb.json"})
+        self.assertIn("use From a file", str(got.exception))
+
+    def test_a_context_path_given_only_in_the_api_path_is_still_where_downloads_are(self):
+        cfg = dict(CFG, base_urls=["https://wiki.example.com"],
+                   api_path="/confluence/rest/api/content")
+        conn = att.connect("https://wiki.example.com/confluence/pages/viewpage.action?pageId=7", cfg)
+        self.assertEqual((conn["base"], conn["site"]),
+                         ("https://wiki.example.com", "https://wiki.example.com/confluence"))
+        # A bare id, with the context in BOTH places: not doubled.
+        both = dict(CFG, api_path="/confluence/rest/api/content")
+        conn = att.connect("12345", both)
+        self.assertEqual(conn["base"] + conn["api"],
+                         "https://wiki.example.com/confluence/rest/api/content")
+        self.assertEqual(conn["site"], "https://wiki.example.com/confluence")
+        conn = att.connect("12345", CFG)
+        self.assertEqual(conn["base"] + conn["api"],
+                         "https://wiki.example.com/confluence/rest/api/content")
 
 
 class TheAttachmentItself(unittest.TestCase):

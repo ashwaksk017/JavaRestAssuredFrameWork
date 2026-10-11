@@ -284,11 +284,39 @@ EXCLUSIVE = {"convert", "agent-generate", "agent-approve", "agent-discard",
 REPEATABLE = {"--link"}
 
 _RUNNING: dict = {}
+_STOPPED: set = set()            # (job, runnable) a person stopped, until it has ended
 _LOCK = threading.Lock()
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _diag():
+    """tools/diag.py, once for the whole process."""
+    if "workbench_diag" not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            "workbench_diag", os.path.join(os.path.dirname(HERE), "diag.py"))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["workbench_diag"] = mod
+        try:
+            spec.loader.exec_module(mod)
+        except BaseException:
+            sys.modules.pop("workbench_diag", None)
+            raise
+    return sys.modules["workbench_diag"]
+
+
+diag = _diag()
+
+
+def read_diag(job: str, which: str = "job", lines: int = 400) -> str:
+    """The end of a job's diagnostics, or of the server's log, for the page."""
+    if which == "server":
+        return diag.tail(diag.server_log(ROOT), lines)
+    if which != "job":
+        raise ValueError("which is `job` or `server`")
+    return diag.tail(os.path.join(job_dir(job), diag.JOB_LOG), lines)
 
 
 def confine(path_value: str) -> str:
@@ -713,6 +741,7 @@ def start(job: str, runnable: str, options: dict) -> dict:
         failed.update({"state": "failed", "exit_code": -1,
                        "finished": _now(), "error": str(e)})
         _write(status_path(job, runnable), failed)
+        diag.job_note(job, f"[jobs] {runnable} could not be started: {type(e).__name__}: {e}", ROOT)
         raise
     with _LOCK:
         _RUNNING[key] = proc
@@ -727,6 +756,17 @@ def start(job: str, runnable: str, options: dict) -> dict:
         done.update({"state": "done" if rc == 0 else "failed",
                      "exit_code": rc, "finished": _now()})
         _write(status_path(job, runnable), done)
+        if rc != 0:
+            # Its own log is written over by the next run of the same
+            # command; the job's record is not. (What it SAID as it failed
+            # is put there by the command itself, under diag.run.)
+            try:
+                diag.job_note(job, f"[jobs] {runnable} exited {rc}"
+                              + (" (stopped from the page, or killed)" if rc < 0 or rc == 1
+                                 and (job, runnable) in _STOPPED else ""), ROOT)
+            except Exception:                            # noqa: BLE001
+                pass
+            _STOPPED.discard((job, runnable))
 
     threading.Thread(target=wait, daemon=True).start()
     return status
@@ -737,7 +777,9 @@ def stop(job: str, runnable: str) -> bool:
         proc = _RUNNING.get((job, runnable))
     if proc is None or proc.poll() is not None:
         return False
+    _STOPPED.add((job, runnable))
     proc.terminate()
+    diag.job_note(job, f"[jobs] {runnable} was told to stop", ROOT)
     return True
 
 

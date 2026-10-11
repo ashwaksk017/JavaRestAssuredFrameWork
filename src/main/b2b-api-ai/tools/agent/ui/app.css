@@ -223,3 +223,6 @@ input[type=file] { padding: .45rem; border: 1px dashed var(--line); border-radiu
 #tab-publish .row input[type=text] { width: auto; flex: 0 1 13rem; }
 #tab-publish .row input[type=text].grow { flex: 1 1 18rem; }
 #tab-publish .row select { width: auto; flex: 0 1 16rem; }
+
+/* The Logs tab. */
+pre.log.tall { max-height: 34rem; min-height: 8rem; white-space: pre-wrap; word-break: break-word; }

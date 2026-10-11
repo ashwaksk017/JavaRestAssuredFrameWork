@@ -83,6 +83,26 @@ from datetime import datetime, timezone
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
+def _diag():
+    """tools/diag.py, once for the whole process: the record of what this
+    command did, kept for finding out what went wrong."""
+    import importlib.util as _ilu
+    if "workbench_diag" not in sys.modules:
+        _spec = _ilu.spec_from_file_location(
+            "workbench_diag", os.path.join(os.path.dirname(HERE), "diag.py"))
+        _mod = _ilu.module_from_spec(_spec)
+        sys.modules["workbench_diag"] = _mod
+        try:
+            _spec.loader.exec_module(_mod)
+        except BaseException:
+            sys.modules.pop("workbench_diag", None)
+            raise
+    return sys.modules["workbench_diag"]
+
+
+diag = _diag()
+
+
 def _load(name: str, path: str):
     """Load a module from a file path.
 
@@ -1537,6 +1557,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         try:
             answer = call(prompt)
         except Exception as e:                           # noqa: BLE001
+            diag.trace()
             say(f"FAIL Cursor call failed: {e}")
             clog.write(f"call FAILED after {time.time() - started:.1f}s: {e}")
             # A call that failed is not a call that did nothing. Everything
@@ -1550,6 +1571,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                 try:
                     return sweep()
                 except Exception as x:                   # noqa: BLE001
+                    diag.trace()
                     return False, [f"the checks could not be completed ({type(x).__name__})"]
 
             at_failure = tree_now()
@@ -2163,4 +2185,4 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(diag.run("loop", main))

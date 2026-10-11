@@ -614,6 +614,96 @@ class FoundByTheReview(Base):
         self.assertEqual((pulled["limited"], pulled["count"]), (True, 2))
 
 
+class FoundByTheSecondReview(Base):
+    def docx(self, name, body):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("word/document.xml", f"<w:document><w:body>{body}</w:body></w:document>")
+        self.doc(name, buf.getvalue())
+        return mt.read_doc(os.path.join(self.job, "docs", name))
+
+    def test_a_deleted_paragraph_mark_does_not_take_the_paragraphs_after_it(self):
+        """Word writes a SELF-CLOSING <w:del/> for it. Taken for the start
+        of deleted text, it removed every rule up to the next deletion."""
+        text, note = self.docx("rules.docx",
+            '<w:p><w:pPr><w:rPr><w:del w:id="1" w:author="a"/></w:rPr></w:pPr>'
+            '<w:r><w:t>RULE ONE applies.</w:t></w:r></w:p>'
+            '<w:p><w:r><w:t>RULE TWO applies.</w:t></w:r></w:p>'
+            '<w:p><w:del w:id="2"><w:r><w:delText>OLD</w:delText></w:r></w:del>'
+            '<w:moveFrom w:id="3"><w:r><w:t>MOVED AWAY</w:t></w:r></w:moveFrom>'
+            '<w:r><w:t>RULE THREE stays.</w:t></w:r></w:p>')
+        self.assertEqual(text, "RULE ONE applies.\nRULE TWO applies.\nRULE THREE stays.")
+        text, note = self.docx("open.docx", '<w:p><w:del w:id="1"><w:r><w:t>never closed</w:t></w:r></w:p>'
+                                            '<w:p><w:r><w:t>after</w:t></w:r></w:p>')
+        self.assertIn("after", text)
+
+    def test_many_deletion_marks_are_read_in_no_time(self):
+        import time
+        body = '<w:p><w:pPr><w:rPr><w:del w:id="1"/></w:rPr></w:pPr><w:r><w:t>x</w:t></w:r></w:p>' * 20000
+        started = time.monotonic()
+        text, note = self.docx("many.docx", body)
+        self.assertLess(time.monotonic() - started, 5.0)
+        self.assertIn("x", text)
+
+    def test_html_that_is_slow_at_its_very_end_is_stopped_too(self):
+        import time
+        for hostile in ("<p>Rule 1</p><a b='" + "x<" * 60000, "<p>Rule 1</p>" + "</" * 190000):
+            started = time.monotonic()
+            text, note = mt._html_text(hostile, budget=1.0)
+            self.assertLess(time.monotonic() - started, 6.0)
+            self.assertIn("Rule 1", text)
+            self.assertTrue(note, "that not all of it was read is said")
+        self.assertEqual(mt._html_text("<p>whole</p>"), ("whole", ""))
+
+    def test_a_step_that_says_nothing_to_do_is_counted_and_notes_means_the_notes(self):
+        self.doc()
+        with io.open(os.path.join(self.job, mt.NOTES), "w") as fh:
+            fh.write("The fee is now 10.")
+        r = self.gen(lambda p, f: reply([
+            case(title="Mixed", steps=[{"action": "Do it", "expected": "ok"},
+                                       {"expected": "only an outcome"},
+                                       {"step": "Under Xray's name", "result": "x"}]),
+            case(title="Invented", source="notes from a document nobody sent.docx"),
+            case(title="Real notes", source="NOTES")]))
+        mixed = r["new_cases"][0]
+        self.assertEqual([s["action"] for s in mixed["steps"]], ["Do it", "Under Xray's name"])
+        self.assertEqual(r["dropped"]["steps_empty"], 1)
+        self.assertIn("said nothing to do", self.read(mt.REPORT))
+        flags = {c["title"]: c["flags"] for c in r["new_cases"]}
+        self.assertEqual(flags["Invented"], ["its source is not one of the documents that were sent"])
+        self.assertEqual(flags["Real notes"], [])
+
+    def test_steps_that_failed_and_steps_not_asked_for_are_both_said(self):
+        issues = [issue(n, f"T{n}", "d") for n in range(1, 12)]
+
+        def transport(method, url, token, timeout, body=None):
+            if "/raven/" in url:
+                key = url.split("/test/")[1].split("/")[0]
+                if key == "ABC-1":
+                    raise search.JiraError(429, "slow down")
+                raise search.JiraError(404, "none")
+            at, size = int(body["startAt"]), int(body["maxResults"])
+            return {"issues": issues[at:at + size], "total": len(issues), "startAt": at}
+        out = mt.pull("j1", "ABC", conn=dict(CONN), transport=transport, root=self.root)
+        self.assertIn("steps of 1 test(s) could not be read", out["steps_note"])
+        self.assertIn("were not asked for", out["steps_note"])
+
+    def test_another_spelling_of_a_name_is_removed_only_once_the_new_file_is_there(self):
+        self.doc("rules.md", b"old")
+        real = os.replace
+
+        def failing(a, b):
+            raise PermissionError(13, "in use")
+        os.replace = failing
+        try:
+            with self.assertRaises(mt.Refused):
+                self.doc("Rules.MD", b"new")
+        finally:
+            os.replace = real
+        self.assertEqual([d["name"] for d in mt.list_docs(self.job)], ["rules.md"],
+                         "the one that was there is still there")
+
+
 class Mock(Base):
     def test_the_stand_ins_say_what_they_are(self):
         os.environ["WORKBENCH_MOCK"] = "1"

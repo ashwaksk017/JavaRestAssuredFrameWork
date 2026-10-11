@@ -74,6 +74,26 @@ import uuid
 from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _diag():
+    """tools/diag.py, once for the whole process: the record of what this
+    command did, kept for finding out what went wrong."""
+    import importlib.util as _ilu
+    if "workbench_diag" not in sys.modules:
+        _spec = _ilu.spec_from_file_location(
+            "workbench_diag", os.path.join(os.path.dirname(HERE), "diag.py"))
+        _mod = _ilu.module_from_spec(_spec)
+        sys.modules["workbench_diag"] = _mod
+        try:
+            _spec.loader.exec_module(_mod)
+        except BaseException:
+            sys.modules.pop("workbench_diag", None)
+            raise
+    return sys.modules["workbench_diag"]
+
+
+diag = _diag()
 TOOLS = os.path.dirname(HERE)
 
 
@@ -293,8 +313,20 @@ def leaks(texts, private: dict) -> list:
         texts = [texts]
     hay = "\n".join(texts)
     low = (hay + "\n" + _unescaped(hay)).lower()
+    squeezed = re.sub(r"\s+", " ", low)
+
+    def forms(value: str) -> set:
+        # As written; with runs of spaces made one (the reports do that);
+        # and as mdsafe.code() writes a name (it swaps four characters).
+        v = value.lower()
+        out = {v, re.sub(r"\s+", " ", v)}
+        coded = v
+        for bad, safe in (("`", "'"), ("|", chr(0xA6)), ("<", chr(0x2039)), (">", chr(0x203A))):
+            coded = coded.replace(bad, safe)
+        out.add(coded)
+        return out
     return sorted({why for value, why in private.items()
-                   if len(value) >= 6 and value.lower() in low})
+                   if len(value) >= 6 and any(f in low or f in squeezed for f in forms(value))})
 
 
 def result_for(job_dir: str, what: str) -> dict:
@@ -334,13 +366,22 @@ def provably_real(data: dict, what: str) -> bool:
 
 # ---- sending --------------------------------------------------------------
 
+class RedirectedWrite(Exception):
+    """The server answered a write with a redirect. It was not followed --
+    and so the server did not do what was asked: nothing was written."""
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """A write is not followed anywhere: the body and the token would go
     with it, and "created somewhere else" is not what was asked."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise urllib.error.URLError("the server answered a write with a redirect; "
-                                    "it was not followed")
+        raise RedirectedWrite()
+
+
+_REDIRECTED = ("answered with a redirect, which was not followed: nothing was written. An "
+               "address that redirects -- to a sign-in page, to another host name -- is not "
+               "the one to put in the configuration.")
 
 
 def _opener():
@@ -356,6 +397,7 @@ def _send(req, timeout: int) -> tuple:
         try:
             body = e.read(4000).decode("utf-8", "replace")
         except Exception:                                # noqa: BLE001
+            diag.trace()
             body = ""
         return e.code, body
 
@@ -501,7 +543,12 @@ def attach(job: str, key: str, name: str, confirm: str, root: str = "", conn=Non
             status, answer = (uploader or upload)(
                 f"{conn['base']}{conn['api']}/issue/{key}/attachments", conn["token"],
                 conn["timeout"], sent_as, data, FILES[name][1])
+    except RedirectedWrite:
+        _log(job_dir, f"REDIRECTED attach {sent_as} to {key}: not followed, nothing written")
+        done.update(ok=False, message=f"Jira {_REDIRECTED}")
+        return done
     except Exception as e:                               # noqa: BLE001
+        diag.trace()
         # No answer. It may have arrived: say that, not "failed".
         _log(job_dir, f"NO ANSWER attach {sent_as} to {key} ({type(e).__name__})")
         done["message"] = (f"Jira did not answer ({type(e).__name__}). The file MAY have "
@@ -655,6 +702,7 @@ def create_page(job: str, what: str, space: str, parent: str, title: str, confir
         try:
             return send("GET", url, token, timeout)
         except Exception as e:                           # noqa: BLE001
+            diag.trace()
             raise Refused(f"Confluence could not be asked ({type(e).__name__}); nothing "
                           f"was created") from None
     # The parent, as Confluence has it now, and that no page has this title.
@@ -684,7 +732,12 @@ def create_page(job: str, what: str, space: str, parent: str, title: str, confir
             "type": "page", "title": title, "space": {"key": space},
             "ancestors": [{"id": parent}],
             "body": {"storage": {"value": body, "representation": "storage"}}})
+    except RedirectedWrite:
+        _log(job_dir, f"REDIRECTED create page {title!r}: not followed, nothing written")
+        done.update(ok=False, message=f"Confluence {_REDIRECTED}")
+        return done
     except Exception as e:                               # noqa: BLE001
+        diag.trace()
         _log(job_dir, f"NO ANSWER create page {title!r} ({type(e).__name__})")
         done["message"] = (f"Confluence did not answer ({type(e).__name__}). The page MAY "
                            f"have been created: look in {space} before trying again.")
@@ -719,11 +772,13 @@ def status(job: str, root: str = "") -> dict:
     try:
         mock_j, mock_c = bool(search.mock_jira()), mock_confluence()
     except (Refused, RuntimeError) as e:
+        diag.trace()
         mock_j, mock_c, problem = True, True, str(e)
     if not problem:
         try:
             opts = settings(jira_mock=mock_j, conf_mock=mock_c)
         except (Refused, search.Refused, RuntimeError) as e:
+            diag.trace()
             problem = str(e)
     usable = []
     for what in PAGES:
@@ -814,6 +869,7 @@ def main(argv=None, **replace) -> int:
               "message": f"{_words(e, 300)} Nothing was written."})
         return 1
     except Exception as e:                               # noqa: BLE001
+        diag.trace()
         say(f"FAIL unexpected {type(e).__name__} in publish.py "
             f"(line {e.__traceback__.tb_lineno if e.__traceback__ else '?'})")
         if not attempted:
@@ -829,4 +885,4 @@ def main(argv=None, **replace) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(diag.run("publish", main))

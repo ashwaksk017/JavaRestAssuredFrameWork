@@ -64,6 +64,26 @@ from datetime import datetime, timezone
 from html.parser import HTMLParser
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _diag():
+    """tools/diag.py, once for the whole process: the record of what this
+    command did, kept for finding out what went wrong."""
+    import importlib.util as _ilu
+    if "workbench_diag" not in sys.modules:
+        _spec = _ilu.spec_from_file_location(
+            "workbench_diag", os.path.join(os.path.dirname(HERE), "diag.py"))
+        _mod = _ilu.module_from_spec(_spec)
+        sys.modules["workbench_diag"] = _mod
+        try:
+            _spec.loader.exec_module(_mod)
+        except BaseException:
+            sys.modules.pop("workbench_diag", None)
+            raise
+    return sys.modules["workbench_diag"]
+
+
+diag = _diag()
 TOOLS = os.path.dirname(HERE)
 
 
@@ -286,11 +306,15 @@ def store_doc(job_dir: str, name: str, data: bytes, root: str = "") -> dict:
             fd, tmp = tempfile.mkstemp(prefix=".up.", suffix=".part", dir=d)
             with os.fdopen(fd, "wb") as fh:
                 fh.write(data)
-            for n in same:
-                if n != base:
-                    os.remove(os.path.join(d, n))
             os.replace(tmp, os.path.join(d, base))
             tmp = ""
+            for n in same:
+                other = os.path.join(d, n)
+                # On a disk that ignores capitals the other spelling IS the
+                # file just written.
+                if n != base and os.path.exists(other) and not os.path.samefile(
+                        other, os.path.join(d, base)):
+                    os.remove(other)
         except OSError as e:
             raise Refused(f"{base} could not be kept ({type(e).__name__})") from None
         finally:
@@ -366,8 +390,14 @@ def _html_text(text: str, budget: float = 4.0) -> tuple:
                         f"{at + 4000:,} characters were read")
                 break
         else:
-            p.close()
+            # NOT p.close(): that is where the parser works through what it
+            # could not make sense of, with no clock. What it is still
+            # holding is a tag that never ended; it is said, not parsed.
+            if len(getattr(p, "rawdata", "") or "") > 200:
+                note = note or ("its HTML ends inside something that is never closed; "
+                                "the end of it was not read")
     except Exception:                                    # noqa: BLE001
+        diag.trace()
         note = note or "its HTML could not be read to the end"
     if p.skip and not note:
         note = ("a <script>, <style>, <noscript> or <template> in it is never closed; "
@@ -385,6 +415,35 @@ def _plain(value, cap: int = FIELD_CHARS) -> str:
     if "<" in s:
         s = html.unescape(_TAG_RX.sub(" ", s))
     return _squash(s)
+
+
+def _drop(xml: str, tag: str) -> str:
+    """`xml` without each <tag ...>...</tag>, in one pass.
+
+    A SELF-CLOSING <tag/> opens nothing: Word writes `<w:del .../>` inside
+    a paragraph's properties to say the paragraph MARK was deleted, and
+    taking that for the start of deleted text removed every paragraph up
+    to the next real deletion. An opener with no closer ends the search
+    rather than being looked for again from every later opener.
+    """
+    opener = re.compile(rf"<{re.escape(tag)}(?=[\s>/])[^>]*>")
+    close = f"</{tag}>"
+    out, pos = [], 0
+    while True:
+        m = opener.search(xml, pos)
+        if not m:
+            break
+        if m.group().endswith("/>"):
+            out.append(xml[pos:m.end()])
+            pos = m.end()
+            continue
+        end = xml.find(close, m.end())
+        if end < 0:
+            break
+        out.append(xml[pos:m.start()])
+        pos = end + len(close)
+    out.append(xml[pos:])
+    return "".join(out)
 
 
 def _docx_text(path: str, cap: int) -> tuple:
@@ -407,9 +466,8 @@ def _docx_text(path: str, cap: int) -> tuple:
     xml = raw.decode("utf-8", "replace")
     if len(raw) == limit:
         xml = xml[:xml.rfind("<")] if "<" in xml[-400:] and ">" not in xml[xml.rfind("<"):] else xml
-    for tag in ("w:del", "w:moveFrom", "mc:Fallback"):
-        xml = re.sub(rf"<{tag}[ >].*?</{tag}>", "", xml, flags=re.S)
-    xml = re.sub(r"<w:(delText|instrText)[ >].*?</w:\1>", "", xml, flags=re.S)
+    for tag in ("w:del", "w:moveFrom", "mc:Fallback", "w:delText", "w:instrText"):
+        xml = _drop(xml, tag)
     xml = re.sub(r"</w:p>", "\n", xml)
     xml = re.sub(r"<w:tab[^>]*/>", "\t", xml)
     xml = re.sub(r"</w:tc>", " | ", xml)
@@ -459,6 +517,7 @@ def read_doc(path: str, cap: int = DOC_CHARS * 4) -> tuple:
                         break
             return "\n".join(out), ""
     except Exception as e:                               # noqa: BLE001
+        diag.trace()
         return "", f"it could not be read ({type(e).__name__})"
     return "", "this kind of file is not read"
 
@@ -561,6 +620,7 @@ def pull(job: str, project: str, issue_type: str = "Test", extra: str = "",
                 else:
                     errors += 1
             except Exception:                            # noqa: BLE001
+                diag.trace()
                 errors += 1
         description = _plain(f.get("description"))[:2000]
         if not steps and description:
@@ -574,15 +634,17 @@ def pull(job: str, project: str, issue_type: str = "Test", extra: str = "",
         why = (why + "; " if why else "") + (f"{odd} issue(s) came back without a usable "
                                              f"key and were left out")
     with_steps = sum(1 for t in tests if t["steps_from"] == "xray")
-    steps_note = ""
+    said = []
     if errors:
-        steps_note = (f"the steps of {errors} test(s) could not be read (Jira refused or did "
-                      f"not answer); their descriptions are used instead")
-    elif skipped and not with_steps:
-        steps_note = ("this Jira gave no Xray steps; the description of each test is used "
-                      "instead")
+        said.append(f"the steps of {errors} test(s) could not be read (Jira refused or did "
+                    f"not answer); their descriptions are used instead")
+    if skipped and not with_steps and not errors:
+        said.append("this Jira gave no Xray steps; the description of each test is used "
+                    "instead")
     elif skipped:
-        steps_note = f"the steps of {skipped} test(s) were not asked for after three were absent"
+        said.append(f"the steps of {skipped} test(s) were not asked for after three in a row "
+                    f"were absent; their descriptions are used instead")
+    steps_note = "; ".join(said)
     inventory = {"at": _now(), "jql": got["jql"], "project": search.project_key(project),
                  "issue_type": issue_type or "Test", "total": got["total"],
                  "complete": bool(got["complete"]) and not odd, "limited": bool(got["limited"]),
@@ -669,14 +731,17 @@ def take_reply(data, sent_keys: dict, sources: list, max_cases: int) -> dict:
     `sources` the names a case may say it comes from -- the documents that
     were sent, and `notes` / `story` when there were any."""
     out = {"new_cases": [], "updates": [], "invented": 0, "empty": 0, "over": 0,
-           "steps_over": 0}
+           "steps_over": 0, "steps_empty": 0}
     names = [s.lower() for s in sources]
 
     def from_what_was_sent(source: str) -> bool:
-        # `rules.md` or `rules.md, section 2`: the name, then anything.
+        # A document: `rules.md` or `rules.md, section 2` -- the name, then
+        # anything. `notes` and `story` are those words and nothing more:
+        # "notes from a document nobody sent" is not the notes.
         s = source.lower().strip()
-        return any(s == n or s.startswith(n + " ") or s.startswith(n + ",")
-                   or s.startswith(n + ":") for n in names)
+        return any(s == n or (n not in ("notes", "story") and (
+            s.startswith(n + " ") or s.startswith(n + ",") or s.startswith(n + ":")))
+            for n in names)
     titles = {_squash(v).lower(): k for k, v in sent_keys.items() if _squash(v)}
     rows = data.get("new_cases") if isinstance(data, dict) else None
     for row in rows if isinstance(rows, list) else []:
@@ -686,7 +751,13 @@ def take_reply(data, sent_keys: dict, sources: list, max_cases: int) -> dict:
         title = _line(row.get("title"), 200)
         steps = []
         for s in row.get("steps") if isinstance(row.get("steps"), list) else []:
-            if isinstance(s, dict) and _line(s.get("action"), 500):
+            if isinstance(s, dict) and not _line(s.get("action"), 500) and _line(
+                    s.get("step"), 500):
+                s = dict(s, action=s.get("step"))        # the same thing, under Xray's name
+            if not (isinstance(s, dict) and _line(s.get("action"), 500)):
+                out["steps_empty"] += 1                  # nothing a person could do
+                continue
+            if True:
                 if len(steps) >= MAX_STEPS:
                     out["steps_over"] += 1
                     continue
@@ -882,6 +953,7 @@ def generate(job: str, app: str = "", speed: str = "balanced", agent=None,
         data, how = jsonfix.loads(raw, partial_key="new_cases", list_key="new_cases")
         data = scrub(data, private)
     except (RuntimeError, ValueError) as e:
+        diag.trace()
         first = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
         raise Refused(f"Cursor gave no usable answer: {first[:200]}") from None
     if how.startswith("partial"):
@@ -905,7 +977,8 @@ def generate(job: str, app: str = "", speed: str = "balanced", agent=None,
                       "mock_jira": bool(inventory.get("mock_jira"))},
         "new_cases": taken["new_cases"], "updates": taken["updates"],
         "dropped": {"invented": taken["invented"], "empty": taken["empty"],
-                    "over": taken["over"], "steps_over": taken["steps_over"]},
+                    "over": taken["over"], "steps_over": taken["steps_over"],
+                    "steps_empty": taken["steps_empty"]},
         "warnings": warnings, "failures": failures, "notes": notes_out,
         "files": {"report": REPORT, "new_cases": NEW_CSV, "updates": UPDATES_CSV},
     }
@@ -947,6 +1020,8 @@ def report(r: dict) -> str:
     if d.get("steps_over"):
         notes.append(f"{d['steps_over']} step(s) beyond the first {MAX_STEPS} of a case were "
                      f"left out")
+    if d.get("steps_empty"):
+        notes.append(f"{d['steps_empty']} step(s) said nothing to do and were left out")
     if notes:
         out += ["## Read this first", ""] + [f"- {md(n)}" for n in notes] + [""]
     out += [f"## New test cases ({len(r['new_cases'])})", ""]
@@ -1063,6 +1138,7 @@ def main(argv=None, agent=None, transport=None) -> int:
         fail(str(e), False)
         return 1
     except Exception as e:                               # noqa: BLE001
+        diag.trace()
         say(f"FAIL unexpected {type(e).__name__} in manualtests.py "
             f"(line {e.__traceback__.tb_lineno if e.__traceback__ else '?'})")
         fail(f"unexpected {type(e).__name__}; see the log", False)
@@ -1075,4 +1151,4 @@ def main(argv=None, agent=None, transport=None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(diag.run("manualtests", main))

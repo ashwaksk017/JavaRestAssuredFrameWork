@@ -90,6 +90,8 @@ def connect(link: str = "", cfg: dict = None) -> dict:
     # Where attachments are downloaded from: always the context address,
     # even when api_path carries the context itself.
     site = fetch.base_for(ref, allowlist, "").rstrip("/")
+    if site and urllib.parse.urlparse(site).path in ("", "/") and api.find("/rest/") > 0:
+        site += api[:api.find("/rest/")]
     if not base:
         raise Refused("a bare page id needs confluence_config.base_urls to say which "
                       "Confluence to ask.")
@@ -167,10 +169,13 @@ def download_url(conn: dict, attachment: dict) -> str:
                       f"a path on this Confluence; it is not followed")
     path = link.split("?", 1)[0]
     plain = urllib.parse.unquote(path)
-    if (not path.startswith("/download/") or ".." in plain or ";" in plain
-            or "\\" in plain or "//" in plain):
+    if (not path.startswith("/download/") or "\\" in plain or "//" in plain
+            or any(seg in ("..", ".") for seg in plain.split("/"))):
         raise Refused(f"the address Confluence gave for {attachment.get('title')!r} is not "
                       f"a download path; it is not followed")
+    if ";" in plain:
+        raise Refused(f"{attachment.get('title')!r} has a `;` in its name, which is not "
+                      f"followed in an address. Download it and use From a file.")
     site = conn.get("site") or conn["base"]
     url = site + link
     want = urllib.parse.urlparse(site)
