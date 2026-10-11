@@ -1125,8 +1125,9 @@ class ThePageCannotPointTheStepAtAFile(unittest.TestCase):
 
     def test_only_the_files_a_person_takes_away_download(self):
         self.assertEqual(sorted(self.server.DOWNLOADS),
-                         ["code-review.md", "design.json", "design.md", "test-cases.csv",
-                          "xray.csv"])
+                         ["code-review.md", "design.json", "design.md",
+                          "manual-new-cases.csv", "manual-tests.md", "manual-xray-updates.csv",
+                          "test-cases.csv", "xray.csv"])
         with self.assertRaises(ValueError):
             self.server.Handler._download(None, "j", "cursor.log")
 

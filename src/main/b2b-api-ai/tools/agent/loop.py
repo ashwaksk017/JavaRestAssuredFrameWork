@@ -199,7 +199,8 @@ DEFAULT_POLICY = {
     "repair_attempts": 1,
     # One Cursor call may take this long before it is reported as stuck.
     # `generate` is per attempt: with one repair attempt, twice this.
-    "cursor_deadline_seconds": {"generate": 2700, "design": 900, "review": 900},
+    "cursor_deadline_seconds": {"generate": 2700, "design": 900, "review": 900,
+                                "manual": 1200},
     # After a timeout, how long to wait before looking for late writes.
     "timeout_settle_seconds": 5,
     # May Discard be used AGAIN on a run that was never confirmed stopped?

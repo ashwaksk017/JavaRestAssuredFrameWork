@@ -91,7 +91,8 @@
   "cursor_deadline_seconds": {
     "generate": 2700,
     "design": 900,
-    "review": 900
+    "review": 900,
+    "manual": 1200
   },
   "branch_prefix": "agent/",
   "remote": "origin",

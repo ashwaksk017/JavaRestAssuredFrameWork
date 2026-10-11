@@ -332,6 +332,72 @@ recovers more kinds of damaged reply.
 python tools/agent/design.py --job <job> --service <name> --swagger-file spec.yaml --requirements-file brd.txt --speed fast
 ```
 
+### Manual tests
+
+Manual UI test cases from requirements, written as a **delta** against
+the tests the team already keeps in Jira / Xray: what is new, and which
+existing tests a changed rule makes wrong. Cursor reads and proposes
+only. Nothing on this tab writes to Jira.
+
+**What it reads**
+
+- **Requirements files** -- choose up to 8. The page sends each file; the
+  workbench keeps it as `target/agent/<job>/docs/<its own name>` and
+  reads it from there, and shows the path. Text (`.txt .md .csv .json
+  .log`), HTML and Word (`.docx`) are read with what Python ships. PDF
+  needs `pypdf` and Excel needs `openpyxl`; a file that cannot be read on
+  this machine is listed as unread with the reason, not passed over.
+- **Notes** -- free text.
+- **The story** read on the New test case tab for the same job, if any.
+- **Existing tests** -- *Read existing tests* takes a project key, an
+  issue type (default `Test`) and optionally one further condition, and
+  reads up to 200 tests with their Xray steps (Server / Data Center; when
+  Xray gives no steps the test's description is used, and the page says
+  so; steps that could not be read because Jira refused or did not answer
+  are counted and said). The step format has not been checked against a
+  live Xray: two shapes are read. Optional: without existing tests there
+  are no updates and no check for duplicates. A failed read keeps the
+  list read before; the result says which project's list it compared
+  with and when that was read.
+
+**What comes back** -- on the page, and as `manual-tests.md`,
+`manual-new-cases.csv` (one row per step) and `manual-xray-updates.csv`:
+
+- **New test cases** -- title, module, category, priority, preconditions,
+  steps with data and expected result, the document it comes from, and
+  why no existing test covers it.
+- **Existing tests to update** -- the test's key, why, and what to change.
+
+**What is checked instead of trusted**
+
+- An update must name a test that was **sent**. A key Cursor makes up, or
+  one of a test that did not fit, is dropped and counted. With no
+  existing tests read, there are no updates whatever the reply says.
+- A case needs a title and at least one step. It is marked when no step
+  says what should be seen, when its source is not one of the documents
+  sent, or when its title is the same as an existing test's.
+- The number of cases is capped by the speed chosen (15 / 30 / 60).
+- What did not fit is said above the results: a document cut short
+  (30,000 characters each, 120,000 in all), notes or a story over 8,000
+  characters, lines that were not sent because they begin like this
+  tool's own markers (`-----`, `=====`), existing tests that were not
+  sent, a list of tests that is not the whole of the project's, a reply
+  that was cut off (no update can be read from one).
+- Of a Word file the body is read, as it reads NOW: text deleted with
+  changes tracked is left out, and headers, footers, footnotes and
+  comments are not read (said when the file has any). HTML is read
+  against a clock; a page that takes too long is read in part and said.
+- Documents and tickets go to Cursor fenced as material, with the private
+  configuration's values and the hosts of URLs removed, in plan mode in an
+  empty directory. The same is taken out of what is WRITTEN -- Cursor's
+  reply and the titles of existing tests alike. The report and the CSVs
+  are plain text: nothing in them becomes a link, a mention or a formula.
+
+```
+python tools/agent/manualtests.py inventory --job <job> --project ABC
+python tools/agent/manualtests.py generate  --job <job> --app "Group booking"
+```
+
 ### Convert ReadyAPI
 
 Converts ReadyAPI project files into this project. The page shows the
@@ -768,6 +834,8 @@ target/agent/<job>/
   <runnable>.status.json state, exit code, and the argv it ran
   design-*.txt           design: the specification, requirements and notes as pasted
   spec/                  design: the specification kept as a file (chosen, or from a Confluence attachment) and where it came from
+  docs/                  Manual tests: the requirements files chosen for the job
+  manual-*.json/.md/.csv Manual tests: the existing tests read, the result, the report and the CSVs
   design-cache/          design: replies kept so an unchanged request is not asked again
   design.md / .json      design: the proposed test cases, and what was left out
   test-cases.csv         design: one row per step
@@ -820,6 +888,8 @@ The API never accepts a command *string*. Every runnable is named in
 | `failures-note` | write down what a failure turned out to be |
 | `audit-service-keys` | audit service keys |
 | `audit-token-chain` | audit the token chain |
+| `manual-inventory` | read a project's existing tests with their steps (Jira, read-only) |
+| `manual-generate` | Cursor proposes new manual test cases and updates to existing ones (plan mode) |
 | `spec-confluence` | take the API specification attached to a Confluence page into the job directory; a link and a name, no path |
 | `verify-all` | run every check of the gate (`tools/verify_all.py`); takes nothing from the page |
 | `agent-design` | Cursor proposes API test cases (plan mode); takes no path, writes the job directory |
@@ -860,6 +930,7 @@ python tools/agent/test_history.py
 python tools/agent/test_defects.py
 python tools/agent/test_codereview.py
 python tools/agent/test_specsource.py
+python tools/agent/test_manualtests.py
 python tools/agent/test_mock.py
 python tools/agent/check_ui.py
 ```

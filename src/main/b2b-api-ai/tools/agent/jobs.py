@@ -75,6 +75,21 @@ RUNNABLES = {
         "label": "Take the API specification attached to a Confluence page",
         "options": {"--job": "text", "--link": "text", "--name": "text"},
     },
+    # Manual UI tests as a delta against the tests in Jira. `inventory`
+    # reads Jira (a project key, a type, one further condition -- each
+    # validated or quoted by the command); `generate` asks Cursor in plan
+    # mode. Neither takes a path: documents are sent to /api/doc-upload.
+    "manual-inventory": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "manualtests.py"), "inventory"],
+        "label": "Read the existing tests, with their steps",
+        "options": {"--job": "text", "--project": "text", "--type": "text",
+                    "--extra": "text", "--max": "text"},
+    },
+    "manual-generate": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "manualtests.py"), "generate"],
+        "label": "Write new manual test cases and updates to existing ones",
+        "options": {"--job": "text", "--app": "text", "--speed": "text"},
+    },
     # The whole gate, as `python tools/verify_all.py`. No options: what it
     # checks is this tree. Offered after a convert.
     "verify-all": {
@@ -418,29 +433,75 @@ def save_upload(name: str, stream, length: int) -> dict:
 
 # ---- a specification chosen on the page -----------------------------------
 MAX_SPEC_UPLOAD = 20 * 1024 * 1024
-_SPECSOURCE = None
+_TOOLS = {}
 _SPECSOURCE_LOCK = threading.Lock()
 
 
-def _specsource():
-    """tools/agent/specsource.py, loaded when first needed: it brings the
-    design step with it, which the server otherwise never loads."""
-    global _SPECSOURCE
+def _tool(name: str):
+    """tools/agent/<name>.py, loaded when first needed: these bring the
+    design step with them, which the server otherwise never loads."""
     # One thread loads it; the others wait for the WHOLE module. Handing
     # out a module that is still being executed gave "no attribute".
     with _SPECSOURCE_LOCK:
-        if _SPECSOURCE is None:
+        if name not in _TOOLS:
             spec = importlib.util.spec_from_file_location(
-                "jobs_specsource", os.path.join(HERE, "specsource.py"))
+                f"jobs_{name}", os.path.join(HERE, f"{name}.py"))
             mod = importlib.util.module_from_spec(spec)
-            sys.modules["jobs_specsource"] = mod
+            sys.modules[f"jobs_{name}"] = mod
             try:
                 spec.loader.exec_module(mod)
             except BaseException:
-                sys.modules.pop("jobs_specsource", None)
+                sys.modules.pop(f"jobs_{name}", None)
                 raise
-            _SPECSOURCE = mod
-        return _SPECSOURCE
+            _TOOLS[name] = mod
+        return _TOOLS[name]
+
+
+def _specsource():
+    return _tool("specsource")
+
+
+# ---- requirement documents chosen on the Manual tests tab -----------------
+def _read_body(stream, length: int, limit: int) -> bytes:
+    if length <= 0:
+        raise ValueError("the file is empty")
+    if length > limit:
+        raise ValueError(f"the file is {length:,} bytes; the limit is {limit:,}")
+    data = b""
+    while len(data) < length:
+        chunk = stream.read(min(length - len(data), 1 << 20))
+        if not chunk:
+            raise ValueError(f"the file arrived incomplete ({len(data):,} of {length:,} bytes)")
+        data += chunk
+    return data
+
+
+def save_doc(job: str, name: str, stream, length: int) -> dict:
+    """A chosen file becomes target/agent/<job>/docs/<name>."""
+    out = job_dir(job)                        # validates the job id first
+    tool = _tool("manualtests")
+    try:
+        tool.doc_name(name)                   # before a byte of it is read
+        data = _read_body(stream, length, tool.MAX_DOC_BYTES)
+        os.makedirs(out, exist_ok=True)
+        return tool.store_doc(out, name, data, ROOT)
+    except tool.Refused as e:
+        raise ValueError(str(e)) from None
+
+
+def list_docs(job: str) -> list:
+    out = job_dir(job)
+    if not os.path.isdir(os.path.join(out, "docs")):
+        return []
+    return _tool("manualtests").list_docs(out, ROOT)
+
+
+def remove_doc(job: str, name: str = "") -> int:
+    tool = _tool("manualtests")
+    try:
+        return tool.remove_doc(job_dir(job), name)
+    except tool.Refused as e:
+        raise ValueError(str(e)) from None
 
 
 def save_spec(job: str, name: str, stream, length: int) -> dict:
@@ -500,7 +561,8 @@ def mock_state() -> dict:
 # result, not the previous command's result under this one's exit code.
 RESULT_FILES = {"jira-": "jira-result.json", "failures-": "failures-result.json",
                 "defects-": "defects-result.json", "agent-review": "code-review.json",
-                "spec-": "spec-result.json"}
+                "spec-": "spec-result.json", "manual-inventory": "manual-pull.json",
+                "manual-generate": "manual-result.json"}
 
 
 def clear_result(job: str, runnable: str) -> None:
@@ -702,7 +764,9 @@ def read_artifact(job: str, name: str) -> str:
                "proposed.diff", "review.json",
                "design.json", "design.md", "test-cases.csv", "xray.csv",
                "jira-result.json", "failures-result.json", "defects-result.json",
-               "code-review.json", "code-review.md", "spec-result.json"}
+               "code-review.json", "code-review.md", "spec-result.json",
+               "manual-result.json", "manual-pull.json", "manual-tests.md",
+               "manual-new-cases.csv", "manual-xray-updates.csv"}
     if name not in allowed:
         raise ValueError(f"{name!r} is not a readable artifact. "
                          f"Known: {', '.join(sorted(allowed))}")

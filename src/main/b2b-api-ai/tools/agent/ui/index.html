@@ -22,6 +22,8 @@
 <nav class="tabs" role="tablist">
   <button role="tab" aria-selected="true"  data-tab="new">
     <span class="name">New test case</span><span class="what">read a story, plan, design</span></button>
+  <button role="tab" aria-selected="false" data-tab="manual">
+    <span class="name">Manual tests</span><span class="what">new cases, and Xray updates</span></button>
   <button role="tab" aria-selected="false" data-tab="convert">
     <span class="name">Convert ReadyAPI</span><span class="what">run the converter</span></button>
   <button role="tab" aria-selected="false" data-tab="agent">
@@ -293,6 +295,64 @@ Expect 201.'></textarea>
   <pre id="cursor-log" class="log cursor"></pre>
   <h3>Command log</h3>
   <pre id="agent-log" class="log"></pre>
+</section>
+
+<!-- ─────────────────────────── manual tests ─────────────────────────── -->
+<section id="tab-manual" class="tab" role="tabpanel" hidden>
+  <p class="lede">
+    Manual UI test cases from requirements, as a <strong>delta</strong>
+    against the tests the team already has: what is new, and which existing
+    tests a changed rule makes wrong. Cursor reads and proposes only.
+    Nothing here writes to Jira.
+  </p>
+
+  <div class="form">
+    <div class="field">
+      <label for="manual-app">Application or module</label>
+      <input id="manual-app" type="text" spellcheck="false" placeholder="Group booking">
+    </div>
+    <div class="field">
+      <label for="manual-speed">How many new cases</label>
+      <select id="manual-speed">
+        <option value="fast">Fast — at most 15</option>
+        <option value="balanced" selected>Balanced — at most 30</option>
+        <option value="thorough">Thorough — at most 60</option>
+      </select>
+    </div>
+  </div>
+
+  <h3>Requirements <span class="hint">files, notes, and the story read on the New test case tab</span></h3>
+  <input type="file" id="manual-files" multiple
+         accept=".txt,.md,.markdown,.csv,.json,.log,.html,.htm,.docx,.pdf,.xlsx">
+  <small class="hint">Up to 8 files. Each is kept under <code>target/agent/&lt;job&gt;/docs/</code>
+    and read from there. Text, HTML and Word are read as they are; PDF and Excel need
+    <code>pypdf</code> / <code>openpyxl</code> installed.</small>
+  <div id="manual-docs" class="result"></div>
+  <label for="manual-notes">Notes <span class="hint">rules, changes, what to focus on</span></label>
+  <textarea id="manual-notes" rows="4" spellcheck="false"></textarea>
+
+  <h3>Existing tests <span class="hint">read from Jira, with their Xray steps — optional, but without them there are no updates and no check for duplicates</span></h3>
+  <div class="row">
+    <input id="manual-project" type="text" spellcheck="false" placeholder="project key, e.g. ABC">
+    <input id="manual-type" type="text" spellcheck="false" placeholder="issue type" value="Test">
+    <input id="manual-extra" type="text" spellcheck="false" class="grow"
+           placeholder='a further condition, e.g. labels = ui (optional)'>
+    <button id="manual-pull">Read existing tests</button>
+    <span id="manual-pull-state" class="state"></span>
+  </div>
+  <div id="manual-inventory" class="result"></div>
+
+  <div class="row center">
+    <button id="manual-run" class="go">Write the test cases</button>
+    <button id="manual-stop">Stop</button>
+    <a id="dl-manual-md" class="dl" hidden>manual-tests.md</a>
+    <a id="dl-manual-new" class="dl" hidden>manual-new-cases.csv</a>
+    <a id="dl-manual-upd" class="dl" hidden>manual-xray-updates.csv</a>
+  </div>
+  <div class="row center"><span id="manual-state" class="state"></span></div>
+  <div id="manual-result" class="result"></div>
+  <h3>Command log</h3>
+  <pre id="manual-log" class="log"></pre>
 </section>
 
 <!-- ───────────────────────────── tab 4 ───────────────────────────── -->

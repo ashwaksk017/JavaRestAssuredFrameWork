@@ -207,3 +207,14 @@ input[type=file] { padding: .45rem; border: 1px dashed var(--line); border-radiu
 .specsrc .row { margin: .5rem 0; }
 .specsrc .grow { flex: 1 1 22rem; }
 .specsrc label.inline { min-width: 11rem; margin: 0; }
+
+/* The Manual tests tab. */
+#tab-manual .row .grow { flex: 1 1 18rem; }
+.result ol { margin: 0; padding-left: 1.2rem; }
+.result ol li { margin: .15rem 0; }
+.result .file { display: flex; gap: .7rem; align-items: baseline; padding: .15rem 0; }
+.result .file code { color: var(--dim); }
+#tab-manual .row input[type=text] { width: auto; flex: 0 1 13rem; }
+#tab-manual .row input[type=text].grow { flex: 1 1 18rem; }
+.specsrc .row input[type=text] { width: auto; flex: 0 1 14rem; }
+.specsrc .row input[type=text].grow { flex: 1 1 22rem; }

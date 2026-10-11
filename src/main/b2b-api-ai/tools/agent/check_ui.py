@@ -702,6 +702,72 @@ def main() -> int:
             check("after Discard the review says the change is no longer waiting",
                   "no longer waiting (the job is DISCARDED)" in html
                   and 'id="agent-review" disabled' in html)
+            # ---- manual tests: documents, existing tests, the delta ------------
+            def send_doc(name, data, ctype="application/octet-stream"):
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{port2}/api/doc-upload?job={JOB}"
+                    f"&name={urllib.parse.quote(name)}",
+                    data=data, headers={"Content-Type": ctype}, method="POST")
+                try:
+                    with urllib.request.urlopen(req, timeout=30) as r:
+                        return r.status, json.loads(r.read().decode())
+                except urllib.error.HTTPError as e:
+                    return e.code, json.loads(e.read().decode() or "{}")
+            code, got = send_doc("Booking Rules.md", b"# Rules\nOver 9 rooms is a group booking.\n")
+            check("a requirements file is kept with the job and its path is told",
+                  code == 200 and (got.get("file") or {}).get("path")
+                  == f"target/agent/{JOB}/docs/Booking Rules.md", f"HTTP {code} {got}")
+            code, got = send_doc("tool.exe", b"MZ")
+            check("a file of a kind that is not read is not kept", code != 200)
+            code, got = send_doc("x.md", b"x", "text/plain")
+            check("a document sent the way another site's form could send it is refused",
+                  code == 403)
+            html = mocked.dom("manual")
+            check("the Manual tests tab lists the file and where it was put",
+                  "Booking Rules.md" in html
+                  and f"target/agent/{JOB}/docs/Booking Rules.md" in html
+                  and html.count('role="tab"') == 7)
+            code, rc = press("manual-inventory", {"--project": "ABC"})
+            html = mocked.dom("manual")
+            check("mock mode: Read existing tests, with their steps, and says it is sample data",
+                  rc == 0 and "existing test(s) of ABC read" in html and "with their Xray steps" in html
+                  and "No Jira was contacted" in html, f"rc={rc}")
+            code, rc = press("manual-generate", None, route="/api/manual",
+                             extra={"app": "Booking", "speed": "fast", "notes": "the fee changed"})
+            html = mocked.dom("manual")
+            check("mock mode: Write the test cases gives new cases and an update to a test that was read",
+                  rc == 0 and "[MOCK] A rule from Booking Rules.md is applied" in html
+                  and "MT-001" in html and "Existing tests to update" in html
+                  and "They are not test cases." in html, f"rc={rc}")
+            check("the manual results can be taken away",
+                  'id="dl-manual-md" class="dl" hidden' not in html
+                  and "name=manual-new-cases.csv" in html)
+            code, body = mocked.call(f"/api/download?job={JOB}&name=manual-tests.md", raw=True)
+            check("the manual report is Markdown and says it is a mock",
+                  code == 200 and "# Manual test cases" in body and "**MOCK.**" in body)
+            with io.open(os.path.join(job_dir, "manual-result.json"), "w", encoding="utf-8") as fh:
+                json.dump({"kind": "manual-tests", "message": "1 new case(s).",
+                           "inventory": {"used": False}, "failures": ["the reply was cut off"],
+                           "new_cases": [{"id": "MT-001", "title": "<img src=x onerror=alert(1)>",
+                                          "steps": [{"action": "<b>a</b>", "expected": "<i>e</i>"}],
+                                          "flags": ["<u>f</u>"], "source": "<s>"}],
+                           "updates": []}, fh)
+            html = mocked.dom("manual")
+            check("what a document or Cursor wrote reaches the Manual tests tab as text",
+                  "&lt;img src=x onerror=alert(1)&gt;" in html and "<img src=x" not in html
+                  and "&lt;b&gt;a&lt;/b&gt;" in html and "&lt;u&gt;f&lt;/u&gt;" in html)
+            check("what is not whole is said above the cases, and no updates without existing tests",
+                  html.index("the reply was cut off") < html.index("&lt;img src=x")
+                  and "no existing tests were read for this job" in html)
+            code, got = mocked.call("/api/doc-remove", {"job": JOB, "name": "Booking Rules.md"})
+            check("Remove forgets the requirements file", code == 200 and got.get("removed") == 1)
+            for name in ("manual-result.json", "manual-pull.json", "manual-inventory.json",
+                         "manual-tests.md", "manual-new-cases.csv", "manual-xray-updates.csv",
+                         "manual-notes.txt"):
+                try:
+                    os.remove(os.path.join(job_dir, name))
+                except OSError:
+                    pass
             for name in ("review.json", "proposed.diff", "code-review.json", "code-review.md",
                          "agent-review.status.json"):
                 try:

@@ -256,6 +256,13 @@ def _search(jql: str, root: str) -> list:
 def jira_transport(method: str, url: str, token: str, timeout: int, body=None, root: str = ""):
     """The mock Jira. Same call as the real transport; no network."""
     root = root or ROOT
+    if method == "GET" and re.search(r"/rest/raven/2\.0/api/test/[A-Za-z][A-Za-z0-9_]+-[0-9]+/steps$", url):
+        # What Xray keeps for a test. The same three steps for every one.
+        return [{"index": n, "step": {"raw": step}, "data": {"raw": data},
+                 "result": {"raw": seen}} for n, (step, data, seen) in enumerate((
+                     ("[MOCK] Open the booking page", "", "The page opens"),
+                     ("[MOCK] Enter the dates and search", "2 nights", "Rooms are listed"),
+                     ("[MOCK] Choose a room and confirm", "", "A confirmation number is shown")), 1)]
     path = url.split("/rest/api/2", 1)[-1]
     if method == "GET" and path == "/myself":
         return {"name": "mock.user", "displayName": "MOCK USER (no Jira was contacted)"}
@@ -389,8 +396,36 @@ def _review_reply(prompt: str) -> str:
     return json.dumps({"files": files, "findings": findings})
 
 
+def _manual_reply(prompt: str) -> str:
+    """One made-up case per document sent, and an update to the first
+    existing test listed. Not test design."""
+    docs = re.findall(r"^----- document \d+ \[[0-9a-f]+\]: (.+?) -----$", prompt, re.M)
+    listed = prompt.split("----- existing tests [", 1)[-1].split("-----", 2)
+    keys = re.findall(r"^([A-Z][A-Z0-9_]+-[0-9]+) \| ", listed[1] if len(listed) > 1 else "",
+                      re.M)
+    cases = [{"title": f"[MOCK] A rule from {name} is applied", "module": "Booking",
+              "category": "functional positive", "priority": "P2",
+              "preconditions": "A signed-in user",
+              "steps": [{"action": "Open the screen the rule is about", "data": "",
+                         "expected": "The screen opens"},
+                        {"action": "Do what the rule describes", "data": "sample values",
+                         "expected": "The result the rule states is shown"}],
+              "source": name, "coverage_note": "MOCK: no comparison was made"}
+             for name in docs] or [
+        {"title": "[MOCK] The noted behaviour works", "module": "", "category": "functional",
+         "priority": "P3", "preconditions": "",
+         "steps": [{"action": "Follow the notes", "data": "", "expected": "It behaves as noted"}],
+         "source": "notes", "coverage_note": "MOCK"}]
+    updates = [{"key": keys[0], "reason": "[MOCK] a rule in the documents changed",
+                "changes": "MOCK: change the expected result of the last step",
+                "source": docs[0] if docs else "notes", "priority": "P2"}] if keys else []
+    return json.dumps({"new_cases": cases, "updates": updates})
+
+
 def cursor(prompt: str, followup=None) -> dict:
     """The mock Cursor for the steps that ask a question and take JSON back."""
+    if "===== MANUAL TEST DESIGN =====" in prompt:
+        return {"result": _manual_reply(prompt), "model": "mock", "status": "finished"}
     if "===== CHANGE UNDER REVIEW =====" in prompt and _REVIEW_FILE_RX.search(prompt):
         return {"result": _review_reply(prompt), "model": "mock", "status": "finished"}
     if "===== DEFECTS =====" in prompt:

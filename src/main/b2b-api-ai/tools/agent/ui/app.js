@@ -550,6 +550,214 @@ for (const [btn, runnable] of [["run-keys", "audit-service-keys"],
   };
 }
 
+// ---- manual tests ------------------------------------------------------
+// Requirement files are kept for the job under target/agent/<job>/docs/,
+// as the specification is: the page sends the file and is told the path.
+// Everything shown here that came from a document, from Jira or from
+// Cursor is put on the page as text.
+async function showManualDocs(j, problem) {
+  j = j || job();
+  const box = $("manual-docs");
+  // Another job's answer arriving late must not touch what is on screen.
+  if (j !== job()) return;
+  if (!j) { box.replaceChildren(); return; }
+  let files = [];
+  try { files = (await api(`/api/docs?job=${encodeURIComponent(j)}`)).files || []; }
+  catch { /* no such job yet */ }
+  if (j !== job()) return;
+  const kids = [];
+  if (problem) kids.push(banner("bad", problem));
+  for (const f of files) {
+    kids.push(el("div", { class: "file" }, el("strong", { text: f.name }), " ",
+      el("span", { text: size(f.bytes) }), " ", el("code", { text: f.path }), " ",
+      el("button", { type: "button", on: { click: async () => {
+        try { await post("/api/doc-remove", { job: j, name: f.name }); } catch { /* still listed */ }
+        showManualDocs(j);
+      } } }, "Remove")));
+  }
+  box.replaceChildren(...kids);
+}
+
+$("manual-files").onchange = async () => {
+  const files = [...$("manual-files").files];
+  const j = job();
+  $("manual-files").value = "";            // so the same choice is a change again
+  if (!files.length) return;
+  // One batch at a time, and no run started on half of it.
+  $("manual-files").disabled = true;
+  $("manual-run").disabled = true;
+  const done = () => { $("manual-files").disabled = false; $("manual-run").disabled = false; };
+  if (!j) { done(); $("manual-docs").replaceChildren(
+    banner("bad", "Name the job first (top right): the files are kept with the job.")); return; }
+  const problems = [];
+  for (const f of files) {
+    if (f.size > 20 * 1024 * 1024) { problems.push(`${f.name}: ${size(f.size)}, the limit is 20 MB`); continue; }
+    try {
+      const r = await fetch(
+        `/api/doc-upload?job=${encodeURIComponent(j)}&name=${encodeURIComponent(f.name)}`,
+        { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: f });
+      let body = {};
+      try { body = await r.json(); } catch { /* the status says it */ }
+      if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+    } catch (e) { problems.push(`${f.name}: ${e.message}`); }
+  }
+  done();
+  showManualDocs(j, problems.length ? `Not kept — ${problems.join("; ")}` : "");
+};
+
+async function manualArtifact(j, name) {
+  try {
+    const got = await api(`/api/artifact?job=${encodeURIComponent(j)}&name=${name}`);
+    return got.text ? JSON.parse(got.text) : null;
+  } catch { return null; }
+}
+
+async function showManualPull(j) {
+  j = j || job();
+  const box = $("manual-inventory");
+  if (j !== job()) return;
+  if (!j) { box.replaceChildren(); return; }
+  const r = await manualArtifact(j, "manual-pull.json");
+  if (j !== job()) return;
+  box.replaceChildren();
+  if (!r) return;
+  if (r.kind !== "manual-pull") {
+    box.replaceChildren(banner("bad", (r.refused ? "Refused — " : "Failed — ") + (r.message || "")));
+    return;
+  }
+  const kids = [];
+  if (r.mock_jira) kids.push(banner("warn", "MOCK. These tests are sample data from this " +
+    "machine (tools/agent/mock.json). No Jira was contacted."));
+  if (!r.complete || r.limited) {
+    kids.push(banner("bad", "NOT THE WHOLE LIST — " +
+      (r.why_incomplete || `the first ${r.count} of ${r.total} were read`) +
+      ". A new case may repeat a test that was not read."));
+  }
+  if (r.steps_note) kids.push(banner("warn", r.steps_note));
+  kids.push(banner("ok", r.message || ""));
+  box.replaceChildren(...kids);
+}
+
+$("manual-pull").onclick = async () => {
+  const j = job();
+  const project = $("manual-project").value.trim();
+  if (!j || !project) {
+    setState($("manual-pull-state"), "bad", j ? "give the project key" : "name the job first");
+    return;
+  }
+  const options = { "--job": j, "--project": project };
+  if ($("manual-type").value.trim()) options["--type"] = $("manual-type").value.trim();
+  if ($("manual-extra").value.trim()) options["--extra"] = $("manual-extra").value.trim();
+  $("manual-pull").disabled = true;
+  try {
+    await post("/api/start", { job: j, runnable: "manual-inventory", options });
+    follow("manual-inventory", $("manual-log"), $("manual-pull-state"), () => {
+      $("manual-pull").disabled = false;
+      showManualPull(j);
+    }, j);
+  } catch (e) {
+    $("manual-pull").disabled = false;
+    setState($("manual-pull-state"), "bad", e.message);
+  }
+};
+
+async function showManual(j) {
+  j = j || job();
+  const box = $("manual-result");
+  if (j !== job()) return;
+  const r = j ? await manualArtifact(j, "manual-result.json") : null;
+  if (j !== job()) return;
+  box.replaceChildren();
+  for (const id of ["dl-manual-md", "dl-manual-new", "dl-manual-upd"]) $(id).hidden = true;
+  if (!r) return;
+  if (r.kind !== "manual-tests") {
+    box.replaceChildren(banner("bad", (r.refused ? "Refused — " : "Failed — ") + (r.message || "")));
+    return;
+  }
+  for (const [id, name] of [["dl-manual-md", "manual-tests.md"],
+                            ["dl-manual-new", "manual-new-cases.csv"],
+                            ["dl-manual-upd", "manual-xray-updates.csv"]]) {
+    $(id).hidden = false;
+    $(id).href = `/api/download?job=${encodeURIComponent(j)}&name=${name}`;
+  }
+  const kids = [];
+  const inv = r.inventory || {};
+  if (r.mock) kids.push(banner("warn", "MOCK. These cases were made up by the stand-in for " +
+    "Cursor (tools/agent/mock.json). They are not test cases."));
+  if (inv.mock_jira && !r.mock) kids.push(banner("warn", "The existing tests these were " +
+    "compared with are sample data, not Jira's."));
+  // What is not whole, before what was found.
+  for (const f of r.failures || []) kids.push(banner("bad", f));
+  for (const w of r.warnings || []) kids.push(banner("warn", w));
+  for (const n of r.notes || []) kids.push(banner("warn", n));
+  const d = r.dropped || {};
+  if (d.invented) kids.push(banner("warn", `${d.invented} update(s) named a test that was ` +
+    "not among the ones sent, and were dropped."));
+  if (d.over) kids.push(banner("warn", `${d.over} case(s) beyond the limit for this speed were left out.`));
+  if (d.empty) kids.push(banner("warn", `${d.empty} entr(ies) had no title, no step or no change, and were dropped.`));
+  if (d.steps_over) kids.push(banner("warn", `${d.steps_over} step(s) beyond the limit for one case were left out.`));
+  kids.push(banner("ok", (r.message || "") + (inv.used
+    ? ` Compared with ${inv.sent} existing test(s) of ${inv.project || "the project"}, read ${inv.pulled_at || "earlier"}.`
+    : "")));
+  const flags = (x) => (x.flags || []).map((f) => el("small", { class: "flag differs", text: f }));
+  const cases = r.new_cases || [];
+  kids.push(heading("New test cases", cases.length));
+  if (cases.length) {
+    kids.push(table(["ID", "Case", "Steps", "Source"], cases.map((c) => [
+      el("div", {}, el("code", { text: c.id }), c.priority ? el("small", { text: c.priority }) : null),
+      el("div", {}, el("div", { text: c.title }),
+         el("small", { text: [c.module, c.category].filter(Boolean).join(" · ") }),
+         c.preconditions ? el("small", { text: `Before: ${c.preconditions}` }) : null,
+         flags(c)),
+      el("ol", {}, (c.steps || []).map((s) => el("li", {},
+         el("span", { text: s.action + (s.data ? ` [${s.data}]` : "") }),
+         s.expected ? el("small", { text: `→ ${s.expected}` }) : null))),
+      el("div", {}, el("span", { text: c.source || "" }),
+         c.coverage_note ? el("small", { text: c.coverage_note }) : null),
+    ])));
+  }
+  const updates = r.updates || [];
+  kids.push(heading("Existing tests to update", updates.length));
+  if (!inv.used) kids.push(el("small", { text: "None can be proposed: no existing tests were read for this job." }));
+  if (updates.length) {
+    kids.push(table(["Test", "Why", "Change", "Source"], updates.map((u) => [
+      el("div", {}, el("code", { text: u.key }), el("small", { text: u.existing_title || "" }),
+         u.priority ? el("small", { text: u.priority }) : null),
+      el("div", {}, el("span", { text: u.reason }), flags(u)),
+      u.changes, u.source || "",
+    ])));
+  }
+  box.replaceChildren(...kids);
+}
+
+$("manual-run").onclick = async () => {
+  const j = job();
+  if (!j) { setState($("manual-state"), "bad", "name the job first"); return; }
+  $("manual-run").disabled = true;
+  try {
+    await post("/api/manual", { job: j, app: $("manual-app").value.trim(),
+                                speed: $("manual-speed").value, notes: $("manual-notes").value });
+    follow("manual-generate", $("manual-log"), $("manual-state"), () => {
+      $("manual-run").disabled = false;
+      showManual(j);
+    }, j);
+  } catch (e) {
+    $("manual-run").disabled = false;
+    setState($("manual-state"), "bad", e.message);
+  }
+};
+$("manual-stop").onclick = async () => {
+  try {
+    let stopped = false;
+    for (const runnable of ["manual-generate", "manual-inventory"]) {
+      const r = await post("/api/stop", { job: job(), runnable });
+      if (r && r.stopped) stopped = true;
+    }
+    if (!stopped) setState($("manual-state"), "", "nothing was running for this job");
+  } catch (e) { setState($("manual-state"), "bad", e.message); }
+};
+onTab.manual = () => { showManualDocs(); showManualPull(); showManual(); };
+
 // ---- tab 3: the agent loop --------------------------------------------
 // The state shown here is review.json in the job directory, written by
 // tools/agent/loop.py. The page decides nothing: the push button is

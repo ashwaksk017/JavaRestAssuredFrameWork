@@ -43,7 +43,8 @@ UI_DIR = os.path.join(HERE, "ui")
 MAX_BODY = 8 * 1024 * 1024       # an OpenAPI document is pasted whole
 DOWNLOADS = {"design.md": "text/markdown", "design.json": "application/json",
              "test-cases.csv": "text/csv", "xray.csv": "text/csv",
-             "code-review.md": "text/markdown"}
+             "code-review.md": "text/markdown", "manual-tests.md": "text/markdown",
+             "manual-new-cases.csv": "text/csv", "manual-xray-updates.csv": "text/csv"}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -149,6 +150,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"files": jobs.list_uploads()})
             if u.path == "/api/spec":
                 return self._json({"spec": jobs.spec_state(q.get("job", ""))})
+            if u.path == "/api/docs":
+                return self._json({"files": jobs.list_docs(q.get("job", ""))})
             if u.path == "/api/mock":
                 # Which services are stand-ins right now. Read on every
                 # request: the file can be edited while the page is open.
@@ -205,6 +208,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(jobs.save_upload(
                     q.get("name", ""), self.rfile,
                     int(self.headers.get("Content-Length") or 0)))
+            if u.path == "/api/doc-upload":
+                self._guard("application/octet-stream")
+                q = {k: v[0] for k, v in parse_qs(u.query).items()}
+                return self._json({"file": jobs.save_doc(
+                    q.get("job", ""), q.get("name", ""), self.rfile,
+                    int(self.headers.get("Content-Length") or 0))})
             if u.path == "/api/spec-upload":
                 self._guard("application/octet-stream")
                 q = {k: v[0] for k, v in parse_qs(u.query).items()}
@@ -213,6 +222,15 @@ class Handler(BaseHTTPRequestHandler):
                     int(self.headers.get("Content-Length") or 0))})
             self._guard()
             body = self._body()
+            if u.path == "/api/doc-remove":
+                # One file, by name. "All of them" is not something a
+                # missing field should mean.
+                if not str(body.get("name") or "").strip():
+                    raise ValueError("name the file to remove")
+                return self._json({"removed": jobs.remove_doc(
+                    body.get("job", ""), str(body["name"]))})
+            if u.path == "/api/manual":
+                return self._json(self._manual(body))
             if u.path == "/api/spec-clear":
                 return self._json({"removed": jobs.spec_clear(body.get("job", ""))})
             if u.path == "/api/upload-clear":
@@ -273,6 +291,26 @@ class Handler(BaseHTTPRequestHandler):
         if body.get("fresh") is True:
             options["--fresh"] = True
         return jobs.start(job, "agent-design", options)
+
+    def _manual(self, body: dict) -> dict:
+        """The notes go into the job directory under a fixed name, which is
+        where the command looks; it is given no path. An empty box removes
+        the file, so an earlier run's notes are not used again unseen."""
+        job = body.get("job", "")
+        out = jobs.job_dir(job)                 # validates the id
+        os.makedirs(out, exist_ok=True)
+        path = os.path.join(out, "manual-notes.txt")
+        text = str(body.get("notes") or "")
+        if text.strip():
+            with io.open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+        elif os.path.isfile(path):
+            os.remove(path)
+        options = {"--job": job}
+        for field, option in (("app", "--app"), ("speed", "--speed")):
+            if str(body.get(field) or "").strip():
+                options[option] = str(body[field]).strip()
+        return jobs.start(job, "manual-generate", options)
 
     def _file(self, name: str, ctype: str) -> None:
         p = os.path.join(UI_DIR, name)

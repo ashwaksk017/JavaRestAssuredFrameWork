@@ -233,6 +233,11 @@ CHECKS = [
           "never pass for them: a switch that is neither true nor false is "
           "an error, every mock result says so, and what a mock agent wrote "
           "cannot be approved"),
+    Check("agent-manualtests",
+          [PY, "tools/agent/test_manualtests.py"],
+          "manual test cases are a delta: an update must name a test that was "
+          "sent, a case needs a title and a step, a document is kept under its "
+          "own name and what could not be read or did not fit is said"),
     Check("agent-specsource",
           [PY, "tools/agent/test_specsource.py"],
           "a specification chosen as a file or taken from a Confluence page is "
