@@ -69,10 +69,11 @@ document.querySelectorAll(".tabs button").forEach((b) => {
 // ---- following a run -------------------------------------------------
 // One poller per (job, runnable). It appends only what is new, so a long
 // convert does not re-render its whole log every second.
-function follow(runnable, logEl, stateEl, onDone) {
+function follow(runnable, logEl, stateEl, onDone, forJob) {
   // The job is read ONCE. Re-reading the text box every tick would switch
-  // this poller to another job's log if the box is edited mid-run.
-  const j = job();
+  // this poller to another job's log if the box is edited mid-run. A
+  // caller that already knows which job it started passes it.
+  const j = forJob || job();
   let offset = 0;
   let misses = 0;
   logEl.textContent = "";
@@ -177,15 +178,116 @@ $("run-jira-verify").onclick = async () => {
 };
 
 // ---- tab 1, second half: design the API tests ------------------------
-// A chosen file is read here, in the browser, into its box: what is sent
-// is what is on screen, and there is no upload route to guard.
-for (const [picker, box] of [["design-swagger-file", "design-swagger"],
-                             ["design-requirements-file", "design-requirements"]]) {
-  $(picker).onchange = async () => {
-    const f = $(picker).files[0];
-    if (f) $(box).value = await f.text();
-  };
+// A requirements file is read here, in the browser, into its box: what is
+// sent is what is on screen.
+$("design-requirements-file").onchange = async () => {
+  const f = $("design-requirements-file").files[0];
+  if (f) $("design-requirements").value = await f.text();
+};
+
+// The specification is different: it is kept as a FILE for the job, under
+// target/agent/<job>/spec/, whether it was chosen here or taken from a
+// Confluence page's attachments. The design step reads it from there when
+// nothing is pasted. The page is told where it was put; it names no path.
+async function showSpec(j, note) {
+  j = j || job();
+  const box = $("design-spec");
+  box.replaceChildren();
+  if (!j) return;
+  const kids = [];
+  if (note) kids.push(banner(note.cls, note.text));
+  let spec = null;
+  try { spec = (await api(`/api/spec?job=${encodeURIComponent(j)}`)).spec; }
+  catch { /* no such job yet */ }
+  // The box was changed while this was being asked: that is another job's
+  // answer, and its Remove button would act on a job no longer on screen.
+  if (j !== job()) return;
+  if (spec && spec.name) {
+    kids.push(el("div", { class: "file" },
+      el("strong", { text: spec.name }), " ",
+      el("span", { text: `${spec.endpoints} endpoint(s), ${spec.format}, ${size(spec.bytes)}` }), " ",
+      el("code", { text: spec.path }), " ",
+      el("small", { text: spec.origin ? `— ${spec.origin}` : "" })));
+    kids.push(el("small", { text: "Used when the box above is empty. What is pasted there wins." }));
+    kids.push(el("button", { type: "button", on: { click: async () => {
+      try { await post("/api/spec-clear", { job: j }); } catch { /* still listed if so */ }
+      $("design-swagger-file").value = "";
+      showSpec(j);
+    } } }, "Remove"));
+  }
+  box.replaceChildren(...kids);
 }
+
+$("design-swagger-file").onchange = async () => {
+  const f = $("design-swagger-file").files[0];
+  if (!f) return;
+  const j = job();
+  const refuse = (text) => {
+    // Emptied, so choosing the same file again is a change again.
+    $("design-swagger-file").value = "";
+    $("design-spec").replaceChildren(banner("bad", text));
+  };
+  if (!j) { refuse("Name the job first (top right): the file is kept with the job."); return; }
+  // Said here: a file the server refuses unread comes back as a dropped
+  // connection, which reads as a network fault.
+  if (!/\.(json|ya?ml)$/i.test(f.name)) {
+    refuse(`Not kept — ${f.name} does not end in .json, .yaml or .yml.`); return;
+  }
+  if (f.size > 20 * 1024 * 1024) {
+    refuse(`Not kept — ${f.name} is ${size(f.size)}; the limit is 20 MB.`); return;
+  }
+  let note;
+  try {
+    const r = await fetch(
+      `/api/spec-upload?job=${encodeURIComponent(j)}&name=${encodeURIComponent(f.name)}`,
+      { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: f });
+    let body = {};
+    try { body = await r.json(); } catch { /* the status says it */ }
+    if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+    note = { cls: "ok", text: `${f.name} is kept for this job.` };
+  } catch (e) {
+    note = { cls: "bad", text: `Not kept — ${e.message}` };
+    $("design-swagger-file").value = "";
+  }
+  showSpec(j, note);
+};
+
+$("design-spec-fetch").onclick = async () => {
+  const j = job();
+  const link = $("design-spec-link").value.trim();
+  if (!j || !link) {
+    setState($("design-spec-state"), "bad", j ? "paste the page's link" : "name the job first");
+    return;
+  }
+  const options = { "--job": j, "--link": link };
+  if ($("design-spec-name").value.trim()) options["--name"] = $("design-spec-name").value.trim();
+  $("design-spec-fetch").disabled = true;
+  try {
+    await post("/api/start", { job: j, runnable: "spec-confluence", options });
+    // Its own log, not the design step's pane: taking that over leaves a
+    // running design showing "running" for ever.
+    follow("spec-confluence", document.createElement("pre"), $("design-spec-state"), async () => {
+      $("design-spec-fetch").disabled = false;
+      let r = null;
+      try {
+        const got = await api(`/api/artifact?job=${encodeURIComponent(j)}&name=spec-result.json`);
+        if (got.text) r = JSON.parse(got.text);
+      } catch { /* shown as nothing */ }
+      await showSpec(j, r ? { cls: r.kind === "spec" && r.ok ? "ok" : "bad",
+                              text: (r.refused ? "Refused — " : "") + (r.message || "") } : null);
+      // Several fit: list them, so one can be named.
+      if (r && r.kind === "spec" && !r.ok && (r.candidates || []).length) {
+        $("design-spec").append(table(["Attachment", "Size", "Endpoints"],
+          r.candidates.map((c) => [c.title, size(c.bytes),
+            c.endpoints === null || c.endpoints === undefined
+              ? (c.note || "not a specification") : c.endpoints])));
+      }
+    }, j);
+  } catch (e) {
+    $("design-spec-fetch").disabled = false;
+    setState($("design-spec-state"), "bad", e.message);
+  }
+};
 
 // `j` is the job the run was started for, not whatever the box holds now.
 async function showDesign(j) {
@@ -266,7 +368,8 @@ $("run-design").onclick = async () => {
 };
 // A design made earlier is still this job's design after a refresh.
 showDesign();
-$("job").addEventListener("change", () => showDesign());
+showSpec();
+$("job").addEventListener("change", () => { showDesign(); showSpec(); });
 $("stop-design").onclick = async () => {
   try { await post("/api/stop", { job: job(), runnable: "agent-design" }); }
   catch (e) { setState($("design-state"), "bad", e.message); }

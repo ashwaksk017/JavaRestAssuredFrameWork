@@ -99,9 +99,24 @@ Expect 201.'></textarea>
       </select>
     </div>
   </div>
-  <label for="design-swagger">API specification <span class="hint">OpenAPI / Swagger, JSON or YAML. Leave empty to use one found on a Confluence page read above.</span></label>
+  <label for="design-swagger">API specification <span class="hint">OpenAPI / Swagger, JSON or YAML. Paste it here, or leave this empty and use a file below.</span></label>
   <textarea id="design-swagger" rows="6" spellcheck="false"></textarea>
-  <input type="file" id="design-swagger-file" accept=".json,.yaml,.yml,.txt">
+  <div class="specsrc">
+    <div class="row">
+      <label for="design-swagger-file" class="inline">From a file</label>
+      <input type="file" id="design-swagger-file" accept=".json,.yaml,.yml">
+    </div>
+    <div class="row">
+      <label for="design-spec-link" class="inline">From a Confluence page</label>
+      <input id="design-spec-link" type="text" spellcheck="false" class="grow"
+             placeholder="the page's link — the specification is taken from its attachments">
+      <input id="design-spec-name" type="text" spellcheck="false"
+             placeholder="attachment name, if several">
+      <button id="design-spec-fetch">Fetch</button>
+      <span id="design-spec-state" class="state"></span>
+    </div>
+    <div id="design-spec" class="result"></div>
+  </div>
   <label for="design-requirements">Requirements <span class="hint">BRD text, acceptance criteria</span></label>
   <textarea id="design-requirements" rows="5" spellcheck="false"></textarea>
   <input type="file" id="design-requirements-file" accept=".txt,.md">

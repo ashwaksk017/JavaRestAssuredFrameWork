@@ -486,7 +486,42 @@ def main() -> int:
                 shutil.rmtree(aside, ignore_errors=True)
             elif not had_uploads:
                 shutil.rmtree(upload_dir, ignore_errors=True)
+        # ---- the specification as a file ------------------------------------
+        def send_spec(name, data, ctype="application/octet-stream"):
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/spec-upload?job={JOB}"
+                f"&name={urllib.parse.quote(name)}",
+                data=data, headers={"Content-Type": ctype}, method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    return r.status, json.loads(r.read().decode())
+            except urllib.error.HTTPError as e:
+                return e.code, json.loads(e.read().decode() or "{}")
+        orders = json.dumps({"openapi": "3.0.1", "paths": {
+            "/orders": {"get": {}, "post": {}}, "/orders/{id}": {"get": {}}}}).encode()
+        code, got = send_spec("Orders API.json", orders)
+        spec = got.get("spec") or {}
+        check("a specification chosen as a file is kept with the job and its path is told",
+              code == 200 and spec.get("path") == f"target/agent/{JOB}/spec/Orders API.json"
+              and spec.get("endpoints") == 3, f"HTTP {code} {got}")
+        code, got = send_spec("notes.json", b'{"hello": 1}')
+        check("a file that is not a specification is not kept, and the page is told why",
+              code != 200 and "not an API specification" in str(got.get("error")), f"{code} {got}")
+        code, got = send_spec("x.json", orders, "text/plain")
+        check("a specification sent the way another site's form could send it is refused",
+              code == 403)
         html = page.dom("new")
+        check("tab 1 shows the kept specification, where it is and what is in it",
+              "Orders API.json" in html and "3 endpoint(s), JSON" in html
+              and f"target/agent/{JOB}/spec/Orders API.json" in html
+              and 'id="design-spec-link"' in html and 'id="design-spec-fetch"' in html)
+        check("the page can start the Confluence fetch, with a link and a name only",
+              declared.get("spec-confluence", {}).get("options")
+              == {"--job": "text", "--link": "text", "--name": "text"})
+        code, got = page.call("/api/spec-clear", {"job": JOB})
+        html = page.dom("new")
+        check("Remove forgets the kept specification",
+              code == 200 and got.get("removed") is True and "Orders API.json" not in html)
         check("tab 1 still has its buttons", 'id="run-intake"' in html and 'id="run-design"' in html)
         html = page.dom("agent")
         check("tab 3 still opens", 'id="tab-agent" class="tab" role="tabpanel" hidden' not in html)

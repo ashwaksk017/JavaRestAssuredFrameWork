@@ -200,3 +200,10 @@ input[type=file] { padding: .45rem; border: 1px dashed var(--line); border-radiu
 .uploaded { margin-top: .5rem; font-size: .85rem; }
 .uploaded .file { display: flex; gap: .8rem; align-items: baseline; padding: .15rem 0; }
 .uploaded .file code { color: var(--dim); }
+
+/* Where a specification comes from, on the design half of tab 1. */
+.specsrc { margin: .3rem 0 1rem; padding: .2rem .9rem .6rem; border: 1px solid var(--line);
+           border-radius: 7px; }
+.specsrc .row { margin: .5rem 0; }
+.specsrc .grow { flex: 1 1 22rem; }
+.specsrc label.inline { min-width: 11rem; margin: 0; }

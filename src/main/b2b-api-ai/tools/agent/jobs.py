@@ -67,6 +67,14 @@ RUNNABLES = {
             "--keep-dead-props": "flag", "--no-reapply-patches": "flag",
         },
     },
+    # Takes the specification attached to a Confluence page into the job
+    # directory. A link and an attachment name; no path. Reads Confluence
+    # (GET only), writes target/agent/<job>/spec/.
+    "spec-confluence": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "specsource.py"), "confluence"],
+        "label": "Take the API specification attached to a Confluence page",
+        "options": {"--job": "text", "--link": "text", "--name": "text"},
+    },
     # The whole gate, as `python tools/verify_all.py`. No options: what it
     # checks is this tree. Offered after a convert.
     "verify-all": {
@@ -408,6 +416,70 @@ def save_upload(name: str, stream, length: int) -> dict:
     return _upload_entry(base)
 
 
+# ---- a specification chosen on the page -----------------------------------
+MAX_SPEC_UPLOAD = 20 * 1024 * 1024
+_SPECSOURCE = None
+_SPECSOURCE_LOCK = threading.Lock()
+
+
+def _specsource():
+    """tools/agent/specsource.py, loaded when first needed: it brings the
+    design step with it, which the server otherwise never loads."""
+    global _SPECSOURCE
+    # One thread loads it; the others wait for the WHOLE module. Handing
+    # out a module that is still being executed gave "no attribute".
+    with _SPECSOURCE_LOCK:
+        if _SPECSOURCE is None:
+            spec = importlib.util.spec_from_file_location(
+                "jobs_specsource", os.path.join(HERE, "specsource.py"))
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules["jobs_specsource"] = mod
+            try:
+                spec.loader.exec_module(mod)
+            except BaseException:
+                sys.modules.pop("jobs_specsource", None)
+                raise
+            _SPECSOURCE = mod
+        return _SPECSOURCE
+
+
+def save_spec(job: str, name: str, stream, length: int) -> dict:
+    """A chosen file becomes target/agent/<job>/spec/<name>, if it is a
+    specification. Answers with where it is and what is in it."""
+    out = job_dir(job)                        # validates the job id first
+    if length <= 0:
+        raise ValueError("the file is empty")
+    if length > MAX_SPEC_UPLOAD:
+        raise ValueError(f"the file is {length:,} bytes; the limit is {MAX_SPEC_UPLOAD:,}")
+    src = _specsource()
+    try:
+        src.spec_name(name)                   # before a byte of it is read
+    except src.Refused as e:
+        raise ValueError(str(e)) from None
+    data = b""
+    while len(data) < length:
+        chunk = stream.read(min(length - len(data), 1 << 20))
+        if not chunk:
+            raise ValueError(f"the file arrived incomplete ({len(data):,} of {length:,} bytes)")
+        data += chunk
+    try:
+        os.makedirs(out, exist_ok=True)
+        return src.store(out, name, data, "chosen on the page", ROOT)
+    except src.Refused as e:
+        raise ValueError(str(e)) from None
+
+
+def spec_state(job: str) -> dict:
+    out = job_dir(job)
+    if not os.path.isdir(os.path.join(out, "spec")):
+        return {}
+    return _specsource().current(out, ROOT)
+
+
+def spec_clear(job: str) -> bool:
+    return _specsource().clear(job_dir(job))
+
+
 def mock_state() -> dict:
     """{"jira": bool, "cursor": bool, "error": str} from tools/agent/mock.json.
     An unreadable file is reported, and counted as "on": the page then
@@ -427,7 +499,8 @@ def mock_state() -> dict:
 # before it can write -- a bad argument, a crash, Stop -- must leave no
 # result, not the previous command's result under this one's exit code.
 RESULT_FILES = {"jira-": "jira-result.json", "failures-": "failures-result.json",
-                "defects-": "defects-result.json", "agent-review": "code-review.json"}
+                "defects-": "defects-result.json", "agent-review": "code-review.json",
+                "spec-": "spec-result.json"}
 
 
 def clear_result(job: str, runnable: str) -> None:
@@ -629,7 +702,7 @@ def read_artifact(job: str, name: str) -> str:
                "proposed.diff", "review.json",
                "design.json", "design.md", "test-cases.csv", "xray.csv",
                "jira-result.json", "failures-result.json", "defects-result.json",
-               "code-review.json", "code-review.md"}
+               "code-review.json", "code-review.md", "spec-result.json"}
     if name not in allowed:
         raise ValueError(f"{name!r} is not a readable artifact. "
                          f"Known: {', '.join(sorted(allowed))}")

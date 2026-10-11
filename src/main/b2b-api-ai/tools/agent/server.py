@@ -48,6 +48,9 @@ DOWNLOADS = {"design.md": "text/markdown", "design.json": "application/json",
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "b2b-agent-ui"
+    # A client that says it will send a body and then sends nothing would
+    # otherwise hold a thread for as long as it likes.
+    timeout = 120
 
     def log_message(self, fmt, *args):      # quieter than the default
         if "--verbose" in sys.argv:
@@ -144,6 +147,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(jobs.list_jobs())
             if u.path == "/api/uploads":
                 return self._json({"files": jobs.list_uploads()})
+            if u.path == "/api/spec":
+                return self._json({"spec": jobs.spec_state(q.get("job", ""))})
             if u.path == "/api/mock":
                 # Which services are stand-ins right now. Read on every
                 # request: the file can be edited while the page is open.
@@ -200,8 +205,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(jobs.save_upload(
                     q.get("name", ""), self.rfile,
                     int(self.headers.get("Content-Length") or 0)))
+            if u.path == "/api/spec-upload":
+                self._guard("application/octet-stream")
+                q = {k: v[0] for k, v in parse_qs(u.query).items()}
+                return self._json({"spec": jobs.save_spec(
+                    q.get("job", ""), q.get("name", ""), self.rfile,
+                    int(self.headers.get("Content-Length") or 0))})
             self._guard()
             body = self._body()
+            if u.path == "/api/spec-clear":
+                return self._json({"removed": jobs.spec_clear(body.get("job", ""))})
             if u.path == "/api/upload-clear":
                 return self._json({"removed": jobs.clear_uploads()})
             if u.path == "/api/start":

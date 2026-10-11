@@ -145,6 +145,12 @@ DEFAULT_DEADLINE = 900        # seconds for one call, when the policy has none
 PASTED = {"swagger": "design-swagger.txt", "requirements": "design-requirements.txt",
           "notes": "design-notes.txt"}
 CASE_KEYS = ("test_cases", "testCases", "testcases", "cases", "tests")
+# A specification kept as a FILE for the job -- chosen on the page, or
+# taken from a Confluence page's attachments (see specsource.py).
+SPEC_DIR = "spec"
+# The record beside it. Its name begins with an underscore, which no
+# kept file's name may: a file CALLED like the record would replace it.
+SPEC_META = "_kept.json"
 
 JSON_ONLY = (
     "Your reply could not be read as JSON. Reply again with ONLY the JSON "
@@ -446,6 +452,30 @@ def uncovered(endpoints: list, prefixes: list, cases: list) -> list:
 
 
 _FENCE_RX = re.compile(r"```[A-Za-z0-9_-]*[ \t]*\r?\n(.*?)```", re.S)
+
+
+def stored_spec(job_dir: str):
+    """(name, text, {origin, at}) of the specification file kept for the
+    job, or None. The name comes from the record written with the file,
+    and must be a plain file name in that directory."""
+    d = os.path.join(job_dir, SPEC_DIR)
+    try:
+        meta = json.loads(_read(os.path.join(d, SPEC_META)) or "{}")
+    except ValueError:
+        return None
+    name = str(meta.get("name") or "") if isinstance(meta, dict) else ""
+    if (not name or name != os.path.basename(name) or name in (".", "..")
+            or name.lower() == SPEC_META.lower() or name.startswith("_")):
+        return None
+    path = os.path.join(d, name)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with io.open(path, encoding="utf-8-sig") as fh:
+            text = fh.read()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return name, text, meta
 
 
 def find_spec(job_dir: str) -> tuple:
@@ -961,7 +991,16 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
 
     where = "given for this run"
     if not swagger.strip():
-        swagger, where = find_spec(out_dir)
+        # Nothing pasted: the file kept for the job, if there is one,
+        # before anything merely found on a page that was read.
+        kept = stored_spec(out_dir)
+        if kept:
+            swagger = kept[1]
+            where = (f"the file {SPEC_DIR}/{kept[0]}"
+                     + (f", from {loop._one_line(kept[2].get('origin'), 120)}"
+                        if kept[2].get("origin") else ""))
+        else:
+            swagger, where = find_spec(out_dir)
     spec, how = read_spec(swagger)
     endpoints, known, source, swagger_sent = [], [], "none", swagger
     if spec is not None:

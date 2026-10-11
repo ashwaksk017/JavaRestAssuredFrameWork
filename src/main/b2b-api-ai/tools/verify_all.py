@@ -233,6 +233,12 @@ CHECKS = [
           "never pass for them: a switch that is neither true nor false is "
           "an error, every mock result says so, and what a mock agent wrote "
           "cannot be approved"),
+    Check("agent-specsource",
+          [PY, "tools/agent/test_specsource.py"],
+          "a specification chosen as a file or taken from a Confluence page is "
+          "kept only if it IS one, under its own name in the job directory; "
+          "an attachment is read only from the approved host, and when a page "
+          "has several none is chosen for you"),
     Check("agent-codereview",
           [PY, "tools/agent/test_codereview.py"],
           "the review of a proposed change reads the diff the loop wrote, "

@@ -114,6 +114,50 @@ def host_allowed(base_url: str, allowlist: list) -> tuple[bool, str]:
                    f"Refusing to fetch from an unapproved host.")
 
 
+_NOT_A_CONTEXT = re.compile(r"(?i)/(pages|display|spaces|x|rest|download)/|\.action/")
+
+
+def base_for(ref, allowlist: list, api_path: str = "") -> str:
+    """The address the API is asked at, for a link.
+
+    A link gives a scheme and a host. A Confluence that is not at the top
+    of its host -- `https://host/confluence/pages/...`, which is how one
+    that shares a host with Jira is set up -- also has a CONTEXT PATH, and
+    the API lives under it: `https://host/confluence/rest/api/...`. The
+    link does not say where the context ends; the configuration does. So
+    when an approved base url has a path, and the link is under it, that
+    base url is the address. Without this every request went to
+    `https://host/rest/api/...` and came back 404.
+
+    An `--api-path` that already begins with the context path is left to
+    do the job it was being used for.
+    """
+    host = (ref.base_url or "").rstrip("/")
+    if not host:
+        return (str(allowlist[0]).rstrip("/") if allowlist else "")
+    want = urllib.parse.urlparse(host)
+    link_path = urllib.parse.urlparse(getattr(ref, "raw", "") or "").path
+    best = ""
+    for allowed in allowlist or []:
+        a = urllib.parse.urlparse(str(allowed).rstrip("/"))
+        ctx = a.path.rstrip("/")
+        if (a.scheme, a.netloc.lower()) != (want.scheme, want.netloc.lower()) or not ctx:
+            continue
+        # A base url is where Confluence IS, not a page in it. One that
+        # somebody wrote as a page address was accepted before (only its
+        # host mattered) and must not now be taken for a context path.
+        if a.query or a.fragment or _NOT_A_CONTEXT.search(ctx + "/"):
+            continue
+        if not (link_path.lower() == ctx.lower()
+                or link_path.lower().startswith(ctx.lower() + "/")):
+            continue
+        if api_path and (api_path == ctx or api_path.startswith(ctx + "/")):
+            continue
+        if len(ctx) > len(best):
+            best = ctx
+    return host + best
+
+
 MAX_RESPONSE_BYTES = 20 * 1024 * 1024
 
 
@@ -130,21 +174,30 @@ class _SameHostRedirect(urllib.request.HTTPRedirectHandler):
     content would not have come from the approved host either.
     """
 
-    def __init__(self, allowed_netloc: str):
+    def __init__(self, allowed_netloc: str, allowed_scheme: str = ""):
         self.allowed = (allowed_netloc or "").lower()
+        self.scheme = (allowed_scheme or "").lower()
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if urllib.parse.urlparse(newurl).netloc.lower() != self.allowed:
+        to = urllib.parse.urlparse(newurl)
+        if to.netloc.lower() != self.allowed:
             raise urllib.error.URLError(
-                f"refusing a redirect to {urllib.parse.urlparse(newurl).netloc} "
+                f"refusing a redirect to {to.netloc} "
                 f"-- it leaves the approved host {self.allowed}, and the "
                 f"Authorization header would travel with it")
+        if self.scheme and to.scheme.lower() != self.scheme:
+            # Same host, but https -> http: the token would cross the
+            # network in clear. A server behind a TLS proxy that does not
+            # know it is behind one answers with exactly this.
+            raise urllib.error.URLError(
+                f"refusing a redirect from {self.scheme} to {to.scheme or 'no scheme'} on "
+                f"{self.allowed} -- the Authorization header would travel with it")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def _opener(base_url: str):
-    return urllib.request.build_opener(
-        _SameHostRedirect(urllib.parse.urlparse(base_url).netloc))
+    u = urllib.parse.urlparse(base_url)
+    return urllib.request.build_opener(_SameHostRedirect(u.netloc, u.scheme))
 
 
 def _get(url: str, token: str, timeout: int) -> dict:
@@ -358,7 +411,7 @@ def main(argv=None) -> int:
               "then fails the allowlist.")
         return 1
 
-    base_url = ref.base_url or (allowlist[0] if allowlist else "")
+    base_url = base_for(ref, allowlist, args.api_path)
     if not base_url:
         print("refused: a bare page id needs confluence_config.base_urls to "
               "say which Confluence to ask.")

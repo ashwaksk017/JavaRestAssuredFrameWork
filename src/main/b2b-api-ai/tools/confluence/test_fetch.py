@@ -278,5 +278,66 @@ class HappyPath(unittest.TestCase):
         self.assertEqual(len(meta["code_blocks"]), 1)
 
 
+class AConfluenceThatIsNotAtTheTopOfItsHost(unittest.TestCase):
+    """`https://host/confluence/...`: the API is under the context path,
+    and only the configuration says where that path ends."""
+
+    def base(self, link, allow, api=""):
+        ref, why = pageref.parse(link)
+        self.assertIsNotNone(ref, why)
+        return cf.base_for(ref, allow, api)
+
+    def test_the_context_path_of_an_approved_base_url_is_kept(self):
+        allow = ["https://jira.example.com/confluence"]
+        for link in ("https://jira.example.com/confluence/pages/viewpage.action?pageId=7",
+                     "https://jira.example.com/confluence/display/ABC/Some+Page",
+                     "https://jira.example.com/confluence/x/AbCd",
+                     "https://JIRA.example.com/confluence/spaces/ABC/pages/7/T"):
+            self.assertEqual(self.base(link, allow).lower(),
+                             "https://jira.example.com/confluence", link)
+
+    def test_a_confluence_at_the_top_of_its_host_is_as_before(self):
+        self.assertEqual(self.base("https://wiki.example.com/pages/viewpage.action?pageId=7",
+                                   ["https://wiki.example.com"]), "https://wiki.example.com")
+        self.assertEqual(self.base("https://wiki.example.com/x/AbCd",
+                                   ["https://wiki.example.com/"]), "https://wiki.example.com")
+
+    def test_a_link_outside_the_context_path_does_not_get_it(self):
+        allow = ["https://jira.example.com/confluence"]
+        self.assertEqual(self.base("https://jira.example.com/confluenceX/x/AbCd", allow),
+                         "https://jira.example.com")
+        self.assertEqual(self.base("https://jira.example.com/x/AbCd", allow),
+                         "https://jira.example.com")
+        self.assertEqual(self.base("https://other.example.com/confluence/x/AbCd", allow),
+                         "https://other.example.com")
+
+    def test_an_api_path_that_already_carries_it_is_not_doubled(self):
+        allow = ["https://jira.example.com/confluence"]
+        link = "https://jira.example.com/confluence/pages/viewpage.action?pageId=7"
+        self.assertEqual(self.base(link, allow, "/confluence/rest/api/content"),
+                         "https://jira.example.com")
+        self.assertEqual(self.base(link, allow, "/rest/api/content"),
+                         "https://jira.example.com/confluence")
+
+    def test_a_base_url_written_as_a_page_address_is_not_taken_for_a_context(self):
+        """Only its host mattered before, so such a configuration worked."""
+        link = "https://wiki.example.com/pages/viewpage.action?pageId=7"
+        for entry in ("https://wiki.example.com/pages/viewpage.action?pageId=1",
+                      "https://wiki.example.com/pages", "https://wiki.example.com/display/TEAM",
+                      "https://wiki.example.com/x/AbCd", "https://wiki.example.com/rest/api"):
+            self.assertEqual(self.base(link, [entry]), "https://wiki.example.com", entry)
+        self.assertEqual(self.base("https://wiki.example.com/display/TEAM/Page",
+                                   ["https://wiki.example.com/display/TEAM"]),
+                         "https://wiki.example.com")
+        self.assertEqual(self.base("https://jira.example.com/Confluence/x/AbCd",
+                                   ["https://jira.example.com/confluence"]),
+                         "https://jira.example.com/confluence", "the case of the path aside")
+
+    def test_a_bare_id_asks_the_first_approved_confluence_whole(self):
+        self.assertEqual(self.base("12345", ["https://jira.example.com/confluence/"]),
+                         "https://jira.example.com/confluence")
+        self.assertEqual(self.base("12345", []), "")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

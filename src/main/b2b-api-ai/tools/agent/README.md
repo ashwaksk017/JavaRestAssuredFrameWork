@@ -184,11 +184,32 @@ run with a different story, they are not used and the Agent loop tab's log says 
 They are handed over as data, each field on one line, with a statement
 that nothing in them is an instruction.
 
-- **Specification** — paste OpenAPI / Swagger as JSON or YAML, or pick a
-  file (it is read into the box in the browser). Left empty, a
-  specification found in a code block of a Confluence page that the
-  last *Read it* fetched is used. A Confluence *attachment* is not
-  fetched.
+- **Specification** — OpenAPI / Swagger, JSON or YAML, from one of
+  three places:
+  - **pasted** into the box. What is pasted always wins.
+  - **From a file.** Choose a `.json`, `.yaml` or `.yml`. The page sends
+    the file; the workbench keeps it as
+    `target/agent/<job>/spec/<its own name>` and the design step reads it
+    from that path. The page shows the path, the format and how many
+    endpoints it found. It is kept only if it IS a specification (it has
+    a `paths` section) -- anything else is refused with the reason.
+  - **From a Confluence page.** Paste the page's link and press *Fetch*.
+    The specification is looked for among the page's **attachments**,
+    read from the approved Confluence only, and kept in the same place.
+    If exactly one attachment is a specification, and every other
+    candidate was read and found not to be one, it is taken. Otherwise
+    none is chosen for you -- several fit, or one could not be read, or
+    is YAML with no `PyYAML` here, or has a name that cannot be used for
+    a file, or the page has more attachments than the first 200, or more
+    than 8 candidates. They are listed with what was found, and you put
+    the name of the one you mean in the attachment box and fetch again.
+
+  One specification is kept per job; a new one replaces it, a failed
+  attempt leaves the earlier one in use, and *Remove* forgets it. A file
+  name may hold letters, digits, spaces and `. _ - ( ) +`, up to 100
+  characters; the limit is 20 MB. With the box empty and no file kept, a specification found
+  in a **code block** of a Confluence page that the last *Read it*
+  fetched is used, as before. YAML needs `PyYAML` installed.
 - **Requirements**, **notes** — free text.
 - **How many** — fast 25, balanced 40, thorough 80 cases at most.
 
@@ -746,6 +767,7 @@ target/agent/<job>/
   <runnable>.log         full output of each command
   <runnable>.status.json state, exit code, and the argv it ran
   design-*.txt           design: the specification, requirements and notes as pasted
+  spec/                  design: the specification kept as a file (chosen, or from a Confluence attachment) and where it came from
   design-cache/          design: replies kept so an unchanged request is not asked again
   design.md / .json      design: the proposed test cases, and what was left out
   test-cases.csv         design: one row per step
@@ -798,6 +820,7 @@ The API never accepts a command *string*. Every runnable is named in
 | `failures-note` | write down what a failure turned out to be |
 | `audit-service-keys` | audit service keys |
 | `audit-token-chain` | audit the token chain |
+| `spec-confluence` | take the API specification attached to a Confluence page into the job directory; a link and a name, no path |
 | `verify-all` | run every check of the gate (`tools/verify_all.py`); takes nothing from the page |
 | `agent-design` | Cursor proposes API test cases (plan mode); takes no path, writes the job directory |
 | `agent-setup` | check the Cursor SDK, the key and git |
@@ -836,6 +859,7 @@ python tools/agent/test_design.py
 python tools/agent/test_history.py
 python tools/agent/test_defects.py
 python tools/agent/test_codereview.py
+python tools/agent/test_specsource.py
 python tools/agent/test_mock.py
 python tools/agent/check_ui.py
 ```
