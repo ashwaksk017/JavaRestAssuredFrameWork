@@ -7,6 +7,48 @@ nothing and anything the page does can be re-run from the command line.
 
 ## Start it
 
+**The easy way.** In the project folder (`src/main/b2b-api-ai`) there are
+four files:
+
+| | Windows | macOS (and Linux) |
+|---|---|---|
+| start | `start-workbench.bat` | `start-workbench.command` |
+| stop | `stop-workbench.bat` | `stop-workbench.command` |
+
+Double-click one, or run it from a console. **Start** starts the server
+in the background -- no window has to stay open -- waits until it
+answers, and opens the page. Run it again while it is running and it
+just opens the page; it never starts a second server. **Stop** stops it.
+
+- Stop ends only a server that says it is THIS folder's workbench.
+  Another copy of the project on the same port, or any other program, is
+  left alone and named.
+- If the port is taken by something else, Start says by what and starts
+  nothing. Use another port with `WORKBENCH_PORT` (e.g. `set
+  WORKBENCH_PORT=9000` on Windows, `export WORKBENCH_PORT=9000` on a Mac)
+  for both Start and Stop.
+- What the server prints is kept in `target/agent/server-console.log`;
+  if it does not come up, Start shows the end of that.
+- A convert or a Cursor run that the workbench had started is not ended
+  by Stop: it runs to its own end.
+- On a Mac, the first time: if double-clicking says the file cannot be
+  run, run `chmod +x start-workbench.command stop-workbench.command`
+  once in the project folder. If macOS says it is from an unidentified
+  developer, right-click it and choose Open.
+- A workbench server that was started the old way BEFORE these files
+  existed cannot say who it is, so Stop will not end it: end that python
+  process by hand once.
+
+The same from a console, on either system:
+
+```
+python tools/agent/launch.py start
+python tools/agent/launch.py status
+python tools/agent/launch.py stop
+```
+
+**By hand**, with the server in the terminal you start it from:
+
 **The path is relative to where you are.** This file sits next to the
 code, so you are probably already in `tools/agent/` — in which case:
 
@@ -1070,6 +1112,7 @@ python tools/agent/test_codereview.py
 python tools/agent/test_specsource.py
 python tools/agent/test_manualtests.py
 python tools/agent/test_publish.py
+python tools/agent/test_launch.py
 python tools/test_diag.py
 python tools/agent/test_mock.py
 python tools/agent/check_ui.py

@@ -296,7 +296,7 @@ def run(module: str, main, argv=None, root: str = ""):
 
 # ---- the web server ---------------------------------------------------------
 
-_QUIET = ("/api/log", "/api/status", "/api/mock", "/api/artifact", "/api/jobs", "/api/docs",
+_QUIET = ("/api/log", "/api/status", "/api/mock", "/api/whoami", "/api/artifact", "/api/jobs", "/api/docs",
           "/api/spec", "/api/uploads", "/api/runnables", "/api/diag")
 
 

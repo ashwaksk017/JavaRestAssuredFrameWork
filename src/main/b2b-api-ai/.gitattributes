@@ -1,2 +1,8 @@
 # Keep the GitLab helper executable as POSIX text on Windows checkouts.
 tools/allure_history.sh text eol=lf
+
+# The launchers. A .bat is run by cmd.exe and wants CRLF; a .command is run
+# by bash on macOS, where a carriage return at the end of the first line
+# makes it "bad interpreter".
+*.bat text eol=crlf
+*.command text eol=lf

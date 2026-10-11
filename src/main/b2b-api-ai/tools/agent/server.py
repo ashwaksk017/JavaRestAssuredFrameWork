@@ -173,6 +173,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({k: {"label": v["label"],
                                        "options": v["options"]}
                                    for k, v in jobs.RUNNABLES.items()})
+            if u.path == "/api/whoami":
+                # Which process this is and which folder it serves, so that
+                # the launcher stops THIS workbench and no other program
+                # that happens to hold the port.
+                return self._json({"pid": os.getpid(), "root": ROOT})
             if u.path == "/api/jobs":
                 return self._json(jobs.list_jobs())
             if u.path == "/api/uploads":

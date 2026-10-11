@@ -233,6 +233,11 @@ CHECKS = [
           "never pass for them: a switch that is neither true nor false is "
           "an error, every mock result says so, and what a mock agent wrote "
           "cannot be approved"),
+    Check("agent-launch",
+          [PY, "tools/agent/test_launch.py"],
+          "the start and stop files start this folder's workbench once and stop "
+          "only it: another copy on the port, or another program, is left alone "
+          "and named; the .bat files are CRLF and the .command files are not"),
     Check("diag",
           [PY, "tools/test_diag.py"],
           "the diagnostics record keeps the full error a command only names, "
