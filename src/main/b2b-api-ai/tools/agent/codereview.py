@@ -704,7 +704,7 @@ def _message(rows: list, findings: list, unconfirmed: list, whole: bool) -> str:
 
 # ---- the report -----------------------------------------------------------
 
-_ZW = "​"                # a zero-width space: it stops a word being recognised
+_ZW = "\u200b"                # a zero-width space: it stops a word being recognised
 
 
 def _fence(text: str) -> str:
@@ -736,7 +736,7 @@ def _path(p) -> str:
     it cannot split. A name is whatever the diff says it is."""
     # Control characters, and the ones that reorder or break a line.
     s = re.sub(r"[\x00-\x1f\x7f\u2028\u2029\u202a-\u202e\u2066-\u2069]", "?", str(p or ""))
-    for bad, safe in (("`", "'"), ("|", "¦"), ("<", "‹"), (">", "›")):
+    for bad, safe in (("`", "'"), ("|", "\u00a6"), ("<", "\u2039"), (">", "\u203a")):
         s = s.replace(bad, safe)
     return f"`{s}`"
 

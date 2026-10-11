@@ -34,6 +34,8 @@
     <span class="name">Defects</span><span class="what">why each bug happened</span></button>
   <button role="tab" aria-selected="false" data-tab="failures">
     <span class="name">Failures</span><span class="what">this run against the last</span></button>
+  <button role="tab" aria-selected="false" data-tab="publish">
+    <span class="name">Publish</span><span class="what">to a Jira issue, a Confluence page</span></button>
 </nav>
 
 <!-- ───────────────────────────── tab 1 ───────────────────────────── -->
@@ -474,6 +476,44 @@ Expect 201.'></textarea>
   <div id="fail-detail" class="result"></div>
   <h3>Log</h3>
   <pre id="fail-log" class="log"></pre>
+</section>
+
+<!-- ───────────────────────────── publish ───────────────────────────── -->
+<section id="tab-publish" class="tab" role="tabpanel" hidden>
+  <p class="lede">
+    Puts this job's results where the team works. <strong>This tab writes
+    to Jira and Confluence</strong>, where other people see it and from
+    where it cannot be taken back here. Both are off until switched on in
+    <code>program_configuration.json</code>; each asks you to type the
+    target again before it writes.
+  </p>
+  <div class="row">
+    <button id="publish-refresh">Check what can be published</button>
+    <span id="publish-state" class="state"></span>
+  </div>
+  <div id="publish-status" class="result"></div>
+
+  <h3>Attach a file to a Jira issue <span class="hint">adds one file; never removes or replaces</span></h3>
+  <div class="row">
+    <select id="publish-file"></select>
+    <input id="publish-key" type="text" spellcheck="false" placeholder="issue key, e.g. ABC-12">
+    <button id="publish-attach" disabled>Attach to the issue</button>
+  </div>
+
+  <h3>Create a Confluence page <span class="hint">creates one new page; never edits one</span></h3>
+  <div class="row">
+    <select id="publish-what"></select>
+    <input id="publish-space" type="text" spellcheck="false" placeholder="space key, e.g. QA">
+    <input id="publish-parent" type="text" spellcheck="false" placeholder="parent page id (numbers)">
+    <input id="publish-title" type="text" spellcheck="false" class="grow" placeholder="title of the new page">
+    <button id="publish-page" disabled>Create the page</button>
+  </div>
+
+  <div id="publish-result" class="result"></div>
+  <h3>Record of writes <span class="hint">every write attempted from this job, before and after</span></h3>
+  <pre id="publish-record" class="doc">—</pre>
+  <h3>Command log</h3>
+  <pre id="publish-log" class="log"></pre>
 </section>
 
 <script src="/app.js"></script>

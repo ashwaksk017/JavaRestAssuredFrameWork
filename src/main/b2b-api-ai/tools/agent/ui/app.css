@@ -218,3 +218,8 @@ input[type=file] { padding: .45rem; border: 1px dashed var(--line); border-radiu
 #tab-manual .row input[type=text].grow { flex: 1 1 18rem; }
 .specsrc .row input[type=text] { width: auto; flex: 0 1 14rem; }
 .specsrc .row input[type=text].grow { flex: 1 1 22rem; }
+
+/* The Publish tab. */
+#tab-publish .row input[type=text] { width: auto; flex: 0 1 13rem; }
+#tab-publish .row input[type=text].grow { flex: 1 1 18rem; }
+#tab-publish .row select { width: auto; flex: 0 1 16rem; }

@@ -813,6 +813,86 @@ snapshots.
 run. A saved digest from somewhere else can be recorded from a console
 (`python tools/failure_history.py record --digest ...`).
 
+### Publish
+
+Puts a job's results where the team works: a file attached to a Jira
+issue, or a new Confluence page. **This is the tab that writes to Jira
+and Confluence.** What it writes is seen by other people and cannot be
+taken back from here, so it is built to do one small thing at a time and
+to say exactly what happened.
+
+**Off until switched on.** In the gitignored `program_configuration.json`:
+
+```json
+"jira_config":       { "publish": { "attach": true, "projects": ["ABC"] } },
+"confluence_config": { "publish": { "create_page": true, "spaces": ["QA"] } }
+```
+
+`attach` and `create_page` must be exactly `true`. `projects` may be
+left out (any project the token may write to); when it is there it must
+be a list of project keys -- a restriction that is mistyped is an error,
+not "no restriction". `spaces` is required: a page is only ever created
+in a space that is listed. Both addresses must be `https`.
+
+Opening the tab asks, each time, what is switched on **now** and which of
+this job's results exist; until the answer is in, what was found last
+time is shown marked as such and the buttons are off. The confirmation
+you are shown ("MOCK" or "this writes to Jira now") comes from that
+answer, and the command is told what you were shown: if `mock.json` was
+changed in between, it writes nothing.
+
+**Attach a file to a Jira issue**
+
+- Choose one of the job's own result files (`design.md`,
+  `test-cases.csv`, `xray.csv`, `manual-tests.md`,
+  `manual-new-cases.csv`, `manual-xray-updates.csv`, `code-review.md`)
+  and give the issue key. You are asked to type the key again.
+- It adds one file, named `<job>-<file>`. It never removes or replaces an
+  attachment, and refuses when the issue already has one of that name.
+
+**Create a Confluence page**
+
+- Choose what the page is made from (manual test cases, the API test
+  design, or the code review), the space, the **numeric id** of the
+  parent page (the `pageId` in its address), and a title. You are asked
+  to type the title again.
+- The parent must exist and be in that space. It creates one new page
+  and never edits one: if the space already has a page with that title,
+  it refuses.
+- The page is built by the workbench from the result file, with every
+  word escaped: nothing a model, a document or a ticket said becomes
+  markup on the page.
+
+**Both**
+
+- Only a result is published. What a failed step leaves behind is not
+  one, and neither is a result with nothing in it.
+- A result made by a stand-in (mock), or from sample data, or that does
+  not say how it was made, is not sent to a real Jira or Confluence.
+- What is about to be sent is searched for the private configuration's
+  values and hosts, and refused if any is in it -- searched as the words
+  were before the report escaped them (`tok_abc` is written `tok\_abc`
+  in Markdown, `a&b` is `a&amp;b` on a page).
+- The token goes only to the configured address, in a header. A write is
+  not followed through a redirect.
+- `publish.log` in the job directory gets a line before each write and
+  one after, and is shown on the tab as the *Record of writes*. From just
+  before a write until its answer is in, the result says "started,
+  outcome not known" -- so a command that was stopped or died is on
+  record as possibly done. When the service did not answer, or answered
+  unclearly, the result says the write **may** have happened and to look
+  before trying again -- not that it failed. Checking what is switched on
+  never removes the record of the last write.
+- In mock mode both change a file under `target/agent/` and contact
+  nobody. Confluence follows the `jira` switch in `mock.json`; add
+  `"confluence": true|false` there to set it separately.
+
+```
+python tools/agent/publish.py status --job <job>
+python tools/agent/publish.py attach --job <job> --key ABC-12 --file manual-tests.md --confirm ABC-12
+python tools/agent/publish.py page   --job <job> --what manual --space QA --parent 12345                                      --title "Booking: manual tests" --confirm "Booking: manual tests"
+```
+
 ### Linking to a tab
 
 The tab is in the address: `http://127.0.0.1:8787/#jira`, `#failures`,
@@ -834,6 +914,9 @@ target/agent/<job>/
   <runnable>.status.json state, exit code, and the argv it ran
   design-*.txt           design: the specification, requirements and notes as pasted
   spec/                  design: the specification kept as a file (chosen, or from a Confluence attachment) and where it came from
+  publish-result.json    Publish: the outcome of the last write (or the refusal of one)
+  publish-status.json    Publish: what was switched on and publishable, when last asked
+  publish.log            Publish: every write to Jira or Confluence attempted from this job
   docs/                  Manual tests: the requirements files chosen for the job
   manual-*.json/.md/.csv Manual tests: the existing tests read, the result, the report and the CSVs
   design-cache/          design: replies kept so an unchanged request is not asked again
@@ -890,6 +973,9 @@ The API never accepts a command *string*. Every runnable is named in
 | `audit-token-chain` | audit the token chain |
 | `manual-inventory` | read a project's existing tests with their steps (Jira, read-only) |
 | `manual-generate` | Cursor proposes new manual test cases and updates to existing ones (plan mode) |
+| `publish-status` | what is switched on for publishing, and which results this job has |
+| `publish-attach` | attach one result file (by name) to one Jira issue; the key twice; **writes to Jira** |
+| `publish-page` | create one Confluence page from a result; the title twice; **writes to Confluence** |
 | `spec-confluence` | take the API specification attached to a Confluence page into the job directory; a link and a name, no path |
 | `verify-all` | run every check of the gate (`tools/verify_all.py`); takes nothing from the page |
 | `agent-design` | Cursor proposes API test cases (plan mode); takes no path, writes the job directory |
@@ -931,6 +1017,7 @@ python tools/agent/test_defects.py
 python tools/agent/test_codereview.py
 python tools/agent/test_specsource.py
 python tools/agent/test_manualtests.py
+python tools/agent/test_publish.py
 python tools/agent/test_mock.py
 python tools/agent/check_ui.py
 ```

@@ -90,6 +90,29 @@ RUNNABLES = {
         "label": "Write new manual test cases and updates to existing ones",
         "options": {"--job": "text", "--app": "text", "--speed": "text"},
     },
+    # The two commands that write outside this machine other than a git
+    # push: a file attached to a Jira issue, a page created in Confluence.
+    # Off unless the private configuration switches them on; the file is a
+    # name from a fixed list, never a path; the key and the title are
+    # given twice. See publish.py.
+    "publish-status": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "publish.py"), "status"],
+        "label": "What can be published from this job, and what is switched on",
+        "options": {"--job": "text"},
+    },
+    "publish-attach": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "publish.py"), "attach"],
+        "label": "Attach one result file to one Jira issue",
+        "options": {"--job": "text", "--key": "text", "--file": "text",
+                    "--confirm-key": "text", "--expect": "text"},
+    },
+    "publish-page": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "publish.py"), "page"],
+        "label": "Create one Confluence page from a result",
+        "options": {"--job": "text", "--what": "text", "--space": "text",
+                    "--parent": "text", "--title": "text", "--confirm-title": "text",
+                    "--expect": "text"},
+    },
     # The whole gate, as `python tools/verify_all.py`. No options: what it
     # checks is this tree. Offered after a convert.
     "verify-all": {
@@ -562,7 +585,11 @@ def mock_state() -> dict:
 RESULT_FILES = {"jira-": "jira-result.json", "failures-": "failures-result.json",
                 "defects-": "defects-result.json", "agent-review": "code-review.json",
                 "spec-": "spec-result.json", "manual-inventory": "manual-pull.json",
-                "manual-generate": "manual-result.json"}
+                "manual-generate": "manual-result.json",
+                # Not publish-status: asking what is switched on must never
+                # remove the record of the last write.
+                "publish-attach": "publish-result.json",
+                "publish-page": "publish-result.json"}
 
 
 def clear_result(job: str, runnable: str) -> None:
@@ -766,7 +793,8 @@ def read_artifact(job: str, name: str) -> str:
                "jira-result.json", "failures-result.json", "defects-result.json",
                "code-review.json", "code-review.md", "spec-result.json",
                "manual-result.json", "manual-pull.json", "manual-tests.md",
-               "manual-new-cases.csv", "manual-xray-updates.csv"}
+               "manual-new-cases.csv", "manual-xray-updates.csv", "publish-result.json",
+               "publish-status.json", "publish.log"}
     if name not in allowed:
         raise ValueError(f"{name!r} is not a readable artifact. "
                          f"Known: {', '.join(sorted(allowed))}")

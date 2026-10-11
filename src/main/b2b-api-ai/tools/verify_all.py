@@ -233,6 +233,12 @@ CHECKS = [
           "never pass for them: a switch that is neither true nor false is "
           "an error, every mock result says so, and what a mock agent wrote "
           "cannot be approved"),
+    Check("agent-publish",
+          [PY, "tools/agent/test_publish.py"],
+          "the two commands that write to Jira and Confluence are off unless "
+          "switched on, take a file by name and a target given twice, never "
+          "replace or edit, refuse what a stand-in made or what holds a private "
+          "value, and record every write before it is made"),
     Check("agent-manualtests",
           [PY, "tools/agent/test_manualtests.py"],
           "manual test cases are a delta: an update must name a test that was "

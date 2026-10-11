@@ -726,7 +726,7 @@ def main() -> int:
             check("the Manual tests tab lists the file and where it was put",
                   "Booking Rules.md" in html
                   and f"target/agent/{JOB}/docs/Booking Rules.md" in html
-                  and html.count('role="tab"') == 7)
+                  and html.count('role="tab"') == 8)
             code, rc = press("manual-inventory", {"--project": "ABC"})
             html = mocked.dom("manual")
             check("mock mode: Read existing tests, with their steps, and says it is sample data",
@@ -759,6 +759,84 @@ def main() -> int:
             check("what is not whole is said above the cases, and no updates without existing tests",
                   html.index("the reply was cut off") < html.index("&lt;img src=x")
                   and "no existing tests were read for this job" in html)
+            # ---- publish: the tab that writes, against the stand-ins ------------
+            conf_store = os.path.join(ROOT, "target", "agent", "mock-confluence.json")
+            conf_kept = None
+            if os.path.isfile(conf_store):
+                with io.open(conf_store, encoding="utf-8") as fh:
+                    conf_kept = fh.read()
+                os.remove(conf_store)
+            try:
+                code, rc = press("publish-status", {})
+                html = mocked.dom("publish")
+                check("the Publish tab says what is switched on, and that these are stand-ins",
+                      rc == 0 and "Attaching to Jira is ON" in html
+                      and "Creating Confluence pages is ON for space(s) QA" in html
+                      and "contacts nobody" in html and html.count('role="tab"') == 8, f"rc={rc}")
+                check("only this job's own results are offered, by name",
+                      '<option value="manual-tests.md">' in html
+                      and '<option value="manual">Manual test cases</option>' in html
+                      and "cursor.log" not in html[html.index('id="tab-publish"'):])
+                code, rc = press("publish-attach", {"--key": "ABC-12", "--file": "manual-tests.md",
+                                                    "--confirm-key": "ABC-12"})
+                html = mocked.dom("publish")
+                check("mock mode: Attach to the issue changes a file on this machine and says so",
+                      rc == 0 and f"{JOB}-manual-tests.md is attached to ABC-12" in html
+                      and "Nothing left this machine." in html, f"rc={rc}")
+                code, rc = press("publish-attach", {"--key": "ABC-12", "--file": "manual-tests.md",
+                                                    "--confirm-key": "ABC-13"})
+                html = mocked.dom("publish")
+                check("a key that is not typed the same twice writes nothing",
+                      rc == 2 and "Refused — nothing was written." in html
+                      and "given twice" in html, f"rc={rc}")
+                code, rc = press("publish-attach", {"--key": "ABC-12", "--file": "cursor.log",
+                                                    "--confirm-key": "ABC-12"})
+                check("a file that is not one of the results cannot be named", rc == 2)
+                code, rc = press("publish-attach", {"--key": "ABC-77", "--file": "manual-tests.md",
+                                                    "--confirm-key": "ABC-77", "--expect": "real"})
+                html = mocked.dom("publish")
+                check("when the page said real and it is a stand-in (or the reverse), nothing is written",
+                      rc == 2 and "Nothing was written" in html, f"rc={rc}")
+                check("the record of writes is on the page, and asking what is on does not erase the last outcome",
+                      "ATTEMPT attach" in html and "DONE attach" in html
+                      and "Refused — nothing was written." in html)
+                code, rc = press("publish-attach", {"--key": "ABC-12", "--file": "manual-tests.md",
+                                                    "--confirm-key": "ABC-12"})
+                check("the same file is not attached to the same issue twice", rc == 2)
+                page_opts = {"--what": "manual", "--space": "QA", "--parent": "4242",
+                             "--title": "Check UI page", "--confirm-title": "Check UI page"}
+                code, rc = press("publish-page", page_opts)
+                html = mocked.dom("publish")
+                check("mock mode: Create the page",
+                      rc == 0 and "was created in QA" in html
+                      and "Nothing left this machine." in html, f"rc={rc}")
+                code, rc = press("publish-page", page_opts)
+                html = mocked.dom("publish")
+                check("a page with a title the space already has is not created again",
+                      rc == 2 and "never edits" in html, f"rc={rc}")
+                code, rc = press("publish-page", dict(page_opts, **{"--space": "DEV",
+                                                                    "--title": "Other",
+                                                                    "--confirm-title": "Other"}))
+                check("a space that is not listed is refused", rc == 2)
+                written = []
+                if os.path.isfile(conf_store):
+                    with io.open(conf_store, encoding="utf-8") as fh:
+                        written = json.load(fh)
+                check("exactly one page was written down by the stand-in",
+                      [p.get("title") for p in written] == ["Check UI page"], str(written))
+            finally:
+                try:
+                    os.remove(conf_store)
+                except OSError:
+                    pass
+                if conf_kept is not None:
+                    with io.open(conf_store, "w", encoding="utf-8") as fh:
+                        fh.write(conf_kept)
+                for name in ("publish-result.json", "publish-status.json", "publish.log"):
+                    try:
+                        os.remove(os.path.join(job_dir, name))
+                    except OSError:
+                        pass
             code, got = mocked.call("/api/doc-remove", {"job": JOB, "name": "Booking Rules.md"})
             check("Remove forgets the requirements file", code == 200 and got.get("removed") == 1)
             for name in ("manual-result.json", "manual-pull.json", "manual-inventory.json",

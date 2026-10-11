@@ -758,6 +758,185 @@ $("manual-stop").onclick = async () => {
 };
 onTab.manual = () => { showManualDocs(); showManualPull(); showManual(); };
 
+// ---- publish -----------------------------------------------------------
+// The one tab that writes to Jira and Confluence. What is switched on, and
+// which of this job's results exist, is ASKED each time the tab is opened
+// (publish.py status) -- never read from a file left by an earlier visit:
+// the wording of the confirmation ("MOCK" or "writes to Jira now") comes
+// from it. The command is also told what the page said (--expect), and
+// writes nothing when that is no longer true.
+const PAGE_NAMES = { manual: "Manual test cases", design: "API test design",
+                     review: "Code review of the proposed change" };
+let publishStatus = null;      // the status of publishJob, asked just now
+let publishJob = "";
+
+// `earlier`: this is what was found on an earlier visit, shown while it is
+// asked again. Nothing can be written from it: the buttons stay off and
+// publishStatus stays empty until the fresh answer is in.
+function fillPublish(st, earlier) {
+  publishStatus = earlier ? null : st;
+  const files = (st && st.files) || [];
+  const pages = (st && st.pages) || [];
+  $("publish-file").replaceChildren(...files.map((f) => el("option", { value: f, text: f })));
+  $("publish-what").replaceChildren(...pages.map((p) =>
+    el("option", { value: p, text: PAGE_NAMES[p] || p })));
+  $("publish-attach").disabled = earlier || !(st && st.attach && files.length);
+  $("publish-page").disabled = earlier || !(st && st.create_page && pages.length);
+  const box = $("publish-status");
+  if (!st) { box.replaceChildren(); return; }
+  const kids = [];
+  if (earlier) kids.push(banner("warn", `As it was at ${st.at || "an earlier time"} — ` +
+    "checking again now. Nothing can be published until that is done."));
+  if (st.problem) kids.push(banner("bad", st.problem));
+  if (st.mock_jira || st.mock_confluence) {
+    kids.push(banner("warn", "MOCK — " +
+      [st.mock_jira ? "Jira" : "", st.mock_confluence ? "Confluence" : ""].filter(Boolean).join(" and ") +
+      " here is a stand-in: publishing there changes a file on this machine and contacts nobody." +
+      (st.mock_jira !== st.mock_confluence ? " The other one is REAL." : "")));
+  }
+  kids.push(banner(st.attach ? "ok" : "warn", st.attach
+    ? "Attaching to Jira is ON" + ((st.projects || []).length ? ` for project(s) ${st.projects.join(", ")}.` : ".")
+    : "Attaching to Jira is OFF (jira_config.publish.attach is not true)."));
+  kids.push(banner(st.create_page ? "ok" : "warn", st.create_page
+    ? `Creating Confluence pages is ON for space(s) ${(st.spaces || []).join(", ") || "— none listed, so none"}.`
+    : "Creating Confluence pages is OFF (confluence_config.publish.create_page is not true)."));
+  if (!files.length && !pages.length) {
+    kids.push(banner("warn", "This job has nothing to publish yet: design the tests, write " +
+      "manual tests or review a change first. A step that failed leaves nothing to publish."));
+  }
+  box.replaceChildren(...kids);
+}
+
+async function publishFile(j, name) {
+  try {
+    const got = await api(`/api/artifact?job=${encodeURIComponent(j)}&name=${name}`);
+    return got.text || "";
+  } catch { return ""; }
+}
+
+async function showPublishResult(j) {
+  const box = $("publish-result");
+  let r = null;
+  try { r = JSON.parse(await publishFile(j, "publish-result.json") || "null"); } catch { r = null; }
+  const record = await publishFile(j, "publish.log");
+  if (j !== job()) return;
+  $("publish-record").textContent = record || "—";
+  if (!r) { box.replaceChildren(); return; }
+  if (r.kind !== "publish") {
+    box.replaceChildren(banner("bad", (r.refused ? "Refused — nothing was written. " : "Failed — ") + (r.message || "")));
+    return;
+  }
+  const kids = [];
+  if (r.mock) kids.push(banner("warn", "MOCK. Nothing left this machine."));
+  kids.push(banner(r.ok === true ? "ok" : "bad",
+    (r.ok === null || r.ok === undefined ? "NOT KNOWN — " : "") + (r.message || "")));
+  if (r.link) kids.push(el("div", {}, "It is at ", el("code", { text: r.link })));
+  box.replaceChildren(...kids);
+}
+
+function publishBusy(on) {
+  for (const id of ["publish-attach", "publish-page", "publish-refresh"]) $(id).disabled = on;
+}
+
+// Ask what is switched on NOW, for the job in the box, and draw from the answer.
+function refreshPublish() {
+  const j = job();
+  publishJob = j;
+  fillPublish(null);
+  $("publish-result").replaceChildren();
+  $("publish-record").textContent = "—";
+  $("publish-log").textContent = "";
+  if (!j) { setState($("publish-state"), "bad", "name the job first"); return; }
+  publishBusy(true);
+  // What is on record is shown at once: the last outcome, the writes made,
+  // and what was found last time (marked as such, with the buttons off).
+  showPublishResult(j);
+  publishFile(j, "publish-status.json").then((text) => {
+    let was = null;
+    try { was = JSON.parse(text || "null"); } catch { was = null; }
+    if (j === job() && !publishStatus && was && was.kind === "publish-status" && was.job === j) {
+      fillPublish(was, true);
+    }
+  });
+  post("/api/start", { job: j, runnable: "publish-status", options: { "--job": j } })
+    .then(() => follow("publish-status", document.createElement("pre"), $("publish-state"), async () => {
+      let st = null;
+      try { st = JSON.parse(await publishFile(j, "publish-status.json") || "null"); } catch { st = null; }
+      if (j !== job()) return;
+      $("publish-refresh").disabled = false;
+      fillPublish(st && st.kind === "publish-status" && st.job === j ? st : null);
+      showPublishResult(j);
+    }, j))
+    .catch((e) => {
+      $("publish-refresh").disabled = false;
+      setState($("publish-state"), "bad", e.message);
+    });
+}
+$("publish-refresh").onclick = refreshPublish;
+
+function runPublish(runnable, options) {
+  const j = publishJob;
+  publishBusy(true);
+  post("/api/start", { job: j, runnable, options: Object.assign({ "--job": j }, options) })
+    .then(() => follow(runnable, $("publish-log"), $("publish-state"), () => {
+      // The outcome first, then what is now switched on and there.
+      showPublishResult(j).then(() => { if (j === job()) refreshPublish(); });
+    }, j))
+    .catch((e) => {
+      $("publish-refresh").disabled = false;
+      fillPublish(publishStatus);
+      setState($("publish-state"), "bad", e.message);
+    });
+}
+
+// The job the status was asked for is the job that is written from.
+function publishReady() {
+  if (publishStatus && publishJob && publishJob === job()) return true;
+  setState($("publish-state"), "bad",
+           "the job changed since this was checked — checking again; read what it says");
+  refreshPublish();
+  return false;
+}
+
+$("publish-attach").onclick = () => {
+  if (!publishReady()) return;
+  const key = $("publish-key").value.trim().toUpperCase();
+  const file = $("publish-file").value;
+  if (!key || !file) { setState($("publish-state"), "bad", "choose the file and give the issue key"); return; }
+  const mocked = publishStatus.mock_jira;
+  const again = prompt(
+    (mocked ? "MOCK: this changes a file on this machine. No Jira is contacted.\n\n"
+            : "This WRITES TO JIRA now, and cannot be undone from here.\n\n") +
+    `From job ${publishJob}: it attaches ${file} to ${key}, as ${publishJob}-${file}.\n\n` +
+    "Type the issue key again to go ahead:");
+  if (again === null) return;
+  runPublish("publish-attach", { "--key": key, "--file": file, "--confirm-key": again.trim(),
+                                 "--expect": mocked ? "mock" : "real" });
+};
+
+$("publish-page").onclick = () => {
+  if (!publishReady()) return;
+  const what = $("publish-what").value;
+  const space = $("publish-space").value.trim();
+  const parent = $("publish-parent").value.trim();
+  const title = $("publish-title").value.trim();
+  if (!what || !space || !parent || !title) {
+    setState($("publish-state"), "bad", "give the space, the parent page id and the title");
+    return;
+  }
+  const mocked = publishStatus.mock_confluence;
+  const again = prompt(
+    (mocked ? "MOCK: this changes a file on this machine. No Confluence is contacted.\n\n"
+            : "This WRITES TO CONFLUENCE now: other people will see the page.\n\n") +
+    `From job ${publishJob}: it creates a new page (${PAGE_NAMES[what] || what}) in ${space} ` +
+    `under page ${parent}.\n\nType the title again to go ahead:`);
+  if (again === null) return;
+  runPublish("publish-page", { "--what": what, "--space": space, "--parent": parent,
+                               "--title": title, "--confirm-title": again.trim(),
+                               "--expect": mocked ? "mock" : "real" });
+};
+onTab.publish = refreshPublish;
+
 // ---- tab 3: the agent loop --------------------------------------------
 // The state shown here is review.json in the job directory, written by
 // tools/agent/loop.py. The page decides nothing: the push button is

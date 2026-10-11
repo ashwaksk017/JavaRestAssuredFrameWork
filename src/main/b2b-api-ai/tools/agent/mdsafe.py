@@ -10,7 +10,7 @@ from __future__ import annotations
 import html
 import re
 
-_ZW = "​"                # a zero-width space: it stops a word being recognised
+_ZW = "\u200b"                # a zero-width space: it stops a word being recognised
 
 
 def md(text) -> str:
@@ -31,9 +31,9 @@ def md(text) -> str:
 
 def code(text) -> str:
     """A name in a code span it cannot close, in a table cell it cannot split."""
-    s = re.sub(r"[\x00-\x1f\x7f  ‪-‮⁦-⁩]", "?",
+    s = re.sub(r"[\x00-\x1f\x7f\u2028\u2029\u202a-\u202e\u2066-\u2069]", "?",
                str(text if text is not None else ""))
-    for bad, safe in (("`", "'"), ("|", "¦"), ("<", "‹"), (">", "›")):
+    for bad, safe in (("`", "'"), ("|", "\u00a6"), ("<", "\u2039"), (">", "\u203a")):
         s = s.replace(bad, safe)
     return f"`{s}`"
 
@@ -48,6 +48,7 @@ def fence(text) -> str:
 def xhtml(text) -> str:
     """Text for a Confluence page body (storage format is XHTML): escaped,
     and with the characters XML does not allow taken out."""
-    s = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f￾￿]", "",
+    # ...and half of a character pair, which is what a cut-off emoji leaves.
+    s = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufffe\uffff\ud800-\udfff]", "",
                str(text if text is not None else ""))
     return html.escape(s, quote=True)

@@ -27,6 +27,8 @@ IT MUST NEVER PASS FOR THE REAL THING
   `"mock": true`.
 * Sample data says it is sample data: summaries, reasons-why and the
   name the token check reports all say MOCK.
+* (A third switch, `"confluence"`, MAY be added. Left out, Confluence
+  follows `jira`.)
 * The file must hold exactly the two switches, each exactly `true` or
   `false`. A misspelt name (`"cursur"`), a missing one, an extra one or
   any other value is an error, not a guess: a typo must not quietly
@@ -63,18 +65,23 @@ class MockConfigError(RuntimeError):
     """mock.json says something that is neither true nor false."""
 
 
-def switches(path: str = "") -> dict:
+# A switch that MAY be in the file. Left out, Confluence follows Jira:
+# the two are one vendor's products and are normally real or not together.
+OPTIONAL = ("confluence",)
+
+
+def switches(path: str = "", with_optional: bool = False) -> dict:
     """{"jira": bool, "cursor": bool}. See the module docstring."""
     env = os.environ.get("WORKBENCH_MOCK", "").strip()
     if env in ("0", "1"):
-        return {s: env == "1" for s in SERVICES}
+        return {s: env == "1" for s in SERVICES + (OPTIONAL if with_optional else ())}
     if env:
         raise MockConfigError(f"WORKBENCH_MOCK is {env!r}; it must be 0 or 1 (or not set)")
     try:
         with io.open(path or CONFIG, encoding="utf-8-sig") as fh:
             data = json.load(fh)
-    except FileNotFoundError:
-        return {s: False for s in SERVICES}          # no file: everything is real
+    except FileNotFoundError:                        # no file: everything is real
+        return {s: False for s in SERVICES + (OPTIONAL if with_optional else ())}
     except OSError as e:
         raise MockConfigError(f"tools/agent/mock.json could not be read "
                               f"({type(e).__name__})") from None
@@ -85,11 +92,12 @@ def switches(path: str = "") -> dict:
     if not isinstance(data, dict):
         raise MockConfigError(f"tools/agent/mock.json must be an object with the switches "
                               f"{', '.join(SERVICES)}. {why}")
-    unknown = sorted(k for k in data if k not in SERVICES)
+    unknown = sorted(k for k in data if k not in SERVICES + OPTIONAL)
     if unknown:
         raise MockConfigError(f"tools/agent/mock.json has a switch this does not know: "
                               f"{', '.join(map(repr, unknown))}. The switches are "
-                              f"{', '.join(SERVICES)}, in lower case. {why}")
+                              f"{', '.join(SERVICES)} (and, optionally, "
+                              f"{', '.join(OPTIONAL)}), in lower case. {why}")
     out = {}
     for s in SERVICES:
         if s not in data:
@@ -99,11 +107,18 @@ def switches(path: str = "") -> dict:
             raise MockConfigError(
                 f"tools/agent/mock.json: \"{s}\" must be true or false, not {v!r}. {why}")
         out[s] = v
+    for s in OPTIONAL:
+        v = data.get(s, out["jira"])
+        if v is not True and v is not False:
+            raise MockConfigError(
+                f"tools/agent/mock.json: \"{s}\" must be true or false, not {v!r}. {why}")
+        if with_optional:
+            out[s] = v
     return out
 
 
 def on(service: str) -> bool:
-    return switches().get(service, False)
+    return switches(with_optional=True).get(service, False)
 
 
 # =============================== Jira ======================================
@@ -121,6 +136,58 @@ def _written(root: str) -> dict:
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+def jira_attach(root: str, key: str, filename: str, size: int) -> None:
+    """The mock Jira's "attach": the name is written down, nothing is sent."""
+    have = _written(root).get("__attachments__")
+    have = have if isinstance(have, dict) else {}
+    have.setdefault(key, []).append({"filename": filename, "size": size})
+    _remember(root, "__attachments__", have)
+
+
+CONFLUENCE_SPACES = ("QA",)
+_CONF_STORE = os.path.join("target", "agent", "mock-confluence.json")
+
+
+def _pages(root: str) -> list:
+    try:
+        with io.open(os.path.join(root, _CONF_STORE), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def confluence(method: str, url: str, body=None, root: str = "") -> tuple:
+    """The mock Confluence, for publishing: (status, answer). Every parent
+    page exists and is in space QA; a created page is a line in a file."""
+    root = root or ROOT
+    path, _, query = url.split("/rest/api/content", 1)[-1].partition("?")
+    pages = _pages(root)
+    if method == "GET" and re.fullmatch(r"/[0-9]+", path):
+        return 200, {"id": path[1:], "title": "[MOCK] parent page",
+                     "space": {"key": CONFLUENCE_SPACES[0]}}
+    if method == "GET" and path == "":
+        from urllib.parse import parse_qs
+        q = {k: v[0] for k, v in parse_qs(query).items()}
+        return 200, {"results": [p for p in pages if p["space"] == q.get("spaceKey")
+                                 and p["title"] == q.get("title")]}
+    if method == "POST" and path == "":
+        page = {"id": str(90000 + len(pages) + 1), "title": str((body or {}).get("title")),
+                "space": str(((body or {}).get("space") or {}).get("key")),
+                "parent": str((((body or {}).get("ancestors") or [{}])[0]).get("id")),
+                "chars": len(str((((body or {}).get("body") or {}).get("storage") or {})
+                                 .get("value") or ""))}
+        pages.append(page)
+        dest = os.path.join(root, _CONF_STORE)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        tmp = f"{dest}.{os.getpid()}.tmp"
+        with io.open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(pages, fh)
+        os.replace(tmp, dest)
+        return 200, {"id": page["id"], "_links": {"webui": f"/pages/viewpage.action?pageId={page['id']}"}}
+    raise ValueError(f"the mock Confluence has no answer for {method} {path[:60]}")
 
 
 def _remember(root: str, key: str, value) -> None:
@@ -288,6 +355,11 @@ def jira_transport(method: str, url: str, token: str, timeout: int, body=None, r
         project = key.split("-")[0]
         known = {i["key"]: i for i in _issues(project)}
         issue = _with_writes(known.get(key) or _issue(project, 0, "Bug", "unknown", ""), root)
+        if "attachment" in (m.group(2) or ""):
+            had = _written(root).get("__attachments__")
+            return {"key": key, "fields": {
+                "summary": issue["fields"].get("summary"),
+                "attachment": list((had if isinstance(had, dict) else {}).get(key) or [])}}
         return {"key": key, "fields": {FIELD_ID: issue["fields"].get(FIELD_ID)}}
     raise ValueError(f"the mock Jira has no answer for {method} {path[:80]}")
 

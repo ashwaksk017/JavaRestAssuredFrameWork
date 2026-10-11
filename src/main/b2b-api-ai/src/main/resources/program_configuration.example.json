@@ -71,7 +71,20 @@
       "base_urls": [],
       "pat": "",
       "acceptance_criteria_fields": [],
-      "timeout_seconds": ""
+      "timeout_seconds": "",
+      "publish": {
+        "attach": false
+      }
+    },
+    "_confluence_comment": "Confluence for the story-to-test tooling (tools/confluence/). Same rules as jira_config: `base_urls` is an ALLOWLIST and includes the context path if there is one (https://host/confluence); `pat` goes in a header only. `publish.create_page` lets the workbench CREATE pages, and only in the spaces listed -- leave it false until you mean it. In jira_config, `publish.attach` likewise lets it attach files to issues; add `\"projects\": [\"ABC\"]` beside it to limit which.",
+    "confluence_config": {
+      "base_urls": [],
+      "pat": "",
+      "timeout_seconds": "",
+      "publish": {
+        "create_page": false,
+        "spaces": []
+      }
     },
     "poll_interval": "",
     "timeout": ""

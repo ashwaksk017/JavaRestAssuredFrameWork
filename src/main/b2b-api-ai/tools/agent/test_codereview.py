@@ -448,7 +448,7 @@ class FoundByTheSecondReview(Base):
         self.assertEqual((r["findings"][0]["line"], r["whole"]), (13, True))
 
     def test_only_a_newline_ends_a_line_of_the_diff(self):
-        diff = TRACKED.replace("++ new comment", 'String a = "x\x0cy z";')
+        diff = TRACKED.replace("++ new comment", 'String a = "x\x0cy\u2028z";')
         self.plant_bytes(diff.encode("utf-8"))
         r = self.run_review(lambda p, f: reply([{
             "file": ORDER, "evidence": "Response r = client.createOrder(token, body);",
@@ -590,7 +590,7 @@ class FoundByTheSecondReview(Base):
         md = self.read(cr.REPORT)
         for live in ("<img", "www.evil", "a@evil", "@all", "ftp://", "&lt;", "`|b.java"):
             self.assertNotIn(live, md, live)
-        self.assertIn("| `src/a'‹img src=x›'¦b.java` | 1 | 0 | reviewed |", md)
+        self.assertIn("| `src/a'\u2039img src=x\u203a'\u00a6b.java` | 1 | 0 | reviewed |", md)
         self.assertEqual(cr._md("a\nb  c"), "a b c")
 
     def test_a_mistyped_job_does_not_become_a_job(self):

@@ -96,11 +96,28 @@ class TheSwitch(unittest.TestCase):
             with self.assertRaises(mock.MockConfigError, msg=text):
                 mock.switches(self.write(text))
 
+    def test_confluence_follows_jira_unless_it_is_given_its_own_switch(self):
+        """One vendor, normally real or not together; separable when asked."""
+        os.environ.pop("WORKBENCH_MOCK", None)
+        for text, want in (('{"jira": true, "cursor": false}', True),
+                           ('{"jira": false, "cursor": true}', False),
+                           ('{"jira": true, "cursor": true, "confluence": false}', False),
+                           ('{"jira": false, "cursor": false, "confluence": true}', True)):
+            got = mock.switches(self.write(text), with_optional=True)
+            self.assertIs(got["confluence"], want, text)
+            self.assertEqual(sorted(mock.switches(self.write(text))), ["cursor", "jira"],
+                             "what the page is told about is unchanged")
+        with self.assertRaises(mock.MockConfigError):
+            mock.switches(self.write('{"jira": true, "cursor": true, "confluence": "yes"}'))
+        os.environ["WORKBENCH_MOCK"] = "0"
+        self.assertIs(mock.switches(with_optional=True)["confluence"], False)
+
     def test_a_typo_never_quietly_selects_the_real_service(self):
         for text, word in (('{"jira": true, "cursur": true}', "cursur"),
                            ('{"Jira": true, "Cursor": true}', "does not know"),
                            ('{"jira": true}', 'no "cursor" switch'),
-                           ('{"jira": true, "cursor": true, "confluence": true}', "confluence")):
+                           ('{"jira": true, "cursor": true, "xray": true}', "xray"),
+                           ('{"jira": true, "cursor": true, "Confluence": true}', "Confluence")):
             with self.assertRaises(mock.MockConfigError) as got:
                 mock.switches(self.write(text))
             self.assertIn(word, str(got.exception), text)
