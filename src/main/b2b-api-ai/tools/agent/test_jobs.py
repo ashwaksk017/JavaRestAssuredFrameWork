@@ -109,6 +109,17 @@ class ArgvIsNeverFreeText(unittest.TestCase):
         self.assertNotIn("agent-design", jobs.EXCLUSIVE,
                          "it writes no tracked or generated file")
 
+    def test_the_intake_is_given_no_file_path_either(self):
+        """What it reads is quoted into the brief Cursor is given."""
+        for option in ("--text-file", "--pages-file"):
+            with self.assertRaises(ValueError):
+                jobs.build_argv("intake", {"--job": "j", option: os.path.join(
+                    "src", "main", "resources", "program_configuration.json")})
+        self.assertFalse([k for k, v in jobs.RUNNABLES["intake"]["options"].items()
+                          if v == "path"])
+        self.assertEqual(jobs.build_argv("intake", {"--job": "j", "--pasted": True})[-3:],
+                         ["--job", "j", "--pasted"])
+
     def test_the_jira_and_failures_tabs_can_send_no_host_token_or_path(self):
         """What the page can send is a project key, a version, a type, a
         limit, a query, a label, a signature id and a note."""

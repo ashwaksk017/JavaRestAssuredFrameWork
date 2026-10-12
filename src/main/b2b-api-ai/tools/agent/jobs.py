@@ -136,8 +136,12 @@ RUNNABLES = {
     "intake": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "intake.py")],
         "label": "Read the pasted story and links",
-        "options": {"--job": "text", "--text-file": "path", "--link": "text",
-                    "--api-path": "text", "--pages-file": "path"},
+        # No path: what the page pasted is written by the server under fixed
+        # names in the job directory and read with --pasted. A path confined
+        # to the repository still reaches the private configuration, and
+        # what intake reads is quoted into the brief Cursor is given.
+        "options": {"--job": "text", "--pasted": "flag", "--link": "text",
+                    "--api-path": "text"},
     },
     "locate": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "locate.py")],

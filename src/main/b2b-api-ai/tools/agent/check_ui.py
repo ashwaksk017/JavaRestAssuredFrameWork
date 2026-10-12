@@ -642,6 +642,8 @@ def main() -> int:
                   and "### ABC-9000 -- parent" in brief and "### ABC-9001 -- is blocked by" in brief
                   and "POST /guests/123/businesses" in brief, f"rc={rc} {brief[:300]}")
             html = mocked.dom("new")
+            check("a page the fetcher could not read can be pasted",
+                  'id="pages"' in mocked.dom("new"))
             check("the Automate Test Case tab has a place for the Jira story",
                   'id="story"' in html and 'for="story"' in html and "Confluence pages" in html)
 

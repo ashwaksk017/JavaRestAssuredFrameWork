@@ -769,6 +769,56 @@ class ConfluencePagesInTheBrief(Links):
         self.assertEqual(intake.main(["--job", "j", "--root", self.tmp, "--pages-file",
                                       os.path.join(self.tmp, "absent.txt")]), 2)
 
+    def test_pasted_reads_the_jobs_own_files_and_nothing_named(self):
+        out = intake.job_dir("j", self.tmp)
+        os.makedirs(out, exist_ok=True)
+        for name, body in (("pasted.txt", "GET /from/text\n"), ("pasted-pages.txt", "GET /from/page\n")):
+            with io.open(os.path.join(out, name), "w", encoding="utf-8") as fh:
+                fh.write(body)
+        self.assertEqual(intake.main(["--job", "j", "--root", self.tmp, "--pasted"]), 0)
+        self.assertEqual({q["raw_path"] for q in self.meta("j")["requests"]},
+                         {"/from/text", "/from/page"})
+
+    def test_a_pasted_page_keeps_its_room_when_fetched_pages_used_the_budget(self):
+        self._confluence_returns("word " * 10000)
+        r = intake.build("j", root=self.tmp, text="GET /x", pages_text="Role | View\n\nTC | Yes\n",
+                         links=[f"https://wiki.example.com/x/AbCdE{n}" for n in range(4)])
+        self.assertIn("> TC | Yes", self.brief("j"))
+        self.assertIn("because the fetcher could not read", self.brief("j"))
+        self.assertTrue(r["pages"][-1]["pasted"])
+
+    def test_the_refusal_reason_keeps_its_address_readable(self):
+        def refusing(argv):
+            print("refused: https://wiki.example.com/pages/viewpage.action?pageId=123#x is not "
+                  "in confluence_config.base_urls ['https://other.example.com']\r\nmore")
+            return 2
+        intake.conf_fetch.main = refusing
+        r = intake.build("j", root=self.tmp, text="GET /x",
+                         links=["https://wiki.example.com/x/AbCdEf"])
+        self.assertIn("viewpage.action?pageId=123#x is not in confluence_config.base_urls "
+                      "['https://other.example.com']", r["links"][0]["reason"])
+        self.assertNotIn("\n", r["links"][0]["reason"])
+
+    def test_the_fetchers_words_still_reach_the_job_log(self):
+        import contextlib
+        def talking(argv):
+            print("refused: no confluence_config")
+            return 2
+        intake.conf_fetch.main = talking
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            intake.build("j", root=self.tmp, text="GET /x", links=["https://wiki.example.com/x/AbCdEf"])
+        self.assertIn("refused: no confluence_config", out.getvalue())
+
+    def test_a_pasted_pages_request_is_not_the_storys_own(self):
+        """design.py takes the story's own requests (pasted text, Jira) as what
+        the story is about; a pasted page is reference material, like a fetched one."""
+        import re
+        r = intake.build("j", root=self.tmp, pages_text="GET /from/page\n", text="GET /own\n")
+        kinds = {q["raw_path"]: bool(re.match(r"(?i)(pasted text|jira )", q["provenance"]))
+                 for q in r["requests"]}
+        self.assertEqual(kinds, {"/own": True, "/from/page": False})
+
     def test_a_page_that_could_not_be_read_adds_no_section(self):
         intake.conf_fetch.main = lambda argv: 2
         intake.build("j", root=self.tmp, text="GET /x",
