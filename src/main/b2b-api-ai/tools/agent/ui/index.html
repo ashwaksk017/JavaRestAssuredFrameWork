@@ -50,9 +50,10 @@
     it writes nothing outside <code>target/</code>.
   </p>
 
-  <label for="story">Jira story <span class="hint">a link to it, or its key — the story, its comments, its parent and its attachments are read for you</span></label>
-  <input id="story" type="text" spellcheck="false" autocomplete="off"
-    placeholder="https://jira.example.com/browse/ABC-123   or   ABC-123">
+  <label for="story">Jira story <span class="hint">a link to it, or its key — the story, its comments, its parent, its attachments and the Confluence pages it points at are read for you. Several keys (one a line, or separated by commas) make one job per story, named by its key</span></label>
+  <textarea id="story" rows="2" spellcheck="false" autocomplete="off"
+    placeholder="https://jira.example.com/browse/ABC-123   or   ABC-123   — or several: ABC-123, ABC-124"></textarea>
+  <div id="stories" class="result"></div>
 
   <label for="text">Story text / payloads <span class="hint">optional when a Jira story is given — paste here what Jira does not hold</span></label>
   <textarea id="text" rows="12" spellcheck="false"
@@ -304,6 +305,12 @@ Expect 201.'></textarea>
       <button id="agent-push" class="go" disabled>Approve</button>
       <button id="agent-discard" disabled>Discard</button>
       <button id="agent-review" disabled>Review the change</button>
+    </div>
+    <label for="agent-ask">Ask Cursor to change it <span class="hint">what should be different in the change above, in your words — Cursor works on the same files, the diff below becomes the whole change, and it waits for your review again</span></label>
+    <textarea id="agent-ask" rows="3" spellcheck="false"
+      placeholder="e.g. Use the member's email from the CSV instead of a fixed one, and assert the 403 body carries an error code."></textarea>
+    <div class="row">
+      <button id="agent-ask-send" disabled>Ask Cursor to change it</button>
     </div>
   </div>
 

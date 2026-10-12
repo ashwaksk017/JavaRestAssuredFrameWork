@@ -1154,7 +1154,7 @@ def project_map(root: str, policy: dict, scope: dict) -> str:
 
 
 def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
-                 root: str = "") -> str:
+                 root: str = "", followup: str = "") -> str:
     brief = _read(os.path.join(job_dir, "brief.md"))
     plan = _read(os.path.join(job_dir, "plan.md"))
     roots = "\n".join(f"  - {r}{'**' if r.endswith('/') else ''}"
@@ -1217,6 +1217,15 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
                   "test method that takes no row. Never invent a key, and never "
                   "put one key on two cases.", "", designed,
                   "===== end of proposed test cases ====="]
+    if followup:
+        # The person who read the change asks for more. Their words are
+        # the instruction; the diff is what the words are about.
+        parts += ["", "===== THE REVIEWER ASKS (after reading the change so far) =====",
+                  "Change what was written for this job as asked below, within the same "
+                  "paths. Do not start over, and do not undo what is not mentioned.",
+                  "", followup.strip(),
+                  "", "===== THE CHANGE SO FAR (proposed.diff) =====",
+                  _read(os.path.join(job_dir, "proposed.diff"))[:30000] or "(no diff was kept)"]
     if repair:
         parts += ["", "===== YOUR PREVIOUS ATTEMPT DID NOT VERIFY =====",
                   "Fix only what this output reports, within the same "
@@ -1513,10 +1522,47 @@ def cmd_setup(job_dir: str, root: str) -> int:
     return 0
 
 
+FOLLOWUP_FILE = "agent-followup.txt"
+MAX_FOLLOWUP = 20000
+
+
+def cmd_followup(job_dir: str, root: str, policy: dict, agent=None, verifier=None) -> int:
+    """The reviewer asks Cursor to change what it wrote: the same run as
+    generate, on top of the change waiting for review, with the person's
+    words and the diff so far in the prompt. The scope is the one the
+    change was made in; the baseline stays the tree as it was before the
+    FIRST run, so Discard still puts everything back and the diff shows
+    the whole change."""
+    text = _read(os.path.join(job_dir, FOLLOWUP_FILE)).strip()
+    if not text:
+        say("FAIL nothing was asked: write what Cursor should change in the box first.")
+        return 1
+    prior = read_review(job_dir)
+    if prior.get("state") not in ("pending-review", "verify-failed"):
+        say(f"FAIL there is no change waiting for review to work on (state: "
+            f"{prior.get('state')}). Run Cursor first.")
+        return 1
+    if prior.get("mock"):
+        say("FAIL the change waiting here was made by the stand-in (mock Cursor); there is "
+            "nothing real to ask Cursor to change. Discard it, set \"cursor\": false in "
+            "tools/agent/mock.json, and run again.")
+        return 1
+    return cmd_generate(job_dir, root, policy, prior.get("scope") or "new-test",
+                        prior.get("suite") or "", agent, verifier, followup=text[:MAX_FOLLOWUP])
+
+
 def cmd_generate(job_dir: str, root: str, policy: dict, scope_name: str = "new-test",
-                 suite: str = "", agent=None, verifier=None) -> int:
+                 suite: str = "", agent=None, verifier=None, followup: str = "") -> int:
     """Cursor writes; the files are checked; the result is held for review."""
     prior = read_review(job_dir)
+    if followup and prior.get("state") in ("pending-review", "verify-failed"):
+        try:
+            with RepoLock(root, f"followup, job {os.path.basename(job_dir)}"):
+                return _generate(job_dir, root, policy, scope_name, suite, agent, verifier,
+                                 followup=followup, prior=prior)
+        except RuntimeError as e:
+            say(f"FAIL {e}")
+            return 1
     if prior.get("state") == "pending-review":
         say("FAIL this job already has changes waiting for review. Approve "
             "them or discard them before generating again.")
@@ -1538,7 +1584,7 @@ def cmd_generate(job_dir: str, root: str, policy: dict, scope_name: str = "new-t
 
 
 def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
-              suite: str, agent, verifier) -> int:
+              suite: str, agent, verifier, followup: str = "", prior: dict = None) -> int:
     if not _read(os.path.join(job_dir, "plan.md")).strip():
         say("FAIL no plan.md for this job. Use the Automate Test Case tab (read it, then locate) "
             "first: the plan is what the agent is asked to act on.")
@@ -1612,6 +1658,26 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
     ignored_before = ignored_entries(root)
     git_before = git_internals(root)
     stale = [p for p in before if in_roots(p, roots)]
+    if followup:
+        # On top of the change waiting for review. The baseline is the one
+        # the first run saved, NOT the tree as it is now: the files in the
+        # write roots are Cursor's own, and the whole change -- first run
+        # and this -- must stay one diff, one Discard.
+        try:
+            with io.open(os.path.join(job_dir, "pre-state.json"), encoding="utf-8") as fh:
+                pre = json.load(fh)
+            before = dict(pre["before"])
+            gen_before = {k: tuple(v) for k, v in pre["generated"].items()}
+        except (OSError, ValueError, KeyError, TypeError):
+            say("FAIL the saved pre-run state of this job cannot be read; a follow-up has "
+                "nothing to measure against. Discard and run again.")
+            return 1
+        commit = (prior or {}).get("base_commit") or commit
+        branch = (prior or {}).get("base_branch") or branch
+        stale = [p for p in stale if p not in dirty_paths(root)
+                 or not any(in_roots(p, [r]) for r in roots)]
+        stale = [p for p in before if in_roots(p, roots) and p not in (prior or {}).get(
+            "files", {}).get("created", []) + (prior or {}).get("files", {}).get("modified", [])]
     if stale:
         say("FAIL there are uncommitted changes inside the paths the agent "
             "writes to. Commit or remove them first -- otherwise its work "
@@ -1619,29 +1685,36 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             + "\n  ".join(sorted(stale)[:20]))
         return 1
     backup_dir = os.path.join(job_dir, "pre")
-    backup(root, before, backup_dir)
-    gen_before = snapshot_generated(root, policy)
-    # The WHOLE generated tree is copied, not just the suite in scope: a
-    # file the agent should not have touched -- another suite's hook, a
-    # shared class -- is exactly the one that must be put back, and git
-    # cannot do it. Pruned to the files actually changed once the run is
-    # accepted.
     gen_backup = os.path.join(job_dir, "pre-generated")
-    say(f" .. copying the generated tree ({len(gen_before)} files) so "
-        f"anything touched can be put back")
-    backup(root, gen_before, gen_backup)
-    # Written BEFORE the agent is called: if this process is stopped or
-    # dies mid-run, `discard` can still put everything back from it.
-    with io.open(os.path.join(job_dir, "pre-state.json"), "w", encoding="utf-8") as fh:
-        json.dump({"before": before, "generated": gen_before, "roots": roots}, fh)
+    if not followup:
+        backup(root, before, backup_dir)
+        gen_before = snapshot_generated(root, policy)
+        # The WHOLE generated tree is copied, not just the suite in scope: a
+        # file the agent should not have touched -- another suite's hook, a
+        # shared class -- is exactly the one that must be put back, and git
+        # cannot do it. Pruned to the files actually changed once the run is
+        # accepted.
+        say(f" .. copying the generated tree ({len(gen_before)} files) so "
+            f"anything touched can be put back")
+        backup(root, gen_before, gen_backup)
+        # Written BEFORE the agent is called: if this process is stopped or
+        # dies mid-run, `discard` can still put everything back from it.
+        with io.open(os.path.join(job_dir, "pre-state.json"), "w", encoding="utf-8") as fh:
+            json.dump({"before": before, "generated": gen_before, "roots": roots}, fh)
     protected = {p: _bytes(os.path.join(root, p))
                  for p in policy.get("protected_files") or []}
 
+    asked = list((prior or {}).get("followups") or []) + ([followup] if followup else [])
     review = write_review(job_dir, {
         "state": "generating", "scope": scope["name"], "suite": scope["suite"],
         "mock": mocked,
         "pushable": bool(scope.get("pushable")), "base_commit": commit,
-        "base_branch": branch, "started": _now()})
+        "base_branch": branch, "started": _now(),
+        "followups": asked})
+    if followup:
+        say(f" .. a follow-up on the change waiting for review (#{len(asked)}): "
+            f"{_one_line(followup, 160)}")
+        clog.write(f"FOLLOW-UP #{len(asked)} from the reviewer: {_one_line(followup, 600)}")
     clog.write("=" * 72)
     clog.write(f"generate  job={os.path.basename(job_dir)}  scope={scope['name']}"
                + (f"  suite={scope['suite']}" if scope["suite"] else "")
@@ -1727,7 +1800,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
     for attempt in range(1, attempts + 1):
         say(f" .. calling Cursor (attempt {attempt} of {attempts}) -- "
             f"the conversation is in cursor.log")
-        prompt = build_prompt(job_dir, policy, scope, repair, root)
+        prompt = build_prompt(job_dir, policy, scope, repair, root, followup=followup)
         with io.open(os.path.join(job_dir, f"agent-prompt-{attempt}.txt"),
                      "w", encoding="utf-8") as fh:
             fh.write(prompt)
@@ -2365,7 +2438,7 @@ def _commit_body(job_dir: str, files: dict) -> str:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("command",
-                    choices=("setup", "generate", "approve", "push", "discard",
+                    choices=("setup", "generate", "followup", "approve", "push", "discard",
                              "reapply"))
     ap.add_argument("--job", required=True)
     ap.add_argument("--scope", default="new-test")
@@ -2377,6 +2450,8 @@ def main(argv=None) -> int:
     policy = load_policy()
     if args.command == "setup":
         return cmd_setup(job_dir, ROOT)
+    if args.command == "followup":
+        return cmd_followup(job_dir, ROOT, policy)
     if args.command == "generate":
         return cmd_generate(job_dir, ROOT, policy, args.scope, args.suite)
     if args.command == "discard":

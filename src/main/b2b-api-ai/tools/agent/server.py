@@ -279,6 +279,20 @@ class Handler(BaseHTTPRequestHandler):
                     body.get("job", ""), str(body["name"]))})
             if u.path == "/api/manual":
                 return self._json(self._manual(body))
+            if u.path == "/api/agent-followup":
+                # What the reviewer asks Cursor to change, kept with the job
+                # under a fixed name; the command reads it from there.
+                out = jobs.job_dir(body.get("job", ""))
+                text = str(body.get("text") or "")
+                if not text.strip():
+                    raise ValueError("write what Cursor should change")
+                if len(text) > 20000:
+                    raise ValueError("that is more than 20,000 characters; keep the ask short")
+                os.makedirs(out, exist_ok=True)
+                with io.open(os.path.join(out, "agent-followup.txt"), "w", encoding="utf-8") as fh:
+                    fh.write(text)
+                return self._json(jobs.start(body.get("job", ""), "agent-followup",
+                                             {"--job": body.get("job", "")}))
             if u.path == "/api/case-review":
                 # A person's decision on proposed cases: validated field by
                 # field in casereview.py, written only under the job.

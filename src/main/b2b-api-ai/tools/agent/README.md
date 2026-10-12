@@ -288,7 +288,13 @@ Things it says rather than hides:
 - **Jira did not answer, or answered something that is not a story**
   (a sign-in page, a cut connection): said under *Not used*. Whatever
   was pasted, and the Confluence links, are still read.
-- **One story a job.** A second story link is not read.
+- **One story a job.** Give several keys (one a line, or separated by
+  commas) and *Read it* makes one job per story, named by its key, reads
+  them all at once and lists them: state, summary, requests found,
+  whether acceptance criteria were found. **Open** puts a job in the box
+  to go on with it. The Confluence links go with every story; pasted text
+  and page text go with none (they belong to one story). Up to ten at a
+  time.
 
 Text from Jira is quoted line by line in the brief and is described
 there as material, not instructions. Credentials written in it --
@@ -734,6 +740,19 @@ problem rather than a missing path, which is why the form says so.
 
 The only tab that writes code. It takes the plan the Automate Test Case tab produced and has
 **Cursor** act on it.
+
+**Asking Cursor to change what it wrote.** Under the review controls,
+*Ask Cursor to change it* takes your words -- "use the member's email
+from the CSV instead of a fixed one" -- and runs Cursor again on the
+same job: same scope, same paths, with your ask and the diff so far in
+front of it. The result is verified and waits for your review again as
+one change: the diff below shows the first run and every follow-up
+together, Approve pushes it all, and Discard puts the tree back to how
+it was before the first run. Each ask is kept in the job's record
+(`followups`). It is not offered for a change the stand-in made. A
+follow-up that writes outside the allowed paths is rejected the way a
+run is: everything is put back, the first run's work included, so word
+the ask within the test's own files.
 
 **Reading the Cursor log while it runs.** Each line is one thing the
 agent did: `tool shell started: command=mvn -q compile` says what it

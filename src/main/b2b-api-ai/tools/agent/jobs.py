@@ -266,6 +266,13 @@ RUNNABLES = {
         "label": "Cursor makes the change, then it is verified",
         "options": {"--job": "text", "--scope": "text", "--suite": "text"},
     },
+    # The reviewer's words are written by the server to a fixed file in the
+    # job directory; the command reads them from there, never from a path.
+    "agent-followup": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "loop.py"), "followup"],
+        "label": "Cursor changes what it wrote, as the reviewer asks; then it is verified",
+        "options": {"--job": "text"},
+    },
     # Reads the job's proposed.diff and asks Cursor about it, in plan mode
     # in an empty directory. It changes nothing: not the tree, not the
     # job's state. No path and no text is taken from the page.
@@ -300,7 +307,7 @@ RUNNABLES = {
 # convert during an agent run would look like the agent rewriting every
 # suite; an agent run during a convert would "put back" half-written
 # files.
-EXCLUSIVE = {"convert", "agent-generate", "agent-approve", "agent-discard",
+EXCLUSIVE = {"convert", "agent-generate", "agent-followup", "agent-approve", "agent-discard",
              "agent-reapply", "verify-all"}
 
 # The only options that may be given more than once.

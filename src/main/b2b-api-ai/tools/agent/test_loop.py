@@ -15,6 +15,7 @@ _os.environ["WORKBENCH_MOCK"] = "0"      # these tests are about the real paths
 
 import importlib.util
 import io
+from contextlib import redirect_stdout
 import json
 import os
 import shutil
@@ -126,6 +127,90 @@ class InsideThePaths(Repo):
         self.assertIn("create POST /x", seen["p"])
         self.assertIn(JIRA + "**", seen["p"])
         self.assertIn("Do not delete any file", seen["p"])
+
+
+class AskingForMore(Repo):
+    """The reviewer asks Cursor to change what it wrote; the whole change
+    stays one diff, one review, one Discard."""
+
+    def first_run(self):
+        def agent(_prompt):
+            write(self.root, JIRA + "NewTest.java", "class NewTest { void a() {} }\n")
+            write(self.root, JIRA + "NewTestData.java", "class NewTestData { String id = \"x\"; }\n")
+            return {"result": "wrote it"}
+        self.assertEqual(self.generate(agent), 0)
+        self.assertEqual(self.state()["state"], "pending-review")
+
+    def ask(self, text, agent, verifier=OK):
+        write(self.root, "target/agent/job1/agent-followup.txt", text)
+        return loop.cmd_followup(self.job, self.root, self.policy, agent=agent, verifier=verifier)
+
+    def test_the_follow_up_works_on_the_same_files_and_the_diff_is_the_whole_change(self):
+        self.first_run()
+        seen = {}
+
+        def agent(prompt):
+            seen["p"] = prompt
+            write(self.root, JIRA + "NewTest.java", "class NewTest { void a() {} void b() {} }\n")
+            return {"result": "added b"}
+        self.assertEqual(self.ask("also cover the 403 case", agent), 0)
+        st = self.state()
+        self.assertEqual(st["state"], "pending-review")
+        self.assertEqual(st["followups"], ["also cover the 403 case"])
+        self.assertEqual(sorted(st["files"]["created"]),
+                         [JIRA + "NewTest.java", JIRA + "NewTestData.java"])
+        self.assertIn("THE REVIEWER ASKS", seen["p"])
+        self.assertIn("also cover the 403 case", seen["p"])
+        self.assertIn("THE CHANGE SO FAR", seen["p"])
+        self.assertIn("void a()", seen["p"], "the diff so far is in the prompt")
+        with io.open(os.path.join(self.job, "proposed.diff"), encoding="utf-8") as fh:
+            diff = fh.read()
+        self.assertIn("void b()", diff)
+        self.assertIn("NewTestData", diff, "the first run's file is still in the one diff")
+        self.assertIn("FOLLOW-UP #1 from the reviewer: also cover the 403 case", self.cursor_log())
+
+    def test_discard_after_a_follow_up_puts_back_the_tree_before_the_first_run(self):
+        self.first_run()
+        self.assertEqual(self.ask("tidy it", lambda p: (
+            write(self.root, JIRA + "NewTest.java", "class NewTest { }\n"), {"result": "ok"})[1]), 0)
+        self.assertEqual(loop.cmd_discard(self.job, self.root, self.policy), 0)
+        self.assertFalse(os.path.exists(os.path.join(self.root, JIRA, "NewTest.java")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, JIRA, "NewTestData.java")))
+        self.assertEqual(self.state()["state"], "discarded")
+
+    def test_a_second_follow_up_is_kept_in_order(self):
+        self.first_run()
+        quiet = lambda p: {"result": "nothing more"}
+        self.assertEqual(self.ask("first ask", quiet), 0)
+        self.assertEqual(self.ask("second ask", quiet), 0)
+        self.assertEqual(self.state()["followups"], ["first ask", "second ask"])
+
+    def test_without_a_change_waiting_there_is_nothing_to_follow_up(self):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = self.ask("anything", lambda p: {"result": ""})
+        self.assertEqual(rc, 1)
+        self.assertIn("no change waiting for review", out.getvalue())
+
+    def test_an_empty_ask_is_refused(self):
+        self.first_run()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = self.ask("   ", lambda p: {"result": ""})
+        self.assertEqual(rc, 1)
+        self.assertIn("nothing was asked", out.getvalue())
+        self.assertEqual(self.state()["state"], "pending-review")
+
+    def test_a_follow_up_that_writes_outside_the_paths_is_rejected_like_a_run(self):
+        self.first_run()
+
+        def agent(_prompt):
+            write(self.root, "src/main/java/Framework.java", "class Framework { /* changed by a follow-up */ }\n")
+            return {"result": "oops"}
+        self.assertNotEqual(self.ask("break out", agent), 0)
+        with io.open(os.path.join(self.root, "src/main/java/Framework.java"), encoding="utf-8") as fh:
+            self.assertNotIn("changed by a follow-up", fh.read(), "the committed file is put back")
+        self.assertEqual(self.state()["state"], "rejected")
 
 
 class OutsideThePaths(Repo):

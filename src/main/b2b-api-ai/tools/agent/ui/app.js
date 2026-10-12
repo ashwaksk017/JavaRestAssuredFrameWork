@@ -284,16 +284,43 @@ async function showArtifact(name, el) {
 }
 
 // ---- tab 1 -----------------------------------------------------------
+// The stories named in the box: each as written (a link or a key) with
+// the key it is about. Several make one job per story.
+const KEY_RX = /\b([A-Za-z][A-Za-z0-9_]+-[0-9]+)\b/;
+function storiesNamed(text) {
+  const out = [];
+  const seen = new Set();
+  for (const piece of text.split(/[\n,;]+|\s{2,}/).map((s) => s.trim()).filter(Boolean)) {
+    // A key alone, or an address with the key in it. A URL with spaces is
+    // not a thing, so splitting on runs of spaces is safe; a single space
+    // between two keys is tried below.
+    const parts = /^https?:\/\//i.test(piece) ? [piece] : piece.split(/\s+/);
+    for (const p of parts) {
+      const m = p.match(KEY_RX);
+      if (!m) continue;
+      const key = m[1].toUpperCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ given: p, key });
+    }
+  }
+  return out;
+}
+const MAX_STORIES = 10;
+
 $("run-intake").onclick = async () => {
   try {
     // The story goes first: it is the story of the job, and one a job.
     const story = $("story").value.trim();
     const links = $("links").value.split("\n").map((s) => s.trim()).filter(Boolean);
+    const stories = storiesNamed(story);
     if (!story && !links.length && !$("text").value.trim() && !$("pages").value.trim()) {
       setState($("new-state"), "bad",
                "give a Jira story, paste some text, or add a Confluence link");
       return;
     }
+    if (stories.length > 1) { await readStories(stories, links); return; }
+    $("stories").replaceChildren();
     await post("/api/intake", {
       job: job(),
       text: $("text").value,
@@ -304,6 +331,75 @@ $("run-intake").onclick = async () => {
            () => showArtifact("brief.md", $("brief")));
   } catch (e) { setState($("new-state"), "bad", e.message); }
 };
+
+// Several stories: one job each, named by its key, all read at once. The
+// Confluence links given go with every one; what was pasted goes with
+// none -- a paste is about one story, and which one cannot be told.
+async function readStories(stories, links) {
+  const box = $("stories");
+  if (stories.length > MAX_STORIES) {
+    setState($("new-state"), "bad", `${stories.length} stories; up to ${MAX_STORIES} at a time`);
+    return;
+  }
+  if ($("text").value.trim() || $("pages").value.trim()) {
+    setState($("new-state"), "warn", "several stories: the pasted text and page text were not " +
+      "used (they belong to one story); read a story on its own to use them");
+  } else {
+    setState($("new-state"), "run", `reading ${stories.length} stories, one job each…`);
+  }
+  const rows = new Map();
+  const draw = () => {
+    box.replaceChildren(heading("Stories read, one job each", stories.length),
+      table(["Job", "State", "Story", "Requests", "Criteria", ""], stories.map((s) => {
+        const r = rows.get(s.key) || {};
+        const open = el("button", { type: "button", on: { click: () => {
+          $("job").value = s.key;
+          $("job").dispatchEvent(new Event("change"));
+          showArtifact("brief.md", $("brief"));
+          setState($("new-state"), "", `job ${s.key} is in the box`);
+        } } }, "Open");
+        return [el("code", { text: s.key }),
+                el("span", { class: `state ${r.cls || "run"}`, text: r.state || "starting…" }),
+                el("span", { text: r.summary || "" }),
+                r.requests === undefined ? "" : String(r.requests),
+                r.ac === undefined ? "" : (r.ac ? "found" : "NONE FOUND"),
+                open];
+      })));
+  };
+  draw();
+  await Promise.all(stories.map(async (s) => {
+    try {
+      await post("/api/intake", { job: s.key, text: "", pages: "", links: [s.given].concat(links) });
+    } catch (e) {
+      rows.set(s.key, { state: `not started: ${e.message}`, cls: "bad" });
+      draw();
+      return;
+    }
+    rows.set(s.key, { state: "reading…", cls: "run" });
+    draw();
+    for (let n = 0; n < 600; n += 1) {
+      let st = null;
+      try { st = await api(`/api/status?job=${encodeURIComponent(s.key)}&runnable=intake`); } catch { st = null; }
+      if (st && st.state !== "running") break;
+      await new Promise((ok) => setTimeout(ok, 1000));
+    }
+    const got = await artifactJson(s.key, "intake.json");
+    if (!got) { rows.set(s.key, { state: "no result; see its Logs", cls: "bad" }); draw(); return; }
+    const read = got.story && got.story.key;
+    rows.set(s.key, {
+      state: read ? (got.ok ? "read" : "read, no request in it") : "story not read",
+      cls: read ? (got.ok ? "ok" : "warn") : "bad",
+      summary: read ? got.story.summary : ((got.notes || [])[0] || ""),
+      requests: (got.requests || []).length,
+      ac: read ? Boolean((got.story.acceptance_criteria || {}).present) : undefined,
+    });
+    draw();
+  }));
+  const done = [...rows.values()];
+  setState($("new-state"), done.every((r) => r.cls === "ok" || r.cls === "warn") ? "ok" : "warn",
+    `${done.filter((r) => r.cls === "ok").length} of ${stories.length} stories read with requests; ` +
+    "press Open on one to go on with it");
+}
 
 // `&follow=intake` in the address shows a command of this job that is
 // running (or has run) the way its button would: after a refresh, or from
@@ -1543,6 +1639,8 @@ async function refreshReview() {
   if (f.created || f.modified) await showArtifact("proposed.diff", $("agent-diff"));
   else $("agent-diff").textContent = "—";
   $("agent-review").disabled = !(state === "pending-review" || state === "verify-failed");
+  $("agent-ask-send").disabled = !(state === "pending-review" || state === "verify-failed") || Boolean(review.mock);
+  $("agent-ask-send").title = review.mock ? "The change waiting here was made by the stand-in; there is nothing real to ask Cursor to change." : "";
   $("agent-review").dataset.job = shown;
   await showCodeReview(shown, review);
 }
@@ -1671,8 +1769,24 @@ function watchCursorLog() {
 }
 
 let agentRunning = "agent-generate";     // what Stop stops
+
+$("agent-ask-send").onclick = async () => {
+  const text = $("agent-ask").value.trim();
+  if (!text) { setState($("agent-state"), "bad", "write what Cursor should change"); return; }
+  if (!confirm(`Cursor will change what it wrote for job "${job()}" as you ask, within the same paths. ` +
+               "Nothing is committed. Continue?")) return;
+  agentRunning = "agent-followup";
+  try {
+    await post("/api/agent-followup", { job: job(), text });
+    $("agent-ask").value = "";
+    follow("agent-followup", $("agent-log"), $("agent-state"), () => {
+      refreshReview();
+      pollCursorLog(false);
+    });
+  } catch (e) { setState($("agent-state"), "bad", e.message); }
+};
 function runAgent(runnable, options) {
-  if (runnable === "agent-generate" || runnable === "agent-review") agentRunning = runnable;
+  if (runnable === "agent-generate" || runnable === "agent-review" || runnable === "agent-followup") agentRunning = runnable;
   return post("/api/start", { job: job(), runnable, options })
     .then(() => follow(runnable, $("agent-log"), $("agent-state"), () => {
       refreshReview();
@@ -1719,10 +1833,10 @@ $("agent-stop").onclick = async () => {
   // and stopping a review must not end a run that is also going.
   // Asked of the server, not remembered: after a reload, or with the job
   // box changed since, what this page started last is not what is running.
-  const other = agentRunning === "agent-review" ? "agent-generate" : "agent-review";
+  const others = ["agent-generate", "agent-review", "agent-followup"].filter((r) => r !== agentRunning);
   try {
     let stopped = false;
-    for (const runnable of [agentRunning, other]) {
+    for (const runnable of [agentRunning, ...others]) {
       const r = await post("/api/stop", { job: job(), runnable });
       if (r && r.stopped) { stopped = true; break; }
     }

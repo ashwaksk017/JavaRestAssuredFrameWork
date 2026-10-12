@@ -649,6 +649,21 @@ def main() -> int:
             html = mocked.dom("new")
             check("a page the fetcher could not read can be pasted",
                   'id="pages"' in mocked.dom("new"))
+            # Several stories at once: one job each, named by its key. The
+            # page starts one intake per story; here the same requests are made.
+            for key in ("ABC-201", "ABC-202"):
+                mocked.call("/api/intake", {"job": key, "text": "", "links": [key]})
+            for key in ("ABC-201", "ABC-202"):
+                for _ in range(240):
+                    if mocked.call(f"/api/status?job={key}&runnable=intake")[1].get("state") != "running":
+                        break
+                    time.sleep(0.25)
+            check("several stories make one job each, named by the key",
+                  all(json.loads(mocked.call(f"/api/artifact?job={k}&name=intake.json")[1]
+                                 .get("text") or "{}").get("story", {}).get("key") == k
+                      for k in ("ABC-201", "ABC-202")))
+            check("the box takes several stories and has a place for them",
+                  '<textarea id="story"' in mocked.dom("new") and 'id="stories"' in mocked.dom("new"))
             check("the Automate Test Case tab has a place for the Jira story",
                   'id="story"' in html and 'for="story"' in html and "Confluence pages" in html)
 
