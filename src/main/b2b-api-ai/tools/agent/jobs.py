@@ -137,7 +137,7 @@ RUNNABLES = {
         "argv": [PY, "-B", os.path.join("tools", "agent", "intake.py")],
         "label": "Read the pasted story and links",
         "options": {"--job": "text", "--text-file": "path", "--link": "text",
-                    "--api-path": "text"},
+                    "--api-path": "text", "--pages-file": "path"},
     },
     "locate": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "locate.py")],

@@ -271,6 +271,10 @@ Things it says rather than hides:
   (its result says the endpoints were checked against nothing).
 - **A linked story or a parent could not be read**, or there were more
   than 8 linked: named.
+- **A Confluence page could not be read**: the brief gives the
+  fetcher's reason. Open the page yourself and paste what it says into
+  **Page text**; it is then read exactly like a fetched page -- for
+  requests, and into the brief under *Confluence pages* for Cursor.
 - **A link to another Jira** than the configured one is refused, and so
   is an address that cannot be read as a story's. The token is only
   ever sent to the first host in `jira_config.base_urls`, and a story of

@@ -558,8 +558,13 @@ def gather_jira(link: str, sources: str, slot: str, connect=None, transport=None
 
 
 def build(job: str, text: str = "", links=None, root: str = "",
-          api_path: str = "") -> dict:
-    """Run the intake. Returns the structured result it also writes."""
+          api_path: str = "", pages_text: str = "") -> dict:
+    """Run the intake. Returns the structured result it also writes.
+
+    `pages_text` is a page somebody pasted -- a Confluence page the
+    fetcher refused, a table from a document. It is read the way a
+    fetched page is: for requests, and into the brief under the pages.
+    """
     links = [l for l in (links or []) if (l or "").strip()]
     out = job_dir(job, root)
     sources = os.path.join(out, "sources")
@@ -670,6 +675,15 @@ def build(job: str, text: str = "", links=None, root: str = "",
                              "reason": "not a Jira key or a Confluence page link"})
             notes.append(f"{link}: not recognised as Jira or Confluence")
 
+    if (pages_text or "").strip():
+        pasted_page = conf_fetch.redact(_unwiki(pages_text))
+        found += _requests_from(pasted_page, "pasted page text")
+        shown, cut = _page_for_brief(pasted_page, page_budget)
+        page_budget -= len(shown)
+        pages.append({"link": "pasted on the Automate Test Case tab (a page the fetcher "
+                              "could not read, or notes)", "text": shown, "cut": cut,
+                      "pasted": True})
+
     # Extraction failures were being dropped here: a step with no verb
     # is filtered out, so a paste the extractor choked on vanished
     # without a word. Surface them before filtering.
@@ -708,6 +722,7 @@ def build(job: str, text: str = "", links=None, root: str = "",
         "job": job,
         "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "pasted_chars": len(text or ""),
+        "pasted_page_chars": len((pages_text or "").strip()),
         "links": gathered,
         "requests": usable,
         "notes": notes,
@@ -848,6 +863,9 @@ def main(argv=None) -> int:
     ap.add_argument("--job", required=True, help="job id; names the directory")
     ap.add_argument("--text", default="", help="pasted story / payload text")
     ap.add_argument("--text-file", default="", help="read the text from a file")
+    ap.add_argument("--pages-file", default="",
+                    help="a file holding the text of a page somebody pasted (a Confluence "
+                         "page the fetcher could not read); read like a fetched page")
     ap.add_argument("--link", action="append", default=[],
                     help="a Jira story (link or key) or a Confluence page link; "
                          "repeatable. One story a job")
@@ -869,12 +887,19 @@ def main(argv=None) -> int:
         with io.open(args.text_file, encoding="utf-8",
                      errors="replace") as fh:
             text = fh.read()
-    if not text.strip() and not args.link:
+    pages_text = ""
+    if args.pages_file:
+        if not os.path.isfile(args.pages_file):
+            print(f"refused: no such file: {args.pages_file}")
+            return 2
+        with io.open(args.pages_file, encoding="utf-8", errors="replace") as fh:
+            pages_text = fh.read()
+    if not text.strip() and not args.link and not pages_text.strip():
         print("refused: give --text, --text-file or at least one --link")
         return 2
 
     r = build(args.job, text=text, links=args.link, root=args.root,
-              api_path=args.api_path)
+              api_path=args.api_path, pages_text=pages_text)
     out = job_dir(args.job, args.root)
     print(f"{len(r['requests'])} request(s) read, "
           f"{sum(1 for g in r['links'] if g.get('ok'))}/{len(r['links'])} "

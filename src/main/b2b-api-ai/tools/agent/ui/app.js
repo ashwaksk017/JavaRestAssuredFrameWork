@@ -289,7 +289,7 @@ $("run-intake").onclick = async () => {
     // The story goes first: it is the story of the job, and one a job.
     const story = $("story").value.trim();
     const links = $("links").value.split("\n").map((s) => s.trim()).filter(Boolean);
-    if (!story && !links.length && !$("text").value.trim()) {
+    if (!story && !links.length && !$("text").value.trim() && !$("pages").value.trim()) {
       setState($("new-state"), "bad",
                "give a Jira story, paste some text, or add a Confluence link");
       return;
@@ -297,6 +297,7 @@ $("run-intake").onclick = async () => {
     await post("/api/intake", {
       job: job(),
       text: $("text").value,
+      pages: $("pages").value,
       links: (story ? [story] : []).concat(links),
     });
     follow("intake", $("new-log"), $("new-state"),

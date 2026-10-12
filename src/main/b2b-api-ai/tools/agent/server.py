@@ -310,6 +310,16 @@ class Handler(BaseHTTPRequestHandler):
         with io.open(text_file, "w", encoding="utf-8") as fh:
             fh.write(body.get("text") or "")
         options = {"--job": job, "--text-file": text_file}
+        # A page pasted because the fetcher could not read it. The file is
+        # written when there is text and removed when there is none, so an
+        # earlier paste is not read again unseen.
+        pages_file = os.path.join(out, "pasted-pages.txt")
+        if str(body.get("pages") or "").strip():
+            with io.open(pages_file, "w", encoding="utf-8") as fh:
+                fh.write(str(body.get("pages")))
+            options["--pages-file"] = pages_file
+        elif os.path.isfile(pages_file):
+            os.remove(pages_file)
         links = [l for l in (body.get("links") or []) if str(l).strip()]
         if links:
             options["--link"] = links

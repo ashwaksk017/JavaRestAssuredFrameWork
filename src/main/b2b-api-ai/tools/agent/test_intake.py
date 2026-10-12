@@ -744,6 +744,31 @@ class ConfluencePagesInTheBrief(Links):
         self.assertTrue(all(p["cut"] > 0 for p in r["pages"]))
         self.assertLess(len(self.brief("j")), 30000)
 
+    def test_a_pasted_page_is_read_like_a_fetched_one(self):
+        page = ("Who may do what:\n\nRole | View | Cancel\n\nTravel Coordinator | Yes | Yes\n\n"
+                "Endpoint: GET:/accounts/\\{accountId}/bookingpolicies\n"
+                "password = hunter2-hunter2\n")
+        r = intake.build("j", root=self.tmp, pages_text=page)
+        self.assertTrue(r["ok"])
+        self.assertEqual([(q["verb"], q["raw_path"]) for q in r["requests"]],
+                         [("GET", "/accounts/{accountId}/bookingpolicies")])
+        self.assertTrue(r["requests"][0]["provenance"].startswith("pasted page text"))
+        brief = self.brief("j")
+        self.assertIn("## Confluence pages", brief)
+        self.assertIn("> Travel Coordinator | Yes | Yes", brief)
+        self.assertIn("pasted on the Automate Test Case tab", brief)
+        self.assertNotIn("hunter2-hunter2", brief)
+        self.assertEqual(r["pasted_page_chars"], len(page.strip()))
+
+    def test_the_command_takes_the_pasted_page_from_a_file_and_needs_nothing_else(self):
+        path = os.path.join(self.tmp, "pasted-pages.txt")
+        with io.open(path, "w", encoding="utf-8") as fh:
+            fh.write("GET /only/here\n")
+        self.assertEqual(intake.main(["--job", "j", "--root", self.tmp, "--pages-file", path]), 0)
+        self.assertIn("/only/here", self.brief("j"))
+        self.assertEqual(intake.main(["--job", "j", "--root", self.tmp, "--pages-file",
+                                      os.path.join(self.tmp, "absent.txt")]), 2)
+
     def test_a_page_that_could_not_be_read_adds_no_section(self):
         intake.conf_fetch.main = lambda argv: 2
         intake.build("j", root=self.tmp, text="GET /x",
