@@ -639,6 +639,33 @@ class StoryFromAnUntrustedJira(Story):
                                "s3cretpw", "ABCDEF0123456789"):
                     self.assertNotIn(secret, text, f"{secret} in {name}")
 
+    def test_the_backslash_jira_puts_before_a_brace_is_not_part_of_the_path(self):
+        """Jira's markup needs `\\{` to show a brace, and the raw text has it."""
+        self.issues["ABC-1"]["fields"]["description"] = (
+            "h2. Acceptance Criteria\n* a\n* b\n\n"
+            "GET /guests/\\{guest_id\\}/businesses\n\nNote \\[all\\] of them.\n\nExpect 200.\n")
+        r = self.read()
+        self.assertEqual([q["raw_path"] for q in r["requests"]],
+                         ["/guests/{guest_id}/businesses"])
+        self.assertNotIn("\\{", self.brief("j"))
+        self.assertIn("> GET /guests/{guest_id}/businesses", self.brief("j"))
+        self.assertIn("> Note [all] of them.", self.brief("j"))
+
+    def test_the_same_backslash_on_a_pasted_or_confluence_line_is_dropped_too(self):
+        got = intake._requests_from("POST /guests/\\{guest_id}/businesses\n", "pasted text")
+        self.assertEqual(got[0]["raw_path"], "/guests/{guest_id}/businesses")
+
+    def test_a_backslash_that_means_something_is_left_alone(self):
+        curl = ('curl -X POST "https://api.example.test/a/b" \\\n'
+                '  -H "Content-Type: application/json" \\\n'
+                '  -d \'{"note": "plain", "path": "C:\\\\tmp"}\'\n')
+        got = intake._requests_from(curl, "pasted text")
+        self.assertEqual((got[0]["verb"], got[0]["raw_path"]), ("POST", "/a/b"))
+        # ...and it reads exactly as the reader reads it untouched.
+        plain = intake.jira_extract.from_text(curl, "pasted text")
+        self.assertEqual(got[0]["body"], plain[0]["body"])
+        self.assertEqual(intake._unwiki('a \\"b\\" \\\\ c\\nd'), 'a \\"b\\" \\\\ c\\nd')
+
     def test_a_path_is_not_taken_for_a_credential(self):
         self.assertEqual(intake.conf_fetch.redact("path = /guests/123/businesses"),
                          "path = /guests/123/businesses")

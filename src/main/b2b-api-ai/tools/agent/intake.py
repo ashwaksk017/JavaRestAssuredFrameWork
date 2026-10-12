@@ -169,6 +169,18 @@ def job_dir(job: str, root: str = "") -> str:
     return os.path.join(root or ROOT, "target", "agent", safe_job(job))
 
 
+_BRACE_ESCAPE_RX = re.compile(r"\\([{}\[\]])")
+# Everything Jira's wiki markup escapes with a backslash to show it as
+# itself. A backslash before a line break (a curl command carried over a
+# line) or before a quote (JSON) is not among them and is left alone.
+_WIKI_ESCAPE_RX = re.compile(r"\\([{}\[\]*_^~|!#+-])")
+
+
+def _unwiki(text: str) -> str:
+    """Jira's text as a person reads it on the page: `\\{id}` is `{id}`."""
+    return _WIKI_ESCAPE_RX.sub(r"\1", text or "")
+
+
 def _requests_from(text: str, source: str) -> list:
     """Requests in a block of text, each carrying its expected status.
 
@@ -178,6 +190,11 @@ def _requests_from(text: str, source: str) -> list:
     raise. `extract.expected_status` reads it from the same prose, so
     the information is there; it was simply being dropped.
     """
+    # `/guests/\{guest_id}`: Jira's and Confluence's own markup needs a
+    # backslash before a brace or a bracket to show one, and the raw text
+    # carries it. It is not part of the path -- and left in, the parameter
+    # is not seen as one, so the request matches nothing.
+    text = _BRACE_ESCAPE_RX.sub(r"\1", text or "")
     try:
         steps = jira_extract.from_text(text or "", source) or []
         status, evidence = jira_extract.expected_status(text or "")
@@ -254,12 +271,12 @@ def _story_text(issue: dict) -> str:
     held = f.get("comment") if isinstance(f.get("comment"), dict) else {}
     for c in _listed(held.get("comments")):
         parts.append(jira_fetch._text_of(c.get("body") if isinstance(c, dict) else c))
-    return "\n\n".join(p.strip() for p in parts if p and p.strip())
+    return _unwiki("\n\n".join(p.strip() for p in parts if p and p.strip()))
 
 
 def _about(issue: dict) -> str:
     """What an issue is about: its description, without its comments."""
-    return jira_fetch._text_of((issue.get("fields") or {}).get("description")).strip()
+    return _unwiki(jira_fetch._text_of((issue.get("fields") or {}).get("description"))).strip()
 
 
 def _listed(value) -> list:

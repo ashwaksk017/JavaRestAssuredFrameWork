@@ -88,7 +88,11 @@ _STATUS_RX = re.compile(
 _FENCE_RX = re.compile(r"```[a-zA-Z0-9]*\s*\n(.*?)```", re.S)
 _NOFORMAT_RX = re.compile(
     r"(?s)\{(?:code|noformat)[^}]*\}(.*?)\{(?:code|noformat)\}")
-_CURL_RX = re.compile(r"(?is)\bcurl\b[^\n]*(?:\\\s*\n[^\n]*)*")
+# A command carried over lines ends each with a backslash. The line is
+# read a character at a time so that the backslash is seen AS the carry:
+# `[^\n]*` first took it as an ordinary character, the match ended at
+# the first line, and the body and headers below it were never read.
+_CURL_RX = re.compile(r"(?is)\bcurl\b(?:\\\s*\n|[^\n])*")
 
 # curl flags that consume the following token. An unknown flag is skipped
 # alone, so a flag-with-value we do not know about costs one stray token

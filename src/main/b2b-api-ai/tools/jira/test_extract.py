@@ -126,6 +126,21 @@ class Curl(unittest.TestCase):
         self.assertEqual(got["verb"], "POST")
         self.assertTrue(got["url"].endswith("/x"))
 
+    def test_a_command_carried_over_lines_is_found_whole_in_a_text(self):
+        """parse_curl joined the lines it was given; the pattern that FINDS
+        a command in a story stopped at the first one, so the body and the
+        headers under it were never read -- and the path kept its quotes."""
+        text = ('Example:\n\n'
+                'curl -X POST "https://api.example.com/guests/123/businesses" \\\n'
+                '  -H "Content-Type: application/json" \\\n'
+                '  -d \'{"businessName": "Acme"}\'\n\n'
+                'Expect 201.\n')
+        steps = extract.from_text(text, "story")
+        self.assertEqual(len(steps), 1)
+        self.assertEqual((steps[0]["verb"], steps[0]["raw_path"]),
+                         ("POST", "/guests/123/businesses"))
+        self.assertEqual(json.loads(steps[0]["body"]), {"businessName": "Acme"})
+
     def test_a_flag_that_takes_a_value_never_becomes_the_url(self):
         """`-u user:pass` once ate the URL and the step came out pathless."""
         got = extract.parse_curl(
