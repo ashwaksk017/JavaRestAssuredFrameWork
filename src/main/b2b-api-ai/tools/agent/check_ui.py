@@ -633,6 +633,18 @@ def main() -> int:
                   rc == 0 and "Only in Release 2.0" in html and "Only in Release 1.1" in html
                   and "ABC-5" in html)
 
+            # A story given by its link: read with what is around it.
+            code, rc = press("intake", None, route="/api/intake",
+                             extra={"text": "", "links": ["https://jira.example.test/browse/ABC-123"]})
+            brief = mocked.call(f"/api/artifact?job={JOB}&name=brief.md")[1].get("text") or ""
+            check("mock mode: a Jira story link is read, with its parent and linked stories",
+                  rc == 0 and "## The story: ABC-123 (MOCK" in brief
+                  and "### ABC-9000 -- parent" in brief and "### ABC-9001 -- is blocked by" in brief
+                  and "POST /guests/123/businesses" in brief, f"rc={rc} {brief[:300]}")
+            html = mocked.dom("new")
+            check("the New test case tab has a place for the Jira story",
+                  'id="story"' in html and 'for="story"' in html and "Confluence pages" in html)
+
             code, rc = press("defects-load", {"--project": "ABC", "--version": "Release 2.0"})
             html = mocked.dom("defects")
             check("mock mode: Load defects", rc == 0 and "ABC-101" in html and "ABC-150" in html

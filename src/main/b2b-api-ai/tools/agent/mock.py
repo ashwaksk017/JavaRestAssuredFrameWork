@@ -320,6 +320,57 @@ def _search(jql: str, root: str) -> list:
     return found
 
 
+STORY_TEXT = """As a member, I can add a business to my profile, so that my stays count for it.
+
+Acceptance Criteria
+- Adding a business with a name returns 201 and the new business id
+- Adding the same name a second time returns 409
+- A name longer than 80 characters returns 400
+
+Example request:
+
+curl -X POST "https://api.example.test/guests/123/businesses" -H "Content-Type: application/json" -d '{"businessName": "Acme"}'
+
+Expect 201.
+"""
+
+
+def story_transport(url: str) -> dict:
+    """The mock Jira, asked for ONE story the way tools/jira/fetch.py asks:
+    the whole issue, then its comment pages. Any key gets the same story."""
+    if re.search(r"/issue/[^/?]+/comment\b", url):
+        return {"comments": [], "total": 0, "startAt": 0, "maxResults": 100}
+    m = re.search(r"/issue/([A-Za-z][A-Za-z0-9_]+-[0-9]+)", url)
+    key = (m.group(1) if m else "MOCK-1").upper()
+    project, number = key.split("-")[0], int(key.split("-")[1])
+    # The stories around it: a parent epic, one it is blocked by, one it
+    # relates to. Asked for by key, each is a story of its own.
+    near = {9000: ("Epic", "Businesses on a member's profile",
+                   "Members can keep the businesses they travel for on their profile, "
+                   "so that stays are attributed without a call to the service desk."),
+            9001: ("Story", "Business names are unique per member",
+                   "Two businesses of one member cannot share a name. The API answers 409 "
+                   "and names the existing business."),
+            9002: ("Story", "Show a member's businesses on the profile page",
+                   "The profile page lists the member's businesses, newest first.")}
+    if number in near:
+        kind, summary, text = near[number]
+        issue = _issue(project, number, kind, summary, "", description=text)
+        issue["fields"]["comment"] = {"comments": [], "total": 0}
+        return issue
+    issue = _issue(project, number, "Story",
+                   "Add a business to a member's profile", "", description=STORY_TEXT)
+    issue["key"] = key
+    issue["fields"]["comment"] = {"comments": [], "total": 0}
+    issue["fields"]["parent"] = {"key": f"{project}-9000"}
+    issue["fields"]["issuelinks"] = [
+        {"type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
+         "inwardIssue": {"key": f"{project}-9001"}},
+        {"type": {"name": "Relates", "inward": "relates to", "outward": "relates to"},
+         "outwardIssue": {"key": f"{project}-9002"}}]
+    return issue
+
+
 def jira_transport(method: str, url: str, token: str, timeout: int, body=None, root: str = ""):
     """The mock Jira. Same call as the real transport; no network."""
     root = root or ROOT
@@ -393,6 +444,15 @@ def _design_reply(prompt: str) -> str:
                       "type": "security", "priority": "medium", "preconditions": "",
                       "steps": [{"action": f"Send {e} with no token",
                                  "data": "no Authorization header", "expected": "status 401"}],
+                      "requirement_refs": ["mock"]})
+    if not cases:
+        # Designed from a story alone: there is no endpoint to hang a case
+        # on, and a real designer would read one out of the story.
+        cases.append({"title": "[MOCK] the story's main path succeeds",
+                      "endpoint": "POST /mock/from-the-story", "type": "positive",
+                      "priority": "high", "preconditions": "",
+                      "steps": [{"action": "Do what the story describes, with valid values",
+                                 "data": "a valid request", "expected": "status 201"}],
                       "requirement_refs": ["mock"]})
     for n, c in enumerate(cases[:limit], 1):
         c["id"] = f"TC-{n:03d}"

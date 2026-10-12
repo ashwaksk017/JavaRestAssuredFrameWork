@@ -355,7 +355,7 @@ MAX_PARENT_DEPTH = 3
 def parent_key(issue: dict) -> str:
     f = (issue or {}).get("fields") or {}
     p = f.get("parent") or {}
-    return str(p.get("key") or "").strip()
+    return str(p.get("key") or "").strip() if isinstance(p, dict) else ""
 
 
 def fetch_chain(key: str, base_url: str, token: str,
@@ -375,13 +375,28 @@ def fetch_chain(key: str, base_url: str, token: str,
             f"  (depth {len(chain) + 1}/{max_depth})")
         try:
             issue = fetch_issue(cur, base_url, token, api_path, timeout, transport)
-        except RuntimeError as e:
-            say(f"  {cur} could not be read: {e}")
-            chain.append({"key": cur, "_error": str(e)})
+        except Exception as e:                           # noqa: BLE001
+            # Not only RuntimeError: a sign-in page answering 200 with HTML
+            # is a JSON error, and a connection cut mid-answer is neither.
+            # Whatever it was, the chain stops here and says so.
+            why = str(e) if isinstance(e, RuntimeError) else \
+                f"{type(e).__name__}: Jira's answer could not be read"
+            say(f"  {cur} could not be read: {why}")
+            chain.append({"key": cur, "_error": why})
+            break
+        if not isinstance(issue, dict) or not isinstance(issue.get("fields"), dict):
+            say(f"  {cur}: the answer is not an issue")
+            chain.append({"key": cur, "_error": "Jira's answer was not an issue"})
             break
         _top_up_comments(issue, cur, base_url, token, api_path, timeout, transport)
         chain.append(issue)
         nxt = parent_key(issue)
+        if nxt and not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*-[0-9]+", nxt):
+            # The parent's key comes from Jira's ANSWER and goes into the
+            # next address. One that is not a key is not followed.
+            say(f"  {cur} names a parent that is not an issue key -- not followed")
+            nxt = ""
+        nxt = nxt.upper()
         if not nxt:
             say(f"  {cur} has no parent -- chain ends here")
         elif nxt in seen:

@@ -324,13 +324,27 @@ def page_revision(page: dict) -> str:
 # would like. Redacted on the way OUT, so the snapshot on disk, the UI
 # and the agent prompt all see the same masked text.
 _SECRET_RX = [
-    re.compile(r"(?i)\b(authorization\s*:\s*)(bearer|basic)\s+\S+"),
+    # Whatever follows `Authorization:` -- with a scheme (Bearer, Basic,
+    # Token...) or with none, which is how a bare JWT is pasted.
+    re.compile(r"(?i)\b((?:proxy-)?authorization\s*:\s*)(bearer|basic|token|digest|negotiate)?"
+               r"[ \t]*[^\s\"',;]+"),
     # The `"?` after the key name matters: in JSON -- which is exactly
     # how a Confluence code block carries one -- the key is quoted, so
     # `"client_secret": "..."` has a closing quote before the colon and
     # a pattern without it matches nothing at all.
-    re.compile(r"(?i)\b(client[_-]?secret|password|passwd|api[_-]?key|"
-               r"secret|token|pat)\b(\"?\s*[:=]\s*)(\"?)([^\s\"',;]{6,})"),
+    # The NAME may carry more around the word: `access_token`,
+    # `db_password`, `aws_secret_access_key`, `secretKey`. A `\b` before
+    # the word does not fire after an underscore, so those all passed.
+    # `pat` only as a name of its own or the last part of one -- `path`
+    # is not a credential.
+    re.compile(r"(?i)(?<![A-Za-z0-9])((?:[\w.-]*?(?:secret|password|passwd|pwd|api[_-]?key|token)"
+               r"[\w-]*)|(?:(?:[\w.-]*[_.-])?pat))(\"?\s*[:=]\s*)(\"?)([^\s\"',;]{6,})"),
+    # A session is a credential: the whole Cookie header.
+    re.compile(r"(?i)\b((?:set-)?cookie\s*:\s*)[^\r\n]+"),
+    # `curl -u user:password`
+    re.compile(r"(?i)((?:\s-u|--user)\s+[\"']?)[^\s\"':]+:[^\s\"']+"),
+    # `https://user:password@host`
+    re.compile(r"(?i)\b(https?://)[^/\s:@\"']+:[^/\s@\"']+@"),
 ]
 
 
@@ -338,6 +352,9 @@ def redact(text: str) -> str:
     out = text or ""
     out = _SECRET_RX[0].sub(r"\1\2 <redacted>", out)
     out = _SECRET_RX[1].sub(r"\1\2\3<redacted>", out)
+    out = _SECRET_RX[2].sub(r"\1<redacted>", out)
+    out = _SECRET_RX[3].sub(r"\1<redacted>", out)
+    out = _SECRET_RX[4].sub(r"\1<redacted>@", out)
     return out
 
 

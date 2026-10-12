@@ -49,7 +49,11 @@
     it writes nothing outside <code>target/</code>.
   </p>
 
-  <label for="text">Story / payloads</label>
+  <label for="story">Jira story <span class="hint">a link to it, or its key — the story, its comments, its parent and its attachments are read for you</span></label>
+  <input id="story" type="text" spellcheck="false" autocomplete="off"
+    placeholder="https://jira.example.com/browse/ABC-123   or   ABC-123">
+
+  <label for="text">Story text / payloads <span class="hint">optional when a Jira story is given — paste here what Jira does not hold</span></label>
   <textarea id="text" rows="12" spellcheck="false"
     placeholder='Paste the story, a curl command, or a VERB /path line.
 
@@ -59,7 +63,7 @@ curl -X POST "https://host/props/ABC/groups/roomrates" \
 
 Expect 201.'></textarea>
 
-  <label for="links">Links <span class="hint">one per line — Confluence page, or a Jira key</span></label>
+  <label for="links">Confluence pages <span class="hint">one link per line</span></label>
   <textarea id="links" rows="3" spellcheck="false"
     placeholder="https://wiki.example.com/display/ABC/Group+Rate+Plan+API"></textarea>
 

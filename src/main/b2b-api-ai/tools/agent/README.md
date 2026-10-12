@@ -212,14 +212,78 @@ looking again at a long run after the page was closed.
 
 ### New test case
 
-Paste a story, request payloads, and Jira or Confluence links. It reads
-them, then decides **create / update / upstream / confirm**: whether
+Give a Jira story (a link to it, or its key), paste request payloads,
+and add Confluence links. It reads them, then decides **create / update
+/ upstream / confirm**: whether
 this is a new test, a change to one that exists (and whether a new row
 of data is all it takes), something that belongs further up the chain,
 or something a person must look at. How it decides is set out
 [below](#how-it-decides-whether-a-test-already-exists).
 
 Writes `brief.md` and `plan.md` into the job directory.
+
+#### Giving it a Jira story
+
+Put the story's address or key in **Jira story**. *Read it* then reads,
+from the Jira in your configuration:
+
+- **the story** -- summary, description, every comment, attachments;
+- **its parents**, up to three levels (acceptance criteria and the
+  request contract are often on the epic);
+- **what is around it** -- the stories Jira links to it (*blocks*, *is
+  blocked by*, *relates to*, *clones*...) and its sub-tasks, up to 8,
+  each read once and not followed further.
+
+All of it goes into `brief.md`: the story's own text under **The
+story**, and each parent and linked story under **Around the story**
+with how it is related. The brief is what *Design the API tests* and the
+Agent loop hand to Cursor, so Cursor sees the story in its setting
+rather than alone. Pasting the story is then optional; paste only what
+Jira does not hold.
+
+What each part is used for is deliberately different:
+
+| Read | Searched for requests | Searched for acceptance criteria | Shown to Cursor |
+|---|---|---|---|
+| the story | yes | yes | yes |
+| its parents | named, **not taken** | yes, and said to be inherited | yes |
+| linked stories, sub-tasks | **no** | **no** | yes, marked as other stories |
+
+Only the story's own requests become requests of the job. An epic lists
+the calls of every story under it, so a parent's requests are named
+under *Not used* for you to paste the one that applies; a request in a
+linked story is that story's to test.
+
+Things it says rather than hides:
+
+- **No acceptance criteria found** on the story or its parents: a
+  warning in the brief and under *Not used*, not a stop. A design made
+  from such a story is the designer's guess at what matters.
+- **The story holds no request**: the brief says so and points to
+  *Design the API tests*, which can now design from the story alone
+  (its result says the endpoints were checked against nothing).
+- **A linked story or a parent could not be read**, or there were more
+  than 8 linked: named.
+- **A link to another Jira** than the configured one is refused, and so
+  is an address that cannot be read as a story's. The token is only
+  ever sent to the first host in `jira_config.base_urls`, and a story of
+  the same key on your Jira is not the one that was meant.
+- **Jira did not answer, or answered something that is not a story**
+  (a sign-in page, a cut connection): said under *Not used*. Whatever
+  was pasted, and the Confluence links, are still read.
+- **One story a job.** A second story link is not read.
+
+Text from Jira is quoted line by line in the brief and is described
+there as material, not instructions. Credentials written in it --
+passwords, tokens, keys, `Authorization` and `Cookie` headers, `curl -u`
+and `user:password@host` addresses -- are masked before anything is
+written. That is a pattern match: it catches the usual shapes, not
+every way a secret can be written, so read a brief made from a story
+that carries credentials before it goes to Cursor. In mock mode a sample story with a
+parent and two linked stories is returned, marked MOCK.
+
+Jira Cloud sign-in (email + API token) is still not supported: this
+uses the personal access token the Jira tab uses.
 
 When the job names a story -- a Jira link in the links box, or a key
 written in the pasted text -- the plan ends with **Earlier work that

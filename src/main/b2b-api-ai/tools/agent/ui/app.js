@@ -286,10 +286,18 @@ async function showArtifact(name, el) {
 // ---- tab 1 -----------------------------------------------------------
 $("run-intake").onclick = async () => {
   try {
+    // The story goes first: it is the story of the job, and one a job.
+    const story = $("story").value.trim();
+    const links = $("links").value.split("\n").map((s) => s.trim()).filter(Boolean);
+    if (!story && !links.length && !$("text").value.trim()) {
+      setState($("new-state"), "bad",
+               "give a Jira story, paste some text, or add a Confluence link");
+      return;
+    }
     await post("/api/intake", {
       job: job(),
       text: $("text").value,
-      links: $("links").value.split("\n").map((s) => s.trim()).filter(Boolean),
+      links: (story ? [story] : []).concat(links),
     });
     follow("intake", $("new-log"), $("new-state"),
            () => showArtifact("brief.md", $("brief")));

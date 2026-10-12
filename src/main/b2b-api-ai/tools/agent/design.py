@@ -1079,10 +1079,24 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
             warnings.append("there was no specification: the endpoints of the "
                             "designed cases were NOT checked against a contract")
             say(f" ok  {len(endpoints)} endpoint(s) taken from the requests intake read")
-    if not (swagger.strip() or requirements.strip() or endpoints):
+    # A story read from Jira is something to design from, with or without a
+    # request in it: its text (and what is around it) is in the brief.
+    try:
+        read_story = (json.loads(_read(os.path.join(out_dir, "intake.json")) or "{}")
+                      .get("story") or {})
+    except (ValueError, AttributeError):
+        read_story = {}
+    has_story = isinstance(read_story, dict) and bool(read_story.get("key"))
+    if has_story and not (swagger.strip() or requirements.strip() or endpoints):
+        warnings.append("designed from the story's text alone: there was no specification "
+                        "and no request, so every endpoint in the cases is the designer's "
+                        "reading of the story and was checked against nothing")
+        say(f" ..  designing from the story {loop._one_line(read_story.get('key'), 40)} "
+            f"alone: no specification, no request")
+    if not (swagger.strip() or requirements.strip() or endpoints or has_story):
         say("FAIL nothing to design from. Give a specification or "
-            "requirements here, or run 'Read it' first with a story that "
-            "carries a request.")
+            "requirements here, or run 'Read it' first with a Jira story or "
+            "a request.")
         return 1
 
     prefixes = base_paths(spec) if spec is not None else []

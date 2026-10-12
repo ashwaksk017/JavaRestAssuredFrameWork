@@ -97,6 +97,8 @@ jira_query = _load("agent_jira_query", os.path.join(_JIRA, "query.py"))
 sys.path.insert(0, _CONF)
 conf_pageref = _load("agent_conf_pageref", os.path.join(_CONF, "pageref.py"))
 conf_fetch = _load("agent_conf_fetch", os.path.join(_CONF, "fetch.py"))
+jira_fetch = _load("agent_jira_fetch", os.path.join(_JIRA, "fetch.py"))
+jira_search = _load("agent_jira_search", os.path.join(_JIRA, "search.py"))
 
 ROOT = projectconfig.ROOT
 
@@ -228,6 +230,285 @@ def gather_confluence(link: str, sources: str, slot: str,
             "text_file": os.path.join(slot, md[0])}
 
 
+# ---- a Jira story -----------------------------------------------------------
+MAX_STORY_CHARS = 8000            # of the story's text, in the brief
+MAX_ATTACHMENT_TEXT = 200_000     # of one textual attachment, read for requests
+MAX_LINKED = 8                    # linked stories and sub-tasks read for context
+MAX_AROUND_EACH = 1500            # of one parent's or linked story's text, in the brief
+MAX_AROUND_TOTAL = 12000          # of all of them together
+_KEY_IN_LINK_RX = re.compile(r"\b([A-Za-z][A-Za-z0-9_]+-[0-9]+)\b")
+
+
+def _one_line(value, cap: int = 200) -> str:
+    """Text from Jira as one short line that cannot be read as structure."""
+    s = re.sub(r"[`<>|*#\[\]]", "", str(value if value is not None else ""))
+    s = re.sub(r"[\x00-\x1f\x7f\s]+", " ", s).strip()
+    return s[:cap] + ("..." if len(s) > cap else "")
+
+
+def _story_text(issue: dict) -> str:
+    """What one issue says: its summary, its description, its comments."""
+    f = issue.get("fields") if isinstance(issue.get("fields"), dict) else {}
+    parts = [f"{issue.get('key', '')}: {jira_fetch._text_of(f.get('summary'))}",
+             jira_fetch._text_of(f.get("description"))]
+    held = f.get("comment") if isinstance(f.get("comment"), dict) else {}
+    for c in _listed(held.get("comments")):
+        parts.append(jira_fetch._text_of(c.get("body") if isinstance(c, dict) else c))
+    return "\n\n".join(p.strip() for p in parts if p and p.strip())
+
+
+def _about(issue: dict) -> str:
+    """What an issue is about: its description, without its comments."""
+    return jira_fetch._text_of((issue.get("fields") or {}).get("description")).strip()
+
+
+def _listed(value) -> list:
+    return value if isinstance(value, list) else []
+
+
+def _named(value) -> str:
+    """The name of a Jira field that is usually {"name": ...}."""
+    return value.get("name") if isinstance(value, dict) else (value if isinstance(value, str)
+                                                              else "")
+
+
+def _links_of(issue: dict) -> list:
+    """[(key, how it is related)] for the stories Jira links to this one,
+    and its sub-tasks, in Jira's order."""
+    f = issue.get("fields") if isinstance(issue.get("fields"), dict) else {}
+    out = []
+    for link in _listed(f.get("issuelinks")):
+        if not isinstance(link, dict):
+            continue
+        kind = link.get("type") if isinstance(link.get("type"), dict) else {}
+        if isinstance(link.get("outwardIssue"), dict):
+            other, how = link["outwardIssue"], kind.get("outward") or kind.get("name")
+        elif isinstance(link.get("inwardIssue"), dict):
+            other, how = link["inwardIssue"], kind.get("inward") or kind.get("name")
+        else:
+            continue
+        out.append((str(other.get("key") or ""), _one_line(how or "linked to", 40)))
+    for sub in _listed(f.get("subtasks")):
+        if isinstance(sub, dict):
+            out.append((str(sub.get("key") or ""), "sub-task of this story"))
+    seen, keep = set(), []
+    for key, how in out:
+        key = key.upper()
+        if _KEY_IN_LINK_RX.fullmatch(key) and key not in seen:
+            seen.add(key)
+            keep.append((key, how))
+    return keep
+
+
+def _around(issue: dict, how: str, budget: int) -> dict:
+    """One story near this job's story, as the brief will show it."""
+    f = issue.get("fields") or {}
+    text = conf_fetch.redact(_about(issue))
+    cap = max(0, min(MAX_AROUND_EACH, budget))
+    return {"key": _one_line(issue.get("key"), 40), "how": how, "ok": True,
+            "type": _one_line(_named(f.get("issuetype")), 40),
+            "status": _one_line(_named(f.get("status")), 40),
+            "summary": _one_line(conf_fetch.redact(jira_fetch._text_of(f.get("summary"))), 300),
+            "text": text[:cap], "cut": max(0, len(text) - cap)}
+
+
+def gather_jira(link: str, sources: str, slot: str, connect=None, transport=None,
+                attachments=None) -> dict:
+    """Read ONE story from the configured Jira into sources/<slot>/.
+
+    The story, every comment, its parents (acceptance criteria are often
+    one level up) and its attachments -- through tools/jira/fetch.py,
+    which is the reader the story chain already uses.
+
+    AND WHAT IS AROUND IT: the stories Jira links to it (blocks, relates
+    to, is cloned by...) and its sub-tasks, one read each, not followed
+    further. They are there for the bigger picture a story read alone
+    does not give. They are CONTEXT: their text is shown beside the story
+    and is never searched for requests or acceptance criteria, because a
+    request in a linked story is that story's to test.
+
+    WHICH JIRA is never the link's to say. The request goes to the base
+    url in jira_config and nowhere else; a link that names another host is
+    refused rather than read from the configured one, because the person
+    who pasted it meant a different story than the one that would come
+    back. The token is a header and is written nowhere.
+
+    Returns what it read, or why it did not: {link, kind, ok, reason?,
+    key?, dir?, text_file?, story?}.
+    """
+    out = {"link": link, "kind": JIRA, "ok": False}
+    try:
+        keys = [str(k).upper() for k in (jira_query.parse(link).get("keys") or [])]
+    except Exception:                                    # noqa: BLE001
+        diag.trace()
+        keys = []
+    if not keys:
+        keys = [m.upper() for m in _KEY_IN_LINK_RX.findall(link)][:1]
+    if not keys:
+        out["reason"] = "no story key (like ABC-123) could be read from this"
+        return out
+    key = keys[0]
+    out["key"] = key
+    if len(keys) > 1:
+        out["also"] = keys[1:6]
+    try:
+        conn = (connect or jira_search.connect)()
+    except jira_search.Refused as e:
+        out["reason"] = str(e)
+        return out
+    mocked = bool(conn.get("mock"))
+    if "://" in link and not mocked:
+        # An address is only read when it is the address of a story on THE
+        # Jira that will be asked -- the first approved base, as everywhere
+        # else. One that cannot be parsed is refused, not waved through,
+        # and so is one on a second approved host: the answer would come
+        # from the first, and be a different story.
+        try:
+            _key, named = jira_fetch.normalize_issue_key(link.strip())
+        except ValueError as e:
+            out["reason"] = _one_line(f"this is not the address of a Jira story: {e}", 300)
+            return out
+        allowed, why = jira_fetch.host_allowed(named, [conn["base"]])
+        if not allowed or not named:
+            out["reason"] = (why if not allowed else
+                             "no host could be read from this address")
+            return out
+    if mocked and transport is None:
+        transport = lambda url, token, timeout: jira_search.mock().story_transport(url)
+    diag.step(f"Reading the sample story {key} (mock mode)" if mocked
+              else f"Asking Jira for the story {key}, its comments and its parents")
+    chain = jira_fetch.fetch_chain(key, conn["base"], conn["token"], conn["api"],
+                                   conn["timeout"], transport)
+    chain = [i for i in chain if isinstance(i, dict)]
+    if not chain or chain[0].get("_error"):
+        why = chain[0].get("_error") if chain else "nothing came back"
+        out["reason"] = _one_line(conf_fetch.redact(f"{key} could not be read: {why}"), 400)
+        return out
+    read = [i for i in chain if not i.get("_error")]
+    outdir = os.path.join(sources, slot)
+    os.makedirs(outdir, exist_ok=True)
+
+    saved = []
+    if attachments is None and not mocked:
+        attachments = lambda issue, where: jira_fetch.download_attachments(
+            issue, where, conn["token"], conn.get("bases") or [conn["base"]], conn["timeout"])
+    if attachments is not None:
+        diag.step("Downloading the story's attachments")
+        for n, issue in enumerate(read):
+            # The key is Jira's ANSWER. It names a folder only when it is a
+            # key: `../../x` or an absolute path would write outside the job.
+            answered = str(issue.get("key") or "").upper()
+            folder = answered if _KEY_IN_LINK_RX.fullmatch(answered) else f"issue{n}"
+            try:
+                saved += attachments(issue, os.path.join(outdir, "attachments", folder)) or []
+            except Exception as e:                       # noqa: BLE001
+                diag.trace()
+                out.setdefault("warnings", []).append(
+                    f"the attachments of {folder} could not be read ({type(e).__name__})")
+
+    fields = []
+    if not mocked:
+        cfg, _note = projectconfig.section("jira_config")
+        fields = (cfg or {}).get("acceptance_criteria_fields") or []
+    ac = jira_fetch.acceptance_criteria_chain(chain, fields)
+    own_fields = read[0].get("fields") or {}
+
+    # ---- what is around the story ---------------------------------------
+    around, budget = [], MAX_AROUND_TOTAL
+    for depth, issue in enumerate(read[1:], 1):
+        entry = _around(issue, "parent" if depth == 1 else "parent of the parent", budget)
+        budget -= len(entry["text"])
+        around.append(entry)
+    linked = [(k, how) for k, how in _links_of(read[0])
+              if k not in {str(i.get("key") or "").upper() for i in chain}]
+    if linked:
+        diag.step(f"Reading {min(len(linked), MAX_LINKED)} linked stor"
+                  f"{'y' if min(len(linked), MAX_LINKED) == 1 else 'ies'} for the bigger picture")
+    for other, how in linked[:MAX_LINKED]:
+        try:
+            issue = jira_fetch.fetch_issue(other, conn["base"], conn["token"], conn["api"],
+                                           conn["timeout"], transport)
+        except RuntimeError as e:
+            around.append({"key": other, "how": how, "ok": False,
+                           "reason": _one_line(conf_fetch.redact(str(e)), 200)})
+            continue
+        except Exception as e:                           # noqa: BLE001
+            diag.trace()
+            around.append({"key": other, "how": how, "ok": False,
+                           "reason": f"{type(e).__name__}: Jira's answer could not be read"})
+            continue
+        if not isinstance(issue, dict) or not isinstance(issue.get("fields"), dict):
+            around.append({"key": other, "how": how, "ok": False,
+                           "reason": "Jira's answer was not an issue"})
+            continue
+        issue["key"] = other                             # the key that was ASKED for
+        entry = _around(issue, how, budget)
+        budget -= len(entry["text"])
+        around.append(entry)
+    not_read = [k for k, _how in linked[MAX_LINKED:]]
+
+    # Requests are looked for in the story and its parents (a contract kept
+    # on the epic is the commonest place one lives) -- not in linked stories.
+    own = conf_fetch.redact(_story_text(read[0]))
+    text = "\n\n".join(t for t in (_story_text(i) for i in read) if t)
+    # Sample payloads attached as files are as likely to hold the request
+    # as the description is.
+    extra = []
+    for a in saved:
+        path = a.get("saved_to") or ""
+        if path.lower().endswith(jira_fetch.TEXTUAL) and os.path.isfile(path):
+            try:
+                with io.open(path, encoding="utf-8", errors="replace") as fh:
+                    extra.append((str(a.get("name") or "attachment"),
+                                  fh.read(MAX_ATTACHMENT_TEXT)))
+            except OSError:
+                continue
+    text = conf_fetch.redact(text)
+    with io.open(os.path.join(outdir, "story.md"), "w", encoding="utf-8") as fh:
+        fh.write(text + "\n")
+    with io.open(os.path.join(outdir, "around.json"), "w", encoding="utf-8") as fh:
+        json.dump(around, fh, indent=2, ensure_ascii=False)
+    comments = (read[0].get("fields") or {}).get("comment")
+    comments = comments if isinstance(comments, dict) else {}
+    out.update({
+        "ok": True, "dir": slot, "text_file": os.path.join(slot, "story.md"),
+        "mock": mocked,
+        "story": {
+            "key": key,
+            "type": _one_line(_named(own_fields.get("issuetype")), 40),
+            "status": _one_line(_named(own_fields.get("status")), 40),
+            "summary": _one_line(conf_fetch.redact(
+                jira_fetch._text_of(own_fields.get("summary"))), 300),
+            "parents": [_one_line(i.get("key"), 40) for i in chain[1:]],
+            "unread_parents": [_one_line(i.get("key"), 40) for i in chain[1:]
+                               if i.get("_error")],
+            "comments": len(_listed(comments.get("comments"))),
+            "comments_note": _one_line(comments.get("_error") or "", 200),
+            "attachments": [{"name": _one_line(a.get("name"), 120),
+                             "status": _one_line(a.get("status"), 60)} for a in saved[:20]],
+            "acceptance_criteria": {
+                "present": bool(ac.get("present")),
+                "confidence": _one_line(ac.get("confidence"), 40),
+                "found_on": _one_line(ac.get("found_on"), 40),
+                "reasons": [_one_line(r, 200) for r in (ac.get("reasons") or [])[:5]],
+            },
+            "chars": len(text),
+            "linked_not_read": not_read[:20],
+        },
+        "own_text": own,
+        "around": around,
+        # The STORY's text is searched for requests. A parent's is too, but
+        # apart, and only to be named: an epic lists the calls of every
+        # story under it, and taking them all would plan this job tests
+        # that belong to its siblings.
+        "_request_texts": [(key, conf_fetch.redact(_story_text(read[0])))],
+        "_parent_texts": [(_one_line(i.get("key"), 40), conf_fetch.redact(_story_text(i)))
+                          for i in read[1:]],
+        "_extra_texts": [(name, conf_fetch.redact(body)) for name, body in extra],
+    })
+    return out
+
+
 def build(job: str, text: str = "", links=None, root: str = "",
           api_path: str = "") -> dict:
     """Run the intake. Returns the structured result it also writes."""
@@ -237,6 +518,7 @@ def build(job: str, text: str = "", links=None, root: str = "",
     os.makedirs(sources, exist_ok=True)
 
     found, notes = [], []
+    story, story_body, around = None, "", []
     found += _requests_from(text, "pasted text")
 
     gathered = []
@@ -254,14 +536,73 @@ def build(job: str, text: str = "", links=None, root: str = "",
             elif not got.get("ok"):
                 notes.append(f"{link}: {got.get('reason')}")
         elif kind == JIRA:
-            # Deliberately not fetched here. tools/jira/run.py is a
-            # gated chain of its own that writes its own packet, and
-            # re-running half of it from inside this stage would give
-            # two answers to the same question.
-            gathered.append({"link": link, "kind": JIRA, "ok": False,
-                             "reason": "run tools/jira/run.py for this story (one "
-                                       "story at a time); its packet is the input here"})
-            notes.append(f"{link}: Jira -- use tools/jira/run.py, one story at a time")
+            # The story is READ here -- its text, comments, parents and
+            # attachments -- so that a person can give a link instead of
+            # pasting. Nothing is decided from it here: tools/jira/run.py
+            # remains the gated chain that turns a story into a test.
+            if story is not None:
+                gathered.append({"link": link, "kind": JIRA, "ok": False,
+                                 "reason": f"one story at a time: {story['key']} is the "
+                                           f"story of this job"})
+                notes.append(f"{link}: not read -- one story at a time, and "
+                             f"{story['key']} was given first")
+                continue
+            try:
+                got = gather_jira(link, sources, f"{n:02d}-jira")
+            except Exception as e:                       # noqa: BLE001
+                diag.trace()
+                # Whatever Jira answered, the pasted text and the other
+                # links are still read: one source must not lose the job.
+                got = {"link": link, "kind": JIRA, "ok": False,
+                       "reason": f"the story could not be read ({type(e).__name__}); "
+                                 f"the Logs tab has the detail"}
+            extra_texts = got.pop("_extra_texts", [])
+            gathered.append(got)
+            if not got.get("ok"):
+                for private in ("_request_texts", "_parent_texts", "own_text", "around"):
+                    got.pop(private, None)
+                notes.append(f"{link}: {got.get('reason')}")
+                continue
+            story = got["story"]
+            around = got.pop("around", [])
+            story_body = got.pop("own_text", "")
+            for issue_key, issue_text in got.pop("_request_texts", []):
+                found += _requests_from(issue_text, f"jira {_one_line(issue_key, 40)}")
+            for issue_key, issue_text in got.pop("_parent_texts", []):
+                theirs = [f"{s.get('verb')} {_one_line(s.get('raw_path'), 120)}"
+                          for s in _requests_from(issue_text, "parent")
+                          if s.get("verb") and s.get("raw_path")]
+                if theirs:
+                    notes.append(f"{story['key']}: its parent {issue_key} holds "
+                                 f"{len(theirs)} request(s) -- {', '.join(theirs[:5])}. They "
+                                 f"are NOT taken as this story's (a parent lists the calls "
+                                 f"of every story under it): paste the one that applies")
+            for a in around:
+                if not a.get("ok"):
+                    notes.append(f"{story['key']}: {a['how']} {a['key']} could not be "
+                                 f"read ({a.get('reason')})")
+            if story["linked_not_read"]:
+                notes.append(f"{story['key']}: {len(story['linked_not_read'])} more linked "
+                             f"stor(ies) were not read (the first {MAX_LINKED} are): "
+                             f"{', '.join(story['linked_not_read'])}")
+            for name, body in extra_texts:
+                found += _requests_from(body, f"jira {story['key']} attachment "
+                                              f"{_one_line(name, 80)}")
+            for w in got.get("warnings") or []:
+                notes.append(f"{story['key']}: {w}")
+            if got.get("also"):
+                notes.append(f"{link}: several stories were named; only {story['key']} "
+                             f"was read ({', '.join(got['also'])} were not)")
+            if story["unread_parents"]:
+                notes.append(f"{story['key']}: its parent "
+                             f"{', '.join(story['unread_parents'])} could not be read")
+            if story["comments_note"]:
+                notes.append(f"{story['key']}: {story['comments_note']}")
+            if not story["acceptance_criteria"]["present"]:
+                notes.append(f"{story['key']}: NO ACCEPTANCE CRITERIA were found on the "
+                             f"story or its parents (looked for a heading, Given/When/"
+                             f"Then, or a list). What should be tested is then a guess: "
+                             f"read the story before trusting a design made from it")
         elif kind == JIRA_QUERY:
             # A query names many stories. This stage reads one request to
             # automate; which of a release's stories that is, is a
@@ -319,6 +660,12 @@ def build(job: str, text: str = "", links=None, root: str = "",
         "requests": usable,
         "notes": notes,
         "ok": bool(usable),
+        # The story this job is about, when one was read from Jira.
+        "story": story,
+        "story_text": story_body[:MAX_STORY_CHARS],
+        "story_text_cut": max(0, len(story_body) - MAX_STORY_CHARS),
+        # Its parents, the stories linked to it and its sub-tasks.
+        "around": around,
     }
     diag.step("Writing the brief")
     _write_brief(out, result)
@@ -329,7 +676,15 @@ def build(job: str, text: str = "", links=None, root: str = "",
 
 def _write_brief(out: str, r: dict) -> None:
     lines = []
-    if not r["ok"]:
+    story = r.get("story")
+    if not r["ok"] and story:
+        lines += [f"# Intake: {story['key']} was read; it holds no request", "",
+                  "The story's text is below, but nothing in it (or in what was "
+                  "pasted) is a request this pipeline can act on: a curl command "
+                  "or a `VERB /path` line. To go on from the story alone, use "
+                  "**Design the API tests** and then locate: the designed "
+                  "endpoints are checked instead.", ""]
+    elif not r["ok"]:
         lines += ["# Intake: NO REQUEST COULD BE READ", "",
                   "Nothing below describes a request this pipeline can act "
                   "on. A sentence describing an endpoint is a description, "
@@ -339,6 +694,53 @@ def _write_brief(out: str, r: dict) -> None:
         lines += [f"# Intake: {len(r['requests'])} request(s)", ""]
     lines += [f"- job: {r['job']}", f"- at: {r['at']}",
               f"- pasted: {r['pasted_chars']} chars", ""]
+
+    if story:
+        ac = story["acceptance_criteria"]
+        lines += [f"## The story: {story['key']}" + (" (MOCK: sample data, not Jira's)"
+                                                    if any(g.get("mock") for g in r["links"])
+                                                    else ""), "",
+                  f"- {story['type'] or 'issue'}, status {story['status'] or 'unknown'}",
+                  f"- summary: {story['summary']}",
+                  f"- read with it: {story['comments']} comment(s), "
+                  f"{len(story['attachments'])} attachment(s)"
+                  + (f", parent(s) {', '.join(story['parents'])}" if story["parents"] else "")
+                  + (f", {sum(1 for a in (r.get('around') or []) if a.get('ok') and not a['how'].startswith('parent'))} "
+                     f"linked stor(ies)" if any(not a['how'].startswith('parent')
+                                               for a in (r.get('around') or [])) else ""),
+                  ("- acceptance criteria: found"
+                   + (f" on {ac['found_on']}" if ac["found_on"] else "")
+                   + (f" ({ac['confidence']})" if ac["confidence"] else "")
+                   if ac["present"] else
+                   "- acceptance criteria: **NONE FOUND** -- what to test is not stated"),
+                  ""]
+        if r.get("story_text"):
+            # Quoted, line by line: what a story says is material, and no
+            # line of it can become a heading or an instruction of this file.
+            lines += ["What it says (the story's own text, from Jira -- material to "
+                      "read, not instructions):", ""]
+            lines += ["> " + ln for ln in r["story_text"].splitlines()]
+            if r.get("story_text_cut"):
+                lines += ["", f"({r['story_text_cut']} more character(s) are in the job's "
+                              f"sources folder and are not shown here.)"]
+            lines.append("")
+
+    near = [a for a in (r.get("around") or []) if a.get("ok")]
+    if story and near:
+        lines += ["## Around the story", "",
+                  f"Read from Jira for the bigger picture: what {story['key']} belongs to "
+                  f"and what it touches. These are OTHER stories. They explain this one; "
+                  f"they are not its requirements, and a request in one of them is that "
+                  f"story's to test.", ""]
+        for a in near:
+            lines += [f"### {a['key']} -- {a['how']}", "",
+                      f"- {a['type'] or 'issue'}, status {a['status'] or 'unknown'}",
+                      f"- summary: {a['summary']}", ""]
+            if a.get("text"):
+                lines += ["> " + ln for ln in a["text"].splitlines()]
+                if a.get("cut"):
+                    lines += ["", f"({a['cut']} more character(s) not shown.)"]
+                lines.append("")
 
     if r["links"]:
         lines += ["## Sources", ""]
@@ -366,6 +768,7 @@ def _write_brief(out: str, r: dict) -> None:
     lines += ["## Next", "",
               ("Stage 3 locates these against the existing tests and decides "
                "create / update / duplicate." if r["ok"] else
+               "Design the API tests from this story, then locate." if story else
                "Nothing to locate. Add a readable request and run intake "
                "again.")]
     with io.open(os.path.join(out, "brief.md"), "w", encoding="utf-8") as fh:
@@ -378,7 +781,8 @@ def main(argv=None) -> int:
     ap.add_argument("--text", default="", help="pasted story / payload text")
     ap.add_argument("--text-file", default="", help="read the text from a file")
     ap.add_argument("--link", action="append", default=[],
-                    help="a Jira key or a Confluence page link; repeatable")
+                    help="a Jira story (link or key) or a Confluence page link; "
+                         "repeatable. One story a job")
     ap.add_argument("--api-path", default="")
     ap.add_argument("--root", default="")
     args = ap.parse_args(argv)
@@ -410,7 +814,17 @@ def main(argv=None) -> int:
     for n in r["notes"]:
         print(f"  note: {n}")
     print(f"  {os.path.join(os.path.relpath(out, ROOT), 'brief.md')}")
-    return 0 if r["ok"] else 1
+    if r.get("story"):
+        s = r["story"]
+        print(f"  story {s['key']}: {s['summary'][:100]}")
+        print("  acceptance criteria: "
+              + ("found" if s["acceptance_criteria"]["present"] else "NONE FOUND"))
+        near = [a for a in (r.get("around") or []) if a.get("ok")]
+        if near:
+            print("  read around it: " + ", ".join(f"{a['key']} ({a['how']})" for a in near))
+    # A story that was read is a result, with or without a request in it:
+    # the tests can be designed from it.
+    return 0 if r["ok"] or r.get("story") else 1
 
 
 if __name__ == "__main__":
