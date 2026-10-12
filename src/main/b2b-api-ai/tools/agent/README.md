@@ -183,9 +183,11 @@ every switch on. Any other value is an error.
 ### New test case
 
 Paste a story, request payloads, and Jira or Confluence links. It reads
-them, then decides **create / update / upstream**: whether this is a new
-test, a change to one that exists, or something that belongs further up
-the chain.
+them, then decides **create / update / upstream / confirm**: whether
+this is a new test, a change to one that exists (and whether a new row
+of data is all it takes), something that belongs further up the chain,
+or something a person must look at. How it decides is set out
+[below](#how-it-decides-whether-a-test-already-exists).
 
 Writes `brief.md` and `plan.md` into the job directory.
 
@@ -212,6 +214,118 @@ Two things it needs before links will work:
   ```
   python tools/agent/locate.py --job <job> --rebuild-index
   ```
+
+#### How it decides whether a test already exists
+
+*Then: is it already automated?* answers one question per request of
+the story, and writes the answer and its evidence to `plan.md` (and, for
+programs, `locate.json`). No model is asked: it is a comparison against
+what is in this folder.
+
+| Decision | Means | Stops the job? |
+|---|---|---|
+| **CREATE** | nothing automated makes this call this way: write a new test | no |
+| **UPDATE** | a hand-written test covers it: add to that test | no |
+| **UPSTREAM** | a *generated* test covers it. A change there is overwritten by the next convert, so it belongs in the ReadyAPI XML | yes |
+| **CONFIRM** | it cannot be told from here -- a likeness, a likely duplicate, or data that is already there. A person decides | yes |
+
+A stop is the step working. The Agent loop tab is handed `plan.md`, so
+what is decided here is what gets written.
+
+**What a request is compared with, in order:**
+
+1. **The converted suites** (`tools/jira/shape_match.py`). Each request
+   is reduced to a *shape* -- verb, path with its parameters as
+   `{name}`, the names and types of the body's fields, the names of the
+   query parameters -- and looked up in the shape index, which holds the
+   same for every call in the ReadyAPI sources. Same shape, one test:
+   UPSTREAM. Same shape and the same expected status in several: a
+   likely duplicate, CONFIRM. Alike but not the same (a field more or
+   fewer): CONFIRM. A path pasted with real values in it
+   (`/props/ABCDE/groups`) is first read against the recorded templates;
+   only a path none of them fits is then read against the templates
+   hand-written tests use.
+
+2. **The hand-written tests** (`tools/agent/coverage.py`). They are not
+   in the shape index, so they are read from the committed code on every
+   run -- there is nothing to rebuild and nothing to go stale. A call is
+   recognised in these ways, and the plan says which:
+
+   | Found as | The code says | How the endpoint is known |
+   |---|---|---|
+   | a written path | `.post("/guests/{guestId}/businesses", body)` | it is there |
+   | a client call | `client.shopGroups(token, code)` | the generated client, or `_audit/<suite>/facade_endpoints.md` |
+   | a step of the DSL | `.enrollOwner()` | followed through the DSL to the client call behind it |
+   | a helper | `addBusiness("x")`, a method of the same class | whichever of the above the helper is |
+
+   A request nothing generated covers, that a hand-written **`@Test`
+   method** makes, is UPDATE. The match is by verb and path -- the code
+   does not show the body, and the plan says so. A step of the DSL, a
+   helper or a set-up method that no test uses is not coverage; it is
+   named as a note, so that the new test is written with it rather than
+   with a second copy of the call.
+
+   A helper is followed one level: a helper that calls another helper
+   is not. When hand-written tests of *different* paths all fit what was
+   pasted, or the path fits several templates and none can be chosen,
+   the answer is CONFIRM.
+
+   Two things are deliberately not credited, because the name is all
+   there is to go on. A client method whose name means **more than one**
+   endpoint across the converted suites (`create`, `read`) credits none
+   of them. A DSL step with a name any object might have (`get`, `build`,
+   `with`) is never followed: `map.get("k")` is not a step.
+
+   Which folders count as hand-written tests is `handwritten_roots` in
+   `tools/agent/policy.json`. It is deliberately not all of `tests/`:
+   the framework's own unit tests are there too, and cover no story.
+   Generated folders are never read, whatever the list says, and
+   neither is a folder that links out of the project.
+
+3. **The data.** The CSV of each test a request matches is opened (each
+   file once; the first 12, and the plan says when there were more) and
+   one of these is said under *the data* in the plan:
+
+   | Finding | Means |
+   |---|---|
+   | **The data is already there** | every field of the request has a column, and a row holds the same values and the same expected status. On an UPDATE this becomes CONFIRM: adding it again is a duplicate |
+   | **The same inputs are there with another expected status** | a row holds the same values and expects something else. On an UPDATE this becomes CONFIRM: one set of inputs with two expectations is for a person to settle |
+   | **A new row is enough** | every field has a column and no row has these values. The test does not change; its CSV gets a row |
+   | **A row alone is not enough** | the request carries a field no column holds -- or two fields of one name that would need one column, or an expected status the file has no column for. What the test sends for those is fixed in its template or its code, so the test changes too |
+   | **Not compared** | no data file, the file is not on this machine (generated files are not committed), or the request carries no values |
+
+   A field is paired with a column by **name**: `peakRooms` with
+   `peakRooms`, `tpl_peakRooms`, `Properties.peakRooms`. Values filling
+   a pasted path (`ABCDE` for `{propCode}`) are compared too. `5` and
+   `5.0` are one value; `01234` and `1234` are not. A `null` in the body
+   is a field like any other. Rows with `execute` set to `N` do not
+   count.
+
+4. **A story with no request in it.** When the story's text gave no
+   request and *Design the API tests* has been run for the job, the
+   endpoints of the designed cases are located instead -- run *Then: is
+   it already automated?* again after designing. A designed endpoint has
+   no body, so it can only be matched as a call: one a generated test
+   already makes is CONFIRM, never permission to write. A design made in
+   mock mode is not used. Requests found in the story always win.
+   Designed cases whose endpoint cannot be read as `VERB /path` are
+   counted at the top of the plan, not dropped in silence.
+
+**What it cannot tell you -- read these before trusting a CREATE:**
+
+- A client call or a DSL step can only be turned into an endpoint when a
+  **converted suite is on the machine**. The plan lists every `@Test`
+  method it could read no call from -- for that reason, or because the
+  path is held in a constant or built by `String.format`. A CREATE does
+  not rule those tests out.
+- Names are all the data check has. A column named differently from the
+  field is not found, and the finding then reads *a row alone is not
+  enough* when a row might do.
+- A hand-written match compares no body. Two tests of one endpoint with
+  different payloads look the same to it.
+- A path assembled in code (`"/accounts/" + id + "/members"`) is known
+  only by how it starts. It is noted as a likeness and decides nothing.
+- The shape index is a snapshot. After a convert, rebuild it.
 
 #### Design the API tests (optional)
 
@@ -998,7 +1112,7 @@ Everything is under `target/agent/<job>/`:
 target/agent/<job>/
   intake.json            what was pasted, with credentials redacted
   brief.md               the story as the tools read it
-  plan.md                create / update / upstream, and why
+  plan.md                create / update / upstream / confirm, and why
   locate.json            the matching evidence behind that verdict
   <runnable>.log         full output of each command
   <runnable>.status.json state, exit code, and the argv it ran
@@ -1047,7 +1161,7 @@ The API never accepts a command *string*. Every runnable is named in
 |---|---|
 | `convert` | convert ReadyAPI suites |
 | `intake` | read the pasted story and links |
-| `locate` | decide create / update / upstream |
+| `locate` | decide create / update / upstream / confirm |
 | `jira-verify` | ask Jira whether the configured token is accepted |
 | `jira-versions` | a project's versions, newest first |
 | `jira-release` | what a release holds, and what changed since another |
@@ -1092,6 +1206,16 @@ used to write outside the tree.
   guard above, not a bug.
 - **`locate` says the index is stale** — it is telling you the truth.
   Rebuild it after a convert.
+- **`locate` says the intake found no request** — the story is prose.
+  Run *Design the API tests*, then locate again: the designed endpoints
+  are checked instead.
+- **The plan says tests "could not be seen into"** — they use client
+  calls or DSL steps and no converted suite is on this machine to say
+  which endpoints those are (convert a suite and locate again), or their
+  path is not written out where it is used.
+- **A hand-written test exists but the plan says CREATE** — its folder
+  is not in `handwritten_roots` (`tools/agent/policy.json`), or see the
+  line above.
 - **Confluence or Jira link refused** — the host is not in
   `*_config.base_urls`. Add it to `program_configuration.json`; do not
   work around it.
@@ -1104,6 +1228,7 @@ used to write outside the tree.
 python tools/agent/test_intake.py
 python tools/agent/test_jobs.py
 python tools/agent/test_locate.py
+python tools/agent/test_coverage.py
 python tools/agent/test_loop.py
 python tools/agent/test_design.py
 python tools/agent/test_history.py
@@ -1127,7 +1252,9 @@ no live Jira and leaves nothing behind. It loads pages and sends the
 requests the buttons send; it does not click.
 
 `test_loop.py` is in the gate (`verify_all`, check `agent-loop`): it is
-the code that decides what may be pushed. The other three are **not** in
+the code that decides what may be pushed. So are `test_locate.py` and
+`test_coverage.py` (`agent-locate`, `agent-coverage`): they decide
+whether anything is written at all. Some of the others are **not** in
 the usual sweep -- the repository-wide run globs `tools/test_*.py` and
 `tools/ra_converter/test_*.py`, which does not reach this directory. Run
 them yourself after touching `intake.py`, `jobs.py` or `locate.py`:

@@ -88,6 +88,11 @@
   ],
   "repair_attempts": 1,
   "repeat_discard": false,
+  "handwritten_roots": [
+    "src/test/java/com/hi/api/tests/manual/",
+    "src/test/java/com/hi/api/tests/jira/",
+    "src/main/java/com/hi/api/dsl/"
+  ],
   "cursor_deadline_seconds": {
     "generate": 2700,
     "design": 900,

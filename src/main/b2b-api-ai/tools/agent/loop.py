@@ -228,6 +228,12 @@ DEFAULT_POLICY = {
     # that run keeps writing -- and each use puts the tree back to how it
     # was BEFORE THE RUN, the reviewer's own later work included.
     "repeat_discard": False,
+    # Where hand-written API tests are, for "does a test of this call
+    # exist already" (coverage.py). Not all of tests/: the framework's own
+    # unit tests are there too, and cover no story.
+    "handwritten_roots": ["src/test/java/com/hi/api/tests/manual/",
+                          "src/test/java/com/hi/api/tests/jira/",
+                          "src/main/java/com/hi/api/dsl/"],
     "branch_prefix": "agent/",
     "remote": "origin",
     "protected_branches": ["main", "master"],

@@ -35,6 +35,29 @@ THE DECISIONS
 
 `upstream` and `confirm` are stops. A stop here is the point: this stage
 exists to prevent writing, not to authorise it.
+
+THREE THINGS THE SHAPE INDEX DOES NOT KNOW (coverage.py)
+--------------------------------------------------------
+* HAND-WRITTEN TESTS are not in the shape index, which is built from the
+  ReadyAPI sources. They are read from the committed code each run. A
+  request nothing generated covers, that a hand-written test makes, is
+  `update` -- matched by verb and path, which is all code can show.
+  Only a @Test method counts; a step or a helper no test uses, and a
+  path the code only starts (`"/a/" + id`), are notes and decide nothing.
+  A pasted path is read against the RECORDED templates first, so a
+  hand-written template can never hide a generated match.
+* THE DATA. For each test a request matches, its CSV is read: is a row
+  with these values already there, is a new row enough, or does the
+  request carry a field no column can hold? "The data is already there"
+  turns an `update` into `confirm`: adding it again is the duplicate this
+  stage exists to stop.
+* A STORY WITH NO REQUEST IN IT. When the story's own text gave none and
+  "Design the tests" has run, the designed endpoints are the requests.
+  They have no body, so they are matched as calls; one that a generated
+  test makes is `confirm`, never permission to write.
+
+None of this turns a stop into a go: an `upstream` or a `confirm` from
+the shape index stays what it was.
 """
 from __future__ import annotations
 
@@ -43,6 +66,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 
@@ -117,6 +141,7 @@ WHY = {
 # four call sites per run -- which re-runs its module-level code each
 # time for no gain.
 intake = _load("locate_intake", os.path.join(HERE, "intake.py"))
+coverage = _load("locate_coverage", os.path.join(HERE, "coverage.py"))
 # Evidence shown beside the plan. Deciding does not depend on it, so a
 # fault in it must not stop a decision from being made.
 try:
@@ -341,22 +366,179 @@ def run(job: str, root: str = "", index_path: str = DEFAULT_INDEX,
         intake = json.load(fh)
 
     requests = intake.get("requests") or []
+    requests_note = ""
     if not requests:
-        raise SystemExit(
-            f"the intake for job {job!r} found no request. There is nothing "
-            f"to locate -- see brief.md for what it looked at.")
+        # A story written as prose. If the tests have been designed, the
+        # designed endpoints are the requests.
+        requests, requests_note = coverage.design_requests(out)
+        if not requests:
+            raise SystemExit(
+                f"the intake for job {job!r} found no request"
+                + (f", and {requests_note}" if requests_note else "")
+                + ". There is nothing to locate -- see brief.md for what it "
+                  "looked at. For a story with no request in it, use Design "
+                  "the tests first: the endpoints it proposes are then "
+                  "checked here.")
+        requests_note = ("The story held no request. These are the endpoints "
+                         "of the designed test cases (design.json); they carry "
+                         "no body, so each is matched as a CALL."
+                         + (f" Note: {requests_note}." if requests_note else ""))
 
     index, index_note = load_index(index_path, rebuild)
+    here = root or ROOT
+    seen = coverage.scan(here)
+    hand_calls = seen["calls"]
+    generated_calls = coverage.call_index(index or {})
 
+    # A pasted concrete path is read against the RECORDED templates first,
+    # exactly as before. Only a path none of them fits is then read against
+    # the templates hand-written tests use. Offering both at once let a
+    # hand-written `/v1/guests/{guestId}/businesses` claim a pasted
+    # `/v1/guests/123/businesses` before the recorded `/guests/{guestId}/
+    # businesses` (which fits once the prefix is trimmed) was tried -- and
+    # an UPSTREAM became an UPDATE.
     templates = jira_extract.path_templates(index or {})
+    hand_templates = [p for p in coverage.handwritten_templates(hand_calls)
+                      if p not in templates]
 
     decisions = []
     for i, req in enumerate(requests, 1):
+        # `/guests/123/businesses/` is `/guests/123/businesses`. Left as
+        # pasted, the extra slash made it fit no template, the shape index
+        # was asked about a path it had never seen, and said NEW.
+        raw = str(req.get("raw_path") or "")
+        tidy = re.sub(r"/{2,}", "/", raw.split("?", 1)[0]).rstrip("/") or raw
+        if tidy != raw:
+            req = dict(req, raw_path=tidy)
         cand = candidate_from(req, job, templates)
+        t = cand["_templatized"]
+        # Whether the recorded templates left the path undecided is settled
+        # HERE, before any hand-written template is looked at: that stop is
+        # not one a hand-written test can lift.
+        ambiguous = bool(t["alternatives"]) and not t["templated"]
+        if not t["templated"] and hand_templates:
+            again = candidate_from(req, job, hand_templates)
+            if again["_templatized"]["templated"]:
+                again["_templatized"]["alternatives"] = (
+                    t["alternatives"] + again["_templatized"]["alternatives"])
+                cand = again
+            elif again["_templatized"]["alternatives"]:
+                # Several hand-written templates fit and none could be
+                # chosen: as undecided as it is among recorded ones.
+                ambiguous = True
+                t["alternatives"] = t["alternatives"] + again["_templatized"]["alternatives"]
         t = cand.pop("_templatized")
         result = shape_match.match(cand, index)
-        decision, entries = decide(
-            result, ambiguous_path=bool(t["alternatives"]) and not t["templated"])
+        decision, entries = decide(result, ambiguous_path=ambiguous)
+        unsure = ""
+        if decision == UPDATE and ambiguous:
+            unsure = ("the path fits more than one template, so which call this is cannot "
+                      "be told; a person decides")
+        elif decision == UPDATE and not any(e.get("java_class_fqn") for e in entries):
+            unsure = ("it matches a recorded case that is mapped to no test, so there is "
+                      "nothing to add to; a person decides")
+        why, notes = WHY[decision], []
+        if unsure:
+            decision, why = CONFIRM, unsure
+        has_body = bool(str(req.get("body") or "").strip())
+        asked_path = req.get("raw_path") or t["path"]
+        made = (coverage.handwritten_matches(hand_calls, req.get("verb"), t["path"])
+                or coverage.handwritten_matches(hand_calls, req.get("verb"), asked_path))
+        # A TEST that makes the call covers it. A step of the DSL that makes
+        # it, used by no test, covers nothing -- but is what a new test
+        # should be written with.
+        # ...and a path the code only STARTS (`"/guests/" + id + ...`) is a
+        # likeness: it is said, and decides nothing.
+        hand = [c for c in made if c.get("is_test") and not c.get("partial")]
+        steps = [c for c in made if not c.get("is_test") and not c.get("partial")]
+        alike = [c for c in made if c.get("is_test") and c.get("partial")]
+        also = (coverage.generated_call_matches(generated_calls, req.get("verb"), t["path"])
+                if decision == CREATE else [])
+        if decision == CREATE and also and req.get("from_design"):
+            # Named by the design, with no request behind it: "the same
+            # call" is all that can be said, and a generated test makes it.
+            # Not permission to write. (A PASTED request with no body -- a
+            # GET -- was compared in full by the shape index, and its
+            # CREATE stands.)
+            decision, entries = CONFIRM, also
+            why = ("the design named this endpoint, with no request to compare, and "
+                   "generated test(s) already call it. Whether the story is covered cannot "
+                   "be told from a name: a person decides (if it is covered, the change "
+                   "belongs upstream)")
+            if hand:
+                notes.append(f"{len(hand)} hand-written test(s) make this call as well, e.g. "
+                             f"{hand[0]['java_class_fqn']}#{hand[0]['java_method']}")
+        elif decision == CREATE and len({coverage.path_key(c["path"]) for c in hand}) > 1:
+            # Tests of DIFFERENT paths all fit what was pasted
+            # (`/guests/{guestId}/businesses` and `/guests/123/{kind}`).
+            decision, entries = CONFIRM, hand
+            why = ("hand-written tests of more than one path fit this request, so which "
+                   "of them it belongs to cannot be told; a person decides")
+        elif decision == CREATE and hand:
+            decision, entries = UPDATE, hand
+            why = ("a hand-written test already makes this call (matched by verb and "
+                   "path; the body was not compared) -- add to it rather than writing "
+                   "a second class")
+            if also:
+                notes.append(f"{len(also)} generated test(s) call this endpoint too, in "
+                             f"another shape, e.g. "
+                             f"{also[0].get('java_class_fqn') or also[0].get('suite')}"
+                             f"#{also[0].get('java_method') or ''}. Those are the "
+                             f"converter's: the addition goes in the hand-written test")
+        elif decision == CREATE and also:
+            notes.append(f"the same endpoint is called by {len(also)} generated test(s) "
+                         f"with a different {'body' if has_body else 'set of parameters'}, e.g. "
+                         f"{also[0].get('java_class_fqn') or also[0].get('suite')}"
+                         f"#{also[0].get('java_method') or ''}. This request is "
+                         f"not one of theirs, so it is new")
+        elif decision != CREATE and hand:
+            notes.append(f"{len(hand)} hand-written test(s) also make this call, e.g. "
+                         f"{hand[0]['java_class_fqn']}#{hand[0]['java_method']}")
+        if alike and not hand:
+            notes.append(f"{len(alike)} hand-written test(s) build a path in code that STARTS "
+                         f"like this one, e.g. {alike[0]['java_class_fqn']}"
+                         f"#{alike[0]['java_method']} ({alike[0]['file']}:{alike[0]['line']}). "
+                         f"Whether it is this call cannot be read: look before writing")
+        if steps and not hand:
+            notes.append("no hand-written test makes this call, but the committed code "
+                         "already has a step for it: "
+                         + ", ".join(f"{c['java_class_fqn']}#{c['java_method']}()"
+                                     for c in steps[:3])
+                         + " -- write the test with it rather than a second copy of the call")
+
+        # The data: what each matched test's CSV says about this request.
+        # Every DISTINCT data file, not the first few tests: the row may be
+        # in the last one, and one test can be matched more than once.
+        data, files, not_examined = [], set(), 0
+        for e in entries:
+            name = e.get("csv_path") or ""
+            if name in files:
+                continue
+            files.add(name)
+            if len(data) >= coverage.MAX_DATA_FILES:
+                not_examined += 1
+                continue
+            found = coverage.examine(here, name, req, t.get("examples"))
+            found["test"] = f"{e.get('java_class_fqn') or e.get('suite') or '?'}" \
+                            f"#{e.get('java_method') or ''}"
+            data.append(found)
+        verdicts = [f["verdict"] for f in data]
+        if decision == UPDATE and "same-inputs" in verdicts and "row-exists" not in verdicts:
+            decision = CONFIRM
+            why = ("the call is automated AND a row with this request's values is already "
+                   "in its data file, expecting ANOTHER status. One set of inputs with two "
+                   "expectations: a person says which the story means")
+        elif decision == UPDATE and "row-exists" in verdicts:
+            decision = CONFIRM
+            why = ("the call is automated AND a row with this request's values is already "
+                   "in its data file. Adding it again would be a duplicate: a person says "
+                   "whether the story means a different case")
+        elif decision == UPDATE and verdicts and all(v == "add-row" for v in verdicts):
+            why += ". A new row is enough: every field of the request has a column"
+        elif decision == UPDATE and "needs-more" in verdicts:
+            why += (". A new row alone is NOT enough: the request carries a field the data "
+                    "file has no column for, so the test (its template or its assertions) "
+                    "changes too")
         decisions.append({
             "n": i,
             "verb": req.get("verb"),
@@ -365,8 +547,10 @@ def run(job: str, root: str = "", index_path: str = DEFAULT_INDEX,
             "templated": t["templated"],
             "path_alternatives": t["alternatives"][:5],
             "provenance": req.get("provenance", ""),
+            "from_design": bool(req.get("from_design")),
             "decision": decision,
-            "why": WHY[decision],
+            "why": why,
+            "notes": notes,
             "verdict": result.get("verdict"),
             "match_level": result.get("match_level"),
             "matches": [{
@@ -374,14 +558,26 @@ def run(job: str, root: str = "", index_path: str = DEFAULT_INDEX,
                 "java_method": e.get("java_method"),
                 "csv_path": e.get("csv_path"),
                 "suite": e.get("suite"),
-                "destination": shape_match.destination(e),
+                "kind": e.get("kind") or "generated",
+                "destination": (f"hand-written: {e.get('file')}:{e.get('line')}"
+                                + (f" -- found through {e['via']}" if e.get("via") else "")
+                                + (f"; data in {e['csv_path']}" if e.get("csv_path") else "")
+                                if e.get("kind") == "handwritten"
+                                else shape_match.destination(e)),
             } for e in entries[:5]],
+            "data": data,
+            "data_not_examined": not_examined,
         })
 
     plan = {
         "job": job,
         "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "index": index_note,
+        "requests_note": requests_note,
+        "handwritten_calls": sum(1 for c in hand_calls if c.get("is_test")),
+        # Tests no call could be read from: a "create" below does not
+        # rule THEM out.
+        "handwritten_blind": seen["blind"],
         "decisions": decisions,
         "stops": [d for d in decisions if d["decision"] in STOPS],
     }
@@ -410,7 +606,20 @@ def _write_plan(out: str, plan: dict) -> None:
         lines += [f"**{len(plan['stops'])} request(s) stop here.** Nothing is "
                   f"written until they are resolved.", ""]
     lines += [f"- job: {plan['job']}", f"- at: {plan['at']}",
-              f"- index: {plan['index']}", ""]
+              f"- index: {plan['index']}",
+              f"- hand-written tests read: {plan.get('handwritten_calls', 0)} call(s) found "
+              f"in the committed test code", ""]
+    blind = plan.get("handwritten_blind") or {}
+    if blind.get("tests"):
+        lines += [f"**{len(blind['tests'])} hand-written test(s) could not be seen "
+                  f"into** -- {blind['reason']}. A `CREATE` below does not rule them out:",
+                  ""] + [f"- `{name}`" for name in blind["tests"][:12]]
+        if len(blind["tests"]) > 12:
+            lines.append(f"- ...and {len(blind['tests']) - 12} more (all of them are in "
+                         f"locate.json)")
+        lines.append("")
+    if plan.get("requests_note"):
+        lines += [f"**{plan['requests_note']}**", ""]
 
     for d in plan["decisions"]:
         lines += [f"## {d['n']}. `{d['verb']} {d['path']}` -> **{d['decision'].upper()}**",
@@ -434,6 +643,16 @@ def _write_plan(out: str, plan: dict) -> None:
                 meth = m.get("java_method") or ""
                 lines.append(f"    - `{where}#{meth}`")
                 lines.append(f"      {m.get('destination', '')}")
+        for note in d.get("notes") or []:
+            lines.append(f"- note: {note}")
+        if d.get("data"):
+            lines.append("- the data:")
+            for f in d["data"]:
+                lines.append(f"    - `{f.get('test', '?')}`: {coverage.describe(f)}")
+            if d.get("data_not_examined"):
+                lines.append(f"    - {d['data_not_examined']} more data file(s) of matched "
+                             f"tests were NOT examined (the first "
+                             f"{coverage.MAX_DATA_FILES} are)")
         lines.append("")
 
     lines += _history_lines(plan)

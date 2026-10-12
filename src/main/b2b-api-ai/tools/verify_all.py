@@ -243,6 +243,18 @@ CHECKS = [
           "the diagnostics record keeps the full error a command only names, "
           "writes no credential, counts a repeated error instead of repeating "
           "it, and is never the reason a command fails"),
+    Check("agent-locate",
+          [PY, "tools/agent/test_locate.py"],
+          "a request a generated test covers stops and goes upstream, one "
+          "only a hand-written test makes is an update, a row that is "
+          "already in the data stops, and a designed endpoint with no "
+          "request behind it never authorises writing over a generated test"),
+    Check("agent-coverage",
+          [PY, "tools/agent/test_coverage.py"],
+          "a call is credited to a hand-written test only when the test "
+          "makes it (not when a comment, an error message or the next "
+          "method names it), and 'a new row is enough' is said only when "
+          "every field of the request has a column"),
     Check("agent-publish",
           [PY, "tools/agent/test_publish.py"],
           "the two commands that write to Jira and Confluence are off unless "
