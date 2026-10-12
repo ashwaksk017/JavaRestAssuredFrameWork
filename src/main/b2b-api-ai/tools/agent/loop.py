@@ -946,12 +946,58 @@ def _one_line(value, cap: int = 400) -> str:
     return s[:cap] + (" ..." if len(s) > cap else "")
 
 
-def designed_cases(job_dir: str, cap: int = 20000) -> tuple:
+def xray_keys(job_dir: str, mocked: bool = None) -> dict:
+    """{designed case id: Jira key} from xray-tests.json (xraytests.py):
+    the Xray Test issues created for this job's design. With `mocked`
+    given, only keys of that kind: a stand-in's key never reaches a real
+    run's files, nor a real key a stand-in's."""
+    try:
+        with io.open(os.path.join(job_dir, "xray-tests.json"), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    tests = data.get("tests") if isinstance(data, dict) else None
+    out = {}
+    for ident, entry in (tests if isinstance(tests, dict) else {}).items():
+        if not isinstance(entry, dict) or not str(ident).startswith("design:"):
+            continue
+        if mocked is not None and bool(entry.get("mock")) != bool(mocked):
+            continue
+        key = str(entry.get("key") or "").upper()
+        if re.fullmatch(r"[A-Z][A-Z0-9_]+-[0-9]+", key):
+            out[str(ident)[len("design:"):]] = key
+    return out
+
+
+def xray_landed(root: str, files: list, keys: dict) -> dict:
+    """Which of the Xray keys handed to the agent are in the files it
+    wrote, and which are not: {found: {case: key}, missing: {case: key}}."""
+    found, missing = {}, {}
+    text = ""
+    for rel in files or []:
+        if not rel.lower().endswith((".java", ".csv", ".properties", ".json", ".xml")):
+            continue
+        # The whole file: a key in the last row of a long data sheet is
+        # as landed as one in the first.
+        try:
+            with io.open(os.path.join(root, rel.replace("/", os.sep)), encoding="utf-8",
+                         errors="replace") as fh:
+                text += "\n" + fh.read()
+        except OSError:
+            continue
+    for case, key in (keys or {}).items():
+        (found if re.search(r"(?<![A-Z0-9_-])" + re.escape(key) + r"(?![0-9])", text)
+         else missing)[case] = key
+    return {"found": found, "missing": missing}
+
+
+def designed_cases(job_dir: str, cap: int = 20000, keys: dict = None) -> tuple:
     """(text, note). The cases design.py wrote for this job, one line per
     step. Text is "" when there is no design, when it was made from a
     different brief than the job has now, or when it is unreadable; the
     note says which, for the log. A case on an endpoint the
-    specification does not have is left out."""
+    specification does not have is left out. A case that has an Xray key
+    (`keys`) carries it: the agent puts it in the row it writes."""
     path = os.path.join(job_dir, "design.json")
     if not os.path.isfile(path):
         return "", ""
@@ -973,8 +1019,10 @@ def designed_cases(job_dir: str, cap: int = 20000) -> tuple:
     for c in cases if isinstance(cases, list) else []:
         if not isinstance(c, dict) or c.get("endpoint_in_spec") is False:
             continue
+        key = (keys or {}).get(_one_line(c.get("id"), 40), "")
         lines.append(f"{_one_line(c.get('id'), 40)} [{_one_line(c.get('type'), 20)}, "
-                     f"{_one_line(c.get('priority'), 20)}] "
+                     f"{_one_line(c.get('priority'), 20)}]"
+                     + (f" [Xray {key}]" if key else "") + " "
                      f"{_one_line(c.get('endpoint'), 200)} -- {_one_line(c.get('title'))}")
         for s in c.get("steps") or []:
             if not isinstance(s, dict):
@@ -986,6 +1034,9 @@ def designed_cases(job_dir: str, cap: int = 20000) -> tuple:
     if len(text) > cap:
         text = text[:cap] + "\n[... the rest is in design.md ...]"
     note = f"{sum(1 for l in lines if not l.startswith('    '))} designed case(s) included"
+    with_key = sum(1 for l in lines if not l.startswith("    ") and "[Xray " in l)
+    if with_key:
+        note += f", {with_key} with an Xray key"
     if data.get("partial"):
         note += " (the design is PARTIAL: its reply was cut off)"
     return text, note
@@ -1127,7 +1178,7 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
         "===== plan.md =====",
         plan or "(empty)",
     ]
-    designed, _note = designed_cases(job_dir)
+    designed, _note = designed_cases(job_dir, keys=xray_keys(job_dir, mocked=mock_cursor()))
     if designed and scope["name"] != "converter":
         parts += ["", "===== TEST CASES PROPOSED FOR THIS JOB (design.md) =====",
                   "These were proposed by an earlier design step from the "
@@ -1139,7 +1190,12 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
                   "assertion to write. Skip one you cannot automate here "
                   "and say which and why. Test data is described, not "
                   "given: take real values from Config or a CSV column, "
-                  "never invent one.", "", designed,
+                  "never invent one. A case marked [Xray KEY] already exists "
+                  "in Jira as that Test issue: put KEY in the `jira_xray_id` "
+                  "column of the data row you write for it (add the column "
+                  "when the sheet has none), or in `@XrayTest(\"KEY\")` on a "
+                  "test method that takes no row. Never invent a key, and never "
+                  "put one key on two cases.", "", designed,
                   "===== end of proposed test cases ====="]
     if repair:
         parts += ["", "===== YOUR PREVIOUS ATTEMPT DID NOT VERIFY =====",
@@ -1853,6 +1909,22 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         review = dict(review, files={k: changes[k] for k in ("created", "modified")},
                       generated=generated, verify=result,
                       hashes={f: _sha(os.path.join(root, f)) for f in files})
+        # The Xray keys the agent was handed: each should now be in a row
+        # or an annotation it wrote. One that is not is said, not failed --
+        # the person reviewing decides whether the case was skipped for a
+        # reason.
+        handed = xray_keys(job_dir, mocked=mocked)
+        if handed:
+            landed = xray_landed(root, files, handed)
+            review["xray"] = landed
+            if landed["missing"]:
+                gaps = ", ".join(f"{c} ({k})" for c, k in sorted(landed["missing"].items())[:12])
+                say(f"WARN {len(landed['missing'])} of {len(handed)} Xray key(s) handed to the "
+                    f"agent are in none of the files it wrote: {gaps}. Those rows carry no "
+                    f"jira_xray_id, so their results will not reach Xray.")
+                clog.write(f"xray keys not in the written files: {gaps}")
+            else:
+                say(f" ok  all {len(handed)} Xray key(s) are in the written files")
         if result["ok"]:
             say(" ok  verified")
             _prune_backup(gen_backup, generated)

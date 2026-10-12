@@ -261,6 +261,12 @@ CHECKS = [
           "switched on, take a file by name and a target given twice, never "
           "replace or edit, refuse what a stand-in made or what holds a private "
           "value, and record every write before it is made"),
+    Check("agent-xraytests",
+          [PY, "tools/agent/test_xraytests.py"],
+          "creating Xray Test issues is off unless switched on, takes one story "
+          "named twice, sends nothing a stand-in made or that holds a private "
+          "value, writes every key down as it comes back, and never creates a "
+          "case twice"),
     Check("agent-manualtests",
           [PY, "tools/agent/test_manualtests.py"],
           "manual test cases are a delta: an update must name a test that was "

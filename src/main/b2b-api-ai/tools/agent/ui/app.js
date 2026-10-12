@@ -467,7 +467,133 @@ async function showDesign(j) {
     $(id).hidden = !have;
     $(id).href = `/api/download?job=${encodeURIComponent(j)}&name=${name}`;
   }
+  if (j === job()) refreshXray("design");
 }
+
+// ---- Xray: the cases as Jira Test issues ---------------------------------
+// One block on each of the two tabs that produce cases. What is on is asked
+// of the server each time the block is drawn (the switch can be changed
+// while the page is open); the keys already created are shown beside it.
+const xrayStatus = {};              // what -> the last status read for the job in the box
+
+function showXrayKeys(what, st) {
+  const box = $(`xray-${what}-result`);
+  const kids = [];
+  const keys = (st && st.keys && st.keys[what]) || {};
+  const names = Object.keys(keys).sort();
+  if (st && st.problem) kids.push(banner("bad", `Xray cannot be written to: ${st.problem}`));
+  else if (st && st.flavour === "cloud")
+    kids.push(banner("warn", "The xray configuration says Xray Cloud. Creating tests there is not " +
+      "supported yet: import xray.csv / manual-new-cases.csv with Xray's importer."));
+  else if (st && !st.create_tests)
+    kids.push(banner("warn", "Creating tests in Jira is switched off. To allow it, set " +
+      "jira_config.publish.create_tests to true in program_configuration.json."));
+  else if (st && st.mock_jira) kids.push(banner("warn", "MOCK Jira: a create changes a file on this machine; no Jira is contacted."));
+  else if (st && st.create_tests && (st.cases || {})[what] > 0 && !(st.real || {})[what])
+    kids.push(banner("warn", `The ${what} result was made by a stand-in, or does not say how it was made, ` +
+      "and Jira here is real: it will not be sent. Run the step again for real first."));
+  if (st && st.notes && st.notes[what]) kids.push(banner("warn", st.notes[what]));
+  if (names.length) {
+    kids.push(heading(`Already in ${st.mock_jira ? "the mock " : ""}Xray`, names.length));
+    kids.push(table(["Case", "Jira test"], names.map((n) => [el("code", { text: n }), el("code", { text: keys[n] })])));
+  }
+  box.replaceChildren(...kids);
+}
+
+function refreshXray(what) {
+  const j = job();
+  const st0 = $(`xray-${what}-state`);
+  $(`xray-${what}-create`).disabled = true;
+  xrayStatus[what] = null;
+  if (!j) { $(`xray-${what}-result`).replaceChildren(); return; }
+  // What was found last time is shown at once, marked as such, while the
+  // fresh answer is asked for: the keys do not change between visits.
+  api(`/api/artifact?job=${encodeURIComponent(j)}&name=xray-status.json`).then((r) => {
+    let was = null;
+    try { was = JSON.parse(r.text || "null"); } catch { was = null; }
+    if (j === job() && !xrayStatus[what] && was && was.kind === "xray-status" && was.job === j) {
+      showXrayKeys(what, was);
+      setState(st0, "run", "checking what is switched on now…");
+    }
+  }).catch(() => { /* nothing from before */ });
+  const begin = post("/api/start", { job: j, runnable: "xray-status", options: { "--job": j } })
+    // Already being asked (the page was drawn twice quickly): follow that run.
+    .catch((e) => { if (/already running/.test(e.message)) return {}; throw e; });
+  begin
+    .then((begun) => follow("xray-status", document.createElement("pre"), document.createElement("span"), async (run) => {
+      if (j !== job()) return;
+      let st = null;
+      try {
+        const r = await api(`/api/artifact?job=${encodeURIComponent(j)}&name=xray-status.json`);
+        st = JSON.parse(r.text || "null");
+      } catch { st = null; }
+      const fresh = run && run.state === "done" && st && st.kind === "xray-status" && st.job === j &&
+                    String(st.at || "") >= String((begun && begun.started) || "");
+      xrayStatus[what] = fresh ? st : null;
+      showXrayKeys(what, xrayStatus[what]);
+      if (fresh) {
+        if (st.story && !$(`xray-${what}-story`).value.trim()) $(`xray-${what}-story`).value = st.story;
+        const usable = (st.cases || {})[what] > 0 && (st.mock_jira || (st.real || {})[what]);
+        $(`xray-${what}-create`).disabled = !(st.create_tests && usable);
+        if (!(st.cases || {})[what]) setState(st0, "", `no ${what} cases in this job yet`);
+        else setState(st0, "", `${st.cases[what]} case(s); ${Object.keys((st.keys || {})[what] || {}).length} already in Xray`);
+      } else {
+        setState(st0, "bad", "what can be created could not be found out; the Logs tab has the reason");
+      }
+    }, j))
+    .catch((e) => setState(st0, "bad", e.message));
+}
+
+function wireXray(what) {
+  $(`xray-${what}-create`).onclick = () => {
+    const j = job();
+    const st = xrayStatus[what];
+    if (!st || st.job !== j) { setState($(`xray-${what}-state`), "bad", "the status is not for this job; it is being read again"); refreshXray(what); return; }
+    const story = $(`xray-${what}-story`).value.trim().toUpperCase();
+    if (!/^[A-Z][A-Z0-9_]+-[0-9]+$/.test(story)) { setState($(`xray-${what}-state`), "bad", "give the story key, like ABC-12"); return; }
+    const n = (st.cases || {})[what] || 0;
+    const have = Object.keys((st.keys || {})[what] || {}).length;
+    const again = prompt(
+      (st.mock_jira ? "MOCK: this changes a file on this machine. No Jira is contacted.\n\n"
+                    : "This CREATES ISSUES IN JIRA now, and they cannot be deleted from here.\n\n") +
+      `From job ${j}: up to ${n - have} new Test issue(s) in the project of ${story}, one a case, ` +
+      `each linked to ${story}.${have ? ` ${have} case(s) already have a test and are not created again.` : ""}\n\n` +
+      "Type the story key again to go ahead:");
+    if (again === null) return;
+    if (!again.trim()) { setState($(`xray-${what}-state`), "bad", "nothing was typed, so nothing was written"); return; }
+    $(`xray-${what}-create`).disabled = true;
+    $(`xray-${what}-log`).hidden = false;
+    post("/api/start", { job: j, runnable: "xray-create", options: {
+      "--job": j, "--what": what, "--story": story, "--confirm-story": again.trim(),
+      "--expect": st.mock_jira ? "mock" : "real" } })
+      .then(() => follow("xray-create", $(`xray-${what}-log`), $(`xray-${what}-state`), async () => {
+        let r = null;
+        try {
+          const a = await api(`/api/artifact?job=${encodeURIComponent(j)}&name=xray-result.json`);
+          r = JSON.parse(a.text || "null");
+        } catch { r = null; }
+        const box = $(`xray-${what}-result`);
+        const kids = [];
+        if (!r) kids.push(banner("bad", "The outcome could not be read; look at the log and in Jira."));
+        else if (r.kind === "error") kids.push(banner("bad", (r.refused ? "Refused — " : "Failed — ") + (r.message || "")));
+        else {
+          kids.push(banner(r.ok === true ? "ok" : (r.ok === false ? "bad" : "warn"),
+            (r.ok === null || r.ok === undefined ? "NOT KNOWN — " : "") + (r.message || "")));
+          const rows = (r.created || []).map((c) => [el("code", { text: c.id }), el("code", { text: c.key }),
+            el("div", {}, el("span", { text: c.title || "" }),
+               el("small", { text: `${c.steps}/${c.steps_of} step(s)${c.linked ? ", linked" : ", NOT linked"}` }),
+               c.note ? el("small", { class: "flag differs", text: c.note }) : null)]);
+          if (rows.length) kids.push(table(["Case", "Jira test", "Created"], rows));
+          for (const c of r.changed || []) kids.push(banner("warn", `${c.id} → ${c.key}: ${c.note}`));
+        }
+        box.replaceChildren(...kids);
+        if (j === job()) refreshXray(what);
+      }, j))
+      .catch((e) => { setState($(`xray-${what}-state`), "bad", e.message); refreshXray(what); });
+  };
+}
+wireXray("design");
+wireXray("manual");
 
 let designCursorTimer = null;
 // cursor.log is appended to across runs. This pane shows THIS run: it
@@ -534,7 +660,7 @@ $("run-design").onclick = async () => {
 // A design made earlier is still this job's design after a refresh.
 showDesign();
 showSpec();
-$("job").addEventListener("change", () => { showDesign(); showSpec(); });
+$("job").addEventListener("change", () => { showDesign(); showSpec(); refreshXray("manual"); });
 $("stop-design").onclick = async () => {
   try { await post("/api/stop", { job: job(), runnable: "agent-design" }); }
   catch (e) { setState($("design-state"), "bad", e.message); }
@@ -909,6 +1035,7 @@ $("manual-run").onclick = async () => {
     follow("manual-generate", $("manual-log"), $("manual-state"), () => {
       $("manual-run").disabled = false;
       showManual(j);
+      if (j === job()) refreshXray("manual");
     }, j);
   } catch (e) {
     $("manual-run").disabled = false;
@@ -925,7 +1052,7 @@ $("manual-stop").onclick = async () => {
     if (!stopped) setState($("manual-state"), "", "nothing was running for this job");
   } catch (e) { setState($("manual-state"), "bad", e.message); }
 };
-onTab.manual = () => { showManualDocs(); showManualPull(); showManual(); };
+onTab.manual = () => { showManualDocs(); showManualPull(); showManual(); refreshXray("manual"); };
 
 // ---- publish -----------------------------------------------------------
 // The one tab that writes to Jira and Confluence. What is switched on, and

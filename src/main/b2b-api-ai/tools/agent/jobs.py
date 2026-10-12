@@ -113,6 +113,19 @@ RUNNABLES = {
                     "--parent": "text", "--title": "text", "--confirm-title": "text",
                     "--expect": "text"},
     },
+    # Xray Test issues from a job's cases. One story, named twice; the
+    # result the cases come from is one of two fixed names. See xraytests.py.
+    "xray-status": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "xraytests.py"), "status"],
+        "label": "What this job could create in Xray, and what it already has",
+        "options": {"--job": "text"},
+    },
+    "xray-create": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "xraytests.py"), "create"],
+        "label": "Create the cases as Xray Test issues in Jira, linked to the story",
+        "options": {"--job": "text", "--what": "text", "--story": "text",
+                    "--confirm-story": "text", "--expect": "text"},
+    },
     # The whole gate, as `python tools/verify_all.py`. No options: what it
     # checks is this tree. Offered after a convert.
     "verify-all": {
@@ -617,7 +630,8 @@ RESULT_FILES = {"jira-": "jira-result.json", "failures-": "failures-result.json"
                 # Not publish-status: asking what is switched on must never
                 # remove the record of the last write.
                 "publish-attach": "publish-result.json",
-                "publish-page": "publish-result.json"}
+                "publish-page": "publish-result.json",
+                "xray-create": "xray-result.json"}
 
 
 def clear_result(job: str, runnable: str) -> None:
@@ -836,6 +850,7 @@ def read_artifact(job: str, name: str) -> str:
                "code-review.json", "code-review.md", "spec-result.json",
                "manual-result.json", "manual-pull.json", "manual-tests.md",
                "manual-new-cases.csv", "manual-xray-updates.csv", "publish-result.json",
+               "xray-tests.json", "xray-result.json", "xray-status.json",
                "publish-status.json", "publish.log"}
     if name not in allowed:
         raise ValueError(f"{name!r} is not a readable artifact. "

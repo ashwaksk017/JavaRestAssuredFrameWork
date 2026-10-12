@@ -652,6 +652,8 @@ def main() -> int:
                   and "Agent loop<" not in html)
             check("the design can be asked for the whole specification",
                   'id="design-whole"' in html)
+            check("both tabs that produce cases have a Create in Xray block",
+                  'id="xray-design-create"' in html and 'id="xray-manual-create"' in html)
 
             code, rc = press("defects-load", {"--project": "ABC", "--version": "Release 2.0"})
             html = mocked.dom("defects")
@@ -672,6 +674,36 @@ def main() -> int:
             check("mock mode: Write to Jira changes a file on this machine and nothing else",
                   rc == 0 and written == {"ABC-101": {"value": "Code defect"}}
                   and "is now 'Code defect'" in html, f"rc={rc} store={written}")
+
+            # Creating the designed cases in the mock Xray: one key a case,
+            # kept for the job, and nothing created twice.
+            with io.open(os.path.join(job_dir, "design.json"), "w", encoding="utf-8") as fh:
+                json.dump({"kind": "design", "mock": True, "brief": "x", "test_cases": [
+                    {"id": "TC-001", "title": "A case", "endpoint": "GET /x", "type": "positive",
+                     "priority": "high", "preconditions": "",
+                     "steps": [{"action": "do", "data": "", "expected": "200"}],
+                     "requirement_refs": [], "endpoint_in_spec": True}]}, fh)
+            code, rc = press("xray-create", {"--what": "design", "--story": "ABC-123",
+                                             "--confirm-story": "ABC-123", "--expect": "mock"})
+            got = json.loads(mocked.call(f"/api/artifact?job={JOB}&name=xray-result.json")[1]
+                             .get("text") or "{}")
+            check("mock mode: Create in Xray makes one mock test a case and keeps its key",
+                  rc == 0 and got.get("kind") == "xray-create" and got.get("mock") is True
+                  and [c["key"] for c in got.get("created", [])] == ["ABC-9001"], str(got)[:300])
+            code, rc = press("xray-create", {"--what": "design", "--story": "ABC-123",
+                                             "--confirm-story": "ABC-123", "--expect": "mock"})
+            got = json.loads(mocked.call(f"/api/artifact?job={JOB}&name=xray-result.json")[1]
+                             .get("text") or "{}")
+            check("mock mode: a second Create in Xray creates nothing twice",
+                  rc == 0 and got.get("created") == [] and len(got.get("kept", [])) == 1, str(got)[:300])
+            code, rc = press("xray-status", {})
+            st = json.loads(mocked.call(f"/api/artifact?job={JOB}&name=xray-status.json")[1]
+                            .get("text") or "{}")
+            check("mock mode: the Xray status names the key the case has",
+                  rc == 0 and st.get("keys", {}).get("design") == {"TC-001": "ABC-9001"}, str(st)[:300])
+            html = mocked.dom("new")
+            check("the Automate Test Case tab shows the case's Xray key",
+                  "ABC-9001" in html and "Already in the mock Xray" in html)
 
             spec = json.dumps({"openapi": "3.0.1", "paths": {
                 "/groups/{id}/rates": {"get": {"summary": "List"}, "post": {"summary": "Create"}}}})

@@ -381,7 +381,34 @@ def jira_transport(method: str, url: str, token: str, timeout: int, body=None, r
                      ("[MOCK] Open the booking page", "", "The page opens"),
                      ("[MOCK] Enter the dates and search", "2 nights", "Rooms are listed"),
                      ("[MOCK] Choose a room and confirm", "", "A confirmation number is shown")), 1)]
+    if method in ("PUT", "POST") and re.search(r"/rest/raven/[0-9.]+/api/test/[A-Za-z][A-Za-z0-9_]+-[0-9]+/steps?$", url):
+        return {"id": 1, "index": 1}                     # a step was "added"
     path = url.split("/rest/api/2", 1)[-1]
+    if method == "POST" and path == "/issue":
+        # An issue is created: the next free number in the project, kept
+        # with the sample data so that it is then found when asked for.
+        fields = (body or {}).get("fields") if isinstance(body, dict) else {}
+        fields = fields if isinstance(fields, dict) else {}
+        project = str(((fields.get("project") or {}) if isinstance(fields.get("project"), dict)
+                       else {}).get("key") or "MOCK").upper()
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]{1,19}", project):
+            raise Unsupported("the project key is not a key")
+        made = _written(root).get("__created__")
+        made = made if isinstance(made, dict) else {}
+        number = 9000 + sum(1 for k in made if k.startswith(project + "-")) + 1
+        key = f"{project}-{number}"
+        kind = ((fields.get("issuetype") or {}) if isinstance(fields.get("issuetype"), dict)
+                else {}).get("name") or "Test"
+        made[key] = {"summary": str(fields.get("summary") or "")[:240], "type": str(kind)[:40],
+                     "description": str(fields.get("description") or "")[:4000]}
+        _remember(root, "__created__", made)
+        return {"id": str(number), "key": key, "self": f"{CONN['base']}/rest/api/2/issue/{key}"}
+    if method == "POST" and path == "/issueLink":
+        links = _written(root).get("__links__")
+        links = links if isinstance(links, list) else []
+        links.append(body if isinstance(body, dict) else {})
+        _remember(root, "__links__", links)
+        return None
     if method == "GET" and path == "/myself":
         return {"name": "mock.user", "displayName": "MOCK USER (no Jira was contacted)"}
     if method == "GET" and path == "/field":
@@ -405,6 +432,18 @@ def jira_transport(method: str, url: str, token: str, timeout: int, body=None, r
             return None
         project = key.split("-")[0]
         known = {i["key"]: i for i in _issues(project)}
+        made = _written(root).get("__created__")
+        if isinstance(made, dict) and key in made and method == "GET":
+            # One this mock created: a Test, in the story's project.
+            row = made[key]
+            return {"key": key, "fields": {"summary": row.get("summary"),
+                                           "issuetype": {"name": row.get("type") or "Test"},
+                                           "project": {"key": project},
+                                           "status": {"name": "Open"}}}
+        if method == "GET" and "project" in (m.group(2) or ""):
+            return {"key": key, "fields": {"summary": f"[MOCK] story {key}",
+                                           "project": {"key": project},
+                                           "issuetype": {"name": "Story"}}}
         issue = _with_writes(known.get(key) or _issue(project, 0, "Bug", "unknown", ""), root)
         if "attachment" in (m.group(2) or ""):
             had = _written(root).get("__attachments__")

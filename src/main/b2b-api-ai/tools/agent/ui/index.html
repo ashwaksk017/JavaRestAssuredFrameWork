@@ -146,6 +146,15 @@ Expect 201.'></textarea>
   </div>
   <h3>design.md</h3>
   <pre id="design-doc" class="doc">—</pre>
+
+  <h3>Create in Xray <span class="hint">one Jira Test issue a case, with its steps, linked to the story; the keys then go into the rows the Agentic Test Creation step writes</span></h3>
+  <div class="row">
+    <input id="xray-design-story" type="text" spellcheck="false" placeholder="story key, e.g. ABC-12">
+    <button id="xray-design-create" disabled>Create in Xray as Jira test cases</button>
+    <span id="xray-design-state" class="state"></span>
+  </div>
+  <div id="xray-design-result" class="result"></div>
+  <pre id="xray-design-log" class="log" hidden></pre>
   <div class="split">
     <div><h3>Command log</h3><pre id="design-log" class="log"></pre></div>
     <div><h3>Cursor log</h3><pre id="design-cursor-log" class="log cursor"></pre></div>
@@ -361,6 +370,15 @@ Expect 201.'></textarea>
   </div>
   <div class="row center"><span id="manual-state" class="state"></span></div>
   <div id="manual-result" class="result"></div>
+
+  <h3>Create in Xray <span class="hint">one Jira Test issue a case, with its steps, linked to the story; the keys then go into the rows the Agentic Test Creation step writes</span></h3>
+  <div class="row">
+    <input id="xray-manual-story" type="text" spellcheck="false" placeholder="story key, e.g. ABC-12">
+    <button id="xray-manual-create" disabled>Create in Xray as Jira test cases</button>
+    <span id="xray-manual-state" class="state"></span>
+  </div>
+  <div id="xray-manual-result" class="result"></div>
+  <pre id="xray-manual-log" class="log" hidden></pre>
   <h3>Command log</h3>
   <pre id="manual-log" class="log"></pre>
 </section>

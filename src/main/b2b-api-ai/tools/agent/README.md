@@ -1100,6 +1100,62 @@ snapshots.
 run. A saved digest from somewhere else can be recorded from a console
 (`python tools/failure_history.py record --digest ...`).
 
+### Create in Xray
+
+Under the design on the Automate Test Case tab, and under the cases on
+the Manual tests tab: **Create in Xray as Jira test cases**. It creates
+one Jira issue of the Test type per case, in the story's project, with
+the case's steps as Xray steps, linked to the story (*tests* / *is
+tested by*). The keys Jira gives back are kept in the job
+(`xray-tests.json`) and shown beside the cases.
+
+**The keys then reach the automated tests.** The Agentic Test Creation
+step hands each designed case to Cursor with its key, as `[Xray
+ABC-901]`, and tells it to put the key in the `jira_xray_id` column of
+the data row it writes (or `@XrayTest("ABC-901")` on a test that takes
+no row). After the run it checks that every key handed over is in a
+file that was written, and says which are not. The framework's result
+listener reports by that column, so the run's results reach the right
+Xray test.
+
+The same rules as Publish:
+
+- **Off** unless `jira_config.publish.create_tests` is `true`;
+  `projects`, when set, is where it may create.
+- **The story key is typed twice**, and tests go in the story's project
+  as Jira has it. The page says beforehand how many would be created.
+- **Nothing a stand-in made** goes to a real Jira; a case holding a
+  private value stops the whole run before anything is sent.
+- **Every key is written down the moment it comes back**, and the
+  attempt is on record before the first write: a run that dies half way
+  keeps what it got, and the next run creates only the cases that have
+  no key. A test deleted in Jira is created again, and said.
+- **Nothing is edited.** A case whose text changed since its test was
+  created is reported as changed, not updated.
+- **A key follows its case, not its number.** A regeneration that
+  numbers the cases differently does not create a second test for a case
+  that already has one: the case is found by its text and the key moves
+  with it (the result says so). A result that gives one id to two cases
+  is refused before anything is sent.
+- **Said beforehand**: the block tells you when the switch is off, when
+  Jira here is a stand-in, and when the result was made by a stand-in
+  and will not be sent to the real Jira.
+- **Steps or the link refused** by Jira do not lose the issue: the
+  result says what is missing for each.
+
+**Xray Server / Data Center only, for now.** Steps are added through
+Xray's own REST API (`PUT /rest/raven/1.0/api/test/<key>/step`), which
+Xray Cloud does not have; Cloud is refused with the way round (import
+`xray.csv` or `manual-new-cases.csv`). The step call has not been run
+against a live Xray. If yours answers differently, set
+`jira_config.publish.xray_step_call` (e.g. `"POST
+/rest/raven/2.0/api/test/{key}/steps"`); `test_issue_type` (default
+`Test`) and `test_link_type` (default `Tests`) are there for a Jira
+that names them differently.
+
+In mock mode the stand-in creates `XYZ-9001`-style keys in a file on
+this machine, and those keys are never handed to a real agent run.
+
 ### Publish
 
 Puts a job's results where the team works: a file attached to a Jira
