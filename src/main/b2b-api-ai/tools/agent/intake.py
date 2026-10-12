@@ -36,6 +36,7 @@ and a link that is neither is reported as such rather than attempted.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
 import io
 import json
@@ -226,9 +227,13 @@ def gather_confluence(link: str, sources: str, slot: str,
     argv = ["--url", link, "--out", outdir]
     if api_path:
         argv += ["--api-path", api_path]
+    said = io.StringIO()
     try:
         diag.step("Fetching a linked Confluence page")
-        rc = conf_fetch.main(argv)
+        # What the fetcher says is the reason it gives: kept, so that a
+        # refusal reaches the brief instead of "run it directly to see why".
+        with contextlib.redirect_stdout(said):
+            rc = conf_fetch.main(argv)
     except SystemExit as e:           # argparse inside a library call
         rc = int(getattr(e, "code", 1) or 1)
     except Exception as e:
@@ -236,8 +241,12 @@ def gather_confluence(link: str, sources: str, slot: str,
         return {"link": link, "kind": CONFLUENCE, "ok": False,
                 "reason": f"{type(e).__name__}: {e}"}
     if rc != 0:
+        lines = [l.strip() for l in said.getvalue().splitlines() if l.strip()]
+        why = next((l for l in lines if l.lower().startswith(("refused", "fail", "error"))),
+                   lines[-1] if lines else "")
         return {"link": link, "kind": CONFLUENCE, "ok": False,
-                "reason": "the fetcher refused -- run it directly to see why"}
+                "reason": _one_line(conf_fetch.redact(why), 400) if why
+                else "the fetcher refused without saying why (the Logs tab may)"}
     md = sorted(n for n in os.listdir(outdir) if n.endswith(".md"))
     if not md:
         return {"link": link, "kind": CONFLUENCE, "ok": False,

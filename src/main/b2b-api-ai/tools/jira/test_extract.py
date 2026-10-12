@@ -141,6 +141,16 @@ class Curl(unittest.TestCase):
                          ("POST", "/guests/123/businesses"))
         self.assertEqual(json.loads(steps[0]["body"]), {"businessName": "Acme"})
 
+    def test_a_story_writes_the_verb_with_a_colon_and_several_on_one_line(self):
+        text = ("Impact:\n\nEndpoint: GET:/guests/{guestId}/accounts/{accountId}/stays "
+                "Endpoint: GET:/guests/{guestId}/accounts/{accountId}/spendDetail\n\n"
+                "Endpoint: GET: /accounts/{accountId}/bookingpolicies\n\n"
+                "GET/POST are verbs, not a request for /POST.\n")
+        got = [(s["verb"], s["raw_path"]) for s in extract.from_text(text, "story")]
+        self.assertEqual(got, [("GET", "/guests/{guestId}/accounts/{accountId}/stays"),
+                               ("GET", "/guests/{guestId}/accounts/{accountId}/spendDetail"),
+                               ("GET", "/accounts/{accountId}/bookingpolicies")])
+
     def test_a_flag_that_takes_a_value_never_becomes_the_url(self):
         """`-u user:pass` once ate the URL and the step came out pathless."""
         got = extract.parse_curl(

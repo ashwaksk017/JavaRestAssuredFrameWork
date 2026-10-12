@@ -77,7 +77,9 @@ VERBS = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS")
 # address" and "DELETE the account" are not calls.
 _HTTP_LINE_RX = re.compile(
     r"(?im)(?:^|[\s>*#|`(\[-])(?:h[1-6]\.\s*)?\**(" + "|".join(VERBS) + r")\b"
-    r"\**\s+[`\"']?((?:https?://[^\s`\"'|)\]]+)|/[A-Za-z0-9._~%\-/{}]*)")
+    # `GET /path`, and the `GET:/path` / `GET: /path` a story is often written
+    # with. Not `GET/POST`: a slash straight after the verb is a word.
+    r"\**(?:\s+|\s*:\s*)[`\"']?((?:https?://[^\s`\"'|)\]]+)|/[A-Za-z0-9._~%\-/{}]*)")
 
 # "returns 204", "responds with a 400", "-> 201", "status code 409".
 _STATUS_RX = re.compile(

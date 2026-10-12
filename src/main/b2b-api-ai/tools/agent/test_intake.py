@@ -282,6 +282,24 @@ class Links(Base):
             return 0
         intake.conf_fetch.main = fake
 
+    def test_the_fetchers_refusal_reaches_the_brief_word_for_word(self):
+        def refusing(argv):
+            print("config: read")
+            print("refused: https://wiki.example.com is not in confluence_config.base_urls")
+            return 2
+        intake.conf_fetch.main = refusing
+        r = intake.build("j", root=self.tmp, text="GET /x",
+                         links=["https://wiki.example.com/x/AbCdEf"])
+        self.assertIn("is not in confluence_config.base_urls", r["links"][0]["reason"])
+        self.assertIn("is not in confluence_config.base_urls", self.brief("j"))
+        self.assertNotIn("run it directly", self.brief("j"))
+
+    def test_a_fetcher_that_refuses_in_silence_is_said_to_have(self):
+        intake.conf_fetch.main = lambda argv: 2
+        r = intake.build("j", root=self.tmp, text="GET /x",
+                         links=["https://wiki.example.com/x/AbCdEf"])
+        self.assertIn("without saying why", r["links"][0]["reason"])
+
     def test_a_request_on_a_confluence_page_is_read(self):
         self._confluence_returns("# Spec\n\n```\nGET /props/ABC/groups\n```\n")
         r = intake.build("j", root=self.tmp,
