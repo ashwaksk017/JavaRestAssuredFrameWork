@@ -1122,6 +1122,32 @@ snapshots.
 run. A saved digest from somewhere else can be recorded from a console
 (`python tools/failure_history.py record --digest ...`).
 
+### Review the cases
+
+Between a proposal and anything that acts on it, a person says which
+cases stand. Under the design on the Automate Test Case tab, and under
+the cases on the Manual tests tab, each case has **Approve** (ticked:
+approved; unticked after a tick: rejected), **Automate** (design only:
+Cursor should write this one), a **title** that can be corrected in
+place, and a **note**. *Approve all* and *Reject all* do the lot. Each
+decision is saved as it is made, in the job's `case-review.json`.
+
+What the decision does:
+
+- **Create in Xray** creates approved cases only, with the corrected
+  title, and refuses while none is approved.
+- **Agentic Test Creation** hands Cursor every proposed case until
+  anyone has decided anything; once a case has been approved or rejected,
+  only the approved ones marked Automate go, and the log says how many
+  were left out by the review.
+- Nothing is deleted from a result; a rejected case stays in
+  `design.md`, marked rejected on the page.
+
+The strip at the top of the Automate Test Case tab shows where the job
+is: Read it, Is it automated?, Design, Review, Create in Xray, Agentic
+Test Creation -- each ticked when the job holds what that step
+produces. It is read from the job's files, not remembered by the page.
+
 ### Create in Xray
 
 Under the design on the Automate Test Case tab, and under the cases on
@@ -1146,6 +1172,8 @@ The same rules as Publish:
   `projects`, when set, is where it may create.
 - **The story key is typed twice**, and tests go in the story's project
   as Jira has it. The page says beforehand how many would be created.
+- **Approved cases only** (the Review step), with the title as corrected
+  there. It refuses while no case is approved.
 - **Nothing a stand-in made** goes to a real Jira; a case holding a
   private value stops the whole run before anything is sent.
 - **Every key is written down the moment it comes back**, and the

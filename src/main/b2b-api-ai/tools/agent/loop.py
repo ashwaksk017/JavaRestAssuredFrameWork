@@ -130,6 +130,7 @@ def _load(name: str, path: str):
 
 
 intake = _load("loop_intake", os.path.join(HERE, "intake.py"))
+casereview = _load("loop_casereview", os.path.join(HERE, "casereview.py"))
 patches = _load("loop_patches", os.path.join(HERE, "patches.py"))
 cursor_call = _load("loop_cursor_call", os.path.join(HERE, "cursor_call.py"))
 mock = _load("loop_mock", os.path.join(HERE, "mock.py"))
@@ -1021,9 +1022,22 @@ def designed_cases(job_dir: str, cap: int = 20000, keys: dict = None) -> tuple:
     if data.get("brief", "") != brief_fingerprint(job_dir):
         return "", ("the design was made from a different brief than this job "
                     "has now; the designed cases were NOT used. Design again.")
+    # What a person decided on the Review step. Until anyone has said
+    # anything, every proposed case goes; once one has been approved or
+    # rejected, only the approved ones marked to automate do, with the
+    # title and steps as corrected.
+    entries = casereview.read(job_dir)["design"]
+    cases = [c for c in cases if isinstance(c, dict)] if isinstance(cases, list) else []
+    left_out = ""
+    if casereview.reviewed(entries):
+        chosen = casereview.approved(cases, entries, for_automation=True)
+        left_out = f", {len(cases) - len(chosen)} left out by the review"
+        cases = chosen
+    else:
+        cases = casereview.apply(cases, entries)
     lines = []
-    for c in cases if isinstance(cases, list) else []:
-        if not isinstance(c, dict) or c.get("endpoint_in_spec") is False:
+    for c in cases:
+        if c.get("endpoint_in_spec") is False:
             continue
         key = (keys or {}).get(_one_line(c.get("id"), 40), "")
         lines.append(f"{_one_line(c.get('id'), 40)} [{_one_line(c.get('type'), 20)}, "
@@ -1039,7 +1053,7 @@ def designed_cases(job_dir: str, cap: int = 20000, keys: dict = None) -> tuple:
     text = "\n".join(lines)
     if len(text) > cap:
         text = text[:cap] + "\n[... the rest is in design.md ...]"
-    note = f"{sum(1 for l in lines if not l.startswith('    '))} designed case(s) included"
+    note = f"{sum(1 for l in lines if not l.startswith('    '))} designed case(s) included{left_out}"
     with_key = sum(1 for l in lines if not l.startswith("    ") and "[Xray " in l)
     if with_key:
         note += f", {with_key} with an Xray key"

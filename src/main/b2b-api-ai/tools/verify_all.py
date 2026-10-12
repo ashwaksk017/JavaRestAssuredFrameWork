@@ -261,6 +261,11 @@ CHECKS = [
           "switched on, take a file by name and a target given twice, never "
           "replace or edit, refuse what a stand-in made or what holds a private "
           "value, and record every write before it is made"),
+    Check("agent-casereview",
+          [PY, "tools/agent/test_casereview.py"],
+          "a person's decision on a proposed case is kept as one of three words, "
+          "its corrected title and steps are bounded and replace the proposed ones, "
+          "and nothing is written on bad input"),
     Check("agent-xraytests",
           [PY, "tools/agent/test_xraytests.py"],
           "creating Xray Test issues is off unless switched on, takes one story "

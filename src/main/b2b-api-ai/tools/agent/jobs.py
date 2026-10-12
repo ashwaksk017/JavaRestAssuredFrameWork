@@ -611,6 +611,16 @@ def spec_state(job: str) -> dict:
     return _specsource().current(out, ROOT)
 
 
+def _casereview():
+    spec = importlib.util.spec_from_file_location("jobs_casereview", os.path.join(HERE, "casereview.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+casereview = _casereview()
+
+
 def spec_clear(job: str) -> bool:
     return _specsource().clear(job_dir(job))
 
@@ -867,7 +877,7 @@ def read_artifact(job: str, name: str) -> str:
                "code-review.json", "code-review.md", "spec-result.json",
                "manual-result.json", "manual-pull.json", "manual-tests.md",
                "manual-new-cases.csv", "manual-xray-updates.csv", "publish-result.json",
-               "xray-tests.json", "xray-result.json", "xray-status.json",
+               "xray-tests.json", "xray-result.json", "xray-status.json", "case-review.json",
                "publish-status.json", "publish.log"}
     if name not in allowed:
         raise ValueError(f"{name!r} is not a readable artifact. "

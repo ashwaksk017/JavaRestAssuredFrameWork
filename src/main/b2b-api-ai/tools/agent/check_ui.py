@@ -222,9 +222,14 @@ def main() -> int:
         check("an ordinary line of output is not a step",
               ">an ordinary line</li>" not in html and ">2 request(s) read</li>" not in html)
         html = running("done", said)
+        # Only the command's own step list: the flow strip at the top of the
+        # tab uses the same done/now classes for the job's stages.
+        steps_only = html[html.find('class="steps"'):]
+        steps_only = steps_only[:steps_only.find("</ol>")]
         check("a finished command ticks every step and says how long it took",
-              html.count('<li class="done">') == 3 and 'class="now"' not in html
-              and re.search(r'class="state ok"[^>]*>finished in \d+:\d\d<', html) is not None)
+              steps_only.count('<li class="done">') == 3 and 'class="now"' not in steps_only
+              and re.search(r'class="state ok"[^>]*>finished in \d+:\d\d<', html) is not None,
+              steps_only[:400])
         html = running("failed", said[:2], code=1)
         check("a command that failed says the step it stopped at",
               '<li class="stopped">Fetching a linked Confluence page</li>' in html
@@ -689,6 +694,27 @@ def main() -> int:
                                              "--confirm-story": "ABC-123", "--expect": "mock"})
             got = json.loads(mocked.call(f"/api/artifact?job={JOB}&name=xray-result.json")[1]
                              .get("text") or "{}")
+            check("Create in Xray refuses until a case is approved",
+                  rc == 2 and got.get("refused") is True and "no case is approved" in got.get("message", ""),
+                  str(got)[:300])
+            code, body = mocked.call("/api/case-review", {"job": JOB, "what": "design", "ids": ["TC-001"],
+                                                          "state": "approved", "title": "A case, corrected"})
+            check("a decision on a case is kept with the job",
+                  code == 200 and body.get("written", {}).get("TC-001", {}).get("state") == "approved", str(body))
+            code, body = mocked.call("/api/case-review", {"job": JOB, "what": "design", "ids": ["TC-001"],
+                                                          "state": "maybe"})
+            check("a decision that is not one of the three words is refused", code == 400, str(body))
+            html = mocked.dom("new")
+            check("the Automate Test Case tab shows the review table and where the job is",
+                  'id="design-review"' in html and "Approve all" in html and 'id="flow"' in html
+                  and "Review (1 approved)" in html, html[html.find('id="flow"'):][:400])
+            code, rc = press("xray-create", {"--what": "design", "--story": "ABC-123",
+                                             "--confirm-story": "ABC-123", "--expect": "mock"})
+            got = json.loads(mocked.call(f"/api/artifact?job={JOB}&name=xray-result.json")[1]
+                             .get("text") or "{}")
+            check("the corrected title is what reaches Xray",
+                  rc == 0 and [c.get("title") for c in got.get("created", [])] == ["A case, corrected"],
+                  str(got)[:300])
             check("mock mode: Create in Xray makes one mock test a case and keeps its key",
                   rc == 0 and got.get("kind") == "xray-create" and got.get("mock") is True
                   and [c["key"] for c in got.get("created", [])] == ["ABC-9001"], str(got)[:300])

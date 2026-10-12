@@ -43,6 +43,7 @@
 
 <!-- ───────────────────────────── tab 1 ───────────────────────────── -->
 <section id="tab-new" class="tab" role="tabpanel">
+  <ol id="flow" class="flow" aria-label="where this job is"></ol>
   <p class="lede">
     Paste a story, request payloads, or both. Add Confluence links if the
     contract lives there. This tab <strong>reads and decides only</strong> —
@@ -148,6 +149,8 @@ Expect 201.'></textarea>
     <a id="dl-xray" class="dl" hidden>xray.csv</a>
     <span id="design-state" class="state"></span>
   </div>
+  <h3>Review the designed cases <span class="hint">tick Approve for the cases that stand, Automate for the ones Cursor should write; a title can be corrected in place. Create in Xray and the Agentic step take approved cases only</span></h3>
+  <div id="design-review" class="result"></div>
   <h3>design.md</h3>
   <pre id="design-doc" class="doc">—</pre>
 
@@ -374,6 +377,8 @@ Expect 201.'></textarea>
   </div>
   <div class="row center"><span id="manual-state" class="state"></span></div>
   <div id="manual-result" class="result"></div>
+  <h3>Review the manual cases <span class="hint">tick Approve for the cases that stand; a title can be corrected in place. Create in Xray takes approved cases only</span></h3>
+  <div id="manual-review" class="result"></div>
 
   <h3>Create in Xray <span class="hint">one Jira Test issue a case, with its steps, linked to the story; the keys then go into the rows the Agentic Test Creation step writes</span></h3>
   <div class="row">

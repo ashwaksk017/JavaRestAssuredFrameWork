@@ -237,6 +237,14 @@ pre.log.tall { max-height: 34rem; min-height: 8rem; white-space: pre-wrap; word-
 @keyframes turn { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .activity::before { animation: none; } }
 button.waiting { opacity: .6; cursor: progress; }
+/* Where a job is: the steps of the flow, done or not. */
+.flow { display: flex; flex-wrap: wrap; gap: .3rem 1.2rem; list-style: none; margin: 0 0 .8rem;
+  padding: .5rem .8rem; border: 1px solid var(--line); border-radius: 7px; font-size: .85rem; }
+.flow li { color: var(--dim); } .flow li.done { color: var(--ok); } .flow li.now { color: var(--warn); }
+.flow li::before { content: "\25CB  "; } .flow li.done::before { content: "\2713  "; }
+.flow li.now::before { content: "\25B8  "; }
+.review input[type=text] { width: 100%; min-width: 14rem; }
+.review .state { font-size: .8rem; }
 .steps { list-style: none; margin: .4rem 0; padding: 0; font-size: .85rem; }
 .steps:empty { display: none; }
 .steps li { padding: .1rem 0 .1rem 1.4em; position: relative; color: var(--dim); }

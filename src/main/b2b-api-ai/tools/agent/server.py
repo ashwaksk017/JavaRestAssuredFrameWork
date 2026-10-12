@@ -279,6 +279,14 @@ class Handler(BaseHTTPRequestHandler):
                     body.get("job", ""), str(body["name"]))})
             if u.path == "/api/manual":
                 return self._json(self._manual(body))
+            if u.path == "/api/case-review":
+                # A person's decision on proposed cases: validated field by
+                # field in casereview.py, written only under the job.
+                out = jobs.job_dir(body.get("job", ""))
+                fields = {k: body.get(k) for k in ("state", "automate", "title", "steps", "note")
+                          if k in body}
+                return self._json({"written": jobs.casereview.update(
+                    out, str(body.get("what") or ""), body.get("ids") or body.get("id"), **fields)})
             if u.path == "/api/spec-clear":
                 return self._json({"removed": jobs.spec_clear(body.get("job", ""))})
             if u.path == "/api/upload-clear":

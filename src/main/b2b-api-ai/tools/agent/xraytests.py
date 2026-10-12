@@ -83,6 +83,7 @@ def _load(name: str, path: str):
 
 
 publish = _load("agent_publish", os.path.join(HERE, "publish.py"))
+casereview = _load("agent_casereview", os.path.join(HERE, "casereview.py"))
 loop = publish.loop
 search = publish.search
 Refused = publish.Refused
@@ -320,6 +321,16 @@ def create(job: str, what: str, story: str, confirm: str, root: str = "", conn=N
     cases = cases_of(result, what)
     if not cases:
         raise Refused(f"the {what} result holds no case with a title and steps")
+    # The Review step: only what a person approved goes to Jira, with the
+    # title and steps as they corrected them.
+    tally = casereview.summary(cases, casereview.read(job_dir)[what])
+    cases = casereview.approved(cases, casereview.read(job_dir)[what])
+    if not cases:
+        raise Refused(f"no case is approved yet: review the {what} cases on the page and tick "
+                      f"Approve for the ones to create ({tally['proposed']} proposed, "
+                      f"{tally['rejected']} rejected). Nothing is created without that.")
+    for case in cases:
+        case["title"] = _one(case["title"], MAX_SUMMARY)
     private = publish.private_values(root)
     found = publish.leaks([json.dumps(c, ensure_ascii=False) for c in cases], private)
     if found:
@@ -521,7 +532,10 @@ def status(job: str, root: str = "") -> dict:
     for what in WHATS:
         try:
             data = publish.result_for(job_dir, what)
-            out["cases"][what] = len(cases_of(data, what))
+            listed = cases_of(data, what)
+            out["cases"][what] = len(listed)
+            out["review"] = out.get("review") or {}
+            out["review"][what] = casereview.summary(listed, casereview.read(job_dir)[what])
             out["real"][what] = publish.provably_real(data, what)
         except Refused as e:
             out["cases"][what] = 0

@@ -117,6 +117,11 @@ class Base(unittest.TestCase):
         self.put("design.json", json.dumps(DESIGN))
         self.put("manual-result.json", json.dumps(MANUAL))
         self.jira = Jira()
+        self.approve_all()
+
+    def approve_all(self):
+        xt.casereview.update(self.job, "design", ["TC-001", "TC-002"], state="approved")
+        xt.casereview.update(self.job, "manual", ["MT-001"], state="approved")
 
     def put(self, name, text):
         with io.open(os.path.join(self.job, name), "w", encoding="utf-8", newline="\n") as fh:
@@ -405,6 +410,36 @@ class FoundByTheReview(Base):
         self.assertFalse(st["create_tests"])
 
 
+class TheReviewStep(Base):
+    def test_nothing_is_created_until_a_case_is_approved(self):
+        os.remove(os.path.join(self.job, xt.casereview.FILE))
+        with self.assertRaises(xt.Refused) as got:
+            self.create()
+        self.assertIn("no case is approved yet", str(got.exception))
+        self.assertIn("2 proposed", str(got.exception))
+        self.assertEqual(self.jira.created, [])
+
+    def test_only_the_approved_cases_are_created_with_the_corrected_title(self):
+        xt.casereview.update(self.job, "design", "TC-002", state="rejected", note="covered by TC-001")
+        xt.casereview.update(self.job, "design", "TC-001", title="Create a rate: 201 and the id")
+        r = self.create()
+        self.assertEqual([c["id"] for c in r["created"]], ["TC-001"])
+        self.assertEqual(self.jira.created[0][1]["fields"]["summary"], "Create a rate: 201 and the id")
+
+    def test_the_status_counts_the_review(self):
+        xt.casereview.update(self.job, "design", "TC-002", state="rejected")
+        real = (search.mock_jira, search.projectconfig.section)
+        self.addCleanup(lambda: (setattr(search, "mock_jira", real[0]),
+                                 setattr(search.projectconfig, "section", real[1])))
+        search.mock_jira = lambda: False
+        search.projectconfig.section = lambda name: ({"publish": {"create_tests": True}}
+                                                     if name == "jira_config" else {}, "t")
+        st = xt.status("j1", self.root)
+        self.assertEqual(st["review"]["design"]["approved"], 1)
+        self.assertEqual(st["review"]["design"]["rejected"], 1)
+        self.assertEqual(st["review"]["manual"]["approved"], 1)
+
+
 class Status(Base):
     def test_it_says_what_could_be_created_and_what_already_was(self):
         self.put("intake.json", json.dumps({"story": {"key": "abc-12"}}))
@@ -473,6 +508,32 @@ class TheAgentLoop(Base):
         self.assertIn("2 with an Xray key", note)
         self.assertEqual(loop.xray_keys(self.job, mocked=True), {})
 
+    def test_once_reviewed_only_approved_cases_marked_to_automate_reach_the_prompt(self):
+        self.create()
+        real = loop.brief_fingerprint
+        self.addCleanup(setattr, loop, "brief_fingerprint", real)
+        loop.brief_fingerprint = lambda job_dir: "abc"
+        xt.casereview.update(self.job, "design", "TC-002", state="rejected")
+        xt.casereview.update(self.job, "design", "TC-001", title="Create a rate, corrected")
+        text, note = loop.designed_cases(self.job, keys=loop.xray_keys(self.job, mocked=False))
+        self.assertIn("TC-001", text)
+        self.assertIn("Create a rate, corrected", text)
+        self.assertNotIn("TC-002", text)
+        self.assertIn("2 left out by the review", note)      # TC-002 rejected, TC-003 never approved
+        xt.casereview.update(self.job, "design", "TC-001", automate=False)
+        text, _note = loop.designed_cases(self.job)
+        self.assertEqual(text, "")
+
+    def test_with_nothing_decided_every_proposed_case_reaches_the_prompt(self):
+        os.remove(os.path.join(self.job, xt.casereview.FILE))
+        real = loop.brief_fingerprint
+        self.addCleanup(setattr, loop, "brief_fingerprint", real)
+        loop.brief_fingerprint = lambda job_dir: "abc"
+        text, note = loop.designed_cases(self.job)
+        self.assertIn("TC-001", text)
+        self.assertIn("TC-002", text)
+        self.assertNotIn("left out", note)
+
     def test_the_keys_that_landed_in_the_written_files_are_told_from_those_that_did_not(self):
         os.makedirs(os.path.join(self.root, "csv"))
         with io.open(os.path.join(self.root, "csv", "a.csv"), "w", encoding="utf-8") as fh:
@@ -500,6 +561,7 @@ class Declared(unittest.TestCase):
         os.makedirs(job)
         with io.open(os.path.join(job, "design.json"), "w", encoding="utf-8") as fh:
             json.dump(DESIGN, fh)
+        xt.casereview.update(job, "design", ["TC-001", "TC-002"], state="approved")
         saved = (loop.intake.ROOT, pb.ROOT, xt.ROOT)
         loop.intake.ROOT = pb.ROOT = xt.ROOT = root
         self.addCleanup(lambda: (setattr(loop.intake, "ROOT", saved[0]),

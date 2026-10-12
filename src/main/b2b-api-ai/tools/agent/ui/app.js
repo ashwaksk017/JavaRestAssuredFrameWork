@@ -468,7 +468,136 @@ async function showDesign(j, fresh) {
     $(id).hidden = !have;
     $(id).href = `/api/download?job=${encodeURIComponent(j)}&name=${name}`;
   }
-  if (j === job()) refreshXray("design", fresh);
+  if (j === job()) { refreshXray("design", fresh); showReview("design"); }
+}
+
+// ---- the Review step: which proposed cases stand ---------------------------
+// Each decision is sent as it is made and kept with the job
+// (case-review.json). Create in Xray and the Agentic step read it there.
+async function artifactJson(j, name) {
+  try {
+    const r = await api(`/api/artifact?job=${encodeURIComponent(j)}&name=${name}`);
+    return JSON.parse(r.text || "null");
+  } catch { return null; }
+}
+
+async function decide(j, what, ids, fields, stateEl) {
+  try {
+    await post("/api/case-review", Object.assign({ job: j, what, ids }, fields));
+    if (stateEl) setState(stateEl, "ok", "saved");
+    return true;
+  } catch (e) {
+    if (stateEl) setState(stateEl, "bad", `not saved: ${e.message}`);
+    return false;
+  }
+}
+
+function reviewTable(j, what, cases, entries, after) {
+  const box = el("div", { class: "review" });
+  const st = el("span", { class: "state" });
+  const entryOf = (c) => entries[c.id] || {};
+  const stateOf = (c) => (entryOf(c).state === "approved" || entryOf(c).state === "rejected")
+    ? entryOf(c).state : "proposed";
+  const counts = { approved: 0, rejected: 0, proposed: 0 };
+  for (const c of cases) counts[stateOf(c)] += 1;
+  const bulk = (fields) => async () => {
+    if (await decide(j, what, cases.map((c) => c.id), fields, st)) after();
+  };
+  box.append(el("div", { class: "row" },
+    el("button", { type: "button", on: { click: bulk({ state: "approved" }) } }, "Approve all"),
+    el("button", { type: "button", on: { click: bulk({ state: "rejected" }) } }, "Reject all"),
+    el("small", { text: `${counts.approved} approved, ${counts.rejected} rejected, ${counts.proposed} not yet decided` }),
+    st));
+  const headers = what === "design" ? ["Approve", "Automate", "Case", "Title", "Endpoint", "Steps", "Note"]
+                                    : ["Approve", "Case", "Title", "Steps", "Note"];
+  box.append(table(headers, cases.map((c) => {
+    const e = entryOf(c);
+    const state = stateOf(c);
+    const approve = el("input", { type: "checkbox" });
+    approve.checked = state === "approved";
+    approve.onchange = async () => {
+      if (await decide(j, what, [c.id], { state: approve.checked ? "approved" : "rejected" }, st)) after();
+    };
+    const automate = el("input", { type: "checkbox" });
+    automate.checked = e.automate !== false;
+    automate.onchange = () => decide(j, what, [c.id], { automate: automate.checked }, st);
+    const title = el("input", { type: "text", value: e.title || c.title || "" });
+    title.onchange = () => {
+      if (title.value.trim()) decide(j, what, [c.id], { title: title.value.trim() }, st);
+    };
+    const note = el("input", { type: "text", value: e.note || "", placeholder: "why, if rejected or changed" });
+    note.onchange = () => decide(j, what, [c.id], { note: note.value.trim() }, st);
+    const steps = el("ol", {}, (e.steps || c.steps || []).map((s) => el("li", {},
+      el("span", { text: (s.action || "") + (s.data ? ` [${s.data}]` : "") }),
+      s.expected ? el("small", { text: `→ ${s.expected}` }) : null)));
+    const cell = el("div", {}, el("code", { text: c.id }),
+      el("small", { class: `flag ${state === "rejected" ? "differs" : ""}`, text: state }),
+      e.title && e.title !== c.title ? el("small", { text: "title changed" }) : null);
+    const row = [approve];
+    if (what === "design") row.push(automate);
+    row.push(cell, el("div", {}, title));
+    if (what === "design") row.push(el("code", { text: c.endpoint || "" }));
+    row.push(steps, el("div", {}, note));
+    return row;
+  })));
+  return box;
+}
+
+async function showReview(what) {
+  const j = job();
+  const box = $(`${what}-review`);
+  if (!j) { box.replaceChildren(); return; }
+  const [result, review] = await Promise.all([
+    artifactJson(j, what === "design" ? "design.json" : "manual-result.json"),
+    artifactJson(j, "case-review.json")]);
+  if (j !== job()) return;
+  const cases = (result && (what === "design" ? result.test_cases : result.new_cases)) || [];
+  const entries = (review && review[what]) || {};
+  if (!cases.length) {
+    box.replaceChildren(el("small", { text: `no ${what} cases in this job yet` }));
+    showFlow();
+    return;
+  }
+  const kids = [];
+  if (result.mock) kids.push(banner("warn", "These are a stand-in's cases (mock Cursor); a review of them goes nowhere real."));
+  kids.push(reviewTable(j, what, cases.filter((c) => c && c.id), entries, () => {
+    showReview(what);
+    refreshXray(what, true);
+  }));
+  box.replaceChildren(...kids);
+  showFlow();
+}
+
+// Where the job is, in order: what has been done is read from what the
+// job holds, not remembered by the page.
+async function showFlow() {
+  const j = job();
+  const flow = $("flow");
+  if (!flow) return;
+  if (!j) { flow.replaceChildren(); return; }
+  const [brief, plan, design, review, xray, agent] = await Promise.all([
+    artifactText(j, "brief.md"), artifactText(j, "plan.md"), artifactJson(j, "design.json"),
+    artifactJson(j, "case-review.json"), artifactJson(j, "xray-tests.json"), artifactJson(j, "review.json")]);
+  if (j !== job()) return;
+  const approved = Object.values((review && review.design) || {}).filter((e) => e.state === "approved").length;
+  const keys = Object.keys((xray && xray.tests) || {}).filter((k) => k.startsWith("design:")).length;
+  const agentState = (agent && agent.state) || "none";
+  const steps = [
+    ["Read it", Boolean(brief)],
+    ["Is it automated?", Boolean(plan)],
+    ["Design", Boolean(design && design.test_cases && design.test_cases.length)],
+    ["Review", approved > 0, approved ? `${approved} approved` : ""],
+    ["Create in Xray", keys > 0, keys ? `${keys} test(s)` : ""],
+    ["Agentic Test Creation", ["pending-review", "approved", "pushed"].includes(agentState),
+     agentState !== "none" ? agentState : ""],
+  ];
+  let now = steps.findIndex(([, done]) => !done);
+  flow.replaceChildren(...steps.map(([name, done, detail], i) =>
+    el("li", { class: done ? "done" : (i === now ? "now" : ""), text: name + (detail ? ` (${detail})` : "") })));
+}
+async function artifactText(j, name) {
+  try { return (await api(`/api/artifact?job=${encodeURIComponent(j)}&name=${name}`)).text || ""; }
+  catch { return ""; }
 }
 
 // ---- Xray: the cases as Jira Test issues ---------------------------------
@@ -507,11 +636,15 @@ function settleXray(what, st) {
   const st0 = $(`xray-${what}-state`);
   xrayStatus[what] = st;
   showXrayKeys(what, st);
-  const usable = (st.cases || {})[what] > 0 && (st.mock_jira || (st.real || {})[what]);
+  const tally = ((st.review || {})[what]) || {};
+  const approved = tally.approved || 0;
+  const usable = approved > 0 && (st.mock_jira || (st.real || {})[what]);
   $(`xray-${what}-create`).disabled = !(st.create_tests && usable);
   if (st.story && !$(`xray-${what}-story`).value.trim()) $(`xray-${what}-story`).value = st.story;
+  const have = Object.keys((st.keys || {})[what] || {}).length;
   if (!(st.cases || {})[what]) setState(st0, "", `no ${what} cases in this job yet`);
-  else setState(st0, "", `${st.cases[what]} case(s); ${Object.keys((st.keys || {})[what] || {}).length} already in Xray`);
+  else if (!approved) setState(st0, "warn", `${st.cases[what]} case(s), none approved yet: review them above first`);
+  else setState(st0, "", `${approved} of ${st.cases[what]} case(s) approved; ${have} already in Xray`);
 }
 
 // `fresh`: ask the server again now. Otherwise the last answer kept for
@@ -575,12 +708,12 @@ function wireXray(what) {
     if (!st || st.job !== j) { setState($(`xray-${what}-state`), "bad", "the status is not for this job; it is being read again"); refreshXray(what, true); return; }
     const story = $(`xray-${what}-story`).value.trim().toUpperCase();
     if (!/^[A-Z][A-Z0-9_]+-[0-9]+$/.test(story)) { setState($(`xray-${what}-state`), "bad", "give the story key, like ABC-12"); return; }
-    const n = (st.cases || {})[what] || 0;
+    const n = (((st.review || {})[what]) || {}).approved || 0;
     const have = Object.keys((st.keys || {})[what] || {}).length;
     const again = prompt(
       (st.mock_jira ? "MOCK: this changes a file on this machine. No Jira is contacted.\n\n"
                     : "This CREATES ISSUES IN JIRA now, and they cannot be deleted from here.\n\n") +
-      `From job ${j}: up to ${n - have} new Test issue(s) in the project of ${story}, one a case, ` +
+      `From job ${j}: up to ${Math.max(0, n - have)} new Test issue(s) in the project of ${story}, one an approved case, ` +
       `each linked to ${story}.${have ? ` ${have} case(s) already have a test and are not created again.` : ""}\n\n` +
       "Type the story key again to go ahead:");
     if (again === null) return;
@@ -684,7 +817,7 @@ $("run-design").onclick = async () => {
 // A design made earlier is still this job's design after a refresh.
 showDesign();
 showSpec();
-$("job").addEventListener("change", () => { showDesign(); showSpec(); refreshXray("manual"); });
+$("job").addEventListener("change", () => { showDesign(); showSpec(); refreshXray("manual"); showReview("manual"); });
 $("stop-design").onclick = async () => {
   try { await post("/api/stop", { job: job(), runnable: "agent-design" }); }
   catch (e) { setState($("design-state"), "bad", e.message); }
@@ -1059,7 +1192,7 @@ $("manual-run").onclick = async () => {
     follow("manual-generate", $("manual-log"), $("manual-state"), () => {
       $("manual-run").disabled = false;
       showManual(j);
-      if (j === job()) refreshXray("manual", true);
+      if (j === job()) { refreshXray("manual", true); showReview("manual"); }
     }, j);
   } catch (e) {
     $("manual-run").disabled = false;
@@ -1076,7 +1209,7 @@ $("manual-stop").onclick = async () => {
     if (!stopped) setState($("manual-state"), "", "nothing was running for this job");
   } catch (e) { setState($("manual-state"), "bad", e.message); }
 };
-onTab.manual = () => { showManualDocs(); showManualPull(); showManual(); refreshXray("manual"); };
+onTab.manual = () => { showManualDocs(); showManualPull(); showManual(); refreshXray("manual"); showReview("manual"); };
 
 // ---- publish -----------------------------------------------------------
 // The one tab that writes to Jira and Confluence. What is switched on, and
