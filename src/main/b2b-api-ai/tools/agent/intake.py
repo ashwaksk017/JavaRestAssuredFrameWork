@@ -888,7 +888,8 @@ def main(argv=None) -> int:
                          "page the fetcher could not read); read like a fetched page")
     ap.add_argument("--pasted", action="store_true",
                     help="read what the page pasted for this job from the job's own files "
-                         "(pasted.txt, pasted-pages.txt). The page uses this, never a path: a "
+                         "(pasted.txt, pasted-pages.txt); it wins over --text-file. The page "
+                         "uses this, never a path: a "
                          "path confined to the repository still reaches the private "
                          "configuration, and whatever is read here is quoted to Cursor")
     ap.add_argument("--link", action="append", default=[],
@@ -930,7 +931,8 @@ def main(argv=None) -> int:
         with io.open(args.pages_file, encoding="utf-8", errors="replace") as fh:
             pages_text = fh.read()
     if not text.strip() and not args.link and not pages_text.strip():
-        print("refused: give --text, --text-file or at least one --link")
+        print("refused: give --text, --text-file, --pasted (with something pasted) or at "
+              "least one --link")
         return 2
 
     r = build(args.job, text=text, links=args.link, root=args.root,

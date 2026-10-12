@@ -455,7 +455,7 @@ $("design-spec-fetch").onclick = async () => {
 };
 
 // `j` is the job the run was started for, not whatever the box holds now.
-async function showDesign(j) {
+async function showDesign(j, fresh) {
   j = j || job();
   let have = false;
   try {
@@ -468,13 +468,14 @@ async function showDesign(j) {
     $(id).hidden = !have;
     $(id).href = `/api/download?job=${encodeURIComponent(j)}&name=${name}`;
   }
-  if (j === job()) refreshXray("design");
+  if (j === job()) refreshXray("design", fresh);
 }
 
 // ---- Xray: the cases as Jira Test issues ---------------------------------
-// One block on each of the two tabs that produce cases. What is on is asked
-// of the server each time the block is drawn (the switch can be changed
-// while the page is open); the keys already created are shown beside it.
+// One block on each of the two tabs that produce cases. The last answer
+// kept for the job is drawn at once; the server is asked again after a run
+// or a create, and whenever the kept answer says the switch is off, broken
+// or a stand-in (see refreshXray). The keys already created are shown.
 const xrayStatus = {};              // what -> the last status read for the job in the box
 
 function showXrayKeys(what, st) {
@@ -501,22 +502,47 @@ function showXrayKeys(what, st) {
   box.replaceChildren(...kids);
 }
 
-function refreshXray(what) {
+// What a status says, drawn: the keys, the banners, the button.
+function settleXray(what, st) {
+  const st0 = $(`xray-${what}-state`);
+  xrayStatus[what] = st;
+  showXrayKeys(what, st);
+  const usable = (st.cases || {})[what] > 0 && (st.mock_jira || (st.real || {})[what]);
+  $(`xray-${what}-create`).disabled = !(st.create_tests && usable);
+  if (st.story && !$(`xray-${what}-story`).value.trim()) $(`xray-${what}-story`).value = st.story;
+  if (!(st.cases || {})[what]) setState(st0, "", `no ${what} cases in this job yet`);
+  else setState(st0, "", `${st.cases[what]} case(s); ${Object.keys((st.keys || {})[what] || {}).length} already in Xray`);
+}
+
+// `fresh`: ask the server again now. Otherwise the last answer kept for
+// the job is used and no command is started -- opening a tab must not set
+// a process going each time. A create checks everything again itself, and
+// after a run or a create the block is refreshed fresh.
+function refreshXray(what, fresh) {
   const j = job();
   const st0 = $(`xray-${what}-state`);
   $(`xray-${what}-create`).disabled = true;
   xrayStatus[what] = null;
   if (!j) { $(`xray-${what}-result`).replaceChildren(); return; }
-  // What was found last time is shown at once, marked as such, while the
-  // fresh answer is asked for: the keys do not change between visits.
   api(`/api/artifact?job=${encodeURIComponent(j)}&name=xray-status.json`).then((r) => {
     let was = null;
     try { was = JSON.parse(r.text || "null"); } catch { was = null; }
-    if (j === job() && !xrayStatus[what] && was && was.kind === "xray-status" && was.job === j) {
-      showXrayKeys(what, was);
-      setState(st0, "run", "checking what is switched on now…");
+    if (j !== job()) return;
+    const had = Boolean(was && was.kind === "xray-status" && was.job === j);
+    // A kept answer that says "on" is good until something is run; one that
+    // says "off", "broken" or "stand-in" is worth asking about again, because
+    // the person has very likely just changed the configuration to fix it.
+    const unsettled = !had || !was.create_tests || was.problem || was.mock_jira;
+    if (had) {
+      settleXray(what, was);
+      if (fresh || unsettled) setState(st0, "run", "checking what is switched on now…");
     }
-  }).catch(() => { /* nothing from before */ });
+    if (fresh || unsettled) askXray(what, j);
+  }).catch(() => { if (j === job()) askXray(what, j); });
+}
+
+function askXray(what, j) {
+  const st0 = $(`xray-${what}-state`);
   const begin = post("/api/start", { job: j, runnable: "xray-status", options: { "--job": j } })
     // Already being asked (the page was drawn twice quickly): follow that run.
     .catch((e) => { if (/already running/.test(e.message)) return {}; throw e; });
@@ -530,15 +556,12 @@ function refreshXray(what) {
       } catch { st = null; }
       const fresh = run && run.state === "done" && st && st.kind === "xray-status" && st.job === j &&
                     String(st.at || "") >= String((begun && begun.started) || "");
-      xrayStatus[what] = fresh ? st : null;
-      showXrayKeys(what, xrayStatus[what]);
       if (fresh) {
-        if (st.story && !$(`xray-${what}-story`).value.trim()) $(`xray-${what}-story`).value = st.story;
-        const usable = (st.cases || {})[what] > 0 && (st.mock_jira || (st.real || {})[what]);
-        $(`xray-${what}-create`).disabled = !(st.create_tests && usable);
-        if (!(st.cases || {})[what]) setState(st0, "", `no ${what} cases in this job yet`);
-        else setState(st0, "", `${st.cases[what]} case(s); ${Object.keys((st.keys || {})[what] || {}).length} already in Xray`);
+        settleXray(what, st);
       } else {
+        xrayStatus[what] = null;
+        $(`xray-${what}-create`).disabled = true;
+        showXrayKeys(what, null);
         setState(st0, "bad", "what can be created could not be found out; the Logs tab has the reason");
       }
     }, j))
@@ -549,7 +572,7 @@ function wireXray(what) {
   $(`xray-${what}-create`).onclick = () => {
     const j = job();
     const st = xrayStatus[what];
-    if (!st || st.job !== j) { setState($(`xray-${what}-state`), "bad", "the status is not for this job; it is being read again"); refreshXray(what); return; }
+    if (!st || st.job !== j) { setState($(`xray-${what}-state`), "bad", "the status is not for this job; it is being read again"); refreshXray(what, true); return; }
     const story = $(`xray-${what}-story`).value.trim().toUpperCase();
     if (!/^[A-Z][A-Z0-9_]+-[0-9]+$/.test(story)) { setState($(`xray-${what}-state`), "bad", "give the story key, like ABC-12"); return; }
     const n = (st.cases || {})[what] || 0;
@@ -588,9 +611,9 @@ function wireXray(what) {
           for (const c of r.changed || []) kids.push(banner("warn", `${c.id} → ${c.key}: ${c.note}`));
         }
         box.replaceChildren(...kids);
-        if (j === job()) refreshXray(what);
+        if (j === job()) refreshXray(what, true);
       }, j))
-      .catch((e) => { setState($(`xray-${what}-state`), "bad", e.message); refreshXray(what); });
+      .catch((e) => { setState($(`xray-${what}-state`), "bad", e.message); refreshXray(what, true); });
   };
 }
 wireXray("design");
@@ -647,7 +670,7 @@ $("run-design").onclick = async () => {
     });
     follow("agent-design", $("design-log"), $("design-state"), () => {
       stopCursorLog();
-      showDesign(j);
+      showDesign(j, true);
       // One run. Left ticked, every later click would pay again in silence.
       $("design-fresh").checked = false;
       button.disabled = false;
@@ -1036,7 +1059,7 @@ $("manual-run").onclick = async () => {
     follow("manual-generate", $("manual-log"), $("manual-state"), () => {
       $("manual-run").disabled = false;
       showManual(j);
-      if (j === job()) refreshXray("manual");
+      if (j === job()) refreshXray("manual", true);
     }, j);
   } catch (e) {
     $("manual-run").disabled = false;
