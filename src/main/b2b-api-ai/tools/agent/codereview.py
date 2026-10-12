@@ -2,7 +2,7 @@
 
     python tools/agent/codereview.py --job J
 
-The Agent loop leaves a change waiting for a person: the files are in
+The Agentic Test Creation tab leaves a change waiting for a person: the files are in
 place, `proposed.diff` says what changed, and the checks have run. What
 the checks cannot say is whether the test is any good -- whether it
 asserts what the story asked for, or anything at all. This command asks
@@ -20,7 +20,7 @@ the test runs against.
 
 WHAT IS CHECKED RATHER THAN TRUSTED
 -----------------------------------
-* The diff is whatever the Agent loop wrote down. Nothing is read from
+* The diff is whatever the Agentic Test Creation tab wrote down. Nothing is read from
   the page, and no path is taken from anybody.
 * A finding must name a file that is in the change, and quote a line.
   The quoted line is LOOKED UP in the part of that file's diff that was

@@ -642,8 +642,16 @@ def main() -> int:
                   and "### ABC-9000 -- parent" in brief and "### ABC-9001 -- is blocked by" in brief
                   and "POST /guests/123/businesses" in brief, f"rc={rc} {brief[:300]}")
             html = mocked.dom("new")
-            check("the New test case tab has a place for the Jira story",
+            check("the Automate Test Case tab has a place for the Jira story",
                   'id="story"' in html and 'for="story"' in html and "Confluence pages" in html)
+
+            bar = html[html.find('class="tabs"'):html.find("</nav>")]
+            check("the two tabs that belong together stand together, under their names",
+                  0 < bar.find("Automate Test Case") < bar.find("Agentic Test Creation")
+                  < bar.find("Manual tests") and "New test case<" not in html
+                  and "Agent loop<" not in html)
+            check("the design can be asked for the whole specification",
+                  'id="design-whole"' in html)
 
             code, rc = press("defects-load", {"--project": "ABC", "--version": "Release 2.0"})
             html = mocked.dom("defects")
@@ -677,7 +685,7 @@ def main() -> int:
             check("mock mode: Check Cursor setup needs no SDK and no key", rc == 0)
 
             # ---- the review of a proposed change -----------------------------
-            # A change waiting for a person, as the Agent loop leaves it. The
+            # A change waiting for a person, as the Agentic Test Creation tab leaves it. The
             # review reads these two files and nothing else.
             def waiting(started):
                 with io.open(os.path.join(job_dir, "review.json"), "w", encoding="utf-8") as fh:

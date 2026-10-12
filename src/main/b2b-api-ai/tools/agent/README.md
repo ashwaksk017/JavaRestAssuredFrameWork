@@ -166,7 +166,7 @@ While a switch is on:
   means "everything real".
 
 **Not simulated**, whatever the switches say: Confluence links on the
-New test case tab are fetched for real; `tools/jira/fetch.py` and
+Automate Test Case tab are fetched for real; `tools/jira/fetch.py` and
 `run.py` (a single story, from a console) use the real Jira; the
 converter and its own Cursor assist; the tests and the Failures tab;
 and git. As shipped both switches are `true`, so a fresh copy is safe to
@@ -210,7 +210,7 @@ looking again at a long run after the page was closed.
 
 ## The tabs
 
-### New test case
+### Automate Test Case
 
 Give a Jira story (a link to it, or its key), paste request payloads,
 and add Confluence links. It reads them, then decides **create / update
@@ -234,10 +234,17 @@ from the Jira in your configuration:
   blocked by*, *relates to*, *clones*...) and its sub-tasks, up to 8,
   each read once and not followed further.
 
+The text of each **Confluence page** given with the job is read too --
+its rules and its tables (a table arrives as rows of `a | b | c`) --
+and goes into the brief under **Confluence pages**, up to 8,000
+characters a page and 20,000 in all. A code block longer than 1,500
+characters is named and left out: a specification on a page is handed
+to the design step on its own.
+
 All of it goes into `brief.md`: the story's own text under **The
 story**, and each parent and linked story under **Around the story**
 with how it is related. The brief is what *Design the API tests* and the
-Agent loop hand to Cursor, so Cursor sees the story in its setting
+Agentic Test Creation hand to Cursor, so Cursor sees the story in its setting
 rather than alone. Pasting the story is then optional; paste only what
 Jira does not hold.
 
@@ -323,7 +330,7 @@ what is in this folder.
 | **UPSTREAM** | a *generated* test covers it. A change there is overwritten by the next convert, so it belongs in the ReadyAPI XML | yes |
 | **CONFIRM** | it cannot be told from here -- a likeness, a likely duplicate, or data that is already there. A person decides | yes |
 
-A stop is the step working. The Agent loop tab is handed `plan.md`, so
+A stop is the step working. The Agentic Test Creation tab is handed `plan.md`, so
 what is decided here is what gets written.
 
 **What a request is compared with, in order:**
@@ -423,17 +430,37 @@ what is decided here is what gets written.
 
 #### Design the API tests (optional)
 
-The lower half of the New test case tab. *Read it* and *locate* answer "is this
+The lower half of the Automate Test Case tab. *Read it* and *locate* answer "is this
 automated already?". This answers "what should be tested?": Cursor is
 given the API specification, the requirements and `brief.md`, and
 proposes test cases, each with an endpoint, steps and a checkable
-expected result. Read the result before the Agent loop tab writes any Java. The Agent loop tab's
+expected result. Read the result before the Agentic Test Creation tab writes any Java. The Agentic Test Creation tab's
 prompt carries the cases (new-test and converted scopes) for as long as
 the job's brief is the one they were designed from; after *Read it* is
-run with a different story, they are not used and the Agent loop tab's log says so.
+run with a different story, they are not used and the Agentic Test Creation tab's log says so.
 They are handed over as data, each field on one line, with a statement
 that nothing in them is an instruction.
 
+- **A story gets a design made for it.** When the job has a story (or
+  pasted text, or the requirements box) that names endpoints of the
+  specification, only those endpoints are designed, every case tied to
+  the story -- in one call, unless even that part of the specification
+  is too large for one. Without this a large
+  specification is cut into parts by size and a story about three
+  endpoints comes back as forty cases of which a handful concern it.
+
+  An endpoint is recognised when the story writes its path
+  (`/guests/{guestId}/accounts/{accountId}/members/{memberId}/stays`,
+  with or without real values), the end of it (`GET .../spendDetail`),
+  or calls its last word an endpoint ("the bookingpolicy endpoint").
+  Case and plurals are ignored. The result lists which paths were
+  chosen and why, so a wrong guess is visible; add `GET /path` lines to
+  the requirements box to name others. When nothing is named, the whole
+  specification is designed and the result says so.
+
+  Tick **Design the whole specification, not only what the story
+  touches** for every endpoint.
+- **The service name**, left empty, is the specification's own title.
 - **Specification** — OpenAPI / Swagger, JSON or YAML, from one of
   three places:
   - **pasted** into the box. What is pasted always wins.
@@ -469,7 +496,7 @@ What the step checks instead of trusting:
   (`$ref` path items are followed; a Swagger 2 `basePath` or a server
   URL's path prefix is accepted in front of a path). A designed case on
   an endpoint that is not in it is kept and marked
-  `[NOT IN THE SPECIFICATION]`, and is not handed to the Agent loop tab. With no
+  `[NOT IN THE SPECIFICATION]`, and is not handed to the Agentic Test Creation tab. With no
   specification, the requests in the story are shown to Cursor but
   nothing is checked against them, and `design.md` says so.
 - A case with no expected result is dropped, and listed.
@@ -506,12 +533,12 @@ What the step checks instead of trusting:
   it unticks itself after the run. A run answered entirely from kept
   replies needs neither the SDK nor a key.
 - Each call to Cursor has a time limit (`cursor_deadline_seconds` in
-  `policy.json`: 900 seconds for a design call; 2700 for an Agent loop tab call,
+  `policy.json`: 900 seconds for a design call; 2700 for an Agentic Test Creation tab call,
   per attempt, so twice that with the repair attempt; 0 is no limit, and
   a value that is not a number is the default). A call that does not
   come back is asked to cancel and reported as stuck, instead of the job
   showing "running" until someone kills it.
-- An Agent loop tab call that fails -- times out, or errors half way -- is not
+- An Agentic Test Creation tab call that fails -- times out, or errors half way -- is not
   treated as a call that did nothing. Everything checked after a
   finished run is checked after a failed one: the credential file,
   `.git` (hooks, config), files hidden from git, folders that ignore
@@ -520,7 +547,7 @@ What the step checks instead of trusting:
   back, after a failed run or a finished one: nothing is reverted, the
   reason says to reset the branch by hand, and Discard then puts the
   files back.
-- When an Agent loop tab call times out, the tree is put back, and after a few
+- When an Agentic Test Creation tab call times out, the tree is put back, and after a few
   seconds it is checked again. If the run wrote again, or could not be
   confirmed cancelled, the job is left **discardable**: end the Cursor
   bridge process (`cursor-sdk-bridge` / `node`) in the task manager if
@@ -598,7 +625,7 @@ only. Nothing on this tab writes to Jira.
   needs `pypdf` and Excel needs `openpyxl`; a file that cannot be read on
   this machine is listed as unread with the reason, not passed over.
 - **Notes** -- free text.
-- **The story** read on the New test case tab for the same job, if any.
+- **The story** read on the Automate Test Case tab for the same job, if any.
 - **Existing tests** -- *Read existing tests* takes a project key, an
   issue type (default `Test`) and optionally one further condition, and
   reads up to 200 tests with their Xray steps (Server / Data Center; when
@@ -693,10 +720,20 @@ and will run without it. When the suite does read workbooks, leaving it
 out empties every DataSource column, and the run then looks like an API
 problem rather than a missing path, which is why the form says so.
 
-### Agent loop
+### Agentic Test Creation
 
-The only tab that writes code. It takes the plan the New test case tab produced and has
-**Cursor** act on it. All Java (and converter) changes go through Cursor;
+The only tab that writes code. It takes the plan the Automate Test Case tab produced and has
+**Cursor** act on it.
+
+Cursor is told **where things are** before it is told where it may
+write: where the hand-written and the converted test classes are, which
+TestNG suite files there are, where the data sheets are and how one is
+laid out, where the steps, the clients and the request bodies are, and
+which of all that is generated. It is read from the folders as they are
+when the run starts, with counts and the names of the suites converted
+on the machine. The same text is written to the Cursor log as its own
+block -- *what Cursor was told about where things are* -- because the
+prompt itself is cut short there. All Java (and converter) changes go through Cursor;
 this tool decides where it may write, checks what it did, and holds the
 result until a person approves it.
 
@@ -1223,20 +1260,20 @@ target/agent/<job>/
   test-cases.csv         design: one row per step
   xray.csv               design: the same, grouped for Xray's importer
   jira-result.json       the Jira tab: the last Jira command's result, as the page shows it
-  code-review.json / .md the Agent loop tab: Cursor's review of the proposed change, and the report
+  code-review.json / .md the Agentic Test Creation tab: Cursor's review of the proposed change, and the report
   defects.json           the Defects tab: the loaded bugs, their text, the suggestions
   defects-result.json    the Defects tab: the same without the ticket text, as the page shows it
   defects-applied.log    the Defects tab: every write to Jira made from this job
   failures-result.json   the Failures tab: the last failure-history command's result
-  cursor.log             the conversation with Cursor (design and the Agent loop tab), appended across runs
-  review.json            the Agent loop tab: state, scope, the files changed, verify result
-  proposed.diff          the Agent loop tab: what is waiting for review
-  converted.patch        the Agent loop tab: an approved change to converted Java, as a diff to read
-  pre-generated/         the Agent loop tab: the changed generated files as they were before the run
-  gate-before.json       the Agent loop tab (converter scope): what failed before / after
-  agent-prompt-N.txt     the Agent loop tab: exactly what Cursor was asked
-  agent-answer-N.md      the Agent loop tab: what it said it did
-  pre/                   the Agent loop tab: your uncommitted files as they were before the run
+  cursor.log             the conversation with Cursor (design and the Agentic Test Creation tab), appended across runs
+  review.json            the Agentic Test Creation tab: state, scope, the files changed, verify result
+  proposed.diff          the Agentic Test Creation tab: what is waiting for review
+  converted.patch        the Agentic Test Creation tab: an approved change to converted Java, as a diff to read
+  pre-generated/         the Agentic Test Creation tab: the changed generated files as they were before the run
+  gate-before.json       the Agentic Test Creation tab (converter scope): what failed before / after
+  agent-prompt-N.txt     the Agentic Test Creation tab: exactly what Cursor was asked
+  agent-answer-N.md      the Agentic Test Creation tab: what it said it did
+  pre/                   the Agentic Test Creation tab: your uncommitted files as they were before the run
 ```
 
 The page polls the log by byte offset, so a long convert streams and a

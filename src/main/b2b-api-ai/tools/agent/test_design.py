@@ -914,7 +914,8 @@ class Run(unittest.TestCase):
         seen = {}
         orig, orig_dir = design.design, loop.intake.job_dir
         loop.intake.job_dir = lambda job, root="": self.out
-        def fake(job, service, swagger, requirements, notes, speed, mode="plan", fresh=False):
+        def fake(job, service, swagger, requirements, notes, speed, mode="plan", fresh=False,
+                 **_more):
             seen.update(swagger=swagger, requirements=requirements, notes=notes, mode=mode)
             return 0
         design.design = fake
@@ -1376,6 +1377,256 @@ class AskingAgainOnTheSameAgent(unittest.TestCase):
         self.sent.clear()
         self.results = [("finished", "prose"), ("finished", "")]
         self.assertEqual(self.call(lambda text: "again")["result"], "prose")
+
+
+def account_spec():
+    """Sixteen paths; a story about reservations touches five of them."""
+    def get(summary):
+        return {"get": {"summary": summary, "responses": {"200": {}, "403": {}}}}
+    paths = {
+        "/accounts": get("Search accounts"),
+        "/accounts/{accountId}": get("Read an account"),
+        "/guests/{guestId}/accounts": get("Accounts of a guest"),
+        "/accounts/{accountId}/members": get("Members of an account"),
+        "/accounts/{accountId}/bookingPolicies": get("Booking policies of an account"),
+        "/guests/{guestId}/accounts/{accountId}/spendDetail": get("Spend detail"),
+        "/guests/{guestId}/accounts/{accountId}/members/{memberId}/spendDetail":
+            get("Spend detail of a member"),
+        "/guests/{guestId}/accounts/{accountId}/members/{memberId}/bookingPolicies":
+            get("Booking policies of a member"),
+        "/guests/{guestId}/accounts/{accountId}/members/{memberId}/stays": get("Stays"),
+    }
+    for n in range(7):
+        paths[f"/accounts/{{accountId}}/other{n}"] = get(f"Other {n}")
+    return {"openapi": "3.0.1", "info": {"title": "Accounts API", "version": "1"}, "paths": paths}
+
+
+STAYS = "/guests/{guestId}/accounts/{accountId}/members/{memberId}/stays"
+MEMBER_SPEND = "/guests/{guestId}/accounts/{accountId}/members/{memberId}/spendDetail"
+ACCOUNT_SPEND = "/guests/{guestId}/accounts/{accountId}/spendDetail"
+MEMBER_POLICIES = "/guests/{guestId}/accounts/{accountId}/members/{memberId}/bookingPolicies"
+ACCOUNT_POLICIES = "/accounts/{accountId}/bookingPolicies"
+
+
+class WhichEndpointsAStoryIsAbout(unittest.TestCase):
+    def named(self, text):
+        return set(design.story_paths(account_spec(), text))
+
+    def test_a_path_written_out_with_or_without_real_values(self):
+        self.assertEqual(self.named("See GET " + STAYS + " for the change."), {STAYS})
+        self.assertEqual(self.named("call /guests/123/accounts/9/members/4/stays?confNumber=1"),
+                         {STAYS})
+        self.assertEqual(self.named("https://h.example.test/accounts/77"),
+                         {"/accounts/{accountId}"})
+
+    def test_the_end_of_a_path_the_way_a_story_shortens_it(self):
+        self.assertEqual(self.named("also GET .../spendDetail"), {MEMBER_SPEND, ACCOUNT_SPEND})
+        self.assertEqual(self.named(".../members/{memberId}/stays"), {STAYS})
+        self.assertEqual(self.named("GET /stays must allow it"), {STAYS})
+
+    def test_case_and_plural_are_the_storys_not_the_contracts(self):
+        self.assertEqual(self.named("and GET .../bookingpolicies"),
+                         {MEMBER_POLICIES, ACCOUNT_POLICIES})
+
+    def test_a_word_the_story_calls_an_endpoint(self):
+        self.assertEqual(self.named("Change requires support within bookingpolicy endpoint"),
+                         {MEMBER_POLICIES, ACCOUNT_POLICIES})
+        self.assertEqual(self.named("the stays API returns the header"), {STAYS})
+
+    def test_a_word_in_passing_names_nothing(self):
+        self.assertEqual(self.named("Members of accounts see their stays and policies."), set())
+        self.assertEqual(self.named("a/b testing and and/or wording, 1/2 of the time"), set())
+
+    def test_a_word_is_not_used_when_a_path_was_written(self):
+        got = self.named("GET .../spendDetail. The members endpoint is unchanged.")
+        self.assertEqual(got, {MEMBER_SPEND, ACCOUNT_SPEND})
+
+    def test_a_path_that_ends_in_a_value_does_not_name_every_path_that_ends_in_one(self):
+        self.assertEqual(self.named("see .../members/12"), set())
+
+    def test_jiras_brace_escape_does_not_cut_a_path_short(self):
+        self.assertEqual(self.named("Change /accounts/\\{accountId}/members so they are listed."),
+                         {"/accounts/{accountId}/members"})
+        self.assertEqual(self.named("GET /guests/\\{guestId}/accounts/\\{accountId}/spendDetail"),
+                         {ACCOUNT_SPEND})
+
+    def test_a_plain_word_is_not_a_value_for_a_parameter(self):
+        """`/accounts/search` is another endpoint, not `/accounts/{accountId}`."""
+        self.assertEqual(self.named("Add GET /accounts/search for coordinators."), set())
+        self.assertEqual(self.named("see /accounts/members"), set())
+        self.assertEqual(self.named("GET /accounts/77 and /accounts/ABCDE and /accounts/{id}"),
+                         {"/accounts/{accountId}"})
+
+    def test_the_base_path_the_story_wrote_is_not_part_of_the_path(self):
+        spec = account_spec()
+        spec["servers"] = [{"url": "https://h.example.test/v1"}]
+        got = set(design.story_paths(spec, "Change GET /v1/accounts/{accountId}/members. "
+                                           "Unlike GET /accounts, it pages."))
+        self.assertEqual(got, {"/accounts/{accountId}/members", "/accounts"})
+
+    def test_words_joined_by_a_slash_are_not_a_path(self):
+        spec = account_spec()
+        spec["paths"]["/logout"] = {"get": {"responses": {"200": {}}}}
+        spec["paths"]["/post"] = {"get": {"responses": {"200": {}}}}
+        self.assertEqual(design.story_paths(spec, "After login/logout the orders are kept, "
+                                                  "and/or GET/POST, on 10/12/2026"), {})
+        self.assertEqual(set(design.story_paths(spec, "call GET /logout")), {"/logout"})
+
+    def test_a_long_run_of_letters_does_not_take_minutes(self):
+        import time
+        started = time.time()
+        design.story_paths(account_spec(), "x" * 200000)
+        design.story_paths(account_spec(), "/a" * 100000)
+        self.assertLess(time.time() - started, 3.0)
+
+    def test_why_each_was_chosen_is_said(self):
+        got = design.story_paths(account_spec(), "GET .../spendDetail")
+        self.assertIn("the end of this path", got[MEMBER_SPEND])
+
+
+class DesigningForAStory(Run):
+    """A story about three endpoints of a large API is designed for those,
+    in one call that sees all of them. (The inherited tests run again; they
+    take three seconds.)"""
+
+    STORY = ("Travel coordinators get the same reservation access as owners.\n"
+             "Impacted: GET " + STAYS + ", GET .../spendDetail and GET .../bookingpolicies\n")
+
+    def story(self, text=None, requests=()):
+        os.makedirs(self.out, exist_ok=True)
+        with io.open(os.path.join(self.out, "intake.json"), "w", encoding="utf-8") as fh:
+            json.dump({"story": {"key": "ABC-1"}, "story_text": self.STORY if text is None else text,
+                       "requests": list(requests)}, fh)
+
+    def ask(self, **kw):
+        seen = []
+
+        def agent(prompt, followup):
+            seen.append(prompt)
+            return {"result": reply(case(endpoint="GET " + STAYS, title="stays"))}
+        kw.setdefault("swagger", json.dumps(account_spec()))
+        rc = self.run_design(agent, **kw)
+        return rc, seen, json.loads(self.read("design.json"))
+
+    def listed(self, prompt):
+        block = prompt.split("===== ENDPOINTS =====")[1].split("=====")[0]
+        return {l.split(" -- ")[0] for l in block.splitlines() if l.startswith("GET ")}
+
+    def test_only_the_endpoints_the_story_names_are_designed_in_one_call(self):
+        self.story()
+        rc, seen, d = self.ask()
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(self.listed(seen[0]), {"GET " + p for p in (
+            STAYS, MEMBER_SPEND, ACCOUNT_SPEND, MEMBER_POLICIES, ACCOUNT_POLICIES)})
+        self.assertIn("THIS DESIGN IS FOR ONE STORY", seen[0])
+        self.assertNotIn("/accounts/{accountId}/other3", seen[0])
+        self.assertEqual({f["path"] for f in d["focus"]},
+                         {STAYS, MEMBER_SPEND, ACCOUNT_SPEND, MEMBER_POLICIES, ACCOUNT_POLICIES})
+        self.assertTrue(any("designed for the story: 5 endpoint(s)" in w for w in d["warnings"]))
+
+    def test_no_case_is_said_of_the_storys_endpoints_not_of_the_whole_api(self):
+        self.story()
+        _rc, _seen, d = self.ask()
+        self.assertEqual(len(d["uncovered_endpoints"]), 4)       # five named, one has a case
+        self.assertTrue(any("4 of 5 endpoint(s) have no test case" in w for w in d["warnings"]))
+
+    def test_a_case_on_another_real_endpoint_is_still_known_to_the_contract(self):
+        self.story()
+
+        def agent(prompt, followup):
+            return {"result": reply(case(endpoint="GET /accounts"))}
+        self.run_design(agent, swagger=json.dumps(account_spec()))
+        d = json.loads(self.read("design.json"))
+        self.assertTrue(d["test_cases"][0]["endpoint_in_spec"])
+
+    def test_the_whole_specification_on_request(self):
+        self.story()
+        _rc, seen, d = self.ask(whole_spec=True)
+        self.assertEqual(len(self.listed(seen[0])), 16)
+        self.assertNotIn("THIS DESIGN IS FOR ONE STORY", seen[0])
+        self.assertEqual(d["focus"], [])
+
+    def test_a_story_that_names_no_endpoint_gets_the_whole_api_and_is_told(self):
+        self.story("Travel coordinators get the same access as owners.")
+        _rc, seen, d = self.ask()
+        self.assertEqual(len(self.listed(seen[0])), 16)
+        self.assertTrue(any("no endpoint of the specification is named" in w
+                            for w in d["warnings"]))
+
+    def test_the_requirements_box_and_the_storys_own_requests_name_endpoints_too(self):
+        self.story("No path in the story.")
+        _rc, seen, _d = self.ask(requirements="Covers GET /stays only.")
+        self.assertEqual(self.listed(seen[0]), {"GET " + STAYS})
+        self.story("No path in the story.",
+                   requests=[{"verb": "GET", "raw_path": "/accounts/77/members",
+                              "provenance": "pasted text: curl command"}])
+        _rc, seen, _d = self.ask()
+        self.assertEqual(self.listed(seen[0]), {"GET /accounts/{accountId}/members"})
+
+    def test_a_request_found_on_a_confluence_page_does_not_narrow_the_design(self):
+        self.story("No path in the story.",
+                   requests=[{"verb": "GET", "raw_path": "/accounts/77/members",
+                              "provenance": "confluence https://wiki.example.test/x"},
+                             {"verb": "GET", "raw_path": "/accounts",
+                              "provenance": "jira ABC-1: a VERB /path line"}])
+        _rc, seen, _d = self.ask()
+        self.assertEqual(self.listed(seen[0]), {"GET /accounts"})
+
+    def test_a_specification_pasted_as_the_story_text_is_not_a_story_naming_every_path(self):
+        os.makedirs(self.out, exist_ok=True)
+        with io.open(os.path.join(self.out, "pasted.txt"), "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(account_spec()))
+        _rc, seen, d = self.ask(swagger="")
+        self.assertEqual(len(self.listed(seen[0])), 16)
+        self.assertFalse(any("names 16 of" in w or "named by the story" in w for w in d["warnings"]))
+
+    def test_a_tiny_specification_is_designed_whole_without_remark(self):
+        self.story()
+        _rc, seen, d = self.ask(swagger=json.dumps(SPEC))
+        self.assertNotIn("THIS DESIGN IS FOR ONE STORY", seen[0])
+        self.assertFalse(any("most of it" in w or "named by the story" in w for w in d["warnings"]))
+
+    def test_a_story_that_names_most_of_the_api_is_not_a_focus(self):
+        self.story(" ".join(f"GET /accounts/1/other{n}" for n in range(7))
+                   + " GET /accounts GET /accounts/1 GET /guests/1/accounts GET .../members")
+        _rc, seen, d = self.ask()
+        self.assertEqual(len(self.listed(seen[0])), 16)
+        self.assertTrue(any("which is most of it" in w for w in d["warnings"]))
+
+    def test_without_a_story_nothing_changes(self):
+        _rc, seen, d = self.ask()
+        self.assertEqual(len(self.listed(seen[0])), 16)
+        self.assertEqual(d["focus"], [])
+        self.assertFalse(any("named by the story" in w for w in d["warnings"]))
+
+    def test_the_service_is_the_specifications_own_name_unless_one_is_given(self):
+        _rc, seen, _d = self.ask()
+        self.assertIn("for the service\n`Accounts API`", seen[0])
+        _rc, seen, _d = self.ask(service="reservations")
+        self.assertIn("`reservations`", seen[0])
+        spec = account_spec()
+        del spec["info"]
+        _rc, seen, _d = self.ask(swagger=json.dumps(spec))
+        self.assertIn("`j1`", seen[0])
+
+    def test_the_prompt_asks_for_the_answer_not_for_a_plan(self):
+        _rc, seen, _d = self.ask()
+        self.assertIn("Do not write a plan first and do not use any tool", seen[0])
+
+    def test_the_command_takes_the_option(self):
+        seen = {}
+        real = design.design
+        self.addCleanup(setattr, design, "design", real)
+        design.design = lambda *a, **k: seen.update(k) or 0
+        real_dir = loop.intake.job_dir
+        self.addCleanup(setattr, loop.intake, "job_dir", real_dir)
+        loop.intake.job_dir = lambda job, root="": self.out
+        os.makedirs(self.out, exist_ok=True)
+        design.main(["--job", "j1", "--whole-spec"])
+        self.assertTrue(seen["whole_spec"])
+        design.main(["--job", "j1"])
+        self.assertFalse(seen["whole_spec"])
 
 
 if __name__ == "__main__":

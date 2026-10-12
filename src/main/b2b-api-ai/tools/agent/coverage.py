@@ -6,7 +6,7 @@ the converted ReadyAPI suites, signed the way the converter signs them.
 That leaves three things unsaid, and this module says them.
 
 1. HAND-WRITTEN TESTS. The shape index is built from the ReadyAPI
-   sources. A call covered only by a test somebody (or the Agent loop)
+   sources. A call covered only by a test somebody (or the Agentic Test Creation tab)
    wrote was not in it, so the second story about that call was answered
    "create" again. `handwritten()` reads the committed test code and
    lists the calls it makes: verb, path, the test method, its data file.
@@ -171,7 +171,7 @@ def path_fits(recorded: str, asked: str) -> bool:
 def _csv_for(root: str, simple: str, method: str) -> str:
     """The data file `PerMethodCsvDataProvider` would read for a method of
     a hand-written class, when there is one: csv/<Class>/<method>.csv, or
-    the same under csv/manual/ (where the Agent loop writes)."""
+    the same under csv/manual/ (where the Agentic Test Creation tab writes)."""
     base = os.path.join(root, *CSV_ROOT)
     for parts in ((simple, f"{method}.csv"), ("manual", simple, f"{method}.csv"),
                   ("manual", f"{method}.csv")):

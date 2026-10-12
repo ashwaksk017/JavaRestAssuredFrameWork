@@ -150,7 +150,9 @@ TEMPLATE = os.path.join(HERE, "prompts", "api_test_design.md")
 
 # Characters, not tokens: a limit a person can check with a text editor.
 SECTION_LIMITS = {"swagger": 80_000, "requirements": 100_000,
-                  "story": 40_000, "notes": 20_000, "endpoints": 30_000}
+                  # The brief: the story, what is around it, and the pages
+                  # read with it.
+                  "story": 60_000, "notes": 20_000, "endpoints": 30_000}
 TOTAL_LIMIT = 200_000
 SPEEDS = {"fast": 25, "balanced": 40, "thorough": 80}
 VERBS = ("get", "post", "put", "patch", "delete", "head", "options")
@@ -475,6 +477,128 @@ def uncovered(endpoints: list, prefixes: list, cases: list) -> list:
 _FENCE_RX = re.compile(r"```[A-Za-z0-9_-]*[ \t]*\r?\n(.*?)```", re.S)
 
 
+# ---- which endpoints a story is about ---------------------------------------------
+MAX_FOCUS_PATHS = 25
+_PATHISH_RX = re.compile(r"(\.{2,3}|\u2026)?(/[A-Za-z0-9_{}\-.]+(?:/[A-Za-z0-9_{}\-.]+)*)")
+_VERB_BEFORE_RX = re.compile(r"(?i)\b(?:get|post|put|patch|delete)\s+(?:\.{2,3}|\u2026)?$")
+# "the bookingpolicy endpoint", "the stays API": a word said to BE an endpoint.
+_WORD_RX = re.compile(r"(?i)\b([A-Za-z][A-Za-z0-9]{3,60})\s+(?:end-?\s?points?|apis?|routes?|resources?)\b")
+
+
+def _stem(segment: str) -> str:
+    """A path segment as a story is likely to write it: without case, and
+    without the plural (`bookingPolicies` is `bookingpolicy`)."""
+    s = re.sub(r"[^a-z0-9]", "", str(segment).lower())
+    for tail in ("ies", "es", "s", "y"):
+        if s.endswith(tail) and len(s) - len(tail) >= 4:
+            return s[:-len(tail)]
+    return s
+
+
+def _is_param(segment: str) -> bool:
+    return bool(re.fullmatch(r"\{[^{}]*\}", segment))
+
+
+_VALUE_RX = re.compile(r"\{[^{}]*\}|.*\d.*|[A-Z0-9_-]{4,}|[0-9a-f-]{8,}")
+
+
+def _value_like(segment: str) -> bool:
+    """Could this segment stand where the specification has a parameter?
+    `{id}`, `123`, `ABCDE`, a uuid -- but not an ordinary word: `/accounts/
+    search` is another endpoint, not `/accounts/{accountId}`."""
+    return bool(_VALUE_RX.fullmatch(segment))
+
+
+def story_paths(spec: dict, text: str) -> dict:
+    """{path of the specification: why} for the paths a story's text names.
+
+    A story names an endpoint in one of three ways, tried in this order:
+
+      the path          `/guests/{guestId}/businesses/{accountId}/members/{memberId}/stays`
+                        (or with real values where the parameters are)
+      its end           `GET .../spendDetail`, `.../members/{memberId}/stays`
+      its last word     "support within the bookingpolicy endpoint" -- a
+                        word the story calls an endpoint or an API. Used
+                        only when nothing above matched anything, and only
+                        for a word that ends one or two paths
+
+    Case and plurals are ignored (`bookingpolicies` is `bookingPolicies`).
+    A parameter of the specification takes whatever the story wrote in its
+    place. Nothing here is certain, which is why what was chosen is listed
+    in the result with the reason for each.
+    """
+    paths = [p for p in (spec.get("paths") or {}) if _path_item(spec, spec["paths"][p])]
+    split = {p: [s for s in p.strip("/").split("/") if s] for p in paths}
+    prefixes = [[s for s in b.strip("/").split("/") if s] for b in base_paths(spec)]
+    found: dict = {}
+
+    def fits(spec_segs: list, told: list) -> bool:
+        if len(told) > len(spec_segs):
+            return False
+        for s, t in zip(spec_segs[len(spec_segs) - len(told):], told):
+            if _is_param(s):
+                if not _value_like(t):
+                    return False
+                continue
+            if _is_param(t) or _stem(s) != _stem(t):
+                return False
+        return True
+
+    # Jira's and Confluence's markup escapes a brace: `/accounts/\{id}`.
+    text = re.sub(r"\\([{}])", r"\1", text or "")
+    for m in _PATHISH_RX.finditer(text):
+        told = [s for s in m.group(2).strip("/").split("/") if s]
+        before = text[max(0, m.start() - 2):m.start()]
+        if before == ":/":
+            told = told[1:]                              # `https://host/a/b`: not the host
+        elif before[-1:].isalnum() and not m.group(1):
+            continue                                     # `and/or`, `login/logout`, `10/12/2026`
+        # The prefix every path is served under (`/v1`), when the story
+        # wrote it: not part of the path the specification lists.
+        for pre in prefixes:
+            if len(told) > len(pre) and [_stem(s) for s in told[:len(pre)]] == [_stem(s) for s in pre]:
+                told = told[len(pre):]
+                break
+        while told and told[-1].strip(".") == "":
+            told.pop()
+        if not told:
+            continue
+        told[-1] = told[-1].rstrip(".")
+        named_as_path = bool(m.group(1)) or bool(_VERB_BEFORE_RX.search(text[:m.start()][-12:]))
+        whole = [p for p in paths if len(split[p]) == len(told) and fits(split[p], told)]
+        if whole:
+            for p in whole:
+                found.setdefault(p, f"the story writes this path (`{m.group(2)[:120]}`)")
+            continue
+        # The end of a path: two segments or more, or one that is written
+        # as a path (`.../stays`, `GET /stays`) -- and ending in a word,
+        # not in a value.
+        if len(told) < 2 and not named_as_path:
+            continue
+        if _is_param(told[-1]) or told[-1].isdigit():
+            continue
+        for p in paths:
+            if not _is_param(split[p][-1]) and fits(split[p], told):
+                found.setdefault(p, f"the story writes the end of this path "
+                                    f"(`{m.group(2)[:120]}`)")
+    if found:
+        return found
+    # Nothing written as a path. The last word of a path, when the story
+    # calls that word an endpoint and it ends only one or two paths.
+    words = {_stem(w) for w in _WORD_RX.findall(text)}
+    ends: dict = {}
+    for p in paths:
+        last = split[p][-1] if split[p] else ""
+        if last and not _is_param(last):
+            ends.setdefault(_stem(last), []).append(p)
+    for stem, sharing in ends.items():
+        if stem in words and len(sharing) <= 2:
+            for p in sharing:
+                found[p] = (f"the story speaks of the `{split[p][-1]}` endpoint, and "
+                            f"this path ends in it")
+    return found
+
+
 def stored_spec(job_dir: str):
     """(name, text, {origin, at}) of the specification file kept for the
     job, or None. The name comes from the record written with the file,
@@ -526,7 +650,7 @@ def find_spec(job_dir: str) -> tuple:
                     best = (block, f"a code block in {rel.replace(os.sep, '/')}")
     pasted = _read(os.path.join(job_dir, "pasted.txt"))
     if len(pasted) > len(best[0]) and read_spec(pasted)[0] is not None:
-        best = (pasted, "the text pasted on the New test case tab")
+        best = (pasted, "the text pasted on the Automate Test Case tab")
     return best
 
 
@@ -994,9 +1118,22 @@ def _tree_state(root: str):
         return None
 
 
+FOCUS_RULE = (
+    "- THIS DESIGN IS FOR ONE STORY, and this rule replaces the coverage\n"
+    "  order under RULES. The endpoint list holds only the endpoints the\n"
+    "  story names; the API has others, and they are not part of this\n"
+    "  design. Every test case must check something the story, its\n"
+    "  acceptance criteria or the pages read with it ask for, and say which\n"
+    "  in `requirement_refs`. Do not add general coverage of an endpoint (a\n"
+    "  happy path, validation, paging) unless the story changes it. A check\n"
+    "  the story needs on an endpoint that is not listed goes in\n"
+    "  `open_questions`.")
+
+
 def design(job: str, service: str = "", swagger: str = "", requirements: str = "",
            notes: str = "", speed: str = "balanced", root: str = "",
-           agent=None, mode: str = "plan", fresh: bool = False) -> int:
+           agent=None, mode: str = "plan", fresh: bool = False,
+           whole_spec: bool = False) -> int:
     """Run the step. `agent(prompt, followup) -> {"result": text}` replaces
     Cursor in the tests."""
     root = root or ROOT
@@ -1100,22 +1237,84 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         return 1
 
     prefixes = base_paths(spec) if spec is not None else []
+    unresolved_refs = set()
+
+    # ---- a story: design what IT is about, not the whole API -------------
+    # A large specification is otherwise cut into parts by size, each part
+    # gets its share of the cases, and a story about three endpoints is
+    # answered with forty cases of which a handful concern it -- with its
+    # endpoints in different parts, so that no one call sees the change.
+    focus, focus_note = {}, ""
+    design_spec, design_endpoints = spec, endpoints
+    if spec is not None and endpoints and source == "specification" and not whole_spec:
+        try:
+            told = json.loads(_read(os.path.join(out_dir, "intake.json")) or "{}")
+        except ValueError:
+            told = {}
+        told = told if isinstance(told, dict) else {}
+        pasted = _read(os.path.join(out_dir, "pasted.txt"))
+        if pasted.strip() and read_spec(pasted)[0] is not None:
+            pasted = ""                                  # the pasted text IS the specification
+        # The story, what a person wrote, and the requests found in the
+        # story itself. A request found on a Confluence page or in an
+        # attachment is an example on a reference page, and would narrow
+        # the design to whatever that page happened to show.
+        own = [f"{r.get('verb', '')} {r.get('raw_path', '')}" for r in told.get("requests") or []
+               if isinstance(r, dict) and re.match(r"(?i)(pasted text|jira )",
+                                                   str(r.get("provenance") or ""))]
+        about = "\n".join([str(told.get("story_text") or ""), pasted, requirements] + own)
+        all_paths = [p for p in spec["paths"] if _path_item(spec, spec["paths"][p])]
+        focus = story_paths(spec, about) if about.strip() and len(all_paths) > 2 else {}
+        if focus and (len(focus) > MAX_FOCUS_PATHS or len(focus) * 5 > len(all_paths) * 3):
+            focus_note = (f"the story names {len(focus)} of the specification's "
+                          f"{len(all_paths)} paths, which is most of it: the whole "
+                          f"specification was designed")
+            focus = {}
+        elif not focus and has_story and len(all_paths) > 2:
+            focus_note = ("no endpoint of the specification is named by the story or by "
+                          "what was pasted, so the WHOLE specification was designed. Name "
+                          "the endpoints the change touches (in the requirements box, as "
+                          "`GET /path`) to have the design made for them")
+        if focus:
+            design_spec = sub_spec(spec, [p for p in all_paths if p in focus], unresolved_refs)
+            design_endpoints = endpoints_of(design_spec)
+            swagger_sent, whole_notes = spec_text(design_spec, SECTION_LIMITS["swagger"])
+            listed = ((f"(every path below is served under {', '.join(prefixes)}; "
+                       f"write the path as listed, without it)\n" if prefixes else "")
+                      + "\n".join(design_endpoints))
+            focus_note = (f"designed for the story: {len(design_endpoints)} endpoint(s) on "
+                          f"{len(focus)} path(s) it names; the specification's other "
+                          f"{len(endpoints) - len(design_endpoints)} endpoint(s) were not "
+                          f"designed (tick 'Design the whole specification' for those)")
+            say(f" ok  {focus_note}")
+            for p in [p for p in all_paths if p in focus]:
+                say(f"       {p}  -- {focus[p]}")
+    if focus_note:
+        warnings.append(focus_note)
+        if not focus:
+            say(f" ..  {focus_note}")
+
     parts = [None]
     if spec is not None and endpoints:
         if len(swagger) > 4 * SECTION_LIMITS["swagger"]:
             say(" ..  working out how to split the specification (this can "
                 "take a moment for a large one)")
-        parts = plan_parts(spec, SECTION_LIMITS["swagger"])
+        parts = plan_parts(design_spec, SECTION_LIMITS["swagger"])
         if len(parts) > 1:
             say(f" ..  the specification does not fit one prompt at full "
                 f"detail: {len(parts)} calls, one part of the API each")
     if len(parts) == 1 and spec is not None:
         warnings += whole_notes
     part_counts = [len(endpoints_of(sub_spec(spec, p))) for p in parts] \
-        if len(parts) > 1 else [len(endpoints)]
+        if len(parts) > 1 else [len(design_endpoints)]
     part_share = shares(part_counts, max_cases) if len(parts) > 1 else [max_cases]
-    unresolved_refs = set()
     asked_service = service.strip()
+    # With no name given, the specification's own -- not the job's, which
+    # is whatever was typed in a box ("job1").
+    spec_title = ""
+    if spec is not None and isinstance(spec.get("info"), dict):
+        spec_title = loop._one_line(spec["info"].get("title"), 80)
+    service_name = asked_service or spec_title or job
 
     private = loop.config_secrets(os.path.join(
         root, "src", "main", "resources", "program_configuration.json"))
@@ -1304,7 +1503,8 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
                 say(f" ..  {line}")
         empty = "(none given)"
         prompt = render(_read(TEMPLATE), {
-            "service": asked_service or job,
+            "service": service_name,
+            "focus": FOCUS_RULE if focus else "",
             "max_cases": share,
             "endpoints": sections["endpoints"] or
                          "(none could be read. Name an endpoint only as the "
@@ -1413,9 +1613,11 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
             say(f" ..  {w}")
         say("FAIL the reply holds no usable test case.")
         return 1
-    missing = uncovered(endpoints, prefixes, cases) if source == "specification" else []
+    # In a design made for a story, "no case" is said of the endpoints the
+    # story names -- not of the rest of the API, which was not asked for.
+    missing = uncovered(design_endpoints, prefixes, cases) if source == "specification" else []
     if missing:
-        warnings.append(f"{len(missing)} of {len(endpoints)} endpoint(s) have "
+        warnings.append(f"{len(missing)} of {len(design_endpoints)} endpoint(s) have "
                         f"no test case; they are listed in design.md")
     result = {
         "job": job,
@@ -1426,6 +1628,8 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         "parsed": parsed,
         "partial": is_partial,
         "calls": len(parts),
+        # The paths a story-focused design was made for, and why each.
+        "focus": [{"path": p, "why": why} for p, why in focus.items()],
         "reused_calls": len(reused),
         "reused_from": sorted(set(r for r in reused if r)),
         "failed_parts": failed,
@@ -1447,7 +1651,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         say(f" ..  {w}")
     say(f" ok  {len(cases)} test case(s) designed"
         + (" -- PARTIAL" if is_partial else "")
-        + f". Read design.md, then the Agent loop tab can implement them.")
+        + f". Read design.md, then the Agentic Test Creation tab can implement them.")
     return 0
 
 
@@ -1461,6 +1665,9 @@ def main(argv=None) -> int:
     ap.add_argument("--speed", default="balanced")
     ap.add_argument("--fresh", action="store_true",
                     help="forget every reply kept for this job, and ask Cursor")
+    ap.add_argument("--whole-spec", action="store_true",
+                    help="design every endpoint of the specification, even when the "
+                         "story names only some (the default is to design those)")
     ap.add_argument("--mode", default="plan",
                     help="plan (default): Cursor proposes and changes nothing. "
                          "agent: only if plan mode gives no usable reply.")
@@ -1479,7 +1686,8 @@ def main(argv=None) -> int:
                  "notes": a.notes_file}
         text = {k: _read(v or os.path.join(out_dir, PASTED[k])) for k, v in given.items()}
         return design(a.job, a.service, text["swagger"], text["requirements"],
-                      text["notes"], a.speed, mode=a.mode, fresh=a.fresh)
+                      text["notes"], a.speed, mode=a.mode, fresh=a.fresh,
+                      whole_spec=a.whole_spec)
     except ValueError as e:                   # an unusable job id
         say(f"FAIL {e}")
         return 1

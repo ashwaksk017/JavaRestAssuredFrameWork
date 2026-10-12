@@ -22,13 +22,13 @@
 
 <nav class="tabs" role="tablist">
   <button role="tab" aria-selected="true"  data-tab="new">
-    <span class="name">New test case</span><span class="what">read a story, plan, design</span></button>
+    <span class="name">Automate Test Case</span><span class="what">read a story, plan, design</span></button>
+  <button role="tab" aria-selected="false" data-tab="agent">
+    <span class="name">Agentic Test Creation</span><span class="what">Cursor writes, you review</span></button>
   <button role="tab" aria-selected="false" data-tab="manual">
     <span class="name">Manual tests</span><span class="what">new cases, and Xray updates</span></button>
   <button role="tab" aria-selected="false" data-tab="convert">
     <span class="name">Convert ReadyAPI</span><span class="what">run the converter</span></button>
-  <button role="tab" aria-selected="false" data-tab="agent">
-    <span class="name">Agent loop</span><span class="what">Cursor writes, you review</span></button>
   <button role="tab" aria-selected="false" data-tab="jira">
     <span class="name">Jira</span><span class="what">stories, releases, tests</span></button>
   <button role="tab" aria-selected="false" data-tab="defects">
@@ -87,7 +87,7 @@ Expect 201.'></textarea>
     above, and proposes test cases with steps and expected results. It
     is asked in plan mode, from an empty directory; host names and the
     private configuration's values are taken out of what is sent. Read
-    the result before the Agent loop tab implements it.
+    the result before the Agentic Test Creation tab implements it.
   </p>
   <div class="form">
     <div class="field">
@@ -137,6 +137,7 @@ Expect 201.'></textarea>
   <div class="row">
     <button id="run-design" class="go">Design the tests</button>
     <label class="inline" title="A design request that has not changed reuses the reply kept from last time instead of paying for it again. Tick this to forget every reply kept for this job and ask Cursor."><input type="checkbox" id="design-fresh"> Ask again</label>
+    <label class="inline" title="When the job has a story, the tests are designed for the endpoints the story names, and the result says which those were. Tick this to design every endpoint of the specification instead."><input type="checkbox" id="design-whole"> Design the whole specification, not only what the story touches</label>
     <button id="stop-design">Stop</button>
     <a id="dl-design" class="dl" hidden>design.md</a>
     <a id="dl-cases" class="dl" hidden>test-cases.csv</a>
@@ -240,7 +241,7 @@ Expect 201.'></textarea>
 <!-- ───────────────────────────── tab 3 ───────────────────────────── -->
 <section id="tab-agent" class="tab" role="tabpanel" hidden>
   <p class="lede">
-    Takes the plan from the New test case tab and has Cursor act on it. This is the only
+    Takes the plan from the Automate Test Case tab and has Cursor act on it. This is the only
     tab that writes code. Choose what Cursor may change — it is held to
     that, and anything else fails the job and is put back.
   </p>
@@ -330,7 +331,7 @@ Expect 201.'></textarea>
     </div>
   </div>
 
-  <h3>Requirements <span class="hint">files, notes, and the story read on the New test case tab</span></h3>
+  <h3>Requirements <span class="hint">files, notes, and the story read on the Automate Test Case tab</span></h3>
   <input type="file" id="manual-files" multiple
          accept=".txt,.md,.markdown,.csv,.json,.log,.html,.htm,.docx,.pdf,.xlsx">
   <small class="hint">Up to 8 files. Each is kept under <code>target/agent/&lt;job&gt;/docs/</code>

@@ -16,7 +16,7 @@ service. There is no other difference to configure.
                      target/agent/mock-jira.json and goes nowhere else.
                      No jira_config, host or token is needed or read.
     "cursor": true   every Cursor call is answered here: test design,
-                     defect reasons, and the Agent loop -- which writes
+                     defect reasons, and the Agentic Test Creation tab -- which writes
                      one small sample test so that the checks, the
                      review and Discard can be tried. What a mock agent
                      wrote can never be pushed: Approve refuses it.
@@ -585,7 +585,7 @@ public class MockAgentSampleTest {
 
 
 def loop_agent(root: str):
-    """The mock Cursor for the Agent loop: it writes ONE file, inside the
+    """The mock Cursor for the Agentic Test Creation tab: it writes ONE file, inside the
     paths a new test may be written to, and says so."""
     def agent(prompt: str) -> dict:
         path = os.path.join(root, SAMPLE_TEST.replace("/", os.sep))

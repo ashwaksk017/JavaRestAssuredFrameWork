@@ -991,6 +991,97 @@ def designed_cases(job_dir: str, cap: int = 20000) -> tuple:
     return text, note
 
 
+def _count(root: str, rel: str, ending: str) -> int:
+    n = 0
+    for _base, _dirs, files in os.walk(os.path.join(root, rel.replace("/", os.sep))):
+        n += sum(1 for f in files if f.endswith(ending))
+    return n
+
+
+def _dirs_in(root: str, rel: str) -> list:
+    base = os.path.join(root, rel.replace("/", os.sep))
+    try:
+        return sorted(d for d in os.listdir(base) if os.path.isdir(os.path.join(base, d))
+                      and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", d))
+    except OSError:
+        return []
+
+
+def project_map(root: str, policy: dict, scope: dict) -> str:
+    """Where the project keeps its tests, suites, data sheets and steps.
+
+    Cursor was told where it may WRITE and left to find everything else.
+    This is read from the folders as they are now -- with how many of each
+    there are, and which suites are converted on this machine -- so that
+    the agent looks in the right place before it writes, and so that the
+    Cursor log shows a person what it was told.
+    """
+    tests = "src/test/java/com/hi/api/tests/"
+    csv_root = "src/test/resources/csv/"
+    suites = _dirs_in(root, tests + "imported")
+    hand = [r for r in (policy.get("handwritten_roots") or []) if "/tests/" in r]
+    try:
+        runs = sorted(f for f in os.listdir(os.path.join(root, "src", "test", "resources"))
+                      if re.fullmatch(r"testng[A-Za-z0-9_.-]*\.xml", f))
+    except OSError:
+        runs = []
+    docs = [d for d in ("CreateTestCase.md", "CURSOR.md", "ARCHITECTURE.md", "AGENTS.md")
+            if os.path.isfile(os.path.join(root, d))]
+    shown = ", ".join(suites[:40]) + (f", and {len(suites) - 40} more" if len(suites) > 40 else "")
+    lines = [
+        "WHERE THINGS ARE IN THIS PROJECT (paths are from the project folder; "
+        "counts are of what is here now). Look here before you write:",
+        "",
+        "  Test classes",
+    ]
+    for r in hand or [tests + "manual/", tests + "jira/"]:
+        lines.append(f"    hand-written   {r}  ({_count(root, r, 'Test.java')} test class(es))")
+    lines += [
+        f"    converted      {tests}imported/<suite>/  ({len(suites)} suite(s) converted here"
+        + (f": {shown}" if suites else "") + ")  GENERATED",
+        f"    shared base    {tests}BaseApiTest.java, {tests}ImportedTest.java",
+        "",
+        "  Test suites (what TestNG runs): src/test/resources/"
+        + (", ".join(runs) if runs else "testng*.xml"),
+        "",
+        "  Data sheets (CSV; one file a test method, one row a case, the `execute` "
+        "column switches a row off)",
+        f"    hand-written   {csv_root}<TestClass>/<method>.csv, and {csv_root}manual/",
+        f"    converted      {csv_root}<suite>/.../<TestClass>/<method>.csv  GENERATED "
+        f"({_count(root, csv_root, '.csv')} sheet(s) in all)",
+        "",
+        "  Steps and calls",
+        f"    steps (DSL)    src/main/java/com/hi/api/dsl/  "
+        f"({_count(root, 'src/main/java/com/hi/api/dsl', '.java')} class(es)) -- a hand-written "
+        f"test is written with these, not with a path of its own",
+        "    clients        src/main/java/com/hi/api/rest/clients/<Suite>Client.java  GENERATED: "
+        "one method an endpoint; the path is in the method",
+        "    per suite      src/main/java/com/hi/api/support/<suite>/  (Specs, Hooks, Phases, "
+        "Steps)  GENERATED",
+        "    endpoint map   _audit/<suite>/facade_endpoints.md  (which method reaches which "
+        "endpoint)",
+        "",
+        "  Request bodies   src/main/resources/templates/<suite>/  GENERATED; "
+        "src/test/resources/templates/manual/ for hand-written",
+        "  Settings         read through Config at run time. "
+        "src/main/resources/program_configuration.json holds credentials: do not open it, "
+        "and copy nothing from it",
+        "  How a test is laid out: " + (", ".join(docs) if docs else "CreateTestCase.md"),
+        "",
+        "  GENERATED means the converter writes it and the next convert overwrites it.",
+        "  For THIS job: plan.md, below, names for each request the test class, the test "
+        "method and the data sheet that already cover it. Start there.",
+    ]
+    if scope.get("suite"):
+        lines.insert(1, f"(this job works in suite `{scope['suite']}`)")
+    if scope.get("name") == "converter":
+        lines += ["", "  THIS JOB changes the converter: tools/ra_converter/ (Python; the "
+                      "emitters write everything marked GENERATED above) and the hand-"
+                      "maintained Java runtime under it. The map above is what the "
+                      "converter produces, for reading; the plan says what to change."]
+    return "\n".join(lines)
+
+
 def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
                  root: str = "") -> str:
     brief = _read(os.path.join(job_dir, "brief.md"))
@@ -1004,6 +1095,8 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
         briefing.replace("{suite}", scope.get("suite") or ""),
         f"Follow the skill at {scope.get('skill') or '.cursor/skills/'} "
         f"and any app skill it points to.",
+        "",
+        project_map(root or ROOT, policy, scope),
         "",
         "WHERE YOU MAY WRITE -- this is enforced after you finish, and a "
         "single file outside it fails the whole job and is reverted:",
@@ -1371,7 +1464,7 @@ def cmd_generate(job_dir: str, root: str, policy: dict, scope_name: str = "new-t
 def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
               suite: str, agent, verifier) -> int:
     if not _read(os.path.join(job_dir, "plan.md")).strip():
-        say("FAIL no plan.md for this job. Use the New test case tab (read it, then locate) "
+        say("FAIL no plan.md for this job. Use the Automate Test Case tab (read it, then locate) "
             "first: the plan is what the agent is asked to act on.")
         return 1
     try:
@@ -1564,6 +1657,11 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             fh.write(prompt)
         clog.write(f"attempt {attempt} of {attempts}: prompt {len(prompt)} "
                    f"characters (agent-prompt-{attempt}.txt)")
+        if attempt == 1:
+            # Its own block: the prompt below is cut off in this log, and
+            # where Cursor was told to look is the part a person asks about.
+            clog.block("what Cursor was told about where things are",
+                       project_map(root, policy, scope))
         clog.block("prompt", prompt, cap=6000)
         started = time.time()
         try:

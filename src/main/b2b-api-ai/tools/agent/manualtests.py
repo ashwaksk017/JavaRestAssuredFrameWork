@@ -11,7 +11,7 @@ them. Given the requirements for a release it wants two lists:
 
 `inventory` reads the existing tests from Jira, with their steps.
 `generate` gives Cursor the requirement documents, the notes, the story
-read on the New test case tab, and that inventory, and writes
+read on the Automate Test Case tab, and that inventory, and writes
 
     manual-result.json        for the page
     manual-tests.md           the same, as a report
@@ -867,7 +867,7 @@ def generate(job: str, app: str = "", speed: str = "balanced", agent=None,
     sent_docs = [d["name"] for d in documents if d["sent_chars"]]
     if not sent_docs and not notes.strip() and not brief.strip():
         raise Refused("there is nothing to write tests from. Choose a requirements file, "
-                      "write notes, or read a story on the New test case tab first."
+                      "write notes, or read a story on the Automate Test Case tab first."
                       + ("" if not documents else " (The files kept could not be read: "
                          + "; ".join(f"{d['name']}: {d['note']}" for d in documents) + ")"))
 

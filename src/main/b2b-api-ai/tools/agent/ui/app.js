@@ -513,6 +513,7 @@ $("run-design").onclick = async () => {
       speed: $("design-speed").value,
       mode: $("design-mode").value,
       fresh: $("design-fresh").checked,
+      whole_spec: $("design-whole").checked,
       swagger: $("design-swagger").value,
       requirements: $("design-requirements").value,
       notes: $("design-notes").value,

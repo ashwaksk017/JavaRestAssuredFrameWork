@@ -338,6 +338,8 @@ class Handler(BaseHTTPRequestHandler):
                 options[option] = str(body[field]).strip()
         if body.get("fresh") is True:
             options["--fresh"] = True
+        if body.get("whole_spec") is True:
+            options["--whole-spec"] = True
         return jobs.start(job, "agent-design", options)
 
     def _manual(self, body: dict) -> dict:
