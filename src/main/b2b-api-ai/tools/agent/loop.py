@@ -506,6 +506,7 @@ def cursor_deadline(policy: dict, what: str, default: float = 2700) -> float:
 def call_cursor(prompt: str, root: str, on_event=None, deadline: float = 0) -> dict:
     """One prompt to Cursor in this repository. See cursor_call.py for why
     it is a session with streamed progress rather than one blocking call."""
+    diag.step("Asking Cursor to write the change (this can take several minutes)")
     ca, cfg = cursor_config(root)
     redact = lambda s: ca.redact_for_log(str(s), cfg.api_key)
     try:
@@ -1119,6 +1120,7 @@ def run_verify(root: str, scope: dict, runner=None, gate_before=None,
                                   f"change cannot be called verified without "
                                   f"a compile."})
             return {"ok": False, "steps": steps}
+        diag.step("Checking that the project still compiles")
         say(f" .. verify: {' '.join(compile_cmd)}")
         r = run([exe] + compile_cmd[1:])
         if r.returncode != 0 and compile_before is not None:
@@ -1143,6 +1145,7 @@ def run_verify(root: str, scope: dict, runner=None, gate_before=None,
             if r.returncode != 0:
                 return {"ok": False, "steps": steps}
     for check in scope.get("checks") or []:
+        diag.step(f"Running the check {os.path.basename(str(check[0]))}")
         say(f" .. verify: python {' '.join(check)}")
         r = run([sys.executable, "-B"] + list(check))
         steps.append({"name": " ".join(check), "rc": r.returncode,
@@ -1150,6 +1153,7 @@ def run_verify(root: str, scope: dict, runner=None, gate_before=None,
         if r.returncode != 0:
             return {"ok": False, "steps": steps}
     if scope.get("gate"):
+        diag.step("Running the full gate and comparing it with the run before the change (this takes minutes)")
         say(" .. verify: the gate (python tools/verify_all.py), compared "
             "with the run taken before the agent")
         try:
@@ -1397,6 +1401,8 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         except RuntimeError as e:
             say(f"FAIL {e}")
             return 1
+    diag.step("Writing the placeholder test (mock mode: Cursor is not asked)" if mocked
+              else "Getting ready to ask Cursor for the change")
     call = agent or (lambda prompt: call_cursor(
         prompt, root, on_event=lambda line: clog.write("  cursor: " + line),
         deadline=cursor_deadline(policy, "generate")))
@@ -2038,6 +2044,7 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
         say("FAIL detached HEAD: check out a branch first.")
         return 1
     # No hooks: a hook is code in .git that this tool did not write.
+    diag.step("Committing the approved change to its own branch and pushing it")
     nohooks = os.path.join(job_dir, "no-hooks")
     os.makedirs(nohooks, exist_ok=True)
     ref = f"refs/heads/{branch}"

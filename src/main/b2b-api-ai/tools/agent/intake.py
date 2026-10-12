@@ -208,6 +208,7 @@ def gather_confluence(link: str, sources: str, slot: str,
     if api_path:
         argv += ["--api-path", api_path]
     try:
+        diag.step("Fetching a linked Confluence page")
         rc = conf_fetch.main(argv)
     except SystemExit as e:           # argparse inside a library call
         rc = int(getattr(e, "code", 1) or 1)
@@ -319,6 +320,7 @@ def build(job: str, text: str = "", links=None, root: str = "",
         "notes": notes,
         "ok": bool(usable),
     }
+    diag.step("Writing the brief")
     _write_brief(out, result)
     with io.open(os.path.join(out, "intake.json"), "w", encoding="utf-8") as fh:
         json.dump(result, fh, indent=2, ensure_ascii=False)

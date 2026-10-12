@@ -390,6 +390,7 @@ def _opener():
 
 def _send(req, timeout: int) -> tuple:
     """(status, body text). Raises OSError-family for "no answer"."""
+    diag.step("Sending it and waiting for the answer")
     try:
         with _opener().open(req, timeout=timeout) as r:
             return r.status, r.read(4 * 1024 * 1024).decode("utf-8", "replace")

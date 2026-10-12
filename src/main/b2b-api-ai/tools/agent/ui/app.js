@@ -12,8 +12,80 @@ const job = () => $("job").value.trim();
   if (/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(j)) $("job").value = j;
 })();
 
+// ---- saying what the page is doing --------------------------------------
+// Nothing the page waits for is silent. A request that takes longer than a
+// blink is named in the strip at the top ("Storing the file..."), and the
+// button that sent it cannot be pressed again until it has answered.
+// The polls that follow a running command are not named here: the command
+// says what IT is doing, beside its own button (see follow()).
+const QUIET = ["/api/log", "/api/status", "/api/mock", "/api/client-error", "/api/whoami"];
+const DOING = {
+  "/api/intake": "Saving the story and its links",
+  "/api/design": "Starting the design",
+  "/api/manual": "Starting",
+  "/api/start": "Starting the command",
+  "/api/stop": "Stopping it",
+  "/api/upload": "Storing the file",
+  "/api/upload-clear": "Clearing the earlier choice",
+  "/api/doc-upload": "Storing the document",
+  "/api/doc-remove": "Removing the document",
+  "/api/spec-upload": "Storing the specification file",
+  "/api/spec-clear": "Removing the stored specification",
+  "/api/artifact": "Loading the result",
+  "/api/jobs": "Listing the jobs",
+  "/api/uploads": "Looking at the files chosen for the convert",
+  "/api/docs": "Looking at the documents kept for this job",
+  "/api/spec": "Looking at the specification kept for this job",
+  "/api/diag": "Reading the logs",
+  "/api/runnables": "Asking what can be run",
+};
+const inFlight = new Map();
+let flight = 0;
+function showActivity() {
+  const bar = document.getElementById("activity");
+  if (!bar) return;
+  const texts = [...new Set(inFlight.values())];
+  bar.textContent = texts.length ? `${texts.join(" \u00b7 ")}\u2026` : "";
+  bar.hidden = !texts.length;
+}
+// The button a click landed on, for as long as that click is being handled.
+let clicked = null;
+document.addEventListener("click", (e) => {
+  const b = e.target && e.target.closest ? e.target.closest("button") : null;
+  if (!b || b.closest(".tabs")) return;
+  if (b.classList.contains("waiting")) {
+    // Its last press has not been answered yet.
+    e.stopImmediatePropagation();
+    e.preventDefault();
+    return;
+  }
+  clicked = b;
+  setTimeout(() => { if (clicked === b) clicked = null; }, 0);
+}, true);
+async function watchedFetch(path, opts) {
+  const p = String(path).split("?")[0];
+  if (QUIET.includes(p)) return fetch(path, opts);
+  const id = ++flight;
+  const timer = setTimeout(() => {
+    inFlight.set(id, DOING[p] || "Asking the workbench");
+    showActivity();
+  }, 350);
+  // Held by a mark, not by `disabled`: what the page's own code does to
+  // `disabled` in the meantime stays exactly as that code left it.
+  const held = opts && opts.method === "POST" && clicked ? clicked : null;
+  if (held) held.classList.add("waiting");
+  try {
+    return await fetch(path, opts);
+  } finally {
+    clearTimeout(timer);
+    inFlight.delete(id);
+    showActivity();
+    if (held) held.classList.remove("waiting");
+  }
+}
+
 async function api(path, opts) {
-  const r = await fetch(path, opts);
+  const r = await watchedFetch(path, opts);
   const body = await r.json().catch(() => ({ error: "not JSON" }));
   if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
   return body;
@@ -67,6 +139,26 @@ document.querySelectorAll(".tabs button").forEach((b) => {
 });
 
 // ---- following a run -------------------------------------------------
+// What each command is FOR, in the server's words, shown the moment it is
+// started -- before it has said anything itself.
+const LABELS = {};
+api("/api/runnables").then((r) => {
+  for (const [name, v] of Object.entries(r || {})) LABELS[name] = v.label || "";
+}).catch(() => { /* the label is then "Working" */ });
+
+// The list of steps a command has said, kept just above its log pane.
+function stepsAbove(logEl) {
+  let s = logEl.previousElementSibling;
+  if (!s || !s.classList || !s.classList.contains("steps")) {
+    s = document.createElement("ol");
+    s.className = "steps";
+    s.setAttribute("aria-live", "polite");
+    logEl.before(s);
+  }
+  return s;
+}
+const STEP_MARK = "==> ";
+
 // One poller per (job, runnable). It appends only what is new, so a long
 // convert does not re-render its whole log every second.
 function follow(runnable, logEl, stateEl, onDone, forJob) {
@@ -84,25 +176,81 @@ function follow(runnable, logEl, stateEl, onDone, forJob) {
   const mine = {};
   logEl.followedBy = mine;
   const owns = () => logEl.followedBy === mine;
-  setState(stateEl, "run", "running…");
+  // The label has one writer as well: two commands followed into different
+  // panes but one label took turns writing over each other.
+  stateEl.followedBy = mine;
+  const ownsLabel = () => stateEl.followedBy === mine;
+  // What it is doing, in words, and for how long. A command says its
+  // steps as lines that start with a mark (tools/diag.py, `step`); until
+  // it has said one, what is shown is what the command is for.
+  // Counted from when the COMMAND started, once the server has said when:
+  // a page opened on a run already going shows the run's time, not its own.
+  let began = Date.now();
+  let ended = 0;
+  const timed = (st) => {
+    const a = Date.parse(st && st.started || "");
+    const z = Date.parse(st && st.finished || "");
+    if (!Number.isNaN(a)) began = Math.min(began, a);
+    if (!Number.isNaN(z)) ended = z;
+  };
+  const clock = () => {
+    const s = Math.max(0, Math.floor(((ended || Date.now()) - began) / 1000));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  };
+  let doing = "";                   // the last step said; until one is, what the command is for
+  const what = () => doing || LABELS[runnable] || "Working";
+  let unfinished = "";              // a line the last chunk stopped in the middle of
+  const stepsEl = stepsAbove(logEl);
+  stepsEl.replaceChildren();
+  const paint = () => { if (ownsLabel()) setState(stateEl, "run", `${what()}… ${clock()}`); };
+  const read = async () => {
+    const chunk = await api(
+      `/api/log?job=${encodeURIComponent(j)}&runnable=${runnable}&offset=${offset}`);
+    if (!chunk.text) return;
+    offset = chunk.offset;
+    if (owns()) {
+      logEl.textContent += chunk.text;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    const lines = (unfinished + chunk.text).split("\n");
+    unfinished = lines.pop();
+    for (const line of lines) {
+      if (line.startsWith(STEP_MARK)) say(line.slice(STEP_MARK.length).trim().slice(0, 200));
+    }
+  };
+  const say = (text) => {
+    if (!text || text === doing) return;
+    doing = text;
+    if (!owns()) return;
+    for (const li of stepsEl.children) li.className = "done";
+    const li = document.createElement("li");
+    li.className = "now";
+    li.textContent = text;          // text, whatever it holds
+    stepsEl.append(li);
+  };
+  const settle = (ok) => {
+    if (!owns()) return;
+    const last = stepsEl.lastElementChild;
+    for (const li of stepsEl.children) li.className = "done";
+    if (!ok && last) last.className = "stopped";
+  };
+  paint();
   const tick = async () => {
     try {
-      const chunk = await api(
-        `/api/log?job=${encodeURIComponent(j)}&runnable=${runnable}&offset=${offset}`);
-      if (chunk.text) {
-        offset = chunk.offset;
-        if (owns()) {
-          logEl.textContent += chunk.text;
-          logEl.scrollTop = logEl.scrollHeight;
-        }
-      }
+      await read();
       const st = await api(
         `/api/status?job=${encodeURIComponent(j)}&runnable=${runnable}`);
       misses = 0;
-      if (st.state === "running") { setTimeout(tick, 900); return; }
-      if (owns()) {
-        if (st.state === "done") setState(stateEl, "ok", "finished");
-        else setState(stateEl, "bad", `exit ${st.exit_code}`);
+      timed(st);
+      if (st.state === "running") { paint(); setTimeout(tick, 900); return; }
+      // What it wrote between the last read and its end: without this the
+      // step a failure "stopped at" could be the one before the real one.
+      await read();
+      settle(st.state === "done" || st.state === "none");
+      if (ownsLabel()) {
+        if (st.state === "done") setState(stateEl, "ok", `finished in ${clock()}`);
+        else if (st.state === "none") setState(stateEl, "", "not run yet for this job");
+        else setState(stateEl, "bad", `exit ${st.exit_code} after ${clock()} — stopped at: ${what()}`);
       }
       if (onDone) onDone(st);
     } catch (e) {
@@ -110,7 +258,7 @@ function follow(runnable, logEl, stateEl, onDone, forJob) {
       // re-enabled buttons while the job was still going.
       misses += 1;
       if (misses <= 8) {
-        if (owns()) setState(stateEl, "run", `running… (not reachable just now, retry ${misses})`);
+        if (ownsLabel()) setState(stateEl, "run", `${what()}… (the workbench is not answering just now, retry ${misses})`);
         setTimeout(tick, 1500);
         return;
       }
@@ -147,6 +295,14 @@ $("run-intake").onclick = async () => {
            () => showArtifact("brief.md", $("brief")));
   } catch (e) { setState($("new-state"), "bad", e.message); }
 };
+
+// `&follow=intake` in the address shows a command of this job that is
+// running (or has run) the way its button would: after a refresh, or from
+// a link. It reads what the button reads and starts nothing.
+(function followFromAddress() {
+  const name = new URLSearchParams(location.search).get("follow") || "";
+  if (/^[a-z][a-z-]{0,40}$/.test(name) && job()) follow(name, $("new-log"), $("new-state"));
+})();
 
 $("run-locate").onclick = async () => {
   try {
@@ -238,7 +394,7 @@ $("design-swagger-file").onchange = async () => {
   }
   let note;
   try {
-    const r = await fetch(
+    const r = await watchedFetch(
       `/api/spec-upload?job=${encodeURIComponent(j)}&name=${encodeURIComponent(f.name)}`,
       { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: f });
     let body = {};
@@ -427,7 +583,7 @@ $("convert-files").onchange = async () => {
     // What is listed is what converts: a new choice replaces the old one.
     await post("/api/upload-clear", {});
     for (const f of files) {
-      const r = await fetch(`/api/upload?name=${encodeURIComponent(f.name)}`, {
+      const r = await watchedFetch(`/api/upload?name=${encodeURIComponent(f.name)}`, {
         method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: f });
       let body = {};
       try { body = await r.json(); } catch { /* not JSON: the status says it */ }
@@ -523,6 +679,7 @@ $("run-convert").onclick = async () => {
       // about either. Said, so the tick is not taken for a run.
       $("verify-block").hidden = false;
       $("verify-log").textContent = "";
+      stepsAbove($("verify-log")).replaceChildren();
       setState($("verify-state"), "bad",
                "not run: the convert did not finish cleanly");
     });
@@ -596,7 +753,7 @@ $("manual-files").onchange = async () => {
       problems.push(`${f.name}: this kind of file is not read`); continue;
     }
     try {
-      const r = await fetch(
+      const r = await watchedFetch(
         `/api/doc-upload?job=${encodeURIComponent(j)}&name=${encodeURIComponent(f.name)}`,
         { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: f });
       let body = {};
@@ -852,6 +1009,7 @@ function refreshPublish(afterWrite) {
     $("publish-result").replaceChildren();
     $("publish-record").textContent = "—";
     $("publish-log").textContent = "";
+    stepsAbove($("publish-log")).replaceChildren();
   }
   if (!j) { setState($("publish-state"), "bad", "name the job first"); return; }
   publishBusy(true);

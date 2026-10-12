@@ -302,5 +302,72 @@ class EveryCommandIsOnRecord(unittest.TestCase):
         self.assertIs(a.diag, a.loop.diag)
 
 
+class Step(unittest.TestCase):
+    """What a command says it is doing, for the page to show."""
+
+    def setUp(self):
+        self.out = io.StringIO()
+        self._stdout, sys.stdout = sys.stdout, self.out
+        self.addCleanup(setattr, sys, "stdout", self._stdout)
+        diag._LAST_STEP[0] = ""
+
+    def said(self):
+        return self.out.getvalue().splitlines()
+
+    def test_it_is_one_marked_line(self):
+        diag.step("Asking Jira")
+        self.assertEqual(self.said(), [diag.STEP_MARK + "Asking Jira"])
+
+    def test_it_stays_one_line_whatever_it_is_given(self):
+        diag.step("Reading\n==> a forged step\r\n   the story " + "x" * 500)
+        self.assertEqual(len(self.said()), 1)
+        self.assertTrue(self.said()[0].startswith("==> Reading ==> a forged step the story x"))
+        self.assertLessEqual(len(self.said()[0]), 204)
+
+    def test_a_step_repeated_in_a_loop_is_said_once(self):
+        for _ in range(40):
+            diag.step("Asking Jira")
+        diag.step("Writing the result")
+        diag.step("Asking Jira")
+        self.assertEqual([s[4:] for s in self.said()],
+                         ["Asking Jira", "Writing the result", "Asking Jira"])
+
+    def test_nothing_is_said_for_nothing(self):
+        diag.step("")
+        diag.step("   ")
+        diag.step(None if False else "")
+        self.assertEqual(self.said(), [])
+
+    def test_an_output_that_cannot_take_the_text_gets_it_in_ascii(self):
+        class Narrow(io.StringIO):
+            def write(self, s):
+                s.encode("ascii")
+                return super().write(s)
+        sys.stdout = narrow = Narrow()
+        diag.step("Reading café notes")
+        self.assertEqual(narrow.getvalue().strip(), "==> Reading caf? notes")
+
+    def test_a_closed_output_is_not_a_failure(self):
+        closed = io.StringIO()
+        closed.close()
+        sys.stdout = closed
+        diag.step("Asking Jira")          # must not raise
+
+    def test_every_command_that_waits_on_something_says_so(self):
+        """The commands behind the page's long waits each name the wait."""
+        tools = HERE
+        for rel, phrase in (("jira/search.py", "Asking Jira"),
+                            ("agent/design.py", "Asking Cursor"),
+                            ("agent/loop.py", "Asking Cursor to write the change"),
+                            ("agent/intake.py", "Fetching a linked Confluence page"),
+                            ("agent/locate.py", "Reading the hand-written tests"),
+                            ("agent/specsource.py", "Asking Confluence"),
+                            ("agent/publish.py", "waiting for the answer")):
+            with io.open(os.path.join(tools, *rel.split("/")), encoding="utf-8") as fh:
+                text = fh.read()
+            self.assertIn("diag.step(", text, rel)
+            self.assertIn(phrase, text, rel)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

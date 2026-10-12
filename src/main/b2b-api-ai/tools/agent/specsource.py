@@ -240,6 +240,7 @@ def from_confluence(job_dir: str, link: str, name: str = "", conf=None, conn=Non
     conf = conf or _attachments()
     try:
         conn = conn or conf.connect(link)
+        diag.step("Asking Confluence which files are attached to the page")
         rows = lister(conn) if lister else conf.list_attachments(conn, conf.page_id(conn))
     except conf.Refused as e:
         raise Refused(str(e)) from None
@@ -274,6 +275,7 @@ def from_confluence(job_dir: str, link: str, name: str = "", conf=None, conn=Non
         if len(pick) > 1:
             raise Refused(f"the page has {len(pick)} attachments called {want!r}")
         try:
+            diag.step("Downloading the attachment")
             data = reader(pick[0])
         except conf.Refused as e:
             raise Refused(str(e)) from None
@@ -287,6 +289,7 @@ def from_confluence(job_dir: str, link: str, name: str = "", conf=None, conn=Non
     good, bad, unknown = [], [], []
     for r in named[:MAX_CANDIDATES]:
         try:
+            diag.step("Downloading the attachment")
             data = reader(r)
         except conf.Refused as e:
             unknown.append(f"{r['title']}: {e}")

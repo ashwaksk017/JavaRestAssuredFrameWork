@@ -178,6 +178,36 @@ For one process, the environment variable `WORKBENCH_MOCK` overrides
 the file: `0` turns every switch off (the tests run that way), `1` turns
 every switch on. Any other value is an error.
 
+## What the page tells you while it works
+
+Nothing the page waits for is silent.
+
+- **Beside the button** that started a command: what it is doing now and
+  for how long -- `Asking Jira and waiting for its answer… 0:07`. Before
+  the command has said anything, it is what the command is for. When it
+  ends: `finished in 0:42`, or `exit 1 after 0:12 — stopped at: Asking
+  Jira and waiting for its answer`.
+- **Above the log**: every step so far, ticked as it is passed, the
+  current one marked, the one a failure stopped at crossed.
+- **The strip at the top**: a request to the workbench itself that takes
+  more than a moment -- storing an uploaded file, loading a result. The
+  button that sent it cannot be pressed again until it has answered.
+- **The log pane** is unchanged: the command's full output, steps
+  included.
+
+A step is an ordinary line of a command's output that starts with
+`==> `. A command says one with `diag.step("...")` (`tools/diag.py`);
+the same step repeated in a loop is said once. To make a new command
+say what it is doing, call that where its slow parts begin -- there is
+nothing to register. The steps are in the command's log and in
+`diagnostics.log`, so "where did it stop" can be answered afterwards.
+
+Adding `&follow=<command>` to the address (`/?job=release-6&follow=intake`)
+shows a command that is running, or has run, the way its button would --
+its steps, and the time counted from when the command started. The page
+does not add this to the address itself: it is for a link, or for
+looking again at a long run after the page was closed.
+
 ## The tabs
 
 ### New test case

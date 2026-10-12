@@ -308,6 +308,7 @@ def _error_text(status: int, reason: str, body: str) -> str:
 def _call(conn: dict, method: str, path: str, body=None, transport=None):
     # A connection made by the mock is answered by the mock, whatever
     # else happens: it has no host to send anything to.
+    diag.step("Reading the sample Jira data (mock mode)" if conn.get("mock") else "Asking Jira and waiting for its answer")
     fn = transport or (mock().jira_transport if conn.get("mock") else _urllib_transport)
     try:
         return fn(method, f"{conn['base']}{conn['api']}{path}", conn["token"],

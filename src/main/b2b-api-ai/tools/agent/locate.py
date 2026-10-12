@@ -384,8 +384,10 @@ def run(job: str, root: str = "", index_path: str = DEFAULT_INDEX,
                          "no body, so each is matched as a CALL."
                          + (f" Note: {requests_note}." if requests_note else ""))
 
+    diag.step("Rebuilding the shape index from the ReadyAPI sources (this can take minutes)" if rebuild else "Loading the shape index of the converted suites")
     index, index_note = load_index(index_path, rebuild)
     here = root or ROOT
+    diag.step("Reading the hand-written tests")
     seen = coverage.scan(here)
     hand_calls = seen["calls"]
     generated_calls = coverage.call_index(index or {})
@@ -401,6 +403,7 @@ def run(job: str, root: str = "", index_path: str = DEFAULT_INDEX,
     hand_templates = [p for p in coverage.handwritten_templates(hand_calls)
                       if p not in templates]
 
+    diag.step(f"Comparing {len(requests)} request(s) with what is already automated")
     decisions = []
     for i, req in enumerate(requests, 1):
         # `/guests/123/businesses/` is `/guests/123/businesses`. Left as
@@ -585,6 +588,7 @@ def run(job: str, root: str = "", index_path: str = DEFAULT_INDEX,
     # Evidence beside the decisions, never an input to them: commits and
     # test files that name the story this job is about. See history.py.
     plan["history"] = story_history(out, root or ROOT)
+    diag.step("Writing the plan")
     _write_plan(out, plan)
     with io.open(os.path.join(out, "locate.json"), "w", encoding="utf-8") as fh:
         json.dump(plan, fh, indent=2, ensure_ascii=False)

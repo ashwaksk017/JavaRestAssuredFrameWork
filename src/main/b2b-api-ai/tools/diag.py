@@ -203,6 +203,33 @@ def note(message: str, module: str = "") -> None:
         _append(_STATE["path"], [f"[{module or _STATE['module']}] {message}"])
 
 
+STEP_MARK = "==> "
+_LAST_STEP = [""]
+
+
+def step(message) -> None:
+    """One plain line saying what the command is doing NOW, for a person
+    watching the page: "Asking Jira", "Reading the hand-written tests".
+
+    It is an ordinary line of the command's output with a mark in front,
+    so it is in the log like everything else; the page lifts the marked
+    lines out and shows the latest beside the button. Said once: a loop
+    that asks Jira forty times says "Asking Jira" one time. Never the
+    reason a command fails.
+    """
+    text = " ".join(str(message).split())[:200]
+    if not text or text == _LAST_STEP[0]:
+        return
+    _LAST_STEP[0] = text
+    note(f"step: {text}")                                # kept, whether or not it fails
+    for line in (text, text.encode("ascii", "replace").decode("ascii")):
+        try:
+            print(STEP_MARK + line, flush=True)
+            return
+        except (UnicodeError, OSError, ValueError):
+            continue
+
+
 def trace(where: str = "", module: str = "") -> None:
     """Call inside `except`: the error being handled, with its traceback.
 

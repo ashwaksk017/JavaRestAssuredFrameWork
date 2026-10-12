@@ -966,6 +966,7 @@ def shares(counts: list, total: int) -> list:
 def call_cursor(prompt: str, root: str, on_event, followup, mode: str = "plan",
                 deadline: float = DEFAULT_DEADLINE) -> dict:
     """Cursor, in plan mode, started in an empty directory."""
+    diag.step("Asking Cursor and waiting for its reply (this can take a few minutes)")
     ca, cfg = loop.cursor_config(root)
     hide = lambda s: ca.redact_for_log(str(s), cfg.api_key)
     # The SDK's child process can still hold the directory when this

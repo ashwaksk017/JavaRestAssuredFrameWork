@@ -226,3 +226,24 @@ input[type=file] { padding: .45rem; border: 1px dashed var(--line); border-radiu
 
 /* The Logs tab. */
 pre.log.tall { max-height: 34rem; min-height: 8rem; white-space: pre-wrap; word-break: break-word; }
+
+/* What the page is doing. The strip names a request that is taking a
+   moment; the list above a log is what a running command has said. */
+.activity { position: sticky; top: 0; z-index: 5; padding: .3rem 1rem; font-size: .85rem;
+  background: var(--panel, #1d2733); color: var(--warn); border-bottom: 1px solid var(--warn); }
+.activity::before { content: ""; display: inline-block; width: .7em; height: .7em;
+  margin-right: .5em; border: 2px solid currentColor; border-right-color: transparent;
+  border-radius: 50%; vertical-align: -.05em; animation: turn .8s linear infinite; }
+@keyframes turn { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .activity::before { animation: none; } }
+button.waiting { opacity: .6; cursor: progress; }
+.steps { list-style: none; margin: .4rem 0; padding: 0; font-size: .85rem; }
+.steps:empty { display: none; }
+.steps li { padding: .1rem 0 .1rem 1.4em; position: relative; color: var(--dim); }
+.steps li::before { position: absolute; left: 0; }
+.steps li.done::before { content: "\2713"; color: var(--ok); }
+.steps li.now { color: var(--warn); }
+.steps li.now::before { content: "\25B8"; }
+.steps li.stopped { color: var(--bad); }
+.steps li.stopped::before { content: "\2717"; }
+

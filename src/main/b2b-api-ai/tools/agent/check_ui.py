@@ -39,6 +39,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -189,6 +190,52 @@ def main() -> int:
               and json.loads(text or "{}").get("kind") == "runs", str(state))
         html = page.dom("failures")
         check("the Failures tab shows that result", "Recorded runs" in html)
+
+        # ---- what a command says it is doing ---------------------------------
+        # A command's steps are marked lines of its output (tools/diag.py).
+        # The page lifts them out: the latest beside the button, all of them
+        # above the log -- and as text, whatever a story's title holds.
+        def running(state, lines, code=0):
+            with io.open(os.path.join(job_dir, "intake.log"), "w", encoding="utf-8",
+                         newline="\n") as fh:
+                fh.write("".join(line + "\n" for line in lines))
+            with io.open(os.path.join(job_dir, "intake.status.json"), "w", encoding="utf-8") as fh:
+                json.dump({"state": state, "exit_code": code, "runnable": "intake"}, fh)
+            return subprocess.run(
+                [browser, "--headless=new", "--disable-gpu", "--no-first-run",
+                 "--disable-extensions", "--virtual-time-budget=6000", "--dump-dom",
+                 f"{page.base}/?job={JOB}&follow=intake#new"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=120
+            ).stdout.decode("utf-8", "replace")
+        said = ["an ordinary line", "==> Fetching a linked Confluence page",
+                "==> Reading <img src=x onerror=alert(1)> the story", "==> Writing the brief",
+                "2 request(s) read"]
+        html = running("running", said)
+        check("a running command shows its steps, the last one as the current one",
+              '<li class="done">Fetching a linked Confluence page</li>' in html
+              and '<li class="now">Writing the brief</li>' in html, html[-600:])
+        check("the label beside the button says the current step and for how long",
+              re.search(r'id="new-state"[^>]*class="state run"[^>]*>Writing the brief… \d+:\d\d<', html)
+              is not None)
+        check("a step is shown as text, whatever it holds",
+              "<img src=x" not in html and "Reading &lt;img src=x onerror=alert(1)&gt; the story" in html)
+        check("an ordinary line of output is not a step",
+              ">an ordinary line</li>" not in html and ">2 request(s) read</li>" not in html)
+        html = running("done", said)
+        check("a finished command ticks every step and says how long it took",
+              html.count('<li class="done">') == 3 and 'class="now"' not in html
+              and re.search(r'class="state ok"[^>]*>finished in \d+:\d\d<', html) is not None)
+        html = running("failed", said[:2], code=1)
+        check("a command that failed says the step it stopped at",
+              '<li class="stopped">Fetching a linked Confluence page</li>' in html
+              and "stopped at: Fetching a linked Confluence page" in html)
+        html = running("running", ["no step yet"])
+        check("before a command has said a step, the label says what the command is for",
+              "Read the pasted story and links… " in html)
+        for name in ("intake.log", "intake.status.json"):
+            os.remove(os.path.join(job_dir, name))
+        check("nothing is in flight on a page at rest: the activity strip is hidden",
+              re.search(r'id="activity"[^>]*hidden', page.dom("new")) is not None)
 
         # ---- the failures tab, with a real comparison ------------------------
         refused = ("FlowStopped | expected status for Create Booking expected [200] but found "
