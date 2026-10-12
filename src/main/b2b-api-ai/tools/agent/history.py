@@ -230,7 +230,8 @@ def _run(argv: list, cwd: str, wait: float) -> tuple:
     real git, and killing the launcher leaves the child holding the pipe,
     so a plain subprocess timeout returns only when the child does."""
     windows = os.name == "nt"
-    flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if windows else 0
+    flags = ((getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+              | getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)) if windows else 0)
     proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                             encoding="utf-8", errors="replace", creationflags=flags,

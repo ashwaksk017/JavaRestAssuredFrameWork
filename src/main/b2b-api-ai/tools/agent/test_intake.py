@@ -740,7 +740,8 @@ class ConfluencePagesInTheBrief(Links):
         r = intake.build("j", root=self.tmp, text="GET /x",
                          links=[f"https://wiki.example.com/x/AbCdE{n}" for n in range(4)])
         self.assertEqual([len(p["text"]) for p in r["pages"]],
-                         [intake.MAX_PAGE_CHARS, intake.MAX_PAGE_CHARS, 4000, 0])
+                         [intake.MAX_PAGE_CHARS, intake.MAX_PAGE_CHARS,
+                          intake.MAX_PAGES_TOTAL - 2 * intake.MAX_PAGE_CHARS, 0])
         self.assertTrue(all(p["cut"] > 0 for p in r["pages"]))
         self.assertLess(len(self.brief("j")), 30000)
 

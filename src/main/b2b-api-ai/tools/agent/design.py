@@ -152,8 +152,8 @@ TEMPLATE = os.path.join(HERE, "prompts", "api_test_design.md")
 SECTION_LIMITS = {"swagger": 80_000, "requirements": 100_000,
                   # The brief: the story, what is around it, and the pages
                   # read with it.
-                  "story": 60_000, "notes": 20_000, "endpoints": 30_000}
-TOTAL_LIMIT = 200_000
+                  "story": 140_000, "notes": 20_000, "endpoints": 30_000}
+TOTAL_LIMIT = 300_000
 SPEEDS = {"fast": 25, "balanced": 40, "thorough": 80}
 VERBS = ("get", "post", "put", "patch", "delete", "head", "options")
 ARTIFACTS = ("design.json", "design.md", "test-cases.csv", "xray.csv")

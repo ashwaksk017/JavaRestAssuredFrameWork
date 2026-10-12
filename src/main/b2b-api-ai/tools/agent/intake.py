@@ -264,8 +264,8 @@ def gather_confluence(link: str, sources: str, slot: str,
 MAX_STORY_CHARS = 8000            # of the story's text, in the brief
 MAX_ATTACHMENT_TEXT = 200_000     # of one textual attachment, read for requests
 MAX_LINKED = 8                    # linked stories and sub-tasks read for context
-MAX_PAGE_CHARS = 8000             # of one Confluence page, in the brief
-MAX_PAGES_TOTAL = 20000           # of all of them together
+MAX_PAGE_CHARS = 40000            # of one Confluence page, in the brief
+MAX_PAGES_TOTAL = 90000           # of all of them together
 MAX_PAGE_BLOCK = 1500             # a code block longer than this is named, not shown
 _PAGE_FENCE_RX = re.compile(r"(```|~~~)[^\n]{0,40}\n(.*?)\1", re.S)
 

@@ -236,8 +236,9 @@ from the Jira in your configuration:
 
 The text of each **Confluence page** given with the job is read too --
 its rules and its tables (a table arrives as rows of `a | b | c`) --
-and goes into the brief under **Confluence pages**, up to 8,000
-characters a page and 20,000 in all. A code block longer than 1,500
+and goes into the brief under **Confluence pages**, up to 40,000
+characters a page and 90,000 in all (a longer page is cut, and the
+brief says so; the whole page is in the job's `sources/` folder). A code block longer than 1,500
 characters is named and left out: a specification on a page is handed
 to the design step on its own.
 

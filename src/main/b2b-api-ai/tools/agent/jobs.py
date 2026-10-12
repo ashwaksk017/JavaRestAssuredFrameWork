@@ -25,6 +25,12 @@ import os
 import re
 import subprocess
 import sys
+
+# On Windows a child started from a process that has no console of its own
+# (the workbench started by its .bat, or by pythonw) opens a console window
+# of its own -- one per command, one per git call. These keep it from.
+NO_WINDOW = ({"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
+             if os.name == "nt" else {})
 import threading
 import time
 from datetime import datetime, timezone
@@ -746,7 +752,7 @@ def start(job: str, runnable: str, options: dict) -> dict:
     logf = io.open(log_path(job, runnable), "wb")
     try:
         proc = subprocess.Popen(argv, cwd=ROOT, stdout=logf,
-                                stderr=subprocess.STDOUT)
+                                stderr=subprocess.STDOUT, **NO_WINDOW)
     except Exception as e:
         # Without this the status file says "running" for a process that
         # never existed, and the page polls it forever.
@@ -796,8 +802,15 @@ def stop(job: str, runnable: str) -> bool:
     if proc is None or proc.poll() is not None:
         return False
     _STOPPED.add((job, runnable))
-    proc.terminate()
-    diag.job_note(job, f"[jobs] {runnable} was told to stop", ROOT)
+    if os.name == "nt":
+        # terminate() ends the Python and leaves what it started -- the
+        # Cursor bridge, a Maven compile -- running and holding files, so
+        # the Discard that follows could not put them back.
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **NO_WINDOW)
+    else:
+        proc.terminate()
+    diag.job_note(job, f"[jobs] {runnable} was told to stop (and what it started with it)", ROOT)
     return True
 
 

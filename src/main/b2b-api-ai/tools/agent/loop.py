@@ -77,6 +77,12 @@ import re
 import shutil
 import subprocess
 import sys
+
+# On Windows a child started from a process that has no console of its own
+# (the workbench started by its .bat, or by pythonw) opens a console window
+# of its own -- one per command, one per git call. These keep it from.
+NO_WINDOW = ({"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
+             if os.name == "nt" else {})
 import time
 from datetime import datetime, timezone
 
@@ -438,7 +444,7 @@ def ensure_sdk(root: str = "", pip=None) -> str:
     argv += ["-r", req] if os.path.isfile(req) else ["cursor-sdk"]
     say(f" .. cursor-sdk is not installed -- installing: {' '.join(argv[1:])}")
     run = pip or (lambda a: subprocess.run(
-        a, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True))
+        a, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, **NO_WINDOW))
     done = run(argv)
     if done.returncode != 0:
         tail = "\n".join((done.stdout or "").strip().splitlines()[-6:])
@@ -528,7 +534,7 @@ def call_cursor(prompt: str, root: str, on_event=None, deadline: float = 0) -> d
 def git(root: str, *args: str, env: dict = None) -> tuple:
     full = dict(os.environ, **env) if env else None
     r = subprocess.run(["git", *args], cwd=root, stdout=subprocess.PIPE,
-                       stderr=subprocess.STDOUT, env=full)
+                       stderr=subprocess.STDOUT, env=full, **NO_WINDOW)
     return r.returncode, r.stdout.decode("utf-8", errors="replace")
 
 
@@ -1209,7 +1215,7 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
 def gate_failures(root: str, out_json: str, runner=None) -> dict:
     """Run the gate; {check name: how to reproduce} for every failing check."""
     run = runner or (lambda argv: subprocess.run(
-        argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT))
+        argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **NO_WINDOW))
     try:
         os.remove(out_json)
     except OSError:
@@ -1249,7 +1255,7 @@ def compile_baseline(root: str, scope: dict, runner=None):
     if not exe:
         return None
     run = runner or (lambda argv: subprocess.run(
-        argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT))
+        argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **NO_WINDOW))
     r = run([exe] + cmd[1:])
     return None if r.returncode == 0 else compile_error_files(r.stdout)
 
@@ -1258,7 +1264,7 @@ def run_verify(root: str, scope: dict, runner=None, gate_before=None,
                gate_json: str = "", compile_before=None) -> dict:
     """Compile, then the scope's checks. {ok, steps:[{name, rc, tail}]}."""
     run = runner or (lambda argv: subprocess.run(
-        argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT))
+        argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **NO_WINDOW))
     steps = []
     compile_cmd = list(scope.get("compile") or [])
     if compile_cmd:
