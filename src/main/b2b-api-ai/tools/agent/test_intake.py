@@ -743,7 +743,7 @@ class ConfluencePagesInTheBrief(Links):
                          [intake.MAX_PAGE_CHARS, intake.MAX_PAGE_CHARS,
                           intake.MAX_PAGES_TOTAL - 2 * intake.MAX_PAGE_CHARS, 0])
         self.assertTrue(all(p["cut"] > 0 for p in r["pages"]))
-        self.assertLess(len(self.brief("j")), 30000)
+        self.assertLess(len(self.brief("j")), intake.MAX_PAGES_TOTAL + 10000)
 
     def test_a_pasted_page_is_read_like_a_fetched_one(self):
         page = ("Who may do what:\n\nRole | View | Cancel\n\nTravel Coordinator | Yes | Yes\n\n"
