@@ -122,8 +122,53 @@ def warm_up(ca):
     return True, "started"
 
 
-def describe(message) -> str:
-    """One line for the Cursor log from one streamed message, or ""."""
+_ARG_KEYS = ("command", "cmd", "path", "file_path", "target_file", "file", "pattern",
+             "query", "glob", "url", "relative_workspace_path")
+QUIET_FOR = 60                               # seconds without a word before the log says so
+PULSE_EVERY = 5                              # how often that is looked at
+
+
+def _one_line(value, cap: int) -> str:
+    s = " ".join(str(value if value is not None else "").split())
+    return s[:cap] + ("..." if len(s) > cap else "")
+
+
+def _args_line(args) -> str:
+    """What a tool was asked to do, in a few words: the command of a shell
+    call, the path of a read or an edit. Not the content of an edit."""
+    if isinstance(args, dict):
+        parts = [f"{k}={_one_line(args[k], 160)}" for k in _ARG_KEYS if args.get(k)]
+        if parts:
+            return " ".join(parts[:2])
+        return _one_line({k: v for k, v in args.items() if k not in ("content", "contents",
+                                                                      "new_string", "old_string",
+                                                                      "code_edit")}, 160)
+    return _one_line(args, 160)
+
+
+def _assistant_text(message) -> str:
+    content = getattr(getattr(message, "message", None), "content", None)
+    if isinstance(content, str):
+        return content
+    parts = []
+    for block in content if isinstance(content, (list, tuple)) else []:
+        text = getattr(block, "text", None)
+        if text is None and isinstance(block, dict):
+            text = block.get("text")
+        if text:
+            parts.append(str(text))
+    return " ".join(parts)
+
+
+def describe(message, timing: dict = None) -> str:
+    """One line for the Cursor log from one streamed message, or "".
+
+    A tool call says what it was asked (`tool shell started: command=mvn
+    -q compile`) and, when it ends, how long it took and -- for a shell --
+    the start of what came back. What the agent says in words is logged
+    as `cursor says:`. `timing` remembers when each call started, across
+    the calls of one run.
+    """
     kind = getattr(message, "type", "") or ""
     if kind == "status":
         status = getattr(message, "status", "") or ""
@@ -132,12 +177,30 @@ def describe(message) -> str:
     if kind == "tool_call":
         name = getattr(message, "name", "") or "?"
         status = getattr(message, "status", "") or ""
+        key = (name, getattr(message, "call_id", "") or "")
         if status == "running":
-            return ""               # the same call reports again when it ends
+            if timing is not None:
+                timing[key] = time.monotonic()
+            asked = _args_line(getattr(message, "args", None))
+            return f"tool {name} started" + (f": {asked}" if asked else "")
         line = f"tool {name} {status}".rstrip()
+        began = (timing or {}).pop(key, None)
+        if began is not None:
+            line += f" in {time.monotonic() - began:.0f}s"
         if status == "error":
             line += f": {str(getattr(message, 'result', ''))[:300]}"
+        elif status == "completed" and any(w in name.lower() for w in ("shell", "terminal", "run", "exec")):
+            shown = _one_line(getattr(message, "result", None), 160)
+            if shown:
+                line += f" -> {shown}"
         return line
+    if kind == "assistant":
+        said = _one_line(_assistant_text(message), 300)
+        return f"cursor says: {said}" if said else ""
+    if kind == "task":
+        text = _one_line(getattr(message, "text", ""), 200)
+        status = getattr(message, "status", "") or ""
+        return f"task {status}: {text}".rstrip(": ") if text or status else ""
     return ""
 
 
@@ -301,9 +364,26 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
     startup_error = getattr(cursor_sdk, "CursorAgentError", None)
     diagnostics: list = []
 
+    last = {"at": time.monotonic(), "line": ""}
+
     def say(line: str) -> None:
         if not stopped.is_set():
+            last["at"], last["line"] = time.monotonic(), line
             emit(line)
+
+    def pulse(done: threading.Event) -> None:
+        """While nothing is heard from Cursor, say so once a minute: a log
+        that stops at `tool shell started` reads as a hang, and most often
+        it is a long compile."""
+        while not done.wait(PULSE_EVERY):
+            quiet = time.monotonic() - last["at"]
+            if quiet >= QUIET_FOR and not stopped.is_set():
+                emit(f"still working: nothing from Cursor for {quiet / 60:.0f} min"
+                     + (f" (last: {last['line'][:100]})" if last["line"] else "")
+                     + f", {(time.monotonic() - t0) / 60:.0f} min in all")
+                last["at"] = time.monotonic()
+    t0 = time.monotonic()
+    timing: dict = {}
 
     def session():
         options = AgentOptions(api_key=cfg.api_key, model=cfg.model, mode=mode,
@@ -316,7 +396,7 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
             still_wanted(agent, run_)
             say("sent; waiting for the agent")
             for message in run_.messages():
-                line = describe(message)
+                line = describe(message, timing)
                 if not line:
                     continue
                 say(line)
@@ -334,7 +414,7 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
                     second = agent.send(again)
                     live["run"] = second
                     for message in second.messages():
-                        line = describe(message)
+                        line = describe(message, timing)
                         if line:
                             say(line)
                     result2 = second.wait()
@@ -346,6 +426,8 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
                         f"keeping the first answer")
             return result, text
 
+    done = threading.Event()
+    threading.Thread(target=pulse, args=(done,), daemon=True, name="cursor-pulse").start()
     try:
         result, text = bounded(session, deadline_seconds, gave_up)
     except CursorCallError:
@@ -364,6 +446,8 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
                 "The patch for this is applied; if it still fails, upgrade "
                 "cursor-sdk.", "startup") from e
         raise CursorCallError(f"unexpected error calling the agent: {e}", "run") from e
+    finally:
+        done.set()
 
     status = str(getattr(result, "status", "") or "")
     run_id = str(getattr(result, "id", "") or "")

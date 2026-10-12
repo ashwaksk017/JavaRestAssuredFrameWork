@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 
@@ -1459,6 +1460,49 @@ class CallingCursor(unittest.TestCase):
         self.assertEqual(fake.sent, ["write the test"])
         self.assertTrue(fake.closed)
         self.assertEqual((out["result"], out["id"], out["transport"]), ("done", "run-7", "session"))
+
+    def test_the_log_says_what_a_tool_was_asked_and_how_long_it_took(self):
+        NS = types.SimpleNamespace
+        msgs = [NS(type="tool_call", name="shell", status="running", call_id="1",
+                   args={"command": "mvn -q compile", "cwd": "/x"}),
+                NS(type="tool_call", name="shell", status="completed", call_id="1",
+                   result="BUILD SUCCESS\nTotal time: 40 s"),
+                NS(type="tool_call", name="edit_file", status="running", call_id="2",
+                   args={"target_file": "src/test/java/XTest.java", "code_edit": "class XTest {}"}),
+                NS(type="tool_call", name="edit_file", status="completed", call_id="2", result="ok"),
+                NS(type="assistant", message=NS(content=[NS(type="text", text="Adding  the\ntest.")])),
+                NS(type="task", status="running", text="Writing the data sheet"),
+                NS(type="thinking", text="private")]
+        self.use(FakeSdk(messages=msgs))
+        seen = []
+        loop.cursor_call.run("p", self.ca, self.cfg, on_event=seen.append)
+        self.assertIn("tool shell started: command=mvn -q compile", seen)
+        self.assertTrue(any(s.startswith("tool shell completed in ") and
+                            s.endswith("-> BUILD SUCCESS Total time: 40 s") for s in seen), seen)
+        self.assertIn("tool edit_file started: target_file=src/test/java/XTest.java", seen)
+        self.assertFalse(any("class XTest" in s for s in seen), "an edit's content is not logged")
+        self.assertIn("cursor says: Adding the test.", seen)
+        self.assertIn("task running: Writing the data sheet", seen)
+        self.assertFalse(any("private" in s for s in seen), "thinking is not logged")
+
+    def test_a_long_silence_is_said_while_it_lasts(self):
+        NS = types.SimpleNamespace
+
+        def slow():
+            yield NS(type="tool_call", name="shell", status="running", call_id="1",
+                     args={"command": "mvn test"})
+            time.sleep(0.5)
+            yield NS(type="tool_call", name="shell", status="completed", call_id="1", result="ok")
+        self.use(FakeSdk(messages=slow()))
+        for name, value in (("QUIET_FOR", 0.1), ("PULSE_EVERY", 0.02)):
+            self.addCleanup(setattr, loop.cursor_call, name, getattr(loop.cursor_call, name))
+            setattr(loop.cursor_call, name, value)
+        seen = []
+        loop.cursor_call.run("p", self.ca, self.cfg, on_event=seen.append)
+        pulses = [s for s in seen if s.startswith("still working: nothing from Cursor")]
+        self.assertTrue(pulses, seen)
+        self.assertIn("(last: tool shell started: command=mvn test)", pulses[0])
+        self.assertLess(seen.index(pulses[0]), seen.index([s for s in seen if "completed" in s][0]))
 
     def test_progress_is_reported_while_the_agent_works(self):
         msgs = [types.SimpleNamespace(type="status", status="running", message=""),

@@ -729,6 +729,18 @@ problem rather than a missing path, which is why the form says so.
 The only tab that writes code. It takes the plan the Automate Test Case tab produced and has
 **Cursor** act on it.
 
+**Reading the Cursor log while it runs.** Each line is one thing the
+agent did: `tool shell started: command=mvn -q compile` says what it
+asked for, `tool shell completed in 38s -> BUILD SUCCESS…` how long it
+took and the start of what came back (shell calls only; what a file
+read returns is not logged), `tool edit_file started: target_file=…`
+which file it is changing (never the content), `cursor says: …` what
+the agent said in words, and `status FINISHED` when it is done. When
+nothing has been heard for a minute, a line says so -- `still working:
+nothing from Cursor for 2 min (last: tool shell started: command=mvn
+test), 9 min in all` -- which is most often a long compile, not a hang.
+The agent's private reasoning is not logged.
+
 Cursor is told **where things are** before it is told where it may
 write: where the hand-written and the converted test classes are, which
 TestNG suite files there are, where the data sheets are and how one is
