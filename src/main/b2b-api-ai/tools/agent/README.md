@@ -232,7 +232,12 @@ from the Jira in your configuration:
   request contract are often on the epic);
 - **what is around it** -- the stories Jira links to it (*blocks*, *is
   blocked by*, *relates to*, *clones*...) and its sub-tasks, up to 8,
-  each read once and not followed further.
+  each read once and not followed further;
+- **the Confluence pages the story's text points at**, up to 6, read
+  as if their links had been given: a story that says "table updated,
+  see [page]" names the page its tests depend on. The Confluence
+  allowlist still decides whether a host is read at all, and a refused
+  page is named with the reason.
 
 The text of each **Confluence page** given with the job is read too --
 its rules and its tables (a table arrives as rows of `a | b | c`) --

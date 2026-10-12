@@ -267,6 +267,26 @@ MAX_LINKED = 8                    # linked stories and sub-tasks read for contex
 MAX_PAGE_CHARS = 40000            # of one Confluence page, in the brief
 MAX_PAGES_TOTAL = 90000           # of all of them together
 MAX_PAGE_BLOCK = 1500             # a code block longer than this is named, not shown
+MAX_STORY_LINKS = 6               # Confluence links found in the story and read unasked
+_URL_IN_TEXT_RX = re.compile(r"https?://[^\s<>\"'|\]\[)]+")
+
+
+def confluence_links_in(text: str, given: list) -> list:
+    """The Confluence page links a story's text names, in order, without
+    the ones already given. Jira writes a link as `[url]` or `[text|url]`;
+    what trails it (`]`, `.`, `,`) is not part of it."""
+    out = []
+    have = {g.strip().rstrip("/").lower() for g in given}
+    for m in _URL_IN_TEXT_RX.finditer(text or ""):
+        url = m.group(0).rstrip(".,;:)")
+        if classify(url) != CONFLUENCE:
+            continue
+        key = url.rstrip("/").lower()
+        if key in have:
+            continue
+        have.add(key)
+        out.append(url)
+    return out[:MAX_STORY_LINKS]
 _PAGE_FENCE_RX = re.compile(r"(```|~~~)[^\n]{0,40}\n(.*?)\1", re.S)
 
 
@@ -635,6 +655,26 @@ def build(job: str, text: str = "", links=None, root: str = "",
             story = got["story"]
             around = got.pop("around", [])
             story_body = got.pop("own_text", "")
+            # The Confluence pages the story itself points at are read too,
+            # unasked: "Table updated to reflect such - [url]" is the page the
+            # tests depend on. The fetcher's allowlist still decides whether
+            # a host is read at all.
+            for extra in confluence_links_in(story_body, links):
+                slot = f"{len(gathered) + 1:02d}-confluence"
+                page = gather_confluence(extra, sources, slot, api_path)
+                page["from_story"] = story["key"]
+                gathered.append(page)
+                if page.get("ok") and page.get("text_file"):
+                    with io.open(os.path.join(sources, page["text_file"]), encoding="utf-8",
+                                 errors="replace") as fh:
+                        body = fh.read()
+                    found += _requests_from(body, f"confluence {extra} (named in {story['key']})")
+                    shown, cut = _page_for_brief(body, page_budget)
+                    page_budget -= len(shown)
+                    pages.append({"link": extra, "text": shown, "cut": cut,
+                                  "from_story": story["key"]})
+                else:
+                    notes.append(f"{extra} (a link in {story['key']}): {page.get('reason')}")
             for issue_key, issue_text in got.pop("_request_texts", []):
                 found += _requests_from(issue_text, f"jira {_one_line(issue_key, 40)}")
             for issue_key, issue_text in got.pop("_parent_texts", []):
@@ -849,7 +889,9 @@ def _write_brief(out: str, r: dict) -> None:
         lines += ["## Sources", ""]
         for g in r["links"]:
             mark = "ok" if g.get("ok") else "NOT READ"
-            lines.append(f"- [{mark}] ({g.get('kind')}) {g.get('link')}")
+            lines.append(f"- [{mark}] ({g.get('kind')}) {g.get('link')}"
+                         + (f" -- a link in {g['from_story']}, read unasked"
+                            if g.get("from_story") else ""))
             if not g.get("ok"):
                 lines.append(f"      {g.get('reason', '')}")
         lines.append("")

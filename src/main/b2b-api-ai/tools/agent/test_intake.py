@@ -427,6 +427,48 @@ class Story(Base):
         self.assertIn("jira ABC-1", mine[0]["provenance"])
         self.assertEqual(mine[0]["expected_status"], "201")
 
+    def test_confluence_pages_the_story_points_at_are_read_unasked(self):
+        self.issues["ABC-1"]["fields"]["description"] += (
+            "\n\nTable updated to reflect such- [https://wiki.example.com/x/AbCdEf#anchor].\n"
+            "Also [the spec|https://wiki.example.com/display/QA/Rates+API], and "
+            "https://other.example.com/not/confluence and https://jira.example.test/browse/ABC-9\n")
+        asked = []
+
+        def fake(argv):
+            asked.append(argv[argv.index("--url") + 1])
+            out = argv[argv.index("--out") + 1]
+            os.makedirs(out, exist_ok=True)
+            with io.open(os.path.join(out, "page.md"), "w", encoding="utf-8") as fh:
+                fh.write("Role | Cancel\n\nTC | Yes\n\nGET /pages/{id}\n")
+            return 0
+        real = intake.conf_fetch.main
+        self.addCleanup(setattr, intake.conf_fetch, "main", real)
+        intake.conf_fetch.main = fake
+        r = self.read(links=["https://jira.example.test/browse/ABC-1",
+                             "https://wiki.example.com/display/QA/Rates+API"])
+        self.assertEqual(sorted(asked), ["https://wiki.example.com/display/QA/Rates+API",
+                                         "https://wiki.example.com/x/AbCdEf#anchor"])
+        unasked = [g for g in r["links"] if g.get("from_story")]
+        self.assertEqual([g["link"] for g in unasked], ["https://wiki.example.com/x/AbCdEf#anchor"])
+        self.assertIn("read unasked", self.brief("j"))
+        self.assertIn("> TC | Yes", self.brief("j"))
+        self.assertIn(("GET", "/pages/{id}"), {(q["verb"], q["raw_path"]) for q in r["requests"]})
+
+    def test_a_page_the_story_points_at_that_cannot_be_read_is_said(self):
+        self.issues["ABC-1"]["fields"]["description"] += "\nSee [https://wiki.example.com/x/AbCdEf]\n"
+        real = intake.conf_fetch.main
+        self.addCleanup(setattr, intake.conf_fetch, "main", real)
+        intake.conf_fetch.main = lambda argv: (print("refused: host not in base_urls"), 2)[1]
+        r = self.read()
+        self.assertTrue(r["ok"])
+        self.assertIn("(a link in ABC-1): refused: host not in base_urls", " ".join(r["notes"]))
+
+    def test_links_in_the_story_are_capped(self):
+        many = " ".join(f"https://wiki.example.com/x/Ab{n:04d}" for n in range(12))
+        self.assertEqual(len(intake.confluence_links_in(many, [])), intake.MAX_STORY_LINKS)
+        self.assertEqual(intake.confluence_links_in("see https://wiki.example.com/x/AbCdEf/",
+                                                    ["https://wiki.example.com/x/AbCdEf"]), [])
+
     def test_a_bare_key_is_read_from_the_configured_jira(self):
         r = self.read(links=["abc-1"])
         self.assertEqual(r["story"]["key"], "ABC-1")
