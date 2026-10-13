@@ -389,5 +389,61 @@ class Artifacts(unittest.TestCase):
         jobs.read_artifact("demo", "brief.md")   # absent file -> ""
 
 
+
+class PuttingAnOutcomeAway(unittest.TestCase):
+    """The agent loop's last outcome can be dismissed from the page when it
+    left nothing in the working tree."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="jobs_dismiss_")
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        # job_dir resolves through intake's root: both are pointed away.
+        for owner in (jobs, jobs.intake):
+            self.addCleanup(setattr, owner, "ROOT", owner.ROOT)
+            owner.ROOT = self.root
+        self.job = jobs.job_dir("j1")
+        self.assertTrue(self.job.startswith(self.root), "the test stays in its scratch folder")
+        os.makedirs(self.job)
+
+    def review(self, **data):
+        import json
+        with io.open(os.path.join(self.job, "review.json"), "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
+    def read(self):
+        import json
+        with io.open(os.path.join(self.job, "review.json"), encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_a_rejection_that_was_undone_is_put_away_and_kept(self):
+        import json
+        self.review(state="rejected", why="timeout", reason="did not finish", undone=True)
+        got = jobs.dismiss_review("j1")
+        self.assertEqual((got["dismissed"], got["was"]), (True, "rejected"))
+        self.assertEqual(self.read()["state"], "none")
+        with io.open(os.path.join(self.job, "review-dismissed.json"), encoding="utf-8") as fh:
+            kept = json.load(fh)
+        self.assertEqual((kept["state"], kept["why"]), ("rejected", "timeout"))
+        self.assertTrue(kept["dismissed_at"])
+        self.assertEqual(jobs.dismiss_review("j1"), {"dismissed": False, "state": "none"})
+
+    def test_an_outcome_with_files_in_the_tree_is_refused(self):
+        for state, extra in (("pending-review", {}), ("verify-failed", {}), ("generating", {}),
+                             ("rejected", {"needs_discard": True})):
+            self.review(state=state, **extra)
+            with self.assertRaises(ValueError, msg=state) as got:
+                jobs.dismiss_review("j1")
+            self.assertIn("Use Discard", str(got.exception))
+            self.assertEqual(self.read()["state"], state, "nothing changed")
+        for state in ("discarded", "pushed", "approved-local"):
+            self.review(state=state)
+            self.assertTrue(jobs.dismiss_review("j1")["dismissed"], state)
+
+    def test_no_review_at_all_is_nothing_to_dismiss(self):
+        self.assertEqual(jobs.dismiss_review("j1"), {"dismissed": False, "state": "none"})
+        with self.assertRaises(ValueError):
+            jobs.dismiss_review("../x")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

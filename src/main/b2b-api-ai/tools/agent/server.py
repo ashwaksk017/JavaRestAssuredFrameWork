@@ -314,6 +314,10 @@ class Handler(BaseHTTPRequestHandler):
                         lock=lock))
                 except jobs.repo.Refused as e:
                     raise ValueError(str(e)) from None
+            if u.path == "/api/agent-dismiss":
+                # The last outcome, put away: only one that left nothing in
+                # the tree; refused while an agent command runs.
+                return self._json(jobs.dismiss_review(body.get("job", "")))
             if u.path == "/api/agent-followup":
                 # What the reviewer asks Cursor to change, kept with the job
                 # under a fixed name; the command reads it from there.

@@ -724,6 +724,44 @@ def log_path(job: str, runnable: str) -> str:
     return os.path.join(job_dir(job), f"{_known(runnable)}.log")
 
 
+# Outcomes of the agent loop that leave nothing in the working tree, and
+# so can be put away from the page. pending-review / verify-failed /
+# generating hold files: Discard first. A rejection that still needs a
+# Discard says so (needs_discard) and is kept until it has had one.
+DISMISSABLE = ("rejected", "discarded", "pushed", "approved-local")
+AGENT_RUNNABLES = ("agent-generate", "agent-followup", "agent-approve", "agent-discard",
+                   "agent-reapply")
+
+
+def dismiss_review(job: str) -> dict:
+    """Put away the agent loop's last outcome for a job: review.json goes
+    back to state none, and what it said is kept in review-dismissed.json.
+    Nothing in the working tree changes."""
+    out = job_dir(job)
+    path = os.path.join(out, "review.json")
+    try:
+        with io.open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        data = {}
+    state = str((data or {}).get("state") or "none")
+    if state == "none":
+        return {"dismissed": False, "state": "none"}
+    for runnable in AGENT_RUNNABLES:
+        if read_status(job, runnable).get("state") == "running":
+            raise ValueError(f"{runnable} is running for this job; wait for it")
+    if state not in DISMISSABLE or (state == "rejected" and data.get("needs_discard")):
+        raise ValueError(f"a {state} outcome is not put away: its files are in the working "
+                         f"tree. Use Discard (or Approve) first.")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with io.open(os.path.join(out, "review-dismissed.json"), "w", encoding="utf-8") as fh:
+        json.dump(dict(data, dismissed_at=now), fh, indent=2, ensure_ascii=False)
+    with io.open(path, "w", encoding="utf-8") as fh:
+        json.dump({"state": "none", "updated": now, "dismissed": state, "dismissed_at": now},
+                  fh, indent=2, ensure_ascii=False)
+    return {"dismissed": True, "state": "none", "was": state}
+
+
 def read_status(job: str, runnable: str) -> dict:
     _known(runnable)
     try:

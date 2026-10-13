@@ -612,6 +612,27 @@ class VerifyAndRepair(Repo):
         self.assertEqual(len(prompts), 4, "the first run and three repairs")
         self.assertEqual(self.state()["attempts"], 4)
 
+    def test_a_rejection_records_why_a_timeout_is_not_a_broken_rule(self):
+        self.policy["timeout_settle_seconds"] = 0
+
+        def times_out(_prompt):
+            write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
+            raise loop.CursorFailed("Cursor did not finish within 1s", "timeout", True)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(self.generate(times_out), 1)
+        st = self.state()
+        self.assertEqual((st["state"], st["why"]), ("rejected", "timeout"))
+
+        def breaks_a_rule(_prompt):
+            write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
+            write(self.root, "src/main/java/Framework.java", "class Framework { /* no */ }\n")
+            return {"result": ""}
+        with redirect_stdout(out):
+            self.assertEqual(self.generate(breaks_a_rule), 1)
+        st = self.state()
+        self.assertEqual((st["state"], st["why"]), ("rejected", "rule"))
+
     def test_a_number_of_repairs_is_still_honoured(self):
         policy = dict(self.policy, repair_attempts=0)
         bad = lambda: {"ok": False, "steps": [{"name": "compile", "rc": 1, "tail": "boom"}]}

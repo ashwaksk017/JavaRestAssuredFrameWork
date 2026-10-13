@@ -1685,6 +1685,12 @@ async function refreshReview() {
   badge.textContent = state.replace("-", " ");
   badge.className = `badge ${state}`;
   let detail = REVIEW_TEXT[state] || state;
+  // A rejection is worded by what happened: a rule broken, or a call
+  // that did not finish -- which is no fault of the change.
+  if (state === "rejected" && review.why === "timeout")
+    detail = "Rejected — the Cursor call did not finish in time. No rule was broken; the files it had written were put back.";
+  else if (state === "rejected" && review.why === "call")
+    detail = "Rejected — the Cursor call failed.";
   if (review.mock) detail = "MOCK RUN — written by the stand-in for Cursor; it cannot be " +
                             "approved, only discarded. " + detail;
   if (review.reason) detail += " " + review.reason;
@@ -1714,6 +1720,10 @@ async function refreshReview() {
   $("agent-discard").disabled = !(review.needs_discard) &&
     !(state === "pending-review" || state === "verify-failed" ||
       state === "generating");   // a stopped run: discard puts it all back
+  // An outcome with nothing left in the tree can be put away.
+  $("agent-dismiss").disabled = !(["rejected", "discarded", "pushed", "approved-local"].includes(state)
+                                  && !review.needs_discard);
+  $("agent-dismiss").dataset.job = shown;
 
   const f = review.files || {};
   const lines = [];
@@ -1984,6 +1994,15 @@ $("agent-stop").onclick = async () => {
   } catch (e) { setState($("agent-state"), "bad", e.message); }
 };
 $("agent-refresh").onclick = () => { refreshReview(); pollCursorLog(true); };
+$("agent-dismiss").onclick = async () => {
+  const j = job();
+  if (!j || $("agent-dismiss").dataset.job !== j) { refreshReview(); return; }
+  $("agent-dismiss").disabled = true;
+  try {
+    await post("/api/agent-dismiss", { job: j });
+  } catch (e) { setState($("agent-state"), "bad", e.message); }
+  refreshReview();
+};
 $("agent-review").onclick = () => {
   if (!sameJobOrRefresh($("agent-review"))) return;
   runAgent("agent-review", { "--job": job() });

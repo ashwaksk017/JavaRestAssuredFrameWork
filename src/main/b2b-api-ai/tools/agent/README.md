@@ -1564,7 +1564,13 @@ the new page. The server itself (`server.py`, `jobs.py`) is a running
 process: after a pull, Stop and Start it; the commands it runs (intake,
 design, the agent loop) are started fresh each time and need no restart.
 What the Agentic tab shows is the job's LAST state, with its time
-(`as of ...`); it changes when a new run starts, not before.
+(`as of ...`); it changes when a new run starts, not before. A
+rejection says what happened -- a rule the agent broke, or a Cursor call
+that did not finish in time (no rule broken; the files were put back).
+**Dismiss** puts an outcome away once nothing of it is left in the
+working tree (rejected and undone, discarded, pushed, approved); what it
+said is kept in `review-dismissed.json`. A change that is waiting, or
+that did not verify, cannot be dismissed: Discard or Approve it.
 
 - **Anything unexplained** — open the **Logs** tab first. It has the full
   text of the error the page only named, and what each command said as it

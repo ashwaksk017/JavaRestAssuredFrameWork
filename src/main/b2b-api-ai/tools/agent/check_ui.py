@@ -908,6 +908,28 @@ def main() -> int:
             check("after Discard the review says the change is no longer waiting",
                   "no longer waiting (the job is DISCARDED)" in html
                   and 'id="agent-review" disabled' in html)
+            # ---- an old outcome: worded by what happened, and put away ---------
+            with io.open(os.path.join(job_dir, "review.json"), "w", encoding="utf-8") as fh:
+                json.dump({"state": "rejected", "scope": "new-test", "why": "timeout", "undone": True,
+                           "reason": "Cursor call failed: Cursor did not finish within 2700s",
+                           "updated": "2026-10-10T12:00:00Z"}, fh)
+            html = mocked.dom("agent")
+            check("a timeout is not called a broken rule, and says when it was",
+                  "did not finish in time. No rule was broken" in html
+                  and "(as of 2026-10-10T12:00:00Z)" in html and "broke a rule" not in html)
+            check("an outcome with nothing in the tree offers Dismiss",
+                  'id="agent-dismiss" title=' in html and 'id="agent-dismiss" disabled' not in html)
+            code, got = mocked.call("/api/agent-dismiss", {"job": JOB})
+            html = mocked.dom("agent")
+            check("Dismiss puts the outcome away and the tab starts clean",
+                  code == 200 and got.get("dismissed") is True and got.get("was") == "rejected"
+                  and "No agent run for this job yet" in html
+                  and os.path.isfile(os.path.join(job_dir, "review-dismissed.json")), f"{code} {got}")
+            waiting("2026-10-10T13:00:00Z")
+            code, got = mocked.call("/api/agent-dismiss", {"job": JOB})
+            check("a change waiting for review cannot be dismissed, only discarded or approved",
+                  code >= 400 and "Use Discard" in json.dumps(got), f"{code} {got}")
+            check("Dismiss is disabled while a change waits", 'id="agent-dismiss" disabled' in mocked.dom("agent"))
             # ---- manual tests: documents, existing tests, the delta ------------
             def send_doc(name, data, ctype="application/octet-stream"):
                 req = urllib.request.Request(

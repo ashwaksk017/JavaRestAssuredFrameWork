@@ -2214,7 +2214,10 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                          f"as it was before this follow-up")
         return notes
 
-    def reject(reason: str, restore: bool = True, undone: bool = False) -> int:
+    def reject(reason: str, restore: bool = True, undone: bool = False, why: str = "rule") -> int:
+        # `why`: "rule" (the agent did what it must not), "timeout" (the
+        # call did not finish in time), "call" (the call failed otherwise).
+        # The page words the outcome by it.
         if restore:
             for note in undo():
                 say(f" .. {note}")
@@ -2229,7 +2232,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                          followup_failed=reason, updated=_now())
             write_review(job_dir, final)
             return 1
-        final = dict(review, state="rejected", reason=reason)
+        final = dict(review, state="rejected", reason=reason, why=why)
         if restore or undone:
             # What an earlier attempt listed is no longer in the tree. Left
             # in, the page shows files and a diff for things that are gone.
@@ -2322,6 +2325,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             # the finished path checks before trusting the tree is checked
             # here too, and anything it finds is said.
             reason = f"Cursor call failed: {e}"
+            why = "timeout" if getattr(e, "kind", "") == "timeout" else "call"
 
             def checked() -> tuple:
                 # sweep() can meet a file the bridge still holds open. That
@@ -2348,7 +2352,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                     reason += " Also: " + "; ".join(found) + "."
                 review = dict(review, needs_discard=True)
                 say(f"WARN {reason}")
-                return reject(reason, restore=False)
+                return reject(reason, restore=False, why=why)
             # With nothing found, sweep() changed nothing: a tree that
             # differs already is the run still writing.
             wrote_during_checks = not found and tree_now() != at_failure
@@ -2398,7 +2402,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                 review = dict(review, needs_discard=True, maybe_alive=True)
             if alive or found:
                 say(f"WARN {reason}")
-            return reject(reason, restore=False, undone=True)
+            return reject(reason, restore=False, undone=True, why=why)
         text = str(answer.get("result") or "")
         with io.open(os.path.join(job_dir, f"agent-answer-{tag}{attempt}.md"),
                      "w", encoding="utf-8") as fh:
