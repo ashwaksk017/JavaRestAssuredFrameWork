@@ -2059,10 +2059,16 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             return 1
         if not design_text:
             why = design_note or "it holds no case"
-            say(f"FAIL the design of this job cannot be used ({why}), and running without "
-                f"it would write a test for every request of the plan, reviewed or not. "
-                f"Design again from the brief the job has now (and review the cases), or "
-                f"remove design.json to run from the plan alone.")
+            # The next step depends on the reason: a review that no longer
+            # matches wants a review, not another design.
+            if "Review the cases" in why:
+                next_step = ("Next: on the Automate Test Case tab, tick Approve (and Automate) on "
+                             "the cases Cursor should write, then run again.")
+            else:
+                next_step = ("Next: Design again from the brief the job has now, review the cases, "
+                             "then run again -- or remove design.json to run from the plan alone.")
+            say(f"FAIL the design of this job cannot be used: {why} Running without it would "
+                f"write a test for every request of the plan, reviewed or not. {next_step}")
             return 1
     private = config_secrets(os.path.join(
         root, "src", "main", "resources", "program_configuration.json"))
