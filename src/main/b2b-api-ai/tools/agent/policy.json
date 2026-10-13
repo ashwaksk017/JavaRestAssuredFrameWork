@@ -86,7 +86,8 @@
     "src/main/resources/program_configuration.json",
     "tools/ra_converter/cursor_agent.json"
   ],
-  "repair_attempts": 1,
+  "repair_attempts": "until-fixed",
+  "repair_max_attempts": 8,
   "repeat_discard": false,
   "handwritten_roots": [
     "src/test/java/com/hi/api/tests/manual/",

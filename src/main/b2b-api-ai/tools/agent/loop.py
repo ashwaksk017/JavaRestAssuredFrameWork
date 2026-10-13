@@ -223,9 +223,16 @@ DEFAULT_POLICY = {
         "src/main/resources/program_configuration.json",
         "tools/ra_converter/cursor_agent.json",
     ],
-    "repair_attempts": 1,
+    # After a run that does not verify (the compile, a check, the gate),
+    # Cursor is handed the output and asked to fix it. "until-fixed": again
+    # and again while the errors keep CHANGING, up to repair_max_attempts;
+    # when an attempt leaves the output exactly as it was, Cursor is going
+    # round in circles and the run stops. A number means that many repair
+    # attempts, as before.
+    "repair_attempts": "until-fixed",
+    "repair_max_attempts": 8,
     # One Cursor call may take this long before it is reported as stuck.
-    # `generate` is per attempt: with one repair attempt, twice this.
+    # `generate` is per attempt.
     "cursor_deadline_seconds": {"generate": 2700, "design": 900, "review": 900,
                                 "manual": 1200},
     # After a timeout, how long to wait before looking for late writes.
@@ -1877,11 +1884,12 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
     def tree_now() -> tuple:
         return dirty_paths(root), snapshot_generated(root, policy)
 
-    attempts = 1 + max(0, int(policy.get("repair_attempts", 1)))
-    repair = ""
+    attempts, until_fixed = repair_attempts(policy)
+    repair, last_failure = "", None
     for attempt in range(1, attempts + 1):
-        say(f" .. calling Cursor (attempt {attempt} of {attempts}) -- "
-            f"the conversation is in cursor.log")
+        say(f" .. calling Cursor (attempt {attempt}"
+            + (f", until it verifies or {attempts} attempts" if until_fixed else f" of {attempts}")
+            + ") -- the conversation is in cursor.log")
         prompt = build_prompt(job_dir, policy, scope, repair, root, followup=followup)
         tag = f"f{len(asked)}-" if followup else ""
         with io.open(os.path.join(job_dir, f"agent-prompt-{tag}{attempt}.txt"),
@@ -2114,16 +2122,45 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         failed = result["steps"][-1]
         say(f"FAIL verify step `{failed['name']}` exited {failed['rc']}")
         clog.block(f"verify output: {failed['name']}", failed["tail"], cap=8000)
+        this_failure = (failed["name"], (failed.get("tail") or "").strip())
+        if until_fixed and attempt < attempts:
+            if this_failure == last_failure:
+                # The same step, the same output: the last attempt changed
+                # nothing that mattered. Another would not either.
+                say(f" .. the errors are exactly as they were after attempt {attempt - 1}: "
+                    f"Cursor is not getting anywhere, so no further attempt is made")
+                clog.write("STOPPED: the verify output did not change between attempts")
+                break
+            say(f" .. the errors changed; asking Cursor again (attempt {attempt + 1})")
+        last_failure = this_failure
         repair = f"$ {failed['name']}\n{failed['tail']}"
         # The repair attempt edits the files just written. `before` stays
         # the ORIGINAL snapshot, so the next classification still covers
         # everything the agent has done since the job started.
     _prune_backup(gen_backup, review.get("generated") or [])
-    write_review(job_dir, dict(review, state="verify-failed"))
-    clog.write("VERIFY FAILED after the repair attempt")
-    say("VERIFY FAILED after the repair attempt. The files are still in "
-        "place so you can look at them; `discard` puts them back.")
+    write_review(job_dir, dict(review, state="verify-failed", attempts=attempt))
+    clog.write(f"VERIFY FAILED after {attempt} attempt(s)")
+    say(f"VERIFY FAILED after {attempt} attempt(s). The files are still in "
+        "place so you can look at them; `discard` puts them back, or ask "
+        "Cursor to change it with what you see.")
     return 1
+
+
+def repair_attempts(policy: dict) -> tuple:
+    """(attempts in all, until_fixed) from the policy. "until-fixed" means
+    as many as repair_max_attempts while the errors keep changing; a
+    number means that many repairs after the first run."""
+    wanted = policy.get("repair_attempts", "until-fixed")
+    if isinstance(wanted, str) and wanted.strip().lower() in ("until-fixed", "until_fixed", "untilfixed"):
+        try:
+            cap = int(policy.get("repair_max_attempts", 8))
+        except (TypeError, ValueError):
+            cap = 8
+        return 1 + max(1, min(cap, 50)), True
+    try:
+        return 1 + max(0, int(wanted)), False
+    except (TypeError, ValueError):
+        return 2, False
 
 
 def _bytes(path: str):

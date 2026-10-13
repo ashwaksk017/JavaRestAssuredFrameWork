@@ -858,8 +858,15 @@ generated files fails. Its verify step runs the gate once before Cursor
 and once after, and fails only when a check that passed before fails
 after, so a tree that already has known failures can still be worked on.
 
-Each run is one Cursor call, plus one repair call if the result does not
-verify (the compiler or gate output is handed back).
+Each run is one Cursor call, and then, while the result does not verify
+(the compile, a check, the gate), another call with the output handed
+back and the instruction to fix only what it reports. It keeps going
+**until it verifies**, with two stops: `repair_max_attempts` in
+`tools/agent/policy.json` (8 by default), and an attempt that leaves the
+failing output exactly as it was -- Cursor going round in circles -- after
+which no further attempt is made. The log says which, and the Agentic
+tab's state says `verify-failed` with the number of attempts. Set
+`repair_attempts` to a number for that many repairs instead.
 
 #### What Approve & push publishes
 

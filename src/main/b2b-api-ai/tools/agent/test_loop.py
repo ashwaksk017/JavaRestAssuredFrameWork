@@ -425,13 +425,63 @@ class VerifyAndRepair(Repo):
         self.assertEqual(self.state()["state"], "pending-review")
 
     def test_two_failures_stop_and_are_not_offered_for_review(self):
+        """The same error twice: Cursor is not getting anywhere."""
         bad = lambda: {"ok": False, "steps": [{"name": "compile", "rc": 1, "tail": "boom"}]}
-        def agent(_prompt):
+        prompts = []
+        def agent(prompt):
+            prompts.append(prompt)
             write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
             return {"result": ""}
-        self.assertEqual(self.generate(agent, bad), 1)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(self.generate(agent, bad), 1)
+        self.assertEqual(len(prompts), 2, "one repair, then the same output stops it")
+        self.assertIn("not getting anywhere", out.getvalue())
         self.assertEqual(self.state()["state"], "verify-failed")
+        self.assertEqual(self.state()["attempts"], 2)
         self.assertEqual(loop.cmd_approve(self.job, self.root, self.policy, "job1", "job1"), 1)
+
+    def test_it_keeps_repairing_while_the_errors_change_until_it_verifies(self):
+        results = [{"ok": False, "steps": [{"name": "compile", "rc": 1, "tail": f"error {n}"}]}
+                   for n in range(4)] + [OK()]
+        prompts = []
+        def agent(prompt):
+            prompts.append(prompt)
+            write(self.root, JIRA + "NewTest.java", "class NewTest { /* v%d */ }\n" % len(prompts))
+            return {"result": ""}
+        self.assertEqual(self.generate(agent, lambda: results.pop(0)), 0)
+        self.assertEqual(len(prompts), 5)
+        self.assertIn("error 3", prompts[4])
+        self.assertEqual(self.state()["state"], "pending-review")
+
+    def test_the_cap_on_attempts_holds_even_while_the_errors_keep_changing(self):
+        n = [0]
+        def bad():
+            n[0] += 1
+            return {"ok": False, "steps": [{"name": "compile", "rc": 1, "tail": f"error {n[0]}"}]}
+        prompts = []
+        def agent(prompt):
+            prompts.append(prompt)
+            write(self.root, JIRA + "NewTest.java", "class NewTest { /* v%d */ }\n" % len(prompts))
+            return {"result": ""}
+        policy = dict(self.policy, repair_attempts="until-fixed", repair_max_attempts=3)
+        rc = loop.cmd_generate(self.job, self.root, policy, "new-test", "", agent=agent, verifier=bad)
+        self.assertEqual(rc, 1)
+        self.assertEqual(len(prompts), 4, "the first run and three repairs")
+        self.assertEqual(self.state()["attempts"], 4)
+
+    def test_a_number_of_repairs_is_still_honoured(self):
+        policy = dict(self.policy, repair_attempts=0)
+        bad = lambda: {"ok": False, "steps": [{"name": "compile", "rc": 1, "tail": "boom"}]}
+        prompts = []
+        def agent(prompt):
+            prompts.append(prompt)
+            write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
+            return {"result": ""}
+        rc = loop.cmd_generate(self.job, self.root, policy, "new-test", "", agent=agent, verifier=bad)
+        self.assertEqual((rc, len(prompts)), (1, 1))
+        self.assertEqual(loop.repair_attempts({"repair_attempts": "nonsense"}), (2, False))
+        self.assertEqual(loop.repair_attempts({}), (9, True))
 
     def test_a_missing_compiler_is_a_failure_not_a_pass(self):
         scope = {"compile": ["definitely-not-a-real-compiler"], "checks": []}
