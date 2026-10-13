@@ -756,6 +756,41 @@ def backup(root: str, paths, dest: str) -> None:
             shutil.copy2(src, out)
 
 
+BACKUP_MARK = ".snapshot"
+
+
+def _snapshot_digest(snap: dict) -> str:
+    h = hashlib.sha1()
+    for rel, sig in sorted(snap.items()):
+        h.update(f"{rel}={sig[0]}:{sig[1]}".encode())
+    return h.hexdigest()
+
+
+def mark_backup(snap: dict, dest: str) -> None:
+    """Write down which snapshot a backup copy is of. A prune after an
+    approved run removes the mark with the files it drops, so a pruned
+    copy is never taken for a whole one."""
+    try:
+        os.makedirs(dest, exist_ok=True)
+        with io.open(os.path.join(dest, BACKUP_MARK), "w", encoding="utf-8") as fh:
+            fh.write(_snapshot_digest(snap))
+    except OSError:
+        pass
+
+
+def backup_is_current(snap: dict, dest: str) -> bool:
+    """Is the copy in `dest` exactly this snapshot? Twenty seconds saved on
+    every run whose tree is as it was."""
+    try:
+        with io.open(os.path.join(dest, BACKUP_MARK), encoding="utf-8") as fh:
+            marked = fh.read().strip()
+    except OSError:
+        return False
+    if marked != _snapshot_digest(snap):
+        return False
+    return all(os.path.isfile(os.path.join(dest, _bk(rel))) for rel in snap)
+
+
 def classify_tracked(before: dict, after: dict, roots) -> dict:
     """What changed among the paths git can see."""
     out = {"created": [], "modified": [], "deleted": [], "outside": []}
@@ -1290,6 +1325,31 @@ def compile_error_files(output) -> set:
     return {m.group(1).replace("\\", "/") for m in _JAVA_ERR_RX.finditer(text)}
 
 
+# Words in Maven's output that mean "it needed the network": then, and
+# only then, the call is made again online.
+_NEEDS_NETWORK = ("could not resolve", "could not transfer", "cannot access", "offline mode",
+                  "non-resolvable", "unknownhost", "no plugin found", "not available in the local")
+
+
+def run_build(run, exe: str, cmd: list) -> tuple:
+    """Run a build command; a Maven command OFFLINE first.
+
+    Online, every `mvn` run asks the remote repositories whether anything
+    is newer, which on a corporate network can take longer than the
+    compile. Offline it uses what the local repository has. Only when the
+    output says something was NOT there is the call made again online,
+    and the pair costs one failed start -- once, after which the local
+    repository has it. Returns (result, "offline" | "online")."""
+    args = list(cmd[1:])
+    is_mvn = os.path.basename(cmd[0]).lower().split(".")[0] in ("mvn", "mvnw")
+    if is_mvn and "-o" not in args and "--offline" not in args:
+        r = run([exe, "-o", *args])
+        text = (r.stdout if isinstance(r.stdout, str) else (r.stdout or b"").decode("utf-8", "replace")).lower()
+        if r.returncode == 0 or not any(w in text for w in _NEEDS_NETWORK):
+            return r, "offline"
+    return run([exe, *args]), "online"
+
+
 def compile_baseline(root: str, scope: dict, runner=None):
     """What already fails to compile BEFORE the agent runs.
 
@@ -1305,8 +1365,64 @@ def compile_baseline(root: str, scope: dict, runner=None):
         return None
     run = runner or (lambda argv: subprocess.run(
         argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **NO_WINDOW))
-    r = run([exe] + cmd[1:])
+    r, _how = run_build(run, exe, cmd)
     return None if r.returncode == 0 else compile_error_files(r.stdout)
+
+
+def _tree_key(root: str, policy: dict, cmd: list) -> str:
+    """What the compile's answer depends on: the commit, every changed or
+    untracked tracked path with its content, the generated tree by size
+    and time (a hash of 3,800 files is five seconds; this is a fraction),
+    and the command. Same key, same answer."""
+    h = hashlib.sha1()
+    h.update(json.dumps(cmd).encode())
+    commit, _branch = head(root)
+    h.update(commit.encode())
+    for rel, sig in sorted(dirty_paths(root).items()):
+        h.update(f"{rel}={sig}".encode())
+    for gen in policy.get("generated_roots") or []:
+        base = os.path.join(root, gen)
+        for dirpath, dirs, files in os.walk(base):
+            dirs.sort()
+            for name in sorted(files):
+                p = os.path.join(dirpath, name)
+                try:
+                    st = os.stat(p)
+                except OSError:
+                    continue
+                h.update(f"{os.path.relpath(p, root)}:{st.st_size}:{int(st.st_mtime)}".encode())
+    return h.hexdigest()
+
+
+def compile_baseline_cached(root: str, policy: dict, scope: dict, runner=None, say_=None):
+    """The compile before the agent, skipped when the tree is as it was the
+    last time it was compiled: the answer is kept in
+    target/agent/compile-baseline.json with the key of the tree."""
+    cmd = list(scope.get("compile") or [])
+    if not cmd:
+        return None
+    path = os.path.join(root, "target", "agent", "compile-baseline.json")
+    key = _tree_key(root, policy, cmd)
+    try:
+        with io.open(path, encoding="utf-8") as fh:
+            kept = json.load(fh)
+        if isinstance(kept, dict) and kept.get("key") == key:
+            if say_:
+                say_(f" .. the tree is as it was when it was last compiled ({kept.get('at')}); "
+                     f"the compile before the agent is not repeated")
+            errors = kept.get("errors")
+            return None if errors is None else set(errors)
+    except (OSError, ValueError):
+        pass
+    errors = compile_baseline(root, scope, runner)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with io.open(path, "w", encoding="utf-8") as fh:
+            json.dump({"key": key, "errors": None if errors is None else sorted(errors),
+                       "at": _now()}, fh)
+    except OSError:
+        pass
+    return errors
 
 
 def run_verify(root: str, scope: dict, runner=None, gate_before=None,
@@ -1326,7 +1442,9 @@ def run_verify(root: str, scope: dict, runner=None, gate_before=None,
             return {"ok": False, "steps": steps}
         diag.step("Checking that the project still compiles")
         say(f" .. verify: {' '.join(compile_cmd)}")
-        r = run([exe] + compile_cmd[1:])
+        started_at = time.time()
+        r, how = run_build(run, exe, compile_cmd)
+        say(f" .. compiled {how} in {time.time() - started_at:.0f}s")
         if r.returncode != 0 and compile_before is not None:
             # The tree did not compile before either. Fail only for a file
             # that compiled then and does not now.
@@ -1679,7 +1797,9 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
     compile_before = None
     if verifier is None and scope.get("compile"):
         say(" .. compiling once BEFORE the agent, to know what already fails")
-        compile_before = compile_baseline(root, scope)
+        started_at = time.time()
+        compile_before = compile_baseline_cached(root, policy, scope, say_=say)
+        say(f" .. ({time.time() - started_at:.0f}s)")
         if compile_before is not None:
             say(f" .. the tree does not compile before the change "
                 f"({len(compile_before)} file(s) with errors); only a NEW "
@@ -1764,9 +1884,16 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         # shared class -- is exactly the one that must be put back, and git
         # cannot do it. Pruned to the files actually changed once the run is
         # accepted.
-        say(f" .. copying the generated tree ({len(gen_before)} files) so "
-            f"anything touched can be put back")
-        backup(root, gen_before, gen_backup)
+        started_at = time.time()
+        if backup_is_current(gen_before, gen_backup):
+            say(f" .. the copy of the generated tree ({len(gen_before)} files) from the "
+                f"last run is still exact; not copied again")
+        else:
+            say(f" .. copying the generated tree ({len(gen_before)} files) so "
+                f"anything touched can be put back")
+            backup(root, gen_before, gen_backup)
+            mark_backup(gen_before, gen_backup)
+        say(f" .. ({time.time() - started_at:.0f}s)")
         # Written BEFORE the agent is called: if this process is stopped or
         # dies mid-run, `discard` can still put everything back from it.
         with io.open(os.path.join(job_dir, "pre-state.json"), "w", encoding="utf-8") as fh:

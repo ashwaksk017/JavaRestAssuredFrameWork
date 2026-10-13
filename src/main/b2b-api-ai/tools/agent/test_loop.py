@@ -483,6 +483,60 @@ class VerifyAndRepair(Repo):
         self.assertEqual(loop.repair_attempts({"repair_attempts": "nonsense"}), (2, False))
         self.assertEqual(loop.repair_attempts({}), (9, True))
 
+    def test_maven_is_run_offline_first_and_online_only_when_something_was_missing(self):
+        calls = []
+
+        def runner(argv):
+            calls.append(argv)
+            if "-o" in argv:
+                return types.SimpleNamespace(returncode=1, stdout=b"[ERROR] Could not resolve dependencies")
+            return types.SimpleNamespace(returncode=0, stdout=b"")
+        scope = {"compile": ["python", "-c", "pass"], "checks": []}
+        got = loop.run_verify(self.root, scope, runner=runner)
+        self.assertTrue(got["ok"])
+        self.assertEqual(len(calls), 1, "not a Maven command: no offline attempt")
+        calls.clear()
+        r, how = loop.run_build(runner, "mvn", ["mvn", "-q", "test-compile"])
+        self.assertEqual([c[1] for c in calls], ["-o", "-q"], "offline first, then online")
+        self.assertEqual((r.returncode, how), (0, "online"))
+        calls.clear()
+        ok = lambda argv: (calls.append(argv), types.SimpleNamespace(returncode=0, stdout=b""))[1]
+        r, how = loop.run_build(ok, "mvn", ["mvn", "-q", "test-compile"])
+        self.assertEqual((len(calls), how), (1, "offline"))
+        failing = lambda argv: (calls.append(argv), types.SimpleNamespace(returncode=1, stdout=b"error: cannot find symbol"))[1]
+        calls.clear()
+        r, how = loop.run_build(failing, "mvn", ["mvn", "-q", "test-compile"])
+        self.assertEqual((len(calls), how, r.returncode), (1, "offline", 1),
+                         "a compile error offline is the answer; it is not retried online")
+
+    def test_the_compile_before_the_agent_is_not_repeated_while_the_tree_is_the_same(self):
+        calls = []
+        runner = lambda argv: (calls.append(argv), types.SimpleNamespace(returncode=1, stdout=b"X.java:[1,1] error: bad"))[1]
+        scope = {"compile": ["python", "-c", "pass"], "checks": []}
+        said = []
+        first = loop.compile_baseline_cached(self.root, self.policy, scope, runner=runner, say_=said.append)
+        second = loop.compile_baseline_cached(self.root, self.policy, scope, runner=runner, say_=said.append)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(first, second)
+        self.assertTrue(any("not repeated" in s for s in said))
+        write(self.root, "src/main/java/Framework.java", "class Framework { /* touched */ }\n")
+        loop.compile_baseline_cached(self.root, self.policy, scope, runner=runner, say_=said.append)
+        self.assertEqual(len(calls), 2, "a changed tree is compiled again")
+        self.assertFalse(os.path.exists(os.path.join(self.root, "target", "agent", "compile-baseline.json")) is False)
+
+    def test_the_generated_copy_is_skipped_when_it_is_still_exact(self):
+        write(self.root, "src/main/java/com/hi/api/support/amex/Hooks.java", "class Hooks {}\n")
+        snap = loop.snapshot_generated(self.root, self.policy)
+        dest = os.path.join(self.job, "pre-generated")
+        self.assertFalse(loop.backup_is_current(snap, dest))
+        loop.backup(self.root, snap, dest)
+        loop.mark_backup(snap, dest)
+        self.assertTrue(loop.backup_is_current(snap, dest))
+        write(self.root, "src/main/java/com/hi/api/support/amex/Hooks.java", "class Hooks { int x; }\n")
+        self.assertFalse(loop.backup_is_current(loop.snapshot_generated(self.root, self.policy), dest))
+        loop._prune_backup(dest, [])
+        self.assertFalse(loop.backup_is_current(snap, dest), "a pruned copy is not a whole one")
+
     def test_a_missing_compiler_is_a_failure_not_a_pass(self):
         scope = {"compile": ["definitely-not-a-real-compiler"], "checks": []}
         got = loop.run_verify(self.root, scope)
