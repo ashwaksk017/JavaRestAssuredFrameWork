@@ -1510,11 +1510,45 @@ class ReDesign(Run):
         self.first()
         self.run_design(self.agent(reply(
             case(id="TC-001", title="  CREATE a rate returns 201 "),
-            case(id="TC-002", title="Second case", steps=[{"action": "b", "data": "", "expected": "CHANGED"}]))))
+            case(id="TC-002", title="Second case", endpoint="GET /other",
+                 steps=[{"action": "b", "data": "", "expected": "CHANGED"}]))))
         d = json.loads(self.read("design.json"))
         ids = {c["title"].strip(): c["id"] for c in d["test_cases"]}
         self.assertEqual(ids["CREATE a rate returns 201"], "TC-001")
-        self.assertEqual(ids["Second case"], "TC-003", "a changed step is another case")
+        self.assertEqual(ids["Second case"], "TC-003", "another endpoint is another case")
+
+    def test_a_reworded_case_on_the_same_endpoint_keeps_its_id_and_asks_to_be_decided_again(self):
+        self.first()
+        design.loop.casereview.update(self.out, "design", "TC-001", state="approved", automate=True)
+        design.loop.casereview.update(self.out, "design", "TC-002", state="rejected")
+        self.run_design(self.agent(reply(
+            case(id="TC-001", title="Creating a rate returns 201 and the id",
+                 steps=[{"action": "POST a valid rate to the group", "data": "a valid group id",
+                         "expected": "201 and the body carries rateId"}]),
+            case(id="TC-002", title="Second case", steps=[{"action": "b", "data": "", "expected": "2"}]))))
+        d = json.loads(self.read("design.json"))
+        ids = {c["title"]: c["id"] for c in d["test_cases"]}
+        self.assertEqual(ids["Creating a rate returns 201 and the id"], "TC-001", "re-worded, same case")
+        self.assertEqual(ids["Second case"], "TC-002")
+        self.assertEqual([ch["id"] for ch in d["previous"]["changed"]], ["TC-001"])
+        self.assertGreaterEqual(d["previous"]["changed"][0]["similarity"], design.SIMILAR)
+        self.assertEqual(d["previous"]["kept"], ["TC-002"])
+        entries = design.loop.casereview.read(self.out)["design"]
+        self.assertEqual(entries["TC-001"]["state"], "proposed", "a decision was about other words")
+        self.assertIn("was approved -- decide again", entries["TC-001"]["note"])
+        self.assertEqual(entries["TC-002"]["state"], "rejected", "the same words keep their decision")
+        self.assertTrue(any("1 re-worded on the same endpoint" in w for w in d["warnings"]))
+
+    def test_a_different_case_on_the_same_endpoint_is_new(self):
+        self.first()
+        self.run_design(self.agent(reply(
+            case(id="TC-001", title="Rejects a rate without a start date",
+                 steps=[{"action": "POST a rate with no start date", "data": "no startDate",
+                         "expected": "400 and an error naming startDate"}]))))
+        d = json.loads(self.read("design.json"))
+        self.assertEqual([c["id"] for c in d["test_cases"]], ["TC-003"])
+        self.assertEqual(d["previous"]["changed"], [])
+        self.assertLess(design.similar(case(), d["test_cases"][0]), design.SIMILAR)
 
     def test_a_new_case_never_takes_an_id_a_review_or_an_xray_test_still_names(self):
         self.first()
@@ -1545,8 +1579,11 @@ class ReDesign(Run):
         self.run_design(self.agent(reply(case(id="TC-002", title="Second case", preconditions=["a token"],
                                              steps=[{"action": "b", "data": "", "expected": "2"}]))))
         d = json.loads(self.read("design.json"))
+        # Same endpoint, same words but for the preconditions: the same
+        # case re-worded, not a new one -- it keeps TC-002, to be decided again.
         self.assertEqual(d["previous"]["kept"], [])
-        self.assertEqual(len(d["previous"]["new"]), 1)
+        self.assertEqual([ch["id"] for ch in d["previous"]["changed"]], ["TC-002"])
+        self.assertEqual(d["previous"]["new"], [])
 
     def test_a_first_design_has_no_previous(self):
         d = self.first()

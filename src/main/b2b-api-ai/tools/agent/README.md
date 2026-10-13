@@ -351,10 +351,15 @@ the text and page still pasted in its folder, so nothing has to be
 typed again -- then *Design the tests* again.
 A re-design is matched to the design before it: a case that says the
 same thing (title, preconditions and steps) keeps its id, and with it
-its review decision and its Xray test. A case whose text changed is a
-new case: it gets an id nothing in the job has used -- not the earlier
-design, not a review decision, not an Xray test -- and comes back as
-proposed. A decision is about a case, not a number: once the cases are
+its review decision and its Xray test. A case on the **same endpoint
+whose words are clearly alike** is the same case re-worded -- a model
+rarely repeats itself to the letter -- so it keeps its id and its Xray
+test, but its review goes back to *proposed* with the note "re-worded
+by the design of ...; was approved -- decide again": one tick to
+confirm, and no decision is carried over to words nobody read. A case
+that matches nothing is new: it gets an id nothing in the job has used
+-- not the earlier design, not a review decision, not an Xray test --
+and comes back as proposed. A decision is about a case, not a number: once the cases are
 renumbered, the old decisions count for nothing, the flow strip and the
 Agentic run say the cases must be reviewed again, and a decision sent
 for a case that is gone is refused. Cases that are gone are named in

@@ -96,7 +96,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import difflib
 import hashlib
+import time
 import importlib.util
 import io
 import json
@@ -1026,15 +1028,42 @@ def reserved_ids(out_dir: str) -> set:
     return out
 
 
+SIMILAR = 0.6          # difflib ratio from which a re-worded case is the same case
+
+
+def _endpoint_key(case: dict) -> str:
+    return " ".join(_text(case.get("endpoint")).lower().rstrip("/").split())
+
+
+def _words(case: dict) -> str:
+    return " ".join([_text(case.get("title")).lower()]
+                    + [f"{_text(s.get('action'))} {_text(s.get('expected'))}".lower()
+                       for s in (case.get("steps") or []) if isinstance(s, dict)])
+
+
+def similar(a: dict, b: dict) -> float:
+    """How alike two cases are, 0..1: the same endpoint is required, then
+    the words of title and steps are compared."""
+    if _endpoint_key(a) != _endpoint_key(b) or not _endpoint_key(a):
+        return 0.0
+    return difflib.SequenceMatcher(None, _words(a), _words(b), autojunk=False).ratio()
+
+
 def rematch(previous: list, cases: list, reserved=()) -> dict:
-    """A re-design against the design before it. A case that says the same
-    thing as an earlier one is the same case: it keeps the earlier id, and
-    with it the review decision and the Xray test keyed to that id. Other
-    cases get ids that neither the earlier design nor a review nor an Xray
-    test uses. Returns {kept, new, removed, note}; `cases` is renumbered
-    in place. Nothing happens when there is no earlier design and nothing
-    reserved."""
-    out = {"kept": [], "new": [], "removed": [], "note": ""}
+    """A re-design against the design before it.
+
+    A case that says the same thing as an earlier one is the same case: it
+    keeps the earlier id, and with it the review decision and the Xray
+    test keyed to that id. A case on the same endpoint whose words are
+    clearly alike (SIMILAR) is the same case re-worded -- a design made
+    again by a model rarely repeats itself to the letter -- so it keeps
+    the id and the Xray test, but its decision is for the caller to put
+    back to proposed: a person said yes to other words. Other cases get
+    ids that neither the earlier design nor a review nor an Xray test
+    uses. Returns {kept, changed, new, removed, note}; `cases` is
+    renumbered in place. Nothing happens when there is no earlier design
+    and nothing reserved."""
+    out = {"kept": [], "changed": [], "new": [], "removed": [], "note": ""}
     reserved = set(reserved)
     if not previous and not reserved:
         return out
@@ -1051,6 +1080,23 @@ def rematch(previous: list, cases: list, reserved=()) -> dict:
             out["kept"].append(old)
         else:
             c["id"] = ""
+    # The re-worded: best pairs first, each old case to one new case.
+    pairs = []
+    for i, c in enumerate(cases):
+        if c["id"]:
+            continue
+        for p in previous:
+            if p["id"] in used:
+                continue
+            score = similar(p, c)
+            if score >= SIMILAR:
+                pairs.append((score, i, p["id"]))
+    for score, i, old in sorted(pairs, key=lambda x: (-x[0], x[1])):
+        if cases[i]["id"] or old in used:
+            continue
+        cases[i]["id"] = old
+        used.add(old)
+        out["changed"].append({"id": old, "similarity": round(score, 2)})
     n = 0
     for c in cases:
         if c["id"]:
@@ -1067,9 +1113,11 @@ def rematch(previous: list, cases: list, reserved=()) -> dict:
                       for c in previous if c["id"] not in used]
     if previous:
         out["note"] = (f"re-design: {len(out['kept'])} case(s) say what they said before and keep "
-                       f"their id (and so their review and their Xray test); {len(out['new'])} new "
-                       f"(a changed case is a new case: review it again, and Create in Xray makes "
-                       f"a new test for it); {len(out['removed'])} of the earlier cases are gone"
+                       f"their id (and so their review and their Xray test); {len(out['changed'])} "
+                       f"re-worded on the same endpoint (keep their id and Xray test; their review "
+                       f"goes back to proposed -- decide again); {len(out['new'])} new (review them; "
+                       f"Create in Xray makes a test for each); {len(out['removed'])} of the earlier "
+                       f"cases are gone"
                        + (": " + ", ".join(r["id"] for r in out["removed"][:8]) if out["removed"] else "")
                        + (" -- an Xray test made for one of them stays in Jira until closed by hand"
                           if out["removed"] and reserved else ""))
@@ -1724,6 +1772,16 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
 
     cases, more = normalise(raw, known, max_cases)
     carried = rematch(previous, cases, reserved_ids(out_dir))
+    if carried["changed"]:
+        # A decision was about other words. Back to proposed, with the
+        # reason, so the person decides again in one tick.
+        entries = loop.casereview.read(out_dir)["design"]
+        decided = [ch["id"] for ch in carried["changed"]
+                   if (entries.get(ch["id"]) or {}).get("state") in ("approved", "rejected")]
+        for case_id in decided:
+            was = entries[case_id]["state"]
+            loop.casereview.update(out_dir, "design", case_id, state="proposed",
+                                   note=f"re-worded by the design of {time.strftime('%Y-%m-%d', time.gmtime())}; was {was} -- decide again")
     if carried["note"]:
         # The earlier design's titles are kept text; they are redacted again
         # with what is private today, as a kept reply is.
@@ -1767,7 +1825,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         "endpoints_checked": bool(known),
         "uncovered_endpoints": missing,
         "test_cases": cases,
-        "previous": {k: carried[k] for k in ("kept", "new", "removed")} if previous else None,
+        "previous": {k: carried[k] for k in ("kept", "changed", "new", "removed")} if previous else None,
         "open_questions": list(dict.fromkeys(questions)),
         "warnings": warnings,
     }
