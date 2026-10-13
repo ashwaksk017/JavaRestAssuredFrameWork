@@ -74,6 +74,8 @@ class Info(WithARepo):
         write(self.root, "new.txt", "y\n")
         r = repo.info(self.root)
         self.assertEqual((r["clean"], r["dirty"]), (False, 1))
+        self.assertEqual((r["untracked"], r["modified"], r["switchable"]), (["new.txt"], [], True),
+                         "an untracked file is named, and does not stand in the way of a switch")
         sh(self.root, "add", "-A")
         sh(self.root, "commit", "-q", "-m", "more")
         self.assertEqual((repo.info(self.root)["ahead"], repo.info(self.root)["clean"]), (1, True))
@@ -104,12 +106,35 @@ class Checkout(WithARepo):
         self.assertIn("from origin/feature/one", r["message"])
         self.assertEqual(sh(self.root, "rev-parse", "--abbrev-ref", "@{upstream}"), "origin/feature/one")
 
-    def test_a_changed_tree_is_not_switched(self):
+    def test_a_changed_tracked_file_is_named_and_stops_the_switch(self):
         write(self.root, "README.md", "edited\n")
+        r = repo.info(self.root)
+        self.assertEqual((r["modified"], r["blocking"], r["switchable"]), (["README.md"], ["README.md"], False))
         with self.assertRaises(repo.Refused) as got:
             repo.checkout(self.root, "local-only", "local-only")
-        self.assertIn("changed or untracked", str(got.exception))
+        self.assertIn("README.md", str(got.exception))
         self.assertEqual(sh(self.root, "rev-parse", "--abbrev-ref", "HEAD"), "main")
+
+    def test_untracked_files_and_the_mock_switches_ride_along(self):
+        # The machine where the real Jira is has mock.json turned off, and
+        # odd files lying about; neither must pin it to one branch.
+        write(self.root, "tools/agent/mock.json", '{"jira": true, "cursor": true}\n')
+        sh(self.root, "add", "-A")
+        sh(self.root, "commit", "-q", "-m", "switches")
+        # Both branches hold the same mock.json, as every branch of the
+        # real repository does; git then carries a local edit across.
+        sh(self.root, "branch", "-f", "local-only", "main")
+        write(self.root, "tools/agent/mock.json", '{"jira": false, "cursor": false}\n')
+        write(self.root, "notes.txt", "mine\n")
+        r = repo.info(self.root)
+        self.assertEqual((r["clean"], r["switchable"], r["blocking"]), (False, True, []))
+        self.assertEqual(r["modified"], ["tools/agent/mock.json"])
+        got = repo.checkout(self.root, "local-only", "local-only")
+        self.assertTrue(got["ok"])
+        self.assertEqual(sh(self.root, "rev-parse", "--abbrev-ref", "HEAD"), "local-only")
+        with io.open(os.path.join(self.root, "tools", "agent", "mock.json"), encoding="utf-8") as fh:
+            self.assertIn('"jira": false', fh.read(), "the local switches came along")
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "notes.txt")))
 
     def test_the_name_twice_a_real_branch_and_a_plain_name(self):
         with self.assertRaises(repo.Refused):

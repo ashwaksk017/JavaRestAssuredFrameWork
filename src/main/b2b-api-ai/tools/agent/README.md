@@ -795,6 +795,13 @@ out, by default) and **Push as** its name (`agent/<job>` by default; it
 must keep the `agent/` prefix, so that no one's main line can be named).
 Both are passed to Approve and said in its confirmation.
 
+The switch needs no *changed tracked file* other than
+`tools/agent/mock.json` (edited on every machine where the real Jira
+and Cursor are; git carries it across when both branches hold the same
+version of it, and says so when not). Untracked files never stand in
+the way. When another tracked file is changed the strip names it and
+the button says so: commit, stash or discard that file first.
+
 **Asking Cursor to change what it wrote.** Under the review controls,
 *Ask Cursor to change it* takes your words -- "use the member's email
 from the CSV instead of a fixed one" -- and runs Cursor again on the
@@ -1568,8 +1575,12 @@ What the Agentic tab shows is the job's LAST state, with its time
 rejection says what happened -- a rule the agent broke, or a Cursor call
 that did not finish in time (no rule broken; the files were put back).
 **Dismiss** puts an outcome away once nothing of it is left in the
-working tree (rejected and undone, discarded, pushed, approved); what it
-said is kept in `review-dismissed.json`. A change that is waiting, or
+working tree (rejected and undone, discarded, pushed, approved). The
+run's Cursor log, command logs, prompts and answers go with it into
+`target/agent/<job>/dismissed-<time>/`, so the tab starts blank and
+nothing is lost; the story, brief, plan, design and review stay, they
+are the job's. A command that fails says its `FAIL` line in the label
+beside its button, not only the step it stopped at. A change that is waiting, or
 that did not verify, cannot be dismissed: Discard or Approve it.
 
 - **Anything unexplained** — open the **Logs** tab first. It has the full

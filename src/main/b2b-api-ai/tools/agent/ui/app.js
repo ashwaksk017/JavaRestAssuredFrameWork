@@ -250,7 +250,13 @@ function follow(runnable, logEl, stateEl, onDone, forJob) {
       if (ownsLabel()) {
         if (st.state === "done") setState(stateEl, "ok", `finished in ${clock()}`);
         else if (st.state === "none") setState(stateEl, "", "not run yet for this job");
-        else setState(stateEl, "bad", `exit ${st.exit_code} after ${clock()} — stopped at: ${what()}`);
+        else {
+          // The reason, when the command said one: a label that only names
+          // the step it stopped at hides the FAIL line two panes down.
+          const said = (logEl.textContent.split("\n").filter((l) => /^(FAIL|REFUSED)\b/.test(l)).pop() || "").trim();
+          setState(stateEl, "bad", `exit ${st.exit_code} after ${clock()} — ` +
+            (said ? said.slice(0, 300) : `stopped at: ${what()}`));
+        }
       }
       if (onDone) onDone(st);
     } catch (e) {
@@ -1885,14 +1891,22 @@ async function showRepo() {
   }
   where.append("on ", el("code", { text: r.branch || "(detached)" }),
     r.head ? el("small", { text: ` ${r.head}` }) : null,
-    r.clean ? el("span", { text: ", clean" }) : el("span", { class: "dirty", text: `, ${r.dirty} changed or untracked file(s)` }),
+    r.clean ? el("span", { text: ", clean" })
+      : el("span", { class: r.switchable ? "" : "dirty",
+                     title: [...(r.modified || []), ...(r.untracked || []).map((p) => p + " (untracked)")].join("\n"),
+                     text: `, ${(r.modified || []).length} changed` +
+                           ((r.blocking || []).length ? ` (${r.blocking.join(", ")})` : "") +
+                           `, ${(r.untracked || []).length} untracked` }),
     r.remote_url ? el("span", {}, `; ${r.remote} → `, el("code", { text: r.remote_url })) : el("span", { class: "dirty", text: `; no remote "${r.remote}"` }),
     r.upstream && (r.ahead || r.behind) ? el("small", { text: ` (${r.ahead} ahead, ${r.behind} behind ${r.upstream})` }) : null);
   const names = [...new Set([...(r.local_branches || []), ...(r.remote_branches || [])])].sort();
   sel.replaceChildren(...names.map((n) => el("option", { value: n, text: n + (r.local_branches.includes(n) ? "" : `  (${r.remote} only)`) })));
   sel.value = r.branch;
-  $("repo-switch").disabled = !r.clean || !names.length;
-  $("repo-switch").title = r.clean ? "" : "The working tree has changes; commit, stash or discard them first.";
+  // Untracked files and an edited mock.json do not stop a switch; another
+  // changed tracked file does, and the strip names it.
+  $("repo-switch").disabled = !r.switchable || !names.length;
+  $("repo-switch").title = r.switchable ? "" :
+    `Changed tracked file(s): ${(r.blocking || []).join(", ")}. Commit, stash or discard them first.`;
   // The base for the job's branch: the remote branches, the current one first.
   const base = $("agent-base");
   const bases = (r.remote_branches || []).slice().sort((a, b) => (a === r.branch ? -1 : b === r.branch ? 1 : a.localeCompare(b)));
@@ -2000,6 +2014,10 @@ $("agent-dismiss").onclick = async () => {
   $("agent-dismiss").disabled = true;
   try {
     await post("/api/agent-dismiss", { job: j });
+    // The logs went with the outcome: the panes start blank.
+    $("agent-log").textContent = "";
+    setState($("agent-state"), "", "not run yet for this job");
+    pollCursorLog(true);
   } catch (e) { setState($("agent-state"), "bad", e.message); }
   refreshReview();
 };

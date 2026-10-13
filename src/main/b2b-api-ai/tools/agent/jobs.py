@@ -754,12 +754,33 @@ def dismiss_review(job: str) -> dict:
         raise ValueError(f"a {state} outcome is not put away: its files are in the working "
                          f"tree. Use Discard (or Approve) first.")
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    with io.open(os.path.join(out, "review-dismissed.json"), "w", encoding="utf-8") as fh:
+    # Everything the Agentic tab shows of a run goes with it, into one
+    # folder, so the tab starts blank and nothing is lost: the Cursor log,
+    # each agent command's log and status, the prompts and the answers.
+    archive = os.path.join(out, "dismissed-" + now.replace(":", "").replace("-", ""))
+    os.makedirs(archive, exist_ok=True)
+    moved = []
+    for name in sorted(os.listdir(out)):
+        full = os.path.join(out, name)
+        if not os.path.isfile(full):
+            continue
+        agent_file = (name == "cursor.log"
+                      or any(name in (f"{r}.log", f"{r}.status.json") for r in AGENT_RUNNABLES)
+                      or name.startswith(("agent-prompt-", "agent-answer-"))
+                      or name in ("proposed.diff", "agent-followup.txt"))
+        if agent_file:
+            os.replace(full, os.path.join(archive, name))
+            moved.append(name)
+    with io.open(os.path.join(archive, "review.json"), "w", encoding="utf-8") as fh:
         json.dump(dict(data, dismissed_at=now), fh, indent=2, ensure_ascii=False)
+    with io.open(os.path.join(out, "review-dismissed.json"), "w", encoding="utf-8") as fh:
+        json.dump(dict(data, dismissed_at=now, archive=os.path.basename(archive)), fh,
+                  indent=2, ensure_ascii=False)
     with io.open(path, "w", encoding="utf-8") as fh:
-        json.dump({"state": "none", "updated": now, "dismissed": state, "dismissed_at": now},
-                  fh, indent=2, ensure_ascii=False)
-    return {"dismissed": True, "state": "none", "was": state}
+        json.dump({"state": "none", "updated": now, "dismissed": state, "dismissed_at": now,
+                   "archive": os.path.basename(archive)}, fh, indent=2, ensure_ascii=False)
+    return {"dismissed": True, "state": "none", "was": state, "archive": os.path.basename(archive),
+            "moved": moved}
 
 
 def read_status(job: str, runnable: str) -> dict:

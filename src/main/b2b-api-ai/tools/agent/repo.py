@@ -87,11 +87,25 @@ def _shown_remote(url: str) -> str:
     return re.sub(r"^[^@/\s]+@", "", url)             # git@host:path -> host:path
 
 
+# Tracked files a machine is expected to have edited and keep across a
+# switch: the mock switches are committed on, and turned off where the
+# real Jira and Cursor are. git carries an edited file through a checkout
+# when the branches hold the same version of it, and refuses when not.
+CARRIED = ("tools/agent/mock.json",)
+MAX_NAMED = 20
+
+
 def info(root: str = "", remote: str = "origin") -> dict:
-    """What the page shows: {branch, head, clean, dirty, remote, remote_url,
-    local_branches, remote_branches, upstream, ahead, behind, is_repo}."""
+    """What the page shows: {branch, head, clean, dirty, modified, untracked,
+    blocking, switchable, remote, remote_url, local_branches,
+    remote_branches, upstream, ahead, behind, is_repo}.
+
+    `clean` is the whole truth (nothing changed, nothing untracked).
+    `switchable` is what a checkout needs: no tracked file changed other
+    than the CARRIED ones. Untracked files never block; git leaves them."""
     root = root or ROOT
     out = {"is_repo": False, "branch": "", "head": "", "clean": True, "dirty": 0,
+           "modified": [], "untracked": [], "blocking": [], "switchable": True,
            "remote": remote, "remote_url": "", "local_branches": [], "remote_branches": [],
            "upstream": "", "ahead": 0, "behind": 0, "note": ""}
     rc, top = git(root, "rev-parse", "--show-toplevel")
@@ -107,6 +121,12 @@ def info(root: str = "", remote: str = "origin") -> dict:
     if rc == 0:
         lines = [l for l in status.splitlines() if l.strip()]
         out["dirty"], out["clean"] = len(lines), not lines
+        for line in lines:
+            code, path = line[:2], line[3:].strip().split(" -> ")[-1].strip('"')
+            (out["untracked"] if code == "??" else out["modified"]).append(path)
+        out["modified"], out["untracked"] = out["modified"][:MAX_NAMED], out["untracked"][:MAX_NAMED]
+        out["blocking"] = [p for p in out["modified"] if p not in CARRIED]
+        out["switchable"] = not out["blocking"]
     rc, url = git(root, "remote", "get-url", remote)
     out["remote_url"] = _shown_remote(url) if rc == 0 else ""
     rc, locals_ = git(root, "for-each-ref", "--format=%(refname:short)", "refs/heads/")
@@ -144,10 +164,12 @@ def checkout(root: str, branch: str, confirm: str, remote: str = "origin", lock=
     state = info(root, remote)
     if not state["is_repo"]:
         raise Refused("this folder is not a git work tree")
-    if not state["clean"]:
-        raise Refused(f"the working tree has {state['dirty']} changed or untracked file(s); a "
-                      f"checkout could carry them to the other branch or be refused half way. "
-                      f"Commit, stash or discard them first.")
+    if not state["switchable"]:
+        names = ", ".join(state["blocking"][:8]) + (" ..." if len(state["blocking"]) > 8 else "")
+        raise Refused(f"{len(state['blocking'])} tracked file(s) are changed: {names}. A checkout "
+                      f"could carry the change to the other branch or be refused half way. "
+                      f"Commit, stash or discard them first. (Untracked files and an edited "
+                      f"{', '.join(CARRIED)} do not stand in the way.)")
     if branch == state["branch"]:
         return {"ok": True, "branch": branch, "message": f"already on {branch}"}
     where = ("local" if branch in state["local_branches"]

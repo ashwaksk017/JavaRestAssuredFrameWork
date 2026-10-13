@@ -418,8 +418,21 @@ class PuttingAnOutcomeAway(unittest.TestCase):
     def test_a_rejection_that_was_undone_is_put_away_and_kept(self):
         import json
         self.review(state="rejected", why="timeout", reason="did not finish", undone=True)
+        for name in ("cursor.log", "agent-generate.log", "agent-generate.status.json", "agent-prompt-1.txt",
+                     "agent-answer-1.md", "proposed.diff", "intake.json", "design.json", "brief.md"):
+            with io.open(os.path.join(self.job, name), "w", encoding="utf-8") as fh:
+                fh.write("x")
         got = jobs.dismiss_review("j1")
         self.assertEqual((got["dismissed"], got["was"]), (True, "rejected"))
+        self.assertEqual(got["moved"], ["agent-answer-1.md", "agent-generate.log", "agent-generate.status.json",
+                                        "agent-prompt-1.txt", "cursor.log", "proposed.diff"])
+        archive = os.path.join(self.job, got["archive"])
+        self.assertTrue(os.path.isfile(os.path.join(archive, "cursor.log")))
+        self.assertTrue(os.path.isfile(os.path.join(archive, "review.json")), "the outcome itself, too")
+        for name in ("cursor.log", "agent-generate.log", "proposed.diff"):
+            self.assertFalse(os.path.exists(os.path.join(self.job, name)), name)
+        for name in ("intake.json", "design.json", "brief.md"):
+            self.assertTrue(os.path.isfile(os.path.join(self.job, name)), f"{name} is the job's, not the run's")
         self.assertEqual(self.read()["state"], "none")
         with io.open(os.path.join(self.job, "review-dismissed.json"), encoding="utf-8") as fh:
             kept = json.load(fh)

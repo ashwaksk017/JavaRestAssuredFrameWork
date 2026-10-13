@@ -919,12 +919,25 @@ def main() -> int:
                   and "(as of 2026-10-10T12:00:00Z)" in html and "broke a rule" not in html)
             check("an outcome with nothing in the tree offers Dismiss",
                   'id="agent-dismiss" title=' in html and 'id="agent-dismiss" disabled' not in html)
+            with io.open(os.path.join(job_dir, "cursor.log"), "w", encoding="utf-8") as fh:
+                fh.write("2026-10-10 12:00:00  an old conversation with Cursor\n")
+            with io.open(os.path.join(job_dir, "agent-generate.log"), "w", encoding="utf-8") as fh:
+                fh.write("FAIL an old command log\n")
+            with io.open(os.path.join(job_dir, "agent-prompt-1.txt"), "w", encoding="utf-8") as fh:
+                fh.write("an old prompt\n")
             code, got = mocked.call("/api/agent-dismiss", {"job": JOB})
             html = mocked.dom("agent")
             check("Dismiss puts the outcome away and the tab starts clean",
                   code == 200 and got.get("dismissed") is True and got.get("was") == "rejected"
                   and "No agent run for this job yet" in html
                   and os.path.isfile(os.path.join(job_dir, "review-dismissed.json")), f"{code} {got}")
+            archive = os.path.join(job_dir, str(got.get("archive") or "none"))
+            check("the run's logs, prompts and answers went with it, into one folder",
+                  {"agent-generate.log", "agent-prompt-1.txt", "cursor.log"} <= set(got.get("moved") or [])
+                  and os.path.isfile(os.path.join(archive, "cursor.log"))
+                  and not os.path.exists(os.path.join(job_dir, "cursor.log"))
+                  and "an old conversation" not in html and "an old command log" not in html,
+                  f"{got.get('moved')} {html.count('an old')}")
             waiting("2026-10-10T13:00:00Z")
             code, got = mocked.call("/api/agent-dismiss", {"job": JOB})
             check("a change waiting for review cannot be dismissed, only discarded or approved",
