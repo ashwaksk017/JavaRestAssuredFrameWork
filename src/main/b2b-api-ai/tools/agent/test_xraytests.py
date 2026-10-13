@@ -534,6 +534,19 @@ class TheAgentLoop(Base):
         self.assertIn("TC-002", text)
         self.assertNotIn("left out", note)
 
+    def test_a_rejected_cases_key_is_not_looked_for_in_the_files(self):
+        """The case was never handed to Cursor, so its key missing from the
+        files is not a gap."""
+        self.create()
+        real = loop.brief_fingerprint
+        self.addCleanup(setattr, loop, "brief_fingerprint", real)
+        loop.brief_fingerprint = lambda job_dir: "abc"
+        xt.casereview.update(self.job, "design", "TC-002", state="rejected")
+        self.assertEqual(loop.designed_case_ids(self.job), {"TC-001"})
+        handed = {c: k for c, k in loop.xray_keys(self.job, mocked=False).items()
+                  if c in loop.designed_case_ids(self.job)}
+        self.assertEqual(handed, {"TC-001": "ABC-901"})
+
     def test_the_keys_that_landed_in_the_written_files_are_told_from_those_that_did_not(self):
         os.makedirs(os.path.join(self.root, "csv"))
         with io.open(os.path.join(self.root, "csv", "a.csv"), "w", encoding="utf-8") as fh:

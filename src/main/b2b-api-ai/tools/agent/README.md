@@ -750,9 +750,12 @@ one change: the diff below shows the first run and every follow-up
 together, Approve pushes it all, and Discard puts the tree back to how
 it was before the first run. Each ask is kept in the job's record
 (`followups`). It is not offered for a change the stand-in made. A
-follow-up that writes outside the allowed paths is rejected the way a
-run is: everything is put back, the first run's work included, so word
-the ask within the test's own files.
+follow-up that fails -- Cursor did not answer, or it wrote outside the
+allowed paths -- undoes itself and nothing more: the change you had
+already read is put back as it was and waits for review again, with the
+reason under `followup_failed` in the job's record. A file you made by
+hand inside the agent's paths stops a follow-up before it starts, the
+way it stops a run, so that it is not swallowed into Cursor's change.
 
 **Reading the Cursor log while it runs.** Each line is one thing the
 agent did: `tool shell started: command=mvn -q compile` says what it

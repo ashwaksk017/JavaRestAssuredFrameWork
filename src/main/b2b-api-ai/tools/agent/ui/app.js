@@ -296,7 +296,11 @@ function storiesNamed(text) {
     // between two keys is tried below.
     const parts = /^https?:\/\//i.test(piece) ? [piece] : piece.split(/\s+/);
     for (const p of parts) {
-      const m = p.match(KEY_RX);
+      // In an address, the key is the one after /browse/ (or in the query),
+      // not a word of the host such as `acme-1.atlassian.net`.
+      const m = p.match(/\/browse\/([A-Za-z][A-Za-z0-9_]+-[0-9]+)/) ||
+                p.match(/[?&]selectedIssue=([A-Za-z][A-Za-z0-9_]+-[0-9]+)/) ||
+                (/^https?:\/\//i.test(p) ? null : p.match(KEY_RX));
       if (!m) continue;
       const key = m[1].toUpperCase();
       if (seen.has(key)) continue;

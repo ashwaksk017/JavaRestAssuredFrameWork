@@ -435,11 +435,16 @@ class Story(Base):
         asked = []
 
         def fake(argv):
-            asked.append(argv[argv.index("--url") + 1])
+            url = argv[argv.index("--url") + 1]
+            asked.append(url)
             out = argv[argv.index("--out") + 1]
             os.makedirs(out, exist_ok=True)
+            # Each page its own words: two pages in one folder would be
+            # read as one another.
+            body = ("Role | Cancel\n\nTC | Yes\n\nGET /pages/{id}\n" if "AbCdEf" in url
+                    else "The rates contract.\n\nGET /rates/{rateId}\n")
             with io.open(os.path.join(out, "page.md"), "w", encoding="utf-8") as fh:
-                fh.write("Role | Cancel\n\nTC | Yes\n\nGET /pages/{id}\n")
+                fh.write(body)
             return 0
         real = intake.conf_fetch.main
         self.addCleanup(setattr, intake.conf_fetch, "main", real)
@@ -452,7 +457,11 @@ class Story(Base):
         self.assertEqual([g["link"] for g in unasked], ["https://wiki.example.com/x/AbCdEf#anchor"])
         self.assertIn("read unasked", self.brief("j"))
         self.assertIn("> TC | Yes", self.brief("j"))
+        self.assertIn("> The rates contract.", self.brief("j"))
         self.assertIn(("GET", "/pages/{id}"), {(q["verb"], q["raw_path"]) for q in r["requests"]})
+        self.assertIn(("GET", "/rates/{rateId}"), {(q["verb"], q["raw_path"]) for q in r["requests"]})
+        dirs = [g["dir"] for g in r["links"] if g.get("dir")]
+        self.assertEqual(len(dirs), len(set(dirs)), "one folder a page")
 
     def test_a_page_the_story_points_at_that_cannot_be_read_is_said(self):
         self.issues["ABC-1"]["fields"]["description"] += "\nSee [https://wiki.example.com/x/AbCdEf]\n"

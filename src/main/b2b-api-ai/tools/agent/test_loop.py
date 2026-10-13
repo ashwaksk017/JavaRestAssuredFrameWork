@@ -201,6 +201,39 @@ class AskingForMore(Repo):
         self.assertIn("nothing was asked", out.getvalue())
         self.assertEqual(self.state()["state"], "pending-review")
 
+    def test_a_file_the_reviewer_made_in_the_roots_is_theirs_and_stops_the_follow_up(self):
+        self.first_run()
+        write(self.root, JIRA + "Mine.java", "class Mine {}\n")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = self.ask("tidy", lambda p: {"result": "ok"})
+        self.assertEqual(rc, 1)
+        self.assertIn("uncommitted changes inside the paths", out.getvalue())
+        self.assertIn("Mine.java", out.getvalue())
+        self.assertTrue(os.path.isfile(os.path.join(self.root, JIRA, "Mine.java")))
+        self.assertEqual(self.state()["state"], "pending-review")
+
+    def test_a_follow_up_whose_cursor_call_fails_undoes_itself_and_not_the_reviewed_change(self):
+        self.first_run()
+
+        def agent(_p):
+            write(self.root, JIRA + "NewTest.java", "class NewTest { half }\n")
+            raise loop.CursorFailed("the bridge went away", "run")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = self.ask("more", agent)
+        self.assertNotEqual(rc, 0)
+        with io.open(os.path.join(self.root, JIRA, "NewTest.java"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "class NewTest { void a() {} }\n")
+        self.assertTrue(os.path.isfile(os.path.join(self.root, JIRA, "NewTestData.java")))
+        st = self.state()
+        self.assertEqual(st["state"], "pending-review")
+        self.assertEqual(st["followups"], ["more"])
+        self.assertIn("bridge went away", st["followup_failed"])
+        self.assertEqual(sorted(st["files"]["created"]), [JIRA + "NewTest.java", JIRA + "NewTestData.java"])
+        self.assertTrue(os.path.isfile(os.path.join(self.job, "proposed.diff")))
+        self.assertIn("the follow-up was undone", out.getvalue())
+
     def test_a_follow_up_that_writes_outside_the_paths_is_rejected_like_a_run(self):
         self.first_run()
 
@@ -210,7 +243,16 @@ class AskingForMore(Repo):
         self.assertNotEqual(self.ask("break out", agent), 0)
         with io.open(os.path.join(self.root, "src/main/java/Framework.java"), encoding="utf-8") as fh:
             self.assertNotIn("changed by a follow-up", fh.read(), "the committed file is put back")
-        self.assertEqual(self.state()["state"], "rejected")
+        # ...and the reviewed change is still there, waiting.
+        self.assertEqual(self.state()["state"], "pending-review")
+        self.assertTrue(os.path.isfile(os.path.join(self.root, JIRA, "NewTest.java")))
+        self.assertIn("outside the allowed paths", self.state()["followup_failed"])
+
+    def test_a_follow_ups_prompt_and_answer_are_kept_beside_the_first_runs(self):
+        self.first_run()
+        self.ask("more", lambda p: {"result": "done"})
+        names = sorted(n for n in os.listdir(self.job) if n.startswith("agent-prompt-"))
+        self.assertEqual(names, ["agent-prompt-1.txt", "agent-prompt-f1-1.txt"])
 
 
 class OutsideThePaths(Repo):

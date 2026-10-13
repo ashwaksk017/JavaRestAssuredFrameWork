@@ -659,8 +659,10 @@ def build(job: str, text: str = "", links=None, root: str = "",
             # unasked: "Table updated to reflect such - [url]" is the page the
             # tests depend on. The fetcher's allowlist still decides whether
             # a host is read at all.
-            for extra in confluence_links_in(story_body, links):
-                slot = f"{len(gathered) + 1:02d}-confluence"
+            for k, extra in enumerate(confluence_links_in(story_body, links), 1):
+                # Its own slot: the given links take `NN-confluence` by their
+                # position, and a page found in the story must not share one.
+                slot = f"{n:02d}s{k}-confluence"
                 page = gather_confluence(extra, sources, slot, api_path)
                 page["from_story"] = story["key"]
                 gathered.append(page)

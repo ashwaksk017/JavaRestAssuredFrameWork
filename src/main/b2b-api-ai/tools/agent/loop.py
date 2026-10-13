@@ -998,6 +998,15 @@ def xray_landed(root: str, files: list, keys: dict) -> dict:
     return {"found": found, "missing": missing}
 
 
+def designed_case_ids(job_dir: str) -> set:
+    """The ids of the designed cases that are handed to the agent -- after
+    the review has had its say -- so that a key for a case that was NOT
+    handed over is not then looked for in the files."""
+    text, _note = designed_cases(job_dir, cap=10_000_000)
+    return {line.split(" ", 1)[0] for line in text.splitlines()
+            if line and not line.startswith("    ")}
+
+
 def designed_cases(job_dir: str, cap: int = 20000, keys: dict = None) -> tuple:
     """(text, note). The cases design.py wrote for this job, one line per
     step. Text is "" when there is no design, when it was made from a
@@ -1674,10 +1683,33 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             return 1
         commit = (prior or {}).get("base_commit") or commit
         branch = (prior or {}).get("base_branch") or branch
-        stale = [p for p in stale if p not in dirty_paths(root)
-                 or not any(in_roots(p, [r]) for r in roots)]
-        stale = [p for p in before if in_roots(p, roots) and p not in (prior or {}).get(
-            "files", {}).get("created", []) + (prior or {}).get("files", {}).get("modified", [])]
+        # Inside the roots there is Cursor's own change, waiting for review.
+        # Anything ELSE there now -- a file the reviewer made by hand -- is
+        # theirs, and would be swallowed into the change and lost on Discard.
+        mine = set(((prior or {}).get("files") or {}).get("created") or []) | set(
+            ((prior or {}).get("files") or {}).get("modified") or [])
+        stale = [p for p in dirty_paths(root) if in_roots(p, roots) and p not in mine]
+        # 2. The first run's accepted copy of the generated tree was pruned
+        # to the files it changed. A follow-up may touch another generated
+        # file in scope; without a copy, Discard could only remove it.
+        gen_backup = os.path.join(job_dir, "pre-generated")
+        for rel, _sig in gen_before.items():
+            if in_roots(rel, roots) and not os.path.isfile(os.path.join(gen_backup, _bk(rel))):
+                src = os.path.join(root, rel)
+                if os.path.isfile(src):
+                    out = os.path.join(gen_backup, _bk(rel))
+                    os.makedirs(os.path.dirname(out), exist_ok=True)
+                    shutil.copy2(src, out)
+        # 3. The change the person has already read, kept whole: a follow-up
+        # that fails or is rejected puts THIS back, not the tree before the
+        # first run.
+        kept_prior = {}
+        for rel in sorted(mine):
+            try:
+                with io.open(os.path.join(root, rel.replace("/", os.sep)), "rb") as fh:
+                    kept_prior[rel] = fh.read()
+            except OSError:
+                continue
     if stale:
         say("FAIL there are uncommitted changes inside the paths the agent "
             "writes to. Commit or remove them first -- otherwise its work "
@@ -1730,6 +1762,16 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         notes += restore_generated(
             root, g["created"] + g["modified"] + g["deleted"] + g["outside"],
             gen_backup)
+        if followup:
+            # ...and the reviewed change back where it was: a failed
+            # follow-up undoes itself, not the work already read.
+            for rel, data in kept_prior.items():
+                path = os.path.join(root, rel.replace("/", os.sep))
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with io.open(path, "wb") as fh:
+                    fh.write(data)
+            notes.append(f"the change waiting for review ({len(kept_prior)} file(s)) is back "
+                         f"as it was before this follow-up")
         return notes
 
     def reject(reason: str, restore: bool = True, undone: bool = False) -> int:
@@ -1738,6 +1780,15 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                 say(f" .. {note}")
                 clog.write(f"undo: {note}")
         clog.write(f"REJECTED: {reason}")
+        if followup and (prior or {}).get("state") in ("pending-review", "verify-failed"):
+            # The follow-up failed; the earlier change still waits, as it
+            # was. Said on the record, and the state goes back to it.
+            say(f"FAIL the follow-up was undone; the change from before it is waiting for "
+                f"review as it was. Reason: {reason}")
+            final = dict(prior, state=prior["state"], followups=asked,
+                         followup_failed=reason, updated=_now())
+            write_review(job_dir, final)
+            return 1
         final = dict(review, state="rejected", reason=reason)
         if restore or undone:
             # What an earlier attempt listed is no longer in the tree. Left
@@ -1801,11 +1852,12 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         say(f" .. calling Cursor (attempt {attempt} of {attempts}) -- "
             f"the conversation is in cursor.log")
         prompt = build_prompt(job_dir, policy, scope, repair, root, followup=followup)
-        with io.open(os.path.join(job_dir, f"agent-prompt-{attempt}.txt"),
+        tag = f"f{len(asked)}-" if followup else ""
+        with io.open(os.path.join(job_dir, f"agent-prompt-{tag}{attempt}.txt"),
                      "w", encoding="utf-8") as fh:
             fh.write(prompt)
         clog.write(f"attempt {attempt} of {attempts}: prompt {len(prompt)} "
-                   f"characters (agent-prompt-{attempt}.txt)")
+                   f"characters (agent-prompt-{tag}{attempt}.txt)")
         if attempt == 1:
             # Its own block: the prompt below is cut off in this log, and
             # where Cursor was told to look is the part a person asks about.
@@ -1901,7 +1953,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                 say(f"WARN {reason}")
             return reject(reason, restore=False, undone=True)
         text = str(answer.get("result") or "")
-        with io.open(os.path.join(job_dir, f"agent-answer-{attempt}.md"),
+        with io.open(os.path.join(job_dir, f"agent-answer-{tag}{attempt}.md"),
                      "w", encoding="utf-8") as fh:
             fh.write(text)
         clog.write(f"answered in {time.time() - started:.1f}s  "
@@ -2007,6 +2059,8 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         # the person reviewing decides whether the case was skipped for a
         # reason.
         handed = xray_keys(job_dir, mocked=mocked)
+        given_ids = designed_case_ids(job_dir)
+        handed = {case: key for case, key in handed.items() if case in given_ids}
         if handed:
             landed = xray_landed(root, files, handed)
             review["xray"] = landed
