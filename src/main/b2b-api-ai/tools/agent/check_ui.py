@@ -688,6 +688,14 @@ def main() -> int:
                   rc == 0 and got.get("ok") is True and got.get("changed") is False, str(got)[:300])
             check("the story box offers the check",
                   'id="story-check"' in mocked.dom("new"))
+            code, rc = press("intake", None, route="/api/intake", extra={"job": "ABC-201", "again": True})
+            told = json.loads(mocked.call("/api/artifact?job=ABC-201&name=intake.json")[1].get("text") or "{}")
+            check("mock mode: a job is read again with the links it was given, no box needed",
+                  code == 200 and rc == 0 and told.get("ok") is True
+                  and (told.get("story") or {}).get("key") == "ABC-201", f"{code} {rc} {str(told)[:200]}")
+            code, body = mocked.call("/api/intake", {"job": "never-read-job", "again": True})
+            check("a job never read has nothing to read again, and is told so",
+                  code >= 400 and "nothing to read again" in json.dumps(body), f"{code} {body}")
             check("the box takes several stories and has a place for them",
                   '<textarea id="story"' in mocked.dom("new") and 'id="stories"' in mocked.dom("new"))
             check("the Automate Test Case tab has a place for the Jira story",
@@ -736,8 +744,11 @@ def main() -> int:
 
             # Creating the designed cases in the mock Xray: one key a case,
             # kept for the job, and nothing created twice.
+            # A design is used only when made from the brief the job has
+            # now; the fixture says it was.
+            fingerprint = _load_module("check_ui_loop", os.path.join(HERE, "loop.py")).brief_fingerprint
             with io.open(os.path.join(job_dir, "design.json"), "w", encoding="utf-8") as fh:
-                json.dump({"kind": "design", "mock": True, "brief": "x", "test_cases": [
+                json.dump({"kind": "design", "mock": True, "brief": fingerprint(job_dir), "test_cases": [
                     {"id": "TC-001", "title": "A case", "endpoint": "GET /x", "type": "positive",
                      "priority": "high", "preconditions": "",
                      "steps": [{"action": "do", "data": "", "expected": "200"}],

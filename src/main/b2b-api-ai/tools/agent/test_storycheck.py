@@ -89,6 +89,23 @@ class Checking(Base):
         self.assertEqual(r["before"]["revision"][:10], "2026-10-01")
         self.assertEqual(r["after"]["revision"][:10], "2026-10-02")
 
+    def test_everything_made_from_the_earlier_reading_is_named(self):
+        for name, data in (("design.json", {"test_cases": [{"id": "TC-001"}, {"id": "TC-002"}]}),
+                           ("case-review.json", {"design": {"TC-001": {"state": "approved"},
+                                                            "TC-002": {"state": "rejected"},
+                                                            "TC-003": {"state": "proposed"}}}),
+                           ("xray-tests.json", {"tests": {"design:TC-001": {"key": "ABC-9"},
+                                                          "manual:MT-001": {"key": "ABC-8"}}}),
+                           ("review.json", {"state": "push-failed"})):
+            with io.open(os.path.join(self.job, name), "w", encoding="utf-8") as fh:
+                json.dump(data, fh)
+        lines = sc.at_stake(self.job)
+        self.assertEqual(len(lines), 4, lines)
+        self.assertTrue(any(l.startswith("a design of 2 case(s)") for l in lines))
+        self.assertTrue(any(l.startswith("a review of 2 case(s)") for l in lines), "proposed is not a decision")
+        self.assertTrue(any(l.startswith("1 test(s) created in Xray") for l in lines), "design tests only")
+        self.assertTrue(any("an automated change (push-failed)" in l for l in lines))
+
     def test_a_revision_change_with_the_same_text_is_said_as_such(self):
         self.now = issue(self.now["fields"]["description"], updated="2026-10-03T10:00:00.000+0000")
         r = self.check()

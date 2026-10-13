@@ -101,9 +101,12 @@ def _clean_steps(steps) -> list:
 
 
 def update(job_dir: str, what: str, ids, state: str = None, automate=None, title: str = None,
-           steps=None, note: str = None) -> dict:
+           steps=None, note: str = None, known=None) -> dict:
     """Record a decision for one case, or the same decision for several.
-    Fields left None are left as they were. Returns the entries written."""
+    Fields left None are left as they were. With `known` (the ids the
+    result holds now), a decision about any other id is refused: a table
+    drawn before a re-design must not decide for a case that is gone.
+    Returns the entries written."""
     if what not in WHATS:
         raise ValueError(f"what must be one of {', '.join(WHATS)}")
     ids = [ids] if isinstance(ids, str) else list(ids or [])
@@ -112,6 +115,11 @@ def update(job_dir: str, what: str, ids, state: str = None, automate=None, title
     for case_id in ids:
         if not isinstance(case_id, str) or not _ID_RX.match(case_id):
             raise ValueError(f"{case_id!r} is not a case id like TC-001")
+    if known is not None:
+        gone = [i for i in ids if i not in set(known)]
+        if gone:
+            raise ValueError(f"{gone[0]} is not a case of this job's {what} result now (the cases "
+                             f"were designed again since this table was drawn); reload the page")
     if state is not None and state not in STATES:
         raise ValueError(f"state must be one of {', '.join(STATES)}")
     if automate is not None and automate is not True and automate is not False:
@@ -162,10 +170,46 @@ def apply(cases: list, entries: dict) -> list:
     return out
 
 
-def reviewed(entries: dict) -> bool:
-    """Has a person said anything about this list yet?"""
+def _ids(cases) -> set:
+    return {c.get("id") for c in (cases or []) if isinstance(c, dict)}
+
+
+def reviewed(entries: dict, cases: list = None) -> bool:
+    """Has a person said anything about this list yet? With `cases`, only
+    decisions about THOSE cases count: a re-design renumbers a case whose
+    text changed, and a decision about the old number is not one about
+    the new case."""
+    ids = _ids(cases) if cases is not None else None
     return any(isinstance(e, dict) and e.get("state") in ("approved", "rejected")
-               for e in (entries or {}).values())
+               and (ids is None or k in ids)
+               for k, e in (entries or {}).items())
+
+
+def stale(entries: dict, cases: list) -> bool:
+    """Decisions exist, but none about the cases there are now."""
+    return reviewed(entries) and not reviewed(entries, cases)
+
+
+# Where each kind of result keeps its cases, for current_ids.
+_RESULTS = {"design": ("design.json", "test_cases"), "manual": ("manual-result.json", "new_cases")}
+
+
+def current_ids(job_dir: str, what: str):
+    """The ids of the cases a job's result holds now, or None when there
+    is no readable result (then nothing is known, and nothing is refused
+    for it)."""
+    name, field = _RESULTS.get(what, (None, None))
+    if not name:
+        return None
+    try:
+        with io.open(os.path.join(job_dir, name), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    rows = data.get(field) if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        return None
+    return {str(c.get("id")) for c in rows if isinstance(c, dict) and c.get("id")}
 
 
 def approved(cases: list, entries: dict, for_automation: bool = False) -> list:
@@ -184,5 +228,6 @@ def summary(cases: list, entries: dict) -> dict:
         counts[case["review"]["state"]] += 1
         if case["review"]["state"] == "approved" and case["review"]["automate"]:
             counts["automate"] += 1
-    counts["reviewed"] = reviewed(entries)
+    counts["reviewed"] = reviewed(entries, cases)
+    counts["stale_review"] = stale(entries, cases)
     return counts

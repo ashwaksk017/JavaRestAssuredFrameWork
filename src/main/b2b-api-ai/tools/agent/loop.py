@@ -1025,7 +1025,11 @@ def pattern_example(root: str, policy: dict, scope: dict) -> tuple:
     paths = [os.path.join(root, p.replace("/", os.sep)) for p in wanted
              if re.fullmatch(r"[A-Za-z0-9_./-]{1,200}", p) and ".." not in p
              and not os.path.isabs(p)]
-    paths = [p for p in paths if os.path.isfile(p) and os.path.realpath(p).startswith(inside)]
+    paths = [p for p in paths if os.path.isfile(p) and os.path.realpath(p).startswith(inside)
+             and not (p.lower().endswith(".csv") and "src/test/resources/csv/" in
+                      os.path.relpath(p, root).replace(os.sep, "/")
+                      and "src/test/resources/csv/manual/" not in
+                      os.path.relpath(p, root).replace(os.sep, "/"))]
     if not paths:
         paths = _example_candidates(root, policy)[:1]
         if paths:
@@ -1129,6 +1133,16 @@ def xray_landed(root: str, files: list, keys: dict) -> dict:
     return {"found": found, "missing": missing}
 
 
+def design_cases_raw(job_dir: str) -> list:
+    """The cases design.json holds, as written, review or no review."""
+    try:
+        with io.open(os.path.join(job_dir, "design.json"), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return [c for c in (data.get("test_cases") or []) if isinstance(c, dict)]
+    except (OSError, ValueError, AttributeError):
+        return []
+
+
 def designed_case_ids(job_dir: str) -> set:
     """The ids of the designed cases that are handed to the agent -- after
     the review has had its say -- so that a key for a case that was NOT
@@ -1169,7 +1183,11 @@ def designed_cases(job_dir: str, cap: int = 20000, keys: dict = None) -> tuple:
     entries = casereview.read(job_dir)["design"]
     cases = [c for c in cases if isinstance(c, dict)] if isinstance(cases, list) else []
     left_out = ""
-    if casereview.reviewed(entries):
+    if casereview.stale(entries, cases):
+        return "", ("the cases were reviewed, but not THESE: a re-design renumbered them since "
+                    "(a case whose text changed is a new case). Review the cases on the Automate "
+                    "Test Case tab again.")
+    if casereview.reviewed(entries, cases):
         chosen = casereview.approved(cases, entries, for_automation=True)
         left_out = f", {len(cases) - len(chosen)} left out by the review"
         cases = chosen
@@ -1372,7 +1390,7 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
     plan = _read(os.path.join(job_dir, "plan.md"))
     designed, _note = designed_cases(job_dir, keys=xray_keys(job_dir, mocked=mock_cursor()))
     decided = bool(designed) and scope["name"] != "converter" and bool(
-        casereview.reviewed(casereview.read(job_dir)["design"]))
+        casereview.reviewed(casereview.read(job_dir)["design"], design_cases_raw(job_dir)))
     brief_head, brief = brief_for_agent(job_dir, policy, decided)
     roots = "\n".join(f"  - {r}{'**' if r.endswith('/') else ''}"
                       for r in scope["write_roots"])
@@ -1982,7 +2000,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         # and write a test for every request in it -- the ones the person
         # rejected included. Stopping is the only honest answer.
         entries = casereview.read(job_dir)["design"]
-        if casereview.reviewed(entries) and not designed_case_ids(job_dir) \
+        if casereview.reviewed(entries, design_cases_raw(job_dir)) and not designed_case_ids(job_dir) \
                 and "different brief" not in (design_note or "") and "MOCK" not in (design_note or ""):
             say("FAIL the review left no case to automate: every designed case is rejected, "
                 "or none that is approved is marked Automate. Tick Approve and Automate on "

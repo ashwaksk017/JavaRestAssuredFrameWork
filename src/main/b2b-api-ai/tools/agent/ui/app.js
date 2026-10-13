@@ -428,10 +428,25 @@ $("story-check").onclick = async () => {
           kids.push(heading("What changed in the story's text"));
           kids.push(el("pre", { class: "doc", text: r.diff + (r.diff_cut ? `\n... ${r.diff_cut} more line(s)` : "") }));
         }
-        kids.push(el("small", { text: "To take the change in: Read it again, then Design again (cases that " +
-          "say the same thing keep their id, their review and their Xray test; a changed case is a new case), " +
-          "review the new ones, Create in Xray for them (an earlier case's test stays in Jira until closed by " +
-          "hand), and ask Cursor to change the automated test with what changed." }));
+        const again = el("button", { type: "button", text: "Read it again, with the same links and pasted text" });
+        again.onclick = async () => {
+          again.disabled = true;
+          try {
+            await post("/api/intake", { job: j, again: true });
+            $("stories").replaceChildren();
+            follow("intake", $("new-log"), $("new-state"),
+                   () => { again.disabled = false; showArtifact("brief.md", $("brief")); });
+          } catch (e) { again.disabled = false; setState($("new-state"), "bad", e.message); }
+        };
+        kids.push(el("div", { class: "row" }, [again]));
+        if (!r.diff) kids.push(el("small", { text: "Only Jira's revision moved -- a field, a comment or an " +
+          "attachment; the story's text is as it was. Read it again to pick that up; if the brief comes back " +
+          "the same, the design, the review and the tests stand as they are." }));
+        else kids.push(el("small", { text: "To take the change in: Read it again (the button above reuses what " +
+          "this job was given), then Design again (cases that say the same thing keep their id, their " +
+          "review and their Xray test; a changed case is a new case), review the new ones, Create in Xray " +
+          "for them (an earlier case's test stays in Jira until closed by hand), and ask Cursor to change " +
+          "the automated test with what changed." }));
       }
       box.replaceChildren(...kids);
     }, j);
@@ -712,7 +727,11 @@ async function showFlow() {
     artifactText(j, "brief.md"), artifactText(j, "plan.md"), artifactJson(j, "design.json"),
     artifactJson(j, "case-review.json"), artifactJson(j, "xray-tests.json"), artifactJson(j, "review.json")]);
   if (j !== job()) return;
-  const approved = Object.values((review && review.design) || {}).filter((e) => e.state === "approved").length;
+  // Decisions about cases the design still has; a re-design renumbers a
+  // case whose text changed, and the old number's decision is not its.
+  const nowIds = new Set(((design && design.test_cases) || []).map((c) => c && c.id));
+  const approved = Object.entries((review && review.design) || {})
+    .filter(([id, e]) => e && e.state === "approved" && nowIds.has(id)).length;
   const keys = Object.keys((xray && xray.tests) || {}).filter((k) => k.startsWith("design:")).length;
   const agentState = (agent && agent.state) || "none";
   // Each step is a link to where it is done: an element of this tab, or
@@ -775,9 +794,21 @@ function showXrayKeys(what, st) {
     kids.push(banner("warn", `The ${what} result was made by a stand-in, or does not say how it was made, ` +
       "and Jira here is real: it will not be sent. Run the step again for real first."));
   if (st && st.notes && st.notes[what]) kids.push(banner("warn", st.notes[what]));
-  if (names.length) {
-    kids.push(heading(`Already in ${st.mock_jira ? "the mock " : ""}Xray`, names.length));
-    kids.push(table(["Case", "Jira test"], names.map((n) => [el("code", { text: n }), el("code", { text: keys[n] })])));
+  if (st && st.stale && st.stale[what])
+    kids.push(banner("warn", "The design was made from an earlier reading of the story than this job " +
+      "has now. Create in Xray will refuse it: Design again, review the cases, then create."));
+  const orphans = (st && st.orphans && st.orphans[what]) || {};
+  const gone = Object.keys(orphans).sort();
+  const live = names.filter((n) => !orphans[n]);
+  if (live.length) {
+    kids.push(heading(`Already in ${st.mock_jira ? "the mock " : ""}Xray`, live.length));
+    kids.push(table(["Case", "Jira test"], live.map((n) => [el("code", { text: n }), el("code", { text: keys[n] })])));
+  }
+  if (gone.length) {
+    kids.push(heading("Tests for cases no longer in the result", gone.length));
+    kids.push(el("small", { text: "Made for a case a re-design dropped or renumbered. Nothing here closes an " +
+      "issue: close or re-point these in Jira by hand." }));
+    kids.push(table(["Was case", "Jira test"], gone.map((n) => [el("code", { text: n }), el("code", { text: orphans[n] })])));
   }
   box.replaceChildren(...kids);
 }

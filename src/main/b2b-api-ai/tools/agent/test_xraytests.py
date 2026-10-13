@@ -116,6 +116,9 @@ class Base(unittest.TestCase):
                                  setattr(pb, "ROOT", saved[1]), setattr(xt, "ROOT", saved[2])))
         self.put("design.json", json.dumps(DESIGN))
         self.put("manual-result.json", json.dumps(MANUAL))
+        # The design fixture says it was made from brief "abc"; so says the job.
+        self.addCleanup(setattr, loop, "brief_fingerprint", loop.brief_fingerprint)
+        loop.brief_fingerprint = lambda job_dir: "abc"
         self.jira = Jira()
         self.approve_all()
 
@@ -472,6 +475,30 @@ class Status(Base):
         self.assertFalse(st["create_tests"])
 
 
+class AfterTheStoryChanged(Base):
+    """A design made from an earlier reading is not created in Jira, and a
+    test whose case is gone is named."""
+
+    def test_a_design_from_an_earlier_brief_is_refused_before_anything_is_created(self):
+        loop.brief_fingerprint = lambda job_dir: "the story was read again"
+        with self.assertRaises(xt.Refused) as got:
+            self.create()
+        self.assertIn("earlier reading of the story", str(got.exception))
+        self.assertEqual(self.jira.created, [], "nothing reached Jira")
+        st = xt.status("j1", self.root)
+        self.assertTrue(st["stale"]["design"])
+        self.assertFalse(st["stale"]["manual"], "a manual result has no brief to be stale against")
+
+    def test_a_key_whose_case_is_gone_is_an_orphan_in_the_status(self):
+        self.put("xray-tests.json", json.dumps({"kind": "xray-tests", "tests": {
+            "design:TC-001": {"key": "ABC-901", "mock": False, "fingerprint": "x"},
+            "design:TC-077": {"key": "ABC-977", "mock": False, "fingerprint": "y"}}}))
+        st = xt.status("j1", self.root)
+        self.assertEqual(st["orphans"]["design"], {"TC-077": "ABC-977"})
+        self.assertEqual(st["keys"]["design"], {"TC-001": "ABC-901", "TC-077": "ABC-977"})
+        self.assertFalse(st["stale"]["design"])
+
+
 class Mock(Base):
     def setUp(self):
         super().setUp()
@@ -573,7 +600,8 @@ class Declared(unittest.TestCase):
         job = os.path.join(root, "target", "agent", "j1")
         os.makedirs(job)
         with io.open(os.path.join(job, "design.json"), "w", encoding="utf-8") as fh:
-            json.dump(DESIGN, fh)
+            # made from the brief this job has (none): the real fingerprint
+            json.dump(dict(DESIGN, brief=loop.brief_fingerprint(job)), fh)
         xt.casereview.update(job, "design", ["TC-001", "TC-002"], state="approved")
         saved = (loop.intake.ROOT, pb.ROOT, xt.ROOT)
         loop.intake.ROOT = pb.ROOT = xt.ROOT = root

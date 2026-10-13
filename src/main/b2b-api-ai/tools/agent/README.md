@@ -345,15 +345,24 @@ also lists what in the job was made from the earlier reading -- the
 design, the review, tests created in Xray, a change waiting for review
 -- so you know what to redo. It changes nothing itself.
 
-Taking the change in: *Read it* again, then *Design the tests* again.
+Taking the change in: *Read it again* -- the button under the answer
+reads the story with the links this job was given the first time and
+the text and page still pasted in its folder, so nothing has to be
+typed again -- then *Design the tests* again.
 A re-design is matched to the design before it: a case that says the
 same thing (title, preconditions and steps) keeps its id, and with it
 its review decision and its Xray test. A case whose text changed is a
 new case: it gets an id nothing in the job has used -- not the earlier
 design, not a review decision, not an Xray test -- and comes back as
-proposed. Cases that are gone are named in the design's warnings; an
-Xray test made for one of them stays in Jira until you close it (nothing
-here edits or closes an issue). Then review the new cases, *Create in
+proposed. A decision is about a case, not a number: once the cases are
+renumbered, the old decisions count for nothing, the flow strip and the
+Agentic run say the cases must be reviewed again, and a decision sent
+for a case that is gone is refused. Cases that are gone are named in
+the design's warnings; an Xray test made for one of them stays in Jira
+until you close it (nothing here edits or closes an issue), and the
+Xray block lists it under *Tests for cases no longer in the result*.
+Until you design again, *Create in Xray* refuses the old design the
+same way the Agentic run does, and says so. Then review the new cases, *Create in
 Xray* for them, and on the Agentic tab ask Cursor to change the
 automated test with what changed. The design before the last one is
 kept as `design.previous.json`, so a design that fails does not lose

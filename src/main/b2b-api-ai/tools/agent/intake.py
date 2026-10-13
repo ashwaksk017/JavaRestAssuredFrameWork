@@ -801,8 +801,11 @@ def build(job: str, text: str = "", links=None, root: str = "",
     }
     diag.step("Writing the brief")
     _write_brief(out, result)
-    with io.open(os.path.join(out, "intake.json"), "w", encoding="utf-8") as fh:
+    # Written beside and moved into place: a reader (the story check, the
+    # page) sees the old file or the new one, never a half of either.
+    with io.open(os.path.join(out, "intake.json.tmp"), "w", encoding="utf-8") as fh:
         json.dump(result, fh, indent=2, ensure_ascii=False)
+    os.replace(os.path.join(out, "intake.json.tmp"), os.path.join(out, "intake.json"))
     return result
 
 

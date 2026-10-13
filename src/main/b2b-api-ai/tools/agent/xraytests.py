@@ -314,6 +314,10 @@ def create(job: str, what: str, story: str, confirm: str, root: str = "", conn=N
     if not mocked:
         publish.https_only(conn["base"], "Jira")
     result = publish.result_for(job_dir, what)
+    if design_stale(job_dir, result, what):
+        raise Refused("the design was made from an earlier reading of the story than this job "
+                      "has now (the brief changed since): Design again, review the cases, then "
+                      "create. Nothing was created.")
     if not mocked and not publish.provably_real(result, what):
         raise Refused("this result was made by a stand-in (mock), or from sample data, or does "
                       "not say how it was made. It is not created in a real Jira. Run the step "
@@ -508,6 +512,13 @@ def create(job: str, what: str, story: str, confirm: str, root: str = "", conn=N
     return done
 
 
+def design_stale(job_dir: str, result: dict, what: str) -> bool:
+    """A design is made from the brief as it was; after the story is read
+    again it says nothing about the story as it is now. Same rule as the
+    agent loop's (loop.designed_cases)."""
+    return what == "design" and str(result.get("brief", "")) != loop.brief_fingerprint(job_dir)
+
+
 def status(job: str, root: str = "") -> dict:
     """What this job could create, what it already has, and what is on."""
     root = root or ROOT
@@ -528,8 +539,11 @@ def status(job: str, root: str = "") -> dict:
     out = {"kind": "xray-status", "at": _now(), "job": job, "problem": problem,
            "create_tests": opts["on"] and flav != "cloud", "projects": opts["projects"],
            "flavour": flav, "mock_jira": mocked, "story": story if _KEY_RX.match(story) else "",
-           "cases": {}, "keys": {}, "real": {}, "notes": {}}
+           "cases": {}, "keys": {}, "real": {}, "notes": {}, "stale": {}, "orphans": {}}
     for what in WHATS:
+        out["keys"][what] = keys_for(job_dir, what, mocked)
+        out["stale"][what] = False
+        out["orphans"][what] = {}
         try:
             data = publish.result_for(job_dir, what)
             listed = cases_of(data, what)
@@ -537,12 +551,16 @@ def status(job: str, root: str = "") -> dict:
             out["review"] = out.get("review") or {}
             out["review"][what] = casereview.summary(listed, casereview.read(job_dir)[what])
             out["real"][what] = publish.provably_real(data, what)
+            out["stale"][what] = design_stale(job_dir, data, what)
+            # A test made for a case the result no longer has: nothing here
+            # closes an issue, so it is named until a person does.
+            ids = {c["id"] for c in listed}
+            out["orphans"][what] = {k: v for k, v in out["keys"][what].items() if k not in ids}
         except Refused as e:
             out["cases"][what] = 0
             out["real"][what] = False
             if "nothing to publish" not in str(e):
                 out["notes"][what] = str(e)
-        out["keys"][what] = keys_for(job_dir, what, mocked)
     return out
 
 

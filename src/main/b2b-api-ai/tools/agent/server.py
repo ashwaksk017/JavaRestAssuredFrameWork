@@ -49,6 +49,25 @@ DOWNLOADS = {"design.md": "text/markdown", "design.json": "application/json",
              "manual-new-cases.csv": "text/csv", "manual-xray-updates.csv": "text/csv"}
 
 
+def given_links(job_dir: str) -> list:
+    """The links a job was handed on its first read, from intake.json: the
+    story and the Confluence pages given with it, not the pages the story
+    itself named (marked from_story) -- those are found again."""
+    try:
+        with io.open(os.path.join(job_dir, "intake.json"), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    out = []
+    for g in (data.get("links") or []) if isinstance(data, dict) else []:
+        if not isinstance(g, dict) or g.get("from_story"):
+            continue
+        link = str(g.get("link") or "").strip()
+        if link and link not in out and len(out) < 40:
+            out.append(link)
+    return out
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "b2b-agent-ui"
     # A client that says it will send a body and then sends nothing would
@@ -311,8 +330,10 @@ class Handler(BaseHTTPRequestHandler):
                 out = jobs.job_dir(body.get("job", ""))
                 fields = {k: body.get(k) for k in ("state", "automate", "title", "steps", "note")
                           if k in body}
+                what = str(body.get("what") or "")
                 return self._json({"written": jobs.casereview.update(
-                    out, str(body.get("what") or ""), body.get("ids") or body.get("id"), **fields)})
+                    out, what, body.get("ids") or body.get("id"),
+                    known=jobs.casereview.current_ids(out, what), **fields)})
             if u.path == "/api/spec-clear":
                 return self._json({"removed": jobs.spec_clear(body.get("job", ""))})
             if u.path == "/api/upload-clear":
@@ -340,6 +361,21 @@ class Handler(BaseHTTPRequestHandler):
         job = body.get("job", "")
         out = jobs.job_dir(job)                 # validates the id
         os.makedirs(out, exist_ok=True)
+        if body.get("again"):
+            # The story changed (or the page was reloaded): read again with
+            # what this job was given the first time -- the links it was
+            # handed, and the pasted text and page still in the job folder.
+            # Links the story itself named are not repeated: the read finds
+            # them again, and the story may name others now.
+            links = given_links(out)
+            pasted = os.path.join(out, "pasted.txt")
+            if not links and not (os.path.isfile(pasted) and os.path.getsize(pasted) > 0):
+                raise ValueError("this job has nothing to read again: no link and no pasted text "
+                                 "were kept from its first read")
+            options = {"--job": job, "--pasted": True}
+            if links:
+                options["--link"] = links
+            return jobs.start(job, "intake", options)
         text_file = os.path.join(out, "pasted.txt")
         with io.open(text_file, "w", encoding="utf-8") as fh:
             fh.write(body.get("text") or "")

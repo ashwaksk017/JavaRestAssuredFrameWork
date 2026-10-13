@@ -245,6 +245,21 @@ class TheReviewDecidesWhatIsWritten(Repo):
             self.assertNotIn(f'"{head}"', src.replace(f'{name} = "{head}"', ""),
                              "the heading is written through its constant, nowhere as a literal")
 
+    def test_a_review_of_cases_a_redesign_renumbered_stops_the_run_with_the_reason(self):
+        self.design(DESIGN_CASE)
+        loop.casereview.update(self.job, "design", "TC-001", state="approved")
+        # The story changed; every case's text changed; the re-design
+        # renumbered them. The old decision is about a case that is gone.
+        self.design(dict(DESIGN_CASE, id="TC-002", title="Create a thing, now with a rate"))
+        seen = {}
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(self.generate(self.agent_that_writes(seen)), 1)
+        self.assertNotIn("p", seen, "Cursor was not called")
+        self.assertIn("renumbered them since", out.getvalue())
+        self.assertIn("Review the cases on the Automate Test Case tab again", out.getvalue())
+        self.assertNotIn("every designed case is rejected", out.getvalue(), "not the wrong reason")
+
     def test_with_nothing_decided_every_case_goes_and_the_plan_leads(self):
         self.design(DESIGN_CASE, dict(DESIGN_CASE, id="TC-002", title="Second"))
         seen = {}

@@ -46,7 +46,7 @@ class Deciding(Base):
         self.assertEqual([c["id"] for c in cr.approved(CASES, entries)], ["TC-001"])
         self.assertEqual(cr.summary(CASES, entries),
                          {"total": 3, "approved": 1, "rejected": 2, "proposed": 0, "automate": 1,
-                          "reviewed": True})
+                          "reviewed": True, "stale_review": False})
         self.assertEqual(entries["TC-002"]["note"], "dupes")
 
     def test_a_corrected_title_and_steps_replace_the_proposed_ones(self):
@@ -78,6 +78,37 @@ class Deciding(Base):
         review = cr.read(self.job)
         self.assertEqual(list(review["design"]), ["TC-001"])
         self.assertEqual(list(review["manual"]), ["MT-001"])
+
+
+class AfterARedesign(Base):
+    """A decision is about a case, not a number: once a re-design has
+    renumbered the cases, old decisions do not count for the new ones."""
+
+    def test_decisions_about_cases_that_are_gone_do_not_make_the_new_ones_reviewed(self):
+        cr.update(self.job, "design", "TC-001", state="approved")
+        entries = cr.read(self.job)["design"]
+        renumbered = [dict(c, id="TC-00%d" % n) for n, c in enumerate(CASES, 4)]
+        self.assertTrue(cr.reviewed(entries))
+        self.assertTrue(cr.reviewed(entries, CASES))
+        self.assertFalse(cr.reviewed(entries, renumbered))
+        self.assertTrue(cr.stale(entries, renumbered))
+        self.assertFalse(cr.stale(entries, CASES))
+        s = cr.summary(renumbered, entries)
+        self.assertEqual((s["reviewed"], s["stale_review"], s["approved"]), (False, True, 0))
+        self.assertFalse(cr.stale({}, renumbered), "nothing decided is not stale, it is undecided")
+
+    def test_a_decision_for_a_case_the_result_no_longer_has_is_refused(self):
+        with io.open(os.path.join(self.job, "design.json"), "w", encoding="utf-8") as fh:
+            json.dump({"test_cases": [{"id": "TC-004"}, {"id": "TC-005"}]}, fh)
+        self.assertEqual(cr.current_ids(self.job, "design"), {"TC-004", "TC-005"})
+        self.assertIsNone(cr.current_ids(self.job, "manual"), "no result: nothing is known")
+        with self.assertRaises(ValueError) as got:
+            cr.update(self.job, "design", "TC-001", state="approved", known=cr.current_ids(self.job, "design"))
+        self.assertIn("TC-001 is not a case of this job's design result now", str(got.exception))
+        self.assertEqual(cr.read(self.job)["design"], {})
+        cr.update(self.job, "design", "TC-004", state="approved", known=cr.current_ids(self.job, "design"))
+        cr.update(self.job, "manual", "MT-001", state="approved", known=cr.current_ids(self.job, "manual"))
+        self.assertEqual(cr.read(self.job)["design"]["TC-004"]["state"], "approved")
 
 
 class WhatIsRefused(Base):
