@@ -584,6 +584,12 @@ What the step checks instead of trusting:
   (nothing is forgotten when Cursor cannot be asked: no key, no SDK);
   it unticks itself after the run. A run answered entirely from kept
   replies needs neither the SDK nor a key.
+- A run that has said or done something and then sends nothing for
+  `cursor_quiet_seconds` (600 by default; 0 switches it off) is taken
+  as finished: it is cancelled, what it said so far is its answer, and
+  what it wrote is verified like any other run. Seen live: Cursor wrote
+  the test, summed up, then stayed silent for 18 minutes until the hard
+  limit -- which then undid everything it had written.
 - Each call to Cursor has a time limit (`cursor_deadline_seconds` in
   `policy.json`: 900 seconds for a design call; 2700 for an Agentic Test Creation tab call,
   per attempt, so twice that with the repair attempt; 0 is no limit, and

@@ -518,6 +518,20 @@ class Preconditions(Repo):
 
 
 class VerifyAndRepair(Repo):
+    def test_an_answer_from_a_run_that_went_quiet_is_verified_like_any_other(self):
+        def agent(prompt):
+            write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
+            return {"result": "Files created: NewTest.java", "status": "quiet", "quiet": True}
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(self.generate(agent), 0)
+        self.assertEqual(self.state()["state"], "pending-review")
+        self.assertIn("went quiet after its last word", out.getvalue())
+        self.assertTrue(os.path.isfile(os.path.join(self.root, JIRA, "NewTest.java")), "kept, not undone")
+        self.assertEqual(loop.cursor_quiet({"cursor_quiet_seconds": "x"}), 600)
+        self.assertEqual(loop.cursor_quiet({"cursor_quiet_seconds": 0}), 0)
+        self.assertEqual(loop.cursor_quiet({}), 600)
+
     def test_a_failed_verify_gets_one_repair_attempt_with_the_output(self):
         prompts, results = [], [
             {"ok": False, "steps": [{"name": "compile", "rc": 1, "tail": "NewTest.java:[3,5] cannot find symbol"}]},
@@ -2009,6 +2023,40 @@ class CallingCursor(unittest.TestCase):
         self.assertIn("(last: cursor is writing: G)", pulses[0])
         self.assertFalse(any(s == "cursor says: G" for s in seen), "a letter is not a log line")
         self.assertEqual(seen[-1], "cursor says: Generating the test class", "said whole at the end")
+
+    def test_a_run_that_goes_quiet_after_speaking_is_taken_as_finished_with_what_it_said(self):
+        NS = types.SimpleNamespace
+
+        def talks_then_stalls():
+            yield NS(type="tool_call", name="edit", status="completed", call_id="1", result="ok")
+            yield NS(type="assistant", message=NS(content=[NS(type="text", text="Files created: XTest.java.")]))
+            time.sleep(30)                   # never ends on its own
+        self.use(FakeSdk(messages=talks_then_stalls()))
+        for name, value in (("QUIET_FOR", 5), ("PULSE_EVERY", 0.02)):
+            self.addCleanup(setattr, loop.cursor_call, name, getattr(loop.cursor_call, name))
+            setattr(loop.cursor_call, name, value)
+        seen = []
+        t0 = time.monotonic()
+        out = loop.cursor_call.run("p", self.ca, self.cfg, on_event=seen.append,
+                                   deadline_seconds=20, quiet_seconds=0.3)
+        self.assertLess(time.monotonic() - t0, 5, "not the hard limit")
+        self.assertEqual(out["status"], "quiet")
+        self.assertTrue(out["quiet"])
+        self.assertEqual(out["result"], "Files created: XTest.java.")
+        self.assertTrue(any("taken as finished" in s for s in seen), seen)
+        self.assertFalse(any("time limit" in s for s in seen))
+
+    def test_a_run_that_never_said_anything_waits_for_the_hard_limit(self):
+        def silent():
+            time.sleep(30)
+            yield None
+        self.use(FakeSdk(messages=silent()))
+        for name, value in (("QUIET_FOR", 5), ("PULSE_EVERY", 0.02)):
+            self.addCleanup(setattr, loop.cursor_call, name, getattr(loop.cursor_call, name))
+            setattr(loop.cursor_call, name, value)
+        with self.assertRaises(loop.cursor_call.CursorCallError) as got:
+            loop.cursor_call.run("p", self.ca, self.cfg, deadline_seconds=0.5, quiet_seconds=0.2)
+        self.assertEqual(got.exception.kind, "timeout", "silence from the start is not a finished run")
 
     def test_progress_is_reported_while_the_agent_works(self):
         msgs = [types.SimpleNamespace(type="status", status="running", message=""),

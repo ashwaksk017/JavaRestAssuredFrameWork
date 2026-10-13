@@ -236,6 +236,9 @@ DEFAULT_POLICY = {
     "agent_brief": "story",
     # One Cursor call may take this long before it is reported as stuck.
     # `generate` is per attempt.
+    # Nothing from Cursor for this long, after it has said or done
+    # something, ends the run as finished: what it wrote is verified.
+    "cursor_quiet_seconds": 600,
     "cursor_deadline_seconds": {"generate": 2700, "design": 900, "review": 900,
                                 "manual": 1200},
     # After a timeout, how long to wait before looking for late writes.
@@ -520,7 +523,22 @@ def cursor_deadline(policy: dict, what: str, default: float = 2700) -> float:
     return value
 
 
-def call_cursor(prompt: str, root: str, on_event=None, deadline: float = 0) -> dict:
+def cursor_quiet(policy: dict, default: float = 600) -> float:
+    """Seconds of silence from Cursor, after it has spoken, that end a run
+    as finished; 0 is off. A value that is not a usable number is the
+    default."""
+    raw = policy.get("cursor_quiet_seconds", default)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if value != value or value < 0 or value == float("inf"):
+        return default
+    return value
+
+
+def call_cursor(prompt: str, root: str, on_event=None, deadline: float = 0,
+                quiet: float = 0) -> dict:
     """One prompt to Cursor in this repository. See cursor_call.py for why
     it is a session with streamed progress rather than one blocking call."""
     diag.step("Asking Cursor to write the change (this can take several minutes)")
@@ -530,7 +548,7 @@ def call_cursor(prompt: str, root: str, on_event=None, deadline: float = 0) -> d
         out = cursor_call.run(prompt, ca, cfg,
                               on_event=(lambda line: on_event(redact(line)))
                               if on_event else None,
-                              deadline_seconds=deadline)
+                              deadline_seconds=deadline, quiet_seconds=quiet)
     except cursor_call.CursorCallError as e:
         msg = redact(e)
         if e.details:
@@ -2021,7 +2039,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
               else "Getting ready to ask Cursor for the change")
     call = agent or (lambda prompt: call_cursor(
         prompt, root, on_event=lambda line: clog.write("  cursor: " + line),
-        deadline=cursor_deadline(policy, "generate")))
+        deadline=cursor_deadline(policy, "generate"), quiet=cursor_quiet(policy)))
     design_text, design_note = designed_cases(job_dir)
     if design_note and scope_name != "converter":
         say(f" ..  {design_note}")
@@ -2390,7 +2408,11 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                    f"run id={answer.get('id', '')}  "
                    f"model={answer.get('model', '')}")
         clog.block("answer", text)
-        say(" .. Cursor finished; checking what it changed")
+        if answer.get("quiet"):
+            say(" .. Cursor went quiet after its last word and was not waited for further; "
+                "checking what it wrote")
+        else:
+            say(" .. Cursor finished; checking what it changed")
 
         commit_now, branch_now = head(root)
         if (commit_now, branch_now) != (commit, branch):

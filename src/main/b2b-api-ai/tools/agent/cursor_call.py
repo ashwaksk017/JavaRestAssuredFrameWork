@@ -248,10 +248,17 @@ def _best_effort(obj, method: str, seconds: float = 5.0) -> bool:
     return bool(done)
 
 
-def bounded(work, seconds, on_timeout=None):
+class WentQuiet(TimeoutError):
+    """The run was given up on because nothing had come from it for a
+    while, not because the wall-clock limit ran out."""
+
+
+def bounded(work, seconds, on_timeout=None, stop=None, on_stop=None):
     """work() with a wall-clock limit. Its value or its exception; or
-    TimeoutError, after `on_timeout()` has been called."""
-    if not seconds or seconds <= 0:
+    TimeoutError, after `on_timeout()` has been called. With `stop` (an
+    Event) set by somebody else, the wait ends early: `on_stop()` is
+    called and WentQuiet is raised."""
+    if (not seconds or seconds <= 0) and stop is None:
         return work()
     box = {}
 
@@ -265,9 +272,11 @@ def bounded(work, seconds, on_timeout=None):
     th.start()
     # In slices: on Windows one long join() is not interrupted by Ctrl+C
     # until it expires, which here is up to 45 minutes.
-    end = time.monotonic() + seconds
+    end = time.monotonic() + (seconds if seconds and seconds > 0 else float("inf"))
     try:
         while th.is_alive():
+            if stop is not None and stop.is_set():
+                break
             left = end - time.monotonic()
             if left <= 0:
                 break
@@ -277,6 +286,10 @@ def bounded(work, seconds, on_timeout=None):
             on_timeout()
         raise
     if th.is_alive():
+        if stop is not None and stop.is_set():
+            if on_stop:
+                on_stop()
+            raise WentQuiet("nothing more came from the run")
         if on_timeout:
             on_timeout()
         raise TimeoutError(f"no result after {seconds:.0f}s")
@@ -286,7 +299,7 @@ def bounded(work, seconds, on_timeout=None):
 
 
 def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
-        deadline_seconds: float = 0) -> dict:
+        deadline_seconds: float = 0, quiet_seconds: float = 0) -> dict:
     """Send one prompt; return {status, result, id, model, transport}.
 
     Raises CursorCallError. `on_event(line)` is called for each status
@@ -303,6 +316,14 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
 
     `deadline_seconds`: the whole call, both turns, gets this long. 0 is
     no limit. See the module docstring.
+
+    `quiet_seconds`: once something has come from Cursor, this long with
+    nothing more is taken as the end of the run: it is cancelled and what
+    it said so far is the answer, with status "quiet". A run that writes
+    its files, sums up, and then never signals the end -- seen live, 18
+    minutes of silence up to the hard limit, after which everything it
+    had written was undone -- is finished work, and is treated as such.
+    0 is off.
     """
     emit = on_event or (lambda line: None)
     if not getattr(cfg, "api_key", ""):
@@ -329,6 +350,15 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
         emit(f"time limit of {deadline_seconds:.0f}s reached; "
              + ("the run was cancelled" if live["cancelled"] else
                 "the run could not be cancelled and may still be working"))
+
+    def went_quiet():
+        stopped.set()
+        live["cancelled"] = _best_effort(live.get("run"), "cancel")
+        _best_effort(live.get("agent"), "close")
+        emit(f"nothing came from Cursor for {quiet_seconds / 60:.0f} min after its last word: "
+             f"the run is taken as finished"
+             + ("" if live["cancelled"] else " (it could not be cancelled and may still be working)")
+             + "; what it wrote is checked now")
 
     def timed_out(e) -> CursorCallError:
         return CursorCallError(
@@ -367,6 +397,9 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
     diagnostics: list = []
 
     last = {"at": time.monotonic(), "line": ""}
+    heard = {"any": False}          # has anything at all come from the run?
+    quiet_stop = threading.Event()
+    transcript: list = []           # every `cursor says:` whole, for a quiet end
 
     def say(line: str) -> None:
         if not stopped.is_set():
@@ -379,6 +412,10 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
         it is a long compile."""
         while not done.wait(PULSE_EVERY):
             quiet = time.monotonic() - last["at"]
+            if (quiet_seconds and quiet_seconds > 0 and heard["any"] and quiet >= quiet_seconds
+                    and not stopped.is_set()):
+                quiet_stop.set()
+                return
             if quiet >= QUIET_FOR and not stopped.is_set():
                 emit(f"still working: nothing from Cursor for {quiet / 60:.0f} min"
                      + (f" (last: {last['line'][:100]})" if last["line"] else "")
@@ -395,12 +432,15 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
 
     def flush_said() -> None:
         whole = _one_line(said["text"], 300)
+        if said["text"].strip():
+            transcript.append(said["text"].strip())
         said["text"] = ""
         if whole:
             say(f"cursor says: {whole}")
 
     def consume(messages) -> None:
         for message in messages:
+            heard["any"] = True
             if (getattr(message, "type", "") or "") == "assistant":
                 piece = _assistant_text(message)
                 if piece:
@@ -454,9 +494,17 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
     done = threading.Event()
     threading.Thread(target=pulse, args=(done,), daemon=True, name="cursor-pulse").start()
     try:
-        result, text = bounded(session, deadline_seconds, gave_up)
+        result, text = bounded(session, deadline_seconds, gave_up, stop=quiet_stop, on_stop=went_quiet)
     except CursorCallError:
         raise
+    except WentQuiet:
+        done.set()
+        run_id = str(getattr(live.get("run"), "id", "") or "")
+        # The last words are usually still in the gather buffer: nothing
+        # came after them to flush it.
+        parts = transcript + ([said["text"].strip()] if said["text"].strip() else [])
+        return {"status": "quiet", "result": "\n\n".join(parts), "id": run_id,
+                "model": cfg.model, "transport": "session", "quiet": True}
     except TimeoutError as e:
         raise timed_out(e) from None
     except Exception as e:                               # noqa: BLE001
