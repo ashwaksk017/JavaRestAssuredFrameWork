@@ -2268,19 +2268,26 @@ def _discard(job_dir: str, root: str, review: dict, policy: dict = None) -> int:
 
 
 def cmd_approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
-                config_path: str = "") -> int:
+                config_path: str = "", base: str = "", branch: str = "") -> int:
     """The review button. A pushable scope is committed to its own branch
-    and pushed; converted Java is kept locally with a saved patch."""
+    and pushed; converted Java is kept locally with a saved patch.
+
+    `base` is the REMOTE branch the job's branch is built on (default: the
+    one checked out); `branch` the name it is pushed as (default: the
+    policy's prefix + the job). Both are the person's choice on the page."""
     try:
         with RepoLock(root, f"approve, job {job}"):
-            return _approve(job_dir, root, policy, job, confirm, config_path)
+            return _approve(job_dir, root, policy, job, confirm, config_path, base, branch)
     except RuntimeError as e:
         say(f"FAIL {e}")
         return 1
 
 
+_BRANCH_NAME_RX = re.compile(r"^(?!-)(?!.*\.\.)(?!.*@\{)[A-Za-z0-9][A-Za-z0-9._/-]{0,120}(?<!\.lock)(?<!/)$")
+
+
 def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
-             config_path: str = "") -> int:
+             config_path: str = "", base_wanted: str = "", branch_wanted: str = "") -> int:
     review = read_review(job_dir)
     if review.get("state") not in ("pending-review", "push-failed"):
         say(f"FAIL this job is not waiting for review (state: "
@@ -2352,13 +2359,30 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
         return 0
 
     branch = policy["branch_prefix"] + job
+    if (branch_wanted or "").strip():
+        # The person's name for the branch: a branch name, under the
+        # policy's prefix (so that `main` and friends cannot be named), and
+        # not one of the protected ones however it is spelled.
+        branch = (branch_wanted or "").strip()
+        if not _BRANCH_NAME_RX.match(branch):
+            say(f"FAIL {branch!r} is not a branch name this will push to.")
+            return 1
+        if not branch.startswith(policy["branch_prefix"]):
+            say(f"FAIL the branch must start with `{policy['branch_prefix']}`: that is what "
+                f"marks it as the agent's, and keeps it off anyone's main line.")
+            return 1
     if branch in policy["protected_branches"] or not policy["branch_prefix"]:
         say(f"FAIL refusing to push to `{branch}`.")
         return 1
     remote = policy["remote"]
     _commit, base = head(root)
+    if (base_wanted or "").strip():
+        base = (base_wanted or "").strip()
+        if not _BRANCH_NAME_RX.match(base):
+            say(f"FAIL {base!r} is not a branch name this will build on.")
+            return 1
     if base == "HEAD":
-        say("FAIL detached HEAD: check out a branch first.")
+        say("FAIL detached HEAD: check out a branch first, or name a base branch.")
         return 1
     # No hooks: a hook is code in .git that this tool did not write.
     diag.step("Committing the approved change to its own branch and pushing it")
@@ -2498,6 +2522,12 @@ def main(argv=None) -> int:
     ap.add_argument("--scope", default="new-test")
     ap.add_argument("--suite", default="")
     ap.add_argument("--confirm", default="")
+    ap.add_argument("--base", default="",
+                    help="approve: the REMOTE branch to build the job's branch on "
+                         "(default: the branch checked out)")
+    ap.add_argument("--branch", default="",
+                    help="approve: the name to push the job's branch as (default: the "
+                         "policy's prefix + the job id; it must keep the prefix)")
     args = ap.parse_args(argv)
     job_dir = intake.job_dir(args.job)
     os.makedirs(job_dir, exist_ok=True)
@@ -2513,7 +2543,7 @@ def main(argv=None) -> int:
     if args.command == "reapply":
         return patches.main(["reapply", "--suite", args.suite])
     return cmd_approve(job_dir, ROOT, policy, intake.safe_job(args.job),
-                       args.confirm)
+                       args.confirm, base=args.base, branch=args.branch)
 
 
 if __name__ == "__main__":

@@ -261,6 +261,11 @@ CHECKS = [
           "switched on, take a file by name and a target given twice, never "
           "replace or edit, refuse what a stand-in made or what holds a private "
           "value, and record every write before it is made"),
+    Check("agent-repo",
+          [PY, "tools/agent/test_repo.py"],
+          "the repository is read for the page with any credential out of the "
+          "remote's address, and a checkout happens only on a clean tree, under "
+          "the agent's lock, to a real branch named twice"),
     Check("agent-casereview",
           [PY, "tools/agent/test_casereview.py"],
           "a person's decision on a proposed case is kept as one of three words, "

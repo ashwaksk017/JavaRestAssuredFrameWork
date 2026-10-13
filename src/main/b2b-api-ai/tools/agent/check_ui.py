@@ -674,6 +674,17 @@ def main() -> int:
                   and "Agent loop<" not in html)
             check("the design can be asked for the whole specification",
                   'id="design-whole"' in html)
+            code, r = mocked.call("/api/repo")
+            check("the repository is read for the page: a branch, a clean flag, the branches",
+                  code == 200 and r.get("is_repo") is True and r.get("branch")
+                  and isinstance(r.get("local_branches"), list) and "clean" in r, str(r)[:200])
+            code, r = mocked.call("/api/repo-checkout", {"branch": "main", "confirm": "nope"})
+            check("a checkout needs the branch named twice", code == 400 and "twice" in r.get("error", ""))
+            code, r = mocked.call("/api/repo-checkout", {"branch": "-x", "confirm": "-x"})
+            check("a checkout refuses a name that is not a branch name", code == 400, str(r))
+            html = mocked.dom("agent")
+            check("the Agentic tab shows the repository and offers the base and the branch",
+                  'id="repo"' in html and 'id="agent-base"' in html and 'id="agent-branch"' in html)
             check("both tabs that produce cases have a Create in Xray block",
                   'id="xray-design-create"' in html and 'id="xray-manual-create"' in html)
 

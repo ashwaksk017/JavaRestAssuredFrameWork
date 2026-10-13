@@ -173,6 +173,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({k: {"label": v["label"],
                                        "options": v["options"]}
                                    for k, v in jobs.RUNNABLES.items()})
+            if u.path == "/api/repo":
+                return self._json(jobs.repo.info(ROOT))
             if u.path == "/api/whoami":
                 # Which process this is and which folder it serves, so that
                 # the launcher stops THIS workbench and no other program
@@ -279,6 +281,16 @@ class Handler(BaseHTTPRequestHandler):
                     body.get("job", ""), str(body["name"]))})
             if u.path == "/api/manual":
                 return self._json(self._manual(body))
+            if u.path == "/api/repo-checkout":
+                # Switches the working tree: clean tree, no job running, the
+                # branch named twice. Refusals come back as one line.
+                try:
+                    lock = jobs.repo_lock("checkout from the page")
+                    return self._json(jobs.repo.checkout(
+                        ROOT, str(body.get("branch") or ""), str(body.get("confirm") or ""),
+                        lock=lock))
+                except jobs.repo.Refused as e:
+                    raise ValueError(str(e)) from None
             if u.path == "/api/agent-followup":
                 # What the reviewer asks Cursor to change, kept with the job
                 # under a fixed name; the command reads it from there.

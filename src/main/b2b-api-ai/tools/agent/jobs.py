@@ -284,7 +284,7 @@ RUNNABLES = {
     "agent-approve": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "loop.py"), "approve"],
         "label": "Approve: push a branch, or keep converted Java locally",
-        "options": {"--job": "text", "--confirm": "text"},
+        "options": {"--job": "text", "--confirm": "text", "--base": "text", "--branch": "text"},
     },
     "agent-reapply": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "patches.py"), "reapply"],
@@ -616,6 +616,26 @@ def spec_state(job: str) -> dict:
     if not os.path.isdir(os.path.join(out, "spec")):
         return {}
     return _specsource().current(out, ROOT)
+
+
+def _repo():
+    spec = importlib.util.spec_from_file_location("jobs_repo", os.path.join(HERE, "repo.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+repo = _repo()
+
+
+def repo_lock(what: str):
+    """The agent's repository lock (loop.RepoLock), for a checkout from the
+    page: it must not run while a job is writing. loop.py is loaded only
+    here, when asked -- the server does not otherwise need it."""
+    spec = importlib.util.spec_from_file_location("jobs_loop", os.path.join(HERE, "loop.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.RepoLock(ROOT, what)
 
 
 def _casereview():

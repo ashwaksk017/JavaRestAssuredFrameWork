@@ -741,6 +741,18 @@ problem rather than a missing path, which is why the form says so.
 The only tab that writes code. It takes the plan the Automate Test Case tab produced and has
 **Cursor** act on it.
 
+**The repository, and where the branch goes.** The strip at the top of
+the tab reads git each time the tab is opened: the branch checked out,
+whether the tree is clean, the remote (its address shown without any
+credentials), and how far the branch is from its upstream. **Switch to
+it** checks out another branch -- only on a clean tree, with no agent job
+running, and with the name typed again; a branch known only on the
+remote is checked out tracking it. Under the review controls, **Build
+on** is the remote branch the job's branch starts from (the one checked
+out, by default) and **Push as** its name (`agent/<job>` by default; it
+must keep the `agent/` prefix, so that no one's main line can be named).
+Both are passed to Approve and said in its confirmation.
+
 **Asking Cursor to change what it wrote.** Under the review controls,
 *Ask Cursor to change it* takes your words -- "use the member's email
 from the CSV instead of a fixed one" -- and runs Cursor again on the

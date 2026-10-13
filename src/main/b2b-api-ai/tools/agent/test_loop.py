@@ -636,6 +636,34 @@ class Push(Repo):
         self.assertEqual(sh(self.root, "rev-parse", "--abbrev-ref", "HEAD"), "main",
                          "the checkout returns to where it was")
 
+    def test_the_branch_can_be_named_and_based_by_the_reviewer(self):
+        self.pending()
+        rc = loop.cmd_approve(self.job, self.root, self.policy, "job1", "job1",
+                              base="main", branch="agent/stays-for-tc")
+        self.assertEqual(rc, 0)
+        files = sh(self.remote, "show", "--name-only", "--format=", "agent/stays-for-tc")
+        self.assertEqual(files.splitlines(), [JIRA + "NewTest.java"])
+
+    def test_a_branch_outside_the_agents_prefix_or_with_a_bad_name_is_refused(self):
+        self.pending()
+        for name in ("main", "feature/x", "agent/..", "-agent/x", "agent/x.lock", "agent/a b"):
+            out = io.StringIO()
+            with redirect_stdout(out):
+                rc = loop.cmd_approve(self.job, self.root, self.policy, "job1", "job1",
+                                      branch=name)
+            self.assertEqual(rc, 1, name)
+            self.assertIn("FAIL", out.getvalue())
+        self.assertEqual(self.state()["state"], "pending-review")
+        self.assertNotIn("feature/x", sh(self.remote, "branch", "--list", "feature/x"))
+
+    def test_a_base_the_remote_does_not_have_is_refused(self):
+        self.pending()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = loop.cmd_approve(self.job, self.root, self.policy, "job1", "job1", base="nowhere")
+        self.assertEqual(rc, 1)
+        self.assertIn("origin/nowhere is not known here", out.getvalue())
+
     def test_unrelated_uncommitted_work_is_not_swept_into_the_commit(self):
         write(self.root, "README.md", "my unsaved work\n")
         self.pending()

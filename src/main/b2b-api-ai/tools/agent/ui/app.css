@@ -255,3 +255,8 @@ button.waiting { opacity: .6; cursor: progress; }
 .steps li.stopped { color: var(--bad); }
 .steps li.stopped::before { content: "\2717"; }
 
+/* The repository as it is, at the top of the Agentic tab. */
+.repo { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; margin: 0 0 .8rem;
+  padding: .5rem .8rem; border: 1px solid var(--line); border-radius: 7px; font-size: .85rem; }
+.repo code { background: rgba(255, 255, 255, .06); padding: 0 .3rem; border-radius: 3px; }
+.repo .dirty { color: var(--warn); }

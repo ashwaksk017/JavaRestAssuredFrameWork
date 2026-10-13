@@ -263,6 +263,13 @@ Expect 201.'></textarea>
     that, and anything else fails the job and is put back.
   </p>
 
+  <div id="repo" class="repo">
+    <span id="repo-where">reading the repository…</span>
+    <select id="repo-branches" aria-label="branches"></select>
+    <button id="repo-switch" type="button" disabled>Switch to it</button>
+    <span id="repo-state" class="state"></span>
+  </div>
+
   <div class="form">
     <div class="field req">
       <label for="agent-scope">What may Cursor change?</label>
@@ -301,6 +308,12 @@ Expect 201.'></textarea>
   <div id="review-box" class="review" hidden>
     <span id="review-badge" class="badge"></span>
     <span id="review-detail"></span>
+    <div class="row">
+      <label class="inline" for="agent-base">Build on <span class="hint">the remote branch the job's branch starts from</span></label>
+      <select id="agent-base"></select>
+      <label class="inline" for="agent-branch">Push as</label>
+      <input id="agent-branch" type="text" spellcheck="false" placeholder="agent/<job>">
+    </div>
     <div class="row">
       <button id="agent-push" class="go" disabled>Approve</button>
       <button id="agent-discard" disabled>Discard</button>

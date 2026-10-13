@@ -1772,6 +1772,57 @@ function watchCursorLog() {
   cursorTimer = setInterval(() => pollCursorLog(false), 1500);
 }
 
+// ---- the repository: where the agent's branch goes ----------------------
+// Read from git each time the tab is opened; the page remembers nothing
+// about it. Switching the working tree is offered only on a clean tree.
+let repoInfo = null;
+async function showRepo() {
+  const where = $("repo-where");
+  const sel = $("repo-branches");
+  let r = null;
+  try { r = await api("/api/repo"); } catch (e) { where.textContent = `the repository could not be read: ${e.message}`; return; }
+  repoInfo = r;
+  where.replaceChildren();
+  if (!r.is_repo) {
+    where.append(el("span", { class: "dirty", text: r.note || "not a git work tree" }));
+    $("repo-switch").disabled = true;
+    return;
+  }
+  where.append("on ", el("code", { text: r.branch || "(detached)" }),
+    r.head ? el("small", { text: ` ${r.head}` }) : null,
+    r.clean ? el("span", { text: ", clean" }) : el("span", { class: "dirty", text: `, ${r.dirty} changed or untracked file(s)` }),
+    r.remote_url ? el("span", {}, `; ${r.remote} → `, el("code", { text: r.remote_url })) : el("span", { class: "dirty", text: `; no remote "${r.remote}"` }),
+    r.upstream && (r.ahead || r.behind) ? el("small", { text: ` (${r.ahead} ahead, ${r.behind} behind ${r.upstream})` }) : null);
+  const names = [...new Set([...(r.local_branches || []), ...(r.remote_branches || [])])].sort();
+  sel.replaceChildren(...names.map((n) => el("option", { value: n, text: n + (r.local_branches.includes(n) ? "" : `  (${r.remote} only)`) })));
+  sel.value = r.branch;
+  $("repo-switch").disabled = !r.clean || !names.length;
+  $("repo-switch").title = r.clean ? "" : "The working tree has changes; commit, stash or discard them first.";
+  // The base for the job's branch: the remote branches, the current one first.
+  const base = $("agent-base");
+  const bases = (r.remote_branches || []).slice().sort((a, b) => (a === r.branch ? -1 : b === r.branch ? 1 : a.localeCompare(b)));
+  base.replaceChildren(...bases.map((n) => el("option", { value: n, text: `${r.remote}/${n}` + (n === r.branch ? "  (checked out)" : "") })));
+  if (!bases.length) base.append(el("option", { value: "", text: `no branch of ${r.remote} is known here (fetch first)` }));
+  if (!$("agent-branch").value.trim() || $("agent-branch").dataset.auto === "1") {
+    $("agent-branch").value = `agent/${job()}`;
+    $("agent-branch").dataset.auto = "1";
+  }
+}
+$("agent-branch").addEventListener("input", () => { $("agent-branch").dataset.auto = "0"; });
+$("repo-switch").onclick = async () => {
+  const branch = $("repo-branches").value;
+  if (!branch) return;
+  const again = prompt(`Switch the working tree to ${branch}? Every file changes to that branch's ` +
+                       "version. Nothing is lost only because the tree is clean.\n\nType the branch name again:");
+  if (again === null) return;
+  $("repo-switch").disabled = true;
+  try {
+    const r = await post("/api/repo-checkout", { branch, confirm: again.trim() });
+    setState($("repo-state"), "ok", r.message || "switched");
+  } catch (e) { setState($("repo-state"), "bad", e.message); }
+  showRepo();
+};
+
 let agentRunning = "agent-generate";     // what Stop stops
 
 $("agent-ask-send").onclick = async () => {
@@ -1885,16 +1936,23 @@ $("agent-push").onclick = () => {
   if (!sameJobOrRefresh($("agent-push"))) return;
   const j = job();
   const pushes = $("agent-push").dataset.pushable !== "false";
+  const base = $("agent-base").value;
+  const branch = $("agent-branch").value.trim() || `agent/${j}`;
+  const remote = (repoInfo && repoInfo.remote) || "origin";
+  if (pushes && !base) { setState($("agent-state"), "bad", `no branch of ${remote} to build on; fetch first`); return; }
   const msg = pushes
-    ? "Approve and push?\n\nThis commits the reviewed files to branch agent/" +
-      j + " and pushes that branch to origin. The repository is public. " +
-      "main is not touched."
+    ? `Approve and push?\n\nThis commits the reviewed files to branch ${branch}, built on ` +
+      `${remote}/${base}, and pushes that branch to ${remote}. The repository is public. ` +
+      `${base} itself is not touched.`
     : "Approve?\n\nThe converted files stay as Cursor left them, on this " +
       "machine only. Nothing is committed or pushed. The change is " +
       "stored and put back after every convert of the suite.";
   if (!confirm(msg)) return;
-  runAgent("agent-approve", { "--job": j, "--confirm": j });
+  const options = { "--job": j, "--confirm": j };
+  if (pushes) { options["--base"] = base; options["--branch"] = branch; }
+  runAgent("agent-approve", options);
 };
+onTab.agent = () => { showRepo(); };
 document.querySelector('.tabs button[data-tab="agent"]')
   .addEventListener("click", () => { refreshReview(); watchCursorLog(); });
 $("job").addEventListener("change", () => { refreshReview(); pollCursorLog(true); });
