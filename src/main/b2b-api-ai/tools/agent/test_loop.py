@@ -1947,7 +1947,10 @@ class CallingCursor(unittest.TestCase):
                 NS(type="tool_call", name="edit_file", status="running", call_id="2",
                    args={"target_file": "src/test/java/XTest.java", "code_edit": "class XTest {}"}),
                 NS(type="tool_call", name="edit_file", status="completed", call_id="2", result="ok"),
-                NS(type="assistant", message=NS(content=[NS(type="text", text="Adding  the\ntest.")])),
+                # what Cursor says comes in pieces; the log gets it whole
+                NS(type="assistant", message=NS(content=[NS(type="text", text="Add")])),
+                NS(type="assistant", message=NS(content=[NS(type="text", text="ing  the\n")])),
+                NS(type="assistant", message=NS(content=[NS(type="text", text="test.")])),
                 NS(type="task", status="running", text="Writing the data sheet"),
                 NS(type="thinking", text="private")]
         self.use(FakeSdk(messages=msgs))
@@ -1959,6 +1962,9 @@ class CallingCursor(unittest.TestCase):
         self.assertIn("tool edit_file started: target_file=src/test/java/XTest.java", seen)
         self.assertFalse(any("class XTest" in s for s in seen), "an edit's content is not logged")
         self.assertIn("cursor says: Adding the test.", seen)
+        self.assertEqual(sum(1 for s in seen if s.startswith("cursor says:")), 1, seen)
+        self.assertLess(seen.index("cursor says: Adding the test."),
+                        seen.index("task running: Writing the data sheet"), "said before the next tool")
         self.assertIn("task running: Writing the data sheet", seen)
         self.assertFalse(any("private" in s for s in seen), "thinking is not logged")
 
@@ -1980,6 +1986,25 @@ class CallingCursor(unittest.TestCase):
         self.assertTrue(pulses, seen)
         self.assertIn("(last: tool shell started: command=mvn test)", pulses[0])
         self.assertLess(seen.index(pulses[0]), seen.index([s for s in seen if "completed" in s][0]))
+
+    def test_a_pause_while_cursor_is_writing_shows_what_it_has_written_so_far(self):
+        NS = types.SimpleNamespace
+
+        def slow():
+            yield NS(type="assistant", message=NS(content=[NS(type="text", text="G")]))
+            time.sleep(0.3)
+            yield NS(type="assistant", message=NS(content=[NS(type="text", text="enerating the test class")]))
+        self.use(FakeSdk(messages=slow()))
+        for name, value in (("QUIET_FOR", 0.1), ("PULSE_EVERY", 0.02)):
+            self.addCleanup(setattr, loop.cursor_call, name, getattr(loop.cursor_call, name))
+            setattr(loop.cursor_call, name, value)
+        seen = []
+        loop.cursor_call.run("p", self.ca, self.cfg, on_event=seen.append)
+        pulses = [s for s in seen if s.startswith("still working")]
+        self.assertTrue(pulses, seen)
+        self.assertIn("(last: cursor is writing: G)", pulses[0])
+        self.assertFalse(any(s == "cursor says: G" for s in seen), "a letter is not a log line")
+        self.assertEqual(seen[-1], "cursor says: Generating the test class", "said whole at the end")
 
     def test_progress_is_reported_while_the_agent_works(self):
         msgs = [types.SimpleNamespace(type="status", status="running", message=""),

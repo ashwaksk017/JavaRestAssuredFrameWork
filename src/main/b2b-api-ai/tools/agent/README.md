@@ -995,7 +995,11 @@ comes back as **a list of `file:line: message`** (each once, at most
 40) with a short tail, not sixty lines of build output.
 
 While Cursor works, the Cursor log shows it: one `cursor:` line per
-status change and per finished tool call. A failure says which kind it
+status change and per finished tool call, and what Cursor says in words
+as `cursor says:` -- gathered whole, since it arrives a few letters at a
+time. When nothing has arrived for a minute the log says so, with the
+last thing seen; `cursor is writing: ...` there means Cursor is in the
+middle of a reply and the words so far are shown. A failure says which kind it
 was -- *did not start* (key, network, bridge) or *started but did not
 finish* (prompt size, timeout) -- because the fixes are different. The
 call is in `tools/agent/cursor_call.py`.

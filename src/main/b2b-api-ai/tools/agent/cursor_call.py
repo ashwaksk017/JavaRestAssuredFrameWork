@@ -384,6 +384,38 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
                 last["at"] = time.monotonic()
     t0 = time.monotonic()
     timing: dict = {}
+    # What Cursor says arrives in pieces -- a word, a letter at a time --
+    # and a log line a letter is no log line. The pieces are gathered and
+    # said whole: when Cursor turns to a tool, pauses at a paragraph, or
+    # the run ends. Meanwhile each piece counts as a sign of life, and the
+    # heartbeat shows the beginning of what is being written.
+    said = {"text": ""}
+
+    def flush_said() -> None:
+        whole = _one_line(said["text"], 300)
+        said["text"] = ""
+        if whole:
+            say(f"cursor says: {whole}")
+
+    def consume(messages) -> None:
+        for message in messages:
+            if (getattr(message, "type", "") or "") == "assistant":
+                piece = _assistant_text(message)
+                if piece:
+                    said["text"] += piece
+                    last["at"] = time.monotonic()
+                    last["line"] = f"cursor is writing: {_one_line(said['text'], 80)}"
+                    if said["text"].rstrip(" ").endswith("\n\n") or len(said["text"]) > 1500:
+                        flush_said()
+                continue
+            flush_said()
+            line = describe(message, timing)
+            if not line:
+                continue
+            say(line)
+            if " error" in line:
+                diagnostics.append(line)
+        flush_said()
 
     def session():
         options = AgentOptions(api_key=cfg.api_key, model=cfg.model, mode=mode,
@@ -395,13 +427,7 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
             live["run"] = run_
             still_wanted(agent, run_)
             say("sent; waiting for the agent")
-            for message in run_.messages():
-                line = describe(message, timing)
-                if not line:
-                    continue
-                say(line)
-                if " error" in line:
-                    diagnostics.append(line)
+            consume(run_.messages())
             result = run_.wait()
             text = getattr(result, "result", None) or ""
             if not str(text).strip():
@@ -413,10 +439,7 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
                 try:
                     second = agent.send(again)
                     live["run"] = second
-                    for message in second.messages():
-                        line = describe(message, timing)
-                        if line:
-                            say(line)
+                    consume(second.messages())
                     result2 = second.wait()
                     text2 = getattr(result2, "result", None) or _conversation_text(second)
                     if str(text2).strip() and str(getattr(result2, "status", "")).lower() != "error":
