@@ -958,6 +958,19 @@ new machine (antivirus scanning the bundled Node binary, a blocked
 executable), and it is cheaper to learn that here than in the middle of
 a run.
 
+Three things keep a run short, all in the prompt. Cursor is told **not
+to run a build of its own**: the workbench compiles the moment it
+finishes and hands back the errors, so a `mvn` it starts is only a wait.
+For a new test it is shown **one existing hand-written test, whole**
+(the smallest that has a `@Test`, or the files `pattern_example` names
+in `policy.json`), with the first lines of a data sheet under
+`csv/manual/` -- the committed location; the other `csv/` folders are
+gitignored because their rows carry customer data, and are never put
+in a prompt -- so it does not open test after test to learn the shape.
+The log names which files were shown. And a failed compile
+comes back as **a list of `file:line: message`** (each once, at most
+40) with a short tail, not sixty lines of build output.
+
 While Cursor works, the Cursor log shows it: one `cursor:` line per
 status change and per finished tool call. A failure says which kind it
 was -- *did not start* (key, network, bridge) or *started but did not

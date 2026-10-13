@@ -127,6 +127,7 @@ class InsideThePaths(Repo):
         self.assertIn("create POST /x", seen["p"])
         self.assertIn(JIRA + "**", seen["p"])
         self.assertIn("Do not delete any file", seen["p"])
+        self.assertIn("Do not run mvn, gradle, the tests or any other build yourself", seen["p"])
 
 
 DESIGN_CASE = {"id": "TC-001", "title": "Create a thing returns 201", "endpoint": "POST /x",
@@ -440,6 +441,26 @@ class VerifyAndRepair(Repo):
         self.assertEqual(self.state()["state"], "verify-failed")
         self.assertEqual(self.state()["attempts"], 2)
         self.assertEqual(loop.cmd_approve(self.job, self.root, self.policy, "job1", "job1"), 1)
+
+    def test_the_same_errors_stop_it_even_when_the_builds_timing_lines_differ(self):
+        n = [0]
+
+        def bad():
+            n[0] += 1
+            return {"ok": False, "steps": [{"name": "compile", "rc": 1,
+                                            "tail": f"ERRORS\nA.java:1: x\nTotal time: {n[0]}.1 s",
+                                            "errors": ["A.java:1: x"]}]}
+        prompts = []
+
+        def agent(prompt):
+            prompts.append(prompt)
+            write(self.root, JIRA + "NewTest.java", "class NewTest { /* v%d */ }\n" % len(prompts))
+            return {"result": ""}
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = loop.cmd_generate(self.job, self.root, self.policy, "new-test", "", agent=agent, verifier=bad)
+        self.assertEqual((rc, len(prompts)), (1, 2))
+        self.assertIn("not getting anywhere", out.getvalue())
 
     def test_it_keeps_repairing_while_the_errors_change_until_it_verifies(self):
         results = [{"ok": False, "steps": [{"name": "compile", "rc": 1, "tail": f"error {n}"}]}
@@ -1250,6 +1271,23 @@ class ATreeThatAlreadyFails(unittest.TestCase):
         failing = lambda argv: types.SimpleNamespace(returncode=1, stdout=self.OUT)
         return loop.run_verify(".", scope, runner=failing, compile_before=before)
 
+    def test_the_agent_is_handed_the_errors_one_a_line_not_the_logs_tail(self):
+        self.assertEqual(loop.compile_errors(self.OUT + self.OUT), [
+            "src/test/java/com/hi/api/tests/manual/GoalShop.java:251: cannot find symbol",
+            "src/test/java/com/hi/api/tests/jira/NewTest.java:3: ';' expected"])
+        report = self.verify(None)["steps"][0]["tail"]
+        self.assertTrue(report.startswith("ERRORS (file:line: message)"), report)
+        self.assertIn("NewTest.java:3: ';' expected", report)
+        self.assertEqual(loop.compile_report(b"BUILD FAILURE\nsomething else\n"),
+                         "BUILD FAILURE\nsomething else", "no error lines: the tail as before")
+        win = b"[ERROR] C:\\repo\\src\\test\\java\\com\\hi\\api\\tests\\jira\\W.java:[7,2] bad\r\n"
+        self.assertEqual(loop.compile_errors(win), ["src/test/java/com/hi/api/tests/jira/W.java:7: bad"])
+        self.assertEqual(self.verify(None)["steps"][0]["errors"], loop.compile_errors(self.OUT))
+        many = b"".join(b"[ERROR] /r/src/A.java:[%d,1] e%d\n" % (n, n) for n in range(50))
+        got = loop.compile_errors(many)
+        self.assertEqual(len(got), loop.MAX_COMPILE_ERRORS + 1)
+        self.assertEqual(got[-1], "... and 10 more error(s)")
+
     def test_the_failing_files_are_read_from_the_output(self):
         self.assertEqual(loop.compile_error_files(self.OUT), {
             "src/test/java/com/hi/api/tests/manual/GoalShop.java",
@@ -1994,6 +2032,57 @@ class WhereThingsAre(Repo):
         self.assertIn("src/main/java/com/hi/api/dsl/  (1 class(es))", text)
         self.assertIn("How a test is laid out: CreateTestCase.md", text)
         self.assertIn("GENERATED means the converter writes it", text)
+
+    def test_one_whole_test_is_shown_as_the_example_the_smallest(self):
+        self.lay_out()
+        write(self.root, "src/test/java/com/hi/api/tests/manual/TwoTest.java",
+              "class TwoTest {\n" + "  // a longer test\n" * 20 + "}\n")
+        # csv/OneTest/one.csv exists too (lay_out) but is gitignored and may
+        # carry customer data: never shown. csv/manual/ is.
+        write(self.root, "src/test/resources/csv/manual/OneTest/one.csv", "h\n2\n")
+        # smaller than OneTest, but not a test: a base class
+        write(self.root, "src/test/java/com/hi/api/tests/manual/BaseTest.java", "class B {}\n")
+        write(self.root, "src/test/java/com/hi/api/tests/manual/OneTest.java",
+              "class OneTest {}\n// @Test\n")
+        block, shown = loop.pattern_example(self.root, loop.DEFAULT_POLICY, {"name": "new-test"})
+        self.assertEqual(shown, ["src/test/java/com/hi/api/tests/manual/OneTest.java",
+                                 "src/test/resources/csv/manual/OneTest/one.csv"])
+        self.assertIn("HOW A TEST IS WRITTEN HERE", block)
+        self.assertIn("class OneTest {}", block)
+        self.assertIn("--- src/test/resources/csv/manual/OneTest/one.csv (first 6 lines) ---\nh\n2", block)
+        self.assertNotIn("csv/OneTest/one.csv", block)
+        self.assertNotIn("a longer test", block)
+        self.assertEqual(loop.pattern_example(self.root, loop.DEFAULT_POLICY, {"name": "converter"}),
+                         ("", []))
+        self.assertEqual(loop.pattern_example(tempfile.mkdtemp(), loop.DEFAULT_POLICY,
+                                              {"name": "new-test"}), ("", []))
+
+    def test_the_policy_may_name_the_example_and_a_long_one_is_cut(self):
+        self.lay_out()
+        write(self.root, "src/test/java/com/hi/api/tests/manual/TwoTest.java",
+              "class TwoTest {\n" + "  int x = 1;\n" * 2000 + "}\n")
+        write(self.root, "src/test/java/com/hi/api/tests/manual/Empty.java", "")
+        policy = dict(loop.DEFAULT_POLICY, pattern_example=[
+            "src/test/java/com/hi/api/tests/manual/TwoTest.java", "../outside.java", "missing.java",
+            "/etc/passwd", "src/test/java/com/hi/api/tests/manual/Empty.java"])
+        block, shown = loop.pattern_example(self.root, policy, {"name": "new-test"})
+        self.assertEqual(shown, ["src/test/java/com/hi/api/tests/manual/TwoTest.java"])
+        self.assertIn("// ... cut here", block)
+        self.assertLess(len(block), loop.EXAMPLE_JAVA_CAP + 800)
+
+    def test_the_example_is_in_the_prompt_and_named_in_the_log(self):
+        self.lay_out()
+        seen = {}
+
+        def agent(prompt):
+            seen["p"] = prompt
+            write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
+            return {"result": ""}
+        self.generate(agent)
+        self.assertIn("HOW A TEST IS WRITTEN HERE", seen["p"])
+        self.assertLess(seen["p"].index("HOW A TEST IS WRITTEN"), seen["p"].index("Act on the plan"))
+        self.assertIn("shown as the example of how a test is written: "
+                      "src/test/java/com/hi/api/tests/manual/OneTest.java", self.cursor_log())
 
     def test_an_empty_project_is_described_not_refused(self):
         text = loop.project_map(tempfile.mkdtemp(), loop.DEFAULT_POLICY, {"name": "new-test"})

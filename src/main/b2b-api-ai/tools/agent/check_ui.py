@@ -61,14 +61,33 @@ BROWSERS = (
 )
 
 
+def renders(browser: str) -> bool:
+    """Does this browser, headless, give a DOM back at all? Edge has been
+    seen to exit 0 with nothing on stdout for every page (an update in
+    flight, or a running instance taking the call); then every check
+    would fail for a reason that is not the page's."""
+    try:
+        done = subprocess.run(
+            [browser, "--headless=new", "--disable-gpu", "--no-first-run",
+             "--disable-extensions", "--dump-dom", "data:text/html,<p id=probe>x</p>"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return b"probe" in done.stdout
+
+
 def find_browser() -> str:
-    for path in BROWSERS:
-        if os.path.isfile(path):
-            return path
+    """The first installed browser that renders; the names are tried
+    after the known paths."""
+    candidates = [p for p in BROWSERS if os.path.isfile(p)]
     for name in ("msedge", "chrome", "google-chrome", "chromium"):
         found = shutil.which(name)
-        if found:
-            return found
+        if found and found not in candidates:
+            candidates.append(found)
+    for path in candidates:
+        if renders(path):
+            return path
+        print(f"skipping {os.path.basename(path)}: headless, it renders nothing")
     return ""
 
 
