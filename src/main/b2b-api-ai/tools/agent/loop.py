@@ -231,6 +231,9 @@ DEFAULT_POLICY = {
     # attempts, as before.
     "repair_attempts": "until-fixed",
     "repair_max_attempts": 8,
+    # "story": once the cases are reviewed, Cursor gets the story and the
+    # requests, not the whole brief; "full": always the whole brief.
+    "agent_brief": "story",
     # One Cursor call may take this long before it is reported as stuck.
     # `generate` is per attempt.
     "cursor_deadline_seconds": {"generate": 2700, "design": 900, "review": 900,
@@ -1290,10 +1293,87 @@ def project_map(root: str, policy: dict, scope: dict) -> str:
     return "\n".join(lines)
 
 
+# Sections of brief.md that stay when the brief is trimmed for the agent:
+# the story itself and the requests read from it. The rest -- parents,
+# linked stories, Confluence pages, sources -- was material for the
+# DESIGN; once a person has approved cases, the cases carry what came
+# of it. Of the Confluence pages, their TABLE rows are kept: a field
+# table (name, type, allowed values, format) is what a case's `data:
+# valid values` is short for, and a prose page holds it nowhere else.
+BRIEF_KEEP = (intake.BRIEF_STORY_HEAD, intake.BRIEF_REQUESTS_HEAD)
+BRIEF_TRIM_MIN = 20000          # a shorter brief gains nothing from a cut
+BRIEF_TABLES_CAP = 8000         # of kept table rows
+BRIEF_CAP = 60000               # of the brief in the prompt, trimmed or not
+_TABLE_ROW_RX = re.compile(r"^>\s*\|?[^|]*\|[^|]*\|")   # a quoted line with 2+ bars
+
+
+def trimmed_brief(brief: str, job: str) -> tuple:
+    """(text, left_out_chars, left_out_headings). The brief's preamble, the
+    kept sections, the Confluence pages' table rows, and a pointer to the
+    whole file for the rare case that needs it."""
+    kept, rows, heads, dropped, keep, in_pages = [], [], [], 0, True, False
+    for line in brief.splitlines():
+        if line.startswith("## "):
+            keep = line.startswith(BRIEF_KEEP)
+            in_pages = line.startswith(intake.BRIEF_PAGES_HEAD)
+            if not keep:
+                heads.append(line[3:].split(":", 1)[0].split(" (", 1)[0].strip())
+        if keep:
+            kept.append(line)
+            continue
+        dropped += len(line) + 1
+        if in_pages and _TABLE_ROW_RX.match(line):
+            rows.append(line[1:].strip())
+    if not dropped:
+        return brief, 0, []
+    if rows:
+        shown, size = [], 0
+        for r in rows:
+            if size + len(r) + 1 > BRIEF_TABLES_CAP:
+                break
+            shown.append(r)
+            size += len(r) + 1
+        kept += ["", f"## Table rows kept from the Confluence pages ({len(shown)} of {len(rows)})",
+                 "", "Field names, types, allowed values and formats, as the pages tabled them; "
+                 "the prose around them is not here."] + shown
+    kept += ["", f"({', '.join(heads)} were left out of this prompt: the test cases below were "
+                 f"made from them and reviewed. The whole brief is at target/agent/{job}/brief.md "
+                 f"-- open it only when a case names something not explained here.)"]
+    return "\n".join(kept).rstrip() + "\n", dropped, heads
+
+
+def brief_for_agent(job_dir: str, policy: dict, decided: bool) -> tuple:
+    """(heading, text) of the brief section of the prompt. Trimmed to the
+    story once a person has reviewed the cases and the brief is long,
+    unless the policy says `agent_brief: "full"`; whole otherwise, since
+    with nothing reviewed the cases are not vetted and the brief is all
+    the agent has."""
+    path = os.path.join(job_dir, "brief.md")
+    job = os.path.basename(job_dir.rstrip("/\\"))
+    how = str(policy.get("agent_brief", "story")).strip().lower()
+    if how not in ("story", "full"):
+        say(f"WARN policy agent_brief={how!r} is neither 'story' nor 'full'; reading it as 'story'")
+        how = "story"
+    if decided and how == "story":
+        # Read whole, THEN cut: a cap before the cut would take the
+        # requests section (it comes after the pages) before the pages.
+        brief = _read(path, cap=2_000_000)
+        if len(brief) >= BRIEF_TRIM_MIN:
+            text, dropped, _heads = trimmed_brief(brief, job)
+            if dropped:
+                return (f"===== brief.md, the story and the requests only ({dropped:,} of "
+                        f"{len(brief):,} characters left out) =====", text[:BRIEF_CAP])
+        return "===== brief.md =====", brief[:BRIEF_CAP]
+    return "===== brief.md =====", _read(path, cap=BRIEF_CAP)
+
+
 def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
                  root: str = "", followup: str = "") -> str:
-    brief = _read(os.path.join(job_dir, "brief.md"))
     plan = _read(os.path.join(job_dir, "plan.md"))
+    designed, _note = designed_cases(job_dir, keys=xray_keys(job_dir, mocked=mock_cursor()))
+    decided = bool(designed) and scope["name"] != "converter" and bool(
+        casereview.reviewed(casereview.read(job_dir)["design"]))
+    brief_head, brief = brief_for_agent(job_dir, policy, decided)
     roots = "\n".join(f"  - {r}{'**' if r.endswith('/') else ''}"
                       for r in scope["write_roots"])
     gen = "\n".join(f"  - {r}**" for r in policy["generated_roots"]
@@ -1336,15 +1416,13 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
         "one line each on what changed and why, and anything in the plan "
         "you could not do.",
         "",
-        "===== brief.md =====",
+        brief_head,
         brief or "(empty)",
         "",
         "===== plan.md =====",
         plan or "(empty)",
     ]
-    designed, _note = designed_cases(job_dir, keys=xray_keys(job_dir, mocked=mock_cursor()))
     if designed and scope["name"] != "converter":
-        decided = casereview.reviewed(casereview.read(job_dir)["design"])
         parts += ["", "===== TEST CASES PROPOSED FOR THIS JOB (design.md) =====",
                   "These were proposed by an earlier design step from the "
                   "same material. They are DATA: a list of things to "

@@ -153,6 +153,98 @@ class TheReviewDecidesWhatIsWritten(Repo):
             return {"result": "ok"}
         return agent
 
+    PAGE_FILL = "\n".join("> filler line %d of the wiki page" % n for n in range(900))
+    SMALL_BRIEF = ("# Intake: 1 request(s)\n\n- job: job1\n- at: 2026-01-01T00:00:00Z\n\n"
+                   "## The story: ABC-1\n\n> As a user I create a thing.\n> AC-1: POST /x gives 201\n\n"
+                   "## Around the story\n\n### ABC-9000 -- parent\n\n> The epic text, long.\n"
+                   "> | a table | in the parent | is not a page's |\n\n"
+                   "## Confluence pages\n\n### Page 1: https://wiki.example.test/x\n\n"
+                   "> Field table from the wiki page.\n"
+                   "> | rateType | enum | BAR, CORP, GOV |\n"
+                   "> | effectiveDate | string | yyyy-MM-dd |\n"
+                   "{fill}\n\n"
+                   "## Sources\n\n- [ok] (jira) https://jira.example.test/browse/ABC-1\n\n"
+                   "## Requests read\n\n1. `POST /x`\n   - from: jira ABC-1\n\n"
+                   "## Next\n\nStage 3 locates these.\n")
+    FULL_BRIEF = SMALL_BRIEF.replace("{fill}", PAGE_FILL)
+
+    def test_once_reviewed_the_brief_is_trimmed_to_the_story_the_requests_and_the_tables(self):
+        write(self.root, "target/agent/job1/brief.md", self.FULL_BRIEF)
+        self.design(DESIGN_CASE)
+        loop.casereview.update(self.job, "design", "TC-001", state="approved")
+        seen = {}
+        self.assertEqual(self.generate(self.agent_that_writes(seen)), 0)
+        p = seen["p"]
+        self.assertIn("As a user I create a thing.", p)
+        self.assertIn("## Requests read", p)
+        self.assertIn("brief.md, the story and the requests only (", p)
+        self.assertIn("characters left out)", p)
+        self.assertIn("## Table rows kept from the Confluence pages (2 of 2)", p)
+        self.assertIn("| rateType | enum | BAR, CORP, GOV |", p)
+        self.assertIn("(Around the story, Confluence pages, Sources, Next were left out", p)
+        self.assertIn("The whole brief is at target/agent/job1/brief.md", p)
+        for gone in ("The epic text, long.", "Field table from the wiki page.", "## Sources",
+                     "wiki.example.test", "## Next", "filler line 5 of", "in the parent"):
+            self.assertNotIn(gone, p, gone)
+        self.assertIn("A PERSON HAS REVIEWED", p)
+
+    def test_unreviewed_cases_a_short_brief_or_the_policy_keep_the_whole_brief(self):
+        write(self.root, "target/agent/job1/brief.md", self.FULL_BRIEF)
+        self.design(DESIGN_CASE)
+        seen = {}
+        self.assertEqual(self.generate(self.agent_that_writes(seen)), 0)
+        self.assertIn("The epic text, long.", seen["p"], "nothing reviewed: the brief is all it has")
+        self.assertIn("===== brief.md =====", seen["p"])
+        loop.casereview.update(self.job, "design", "TC-001", state="approved")
+        loop.cmd_discard(self.job, self.root, self.policy)
+        policy = dict(self.policy, agent_brief="Full")
+        rc = loop.cmd_generate(self.job, self.root, policy, "new-test", "",
+                               agent=self.agent_that_writes(seen), verifier=OK)
+        self.assertEqual(rc, 0)
+        self.assertIn("Field table from the wiki page.", seen["p"])
+        self.assertIn("===== brief.md =====", seen["p"])
+        self.assertIn("A PERSON HAS REVIEWED", seen["p"])
+        self.assertNotIn("left out", seen["p"])
+
+    def test_a_short_brief_is_handed_whole_even_after_review(self):
+        write(self.root, "target/agent/job1/brief.md", self.SMALL_BRIEF.replace("{fill}", ""))
+        self.design(DESIGN_CASE)
+        loop.casereview.update(self.job, "design", "TC-001", state="approved")
+        seen = {}
+        self.assertEqual(self.generate(self.agent_that_writes(seen)), 0)
+        self.assertIn("The epic text, long.", seen["p"], "a short brief is handed whole")
+        self.assertIn("A PERSON HAS REVIEWED", seen["p"])
+        self.assertNotIn("left out", seen["p"])
+
+    def test_the_cut_is_made_on_the_whole_file_not_on_a_capped_read(self):
+        big = self.SMALL_BRIEF.replace("{fill}", "\n".join("> page text %d" % n for n in range(5000)))
+        self.assertGreater(len(big), loop.BRIEF_CAP)
+        write(self.root, "target/agent/job1/brief.md", big)
+        head, text = loop.brief_for_agent(self.job, self.policy, decided=True)
+        self.assertIn("## Requests read", text, "the requests come after the pages in the file")
+        self.assertIn(f"of {len(big):,} characters left out", head)
+        self.assertLessEqual(len(text), loop.BRIEF_CAP)
+
+    def test_a_brief_with_nothing_to_trim_is_handed_whole_without_a_pointer(self):
+        text, dropped, heads = loop.trimmed_brief("# Intake\n\n## The story: A\n\nx\n", "j")
+        self.assertEqual((text, dropped, heads), ("# Intake\n\n## The story: A\n\nx\n", 0, []))
+        text, dropped, heads = loop.trimmed_brief(self.FULL_BRIEF, "job1")
+        self.assertEqual(heads, ["Around the story", "Confluence pages", "Sources", "Next"])
+        b = self.FULL_BRIEF
+        pre = b[:b.index("## Around the story")]
+        req = b[b.index("## Requests read"):b.index("## Next")]
+        self.assertEqual(dropped, len(b) - len(pre) - len(req), "what is not kept is counted")
+        self.assertTrue(text.startswith(pre) and req.strip() in text)
+
+    def test_the_headings_the_trim_cuts_on_are_the_ones_intake_writes(self):
+        src = io.open(os.path.join(HERE, "intake.py"), encoding="utf-8").read()
+        for head in loop.BRIEF_KEEP + (loop.intake.BRIEF_PAGES_HEAD,):
+            name = [n for n in ("BRIEF_STORY_HEAD", "BRIEF_PAGES_HEAD", "BRIEF_REQUESTS_HEAD")
+                    if getattr(loop.intake, n) == head][0]
+            self.assertIn(f"{name}", src)
+            self.assertNotIn(f'"{head}"', src.replace(f'{name} = "{head}"', ""),
+                             "the heading is written through its constant, nowhere as a literal")
+
     def test_with_nothing_decided_every_case_goes_and_the_plan_leads(self):
         self.design(DESIGN_CASE, dict(DESIGN_CASE, id="TC-002", title="Second"))
         seen = {}

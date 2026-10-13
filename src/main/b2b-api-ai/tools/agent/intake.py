@@ -262,6 +262,10 @@ def gather_confluence(link: str, sources: str, slot: str,
 
 # ---- a Jira story -----------------------------------------------------------
 MAX_STORY_CHARS = 8000            # of the story's text, in the brief
+# Headings of brief.md that other tools cut on (loop.trimmed_brief).
+BRIEF_STORY_HEAD = "## The story"
+BRIEF_PAGES_HEAD = "## Confluence pages"
+BRIEF_REQUESTS_HEAD = "## Requests read"
 MAX_ATTACHMENT_TEXT = 200_000     # of one textual attachment, read for requests
 MAX_LINKED = 8                    # linked stories and sub-tasks read for context
 MAX_PAGE_CHARS = 40000            # of one Confluence page, in the brief
@@ -827,7 +831,7 @@ def _write_brief(out: str, r: dict) -> None:
 
     if story:
         ac = story["acceptance_criteria"]
-        lines += [f"## The story: {story['key']}" + (" (MOCK: sample data, not Jira's)"
+        lines += [f"{BRIEF_STORY_HEAD}: {story['key']}" + (" (MOCK: sample data, not Jira's)"
                                                     if any(g.get("mock") for g in r["links"])
                                                     else ""), "",
                   f"- {story['type'] or 'issue'}, status {story['status'] or 'unknown'}",
@@ -876,7 +880,7 @@ def _write_brief(out: str, r: dict) -> None:
     if shown_pages:
         fetched = any(not p.get("pasted") for p in shown_pages)
         pasted = any(p.get("pasted") for p in shown_pages)
-        lines += ["## Confluence pages", "",
+        lines += [BRIEF_PAGES_HEAD, "",
                   ("Read from the Confluence links given with this job" if fetched else "")
                   + (", and " if fetched and pasted else "")
                   + ("pasted on the Automate Test Case tab because the fetcher could not read "
@@ -903,7 +907,7 @@ def _write_brief(out: str, r: dict) -> None:
         lines.append("")
 
     if r["requests"]:
-        lines += ["## Requests read", ""]
+        lines += [BRIEF_REQUESTS_HEAD, ""]
         for i, s in enumerate(r["requests"], 1):
             lines.append(f"{i}. `{s.get('verb')} {s.get('raw_path')}`")
             if s.get("query_param_names"):

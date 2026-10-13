@@ -249,9 +249,10 @@ to the design step on its own.
 
 All of it goes into `brief.md`: the story's own text under **The
 story**, and each parent and linked story under **Around the story**
-with how it is related. The brief is what *Design the API tests* and the
-Agentic Test Creation hand to Cursor, so Cursor sees the story in its setting
-rather than alone. Pasting the story is then optional; paste only what
+with how it is related. The brief is what *Design the API tests* hands
+to Cursor, and what the Agentic Test Creation hands it until a person
+has reviewed the cases (see *What Cursor needs*), so Cursor sees the
+story in its setting rather than alone. Pasting the story is then optional; paste only what
 Jira does not hold.
 
 What each part is used for is deliberately different:
@@ -259,8 +260,8 @@ What each part is used for is deliberately different:
 | Read | Searched for requests | Searched for acceptance criteria | Shown to Cursor |
 |---|---|---|---|
 | the story | yes | yes | yes |
-| its parents | named, **not taken** | yes, and said to be inherited | yes |
-| linked stories, sub-tasks | **no** | **no** | yes, marked as other stories |
+| its parents | named, **not taken** | yes, and said to be inherited | for the design; not once the cases are reviewed |
+| linked stories, sub-tasks | **no** | **no** | for the design, marked as other stories; not once the cases are reviewed |
 
 Only the story's own requests become requests of the job. An epic lists
 the calls of every story under it, so a parent's requests are named
@@ -280,7 +281,9 @@ Things it says rather than hides:
 - **A Confluence page could not be read**: the brief gives the
   fetcher's reason. Open the page yourself and paste what it says into
   **Page text**; it is then read exactly like a fetched page -- for
-  requests, and into the brief under *Confluence pages* for Cursor.
+  requests, and into the brief under *Confluence pages* for the design
+  (the Agentic step keeps only its table rows once the cases are
+  reviewed).
 - **A link to another Jira** than the configured one is refused, and so
   is an address that cannot be read as a story's. The token is only
   ever sent to the first host in `jira_config.base_urls`, and a story of
@@ -958,7 +961,18 @@ new machine (antivirus scanning the bundled Node binary, a blocked
 executable), and it is cheaper to learn that here than in the middle of
 a run.
 
-Three things keep a run short, all in the prompt. Cursor is told **not
+Four things keep a run short, all in the prompt. Once a person has
+reviewed the cases and the brief is long (20,000 characters or more),
+the brief handed to Cursor is **the story, the requests, and the table
+rows of the Confluence pages**: parents, linked stories, the pages'
+prose and the sources were material for the design, and the approved
+cases carry what came of them; the tables (field names, types, allowed
+values, formats) stay because a case's `data: valid values` is short
+for them. The prompt names what was left out, how much, and where the
+whole brief is (`target/agent/<job>/brief.md`), to be opened only when
+a case names something not explained. With nothing reviewed the whole
+brief goes, since then the cases are not vetted; `agent_brief: "full"`
+in `policy.json` keeps the whole brief always. Cursor is told **not
 to run a build of its own**: the workbench compiles the moment it
 finishes and hands back the errors, so a `mvn` it starts is only a wait.
 For a new test it is shown **one existing hand-written test, whole**
