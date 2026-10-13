@@ -180,6 +180,8 @@ def describe(message, timing: dict = None) -> str:
         key = (name, getattr(message, "call_id", "") or "")
         if status == "running":
             if timing is not None:
+                if key in timing:
+                    return ""          # the SDK says "running" twice; once is the news
                 timing[key] = time.monotonic()
             asked = _args_line(getattr(message, "args", None))
             return f"tool {name} started" + (f": {asked}" if asked else "")

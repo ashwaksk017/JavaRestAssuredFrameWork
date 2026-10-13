@@ -1946,6 +1946,8 @@ class CallingCursor(unittest.TestCase):
                    result="BUILD SUCCESS\nTotal time: 40 s"),
                 NS(type="tool_call", name="edit_file", status="running", call_id="2",
                    args={"target_file": "src/test/java/XTest.java", "code_edit": "class XTest {}"}),
+                NS(type="tool_call", name="edit_file", status="running", call_id="2",
+                   args={"target_file": "src/test/java/XTest.java", "code_edit": "class XTest {}"}),
                 NS(type="tool_call", name="edit_file", status="completed", call_id="2", result="ok"),
                 # what Cursor says comes in pieces; the log gets it whole
                 NS(type="assistant", message=NS(content=[NS(type="text", text="Add")])),
@@ -1960,6 +1962,8 @@ class CallingCursor(unittest.TestCase):
         self.assertTrue(any(s.startswith("tool shell completed in ") and
                             s.endswith("-> BUILD SUCCESS Total time: 40 s") for s in seen), seen)
         self.assertIn("tool edit_file started: target_file=src/test/java/XTest.java", seen)
+        self.assertEqual(sum(1 for s in seen if s.startswith("tool edit_file started")), 1,
+                         "the SDK's second 'running' message for the same call is not a second line")
         self.assertFalse(any("class XTest" in s for s in seen), "an edit's content is not logged")
         self.assertIn("cursor says: Adding the test.", seen)
         self.assertEqual(sum(1 for s in seen if s.startswith("cursor says:")), 1, seen)
@@ -2188,6 +2192,33 @@ class WhereThingsAre(Repo):
                          ("", []))
         self.assertEqual(loop.pattern_example(tempfile.mkdtemp(), loop.DEFAULT_POLICY,
                                               {"name": "new-test"}), ("", []))
+
+    def test_with_a_skill_file_the_skill_is_in_the_prompt_and_the_example_is_not(self):
+        self.lay_out()
+        write(self.root, ".cursor/skills/jira-to-restassured/SKILL.md",
+              "# Jira to REST Assured\n\nPut @XrayTest on the method. baseUrl() comes from BaseApiTest.\n")
+        seen = {}
+
+        def agent(prompt):
+            seen["p"] = prompt
+            write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
+            return {"result": ""}
+        self.generate(agent)
+        p = seen["p"]
+        self.assertIn("===== THE SKILL TO FOLLOW (.cursor/skills/jira-to-restassured/SKILL.md) =====", p)
+        self.assertIn("Put @XrayTest on the method.", p)
+        self.assertIn("the skill wins", p)
+        self.assertIn("Follow the skill below", p)
+        self.assertNotIn("HOW A TEST IS WRITTEN HERE", p, "no second, disagreeing shape")
+        self.assertNotIn("Follow the skill at", p)
+        self.assertIn("the skill is in the prompt, whole: .cursor/skills/jira-to-restassured/SKILL.md",
+                      self.cursor_log())
+        scope = {"name": "new-test", "skill": "../outside/SKILL.md"}
+        self.assertEqual(loop.skill_block(self.root, scope), "", "a skill path cannot leave the project")
+        write(self.root, "big/SKILL.md", "x" * (loop.SKILL_CAP + 500))
+        block = loop.skill_block(self.root, {"name": "new-test", "skill": "big/SKILL.md"})
+        self.assertIn("... cut here", block)
+        self.assertLess(len(block), loop.SKILL_CAP + 400)
 
     def test_the_policy_may_name_the_example_and_a_long_one_is_cut(self):
         self.lay_out()

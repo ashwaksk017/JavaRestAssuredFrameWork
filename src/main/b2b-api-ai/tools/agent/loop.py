@@ -1009,6 +1009,35 @@ def _example_candidates(root: str, policy: dict) -> list:
     return [p for _s, p in sorted(tests or found)]
 
 
+SKILL_CAP = 16000
+
+
+def skill_block(root: str, scope: dict) -> str:
+    """The scope's skill file, whole (capped), as a block of the prompt.
+
+    The prompt used to point at the file and inline an example test from
+    elsewhere. Cursor built from the example, read the skill later, found
+    the two disagreed (@XrayTest, baseUrl() from the base class) and did
+    the work twice. The skill is the contract and holds its own example:
+    it goes in the prompt, and the example from another folder does not."""
+    rel = str(scope.get("skill") or "").strip()
+    if not rel or ".." in rel or os.path.isabs(rel):
+        return ""
+    path = os.path.join(root, rel.replace("/", os.sep))
+    inside = os.path.realpath(root) + os.sep
+    if not os.path.isfile(path) or not os.path.realpath(path).startswith(inside):
+        return ""
+    text = _read(path, SKILL_CAP + 1)
+    if not text.strip():
+        return ""
+    if len(text) > SKILL_CAP:
+        text = text[:SKILL_CAP] + "\n... cut here; the rest is in the file"
+    return "\n".join([f"===== THE SKILL TO FOLLOW ({rel}) =====",
+                      "This is how a test is written in this repository. Where anything else in "
+                      "this prompt or in the project differs from it, the skill wins.",
+                      "", text.rstrip(), "===== end of the skill ====="])
+
+
 def pattern_example(root: str, policy: dict, scope: dict) -> tuple:
     """(block, paths): one existing hand-written test, whole, and the first
     lines of its data sheet, for a new-test job.
@@ -1399,8 +1428,10 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
     briefing = _SCOPE_BRIEFING.get(scope["name"], _SCOPE_BRIEFING["new-test"])
     parts = [
         briefing.replace("{suite}", scope.get("suite") or ""),
-        f"Follow the skill at {scope.get('skill') or '.cursor/skills/'} "
-        f"and any app skill it points to.",
+        (f"Follow the skill below, and any app skill it points to."
+         if skill_block(root or ROOT, scope) else
+         f"Follow the skill at {scope.get('skill') or '.cursor/skills/'} "
+         f"and any app skill it points to."),
         "",
         project_map(root or ROOT, policy, scope),
         "",
@@ -1425,7 +1456,9 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
         "",
         suite_briefing(root or ROOT, policy, scope),
         "",
-        pattern_example(root or ROOT, policy, scope)[0],
+        # The skill, whole; an example test from the project only when
+        # there is no skill file to show the shape.
+        skill_block(root or ROOT, scope) or pattern_example(root or ROOT, policy, scope)[0],
         "",
         "Act on the plan below. For a request the plan marks UPSTREAM or "
         "STOP, write nothing for it and say why.",
@@ -2253,9 +2286,12 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             # where Cursor was told to look is the part a person asks about.
             clog.block("what Cursor was told about where things are",
                        project_map(root, policy, scope))
-            shown = pattern_example(root, policy, scope)[1]
-            if shown:
-                clog.write("shown as the example of how a test is written: " + ", ".join(shown))
+            if skill_block(root, scope):
+                clog.write(f"the skill is in the prompt, whole: {scope.get('skill')}")
+            else:
+                shown = pattern_example(root, policy, scope)[1]
+                if shown:
+                    clog.write("shown as the example of how a test is written: " + ", ".join(shown))
         clog.block("prompt", prompt, cap=6000)
         started = time.time()
         try:

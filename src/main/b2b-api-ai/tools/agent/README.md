@@ -984,13 +984,18 @@ brief goes, since then the cases are not vetted; `agent_brief: "full"`
 in `policy.json` keeps the whole brief always. Cursor is told **not
 to run a build of its own**: the workbench compiles the moment it
 finishes and hands back the errors, so a `mvn` it starts is only a wait.
-For a new test it is shown **one existing hand-written test, whole**
-(the smallest that has a `@Test`, or the files `pattern_example` names
-in `policy.json`), with the first lines of a data sheet under
-`csv/manual/` -- the committed location; the other `csv/` folders are
-gitignored because their rows carry customer data, and are never put
-in a prompt -- so it does not open test after test to learn the shape.
-The log names which files were shown. And a failed compile
+The scope's **skill file goes into the prompt whole** (`skill` in
+`policy.json`, e.g. `.cursor/skills/jira-to-restassured/SKILL.md`, up
+to 16,000 characters), with the rule that where anything else differs
+from it, the skill wins. It used to be only pointed at, with an example
+test from another folder inlined instead; Cursor built from the example,
+read the skill later, found they disagreed and did the work twice. Only
+when the scope has no skill file is **one existing hand-written test**
+shown instead (the smallest that has a `@Test`, or the files
+`pattern_example` names in `policy.json`), with the first lines of a
+data sheet under `csv/manual/` -- the committed location; the other
+`csv/` folders are gitignored because their rows carry customer data,
+and are never put in a prompt. The log names what was shown. And a failed compile
 comes back as **a list of `file:line: message`** (each once, at most
 40) with a short tail, not sixty lines of build output.
 

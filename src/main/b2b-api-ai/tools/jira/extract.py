@@ -252,12 +252,17 @@ def parse_curl(command: str) -> dict:
     return {"verb": verb, "url": url, "body": body, "headers": headers}
 
 
+# Prose glues these to a path: `GET /x/spendDetail- deprecated`,
+# `see GET /x/stays.` A real path ends in none of them.
+_PATH_TAIL = "-.,;:!?"
+
+
 def _split_url(url: str) -> tuple[str, list]:
     if "://" in url:
         u = urlparse(url)
-        return (u.path or "/"), [k for k, _ in parse_qsl(u.query)]
+        return (u.path or "/").rstrip(_PATH_TAIL) or "/", [k for k, _ in parse_qsl(u.query)]
     path, _, query = url.partition("?")
-    return (path or "/"), [k for k, _ in parse_qsl(query)]
+    return (path.rstrip(_PATH_TAIL) or "/"), [k for k, _ in parse_qsl(query)]
 
 
 def _media_type(headers: dict, body: str) -> str:

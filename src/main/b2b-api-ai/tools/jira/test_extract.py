@@ -151,6 +151,21 @@ class Curl(unittest.TestCase):
                                ("GET", "/guests/{guestId}/accounts/{accountId}/spendDetail"),
                                ("GET", "/accounts/{accountId}/bookingpolicies")])
 
+    def test_punctuation_glued_to_a_path_by_prose_is_not_part_of_it(self):
+        """A Confluence table read as text gave `GET .../spendDetail-` and
+        `GET .../stays-`: three plan items for endpoints that do not exist."""
+        text = ("| GET /businesses/{accountId}/spendDetail- | deprecated |\n"
+                "GET /guests/{guestId}/stays- lists stays.\n"
+                "See GET /accounts/{accountId}/bookingpolicies. Then POST /accounts/{accountId}/members, "
+                "which returns 201; also GET https://api.example.test/v1/things-?page=2\n")
+        got = [(s["verb"], s["raw_path"], s["query_param_names"]) for s in extract.from_text(text, "page")]
+        self.assertEqual(got, [("GET", "/businesses/{accountId}/spendDetail", []),
+                               ("GET", "/guests/{guestId}/stays", []),
+                               ("GET", "/accounts/{accountId}/bookingpolicies", []),
+                               ("POST", "/accounts/{accountId}/members", []),
+                               ("GET", "/v1/things", ["page"])])
+        self.assertEqual(extract._split_url("/-")[0], "/", "never emptied")
+
     def test_a_flag_that_takes_a_value_never_becomes_the_url(self):
         """`-u user:pass` once ate the URL and the step came out pathless."""
         got = extract.parse_curl(
