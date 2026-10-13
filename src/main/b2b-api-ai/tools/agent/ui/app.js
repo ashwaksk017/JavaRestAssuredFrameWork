@@ -682,18 +682,36 @@ async function showFlow() {
   const approved = Object.values((review && review.design) || {}).filter((e) => e.state === "approved").length;
   const keys = Object.keys((xray && xray.tests) || {}).filter((k) => k.startsWith("design:")).length;
   const agentState = (agent && agent.state) || "none";
+  // Each step is a link to where it is done: an element of this tab, or
+  // another tab.
   const steps = [
-    ["Read it", Boolean(brief)],
-    ["Is it automated?", Boolean(plan)],
-    ["Design", Boolean(design && design.test_cases && design.test_cases.length)],
-    ["Review", approved > 0, approved ? `${approved} approved` : ""],
-    ["Create in Xray", keys > 0, keys ? `${keys} test(s)` : ""],
+    ["Read it", Boolean(brief), "", "new", "story"],
+    ["Is it automated?", Boolean(plan), "", "new", "run-locate"],
+    ["Design", Boolean(design && design.test_cases && design.test_cases.length), "", "new", "run-design"],
+    ["Review", approved > 0, approved ? `${approved} approved` : "", "new", "design-review"],
+    ["Create in Xray", keys > 0, keys ? `${keys} test(s)` : "", "new", "xray-design-create"],
     ["Agentic Test Creation", ["pending-review", "approved", "pushed"].includes(agentState),
-     agentState !== "none" ? agentState : ""],
+     agentState !== "none" ? agentState : "", "agent", "agent-generate"],
   ];
   let now = steps.findIndex(([, done]) => !done);
-  flow.replaceChildren(...steps.map(([name, done, detail], i) =>
-    el("li", { class: done ? "done" : (i === now ? "now" : ""), text: name + (detail ? ` (${detail})` : "") })));
+  flow.replaceChildren(...steps.map(([name, done, detail, tab, target], i) =>
+    el("li", { class: done ? "done" : (i === now ? "now" : "") },
+      el("button", { type: "button", class: "step-link", "data-tab": tab, "data-target": target,
+                     title: `go to: ${name}`,
+                     on: { click: () => goToStep(tab, target) } },
+         name + (detail ? ` (${detail})` : "")))));
+}
+
+function goToStep(tab, target) {
+  const button = document.querySelector(`.tabs button[data-tab="${tab}"]`);
+  if (button && button.getAttribute("aria-selected") !== "true") button.click();
+  const there = $(target);
+  if (!there) return;
+  there.scrollIntoView({ behavior: "smooth", block: "center" });
+  // A moment's highlight, so the eye lands on it.
+  there.classList.add("here");
+  setTimeout(() => there.classList.remove("here"), 1600);
+  if (typeof there.focus === "function" && !there.disabled) there.focus({ preventScroll: true });
 }
 async function artifactText(j, name) {
   try { return (await api(`/api/artifact?job=${encodeURIComponent(j)}&name=${name}`)).text || ""; }

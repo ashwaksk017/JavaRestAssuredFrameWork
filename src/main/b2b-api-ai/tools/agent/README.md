@@ -1180,7 +1180,9 @@ What the decision does:
 The strip at the top of the Automate Test Case tab shows where the job
 is: Read it, Is it automated?, Design, Review, Create in Xray, Agentic
 Test Creation -- each ticked when the job holds what that step
-produces. It is read from the job's files, not remembered by the page.
+produces, and each a link to where that step is done (the last one
+opens the Agentic Test Creation tab). It is read from the job's files,
+not remembered by the page.
 
 ### Create in Xray
 

@@ -734,6 +734,11 @@ def main() -> int:
             check("the Automate Test Case tab shows the review table and where the job is",
                   'id="design-review"' in html and "Approve all" in html and 'id="flow"' in html
                   and "Review (1 approved)" in html, html[html.find('id="flow"'):][:400])
+            strip = html[html.find('id="flow"'):html.find("</ol>", html.find('id="flow"'))]
+            check("each step of the strip is a link to where it is done",
+                  strip.count('class="step-link"') == 6
+                  and 'data-tab="agent" data-target="agent-generate"' in strip
+                  and 'data-tab="new" data-target="design-review"' in strip, strip[:400])
             code, rc = press("xray-create", {"--what": "design", "--story": "ABC-123",
                                              "--confirm-story": "ABC-123", "--expect": "mock"})
             got = json.loads(mocked.call(f"/api/artifact?job={JOB}&name=xray-result.json")[1]
