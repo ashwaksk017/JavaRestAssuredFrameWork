@@ -574,6 +574,10 @@ def gather_jira(link: str, sources: str, slot: str, connect=None, transport=None
             },
             "chars": len(text),
             "linked_not_read": not_read[:20],
+            # Jira's own id of this version of the story, so that a later
+            # check can tell whether it changed (storycheck.py).
+            # `updated|hash`, kept as is: _one_line would strip the bar.
+            "revision": str(jira_fetch.story_revision(read[0]) or "")[:80],
         },
         "own_text": own,
         "around": around,

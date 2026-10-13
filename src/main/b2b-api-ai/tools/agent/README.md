@@ -332,6 +332,30 @@ Two things it needs before links will work:
   python tools/agent/locate.py --job <job> --rebuild-index
   ```
 
+#### When the story changes
+
+A job reads its story once, and everything after is made from that
+reading. **Has the story changed?** (under the story box) reads the
+story again and compares: Jira's revision of it, and the story's own
+text, shown as a line-by-line diff. When it has changed, the answer
+also lists what in the job was made from the earlier reading -- the
+design, the review, tests created in Xray, a change waiting for review
+-- so you know what to redo. It changes nothing itself.
+
+Taking the change in: *Read it* again, then *Design the tests* again.
+A re-design is matched to the design before it: a case that says the
+same thing (title, preconditions and steps) keeps its id, and with it
+its review decision and its Xray test. A case whose text changed is a
+new case: it gets an id nothing in the job has used -- not the earlier
+design, not a review decision, not an Xray test -- and comes back as
+proposed. Cases that are gone are named in the design's warnings; an
+Xray test made for one of them stays in Jira until you close it (nothing
+here edits or closes an issue). Then review the new cases, *Create in
+Xray* for them, and on the Agentic tab ask Cursor to change the
+automated test with what changed. The design before the last one is
+kept as `design.previous.json`, so a design that fails does not lose
+the match.
+
 #### How it decides whether a test already exists
 
 *Then: is it already automated?* answers one question per request of

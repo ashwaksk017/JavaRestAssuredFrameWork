@@ -1484,6 +1484,84 @@ class WhichEndpointsAStoryIsAbout(unittest.TestCase):
         self.assertIn("the end of this path", got[MEMBER_SPEND])
 
 
+class ReDesign(Run):
+    """A design made again is matched to the one before it."""
+
+    def first(self):
+        self.run_design(self.agent(reply(case(), case(id="TC-002", title="Second case",
+                                                       steps=[{"action": "b", "data": "", "expected": "2"}]))))
+        return json.loads(self.read("design.json"))
+
+    def test_a_case_that_says_the_same_keeps_its_id_and_new_ones_get_fresh_ids(self):
+        self.first()
+        again = reply(case(id="TC-009", title="Second case", steps=[{"action": "b", "data": "", "expected": "2"}]),
+                      case(id="TC-001", title="A brand new case", steps=[{"action": "c", "data": "", "expected": "3"}]))
+        self.run_design(self.agent(again))
+        d = json.loads(self.read("design.json"))
+        ids = {c["title"]: c["id"] for c in d["test_cases"]}
+        self.assertEqual(ids["Second case"], "TC-002", "the same case keeps the id it had")
+        self.assertEqual(ids["A brand new case"], "TC-003", "a new case gets an id the earlier design did not use")
+        self.assertEqual(d["previous"]["kept"], ["TC-002"])
+        self.assertEqual(d["previous"]["new"], ["TC-003"])
+        self.assertEqual([r["id"] for r in d["previous"]["removed"]], ["TC-001"])
+        self.assertTrue(any("re-design: 1 case(s) say what they said before" in w for w in d["warnings"]))
+
+    def test_matching_ignores_case_and_spacing_but_not_a_changed_step(self):
+        self.first()
+        self.run_design(self.agent(reply(
+            case(id="TC-001", title="  CREATE a rate returns 201 "),
+            case(id="TC-002", title="Second case", steps=[{"action": "b", "data": "", "expected": "CHANGED"}]))))
+        d = json.loads(self.read("design.json"))
+        ids = {c["title"].strip(): c["id"] for c in d["test_cases"]}
+        self.assertEqual(ids["CREATE a rate returns 201"], "TC-001")
+        self.assertEqual(ids["Second case"], "TC-003", "a changed step is another case")
+
+    def test_a_new_case_never_takes_an_id_a_review_or_an_xray_test_still_names(self):
+        self.first()
+        with io.open(os.path.join(self.out, "case-review.json"), "w", encoding="utf-8") as fh:
+            json.dump({"kind": "case-review", "design": {"TC-001": {"state": "approved"}}, "manual": {}}, fh)
+        with io.open(os.path.join(self.out, "xray-tests.json"), "w", encoding="utf-8") as fh:
+            json.dump({"kind": "xray-tests", "tests": {"design:TC-003": {"key": "ABC-9"}}}, fh)
+        self.run_design(self.agent(reply(case(id="TC-001", title="Unrelated new case",
+                                             steps=[{"action": "z", "data": "", "expected": "9"}]))))
+        d = json.loads(self.read("design.json"))
+        self.assertEqual([c["id"] for c in d["test_cases"]], ["TC-004"],
+                         "TC-001 is approved, TC-002 was the earlier design's, TC-003 has an Xray test")
+        self.assertTrue(any("earlier cases are gone" in w and "closed by hand" in w for w in d["warnings"]))
+
+    def test_a_failed_design_does_not_lose_the_match(self):
+        self.first()
+        # As a failed run leaves the folder: the design before it kept, its own gone.
+        design.keep_previous(self.out)
+        design.clear_outputs(self.out)
+        self.run_design(self.agent(reply(case(id="TC-001", title="Second case",
+                                             steps=[{"action": "b", "data": "", "expected": "2"}]))))
+        d = json.loads(self.read("design.json"))
+        self.assertEqual([c["id"] for c in d["test_cases"]], ["TC-002"])
+        self.assertTrue(os.path.isfile(os.path.join(self.out, "design.previous.json")))
+
+    def test_changed_preconditions_make_another_case(self):
+        self.first()
+        self.run_design(self.agent(reply(case(id="TC-002", title="Second case", preconditions=["a token"],
+                                             steps=[{"action": "b", "data": "", "expected": "2"}]))))
+        d = json.loads(self.read("design.json"))
+        self.assertEqual(d["previous"]["kept"], [])
+        self.assertEqual(len(d["previous"]["new"]), 1)
+
+    def test_a_first_design_has_no_previous(self):
+        d = self.first()
+        self.assertIsNone(d["previous"])
+
+    def test_a_stand_ins_design_is_not_matched_against(self):
+        self.first()
+        d = json.loads(self.read("design.json"))
+        d["mock"] = True
+        with io.open(os.path.join(self.out, "design.json"), "w", encoding="utf-8") as fh:
+            json.dump(d, fh)
+        self.run_design(self.agent(reply(case(id="TC-007"))))
+        self.assertIsNone(json.loads(self.read("design.json"))["previous"])
+
+
 class DesigningForAStory(Run):
     """A story about three endpoints of a large API is designed for those,
     in one call that sees all of them. (The inherited tests run again; they

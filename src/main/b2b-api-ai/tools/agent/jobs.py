@@ -119,6 +119,13 @@ RUNNABLES = {
                     "--parent": "text", "--title": "text", "--confirm-title": "text",
                     "--expect": "text"},
     },
+    # Has the story changed since the job read it? Reads Jira; writes only
+    # story-check.json. See storycheck.py.
+    "story-check": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "storycheck.py")],
+        "label": "Read the story again and say what changed since this job read it",
+        "options": {"--job": "text"},
+    },
     # Xray Test issues from a job's cases. One story, named twice; the
     # result the cases come from is one of two fixed names. See xraytests.py.
     "xray-status": {
@@ -678,7 +685,8 @@ RESULT_FILES = {"jira-": "jira-result.json", "failures-": "failures-result.json"
                 # remove the record of the last write.
                 "publish-attach": "publish-result.json",
                 "publish-page": "publish-result.json",
-                "xray-create": "xray-result.json"}
+                "xray-create": "xray-result.json",
+                "story-check": "story-check.json"}
 
 
 def clear_result(job: str, runnable: str) -> None:
@@ -905,6 +913,7 @@ def read_artifact(job: str, name: str) -> str:
                "manual-result.json", "manual-pull.json", "manual-tests.md",
                "manual-new-cases.csv", "manual-xray-updates.csv", "publish-result.json",
                "xray-tests.json", "xray-result.json", "xray-status.json", "case-review.json",
+               "story-check.json",
                "publish-status.json", "publish.log"}
     if name not in allowed:
         raise ValueError(f"{name!r} is not a readable artifact. "

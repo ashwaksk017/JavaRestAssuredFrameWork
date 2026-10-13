@@ -965,6 +965,120 @@ def write_outputs(out_dir: str, design: dict) -> None:
         fh.write("\n".join(md).rstrip() + "\n")
 
 
+def case_text_key(case: dict) -> str:
+    """A case by what it says -- title, preconditions and steps, as the Xray
+    fingerprint has it, but not its number, case or spacing."""
+    body = json.dumps([_text(case.get("title")).lower(),
+                       json.dumps(case.get("preconditions") or "", sort_keys=True).lower(),
+                       [(_text(s.get("action")).lower(), _text(s.get("data")).lower(),
+                         _text(s.get("expected")).lower())
+                        for s in (case.get("steps") or []) if isinstance(s, dict)]],
+                      sort_keys=True)
+    return hashlib.sha1(body.encode("utf-8")).hexdigest()[:16]
+
+
+PREVIOUS = "design.previous.json"
+
+
+def _read_json(path: str):
+    try:
+        with io.open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def previous_design(out_dir: str) -> list:
+    """The cases of the design this job had before this run, if any and
+    not a stand-in's. A failed run removes design.json, so the copy kept
+    beside it (PREVIOUS) answers when design.json is gone."""
+    for name in ("design.json", PREVIOUS):
+        data = _read_json(os.path.join(out_dir, name))
+        if isinstance(data, dict) and not data.get("mock"):
+            cases = [c for c in (data.get("test_cases") or []) if isinstance(c, dict) and c.get("id")]
+            if cases:
+                return cases
+    return []
+
+
+def keep_previous(out_dir: str) -> None:
+    """Copy the design about to be cleared, so the next design can be
+    matched to it even if this run fails."""
+    data = _read_json(os.path.join(out_dir, "design.json"))
+    if isinstance(data, dict) and not data.get("mock") and data.get("test_cases"):
+        try:
+            with io.open(os.path.join(out_dir, PREVIOUS), "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=1, ensure_ascii=False)
+        except OSError:
+            diag.trace()
+
+
+def reserved_ids(out_dir: str) -> set:
+    """Ids a review decision or an Xray test is keyed to. A new case must
+    not take one, or it would inherit that decision and that test."""
+    out = set()
+    review = _read_json(os.path.join(out_dir, "case-review.json"))
+    if isinstance(review, dict) and isinstance(review.get("design"), dict):
+        out |= {str(k) for k in review["design"]}
+    xray = _read_json(os.path.join(out_dir, "xray-tests.json"))
+    if isinstance(xray, dict) and isinstance(xray.get("tests"), dict):
+        out |= {str(k).split(":", 1)[1] for k in xray["tests"] if str(k).startswith("design:")}
+    return out
+
+
+def rematch(previous: list, cases: list, reserved=()) -> dict:
+    """A re-design against the design before it. A case that says the same
+    thing as an earlier one is the same case: it keeps the earlier id, and
+    with it the review decision and the Xray test keyed to that id. Other
+    cases get ids that neither the earlier design nor a review nor an Xray
+    test uses. Returns {kept, new, removed, note}; `cases` is renumbered
+    in place. Nothing happens when there is no earlier design and nothing
+    reserved."""
+    out = {"kept": [], "new": [], "removed": [], "note": ""}
+    reserved = set(reserved)
+    if not previous and not reserved:
+        return out
+    by_text = {}
+    for c in previous:
+        by_text.setdefault(case_text_key(c), c["id"])
+    used = set()
+    taken = {c["id"] for c in previous} | reserved
+    for c in cases:
+        old = by_text.get(case_text_key(c))
+        if old and old not in used:
+            c["id"] = old
+            used.add(old)
+            out["kept"].append(old)
+        else:
+            c["id"] = ""
+    n = 0
+    for c in cases:
+        if c["id"]:
+            continue
+        while True:
+            n += 1
+            candidate = f"TC-{n:03d}"
+            if candidate not in taken and candidate not in used:
+                break
+        c["id"] = candidate
+        used.add(candidate)
+        out["new"].append(candidate)
+    out["removed"] = [{"id": c["id"], "title": _text(c.get("title"))[:120]}
+                      for c in previous if c["id"] not in used]
+    if previous:
+        out["note"] = (f"re-design: {len(out['kept'])} case(s) say what they said before and keep "
+                       f"their id (and so their review and their Xray test); {len(out['new'])} new "
+                       f"(a changed case is a new case: review it again, and Create in Xray makes "
+                       f"a new test for it); {len(out['removed'])} of the earlier cases are gone"
+                       + (": " + ", ".join(r["id"] for r in out["removed"][:8]) if out["removed"] else "")
+                       + (" -- an Xray test made for one of them stays in Jira until closed by hand"
+                          if out["removed"] and reserved else ""))
+    else:
+        out["note"] = (f"the earlier design of this job is gone, but a review or an Xray test "
+                       f"still names {len(reserved)} id(s); the new cases were numbered around them")
+    return out
+
+
 def clear_outputs(out_dir: str) -> None:
     """A failed run must not leave the previous run's design on the page."""
     for name in ARTIFACTS:
@@ -1139,6 +1253,8 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
     root = root or ROOT
     out_dir = loop.intake.job_dir(job, root)
     os.makedirs(out_dir, exist_ok=True)
+    previous = previous_design(out_dir)
+    keep_previous(out_dir)
     clear_outputs(out_dir)
     if speed not in SPEEDS:
         say(f"FAIL unknown speed {speed!r}. Known: {', '.join(SPEEDS)}")
@@ -1607,6 +1723,15 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
                         + (" ..." if len(unresolved_refs) > 5 else ""))
 
     cases, more = normalise(raw, known, max_cases)
+    carried = rematch(previous, cases, reserved_ids(out_dir))
+    if carried["note"]:
+        # The earlier design's titles are kept text; they are redacted again
+        # with what is private today, as a kept reply is.
+        for gone in carried["removed"]:
+            gone["title"] = redact(gone["title"], private)[0]
+        # The ids normalise handed out were replaced; its notes about them
+        # would mislead.
+        more = [w for w in more if "was used twice" not in w] + [carried["note"]]
     warnings += more
     if not cases:
         for w in more[:8]:
@@ -1642,6 +1767,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         "endpoints_checked": bool(known),
         "uncovered_endpoints": missing,
         "test_cases": cases,
+        "previous": {k: carried[k] for k in ("kept", "new", "removed")} if previous else None,
         "open_questions": list(dict.fromkeys(questions)),
         "warnings": warnings,
     }

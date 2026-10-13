@@ -610,7 +610,7 @@ def main() -> int:
                 code, _ = mocked.call(route, body)
                 state = {}
                 for _ in range(240):
-                    state = mocked.call(f"/api/status?job={JOB}&runnable={runnable}")[1]
+                    state = mocked.call(f"/api/status?job={body['job']}&runnable={runnable}")[1]
                     if state.get("state") != "running":
                         break
                     time.sleep(0.25)
@@ -662,6 +662,13 @@ def main() -> int:
                   all(json.loads(mocked.call(f"/api/artifact?job={k}&name=intake.json")[1]
                                  .get("text") or "{}").get("story", {}).get("key") == k
                       for k in ("ABC-201", "ABC-202")))
+            code, rc = press("story-check", {}, extra={"job": "ABC-201"})
+            got = json.loads(mocked.call("/api/artifact?job=ABC-201&name=story-check.json")[1]
+                             .get("text") or "{}")
+            check("mock mode: the story can be read again and compared with what the job holds",
+                  rc == 0 and got.get("ok") is True and got.get("changed") is False, str(got)[:300])
+            check("the story box offers the check",
+                  'id="story-check"' in mocked.dom("new"))
             check("the box takes several stories and has a place for them",
                   '<textarea id="story"' in mocked.dom("new") and 'id="stories"' in mocked.dom("new"))
             check("the Automate Test Case tab has a place for the Jira story",

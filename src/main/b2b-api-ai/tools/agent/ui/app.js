@@ -405,6 +405,39 @@ async function readStories(stories, links) {
     "press Open on one to go on with it");
 }
 
+// Has the story changed since the job read it? Reads Jira again and shows
+// the difference, and what in the job was made from the earlier reading.
+$("story-check").onclick = async () => {
+  const j = job();
+  if (!j) { setState($("story-check-state"), "bad", "name the job first"); return; }
+  $("story-check").disabled = true;
+  try {
+    await post("/api/start", { job: j, runnable: "story-check", options: { "--job": j } });
+    follow("story-check", document.createElement("pre"), $("story-check-state"), async () => {
+      $("story-check").disabled = false;
+      const r = await artifactJson(j, "story-check.json");
+      const box = $("story-check-result");
+      if (!r) { box.replaceChildren(banner("bad", "no answer; the Logs tab has the reason")); return; }
+      const kids = [banner(!r.ok ? "bad" : r.changed ? "warn" : "ok", r.message || "")];
+      if (r.changed) {
+        if (r.at_stake && r.at_stake.length) {
+          kids.push(heading("Made from the earlier reading", r.at_stake.length));
+          kids.push(el("ul", {}, r.at_stake.map((s) => el("li", { text: s }))));
+        }
+        if (r.diff) {
+          kids.push(heading("What changed in the story's text"));
+          kids.push(el("pre", { class: "doc", text: r.diff + (r.diff_cut ? `\n... ${r.diff_cut} more line(s)` : "") }));
+        }
+        kids.push(el("small", { text: "To take the change in: Read it again, then Design again (cases that " +
+          "say the same thing keep their id, their review and their Xray test; a changed case is a new case), " +
+          "review the new ones, Create in Xray for them (an earlier case's test stays in Jira until closed by " +
+          "hand), and ask Cursor to change the automated test with what changed." }));
+      }
+      box.replaceChildren(...kids);
+    }, j);
+  } catch (e) { $("story-check").disabled = false; setState($("story-check-state"), "bad", e.message); }
+};
+
 // `&follow=intake` in the address shows a command of this job that is
 // running (or has run) the way its button would: after a refresh, or from
 // a link. It reads what the button reads and starts nothing.

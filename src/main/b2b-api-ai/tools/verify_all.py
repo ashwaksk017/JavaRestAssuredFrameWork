@@ -261,6 +261,10 @@ CHECKS = [
           "switched on, take a file by name and a target given twice, never "
           "replace or edit, refuse what a stand-in made or what holds a private "
           "value, and record every write before it is made"),
+    Check("agent-storycheck",
+          [PY, "tools/agent/test_storycheck.py"],
+          "a story read again is compared with what the job holds, by revision and "
+          "by text, and what was made from the earlier reading is named"),
     Check("agent-repo",
           [PY, "tools/agent/test_repo.py"],
           "the repository is read for the page with any credential out of the "

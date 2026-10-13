@@ -478,6 +478,11 @@ class Story(Base):
         self.assertEqual(intake.confluence_links_in("see https://wiki.example.com/x/AbCdEf/",
                                                     ["https://wiki.example.com/x/AbCdEf"]), [])
 
+    def test_the_storys_revision_is_kept_for_a_later_check(self):
+        self.issues["ABC-1"]["fields"]["updated"] = "2026-10-01T10:00:00.000+0000"
+        r = self.read()
+        self.assertTrue(r["story"]["revision"].startswith("2026-10-01T10:00:00"))
+
     def test_a_bare_key_is_read_from_the_configured_jira(self):
         r = self.read(links=["abc-1"])
         self.assertEqual(r["story"]["key"], "ABC-1")
