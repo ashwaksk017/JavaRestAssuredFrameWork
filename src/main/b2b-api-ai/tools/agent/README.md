@@ -1558,6 +1558,14 @@ used to write outside the tree.
 
 ## If something looks wrong
 
+The page is never cached: every file and every answer is sent with
+`Cache-Control: no-store`, so after a `git pull` a plain reload runs
+the new page. The server itself (`server.py`, `jobs.py`) is a running
+process: after a pull, Stop and Start it; the commands it runs (intake,
+design, the agent loop) are started fresh each time and need no restart.
+What the Agentic tab shows is the job's LAST state, with its time
+(`as of ...`); it changes when a new run starts, not before.
+
 - **Anything unexplained** — open the **Logs** tab first. It has the full
   text of the error the page only named, and what each command said as it
   failed.

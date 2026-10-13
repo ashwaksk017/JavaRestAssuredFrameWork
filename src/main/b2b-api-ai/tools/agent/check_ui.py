@@ -111,6 +111,14 @@ class Page:
     def __init__(self, browser: str, base: str):
         self.browser, self.base = browser, base
 
+    def headers(self, path: str) -> dict:
+        """The response headers of a GET, lower-cased."""
+        try:
+            with urllib.request.urlopen(self.base + path, timeout=20) as r:
+                return {k.lower(): v for k, v in r.headers.items()}
+        except urllib.error.HTTPError as e:
+            return {k.lower(): v for k, v in e.headers.items()}
+
     def call(self, path: str, payload=None, raw: bool = False) -> tuple:
         req = urllib.request.Request(self.base + path)
         data = None
@@ -205,6 +213,9 @@ def main() -> int:
                 break
             time.sleep(0.25)
         text = page.call(f"/api/artifact?job={JOB}&name=failures-result.json")[1].get("text") or ""
+        for path in ("/", "/app.js", "/app.css", "/api/mock", "/api/status?job=none"):
+            check(f"nothing is cached by the browser: {path}",
+                  page.headers(path).get("cache-control") == "no-store")
         check("server -> command -> result file", code == 200 and state.get("exit_code") == 0
               and json.loads(text or "{}").get("kind") == "runs", str(state))
         html = page.dom("failures")

@@ -107,6 +107,9 @@ class Handler(BaseHTTPRequestHandler):
         # sniffed into something executable.
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
+        # Nothing here is worth caching, and a cached app.js is the old
+        # page running against a pulled server: every answer is fresh.
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
@@ -248,6 +251,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", DOWNLOADS[name] + "; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Disposition",
                          f'attachment; filename="{jobs.intake.safe_job(job)}-{name}"')
         self.send_header("X-Content-Type-Options", "nosniff")

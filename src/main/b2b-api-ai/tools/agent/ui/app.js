@@ -1689,6 +1689,9 @@ async function refreshReview() {
                             "approved, only discarded. " + detail;
   if (review.reason) detail += " " + review.reason;
   if (review.branch) detail += ` Branch: ${review.branch}.`;
+  // A state is what the LAST run left; said with its time so that an old
+  // result is not read as a live one.
+  if (review.updated && state !== "none") detail += ` (as of ${review.updated})`;
   $("review-detail").textContent = detail;
   const canPush = (state === "pending-review" || state === "push-failed") && !review.mock;
   $("agent-push").disabled = !canPush;
