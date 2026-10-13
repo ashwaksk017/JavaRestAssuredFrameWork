@@ -1172,8 +1172,13 @@ What the decision does:
   title, and refuses while none is approved.
 - **Agentic Test Creation** hands Cursor every proposed case until
   anyone has decided anything; once a case has been approved or rejected,
-  only the approved ones marked Automate go, and the log says how many
-  were left out by the review.
+  only the approved ones marked Automate go, the prompt says that these
+  and no others are to be written (a request of the plan with no
+  approved case gets nothing), and the log says how many were left out.
+  A job whose design cannot be used -- made from an earlier brief, or by
+  the stand-in -- or whose review left nothing to automate does not run:
+  Cursor would otherwise be handed the plan alone and write a test for
+  every request in it, the rejected ones included.
 - Nothing is deleted from a result; a rejected case stays in
   `design.md`, marked rejected on the page.
 

@@ -129,6 +129,79 @@ class InsideThePaths(Repo):
         self.assertIn("Do not delete any file", seen["p"])
 
 
+DESIGN_CASE = {"id": "TC-001", "title": "Create a thing returns 201", "endpoint": "POST /x",
+               "type": "positive", "priority": "high", "preconditions": "",
+               "steps": [{"action": "POST a valid thing", "data": "valid values",
+                          "expected": "201 and the body carries an id"}],
+               "requirement_refs": ["AC-1"], "endpoint_in_spec": True}
+
+
+class TheReviewDecidesWhatIsWritten(Repo):
+    """Once a person has approved or rejected cases, Cursor is told to write
+    those and no others; a design that cannot be used stops the run."""
+
+    def design(self, *cases, brief=None):
+        data = {"kind": "design", "mock": False, "test_cases": list(cases),
+                "brief": loop.brief_fingerprint(self.job) if brief is None else brief}
+        write(self.root, "target/agent/job1/design.json", json.dumps(data))
+
+    def agent_that_writes(self, seen):
+        def agent(prompt):
+            seen["p"] = prompt
+            write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
+            return {"result": "ok"}
+        return agent
+
+    def test_with_nothing_decided_every_case_goes_and_the_plan_leads(self):
+        self.design(DESIGN_CASE, dict(DESIGN_CASE, id="TC-002", title="Second"))
+        seen = {}
+        self.assertEqual(self.generate(self.agent_that_writes(seen)), 0)
+        self.assertIn("TC-001", seen["p"])
+        self.assertIn("TC-002", seen["p"])
+        self.assertIn("Nobody has reviewed them yet", seen["p"])
+        self.assertNotIn("A PERSON HAS REVIEWED", seen["p"])
+
+    def test_once_reviewed_only_the_approved_cases_go_and_cursor_is_told_so(self):
+        self.design(DESIGN_CASE, dict(DESIGN_CASE, id="TC-002", title="Second, rejected"))
+        loop.casereview.update(self.job, "design", "TC-001", state="approved")
+        loop.casereview.update(self.job, "design", "TC-002", state="rejected")
+        seen = {}
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(self.generate(self.agent_that_writes(seen)), 0)
+        self.assertIn("TC-001", seen["p"])
+        self.assertNotIn("TC-002", seen["p"])
+        self.assertNotIn("Second, rejected", seen["p"])
+        self.assertIn("A PERSON HAS REVIEWED THEM", seen["p"])
+        self.assertIn("write tests for THESE cases and no others", seen["p"])
+        self.assertIn("1 left out by the review", out.getvalue())
+
+    def test_a_review_that_leaves_nothing_to_automate_stops_the_run(self):
+        self.design(DESIGN_CASE)
+        loop.casereview.update(self.job, "design", "TC-001", state="approved", automate=False)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = self.generate(self.agent_that_writes({}))
+        self.assertEqual(rc, 1)
+        self.assertIn("left no case to automate", out.getvalue())
+        self.assertFalse(os.path.exists(os.path.join(self.root, JIRA, "NewTest.java")))
+
+    def test_a_design_from_another_brief_stops_the_run_instead_of_writing_everything(self):
+        self.design(DESIGN_CASE, brief="some-other-brief")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = self.generate(self.agent_that_writes({}))
+        self.assertEqual(rc, 1)
+        self.assertIn("cannot be used", out.getvalue())
+        self.assertIn("different brief", out.getvalue())
+        self.assertFalse(os.path.exists(os.path.join(self.root, JIRA, "NewTest.java")))
+
+    def test_a_job_with_no_design_at_all_still_runs_from_the_plan(self):
+        seen = {}
+        self.assertEqual(self.generate(self.agent_that_writes(seen)), 0)
+        self.assertNotIn("TEST CASES PROPOSED", seen["p"])
+
+
 class AskingForMore(Repo):
     """The reviewer asks Cursor to change what it wrote; the whole change
     stays one diff, one review, one Discard."""
