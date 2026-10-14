@@ -1026,6 +1026,19 @@ and are never put in a prompt. The log names what was shown. And a failed compil
 comes back as **a list of `file:line: message`** (each once, at most
 40) with a short tail, not sixty lines of build output.
 
+**Reading a slow run.** The log carries one `backend request #N` line
+per request the bridge makes to Cursor's backend. One turn is one
+request; a second request in the same run is a retry after a failure,
+and the bridge waits before it -- seconds at first, then minutes (its
+backoff triples each time and caps at five minutes) -- and runs the turn
+again from the start, so Cursor is seen re-reading the same files. A
+run that takes thirty minutes for two cases has usually spent twenty of
+them in these retries, not thinking. The `sdk:` lines are the SDK's own
+log and the `bridge:` lines are the bridge's; a 429 or a 5xx from
+Cursor's backend shows there. Those are Cursor's side (the API key's
+limits, or capacity): check the key's usage on Cursor's dashboard, try
+another model id, or pause before running again.
+
 While Cursor works, the Cursor log shows it: one `cursor:` line per
 status change and per finished tool call, and what Cursor says in words
 as `cursor says:` -- gathered whole, since it arrives a few letters at a

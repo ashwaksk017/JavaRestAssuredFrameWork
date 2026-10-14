@@ -55,6 +55,7 @@ checks them afterwards; and it does not silently switch model.
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import threading
@@ -203,6 +204,32 @@ def describe(message, timing: dict = None) -> str:
         text = _one_line(getattr(message, "text", ""), 200)
         status = getattr(message, "status", "") or ""
         return f"task {status}: {text}".rstrip(": ") if text or status else ""
+    if kind == "request":
+        # One line per request the bridge makes to Cursor's backend. One
+        # turn, one request -- so a second one in the same turn is a RETRY:
+        # the bridge backs off (seconds, then minutes) and runs the turn
+        # again. This is the line that shows where a slow run's time went.
+        n = (timing or {}).get("_requests", 0) + 1
+        if timing is not None:
+            timing["_requests"] = n
+        rid = _one_line(getattr(message, "request_id", ""), 60)
+        return f"backend request #{n}" + (f" {rid}" if rid else "") + (
+            "  (a request after the first in one run is a retry after a failure)" if n > 1 else "")
+    if kind == "usage":
+        u = getattr(message, "usage", None)
+        if u is not None:
+            return (f"usage: {getattr(u, 'input_tokens', '?')} in, {getattr(u, 'output_tokens', '?')} out, "
+                    f"{getattr(u, 'total_tokens', '?')} in all")
+        return "usage"
+    if kind == "system":
+        sub = _one_line(getattr(message, "subtype", ""), 60)
+        model = getattr(message, "model", None)
+        shown = _one_line(getattr(model, "id", None) or getattr(model, "name", None) or model or "", 60)
+        return f"system {sub}".rstrip() + (f" model={shown}" if shown else "")
+    if kind in ("thinking", "user"):
+        return ""                        # thinking is private; the user message is the prompt
+    if kind:
+        return f"cursor {kind}"          # a kind this log did not know: named, not dropped
     return ""
 
 
@@ -296,6 +323,32 @@ def bounded(work, seconds, on_timeout=None, stop=None, on_stop=None):
     if "error" in box:
         raise box["error"]
     return box["value"]
+
+
+def _bridge_stderr(agent, sdk):
+    """The stderr pipe of the bridge process the SDK launched, when it can
+    be found. After startup nothing in the SDK reads it (1.0.37): the
+    bridge's account of retries and backoff goes into a pipe nobody
+    drains. Best effort; None when the shape is not the one known."""
+    for owner in (getattr(getattr(agent, "client", None), "_owned_bridge", None),
+                  getattr(getattr(sdk, "_client", None), "_DEFAULT_BRIDGE", None)):
+        process = getattr(owner, "process", None)
+        stream = getattr(process, "stderr", None)
+        if stream is not None and hasattr(stream, "readline"):
+            return stream
+    return None
+
+
+class _ForwardToLog(logging.Handler):
+    def __init__(self, emit):
+        super().__init__(level=logging.INFO)
+        self._emit = emit
+
+    def emit(self, record):                              # noqa: A003
+        try:
+            self._emit(f"sdk: {record.getMessage()}"[:600])
+        except Exception:                                # noqa: BLE001
+            pass
 
 
 def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
@@ -459,12 +512,29 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
                 diagnostics.append(line)
         flush_said()
 
+    def drain_bridge(agent) -> None:
+        """The bridge's stderr, line by line, into the log as `bridge:`."""
+        stream = _bridge_stderr(agent, cursor_sdk)
+        if stream is None:
+            return
+
+        def pump():
+            try:
+                for raw in iter(stream.readline, ""):
+                    line = raw.rstrip() if isinstance(raw, str) else raw.decode("utf-8", "replace").rstrip()
+                    if line and not stopped.is_set():
+                        emit(f"bridge: {line[:600]}")
+            except Exception:                            # noqa: BLE001
+                pass
+        threading.Thread(target=pump, daemon=True, name="cursor-bridge-stderr").start()
+
     def session():
         options = AgentOptions(api_key=cfg.api_key, model=cfg.model, mode=mode,
                                local=LocalAgentOptions(cwd=cwd))
         with Agent.create(options) as agent:
             live["agent"] = agent
             still_wanted(agent)
+            drain_bridge(agent)
             run_ = agent.send(prompt)
             live["run"] = run_
             still_wanted(agent, run_)
@@ -493,6 +563,13 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
 
     done = threading.Event()
     threading.Thread(target=pulse, args=(done,), daemon=True, name="cursor-pulse").start()
+    # What the SDK says to its own logger (connects, retries, errors) is
+    # part of this run's story: it goes into the same log while it runs.
+    sdk_log = logging.getLogger("cursor_sdk")
+    forward = _ForwardToLog(emit)
+    sdk_log.addHandler(forward)
+    if sdk_log.level == logging.NOTSET or sdk_log.level > logging.INFO:
+        sdk_log.setLevel(logging.INFO)
     try:
         result, text = bounded(session, deadline_seconds, gave_up, stop=quiet_stop, on_stop=went_quiet)
     except CursorCallError:
@@ -535,6 +612,7 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
         raise CursorCallError(f"unexpected error calling the agent: {e}", "run") from e
     finally:
         done.set()
+        sdk_log.removeHandler(forward)
 
     status = str(getattr(result, "status", "") or "")
     run_id = str(getattr(result, "id", "") or "")

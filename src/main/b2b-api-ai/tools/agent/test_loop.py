@@ -15,6 +15,7 @@ _os.environ["WORKBENCH_MOCK"] = "0"      # these tests are about the real paths
 
 import importlib.util
 import io
+import logging
 from contextlib import redirect_stdout
 import json
 import os
@@ -2034,6 +2035,46 @@ class CallingCursor(unittest.TestCase):
                         seen.index("task running: Writing the data sheet"), "said before the next tool")
         self.assertIn("task running: Writing the data sheet", seen)
         self.assertFalse(any("private" in s for s in seen), "thinking is not logged")
+
+    def test_every_kind_of_message_leaves_a_line_and_a_second_request_is_called_a_retry(self):
+        NS = types.SimpleNamespace
+        msgs = [NS(type="system", subtype="init", model=NS(id="composer-x")),
+                NS(type="request", request_id="req-1"),
+                NS(type="assistant", message=NS(content=[NS(type="text", text="Reading the skill.")])),
+                NS(type="request", request_id="req-2"),
+                NS(type="assistant", message=NS(content=[NS(type="text", text="Reading the skill.")])),
+                NS(type="usage", usage=NS(input_tokens=1200, output_tokens=300, total_tokens=1500)),
+                NS(type="turn-ended"),
+                NS(type="thinking", text="private")]
+        self.use(FakeSdk(messages=msgs))
+        seen = []
+        loop.cursor_call.run("p", self.ca, self.cfg, on_event=seen.append)
+        self.assertIn("system init model=composer-x", seen)
+        self.assertIn("backend request #1 req-1", seen)
+        self.assertIn("backend request #2 req-2  (a request after the first in one run is a retry after a failure)", seen)
+        self.assertIn("usage: 1200 in, 300 out, 1500 in all", seen)
+        self.assertIn("cursor turn-ended", seen, "a kind the log does not know is named, not dropped")
+        self.assertFalse(any("private" in s for s in seen))
+
+    def test_the_sdks_own_logger_and_the_bridges_stderr_reach_the_log(self):
+        NS = types.SimpleNamespace
+
+        def talks():
+            logging.getLogger("cursor_sdk").info("connect: retrying after 503")
+            yield NS(type="assistant", message=NS(content=[NS(type="text", text="done.")]))
+        self.use(FakeSdk(messages=talks()))
+        self.addCleanup(setattr, loop.cursor_call, "_bridge_stderr", loop.cursor_call._bridge_stderr)
+        loop.cursor_call._bridge_stderr = lambda agent, sdk: io.StringIO(
+            "[turn-runner] Endless retry delay selected {selectedDelayMs: 81000}\n")
+        seen = []
+        loop.cursor_call.run("p", self.ca, self.cfg, on_event=seen.append)
+        self.assertIn("sdk: connect: retrying after 503", seen)
+        deadline = time.monotonic() + 2
+        while not any(s.startswith("bridge: ") for s in seen) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertIn("bridge: [turn-runner] Endless retry delay selected {selectedDelayMs: 81000}", seen)
+        self.assertFalse(any(isinstance(h, loop.cursor_call._ForwardToLog)
+                             for h in logging.getLogger("cursor_sdk").handlers), "handler removed after the run")
 
     def test_a_long_silence_is_said_while_it_lasts(self):
         NS = types.SimpleNamespace
