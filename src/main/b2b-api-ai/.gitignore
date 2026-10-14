@@ -162,3 +162,9 @@ tools/ra_converter/fluent_catalog.json
 # turned out to be (tools/failure_history.py). Not under target/: mvn clean
 # would take the history with it. Notes are free text, so it is not tracked.
 .failure-history/
+
+# Everything the test workbench knows (tools/agent): one folder a job --
+# brief, plan, design, review decisions, Xray keys, the change waiting
+# for review -- and the server's logs. Not under target/, for the same
+# reason: mvn clean would take it all.
+.workbench/

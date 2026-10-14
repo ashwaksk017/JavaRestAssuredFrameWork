@@ -64,7 +64,7 @@ class Mocked(unittest.TestCase):
         return rc, out.getvalue()
 
     def result(self, name, job="j1"):
-        with io.open(os.path.join(self.root, "target", "agent", job, name), encoding="utf-8") as fh:
+        with io.open(os.path.join(self.root, ".workbench", job, name), encoding="utf-8") as fh:
             return json.load(fh)
 
 
@@ -251,7 +251,7 @@ class DefectsAgainstTheStandIns(Mocked):
                                 "--reason", "Code defect", "--confirm", "ABC-101")
         self.assertEqual(rc, 0)
         self.assertIn("Jira now holds 'Code defect'", out)
-        store = os.path.join(self.root, "target", "agent", "mock-jira.json")
+        store = os.path.join(self.root, ".workbench", "mock-jira.json")
         self.assertEqual(json.load(io.open(store, encoding="utf-8")),
                          {"ABC-101": {"value": "Code defect"}})
         # ...and it is still there the next time the bugs are loaded.
@@ -331,7 +331,7 @@ class DefectsAgainstTheStandIns(Mocked):
                      ("--key", "ABC-101", "--reason", "Made up", "--confirm", "ABC-101")):
             rc, out = self.run_main(defects.main, "apply", "--job", "j1", *argv)
             self.assertEqual(rc, 2, argv)
-        self.assertFalse(os.path.exists(os.path.join(self.root, "target", "agent", "mock-jira.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, ".workbench", "mock-jira.json")))
 
 
 class DesignAgainstTheStandIn(Mocked):
@@ -354,19 +354,19 @@ class DesignAgainstTheStandIn(Mocked):
         self.assertEqual(len(d["test_cases"]), 6, "two per endpoint")
         self.assertTrue(all(c["endpoint_in_spec"] for c in d["test_cases"]))
         self.assertTrue(all(c["title"].startswith("[MOCK]") for c in d["test_cases"]))
-        md = io.open(os.path.join(self.root, "target", "agent", "j1", "design.md"),
+        md = io.open(os.path.join(self.root, ".workbench", "j1", "design.md"),
                      encoding="utf-8").read()
         self.assertIn("MOCK. This is not a design.", md)
 
     def test_a_mock_design_is_not_handed_to_the_agent_as_proposed_test_cases(self):
         with redirect_stdout(io.StringIO()):
             design.design("j1", swagger=json.dumps(self.SPEC), root=self.root)
-        text, note = loop.designed_cases(os.path.join(self.root, "target", "agent", "j1"))
+        text, note = loop.designed_cases(os.path.join(self.root, ".workbench", "j1"))
         self.assertEqual(text, "")
         self.assertIn("is a MOCK", note)
 
     def test_ask_again_in_mock_mode_keeps_what_cursor_was_paid_for(self):
-        out = os.path.join(self.root, "target", "agent", "j1")
+        out = os.path.join(self.root, ".workbench", "j1")
         design.cache_put(out, "a" * 64, '{"test_cases": []}', "composer-2.5")
         design.cache_put(out, "b" * 64, '{"test_cases": []}', "mock")
         with redirect_stdout(io.StringIO()):
@@ -402,12 +402,12 @@ class TheAgentLoopAgainstTheStandIn(Mocked):
         git("init", "-q", "-b", "main")
         git("config", "user.email", "t@example.com")
         git("config", "user.name", "t")
-        for rel, text in ((".gitignore", "target/\n"), ("README.md", "x\n")):
+        for rel, text in ((".gitignore", "target/\n.workbench/\n"), ("README.md", "x\n")):
             with io.open(os.path.join(self.repo, rel), "w") as fh:
                 fh.write(text)
         git("add", "-A")
         git("commit", "-q", "-m", "base")
-        self.job = os.path.join(self.repo, "target", "agent", "j1")
+        self.job = os.path.join(self.repo, ".workbench", "j1")
         os.makedirs(self.job)
         for name in ("plan.md", "brief.md"):
             with io.open(os.path.join(self.job, name), "w") as fh:

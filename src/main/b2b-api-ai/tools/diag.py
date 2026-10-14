@@ -6,13 +6,13 @@ and the page serves that output. That is the right default for a page and
 the wrong one for whoever has to find the fault. This module keeps the
 rest, somewhere that is not served as command output:
 
-    target/agent/<job>/diagnostics.log   every command run for the job:
+    .workbench/<job>/diagnostics.log   every command run for the job:
                                          when, with what options, how long,
                                          its exit code, and the full
                                          traceback of every error -- the
                                          ones it handled as well as the
                                          ones it did not
-    target/agent/server.log              the web server: requests that
+    .workbench/server.log              the web server: requests that
                                          failed, every request that starts
                                          or changes something, errors in
                                          the page's own script
@@ -75,15 +75,57 @@ def level() -> str:
     return "debug" if v == "debug" else "on"
 
 
+# Where the workbench keeps everything it knows: one folder a job, plus
+# the server's logs. NOT under target/: `mvn clean` deletes target/, and
+# with it would go every brief, design, review decision, Xray key and
+# change waiting for review. Same rule as .failure-history/ and
+# .agent-patches/; gitignored like them.
+STATE_REL = ".workbench"
+_OLD_STATE = os.path.join("target", "agent")
+
+
+def state_dir(root: str = "") -> str:
+    return os.path.join(root or ROOT, STATE_REL)
+
+
+def migrate_state(root: str = "") -> list:
+    """Jobs and logs left under the old folder (target/agent) move into
+    STATE_REL, entry by entry, each only when the new folder has none of
+    that name. Returns what moved. A file still held open (an old server's
+    console log) is left where it is; the old folder is removed when it
+    is empty. Safe to call at every start."""
+    root = root or ROOT
+    old = os.path.join(root, _OLD_STATE)
+    if not os.path.isdir(old):
+        return []
+    new = state_dir(root)
+    os.makedirs(new, exist_ok=True)
+    moved = []
+    for name in sorted(os.listdir(old)):
+        src, dst = os.path.join(old, name), os.path.join(new, name)
+        if os.path.exists(dst):
+            continue
+        try:
+            os.replace(src, dst)
+            moved.append(name)
+        except OSError:
+            pass
+    try:
+        os.rmdir(old)
+    except OSError:
+        pass
+    return moved
+
+
 def job_log(job: str, root: str = "") -> str:
     """Where a job's record is kept, or "" for something that is not a job id."""
     if not _JOB_RX.match(job or "") or job in (".", ".."):
         return ""
-    return os.path.join(root or ROOT, "target", "agent", job, JOB_LOG)
+    return os.path.join(state_dir(root), job, JOB_LOG)
 
 
 def server_log(root: str = "") -> str:
-    return os.path.join(root or ROOT, "target", "agent", SERVER_LOG)
+    return os.path.join(state_dir(root), SERVER_LOG)
 
 
 # ---- what must not be written ----------------------------------------------

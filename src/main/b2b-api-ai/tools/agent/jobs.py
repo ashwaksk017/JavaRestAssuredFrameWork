@@ -75,7 +75,7 @@ RUNNABLES = {
     },
     # Takes the specification attached to a Confluence page into the job
     # directory. A link and an attachment name; no path. Reads Confluence
-    # (GET only), writes target/agent/<job>/spec/.
+    # (GET only), writes .workbench/<job>/spec/.
     "spec-confluence": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "specsource.py"), "confluence"],
         "label": "Take the API specification attached to a Confluence page",
@@ -565,7 +565,7 @@ def _read_body(stream, length: int, limit: int) -> bytes:
 
 
 def save_doc(job: str, name: str, stream, length: int) -> dict:
-    """A chosen file becomes target/agent/<job>/docs/<name>."""
+    """A chosen file becomes .workbench/<job>/docs/<name>."""
     out = job_dir(job)                        # validates the job id first
     tool = _tool("manualtests")
     try:
@@ -593,7 +593,7 @@ def remove_doc(job: str, name: str = "") -> int:
 
 
 def save_spec(job: str, name: str, stream, length: int) -> dict:
-    """A chosen file becomes target/agent/<job>/spec/<name>, if it is a
+    """A chosen file becomes .workbench/<job>/spec/<name>, if it is a
     specification. Answers with where it is and what is in it."""
     out = job_dir(job)                        # validates the job id first
     if length <= 0:
@@ -925,7 +925,7 @@ def _write(path: str, payload: dict) -> None:
 
 
 def list_jobs() -> list:
-    base = os.path.join(ROOT, "target", "agent")
+    base = os.path.join(ROOT, ".workbench")
     if not os.path.isdir(base):
         return []
     out = []

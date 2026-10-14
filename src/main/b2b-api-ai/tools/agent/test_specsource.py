@@ -55,7 +55,7 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="b2b-spec-")
         self.addCleanup(shutil.rmtree, self.root, True)
-        self.job = os.path.join(self.root, "target", "agent", "j1")
+        self.job = os.path.join(self.root, ".workbench", "j1")
         os.makedirs(self.job)
 
     def fetch(self, rows, name=""):
@@ -70,7 +70,7 @@ class AFileChosen(Base):
                         self.root)
         self.assertEqual({k: got[k] for k in ("name", "path", "endpoints", "format", "origin")},
                          {"name": "Orders API.json", "endpoints": 3, "format": "JSON",
-                          "path": "target/agent/j1/spec/Orders API.json",
+                          "path": ".workbench/j1/spec/Orders API.json",
                           "origin": "chosen on the page"})
         self.assertEqual(sorted(os.listdir(os.path.join(self.job, "spec"))),
                          ["Orders API.json", "_kept.json"])
@@ -352,7 +352,7 @@ class FoundByTheReview(Base):
             fh.write("```\n" + OTHER.decode() + "\n```\n")
         with io.open(os.path.join(self.job, "intake.json"), "w") as fh:
             json.dump({"links": [{"ok": True, "dir": "01-confluence", "files": ["p.md"]}]}, fh)
-        other_job = os.path.join(self.root, "target", "agent", "j2")
+        other_job = os.path.join(self.root, ".workbench", "j2")
         os.makedirs(other_job)
         seen = []
 
@@ -578,7 +578,7 @@ class Declared(unittest.TestCase):
         self.addCleanup(lambda: (setattr(jobs, "ROOT", saved[0]),
                                  setattr(jobs.intake, "ROOT", saved[1])))
         got = jobs.save_spec("j1", "orders.json", io.BytesIO(SPEC), len(SPEC))
-        self.assertEqual((got["path"], got["endpoints"]), ("target/agent/j1/spec/orders.json", 3))
+        self.assertEqual((got["path"], got["endpoints"]), (".workbench/j1/spec/orders.json", 3))
         self.assertEqual(jobs.spec_state("j1")["name"], "orders.json")
         for job, name, data, length in (("j1", "x.json", b'{"a": 1}', None),
                                         ("j1", "x.exe", SPEC, None),

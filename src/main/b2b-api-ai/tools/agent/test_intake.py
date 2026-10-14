@@ -172,7 +172,7 @@ class JobIdIsUserInput(Base):
 
     def test_an_absolute_job_id_cannot_escape_the_job_root(self):
         """os.path.join lets an absolute second argument win outright,
-        so this did not land under target/agent at all."""
+        so this did not land under .workbench at all."""
         for bad in ("C:/Windows/Temp", "/etc", r"\server\share"):
             with self.assertRaises(ValueError, msg=bad):
                 intake.job_dir(bad, self.tmp)
@@ -640,7 +640,7 @@ class StoryFromAnUntrustedJira(Story):
         self.assertTrue(saved_to)
         for where in saved_to:
             self.assertTrue(os.path.realpath(where).startswith(job + os.sep), where)
-        self.assertFalse(os.path.exists(os.path.join(self.tmp, "target", "agent", "ESCAPED")))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, ".workbench", "ESCAPED")))
 
     def test_a_parent_key_that_is_not_a_key_is_not_followed(self):
         self.issues["ABC-1"]["fields"]["parent"] = {"key": "../../../plugins/servlet/x?y=1#"}

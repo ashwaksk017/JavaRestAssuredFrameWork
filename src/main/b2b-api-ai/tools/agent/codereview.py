@@ -882,7 +882,7 @@ def main(argv=None, agent=None) -> int:
             say(f"  NOT REVIEWED {f['file']}: {f['why']}")
     for f in r["failures"]:
         say(f"  FAILED {f}")
-    say(f"  report: target/agent/{a.job}/{REPORT}")
+    say(f"  report: .workbench/{a.job}/{REPORT}")
     return 0 if r["whole"] else 1
 
 

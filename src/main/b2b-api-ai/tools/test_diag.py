@@ -25,7 +25,7 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="b2b-diag-")
         self.addCleanup(shutil.rmtree, self.root, True)
-        self.job = os.path.join(self.root, "target", "agent", "j1")
+        self.job = os.path.join(self.root, ".workbench", "j1")
         os.makedirs(self.job)
         os.makedirs(os.path.join(self.root, "src", "main", "resources"))
         self.config({"jira_config": {"pat": TOKEN, "base_urls": ["https://jira.example.com"]},
@@ -131,7 +131,7 @@ class ACommand(Base):
 
     def test_a_mistyped_job_does_not_become_a_job_by_being_logged(self):
         self.assertEqual(self.run_cmd(lambda: 2, argv=("--job", "nosuchjob")), 2)
-        self.assertFalse(os.path.exists(os.path.join(self.root, "target", "agent", "nosuchjob")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, ".workbench", "nosuchjob")))
         for bad in ("../x", "", "a/b", "C:\\x"):
             self.assertEqual(diag.job_log(bad, self.root), "")
         self.assertEqual(self.run_cmd(lambda: 0, argv=("--job=j1",)), 0)
@@ -257,7 +257,7 @@ class TheServer(Base):
                              "    REFUSED the key must be given twice"], self.root)
         self.assertIn("REFUSED the key must be given twice", self.log())
         diag.job_note("nosuchjob", "x", self.root)
-        self.assertFalse(os.path.exists(os.path.join(self.root, "target", "agent", "nosuchjob")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, ".workbench", "nosuchjob")))
 
 
 class EveryCommandIsOnRecord(unittest.TestCase):
@@ -367,6 +367,34 @@ class Step(unittest.TestCase):
                 text = fh.read()
             self.assertIn("diag.step(", text, rel)
             self.assertIn(phrase, text, rel)
+
+
+
+class TheStateFolder(unittest.TestCase):
+    """The workbench's state is not under target/, and what was there moves."""
+
+    def test_the_folder_and_the_move(self):
+        import shutil
+        root = tempfile.mkdtemp(prefix="diag-state-")
+        self.addCleanup(shutil.rmtree, root, True)
+        self.assertEqual(diag.state_dir(root), os.path.join(root, ".workbench"))
+        self.assertTrue(diag.job_log("j1", root).startswith(os.path.join(root, ".workbench", "j1")))
+        self.assertNotIn("target", diag.server_log(root))
+        old = os.path.join(root, "target", "agent")
+        os.makedirs(os.path.join(old, "job1"))
+        with io.open(os.path.join(old, "job1", "brief.md"), "w", encoding="utf-8") as fh:
+            fh.write("the brief\n")
+        with io.open(os.path.join(old, "server.log"), "w", encoding="utf-8") as fh:
+            fh.write("log\n")
+        os.makedirs(os.path.join(root, ".workbench", "job1"))        # already there: kept, not replaced
+        moved = diag.migrate_state(root)
+        self.assertEqual(moved, ["server.log"])
+        self.assertTrue(os.path.isfile(os.path.join(root, ".workbench", "server.log")))
+        self.assertTrue(os.path.isdir(os.path.join(old, "job1")), "a job the new folder already has stays put")
+        self.assertEqual(diag.migrate_state(os.path.join(root, "nowhere")), [], "no old folder: nothing to do")
+        shutil.rmtree(os.path.join(root, ".workbench", "job1"))
+        self.assertEqual(diag.migrate_state(root), ["job1"])
+        self.assertFalse(os.path.exists(old), "the old folder is removed once empty")
 
 
 if __name__ == "__main__":

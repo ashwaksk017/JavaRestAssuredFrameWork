@@ -505,7 +505,7 @@ $("design-requirements-file").onchange = async () => {
 };
 
 // The specification is different: it is kept as a FILE for the job, under
-// target/agent/<job>/spec/, whether it was chosen here or taken from a
+// .workbench/<job>/spec/, whether it was chosen here or taken from a
 // Confluence page's attachments. The design step reads it from there when
 // nothing is pasted. The page is told where it was put; it names no path.
 async function showSpec(j, note) {
@@ -1188,7 +1188,7 @@ for (const [btn, runnable] of [["run-keys", "audit-service-keys"],
 }
 
 // ---- manual tests ------------------------------------------------------
-// Requirement files are kept for the job under target/agent/<job>/docs/,
+// Requirement files are kept for the job under .workbench/<job>/docs/,
 // as the specification is: the page sends the file and is told the path.
 // Everything shown here that came from a document, from Jira or from
 // Cursor is put on the page as text.
@@ -1617,7 +1617,7 @@ function onlyErrors(text) {
 async function showLogs() {
   const j = job();
   const filter = (text) => ($("logs-errors").checked ? onlyErrors(text) : text) || "—";
-  $("logs-job-path").textContent = j ? `target/agent/${j}/diagnostics.log` : "name the job (top right)";
+  $("logs-job-path").textContent = j ? `.workbench/${j}/diagnostics.log` : "name the job (top right)";
   let mine = "", server = "";
   if (j) {
     try { mine = (await api(`/api/diag?job=${encodeURIComponent(j)}&which=job`)).text || ""; }

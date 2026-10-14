@@ -449,7 +449,7 @@ class Run(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="designtest_root_")
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
-        self.out = os.path.join(self.root, "target", "agent", "j1")
+        self.out = os.path.join(self.root, ".workbench", "j1")
         self.prompts = []
 
     def agent(self, *replies, ask=True):

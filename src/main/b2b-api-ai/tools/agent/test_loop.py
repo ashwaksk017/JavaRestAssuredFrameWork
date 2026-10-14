@@ -63,7 +63,7 @@ class Repo(unittest.TestCase):
         sh(self.root, "config", "user.email", "t@example.com")
         sh(self.root, "config", "user.name", "t")
         sh(self.root, "config", "core.autocrlf", "false")
-        write(self.root, ".gitignore", "target/\n" + GEN + "\n" + IMPORTED + "\n"
+        write(self.root, ".gitignore", "target/\n.workbench/\n" + GEN + "\n" + IMPORTED + "\n"
               + CSV + "*\n!" + CSV + "manual/\n")
         write(self.root, "README.md", "hello\n")
         write(self.root, JIRA + "ExistingTest.java", "class ExistingTest {}\n")
@@ -75,10 +75,10 @@ class Repo(unittest.TestCase):
         write(self.root, "tools/ra_converter/ra_converter.py", "X = 1\n")
         sh(self.root, "add", "-A")
         sh(self.root, "commit", "-q", "-m", "base")
-        self.job = os.path.join(self.root, "target", "agent", "job1")
+        self.job = os.path.join(self.root, ".workbench", "job1")
         os.makedirs(self.job)
-        write(self.root, "target/agent/job1/plan.md", "# plan\ncreate POST /x\n")
-        write(self.root, "target/agent/job1/brief.md", "# brief\nPOST /x expect 201\n")
+        write(self.root, ".workbench/job1/plan.md", "# plan\ncreate POST /x\n")
+        write(self.root, ".workbench/job1/brief.md", "# brief\nPOST /x expect 201\n")
         self.policy = loop.load_policy(os.path.join(self.root, "no-policy.json"))
 
     def generate(self, agent, verifier=OK, scope="new-test", suite=""):
@@ -145,7 +145,7 @@ class TheReviewDecidesWhatIsWritten(Repo):
     def design(self, *cases, brief=None):
         data = {"kind": "design", "mock": False, "test_cases": list(cases),
                 "brief": loop.brief_fingerprint(self.job) if brief is None else brief}
-        write(self.root, "target/agent/job1/design.json", json.dumps(data))
+        write(self.root, ".workbench/job1/design.json", json.dumps(data))
 
     def agent_that_writes(self, seen):
         def agent(prompt):
@@ -170,7 +170,7 @@ class TheReviewDecidesWhatIsWritten(Repo):
     FULL_BRIEF = SMALL_BRIEF.replace("{fill}", PAGE_FILL)
 
     def test_once_reviewed_the_brief_is_trimmed_to_the_story_the_requests_and_the_tables(self):
-        write(self.root, "target/agent/job1/brief.md", self.FULL_BRIEF)
+        write(self.root, ".workbench/job1/brief.md", self.FULL_BRIEF)
         self.design(DESIGN_CASE)
         loop.casereview.update(self.job, "design", "TC-001", state="approved")
         seen = {}
@@ -183,14 +183,14 @@ class TheReviewDecidesWhatIsWritten(Repo):
         self.assertIn("## Table rows kept from the Confluence pages (2 of 2)", p)
         self.assertIn("| rateType | enum | BAR, CORP, GOV |", p)
         self.assertIn("(Around the story, Confluence pages, Sources, Next were left out", p)
-        self.assertIn("The whole brief is at target/agent/job1/brief.md", p)
+        self.assertIn("The whole brief is at .workbench/job1/brief.md", p)
         for gone in ("The epic text, long.", "Field table from the wiki page.", "## Sources",
                      "wiki.example.test", "## Next", "filler line 5 of", "in the parent"):
             self.assertNotIn(gone, p, gone)
         self.assertIn("A PERSON HAS REVIEWED", p)
 
     def test_unreviewed_cases_a_short_brief_or_the_policy_keep_the_whole_brief(self):
-        write(self.root, "target/agent/job1/brief.md", self.FULL_BRIEF)
+        write(self.root, ".workbench/job1/brief.md", self.FULL_BRIEF)
         self.design(DESIGN_CASE)
         seen = {}
         self.assertEqual(self.generate(self.agent_that_writes(seen)), 0)
@@ -208,7 +208,7 @@ class TheReviewDecidesWhatIsWritten(Repo):
         self.assertNotIn("left out", seen["p"])
 
     def test_a_short_brief_is_handed_whole_even_after_review(self):
-        write(self.root, "target/agent/job1/brief.md", self.SMALL_BRIEF.replace("{fill}", ""))
+        write(self.root, ".workbench/job1/brief.md", self.SMALL_BRIEF.replace("{fill}", ""))
         self.design(DESIGN_CASE)
         loop.casereview.update(self.job, "design", "TC-001", state="approved")
         seen = {}
@@ -220,7 +220,7 @@ class TheReviewDecidesWhatIsWritten(Repo):
     def test_the_cut_is_made_on_the_whole_file_not_on_a_capped_read(self):
         big = self.SMALL_BRIEF.replace("{fill}", "\n".join("> page text %d" % n for n in range(5000)))
         self.assertGreater(len(big), loop.BRIEF_CAP)
-        write(self.root, "target/agent/job1/brief.md", big)
+        write(self.root, ".workbench/job1/brief.md", big)
         head, text = loop.brief_for_agent(self.job, self.policy, decided=True)
         self.assertIn("## Requests read", text, "the requests come after the pages in the file")
         self.assertIn(f"of {len(big):,} characters left out", head)
@@ -324,7 +324,7 @@ class AskingForMore(Repo):
         self.assertEqual(self.state()["state"], "pending-review")
 
     def ask(self, text, agent, verifier=OK):
-        write(self.root, "target/agent/job1/agent-followup.txt", text)
+        write(self.root, ".workbench/job1/agent-followup.txt", text)
         return loop.cmd_followup(self.job, self.root, self.policy, agent=agent, verifier=verifier)
 
     def test_the_follow_up_works_on_the_same_files_and_the_diff_is_the_whole_change(self):
@@ -711,7 +711,7 @@ class VerifyAndRepair(Repo):
         write(self.root, "src/main/java/Framework.java", "class Framework { /* touched */ }\n")
         loop.compile_baseline_cached(self.root, self.policy, scope, runner=runner, say_=said.append)
         self.assertEqual(len(calls), 2, "a changed tree is compiled again")
-        self.assertFalse(os.path.exists(os.path.join(self.root, "target", "agent", "compile-baseline.json")) is False)
+        self.assertFalse(os.path.exists(os.path.join(self.root, ".workbench", "compile-baseline.json")) is False)
 
     def test_the_generated_copy_is_skipped_when_it_is_still_exact(self):
         write(self.root, "src/main/java/com/hi/api/support/amex/Hooks.java", "class Hooks {}\n")
@@ -935,7 +935,7 @@ class ARunThatTimedOut(Repo):
     def test_an_ignored_file_that_was_already_there_survives_the_clean_up(self):
         """git reports a folder as ONE ignored entry once its tracked files
         are gone. Taking that entry whole took the reviewer's local file."""
-        write(self.root, ".gitignore", "target/\n*.env\n")
+        write(self.root, ".gitignore", "target/\n.workbench/\n*.env\n")
         write(self.root, "data/x.txt", "tracked\n")
         sh(self.root, "add", "-A")
         sh(self.root, "commit", "-q", "-m", "data")
@@ -1277,9 +1277,9 @@ class SurvivesAReconvert(Repo):
             seen["p"] = prompt
             write(self.root, GEN + "amex/Other.java", "class Other {}\n")
             return {"result": ""}
-        job2 = os.path.join(self.root, "target", "agent", "job2")
+        job2 = os.path.join(self.root, ".workbench", "job2")
         os.makedirs(job2)
-        write(self.root, "target/agent/job2/plan.md", "# plan\n")
+        write(self.root, ".workbench/job2/plan.md", "# plan\n")
         self.assertEqual(loop.cmd_generate(job2, self.root, self.policy, "converted", "amex",
                                            agent=agent, verifier=OK), 0)
         self.assertIn("Changes already approved for this suite", seen["p"])
@@ -1540,9 +1540,9 @@ class StoredChangesInOrder(Repo):
     V0 = "class Hooks {\n    int a;\n    int b;\n    int c;\n}\n"
 
     def approve(self, job, text):
-        d = os.path.join(self.root, "target", "agent", job)
+        d = os.path.join(self.root, ".workbench", job)
         os.makedirs(d, exist_ok=True)
-        write(self.root, f"target/agent/{job}/plan.md", "# plan\n")
+        write(self.root, f".workbench/{job}/plan.md", "# plan\n")
         def agent(_prompt):
             write(self.root, self.HOOK, text)
             return {"result": ""}
@@ -1685,13 +1685,13 @@ class AProjectBelowTheRepositoryTop(unittest.TestCase):
         sh(top, "config", "user.email", "t@example.com")
         sh(top, "config", "user.name", "t")
         root = os.path.join(top, "src", "main", "proj")
-        write(top, ".gitignore", "target/\n")
+        write(top, ".gitignore", "target/\n.workbench/\n")
         write(top, "TOP.md", "top\n")
         write(root, JIRA + "ExistingTest.java", "class ExistingTest {}\n")
         sh(top, "add", "-A")
         sh(top, "commit", "-q", "-m", "base")
-        job = os.path.join(root, "target", "agent", "job1")
-        write(root, "target/agent/job1/plan.md", "# plan\n")
+        job = os.path.join(root, ".workbench", "job1")
+        write(root, ".workbench/job1/plan.md", "# plan\n")
         policy = loop.load_policy(os.path.join(root, "none.json"))
 
         def agent(_prompt):
@@ -1709,8 +1709,8 @@ class AProjectBelowTheRepositoryTop(unittest.TestCase):
         def good(_prompt):
             write(root, JIRA + "NewTest.java", "class NewTest {}\n")
             return {"result": ""}
-        write(root, "target/agent/job2/plan.md", "# plan\n")
-        job2 = os.path.join(root, "target", "agent", "job2")
+        write(root, ".workbench/job2/plan.md", "# plan\n")
+        job2 = os.path.join(root, ".workbench", "job2")
         self.assertEqual(loop.cmd_generate(job2, root, policy, agent=good, verifier=OK), 0,
                          "NEGATIVE CONTROL: an in-scope change in a nested project still passes")
 
@@ -1738,7 +1738,7 @@ class WhatApprovePublishes(Push):
         self.assertEqual(sh(self.remote, "branch", "--list", "agent/*"), "")
 
     def test_the_pasted_story_is_not_in_the_commit_message(self):
-        write(self.root, "target/agent/job1/brief.md",
+        write(self.root, ".workbench/job1/brief.md",
               "# brief\nSee https://jira.internal.corp.test/browse/SECRET-1\n")
         self.pending()
         self.assertEqual(self.push(), 0)

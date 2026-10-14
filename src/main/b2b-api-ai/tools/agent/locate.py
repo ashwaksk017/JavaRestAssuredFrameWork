@@ -4,7 +4,7 @@
     python tools/agent/locate.py --job j1 --index target/shape-index.json
 
 Stage 3 of the story-to-test plan. Reads the brief's requests from
-`target/agent/<job>/intake.json`, matches each against everything
+`.workbench/<job>/intake.json`, matches each against everything
 already converted, and writes a plan saying -- per request -- whether to
 create, update, or stop.
 

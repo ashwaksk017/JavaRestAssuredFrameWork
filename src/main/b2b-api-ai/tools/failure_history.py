@@ -79,7 +79,7 @@ way?"). Its weights were tuned on one team's tickets and are not used.
 FOR THE WORKBENCH PAGE
 ----------------------
 With `--job J` every command also writes what it found to
-`target/agent/J/failures-result.json` -- the comparison as data, built
+`.workbench/J/failures-result.json` -- the comparison as data, built
 by `analyse()`, which is also what the console report is printed from.
 The page and the console therefore cannot disagree: there is one
 analysis and two ways of showing it.
@@ -635,7 +635,7 @@ def job_result_path(root: str, job: str) -> str:
     j = (job or "").strip()
     if not _JOB_RX.match(j) or j in (".", ".."):
         return ""
-    return os.path.join(root, "target", "agent", j, JOB_RESULT)
+    return os.path.join(root, ".workbench", j, JOB_RESULT)
 
 
 def tell(root: str, job: str, payload: dict) -> None:

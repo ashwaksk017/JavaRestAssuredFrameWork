@@ -13,7 +13,7 @@ service. There is no other difference to configure.
     "jira":   true   every Jira request is answered here: the token
                      check, versions, searches, a bug's edit screen,
                      and a WRITE -- which is remembered in
-                     target/agent/mock-jira.json and goes nowhere else.
+                     .workbench/mock-jira.json and goes nowhere else.
                      No jira_config, host or token is needed or read.
     "cursor": true   every Cursor call is answered here: test design,
                      defect reasons, and the Agentic Test Creation tab -- which writes
@@ -126,7 +126,7 @@ def on(service: str) -> bool:
 CONN = {"base": "https://mock-jira.invalid", "bases": ["https://mock-jira.invalid"],
         "token": "mock-token-not-a-credential", "timeout": 5, "api": "/rest/api/2",
         "cleartext": False, "mock": True}
-_STORE = os.path.join("target", "agent", "mock-jira.json")
+_STORE = os.path.join(".workbench", "mock-jira.json")
 
 
 def _written(root: str) -> dict:
@@ -147,7 +147,7 @@ def jira_attach(root: str, key: str, filename: str, size: int) -> None:
 
 
 CONFLUENCE_SPACES = ("QA",)
-_CONF_STORE = os.path.join("target", "agent", "mock-confluence.json")
+_CONF_STORE = os.path.join(".workbench", "mock-confluence.json")
 
 
 def _pages(root: str) -> list:

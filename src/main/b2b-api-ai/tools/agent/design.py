@@ -11,7 +11,7 @@ specification, the requirements and the story, and gets back a list of
 test cases -- each with an endpoint, steps and a checkable expected
 result -- for a person to read before tab 3 turns any of it into Java.
 
-It writes into target/agent/<job>/ and nowhere else:
+It writes into .workbench/<job>/ and nowhere else:
 
     design.json      everything, for the next stage and for the page
     design.md        the same, to read

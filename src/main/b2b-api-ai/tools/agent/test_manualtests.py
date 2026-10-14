@@ -78,7 +78,7 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="b2b-manual-")
         self.addCleanup(shutil.rmtree, self.root, True)
-        self.job = os.path.join(self.root, "target", "agent", "j1")
+        self.job = os.path.join(self.root, ".workbench", "j1")
         os.makedirs(self.job)
         saved = (loop.intake.ROOT, mt.ROOT)
         loop.intake.ROOT = mt.ROOT = self.root
@@ -111,7 +111,7 @@ class TheDocuments(Base):
     def test_a_file_is_kept_under_its_own_name_and_its_path_is_told(self):
         got = mt.store_doc(self.job, "C:\\Users\\me\\Rate Rules (v2).md", b"# R\n", self.root)
         self.assertEqual(got, {"name": "Rate Rules (v2).md", "bytes": 4,
-                               "path": "target/agent/j1/docs/Rate Rules (v2).md"})
+                               "path": ".workbench/j1/docs/Rate Rules (v2).md"})
         self.assertEqual(mt.list_docs(self.job, self.root), [got])
 
     def test_what_is_not_what_its_name_says_is_not_kept(self):
@@ -393,7 +393,7 @@ class WhatIsWritten(Base):
             self.assertEqual(mt.main(["generate", "--job", "../x"]), 2)
             self.assertEqual(mt.main(["generate", "--job", "nosuchjob"],
                                      agent=lambda p, f: reply()), 2)
-        self.assertFalse(os.path.exists(os.path.join(self.root, "target", "agent", "nosuchjob")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, ".workbench", "nosuchjob")))
 
     def test_a_failed_pull_keeps_the_list_read_before(self):
         self.inventory([issue(1, "Book a room")])
@@ -746,7 +746,7 @@ class Declared(unittest.TestCase):
         self.addCleanup(lambda: (setattr(jobs, "ROOT", saved[0]),
                                  setattr(jobs.intake, "ROOT", saved[1])))
         got = jobs.save_doc("j1", "rules.md", io.BytesIO(b"# R\n"), 4)
-        self.assertEqual(got["path"], "target/agent/j1/docs/rules.md")
+        self.assertEqual(got["path"], ".workbench/j1/docs/rules.md")
         for job, name, data, length in (("j1", "x.exe", b"x", None), ("../x", "a.md", b"x", None),
                                         ("j1", "a.md", b"x", 50), ("j1", "a.md", b"", None)):
             with self.assertRaises(ValueError, msg=(job, name)):

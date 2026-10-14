@@ -46,7 +46,21 @@ import webbrowser
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 SERVER = os.path.join(HERE, "server.py")
-CONSOLE = os.path.join(ROOT, "target", "agent", "server-console.log")
+CONSOLE = os.path.join(ROOT, ".workbench", "server-console.log")
+
+
+def move_old_state() -> None:
+    """The workbench's state used to live under target/agent, which
+    `mvn clean` deletes. Whatever is still there moves to the new folder
+    before the server starts (tools/diag.py says where)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("launch_diag", os.path.join(ROOT, "tools", "diag.py"))
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+        mod.migrate_state(ROOT)
+    except Exception:                                # noqa: BLE001
+        pass
 HOST = "127.0.0.1"
 
 
@@ -125,6 +139,7 @@ def start(open_page: bool = True, wait: float = 20.0) -> int:
             f"Close that program -- for an old workbench, end its python process -- or set "
             f"WORKBENCH_PORT to another port.")
         return 1
+    move_old_state()
     os.makedirs(os.path.dirname(CONSOLE), exist_ok=True)
     log = io.open(CONSOLE, "ab")
     log.write(f"\n===== started {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n".encode())

@@ -53,7 +53,7 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="b2b-publish-")
         self.addCleanup(shutil.rmtree, self.root, True)
-        self.job = os.path.join(self.root, "target", "agent", "j1")
+        self.job = os.path.join(self.root, ".workbench", "j1")
         os.makedirs(self.job)
         saved = (loop.intake.ROOT, pb.ROOT)
         loop.intake.ROOT = pb.ROOT = self.root
@@ -736,7 +736,7 @@ class MockAndStatus(Base):
             pb.create_page("j1", "manual", "QA", "4242", "Mock page", "Mock page", self.root)
         with self.assertRaises(pb.Refused):
             pb.create_page("j1", "manual", "DEV", "4242", "Other", "Other", self.root)
-        self.assertEqual(sorted(os.listdir(os.path.join(self.root, "target", "agent"))),
+        self.assertEqual(sorted(os.listdir(os.path.join(self.root, ".workbench"))),
                          ["j1", "mock-confluence.json", "mock-jira.json"])
         self.assertIn("(MOCK)", self.log())
 
@@ -763,7 +763,7 @@ class MockAndStatus(Base):
             self.assertEqual(pb.main(["status", "--job", "../x"]), 2)
         with io.open(os.path.join(self.job, pb.RESULT), encoding="utf-8") as fh:
             self.assertEqual(json.load(fh)["kind"], "error")
-        self.assertFalse(os.path.exists(os.path.join(self.root, "target", "agent", "nosuchjob")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, ".workbench", "nosuchjob")))
 
 
 class Declared(unittest.TestCase):

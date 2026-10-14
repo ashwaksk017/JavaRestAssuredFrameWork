@@ -248,7 +248,7 @@ def job_dir(job: str) -> str:
     j = (job or "").strip()
     if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", j) or j in (".", ".."):
         raise Refused(f"unusable job id {job!r}")
-    return os.path.join(ROOT, "target", "agent", j)
+    return os.path.join(ROOT, ".workbench", j)
 
 
 def _write_json(path: str, payload) -> None:

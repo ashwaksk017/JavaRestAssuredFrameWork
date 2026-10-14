@@ -20,7 +20,7 @@ read on the Automate Test Case tab, and that inventory, and writes
 
 WHERE THE REQUIREMENTS COME FROM
 --------------------------------
-Files chosen on the page are kept under target/agent/<job>/docs/ under
+Files chosen on the page are kept under .workbench/<job>/docs/ under
 their own names, and read from there. Text (.txt .md .csv .json .log),
 HTML and Word (.docx) are read with what Python ships; PDF needs `pypdf`
 and Excel needs `openpyxl`, and a file that cannot be read here is said
@@ -1146,7 +1146,7 @@ def main(argv=None, agent=None, transport=None) -> int:
     say(("MOCK  " if r["mock"] else " ok   ") + r["message"])
     for w in r["failures"] + r["warnings"]:
         say(f"  NOTE {w}")
-    say(f"  report: target/agent/{a.job}/{REPORT}")
+    say(f"  report: .workbench/{a.job}/{REPORT}")
     return 1 if r["failures"] else 0
 
 

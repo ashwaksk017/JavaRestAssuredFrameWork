@@ -580,7 +580,7 @@ class WhatThePageIsGiven(unittest.TestCase):
         return rc, self.result(job or "j1")
 
     def result(self, job):
-        p = os.path.join(self.root, "target", "agent", job, search.JOB_RESULT)
+        p = os.path.join(self.root, ".workbench", job, search.JOB_RESULT)
         if not os.path.isfile(p):
             return None
         with io.open(p, encoding="utf-8") as fh:

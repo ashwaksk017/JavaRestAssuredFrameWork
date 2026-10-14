@@ -10,9 +10,9 @@ reproducible without the UI, which is how every other stage here works.
 
 WHAT IT PRODUCES
 ----------------
-    target/agent/<job>/brief.md        the readable summary
-    target/agent/<job>/intake.json     the same thing, structured
-    target/agent/<job>/sources/        one snapshot per link
+    .workbench/<job>/brief.md        the readable summary
+    .workbench/<job>/intake.json     the same thing, structured
+    .workbench/<job>/sources/        one snapshot per link
 
 WHAT IT REFUSES
 ---------------
@@ -150,7 +150,7 @@ _SAFE_JOB_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 def safe_job(job: str) -> str:
-    """A job id that cannot leave target/agent/.
+    """A job id that cannot leave .workbench/.
 
     This comes from a UI text box. `os.path.join` lets an ABSOLUTE
     second argument win outright, so a job id of `C:/Windows/Temp` or
@@ -167,7 +167,7 @@ def safe_job(job: str) -> str:
 
 
 def job_dir(job: str, root: str = "") -> str:
-    return os.path.join(root or ROOT, "target", "agent", safe_job(job))
+    return os.path.join(root or ROOT, ".workbench", safe_job(job))
 
 
 _BRACE_ESCAPE_RX = re.compile(r"\\([{}\[\]])")

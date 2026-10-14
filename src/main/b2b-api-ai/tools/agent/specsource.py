@@ -8,7 +8,7 @@
 It can also be a FILE: one chosen on the page, or one attached to a
 Confluence page. Either way it ends up in one place,
 
-    target/agent/<job>/spec/<its own name>
+    .workbench/<job>/spec/<its own name>
 
 and the design step reads it from there. The page never names a path: it
 sends a file, or a link, and is told where the file was put.

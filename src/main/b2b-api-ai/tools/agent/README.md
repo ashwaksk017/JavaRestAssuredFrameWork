@@ -27,7 +27,7 @@ just opens the page; it never starts a second server. **Stop** stops it.
   nothing. Use another port with `WORKBENCH_PORT` (e.g. `set
   WORKBENCH_PORT=9000` on Windows, `export WORKBENCH_PORT=9000` on a Mac)
   for both Start and Stop.
-- What the server prints is kept in `target/agent/server-console.log`;
+- What the server prints is kept in `.workbench/server-console.log`;
   if it does not come up, Start shows the end of that.
 - A convert or a Cursor run that the workbench had started is not ended
   by Stop: it runs to its own end.
@@ -140,7 +140,7 @@ needed: each command reads the file when it starts.
 
 | switch | `true` | `false` |
 |---|---|---|
-| `jira` | The **Jira** and **Defects** tabs use a sample project (three releases, stories, bugs, tests) under whatever project key you type. No `jira_config`, host or token is needed. **Write to Jira** changes `target/agent/mock-jira.json` and nothing else. | The Jira in `program_configuration.json`, with its token. |
+| `jira` | The **Jira** and **Defects** tabs use a sample project (three releases, stories, bugs, tests) under whatever project key you type. No `jira_config`, host or token is needed. **Write to Jira** changes `.workbench/mock-jira.json` and nothing else. | The Jira in `program_configuration.json`, with its token. |
 | `cursor` | **Design the tests** returns two cases per endpoint; **Suggest reasons** and **Review the change** are keyword matches; **Run Cursor** writes one placeholder test so the checks, the review and Discard can be tried. No SDK, no key, no cost. | Cursor, with the key in `cursor_agent.json`. |
 
 While a switch is on:
@@ -523,7 +523,7 @@ that nothing in them is an instruction.
   - **pasted** into the box. What is pasted always wins.
   - **From a file.** Choose a `.json`, `.yaml` or `.yml`. The page sends
     the file; the workbench keeps it as
-    `target/agent/<job>/spec/<its own name>` and the design step reads it
+    `.workbench/<job>/spec/<its own name>` and the design step reads it
     from that path. The page shows the path, the format and how many
     endpoints it found. It is kept only if it IS a specification (it has
     a `paths` section) -- anything else is refused with the reason.
@@ -691,7 +691,7 @@ only. Nothing on this tab writes to Jira.
 **What it reads**
 
 - **Requirements files** -- choose up to 8. The page sends each file; the
-  workbench keeps it as `target/agent/<job>/docs/<its own name>` and
+  workbench keeps it as `.workbench/<job>/docs/<its own name>` and
   reads it from there, and shows the path. Text (`.txt .md .csv .json
   .log`), HTML and Word (`.docx`) are read with what Python ships. PDF
   needs `pypdf` and Excel needs `openpyxl`; a file that cannot be read on
@@ -959,7 +959,7 @@ back everything changed since it started. A run that ended
 #### The Cursor log
 
 Everything about the conversation with Cursor is in its own log,
-`target/agent/<job>/cursor.log`, shown in its own pane and separate from
+`.workbench/<job>/cursor.log`, shown in its own pane and separate from
 the command log:
 
 ```
@@ -1005,7 +1005,7 @@ prose and the sources were material for the design, and the approved
 cases carry what came of them; the tables (field names, types, allowed
 values, formats) stay because a case's `data: valid values` is short
 for them. The prompt names what was left out, how much, and where the
-whole brief is (`target/agent/<job>/brief.md`), to be opened only when
+whole brief is (`.workbench/<job>/brief.md`), to be opened only when
 a case names something not explained. With nothing reviewed the whole
 brief goes, since then the cases are not vetted; `agent_brief: "full"`
 in `policy.json` keeps the whole brief always. Cursor is told **not
@@ -1433,7 +1433,7 @@ changed in between, it writes nothing.
   unclearly, the result says the write **may** have happened and to look
   before trying again -- not that it failed. Checking what is switched on
   never removes the record of the last write.
-- In mock mode both change a file under `target/agent/` and contact
+- In mock mode both change a file under `.workbench/` and contact
   nobody. Confluence follows the `jira` switch in `mock.json`; add
   `"confluence": true|false` there to set it separately.
 
@@ -1449,14 +1449,14 @@ For finding out what went wrong. Everywhere else the page shows an
 unexpected error only by its kind -- an error's text can quote what was
 being read, and that output is served to the page. The rest is kept here.
 
-- **This job** -- `target/agent/<job>/diagnostics.log`. Every command run
+- **This job** -- `.workbench/<job>/diagnostics.log`. Every command run
   for the job: when it started and with what options, how long it took,
   its exit code, **what it said when it failed** (its own log is written
   over by the next run; this is not), and the **full traceback of every
   error**, including the ones a command handled and carried on from.
   The same error at the same place is written out five times in a run
   and then counted.
-- **The web server** -- `target/agent/server.log`. Requests that failed,
+- **The web server** -- `.workbench/server.log`. Requests that failed,
   every request that starts or changes something, refusals with their
   reason, tracebacks of faults in the server, and errors in the page's
   own script (a button that "does nothing" usually left one here).
@@ -1500,10 +1500,18 @@ the last result of that job when they are opened.
 
 ## Where the state lives
 
-Everything is under `target/agent/<job>/`:
+Everything is under **`.workbench/`** at the module root (gitignored),
+one folder a job. It used to be `target/agent/`, until a `mvn clean`
+could not delete the running server's console log -- and would have
+taken every job with it had it succeeded. On start the server and the
+launcher move whatever is still under `target/agent/` across, so
+nothing is lost; a file an old server still holds open stays behind
+until that server stops. `mvn clean` is safe again.
+
+Everything is under `.workbench/<job>/`:
 
 ```
-target/agent/<job>/
+.workbench/<job>/
   intake.json            what was pasted, with credentials redacted
   brief.md               the story as the tools read it
   plan.md                create / update / upstream / confirm, and why
@@ -1604,7 +1612,7 @@ that did not finish in time (no rule broken; the files were put back).
 **Dismiss** puts an outcome away once nothing of it is left in the
 working tree (rejected and undone, discarded, pushed, approved). The
 run's Cursor log, command logs, prompts and answers go with it into
-`target/agent/<job>/dismissed-<time>/`, so the tab starts blank and
+`.workbench/<job>/dismissed-<time>/`, so the tab starts blank and
 nothing is lost; the story, brief, plan, design and review stay, they
 are the job's. A command that fails says its `FAIL` line in the label
 beside its button, not only the step it stopped at. A change that is waiting, or

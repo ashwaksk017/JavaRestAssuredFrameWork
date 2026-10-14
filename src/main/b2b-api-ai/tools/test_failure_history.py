@@ -405,7 +405,7 @@ class WhatThePageIsGiven(Store):
         return rc, out.getvalue()
 
     def result(self, job="j1"):
-        p = os.path.join(self.root, "target", "agent", job, fh.JOB_RESULT)
+        p = os.path.join(self.root, ".workbench", job, fh.JOB_RESULT)
         if not os.path.isfile(p):
             return None
         with io.open(p, encoding="utf-8") as f:
@@ -486,7 +486,7 @@ class WhatThePageIsGiven(Store):
         with io.open(victim, "w") as f:
             f.write("somebody else's file")
         self.put_digest(("A.one", "-", REFUSED))
-        rel = os.path.relpath(victim_dir, os.path.join(self.root, "target", "agent"))
+        rel = os.path.relpath(victim_dir, os.path.join(self.root, ".workbench"))
         for job in (rel, victim_dir, "../../../x"):
             self.main("list", "--job", job)
             self.main("record", "--job", job)

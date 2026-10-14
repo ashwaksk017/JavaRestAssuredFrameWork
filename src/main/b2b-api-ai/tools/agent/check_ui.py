@@ -151,7 +151,7 @@ def main() -> int:
     import failure_history
     import search
 
-    job_dir = os.path.join(ROOT, "target", "agent", JOB)
+    job_dir = os.path.join(ROOT, ".workbench", JOB)
     scratch = tempfile.mkdtemp(prefix="check_ui_")
     port = free_port()
     page = Page(browser, f"http://127.0.0.1:{port}")
@@ -301,7 +301,7 @@ def main() -> int:
                     ("D.new", "-", "AssertionError | expected status for Create Booking expected "
                                    "[200] but found [403]"),
                     label="after the fix", written=1_767_312_000)
-        shutil.copy(os.path.join(scratch, "target", "agent", JOB, failure_history.JOB_RESULT),
+        shutil.copy(os.path.join(scratch, ".workbench", JOB, failure_history.JOB_RESULT),
                     os.path.join(job_dir, failure_history.JOB_RESULT))
         html = page.dom("failures")
         check("a recorded run exits 0", rc == 0)
@@ -347,7 +347,7 @@ def main() -> int:
 
         def jira_cmd(*argv):
             rc = quiet(search.main, list(argv) + ["--job", JOB], transport=jira)
-            src = os.path.join(scratch, "target", "agent", JOB, search.JOB_RESULT)
+            src = os.path.join(scratch, ".workbench", JOB, search.JOB_RESULT)
             shutil.copy(src, os.path.join(job_dir, search.JOB_RESULT))
             with io.open(src, encoding="utf-8") as fh:
                 return rc, fh.read(), page.dom("jira")
@@ -424,7 +424,7 @@ def main() -> int:
                                 "write_back": write_back}}
         conn = search.connect()
         defects.ROOT = scratch
-        shown = os.path.join(scratch, "target", "agent", JOB, defects.RESULT)
+        shown = os.path.join(scratch, ".workbench", JOB, defects.RESULT)
 
         def show():
             shutil.copy(shown, os.path.join(job_dir, defects.RESULT))
@@ -584,7 +584,7 @@ def main() -> int:
         code, got = send_spec("Orders API.json", orders)
         spec = got.get("spec") or {}
         check("a specification chosen as a file is kept with the job and its path is told",
-              code == 200 and spec.get("path") == f"target/agent/{JOB}/spec/Orders API.json"
+              code == 200 and spec.get("path") == f".workbench/{JOB}/spec/Orders API.json"
               and spec.get("endpoints") == 3, f"HTTP {code} {got}")
         code, got = send_spec("notes.json", b'{"hello": 1}')
         check("a file that is not a specification is not kept, and the page is told why",
@@ -595,7 +595,7 @@ def main() -> int:
         html = page.dom("new")
         check("tab 1 shows the kept specification, where it is and what is in it",
               "Orders API.json" in html and "3 endpoint(s), JSON" in html
-              and f"target/agent/{JOB}/spec/Orders API.json" in html
+              and f".workbench/{JOB}/spec/Orders API.json" in html
               and 'id="design-spec-link"' in html and 'id="design-spec-fetch"' in html)
         check("the page can start the Confluence fetch, with a link and a name only",
               declared.get("spec-confluence", {}).get("options")
@@ -613,7 +613,7 @@ def main() -> int:
 
         # ---- mock mode, through a server that has it switched on ----------------
         srv.terminate()
-        store = os.path.join(ROOT, "target", "agent", "mock-jira.json")
+        store = os.path.join(ROOT, ".workbench", "mock-jira.json")
         kept = None
         if os.path.isfile(store):                 # somebody's own mock writes: put back after
             with io.open(store, encoding="utf-8") as fh:
@@ -957,7 +957,7 @@ def main() -> int:
             code, got = send_doc("Booking Rules.md", b"# Rules\nOver 9 rooms is a group booking.\n")
             check("a requirements file is kept with the job and its path is told",
                   code == 200 and (got.get("file") or {}).get("path")
-                  == f"target/agent/{JOB}/docs/Booking Rules.md", f"HTTP {code} {got}")
+                  == f".workbench/{JOB}/docs/Booking Rules.md", f"HTTP {code} {got}")
             code, got = send_doc("tool.exe", b"MZ")
             check("a file of a kind that is not read is not kept", code != 200)
             code, got = send_doc("x.md", b"x", "text/plain")
@@ -966,7 +966,7 @@ def main() -> int:
             html = mocked.dom("manual")
             check("the Manual tests tab lists the file and where it was put",
                   "Booking Rules.md" in html
-                  and f"target/agent/{JOB}/docs/Booking Rules.md" in html
+                  and f".workbench/{JOB}/docs/Booking Rules.md" in html
                   and html.count('role="tab"') == 9)
             code, rc = press("manual-inventory", {"--project": "ABC"})
             html = mocked.dom("manual")
@@ -1001,7 +1001,7 @@ def main() -> int:
                   html.index("the reply was cut off") < html.index("&lt;img src=x")
                   and "no existing tests were read for this job" in html)
             # ---- publish: the tab that writes, against the stand-ins ------------
-            conf_store = os.path.join(ROOT, "target", "agent", "mock-confluence.json")
+            conf_store = os.path.join(ROOT, ".workbench", "mock-confluence.json")
             conf_kept = None
             if os.path.isfile(conf_store):
                 with io.open(conf_store, encoding="utf-8") as fh:
@@ -1090,7 +1090,7 @@ def main() -> int:
                 check("the Logs tab shows both, as text",
                       "[publish] START" in html and "POST /api/start" in html
                       and "&lt;img src=x onerror=alert(1)&gt;" in html and "<img src=x" not in html
-                      and f"target/agent/{JOB}/diagnostics.log" in html)
+                      and f".workbench/{JOB}/diagnostics.log" in html)
             finally:
                 try:
                     os.remove(conf_store)

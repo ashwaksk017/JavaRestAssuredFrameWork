@@ -58,8 +58,8 @@ class Repo(unittest.TestCase):
         sh(self.top, "config", "commit.gpgsign", "false")
         self.root = os.path.join(self.top, self.PROJECT) if self.PROJECT else self.top
         os.makedirs(self.root, exist_ok=True)
-        write(self.top, ".gitignore", "target/\n")
-        self.job = os.path.join(self.root, "target", "agent", "j1")
+        write(self.top, ".gitignore", "target/\n.workbench/\n")
+        self.job = os.path.join(self.root, ".workbench", "j1")
         os.makedirs(self.job)
 
     def commit(self, message, files, root=None):

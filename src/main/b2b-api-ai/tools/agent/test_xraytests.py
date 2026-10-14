@@ -108,7 +108,7 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="b2b-xray-")
         self.addCleanup(shutil.rmtree, self.root, True)
-        self.job = os.path.join(self.root, "target", "agent", "j1")
+        self.job = os.path.join(self.root, ".workbench", "j1")
         os.makedirs(self.job)
         saved = (loop.intake.ROOT, pb.ROOT, xt.ROOT)
         loop.intake.ROOT = pb.ROOT = xt.ROOT = self.root
@@ -517,7 +517,7 @@ class Mock(Base):
         again = xt.create("j1", "design", "XYZ-7", "XYZ-7", self.root)
         self.assertEqual(again["created"], [])
         self.assertEqual(len(again["kept"]), 2)
-        self.assertEqual(sorted(os.listdir(os.path.join(self.root, "target", "agent"))),
+        self.assertEqual(sorted(os.listdir(os.path.join(self.root, ".workbench"))),
                          ["j1", "mock-jira.json"])
         self.assertTrue(xt.status("j1", self.root)["mock_jira"])
 
@@ -597,7 +597,7 @@ class Declared(unittest.TestCase):
     def test_the_command_writes_its_result_and_says_it(self):
         root = tempfile.mkdtemp(prefix="b2b-xray-cmd-")
         self.addCleanup(shutil.rmtree, root, True)
-        job = os.path.join(root, "target", "agent", "j1")
+        job = os.path.join(root, ".workbench", "j1")
         os.makedirs(job)
         with io.open(os.path.join(job, "design.json"), "w", encoding="utf-8") as fh:
             # made from the brief this job has (none): the real fingerprint

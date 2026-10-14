@@ -79,7 +79,7 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="b2b-cr-")
         self.addCleanup(shutil.rmtree, self.root, True)
-        self.job = os.path.join(self.root, "target", "agent", "j1")
+        self.job = os.path.join(self.root, ".workbench", "j1")
         os.makedirs(self.job)
         self.plant(DIFF)
         saved = cr.ROOT
@@ -596,7 +596,7 @@ class FoundByTheSecondReview(Base):
     def test_a_mistyped_job_does_not_become_a_job(self):
         with redirect_stdout(io.StringIO()):
             self.assertEqual(cr.main(["--job", "nosuchjob"], agent=lambda p, f: reply()), 2)
-        self.assertFalse(os.path.exists(os.path.join(self.root, "target", "agent", "nosuchjob")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, ".workbench", "nosuchjob")))
 
     def test_an_unexpected_failure_is_reported_without_its_text(self):
         def agent(p, f):

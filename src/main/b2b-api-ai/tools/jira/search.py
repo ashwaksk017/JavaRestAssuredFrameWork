@@ -60,7 +60,7 @@ instead of returning nothing.
 FOR THE WORKBENCH PAGE
 ----------------------
 With `--job J` every command also writes what it found to
-`target/agent/J/jira-result.json`: the same result as the file under
+`.workbench/J/jira-result.json`: the same result as the file under
 `target/jira/search/`, with a `kind` the page picks a table by, or the
 refusal or failure as a message. The page shows that file. It decides
 nothing and holds no host or token; a result that is short says so in
@@ -590,11 +590,11 @@ JOB_RESULT = "jira-result.json"
 def job_result_path(job: str) -> str:
     """Where the page reads a command's result. The job id names a
     directory and comes from a text box: letters, digits, dot, dash and
-    underscore only, so it cannot leave target/agent/."""
+    underscore only, so it cannot leave .workbench/."""
     j = (job or "").strip()
     if not _JOB_RX.match(j) or j in (".", ".."):
         raise Refused(f"unusable job id {job!r}")
-    return os.path.join(ROOT, "target", "agent", j, JOB_RESULT)
+    return os.path.join(ROOT, ".workbench", j, JOB_RESULT)
 
 
 _MOCKED = []          # non-empty once this process has connected to the mock Jira

@@ -31,7 +31,7 @@ isProject: true
   UI (paste story / payloads / Confluence links)
         |
         v
-  target/agent/<job-id>/          <- gitignored, every step writes here
+  .workbench/<job-id>/          <- gitignored, every step writes here
         brief.md                  intake, normalised
         sources/                  Jira + Confluence snapshots
         plan.md                   create / update / delete, per test
@@ -242,7 +242,7 @@ rather than a free-text box:
 | `--data-dir` | required in practice; the known landmine is forgetting it |
 | `--input` | one XML, a comma list, or a directory -- and only the directory form is authoritative |
 
-What both tabs share: the job directory under `target/agent/<job>/`, the
+What both tabs share: the job directory under `.workbench/<job>/`, the
 log, and the audits. Nothing else.
 
 ### Stage 7 — Push-back

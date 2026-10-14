@@ -1,7 +1,7 @@
 """Fetch a Confluence page, snapshot it, and refuse what it cannot do.
 
     python tools/confluence/fetch.py --url https://wiki.example.com/x/AbCdEf
-    python tools/confluence/fetch.py --id 12345 --out target/agent/job1/sources
+    python tools/confluence/fetch.py --id 12345 --out .workbench/job1/sources
     python tools/confluence/fetch.py --url <url> --children 1 --comments
 
 The host must be in `confluence_config.base_urls` in

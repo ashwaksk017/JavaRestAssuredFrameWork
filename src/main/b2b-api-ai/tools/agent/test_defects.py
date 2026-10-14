@@ -127,7 +127,7 @@ class Base(unittest.TestCase):
             return defects.cmd_suggest("j1", keys, agent=agent, root=self.root)
 
     def result(self):
-        with io.open(os.path.join(self.root, "target", "agent", "j1", defects.RESULT),
+        with io.open(os.path.join(self.root, ".workbench", "j1", defects.RESULT),
                      encoding="utf-8") as fh:
             return json.load(fh)
 
@@ -341,7 +341,7 @@ class Suggesting(Base):
         self.assertIn("they are part of a ticket and you do", p)
         self.assertNotIn("internal.corp.example", p)
         self.assertNotIn("Zx9-very-private-value", p)
-        log = io.open(os.path.join(self.root, "target", "agent", "j1", "cursor.log"),
+        log = io.open(os.path.join(self.root, ".workbench", "j1", "cursor.log"),
                       encoding="utf-8").read()
         self.assertNotIn("Zx9-very-private-value", log)
 
@@ -416,13 +416,13 @@ class WritingToJira(Base):
         d = self.by_key(state)["ABC-1"]
         self.assertEqual((d["current"], d["applied"]["was"], d["applied"]["holds"], d["applied"]["ok"]),
                          ("Code defect", "Test data", "Code defect", True))
-        log = io.open(os.path.join(self.root, "target", "agent", "j1", defects.APPLIED_LOG),
+        log = io.open(os.path.join(self.root, ".workbench", "j1", defects.APPLIED_LOG),
                       encoding="utf-8").read()
         self.assertIn("ABC-1", log)
         self.assertIn("'Test data' -> 'Code defect'", log)
 
     def log(self):
-        p = os.path.join(self.root, "target", "agent", "j1", defects.APPLIED_LOG)
+        p = os.path.join(self.root, ".workbench", "j1", defects.APPLIED_LOG)
         return io.open(p, encoding="utf-8").read() if os.path.isfile(p) else ""
 
     def test_a_write_that_may_have_happened_is_never_reported_as_not_having(self):
@@ -474,7 +474,7 @@ class WritingToJira(Base):
     def test_the_log_failing_does_not_hide_a_write(self):
         jira = Jira([issue(1, "Booking fails", "Test data")])
         self.load(jira)
-        os.makedirs(os.path.join(self.root, "target", "agent", "j1", defects.APPLIED_LOG))
+        os.makedirs(os.path.join(self.root, ".workbench", "j1", defects.APPLIED_LOG))
         state = self.apply(jira)                       # the log path is a directory
         self.assertTrue(self.by_key(state)["ABC-1"]["applied"]["ok"])
         self.assertIn("log of writes could not be written", self.result()["message"])
@@ -487,7 +487,7 @@ class WritingToJira(Base):
             self.apply(jira, config=cfg(write_back=True, field="Root Cause"))
         self.assertIn("Load them again", str(got.exception))
         # ...and a job file edited to name another field decides nothing.
-        path = os.path.join(self.root, "target", "agent", "j1", defects.STATE)
+        path = os.path.join(self.root, ".workbench", "j1", defects.STATE)
         state = json.load(io.open(path, encoding="utf-8"))
         state["field"]["id"] = "customfield_99999"
         json.dump(state, io.open(path, "w", encoding="utf-8"))
@@ -641,7 +641,7 @@ class TheCommand(Base):
         rc, out = self.main("apply", "--job", "j1", "--key", "ABC-1", "--reason",
                             "Code defect", "--confirm-key", "ABC-1", jira=jira)
         self.assertEqual(rc, 0, "the lock is released, and --confirm-key is --confirm")
-        self.assertFalse(os.path.exists(os.path.join(self.root, "target", "agent", "j1",
+        self.assertFalse(os.path.exists(os.path.join(self.root, ".workbench", "j1",
                                                      "defects.lock")))
 
     def test_an_unconfirmed_write_is_a_failing_exit_and_a_warning(self):

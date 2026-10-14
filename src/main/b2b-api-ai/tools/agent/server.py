@@ -16,7 +16,7 @@ is no login here; if this needs to be reachable by a team, put it behind
 something that has one.
 
 Standard library only: no framework, no build step, no database. The job
-directory under `target/agent/<job>/` is the state, which is why a
+directory under `.workbench/<job>/` is the state, which is why a
 refresh loses nothing and why every run is reproducible from the CLI.
 """
 from __future__ import annotations
@@ -78,7 +78,7 @@ class Handler(BaseHTTPRequestHandler):
         if "--verbose" in sys.argv:
             super().log_message(fmt, *args)
 
-    # ---- the record (target/agent/server.log) ------------------------
+    # ---- the record (.workbench/server.log) ------------------------
     def send_response(self, code, message=None):
         self._status = code
         super().send_response(code, message)
@@ -465,6 +465,10 @@ def main(argv=None) -> int:
                          "repository and has no authentication")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args(argv)
+    moved = diag.migrate_state(ROOT)
+    if moved:
+        print(f"  moved {len(moved)} entr{'y' if len(moved) == 1 else 'ies'} from target/agent "
+              f"to {diag.STATE_REL}/ (mvn clean no longer reaches them)")
 
     # On Windows the default (SO_REUSEADDR) lets a second server bind a port
     # an earlier one still holds, and the EARLIER one keeps answering: the
@@ -486,7 +490,7 @@ def main(argv=None) -> int:
         return 1
     print(f"b2b agent UI on http://{args.host}:{args.port}")
     print(f"  repository: {ROOT}")
-    print(f"  jobs:       target/agent/<job>/")
+    print(f"  jobs:       .workbench/<job>/")
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         print("  WARNING: not bound to loopback. This process starts "
               "commands that write to the repository and has NO "

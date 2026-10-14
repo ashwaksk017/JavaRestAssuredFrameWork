@@ -13,7 +13,7 @@
   <h1>AI Enabled Test WorkBench</h1>
   <label class="job">job
     <input id="job" value="job1" spellcheck="false"
-           title="Names a directory under target/agent/. Letters, digits, dot, dash, underscore.">
+           title="Names a directory under .workbench/. Letters, digits, dot, dash, underscore.">
   </label>
 </header>
 
@@ -376,7 +376,7 @@ Expect 201.'></textarea>
   <h3>Requirements <span class="hint">files, notes, and the story read on the Automate Test Case tab</span></h3>
   <input type="file" id="manual-files" multiple
          accept=".txt,.md,.markdown,.csv,.json,.log,.html,.htm,.docx,.pdf,.xlsx">
-  <small class="hint">Up to 8 files. Each is kept under <code>target/agent/&lt;job&gt;/docs/</code>
+  <small class="hint">Up to 8 files. Each is kept under <code>.workbench/&lt;job&gt;/docs/</code>
     and read from there. Text, HTML and Word are read as they are; PDF and Excel need
     <code>pypdf</code> / <code>openpyxl</code> installed.</small>
   <div id="manual-docs" class="result"></div>
@@ -585,7 +585,7 @@ Expect 201.'></textarea>
     the <strong>full error</strong> where there was one — the page elsewhere
     shows only an error's kind. Credentials are taken out before anything
     is written. Both files are on this machine only, under
-    <code>target/agent/</code>.
+    <code>.workbench/</code>.
   </p>
   <div class="row">
     <button id="logs-refresh">Refresh</button>
@@ -594,7 +594,7 @@ Expect 201.'></textarea>
   </div>
   <h3>This job <span class="hint" id="logs-job-path"></span></h3>
   <pre id="logs-job" class="log tall">—</pre>
-  <h3>The web server <span class="hint">target/agent/server.log — failed requests, everything that starts or changes something, errors in this page</span></h3>
+  <h3>The web server <span class="hint">.workbench/server.log — failed requests, everything that starts or changes something, errors in this page</span></h3>
   <pre id="logs-server" class="log tall">—</pre>
 </section>
 

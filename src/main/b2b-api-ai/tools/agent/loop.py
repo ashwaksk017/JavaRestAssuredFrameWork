@@ -55,7 +55,7 @@ back after every later convert of that suite.
 THE CURSOR LOG
 --------------
 Everything said to Cursor and everything it answered goes to
-`target/agent/<job>/cursor.log`, separate from the command log: which
+`.workbench/<job>/cursor.log`, separate from the command log: which
 scope, which model, how long, the run id, the answer, the files it
 changed and the verdict on them. The API key is never written.
 
@@ -285,7 +285,7 @@ class RepoLock:
     """
 
     def __init__(self, root: str, what: str):
-        self.path = os.path.join(root, "target", "agent", ".lock")
+        self.path = os.path.join(root, ".workbench", ".lock")
         self.what = what
         self.fh = None
 
@@ -627,6 +627,11 @@ def dirty_paths(root: str) -> dict:
             if src:
                 found[_rel(root, top, src)] = _sha(os.path.join(top, src))
         found[_rel(root, top, path)] = _sha(os.path.join(top, path))
+    # The workbench's own folder is never part of the change: its logs are
+    # written while the run goes, and a copy of an open log is no backup.
+    state = diag.STATE_REL + "/"
+    found = {p: h for p, h in found.items()
+             if not p.replace("\\", "/").startswith(state) and "/" + state not in p.replace("\\", "/")}
     return found
 
 
@@ -1402,7 +1407,7 @@ def trimmed_brief(brief: str, job: str) -> tuple:
                  "", "Field names, types, allowed values and formats, as the pages tabled them; "
                  "the prose around them is not here."] + shown
     kept += ["", f"({', '.join(heads)} were left out of this prompt: the test cases below were "
-                 f"made from them and reviewed. The whole brief is at target/agent/{job}/brief.md "
+                 f"made from them and reviewed. The whole brief is at .workbench/{job}/brief.md "
                  f"-- open it only when a case names something not explained here.)"]
     return "\n".join(kept).rstrip() + "\n", dropped, heads
 
@@ -1670,11 +1675,11 @@ def _tree_key(root: str, policy: dict, cmd: list) -> str:
 def compile_baseline_cached(root: str, policy: dict, scope: dict, runner=None, say_=None):
     """The compile before the agent, skipped when the tree is as it was the
     last time it was compiled: the answer is kept in
-    target/agent/compile-baseline.json with the key of the tree."""
+    .workbench/compile-baseline.json with the key of the tree."""
     cmd = list(scope.get("compile") or [])
     if not cmd:
         return None
-    path = os.path.join(root, "target", "agent", "compile-baseline.json")
+    path = os.path.join(root, ".workbench", "compile-baseline.json")
     key = _tree_key(root, policy, cmd)
     try:
         with io.open(path, encoding="utf-8") as fh:
