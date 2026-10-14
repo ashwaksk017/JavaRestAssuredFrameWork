@@ -78,6 +78,33 @@ public abstract class BaseApiTest {
     protected SoftAssert softAssert;
 
     /** Convenience for legacy string-based utilities. */
+    /**
+     * A value a test needs that must not be written into the repository: a
+     * customer's account id, a guest id, a member id, a confirmation number.
+     * The row's column when the sheet has it; else program_configuration.json
+     * under the story's key ({@code jira.<story key>.<snake_case name>}, e.g.
+     * {@code jira.b2b-1234.travel_coordinator.guest_id}); else the test is
+     * SKIPPED and says which key to set. Never a literal in the test.
+     *
+     * <p>csv/manual/ is committed and this repository is public, so a real id
+     * is never put in a row there: the column is left blank and the value
+     * lives in the configuration of the machine that runs the test. A row
+     * that does carry the value (a private fork) is used as it is.
+     */
+    protected static String rowOrConfig(java.util.Map<String, String> row, String column, String configKey) {
+        String fromRow = row == null ? null : row.get(column);
+        if (fromRow != null && !fromRow.trim().isEmpty() && !"null".equalsIgnoreCase(fromRow.trim())) {
+            return fromRow.trim();
+        }
+        String fromConfig = Config.get(configKey, "");
+        if (fromConfig != null && !fromConfig.trim().isEmpty()) {
+            return fromConfig.trim();
+        }
+        throw new org.testng.SkipException("no value for '" + column + "': set " + configKey
+                + " in program_configuration.json on this machine (or fill the '" + column
+                + "' column of the row)");
+    }
+
     protected String baseUrl() {
         return Config.baseUrl();
     }

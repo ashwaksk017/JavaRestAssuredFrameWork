@@ -110,8 +110,9 @@ public class AccountActivationTest extends BaseApiTest {
 
         // Every value the request needs, named. A path param is a
         // declared local, never an undeclared identifier -- and never a
-        // literal buried in the URL where nobody can see it.
-        String accountId = "1000001";
+        // literal buried in the URL where nobody can see it. A customer's
+        // id is never a literal at all: see section 4b.
+        String accountId = rowOrConfig(null, "account_id", "jira.b2b-1234.account_id");
 
         // Auth: writes ctx["accessToken"]; re-used if already present.
         Map<String, String> ctx = new HashMap<>();
@@ -217,6 +218,42 @@ Give every row a readable `description` and `test_case_id`.
 
 ---
 
+## 4b. Values that must not be in the repository
+
+Account ids, guest ids, member ids, confirmation numbers, e-mail
+addresses: a customer's data. This repository is public and `csv/manual/`
+is committed, so such a value goes in neither the Java nor the row file.
+It lives in `program_configuration.json` on the machine that runs the
+test, and the test reads it with **one helper**, from `BaseApiTest`:
+
+```java
+String guestId   = rowOrConfig(row, "guest_id",   "jira.b2b-1234.travel_coordinator.guest_id");
+String accountId = rowOrConfig(row, "account_id", "jira.b2b-1234.travel_coordinator.account_id");
+String memberId  = rowOrConfig(row, "member_id",  "jira.b2b-1234.travel_coordinator.member_id");
+```
+
+`rowOrConfig(row, column, configKey)` takes the row's column when it is
+filled, else the configuration key, else **skips** the test with a message
+naming the key. Pass `null` for the row in a test without a data provider.
+Do not write a helper of your own for this.
+
+**The configuration key scheme is fixed:**
+
+```
+jira.<story key, lower case>.<role or object, snake_case>.<field, snake_case>
+jira.b2b-1234.travel_coordinator.guest_id
+jira.b2b-1234.travel_coordinator.username          (a credential: same scheme)
+jira.b2b-1234.other_member.confirmation_number
+```
+
+The story key names the keys, so two stories never collide and a key can
+be found from the test that uses it. The row file keeps the **same names
+as columns** (`guest_id`, `account_id`, ...), **left blank** -- a private
+copy may fill them, the committed file never does. In your report, list
+every key the test reads, so whoever runs it knows what to set.
+
+---
+
 ## 5. Assert what the story says, and only that
 
 Derive every assertion from the acceptance criteria, and cite it in
@@ -249,7 +286,11 @@ and reconverted.
 
 ## 7. Validate before reporting
 
-In order. Stop at the first failure and report it.
+When this skill is run by the test workbench (tools/agent), **the
+workbench runs these for you** the moment you finish and hands back the
+errors; do not run them yourself, and do not touch anything under
+`tools/` to make them pass. From the editor, in order; stop at the first
+failure and report it.
 
 ```bash
 mvn -o -q -DskipTests test-compile
