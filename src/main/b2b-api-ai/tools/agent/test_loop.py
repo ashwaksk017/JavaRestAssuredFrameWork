@@ -532,6 +532,18 @@ class VerifyAndRepair(Repo):
         self.assertEqual(loop.cursor_quiet({"cursor_quiet_seconds": 0}), 0)
         self.assertEqual(loop.cursor_quiet({}), 600)
 
+    def test_an_answer_from_a_run_the_time_limit_ended_is_verified_not_undone(self):
+        def agent(prompt):
+            write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
+            return {"result": "Files created: NewTest.java", "status": "timeout", "ended_in_timeout": True,
+                    "cancelled": True}
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(self.generate(agent), 0)
+        self.assertEqual(self.state()["state"], "pending-review")
+        self.assertIn("time limit ended the run after Cursor had answered", out.getvalue())
+        self.assertTrue(os.path.isfile(os.path.join(self.root, JIRA, "NewTest.java")), "kept, not undone")
+
     def test_an_answer_from_a_run_that_ended_in_error_is_verified_not_undone(self):
         def agent(prompt):
             write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
@@ -1918,6 +1930,9 @@ class FakeSdk:
             def supports(self_inner, what):
                 return False
 
+            def cancel(self_inner):
+                outer.cancelled = True
+
         class Session:
             def __enter__(self_inner):
                 return self_inner
@@ -2096,6 +2111,22 @@ class CallingCursor(unittest.TestCase):
             loop.cursor_call.run("p", self.ca, self.cfg)
         self.assertEqual(got.exception.kind, "run")
         self.assertIn("did not finish", str(got.exception))
+
+    def test_the_hard_limit_after_an_answer_keeps_the_answer(self):
+        NS = types.SimpleNamespace
+
+        def answers_then_hangs():
+            yield NS(type="assistant", message=NS(content=[NS(type="text", text="## Files created: XTest.java")]))
+            time.sleep(30)
+        self.use(FakeSdk(messages=answers_then_hangs()))
+        for name, value in (("QUIET_FOR", 5), ("PULSE_EVERY", 0.02)):
+            self.addCleanup(setattr, loop.cursor_call, name, getattr(loop.cursor_call, name))
+            setattr(loop.cursor_call, name, value)
+        seen = []
+        out = loop.cursor_call.run("p", self.ca, self.cfg, on_event=seen.append, deadline_seconds=0.5)
+        self.assertEqual((out["status"], out["ended_in_timeout"], out["cancelled"]), ("timeout", True, True))
+        self.assertEqual(out["result"], "## Files created: XTest.java")
+        self.assertTrue(any("time limit came after Cursor had answered" in s for s in seen), seen)
 
     def test_a_run_that_never_said_anything_waits_for_the_hard_limit(self):
         def silent():

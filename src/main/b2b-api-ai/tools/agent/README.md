@@ -600,6 +600,10 @@ What the step checks instead of trusting:
   its answer; what it wrote goes to the verify step, which decides. The
   error is on the record in the Cursor log. Only a run that ends in
   error having said nothing is a failure.
+- The same holds for the time limit: when it comes after Cursor has
+  answered and the run is confirmed cancelled, the answer is kept and
+  what was written is verified. A run the limit ends before any answer,
+  or that cannot be cancelled, is a failure and its files are put back.
 - Each call to Cursor has a time limit (`cursor_deadline_seconds` in
   `policy.json`: 900 seconds for a design call; 2700 for an Agentic Test Creation tab call,
   per attempt, so twice that with the repair attempt; 0 is no limit, and

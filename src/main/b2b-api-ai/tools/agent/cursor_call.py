@@ -506,6 +506,20 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
         return {"status": "quiet", "result": "\n\n".join(parts), "id": run_id,
                 "model": cfg.model, "transport": "session", "quiet": True}
     except TimeoutError as e:
+        # The hard limit, after Cursor had answered (seen live: the summary
+        # at minute 42, the limit at 45). The answer is kept and what was
+        # written is checked -- when the run is known to have stopped. A run
+        # that could not be cancelled may still be writing: that stays a
+        # failure, with the putting-back and the waiting the loop does.
+        parts = transcript + ([said["text"].strip()] if said["text"].strip() else [])
+        if parts and live.get("cancelled"):
+            done.set()
+            run_id = str(getattr(live.get("run"), "id", "") or "")
+            emit("the time limit came after Cursor had answered; the answer is kept and what it "
+                 "wrote is checked")
+            return {"status": "timeout", "result": "\\n\\n".join(parts), "id": run_id,
+                    "model": cfg.model, "transport": "session", "ended_in_timeout": True,
+                    "cancelled": True}
         raise timed_out(e) from None
     except Exception as e:                               # noqa: BLE001
         if startup_error is not None and isinstance(e, startup_error):
