@@ -2421,6 +2421,11 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         if answer.get("quiet"):
             say(" .. Cursor went quiet after its last word and was not waited for further; "
                 "checking what it wrote")
+        elif answer.get("ended_in_error"):
+            say("WARN Cursor reported an error at the end of the run, but it had answered; what it "
+                "wrote is checked rather than undone. The verify step decides.")
+            for line in answer.get("diagnostics") or []:
+                clog.write(f"cursor error detail: {line}")
         else:
             say(" .. Cursor finished; checking what it changed")
 

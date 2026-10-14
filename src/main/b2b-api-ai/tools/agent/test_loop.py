@@ -532,6 +532,19 @@ class VerifyAndRepair(Repo):
         self.assertEqual(loop.cursor_quiet({"cursor_quiet_seconds": 0}), 0)
         self.assertEqual(loop.cursor_quiet({}), 600)
 
+    def test_an_answer_from_a_run_that_ended_in_error_is_verified_not_undone(self):
+        def agent(prompt):
+            write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
+            return {"result": "Files created: NewTest.java", "status": "error", "ended_in_error": True,
+                    "diagnostics": ["tool shell error: denied"]}
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(self.generate(agent), 0)
+        self.assertEqual(self.state()["state"], "pending-review")
+        self.assertIn("reported an error at the end of the run, but it had answered", out.getvalue())
+        self.assertTrue(os.path.isfile(os.path.join(self.root, JIRA, "NewTest.java")), "kept, not undone")
+        self.assertIn("cursor error detail: tool shell error: denied", self.cursor_log())
+
     def test_a_failed_verify_gets_one_repair_attempt_with_the_output(self):
         prompts, results = [], [
             {"ok": False, "steps": [{"name": "compile", "rc": 1, "tail": "NewTest.java:[3,5] cannot find symbol"}]},
@@ -2067,6 +2080,23 @@ class CallingCursor(unittest.TestCase):
         self.assertTrue(any("taken as finished" in s for s in seen), seen)
         self.assertFalse(any("time limit" in s for s in seen))
 
+    def test_an_error_status_with_an_answer_keeps_the_answer_and_says_so(self):
+        NS = types.SimpleNamespace
+        msgs = [NS(type="tool_call", name="edit", status="completed", call_id="1", result="ok")]
+        self.use(FakeSdk(messages=msgs, status="error", result="## Files created\n- XTest.java"))
+        seen = []
+        out = loop.cursor_call.run("p", self.ca, self.cfg, on_event=seen.append)
+        self.assertEqual((out["status"], out["ended_in_error"]), ("error", True))
+        self.assertEqual(out["result"], "## Files created\n- XTest.java")
+        self.assertTrue(any("ended with status 'error'" in s and "had answered" in s for s in seen), seen)
+
+    def test_an_error_status_with_nothing_said_is_still_a_failure(self):
+        self.use(FakeSdk(messages=[], status="error", result=""))
+        with self.assertRaises(loop.cursor_call.CursorCallError) as got:
+            loop.cursor_call.run("p", self.ca, self.cfg)
+        self.assertEqual(got.exception.kind, "run")
+        self.assertIn("did not finish", str(got.exception))
+
     def test_a_run_that_never_said_anything_waits_for_the_hard_limit(self):
         def silent():
             time.sleep(30)
@@ -2100,13 +2130,19 @@ class CallingCursor(unittest.TestCase):
         self.assertIn("did not start", str(got.exception))
         self.assertIn("not the prompt", str(got.exception))
 
-    def test_a_run_that_failed_half_way_says_that_instead(self):
+    def test_a_run_that_failed_half_way_keeps_its_partial_answer_and_names_the_error(self):
         msgs = [types.SimpleNamespace(type="tool_call", name="edit_file", status="error", result="disk full")]
         self.use(FakeSdk(messages=msgs, status="error", result="partial"))
+        seen = []
+        out = loop.cursor_call.run("p", self.ca, self.cfg, on_event=seen.append)
+        self.assertEqual((out["ended_in_error"], out["id"], out["result"]), (True, "run-7", "partial"))
+        self.assertTrue(any("disk full" in d for d in out["diagnostics"]))
+        self.assertTrue(any("had answered" in s and "disk full" in s for s in seen), seen)
+        # Nothing answered: that is a failure, with the tool error as detail.
+        self.use(FakeSdk(messages=msgs, status="error", result=""))
         with self.assertRaises(loop.cursor_call.CursorCallError) as got:
             loop.cursor_call.run("p", self.ca, self.cfg)
-        self.assertEqual(got.exception.kind, "run")
-        self.assertEqual(got.exception.run_id, "run-7")
+        self.assertEqual((got.exception.kind, got.exception.run_id), ("run", "run-7"))
         self.assertIn("disk full", got.exception.details)
 
     def test_an_sdk_without_sessions_falls_back_to_the_single_call(self):

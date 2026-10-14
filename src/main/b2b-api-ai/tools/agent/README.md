@@ -595,6 +595,11 @@ What the step checks instead of trusting:
   what it wrote is verified like any other run. Seen live: Cursor wrote
   the test, summed up, then stayed silent for 18 minutes until the hard
   limit -- which then undid everything it had written.
+- A run whose last status from the SDK is "error" but which had
+  answered (seen live: the whole summary of the files it wrote) keeps
+  its answer; what it wrote goes to the verify step, which decides. The
+  error is on the record in the Cursor log. Only a run that ends in
+  error having said nothing is a failure.
 - Each call to Cursor has a time limit (`cursor_deadline_seconds` in
   `policy.json`: 900 seconds for a design call; 2700 for an Agentic Test Creation tab call,
   per attempt, so twice that with the repair attempt; 0 is no limit, and

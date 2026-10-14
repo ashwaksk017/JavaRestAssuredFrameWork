@@ -525,11 +525,22 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
     status = str(getattr(result, "status", "") or "")
     run_id = str(getattr(result, "id", "") or "")
     if status.lower() == "error":
+        if str(text).strip():
+            # The SDK's last word on the run was "error", yet the agent had
+            # answered -- seen live with the whole summary of the files it
+            # wrote. The answer is kept; what was written is for the verify
+            # step to judge, not a status word. The error is on the record.
+            emit(f"the run ended with status 'error' (run id {run_id}, after "
+                 f"{time.time() - started:.0f}s) but had answered; the answer is kept and what "
+                 f"it wrote is checked" + (": " + "; ".join(diagnostics[:3]) if diagnostics else ""))
+            return {"status": status, "result": str(text), "id": run_id, "model": cfg.model,
+                    "transport": "session", "ended_in_error": True,
+                    "diagnostics": diagnostics[:12]}
         raise CursorCallError(
             f"the agent started but did not finish (run id {run_id}, after "
             f"{time.time() - started:.0f}s). Usual causes: a very large "
             f"prompt, a slow network or VPN to Cursor, or the model timing "
             f"out.", "run", run_id=run_id,
-            details="\n".join(diagnostics[:12] + ([str(text)[:2000]] if str(text).strip() else [])))
+            details="\n".join(diagnostics[:12]))
     return {"status": status, "result": str(text), "id": run_id,
             "model": cfg.model, "transport": "session"}
