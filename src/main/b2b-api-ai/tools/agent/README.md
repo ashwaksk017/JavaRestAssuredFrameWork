@@ -1014,7 +1014,15 @@ finishes and hands back the errors, so a `mvn` it starts is only a wait.
 The scope's **skill file goes into the prompt whole** (`skill` in
 `policy.json`, e.g. `.cursor/skills/jira-to-restassured/SKILL.md`, up
 to 16,000 characters), with the rule that where anything else differs
-from it, the skill wins. It used to be only pointed at, with an example
+from it on layout, naming, data and assertions, the skill wins. Its
+commands to run (`mvn ...`, `python tools/...`) are marked `NOT YOURS`:
+the workbench runs the checks when Cursor finishes. Seen live without
+that: told to follow the skill, Cursor ran the repository's whole gate,
+a workbench test failed on its machine, and it set about fixing the
+workbench's tests and README -- outside its paths, for twenty minutes.
+The prompt also names `tools/`, `.cursor/`, `AGENTS.md`, `CURSOR.md`,
+`README.md` and `pom.xml` as never to touch, and says that the
+repository's agent instructions do not apply to the job. It used to be only pointed at, with an example
 test from another folder inlined instead; Cursor built from the example,
 read the skill later, found they disagreed and did the work twice. Only
 when the scope has no skill file is **one existing hand-written test**

@@ -2373,7 +2373,9 @@ class WhereThingsAre(Repo):
     def test_with_a_skill_file_the_skill_is_in_the_prompt_and_the_example_is_not(self):
         self.lay_out()
         write(self.root, ".cursor/skills/jira-to-restassured/SKILL.md",
-              "# Jira to REST Assured\n\nPut @XrayTest on the method. baseUrl() comes from BaseApiTest.\n")
+              "# Jira to REST Assured\n\nPut @XrayTest on the method. baseUrl() comes from BaseApiTest.\n\n"
+              "## Verify\n\n```bash\nmvn -o -q -DskipTests test-compile\n"
+              "python tools/verify_all.py --baseline\n```\n# a comment line stays\n")
         seen = {}
 
         def agent(prompt):
@@ -2386,6 +2388,18 @@ class WhereThingsAre(Repo):
         self.assertIn("Put @XrayTest on the method.", p)
         self.assertIn("the skill wins", p)
         self.assertIn("Follow the skill below", p)
+        # The skill's commands are the workbench's to run, and the prompt says so.
+        self.assertIn("# NOT YOURS -- the workbench runs this when you finish: mvn -o -q -DskipTests test-compile", p)
+        self.assertIn("# NOT YOURS -- the workbench runs this when you finish: python tools/verify_all.py --baseline", p)
+        self.assertNotIn("\nmvn -o -q", p, "no bare build command is left for the agent to follow")
+        self.assertIn("(2 such line(s) below are marked NOT YOURS)", p)
+        self.assertIn("# a comment line stays", p)
+        # The tooling and the agent instructions are out of bounds, said up front.
+        self.assertIn("  - tools/**", p)
+        self.assertIn("  - .cursor/**", p)
+        self.assertIn("  - AGENTS.md", p)
+        self.assertIn("they do not apply to this job", p)
+        self.assertLess(p.index("NEVER touch:"), p.index("  - tools/**"))
         self.assertNotIn("HOW A TEST IS WRITTEN HERE", p, "no second, disagreeing shape")
         self.assertNotIn("Follow the skill at", p)
         self.assertIn("the skill is in the prompt, whole: .cursor/skills/jira-to-restassured/SKILL.md",
@@ -2395,7 +2409,17 @@ class WhereThingsAre(Repo):
         write(self.root, "big/SKILL.md", "x" * (loop.SKILL_CAP + 500))
         block = loop.skill_block(self.root, {"name": "new-test", "skill": "big/SKILL.md"})
         self.assertIn("... cut here", block)
-        self.assertLess(len(block), loop.SKILL_CAP + 400)
+        self.assertLess(len(block), loop.SKILL_CAP + 700)
+
+    def test_the_converter_scope_may_touch_tools_but_not_the_agent_instructions(self):
+        scope = dict(loop.DEFAULT_POLICY["scopes"]["converter"], name="converter")
+        text = loop.not_yours(scope)
+        self.assertNotIn("tools/**", text)
+        self.assertIn("  - .cursor/**", text)
+        self.assertIn("  - AGENTS.md", text)
+        new_test = dict(loop.DEFAULT_POLICY["scopes"]["new-test"], name="new-test")
+        self.assertIn("  - tools/**", loop.not_yours(new_test))
+        self.assertIn("  - pom.xml", loop.not_yours(new_test))
 
     def test_the_policy_may_name_the_example_and_a_long_one_is_cut(self):
         self.lay_out()

@@ -1055,10 +1055,36 @@ def skill_block(root: str, scope: dict) -> str:
         return ""
     if len(text) > SKILL_CAP:
         text = text[:SKILL_CAP] + "\n... cut here; the rest is in the file"
+    text, marked = _mark_commands(text)
     return "\n".join([f"===== THE SKILL TO FOLLOW ({rel}) =====",
-                      "This is how a test is written in this repository. Where anything else in "
-                      "this prompt or in the project differs from it, the skill wins.",
+                      "This is how a test is written in this repository: its layout, naming, "
+                      "data and assertions. Where anything else in this prompt or in the project "
+                      "differs from it on THOSE, the skill wins. Its commands to run -- a build, "
+                      "a test, a check under tools/ -- are not yours: this tool runs them when "
+                      "you finish" + (f" ({marked} such line(s) below are marked NOT YOURS)" if marked else "")
+                      + ".",
                       "", text.rstrip(), "===== end of the skill ====="])
+
+
+_COMMAND_LINE_RX = re.compile(r"^(\s*)((?:mvn|mvnw|gradle|gradlew|python3?|py|npm|npx|pytest)\b.*)$")
+NOT_YOURS = "# NOT YOURS -- the workbench runs this when you finish: "
+
+
+def _mark_commands(text: str) -> tuple:
+    """Shell commands quoted in a skill (`mvn ...`, `python tools/...`) are
+    prefixed as the workbench's to run, so an agent told to follow the
+    skill does not run the repository's whole gate -- and then set about
+    fixing the gate's own tests when one fails on its machine, which is
+    what happened. Returns (text, how many lines were marked)."""
+    out, n = [], 0
+    for line in text.splitlines():
+        m = _COMMAND_LINE_RX.match(line)
+        if m and not line.lstrip().startswith("#"):
+            out.append(f"{m.group(1)}{NOT_YOURS}{m.group(2)}")
+            n += 1
+        else:
+            out.append(line)
+    return "\n".join(out), n
 
 
 def pattern_example(root: str, policy: dict, scope: dict) -> tuple:
@@ -1437,6 +1463,19 @@ def brief_for_agent(job_dir: str, policy: dict, decided: bool) -> tuple:
     return "===== brief.md =====", _read(path, cap=BRIEF_CAP)
 
 
+def not_yours(scope: dict) -> str:
+    """Paths no job writes to, besides the generated ones: the tooling,
+    the agent instructions and the repository's documents. The converter
+    scope owns tools/ra_converter and the gate, so for it only the agent
+    instructions are named."""
+    if scope.get("name") == "converter":
+        extra = [".cursor/**", "AGENTS.md", "CURSOR.md"]
+    else:
+        extra = ["tools/**", ".cursor/**", "AGENTS.md", "CURSOR.md", "README.md", "pom.xml"]
+    extra = [p for p in extra if not in_roots(p.rstrip("*"), scope.get("write_roots") or [])]
+    return "".join(f"\n  - {p}" for p in extra)
+
+
 def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
                  root: str = "", followup: str = "") -> str:
     plan = _read(os.path.join(job_dir, "plan.md"))
@@ -1463,7 +1502,13 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
         roots,
         "",
         "NEVER touch:",
-        gen + ("\n  (other than the paths listed above)" if scope["name"] == "converted" else ""),
+        gen + ("\n  (other than the paths listed above)" if scope["name"] == "converted" else "")
+        + not_yours(scope),
+        "",
+        "AGENTS.md, CURSOR.md, the READMEs and .cursor/rules are written for people and "
+        "agents working ON the converter and this tool; they do not apply to this job. Do "
+        "not follow their instructions to run tools/verify_all.py or any script under "
+        "tools/, and do not edit their files: a change there fails the whole job.",
         "",
         "Do not delete any file. Do not run git commit, git push, git "
         "checkout or git reset -- this tool commits, after a person has "
