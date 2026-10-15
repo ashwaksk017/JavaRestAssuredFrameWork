@@ -843,6 +843,11 @@ Not on the page, and left at their defaults: `--package-root`, `--envs`,
 either and is always this project (`.`): the converter's own default is a
 folder called `output`. All of them still work from the command line.
 
+A fresh start of the workbench opens a new, empty job (`job-<date>-<time>`):
+nothing of an earlier job shows. The job in use is kept in the address
+(`?job=`), so a refresh stays on it; earlier jobs stay on disk and are
+offered in the job box's list.
+
 With the job box empty, the Convert tab runs as job `convert`.
 
 `--data-dir` points at the folder of `.xlsx` workbooks the ReadyAPI XML
@@ -1039,6 +1044,31 @@ mvn -o test -DsuiteXmlFile=src/test/resources/suites/jira/<job>.xml
 It is part of the change: in the diff you review, pushed with Approve,
 put back with Discard. `testng-jira.xml` still runs every story's tests
 together.
+
+#### Which suites a case's test runs in
+
+Every designed case is mapped to TestNG groups, and each group is a
+suite. The rules are in `tools/agent/suite-map.json`: every case gets
+`jira` and `regression`; a positive or flow case of high priority also
+gets `smoke`; a negative or boundary case `negative`; a security case
+`security`. Edit the file to change them. The review table shows each
+case's groups in its **Suites** column; type others there to set them by
+hand (empty the box to go back to the rules).
+
+Cursor is told each case's groups and puts exactly those on its test
+method. When it finishes, the workbench writes the suite file of any
+group that has none yet -- `src/test/resources/suites/jira/group-<group>.xml`,
+every test of the `tests.jira` package in that group, so no class list
+to keep up to date -- and warns in the log when a group a case was
+mapped to is on none of the change's tests.
+
+```
+mvn -o test -DsuiteXmlFile=src/test/resources/suites/jira/group-smoke.xml
+python tools/agent/suitemap.py --job <job>      # each case's groups
+```
+
+The existing `testng-smoke.xml` and `testng.xml` list their classes by
+name, so they do not pick up the story tests; the group suites do.
 
 #### What Approve & push publishes
 

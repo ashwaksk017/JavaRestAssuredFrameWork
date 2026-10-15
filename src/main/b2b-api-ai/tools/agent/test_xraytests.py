@@ -531,7 +531,7 @@ class TheAgentLoop(Base):
         self.addCleanup(setattr, loop, "brief_fingerprint", real)
         loop.brief_fingerprint = lambda job_dir: "abc"
         text, note = loop.designed_cases(self.job, keys=loop.xray_keys(self.job, mocked=False))
-        self.assertIn("TC-001 [positive, high] [Xray ABC-901] POST", text)
+        self.assertIn("TC-001 [positive, high] [Xray ABC-901] [groups: jira, regression, smoke] POST", text)
         self.assertIn("2 with an Xray key", note)
         self.assertEqual(loop.xray_keys(self.job, mocked=True), {})
 

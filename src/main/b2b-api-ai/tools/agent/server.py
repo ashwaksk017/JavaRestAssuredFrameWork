@@ -209,6 +209,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"pid": os.getpid(), "root": ROOT})
             if u.path == "/api/jobs":
                 return self._json(jobs.list_jobs())
+            if u.path == "/api/suite-groups":
+                # Which suites each designed case's test runs in.
+                sm = jobs.casereview._suitemap()
+                mapping = sm.load()
+                return self._json({"cases": sm.for_job(jobs.job_dir(q.get("job", "")), mapping),
+                                   "problem": mapping.get("problem", "")})
             if u.path == "/api/uploads":
                 return self._json({"files": jobs.list_uploads()})
             if u.path == "/api/spec":
@@ -350,7 +356,7 @@ class Handler(BaseHTTPRequestHandler):
                 # A person's decision on proposed cases: validated field by
                 # field in casereview.py, written only under the job.
                 out = jobs.job_dir(body.get("job", ""))
-                fields = {k: body.get(k) for k in ("state", "automate", "title", "steps", "note")
+                fields = {k: body.get(k) for k in ("state", "automate", "title", "steps", "note", "groups")
                           if k in body}
                 what = str(body.get("what") or "")
                 return self._json({"written": jobs.casereview.update(

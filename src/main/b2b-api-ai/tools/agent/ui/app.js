@@ -7,9 +7,28 @@ const $ = (id) => document.getElementById(id);
 const job = () => $("job").value.trim();
 // `?job=name` in the address opens the page on that job, so a result can
 // be linked to: http://127.0.0.1:8787/?job=release-6#jira
+// Without one -- the workbench just started -- the page opens on a NEW job,
+// empty: nothing of an earlier job's design, review or Xray tests shows.
+// The job in use is written into the address, so a refresh stays on it.
+// Earlier jobs are kept on disk and offered in the job box's list.
+function newJobId() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `job-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+function jobIntoAddress() {
+  const j = job();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(j)) return;
+  const q = new URLSearchParams(location.search);
+  if (q.get("job") === j) return;
+  q.set("job", j);
+  try { history.replaceState(null, "", `${location.pathname}?${q.toString()}${location.hash}`); } catch { /* file: or sandboxed */ }
+}
 (function jobFromAddress() {
   const j = new URLSearchParams(location.search).get("job") || "";
-  if (/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(j)) $("job").value = j;
+  $("job").value = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(j) ? j : newJobId();
+  jobIntoAddress();
+  $("job").addEventListener("change", jobIntoAddress);
 })();
 
 // ---- saying what the page is doing --------------------------------------
@@ -18,7 +37,7 @@ const job = () => $("job").value.trim();
 // button that sent it cannot be pressed again until it has answered.
 // The polls that follow a running command are not named here: the command
 // says what IT is doing, beside its own button (see follow()).
-const QUIET = ["/api/log", "/api/status", "/api/mock", "/api/client-error", "/api/whoami"];
+const QUIET = ["/api/log", "/api/status", "/api/mock", "/api/client-error", "/api/whoami", "/api/jobs"];
 const DOING = {
   "/api/intake": "Saving the story and its links",
   "/api/design": "Starting the design",
@@ -696,7 +715,7 @@ async function decide(j, what, ids, fields, stateEl) {
   }
 }
 
-function reviewTable(j, what, cases, entries, after, done, change) {
+function reviewTable(j, what, cases, entries, after, done, change, suites) {
   const box = el("div", { class: "review" });
   const st = el("span", { class: "state" });
   const entryOf = (c) => entries[c.id] || {};
@@ -712,7 +731,7 @@ function reviewTable(j, what, cases, entries, after, done, change) {
     el("button", { type: "button", on: { click: bulk({ state: "rejected" }) } }, "Reject all"),
     el("small", { text: `${counts.approved} approved, ${counts.rejected} rejected, ${counts.proposed} not yet decided` }),
     st));
-  const headers = what === "design" ? ["Approve", "Automate", "Case", "Title", "Endpoint", "Steps", "Note", "Write it"]
+  const headers = what === "design" ? ["Approve", "Automate", "Case", "Title", "Endpoint", "Suites", "Steps", "Note", "Write it"]
                                     : ["Approve", "Case", "Title", "Steps", "Note"];
   box.append(table(headers, cases.map((c) => {
     const e = entryOf(c);
@@ -727,7 +746,9 @@ function reviewTable(j, what, cases, entries, after, done, change) {
     automate.onchange = async () => {
       if (await decide(j, what, [c.id], { automate: automate.checked }, st)) after();
     };
-    const title = el("input", { type: "text", value: e.title || c.title || "" });
+    const title = el("textarea", { rows: "1", spellcheck: "false", class: "title" });
+    title.value = e.title || c.title || "";
+    fitHeight(title, 6);
     title.onchange = () => {
       if (title.value.trim()) decide(j, what, [c.id], { title: title.value.trim() }, st);
     };
@@ -741,7 +762,23 @@ function reviewTable(j, what, cases, entries, after, done, change) {
     const row = [approve];
     if (what === "design") row.push(automate);
     row.push(cell, el("div", {}, title));
-    if (what === "design") row.push(el("code", { text: c.endpoint || "" }));
+    if (what === "design") row.push(el("code", { class: "endpoint" },
+      // A line break is allowed after each slash, nowhere else.
+      ...String(c.endpoint || "").split("/").flatMap((part, i) => (i ? [el("wbr"), "/" + part] : [part]))));
+    if (what === "design") {
+      // The TestNG groups -- the suites -- the case's test runs in: from
+      // suite-map.json's rules, or set here by hand. Empty: the rules again.
+      const s = (suites || {})[c.id] || { groups: [], chosen: false };
+      const groups = el("textarea", { rows: "1", spellcheck: "false", class: "groups",
+                                      title: "comma-separated TestNG groups; each runs as suites/jira/group-<name>.xml. Empty it to go back to the rules." });
+      groups.value = (s.groups || []).join(", ");
+      fitHeight(groups, 4);
+      groups.onchange = async () => {
+        const v = groups.value.replace(/\s*\n\s*/g, ",").trim();
+        if (await decide(j, what, [c.id], { groups: v }, st)) after();
+      };
+      row.push(el("div", {}, groups, el("small", { text: s.chosen ? "set by hand" : "from the rules" })));
+    }
     row.push(steps, el("div", {}, note));
     if (what === "design") {
       // What the case's last run came to -- if it is about the change
@@ -761,6 +798,18 @@ function reviewTable(j, what, cases, entries, after, done, change) {
   return box;
 }
 
+// A text box as tall as what it holds (up to a limit), so nothing is cut.
+function fitHeight(box, max = 10) {
+  const fit = () => {
+    box.style.height = "auto";
+    const line = parseFloat(getComputedStyle(box).lineHeight) || 18;
+    box.style.height = `${Math.min(box.scrollHeight + 2, line * max + 12)}px`;
+  };
+  box.addEventListener("input", fit);
+  requestAnimationFrame(fit);
+  return box;
+}
+
 // A case's steps, editable: action, data and expected result of each, a
 // step added or removed. Saved as the person's correction when a field is
 // left; the Agentic step and Create in Xray use the corrected steps.
@@ -776,14 +825,17 @@ function stepEditor(given, save, st) {
   };
   const add = (s) => {
     const r = {
-      action: el("textarea", { rows: "2", spellcheck: "false", placeholder: "what is sent / done" }),
-      data: el("input", { type: "text", spellcheck: "false", placeholder: "data" }),
-      expected: el("textarea", { rows: "2", spellcheck: "false", placeholder: "what is expected" }),
+      action: el("textarea", { rows: "1", spellcheck: "false", class: "do", placeholder: "what is sent / done" }),
+      data: el("textarea", { rows: "1", spellcheck: "false", class: "data", placeholder: "the data it needs (optional)" }),
+      expected: el("textarea", { rows: "1", spellcheck: "false", class: "expect", placeholder: "what is expected" }),
     };
     r.action.value = s.action || ""; r.data.value = s.data || ""; r.expected.value = s.expected || "";
-    for (const f of [r.action, r.data, r.expected]) f.onchange = send;
-    const remove = el("button", { type: "button", title: "remove this step", text: "×" });
-    r.node = el("div", { class: "step" }, el("span", { class: "n" }), r.action, r.data, r.expected, remove);
+    for (const f of [r.action, r.data, r.expected]) { f.onchange = send; fitHeight(f, 8); }
+    const remove = el("button", { type: "button", class: "remove", title: "remove this step", text: "×" });
+    r.node = el("div", { class: "step" }, el("span", { class: "n" }),
+      el("span", { class: "lbl l-do", text: "do" }), r.action,
+      el("span", { class: "lbl l-data", text: "data" }), r.data,
+      el("span", { class: "lbl l-expect", text: "expect" }), r.expected, remove);
     remove.onclick = () => {
       if (rows.length === 1) { setState(st, "bad", "a case needs at least one step"); return; }
       rows.splice(rows.indexOf(r), 1); r.node.remove(); number(); send();
@@ -818,11 +870,12 @@ async function showReview(what) {
     }
     return;
   }
-  const [result, review, done, agentReview] = await Promise.all([
+  const [result, review, done, agentReview, suites] = await Promise.all([
     artifactJson(j, what === "design" ? "design.json" : "manual-result.json"),
     artifactJson(j, "case-review.json"),
     what === "design" ? artifactJson(j, "automated-cases.json") : Promise.resolve(null),
-    what === "design" ? artifactJson(j, "review.json") : Promise.resolve(null)]);
+    what === "design" ? artifactJson(j, "review.json") : Promise.resolve(null),
+    what === "design" ? api(`/api/suite-groups?job=${encodeURIComponent(j)}`).catch(() => null) : Promise.resolve(null)]);
   if (j !== job()) return;
   const cases = (result && (what === "design" ? result.test_cases : result.new_cases)) || [];
   const entries = (review && review[what]) || {};
@@ -833,12 +886,13 @@ async function showReview(what) {
   }
   const kids = [];
   if (result.mock) kids.push(banner("warn", "These are a stand-in's cases (mock Cursor); a review of them goes nowhere real."));
+  if (suites && suites.problem) kids.push(banner("warn", `suite-map.json: ${suites.problem}. Every case gets the default groups.`));
   const live = agentReview && ["pending-review", "verify-failed", "pushed", "approved-local", "push-failed"]
     .includes(agentReview.state) ? agentReview.change : "";
   kids.push(reviewTable(j, what, cases.filter((c) => c && c.id), entries, () => {
     showReview(what);
     refreshXray(what, true);
-  }, done, live));
+  }, done, live, suites && suites.cases));
   box.replaceChildren(...kids);
   showFlow();
 }
@@ -2823,6 +2877,13 @@ showMockBanner();
 
 // Whatever tab the address names, open it -- after every tab above has
 // said what it does when opened.
+// The jobs kept on disk, newest first, offered in the job box.
+api("/api/jobs").then((list) => {
+  const box = $("known-jobs");
+  if (!box || !Array.isArray(list)) return;
+  const rows = list.slice().sort((a, b) => String(b.modified).localeCompare(String(a.modified))).slice(0, 50);
+  box.replaceChildren(...rows.map((r) => el("option", { value: r.job, text: `${r.job}  (${r.modified})` })));
+}).catch(() => { /* no list: the box still takes a typed id */ });
 (function openTabFromAddress() {
   const name = (location.hash || "").replace(/^#/, "");
   const b = name && document.querySelector(`.tabs button[data-tab="${name.replace(/[^a-z]/g, "")}"]`);

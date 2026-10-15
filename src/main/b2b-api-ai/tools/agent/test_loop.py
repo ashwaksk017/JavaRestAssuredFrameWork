@@ -447,6 +447,28 @@ class TheReviewDecidesWhatIsWritten(Repo):
         self.assertNotIn("TC-002", cases, "a case nobody asked for is not handed over")
         self.assertEqual(loop.automate_only(self.job), set(), "no filter is left behind")
 
+    def test_each_case_carries_its_groups_and_their_suites_are_written(self):
+        self.design(DESIGN_CASE, dict(DESIGN_CASE, id="TC-002", title="Bad body", type="negative", priority="low"))
+        loop.casereview.update(self.job, "design", ["TC-001", "TC-002"], state="approved")
+        seen = {}
+
+        def agent(prompt):
+            seen["p"] = prompt
+            write(self.root, JIRA + "NewTest.java",
+                  'class NewTest { @Test(groups = {"jira", "regression", "smoke"}) void a() {} }\n')
+            return {"result": "ok"}
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(self.generate(agent), 0)
+        self.assertIn("TC-001 [positive, high] [groups: jira, regression, smoke] POST /x", seen["p"])
+        self.assertIn("[groups: jira, regression, negative]", seen["p"])
+        self.assertIn("@Test(groups = {...})", seen["p"])
+        created = self.state()["files"]["created"]
+        self.assertIn("src/test/resources/suites/jira/group-smoke.xml", created, "part of the change")
+        self.assertIn("src/test/resources/suites/jira/group-regression.xml", created)
+        self.assertNotIn("src/test/resources/suites/jira/group-negative.xml", created, "no test is in it")
+        self.assertIn("WARN no test of this change is in the group(s) negative", out.getvalue())
+
     def test_without_a_specification_nothing_is_said_of_one(self):
         self.design(DESIGN_CASE)
         loop.casereview.update(self.job, "design", ["TC-001"], state="approved")

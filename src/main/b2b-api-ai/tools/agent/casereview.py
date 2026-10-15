@@ -31,6 +31,19 @@ import os
 import re
 from datetime import datetime, timezone
 
+def _suitemap():
+    import importlib.util
+    import sys
+    name = "casereview_suitemap"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            name, os.path.join(os.path.dirname(os.path.abspath(__file__)), "suitemap.py"))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+    return sys.modules[name]
+
+
 FILE = "case-review.json"
 STATES = ("proposed", "approved", "rejected")
 WHATS = ("design", "manual")
@@ -101,7 +114,7 @@ def _clean_steps(steps) -> list:
 
 
 def update(job_dir: str, what: str, ids, state: str = None, automate=None, title: str = None,
-           steps=None, note: str = None, known=None) -> dict:
+           steps=None, note: str = None, known=None, groups=None) -> dict:
     """Record a decision for one case, or the same decision for several.
     Fields left None are left as they were. With `known` (the ids the
     result holds now), a decision about any other id is refused: a table
@@ -128,6 +141,11 @@ def update(job_dir: str, what: str, ids, state: str = None, automate=None, title
         raise ValueError("a title cannot be empty")
     if steps is not None:
         steps = _clean_steps(steps)
+    if groups is not None:
+        # The suites a case's test runs in (suitemap.py). Empty: back to
+        # what the rules in suite-map.json say.
+        empty = groups == "" or groups == [] or (isinstance(groups, str) and not groups.strip(" ,"))
+        groups = [] if empty else _suitemap().clean_groups(groups)
     review = read(job_dir)
     written = {}
     for case_id in ids:
@@ -142,6 +160,11 @@ def update(job_dir: str, what: str, ids, state: str = None, automate=None, title
             entry["steps"] = steps
         if note is not None:
             entry["note"] = _one_line(note, MAX_NOTE)
+        if groups is not None:
+            if groups:
+                entry["groups"] = groups
+            else:
+                entry.pop("groups", None)
         entry.setdefault("state", "proposed")
         entry["at"] = _now()
         review[what][case_id] = entry

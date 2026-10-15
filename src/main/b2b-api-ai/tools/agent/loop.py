@@ -131,6 +131,7 @@ def _load(name: str, path: str):
 
 intake = _load("loop_intake", os.path.join(HERE, "intake.py"))
 casereview = _load("loop_casereview", os.path.join(HERE, "casereview.py"))
+suitemap = _load("loop_suitemap", os.path.join(HERE, "suitemap.py"))
 patches = _load("loop_patches", os.path.join(HERE, "patches.py"))
 cursor_call = _load("loop_cursor_call", os.path.join(HERE, "cursor_call.py"))
 mock = _load("loop_mock", os.path.join(HERE, "mock.py"))
@@ -1322,13 +1323,16 @@ def designed_cases(job_dir: str, cap: int = 20000, keys: dict = None, only_ids=N
     else:
         cases = casereview.apply(cases, entries)
     lines = []
+    mapping = suitemap.load()
     for c in cases:
         if c.get("endpoint_in_spec") is False:
             continue
         key = (keys or {}).get(_one_line(c.get("id"), 40), "")
+        groups = suitemap.groups_for(c, mapping, (entries.get(str(c.get("id") or "")) or {}).get("groups"))
         lines.append(f"{_one_line(c.get('id'), 40)} [{_one_line(c.get('type'), 20)}, "
                      f"{_one_line(c.get('priority'), 20)}]"
-                     + (f" [Xray {key}]" if key else "") + " "
+                     + (f" [Xray {key}]" if key else "")
+                     + f" [groups: {', '.join(groups)}] "
                      f"{_one_line(c.get('endpoint'), 200)} -- {_one_line(c.get('title'))}")
         for s in c.get("steps") or []:
             if not isinstance(s, dict):
@@ -1698,6 +1702,33 @@ def write_job_suite(root: str, job_dir: str, scope: dict) -> str:
     return rel
 
 
+_GROUPS_LINE_RX = re.compile(r"\[groups: ([^\]]*)\]")
+
+
+def write_group_suites(root: str, job_dir: str, scope: dict) -> list:
+    """The suite file of each group the job's tests use (suitemap.py),
+    written when it has none yet -- part of the change, like the job's
+    own suite. Returns what to say: the files written, and any group a
+    case handed to Cursor names that its tests do not carry."""
+    if scope.get("name") != "new-test" or not in_roots(JOB_SUITES, scope.get("write_roots") or []):
+        return []
+    texts = [_read(os.path.join(root, p.replace("/", os.sep)), 400_000)
+             for p, h in dirty_paths(root).items()
+             if h is not None and p.startswith(_JIRA_TESTS) and p.endswith(".java")]
+    used = suitemap.groups_in_code(texts)
+    said = [f"the suite of the group {g}: {rel}" for g, rel in
+            ((rel.rsplit("group-", 1)[1][:-4], rel) for rel in suitemap.write_suites(root, used))]
+    designed, _note = designed_cases(job_dir)
+    expected = set()
+    for m in _GROUPS_LINE_RX.finditer(designed):
+        expected |= {g.strip() for g in m.group(1).split(",") if g.strip()}
+    missing = sorted(expected - used)
+    if missing and texts:
+        said.append("WARN no test of this change is in the group(s) " + ", ".join(missing)
+                    + " a case was mapped to; ask Cursor to add them, or change the case's groups")
+    return said
+
+
 def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
                  root: str = "", followup: str = "") -> str:
     plan = _read(os.path.join(job_dir, "plan.md"))
@@ -1794,7 +1825,10 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
                   "column of the data row you write for it (add the column "
                   "when the sheet has none), or in `@XrayTest(\"KEY\")` on a "
                   "test method that takes no row. Never invent a key, and never "
-                  "put one key on two cases.", "", designed,
+                  "put one key on two cases. A case's [groups: ...] are the TestNG "
+                  "groups -- and so the suites -- its test runs in: put exactly those "
+                  "in @Test(groups = {...}) of the method that tests it. Cases with "
+                  "different groups do not share a test method.", "", designed,
                   "===== end of proposed test cases ====="]
         spec_block, _spec_note = spec_for_cases(job_dir, endpoints_of_cases(designed), root)
         if spec_block:
@@ -2854,6 +2888,9 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         if suite_rel:
             say(f" .. the suite of this job's tests: {suite_rel}")
             clog.write(f"suite written: {suite_rel}")
+        for line in write_group_suites(root, job_dir, scope):
+            say(f" .. {line}")
+            clog.write(f"suites: {line}")
 
         commit_now, branch_now = head(root)
         if (commit_now, branch_now) != (commit, branch):
