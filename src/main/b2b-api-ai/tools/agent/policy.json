@@ -100,7 +100,8 @@
     "src/main/resources/program_configuration.json",
     "tools/ra_converter/cursor_agent.json",
     "tools/agent/policy.json",
-    "tools/agent/mock.json"
+    "tools/agent/mock.json",
+    "tools/agent/check_workbench.py"
   ],
   "repair_attempts": "until-fixed",
   "repair_max_attempts": 8,

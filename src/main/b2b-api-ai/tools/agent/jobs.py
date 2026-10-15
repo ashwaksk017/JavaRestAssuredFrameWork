@@ -801,11 +801,24 @@ def refine_notes(job: str, request: str) -> str:
 def workflow_gate(job: str, runnable: str, options: dict) -> str:
     """Why a stage of the workflow cannot start yet, or ""."""
     if is_workbench_job(job):
+        # A workbench job makes a change to the workbench, and nothing else.
+        if runnable not in WORKBENCH_RUNNABLES:
+            return ("this is a job for changing the workbench itself: only Ask Cursor, Review, "
+                    "Approve and Discard run in it -- use a story's job for the workflow")
         return ""
     out = job_dir(job)
-    if runnable == "agent-automate" or (runnable == "xray-create" and options.get("--what") == "design"):
-        ok, why = workflow.finalized(out, casereview, casereview._suitemap())
-        return "" if ok else why
+    sm = casereview._suitemap()
+    designed = bool(_read_json(os.path.join(out, "design.json")).get("test_cases"))
+    # A job with designed cases: no code is written, run or pushed for it
+    # until its cases are final -- whichever button started it (Automate,
+    # Ask Cursor, a follow-up, Run, Approve).
+    finalize_first = runnable in ("agent-automate", "agent-followup", "agent-run-tests", "agent-approve") \
+        or (runnable == "agent-generate" and (options.get("--scope") or "new-test") == "new-test") \
+        or (runnable == "xray-create" and options.get("--what") == "design")
+    if finalize_first and (designed or runnable == "agent-automate"):
+        ok, why = workflow.finalized(out, casereview, sm)
+        if not ok:
+            return why
     if runnable == "agent-run-tests":
         ok, why = workflow.regression_confirmed(out)
         return "" if ok else why
@@ -1049,6 +1062,8 @@ def migration_ask(job: str, scope: str, suite: str, text: str) -> dict:
 
 
 # ---- a change to the workbench itself (the "workbench" scope) ----------------
+WORKBENCH_RUNNABLES = ("agent-generate", "agent-followup", "agent-approve", "agent-discard",
+                       "agent-review")
 # Cursor changing tools/agent: the page, its server, their tests. Its own
 # jobs (workbench-<time>), one change at a time, and only while NOTHING else
 # runs -- nor does anything start while it runs: every other command reads
@@ -1258,6 +1273,13 @@ def read_log(job: str, runnable: str, offset: int = 0) -> dict:
             "text": chunk.decode("utf-8", errors="replace")}
 
 
+class _Starting:
+    """Holds a command's place in _RUNNING between the checks and Popen."""
+
+    def poll(self):
+        return None
+
+
 def start(job: str, runnable: str, options: dict) -> dict:
     """Launch a runnable. Returns immediately; the log grows on disk."""
     options = dict(options or {})
@@ -1311,6 +1333,9 @@ def start(job: str, runnable: str, options: dict) -> dict:
             raise RuntimeError("Cursor is changing the workbench itself: nothing else starts "
                                "until that run has finished. Wait for it, or Stop it on the "
                                "Logs tab.")
+        # The slot is taken now, inside the lock: two requests at the same
+        # moment must not both pass the checks above.
+        _RUNNING[key] = _Starting()
 
     status = {"state": "running", "runnable": runnable, "job": job,
               "argv": argv[2:], "started": _now()}
@@ -1328,6 +1353,8 @@ def start(job: str, runnable: str, options: dict) -> dict:
             logf.close()
         except Exception:
             pass
+        with _LOCK:
+            _RUNNING.pop(key, None)
         failed = dict(status)
         failed.update({"state": "failed", "exit_code": -1,
                        "finished": _now(), "error": str(e)})

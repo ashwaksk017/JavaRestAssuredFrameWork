@@ -104,15 +104,20 @@ def regression_confirmed(job_dir: str) -> tuple:
         return False, "confirm which automated cases are regression cases first (Commit and push tab)"
     if rec.get("change") != str(review.get("change") or ""):
         return False, "the regression cases were confirmed for an earlier change: confirm them again"
+    if rec.get("run") != str(review.get("started") or ""):
+        # A follow-up or an Automate added to the change since: the cases in
+        # it, and so the regression ones, may differ.
+        return False, "the change was added to after the regression cases were confirmed: confirm them again"
     return True, f"{len(rec.get('cases') or [])} regression case(s) confirmed {rec.get('at')}"
 
 
 def confirm_regression(job_dir: str, casereview, suitemap) -> dict:
     review = _json(job_dir, "review.json")
-    if review.get("state") not in ("pending-review", "verify-failed"):
-        raise ValueError("there is no change waiting for review to confirm the regression cases of")
+    if review.get("state") != "pending-review":
+        raise ValueError("there is no change waiting for review (and verified) to confirm the regression cases of")
     rec = _json(job_dir, FILE)
     rec["regression"] = {"at": _now(), "change": str(review.get("change") or ""),
+                         "run": str(review.get("started") or ""),
                          "cases": regression_cases(job_dir, casereview, suitemap)}
     _save(job_dir, rec)
     return rec["regression"]

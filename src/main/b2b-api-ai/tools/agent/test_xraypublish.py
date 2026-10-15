@@ -95,6 +95,52 @@ class Publishing(Base):
         self.assertEqual(r["sent"]["tests"][0]["testKey"], "ABC-11")
 
 
+class TheGapsClosed(Base):
+    def test_the_skill_template_annotation_is_found(self):
+        java = os.path.join(self.root, "src", "test", "java", "com", "hi", "api", "tests", "jira", "SkillTest.java")
+        with io.open(java, "w", encoding="utf-8") as fh:
+            fh.write('class SkillTest {\n  void before() { int x = 1; }\n'
+                     '  @Test(groups = {"jira"}, retryAnalyzer = RetryAnalyzer.class)\n'
+                     '  @XrayTest("B2B-1234")\n  @Story("B2B-1234 activate a pending account")\n'
+                     '  @Description("AC: POST /businesses/{accountId}/activate on a pending; account")\n'
+                     '  public void activatePendingAccount_204() { }\n}\n')
+        self.assertEqual(xp.annotation_key(self.root, "com.hi.api.tests.jira.SkillTest",
+                                           "activatePendingAccount_204"), "B2B-1234")
+        self.assertEqual(xp.annotation_key(self.root, "com.hi.api.tests.jira.SkillTest", "before"), "")
+
+    def test_a_switched_off_row_is_not_published_as_todo(self):
+        by_key, _ = xp.keyed(self.root, [
+            {"class": "C", "method": "m", "status": "PASS", "params": "{jira_xray_id=ABC-1}"},
+            {"class": "C", "method": "m", "status": "SKIP", "params": "{jira_xray_id=ABC-1}",
+             "message": "execute=N -- switched off in the data sheet, not a failure", "switched_off": True}])
+        self.assertEqual(by_key, {"ABC-1": "PASS"})
+
+    def test_the_confirmed_cases_are_the_regression_ones_and_a_publish_is_not_repeated(self):
+        with io.open(os.path.join(self.job, "workflow.json"), "w", encoding="utf-8") as fh:
+            json.dump({"regression": {"cases": ["TC-001"]}}, fh)
+        with io.open(os.path.join(self.job, "xray-tests.json"), "w", encoding="utf-8") as fh:
+            json.dump({"tests": {"design:TC-001": {"key": "ABC-11"}, "design:TC-002": {"key": "ABC-12"}}}, fh)
+        x = Xray()
+        xp.run("j1", self.root, transport=x, conf=dict(CONF), mocked=False)
+        add = [c for c in x.calls if c[1].endswith("/api/testset/ABC-500/test")][0]
+        self.assertEqual(add[2], {"add": ["ABC-11"]}, "ABC-12 is in the group but was not confirmed")
+        with self.assertRaises(xp.Refused) as got:
+            xp.run("j1", self.root, transport=Xray(), conf=dict(CONF), mocked=False)
+        self.assertIn("published already, as ABC-901", str(got.exception))
+
+    def test_a_failed_regression_add_keeps_the_execution_on_record(self):
+        class Refuses(Xray):
+            def __call__(self, method, url, token, timeout, body=None):
+                if url.endswith("/test"):
+                    raise xp.search.JiraError(403, "no permission")
+                return super().__call__(method, url, token, timeout, body)
+        r = xp.run("j1", self.root, transport=Refuses(), conf=dict(CONF), mocked=False)
+        self.assertEqual(r["execution"], "ABC-901")
+        self.assertIn("HTTP 403", r["regression"]["error"])
+        with io.open(os.path.join(self.job, "xray-publish.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["execution"], "ABC-901")
+
+
 class WhatIsRefused(Base):
     def test_no_run_no_settings_no_keys_cloud_wrong_issue_type(self):
         with self.assertRaises(xp.Refused) as got:

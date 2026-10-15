@@ -50,15 +50,23 @@ def read(path: str) -> dict:
                      # The data row, as TestNG wrote it: {jira_xray_id=ABC-1, ...}
                      "params": " ".join(((value.text if value is not None else "") or "").split())[:2000],
                      "groups": sorted(set(groups.get((cname, m.get("name", "")), [])))}
-            if status == "PASS":
-                out["passed"] += 1
-            elif status == "SKIP" and SWITCHED_OFF in entry["message"]:
-                out["switched_off"] += 1
-            elif status == "SKIP":
-                out["skipped"] += 1
-            else:
-                out["failed"] += 1
+            entry["switched_off"] = status == "SKIP" and SWITCHED_OFF in entry["message"]
             out["tests"].append(entry)
+    # A test retried by RetryAnalyzer leaves its earlier attempts as SKIP;
+    # the attempt that counts is the last one of the same test and row.
+    decided = {(e["class"], e["method"], e["params"]) for e in out["tests"] if e["status"] in ("PASS", "FAIL")}
+    out["tests"] = [e for e in out["tests"]
+                    if not (e["status"] == "SKIP" and not e["switched_off"]
+                            and (e["class"], e["method"], e["params"]) in decided)]
+    for e in out["tests"]:
+        if e["status"] == "PASS":
+            out["passed"] += 1
+        elif e["switched_off"]:
+            out["switched_off"] += 1
+        elif e["status"] == "SKIP":
+            out["skipped"] += 1
+        else:
+            out["failed"] += 1
     return out
 
 

@@ -997,6 +997,11 @@ async function showFlow() {
              !haveCases ? "nothing to finalize yet: design the cases, then approve the ones that stand"
                : wf.finalized ? wf.finalized_why
                : "not finalized: approve the cases that stand, then Finalize -- Create in Xray and Automate wait for it");
+    // Run the tests waits for the regression confirmation (the server too).
+    if (!wf.regression_confirmed && !$("agent-run").disabled) {
+      $("agent-run").disabled = true;
+      $("agent-run").title = wf.regression_why;
+    }
     const box = $("wf-regression-result");
     if (box) {
       box.replaceChildren(banner(wf.regression_confirmed ? "ok" : "warn",
@@ -2185,8 +2190,17 @@ async function refreshReview() {
   const newTests = (review.scope || "new-test") === "new-test";
   const ran = review.execution || null;
   $("agent-run").disabled = !(state === "pending-review" && newTests && !review.mock);
-  // Publishing needs a run; it is the last step, after the push.
-  $("agent-xray").disabled = !ran;
+  // Publishing is the last step: after the push.
+  $("agent-xray").disabled = !(ran && state === "pushed");
+  $("agent-xray").title = state === "pushed" ? "" : "push the change first (Approve & push)";
+  artifactJson(shown, "xray-publish.json").then((r) => {
+    const box = $("agent-xray-result");
+    box.replaceChildren();
+    if (r && shown === job()) box.append(banner(r.ok ? "ok" : "bad",
+      `Xray: Test Execution ${r.execution || "(none)"}${r.mock ? " (mock)" : ""}, ` +
+      `${Object.keys(r.published || {}).length} test(s) published` +
+      (r.regression && r.regression.error ? `; ${r.regression.error}` : "")));
+  });
   if (state === "pending-review" && newTests && !review.mock && (!ran || !ran.ok)) {
     $("agent-push").disabled = true;
     $("agent-push").title = ran ? `the last run on ${ran.env} did not pass: ${ran.why}` : "run the tests first: only a change whose tests all passed is pushed";

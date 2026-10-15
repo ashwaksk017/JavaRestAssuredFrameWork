@@ -67,6 +67,7 @@ class Finalizing(Base):
 class Regression(Base):
     def test_confirmed_for_the_change_waiting_and_needed_to_run(self):
         cr.update(self.job, "design", ["TC-001", "TC-002"], state="approved")
+        wf.finalize(self.job, cr, sm)
         self.write("review.json", {"state": "pending-review", "change": "c1"})
         self.write("automated-cases.json", {"TC-001": {"written": True, "change": "c1"},
                                              "TC-002": {"written": True, "change": "c1"}})
@@ -95,6 +96,30 @@ class Refining(Base):
         self.assertIn("do: GET | expect: 200", notes)
         with self.assertRaises(ValueError):
             jobs.refine_notes("j1", "  ")
+
+
+class TheGatesHold(Base):
+    def test_no_code_for_a_designed_job_until_its_cases_are_final(self):
+        cr.update(self.job, "design", ["TC-001"], state="approved")
+        for runnable, options in (("agent-generate", {"--scope": "new-test"}), ("agent-followup", {}),
+                                  ("agent-approve", {}), ("agent-run-tests", {})):
+            self.assertIn("not finalized", jobs.workflow_gate("j1", runnable, options), runnable)
+        self.assertEqual(jobs.workflow_gate("j1", "agent-discard", {}), "", "Discard is never held back")
+
+    def test_a_follow_up_after_the_confirmation_needs_it_again(self):
+        cr.update(self.job, "design", ["TC-001"], state="approved")
+        wf.finalize(self.job, cr, sm)
+        self.write("review.json", {"state": "pending-review", "change": "c1", "started": "t1"})
+        jobs.workflow_act("j1", "confirm-regression")
+        self.assertEqual(jobs.workflow_gate("j1", "agent-run-tests", {}), "")
+        self.write("review.json", {"state": "pending-review", "change": "c1", "started": "t2"})
+        self.assertIn("added to after the regression cases were confirmed",
+                      jobs.workflow_gate("j1", "agent-run-tests", {}))
+
+    def test_a_workbench_job_runs_only_its_own_commands(self):
+        self.assertIn("job for changing the workbench", jobs.workflow_gate("workbench-1", "agent-run-tests", {}))
+        self.assertIn("job for changing the workbench", jobs.workflow_gate("workbench-1", "agent-automate", {}))
+        self.assertEqual(jobs.workflow_gate("workbench-1", "agent-generate", {"--scope": "workbench"}), "")
 
 
 class TheStrip(Base):

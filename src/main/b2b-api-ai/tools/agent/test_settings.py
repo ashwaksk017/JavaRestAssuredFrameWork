@@ -85,6 +85,21 @@ class Saving(Base):
         self.assertEqual(self.doc()["stg"]["jira_config"]["pat"], "old-token-123", "nothing written")
 
 
+class TheCopies(Base):
+    def test_a_copy_keeps_no_token_and_an_unchanged_save_writes_nothing(self):
+        st.save({"jira_pat": "brand-new-token-9"}, self.root)
+        keep = os.path.join(self.root, st.BACKUPS)
+        (only,) = os.listdir(keep)
+        with io.open(os.path.join(keep, only), encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertNotIn("old-token-123", text)
+        self.assertIn("<removed from the copy>", text)
+        r = st.save({"jira_base_urls": ""}, self.root)
+        r = st.save({"jira_base_urls": ""}, self.root)
+        self.assertFalse(r["saved"], "the same settings again: nothing written")
+        self.assertEqual(len(os.listdir(keep)), 2)
+
+
 class TheStages(Base):
     def test_create_in_xray_run_and_mapping_are_saved_where_they_are_read(self):
         r = st.save({"xray_create_on": True, "xray_create_projects": "abc, def",

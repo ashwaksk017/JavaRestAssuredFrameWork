@@ -82,18 +82,29 @@ def annotation_key(root: str, cls: str, method: str) -> str:
     if not m:
         return ""
     head = text[:m.start()]
-    # Only the annotations of THIS method: what follows the last body end.
-    head = head[max(head.rfind("}"), head.rfind(";")) + 1:]
-    found = _ANN_RX.findall(head)
-    return found[-1] if found else ""
+    # String literals set aside first: a `}` or `;` inside one (the SKILL's
+    # own @Description("... /businesses/{accountId}/...")) is not the end of
+    # the method before.
+    strings = []
+
+    def keep(match):
+        strings.append(match.group(0))
+        return f"\x00{len(strings) - 1}\x00"
+    plain = re.sub(r'"""[\s\S]*?"""|"(?:\\.|[^"\\\n])*"', keep, head)
+    plain = plain[max(plain.rfind("}"), plain.rfind(";")) + 1:]
+    found = re.findall(r"@XrayTest\(\s*\x00(\d+)\x00\s*\)", plain)
+    if not found:
+        return ""
+    key = strings[int(found[-1])].strip('"')
+    return key if _KEY_RX.match(key) else ""
 
 
 def keyed(root: str, tests: list) -> tuple:
     """({key: status}, [not published: {test, why}])."""
     by_key, unkeyed = {}, []
     for t in tests:
-        if t.get("config"):
-            continue
+        if t.get("config") or t.get("switched_off") or "switched off in the data sheet" in str(t.get("message") or ""):
+            continue                        # the author's choice, not a test that did not run
         status = STATUS.get(str(t.get("status") or "").upper(), "TODO")
         m = _ROW_KEY_RX.search(str(t.get("params") or ""))
         key = m.group(1) if m else annotation_key(root, t.get("class", ""), t.get("method", ""))
@@ -125,6 +136,14 @@ def run(job: str, root: str = "", transport=None, conf: dict = None, mocked: boo
             ran = json.load(fh)
     except (OSError, ValueError):
         raise Refused("this job has no run to publish: Run the tests first (Commit and push tab)")
+    try:
+        with io.open(os.path.join(job_dir, "xray-publish.json"), encoding="utf-8") as fh:
+            before = json.load(fh)
+    except (OSError, ValueError):
+        before = {}
+    if before.get("ok") and before.get("run_at") == ran.get("at") and not before.get("mock"):
+        raise Refused(f"this run was published already, as {before.get('execution')}: run the tests "
+                      f"again for a new Test Execution")
     mocked = search.mock_jira() if mocked is None else mocked
     conf = conf or _xray_settings(root)
     if not mocked:
@@ -145,13 +164,15 @@ def run(job: str, root: str = "", transport=None, conf: dict = None, mocked: boo
             "project": conf.get("project") or "MOCK", "testEnvironments": [str(ran.get("env") or "")]}
     out = {"kind": "xray-publish", "at": _now(), "job": job, "mock": bool(mocked),
            "run_at": ran.get("at"), "published": by_key, "not_published": unkeyed}
-    in_regression = set(_regression_keys(root, ran))
+    in_regression = set(_regression_keys(root, ran, job_dir, mocked))
     regression_keys = sorted(k for k in by_key if k in in_regression)
     xconn = {"base": conf.get("base") or "https://xray.mock", "api": "", "token": conf.get("token") or "",
              "timeout": 60}
     reg = conf.get("regression")
     reg_type = ""
-    if reg and regression_keys:
+    if reg:
+        # Looked up whatever the run holds: a Test Plan takes the execution
+        # even when no regression test is added this time.
         if mocked:
             reg_type = "Test Set"
         else:
@@ -175,24 +196,43 @@ def run(job: str, root: str = "", transport=None, conf: dict = None, mocked: boo
         out["execution"] = key
         if not key:
             out["warning"] = "Xray answered without the key of a Test Execution: " + json.dumps(answer)[:300]
+    out["ok"] = bool(out.get("execution"))
+    _keep(job_dir, out)                     # the execution exists now, whatever follows
     if reg and regression_keys:
         kind = "testplan" if reg_type == "Test Plan" else "testset"
+        out["regression"] = {"key": reg, "type": reg_type, "added": regression_keys}
         if not mocked:
             diag.step(f"Adding the regression tests to {reg}")
-            search._call(xconn, "POST", f"/rest/raven/1.0/api/{kind}/{reg}/test",
-                         {"add": regression_keys}, transport)
-        out["regression"] = {"key": reg, "type": reg_type, "added": regression_keys}
+            try:
+                search._call(xconn, "POST", f"/rest/raven/1.0/api/{kind}/{reg}/test",
+                             {"add": regression_keys}, transport)
+            except search.JiraError as e:
+                out["regression"] = {"key": reg, "type": reg_type, "added": [],
+                                     "error": f"Xray refused adding them (HTTP {e.status}): {str(e)[:200]}"}
     elif regression_keys:
         out["regression"] = {"key": "", "added": [],
                              "note": "no regression Test Set or Test Plan is set (Settings tab)"}
-    out["ok"] = bool(out.get("execution"))
-    with io.open(os.path.join(job_dir, "xray-publish.json"), "w", encoding="utf-8") as fh:
-        json.dump(out, fh, indent=1)
+    _keep(job_dir, out)
     return out
 
 
-def _regression_keys(root: str, ran: dict) -> list:
-    """The keys of the run's tests in the `regression` group."""
+def _keep(job_dir: str, out: dict) -> None:
+    with io.open(os.path.join(job_dir, "xray-publish.json"), "w", encoding="utf-8") as fh:
+        json.dump(out, fh, indent=1)
+
+
+def _regression_keys(root: str, ran: dict, job_dir: str = "", mocked: bool = False) -> list:
+    """The Xray keys of the cases a person CONFIRMED as regression
+    (workflow.json); for a job from before that step, the run's tests in
+    the `regression` group."""
+    try:
+        with io.open(os.path.join(job_dir, "workflow.json"), encoding="utf-8") as fh:
+            confirmed = (json.load(fh).get("regression") or {}).get("cases")
+    except (OSError, ValueError, AttributeError):
+        confirmed = None
+    if isinstance(confirmed, list):
+        keys = xt.keys_for(job_dir, "design", mocked)
+        return [keys[c] for c in confirmed if c in keys]
     tests = [t for t in ran.get("tests") or [] if "regression" in (t.get("groups") or [])]
     return list(keyed(root, tests)[0])
 
@@ -217,7 +257,9 @@ def main(argv=None) -> int:
     for n in r["not_published"]:
         print(f" ..  not published: {n['test']} -- {n['why']}")
     reg = r.get("regression") or {}
-    if reg.get("added"):
+    if reg.get("error"):
+        print(f"WARN the Test Execution was made, but {reg['error']}")
+    elif reg.get("added"):
         print(f" ok  {len(reg['added'])} regression test(s) added to {reg['key']} ({reg['type']})")
     elif reg.get("note"):
         print(f" ..  {reg['note']}")

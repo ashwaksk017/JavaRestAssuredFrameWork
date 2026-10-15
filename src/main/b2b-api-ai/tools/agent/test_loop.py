@@ -1396,6 +1396,32 @@ class Push(Repo):
         write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
         self.assertEqual(self.push(), 0)
 
+    def test_a_green_run_on_another_environment_does_not_open_the_push(self):
+        self.policy["require_green_run"] = True
+        self.pending()
+
+        def runner(args):
+            write(self.root, "target/surefire-reports/testng-results.xml", '''<?xml version="1.0"?>
+<testng-results><suite name="s"><test name="t"><class name="com.hi.api.tests.jira.NewTest">
+<test-method status="PASS" name="get_200" duration-ms="1"/></class></test></suite></testng-results>
+''')
+            return 0, ""
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(loop.cmd_run(self.job, self.root, self.policy, "qa", runner=runner), 0)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(self.push(), 1)
+        self.assertIn("the last run was on qa", out.getvalue())
+
+    def test_a_second_job_of_a_story_pushes_beside_the_first(self):
+        self.policy["branch_prefix"] = "feature_"
+        write(self.root, ".workbench/job1/intake.json", json.dumps({"story": {"key": "ABC-42"}}))
+        sh(self.root, "branch", "feature_ABC-42")
+        self.pending()
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(self.push(), 0)
+        self.assertEqual(self.state()["branch"], "feature_ABC-42_job1")
+
     def test_the_branch_is_named_after_the_story(self):
         self.policy["branch_prefix"] = "feature_"
         write(self.root, ".workbench/job1/intake.json", json.dumps({"story": {"key": "ABC-42"}}))

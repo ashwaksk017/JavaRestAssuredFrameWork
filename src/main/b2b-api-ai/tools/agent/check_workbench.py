@@ -65,6 +65,8 @@ def main(argv=None) -> int:
     for test in QUICK_TESTS:
         path = os.path.join(HERE, test)
         if not os.path.isfile(path):
+            print(f"FAIL {test}: missing -- a test of the workbench was removed")
+            failed.append(test)
             continue
         rc, out = _run([sys.executable, "-B", path], 600)
         last = [l for l in out.strip().splitlines() if l.strip()][-1:] or [""]

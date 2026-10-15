@@ -20,6 +20,26 @@ spec.loader.exec_module(ex)
 RESULTS = '<?xml version="1.0" encoding="UTF-8"?>\n<testng-results ignored="0" total="4" passed="1" failed="1" skipped="2">\n  <suite name="s"><test name="t">\n    <class name="com.hi.api.tests.jira.NewTest">\n      <test-method status="PASS" name="setUp" is-config="true" duration-ms="1"/>\n      <test-method status="PASS" name="get_200" duration-ms="120"/>\n      <test-method status="FAIL" name="get_403" duration-ms="80">\n        <exception class="java.lang.AssertionError"><message><![CDATA[expected [403] but found [200]]]></message></exception>\n      </test-method>\n      <test-method status="SKIP" name="get_404" duration-ms="1">\n        <exception class="org.testng.SkipException"><message><![CDATA[config key jira.abc-1.owner.guest_id is not set]]></message></exception>\n      </test-method>\n      <test-method status="SKIP" name="row_off" duration-ms="1">\n        <exception class="org.testng.SkipException"><message><![CDATA[execute=N [test_case_id=r] -- switched off in the data sheet, not a failure]]></message></exception>\n      </test-method>\n    </class>\n  </test></suite>\n</testng-results>\n'
 
 
+RETRIED = """<?xml version="1.0" encoding="UTF-8"?>
+<testng-results><suite name="s"><test name="t"><class name="C">
+  <test-method status="SKIP" name="flaky" duration-ms="5"><exception class="org.testng.SkipException"><message>retry</message></exception></test-method>
+  <test-method status="PASS" name="flaky" duration-ms="5"/>
+</class></test></suite></testng-results>
+"""
+
+
+class Retried(unittest.TestCase):
+    def test_an_attempt_retried_to_a_pass_is_not_a_skip(self):
+        d = tempfile.mkdtemp(prefix="execution-r-")
+        self.addCleanup(shutil.rmtree, d, True)
+        p = os.path.join(d, "r.xml")
+        with io.open(p, "w", encoding="utf-8") as fh:
+            fh.write(RETRIED)
+        r = ex.read(p)
+        self.assertEqual((r["passed"], r["skipped"]), (1, 0))
+        self.assertTrue(ex.verdict(r)[0])
+
+
 class Reading(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="execution-")

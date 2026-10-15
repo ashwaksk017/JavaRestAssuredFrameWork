@@ -315,9 +315,11 @@ def save(changes: dict, root: str = "", busy=None) -> dict:
         map_change = {"about": "This machine's suite mapping, set on the Settings tab.",
                       "always": always, "rules": rules}
         said.append("suite mapping")
-    if not said:
+    unchanged = json.dumps(doc, sort_keys=True) == json.dumps(_read(root), sort_keys=True)
+    if not said or (unchanged and not wb_changed and map_change is None):
         return {"saved": False, "said": "nothing to change", "status": status(root)}
-    _write(doc, root)
+    if not unchanged:
+        _write(doc, root)
     if wb_changed:
         p = os.path.join(root or ROOT, WORKBENCH_FILE)
         os.makedirs(os.path.dirname(p), exist_ok=True)
@@ -335,15 +337,46 @@ def save(changes: dict, root: str = "", busy=None) -> dict:
     return {"saved": True, "said": ", ".join(said), "env": env, "status": status(root)}
 
 
+_SECRET_KEYS = ("pat", "token", "password", "secret", "clientsecret", "apikey", "api_key")
+
+
+def _without_tokens(node):
+    if isinstance(node, dict):
+        return {k: ("<removed from the copy>" if any(s in str(k).lower().replace("_", "")
+                                                       for s in (x.replace("_", "") for x in _SECRET_KEYS))
+                    and isinstance(v, str) and v else _without_tokens(v))
+                for k, v in node.items()}
+    if isinstance(node, list):
+        return [_without_tokens(v) for v in node]
+    return node
+
+
 def _write(doc: dict, root: str = "") -> None:
     p = _path(root)
     os.makedirs(os.path.dirname(p), exist_ok=True)
     keep = os.path.join(root or ROOT, BACKUPS)
     if os.path.isfile(p):
         os.makedirs(keep, exist_ok=True)
-        shutil.copy2(p, os.path.join(keep, "program_configuration-"
-                                     + datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".json"))
+        # The copy keeps the file's shape and every setting -- but no token:
+        # a token removed on the page must not live on in a copy.
+        with io.open(p, encoding="utf-8-sig") as fh:
+            before = json.load(fh)
+        with io.open(os.path.join(keep, "program_configuration-"
+                                  + datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".json"),
+                     "w", encoding="utf-8") as fh:
+            json.dump(_without_tokens(before), fh, indent=2)
         old = sorted(n for n in os.listdir(keep) if n.startswith("program_configuration-"))
+        for name in old:
+            full = os.path.join(keep, name)
+            try:
+                with io.open(full, encoding="utf-8-sig") as fh:
+                    data = json.load(fh)
+                clean = _without_tokens(data)
+                if clean != data:
+                    with io.open(full, "w", encoding="utf-8") as fh:
+                        json.dump(clean, fh, indent=2)
+            except (OSError, ValueError):
+                pass
         for name in old[:-KEEP]:
             try:
                 os.remove(os.path.join(keep, name))

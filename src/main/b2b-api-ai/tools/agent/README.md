@@ -1716,7 +1716,11 @@ book it is held to; an edit there is put back and the run rejected.
   while a change waits is added to it.
 - It runs only while nothing else runs, and nothing else starts until it has
   finished: every other command is started by, or reads, the files it
-  changes.
+  changes. A workbench job runs only Ask Cursor, Review, Approve and Discard.
+- It never changes `policy.json`, `mock.json` or `check_workbench.py` (the
+  checker it is verified by). A change to the files that decide what later
+  runs may do -- jobs.py, loop.py, workflow.py, the tests -- is named at
+  review: read those parts closely.
 - Before review the change must pass `python tools/agent/check_workbench.py`:
   every Python file compiles, `ui/app.js` parses, the workbench's quick tests
   and the page checks pass. (`test_loop.py`, seven minutes, is not run: run
@@ -1743,11 +1747,11 @@ Each stage is a link to where it is done, and the server holds the gates
 
 | Stage | Done when | It unlocks |
 |---|---|---|
-| Finalize | **Finalize the cases** (under the review): the approved cases -- titles, steps, suites, Automate -- frozen. An edit afterwards reopens it. | Create in Xray (designed cases) and Automate |
-| Regression | **Confirm the regression cases** (Commit and push tab): the automated cases in the `regression` group, for the change waiting. A new change needs it again. | Run the tests |
-| Run on stg | **Run the tests (stg)**: every test passed (a row switched off in its sheet aside). | Approve & push |
-| Push | **Approve & push** to `feature_<story key>` (`feature_<job>` without one). | Publish to Xray |
-| Publish | **Publish to Xray**: a new Test Execution with the run's results; the regression tests added to the regression Test Set / Plan (Settings tab). | -- |
+| Finalize | **Finalize the cases** (under the review): the approved cases -- titles, steps, suites, Automate -- frozen. An edit afterwards reopens it. | For a job with designed cases: Create in Xray, Automate, Ask Cursor, a follow-up, Run the tests and Approve |
+| Regression | **Confirm the regression cases** (Commit and push tab): the automated cases in the `regression` group, for the change as it is now -- a follow-up or another Automate needs it again. Publish adds exactly these to the regression Test Set / Plan. | Run the tests |
+| Run on stg | **Run the tests**, on the environment of the Settings tab: every test passed (a row switched off in its sheet aside; an attempt retried to a pass is not a skip). | Approve & push -- for a run on that environment, of exactly these files |
+| Push | **Approve & push** to `feature_<story key>` (`feature_<job>` without one; `feature_<key>_<job>` when the story's branch exists already). | Publish to Xray |
+| Publish | **Publish to Xray**: a new Test Execution with the run's results (once a run: publishing the same run again is refused); the confirmed regression cases added to the regression Test Set / Plan (Settings tab). If adding them fails, the execution is still on record. | -- |
 
 ### Settings
 

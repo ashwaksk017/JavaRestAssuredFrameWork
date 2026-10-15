@@ -356,6 +356,10 @@ def cursor_log_name(scope_name) -> str:
     return "migration-cursor.log" if scope_name in ("converted", "converter") else "cursor.log"
 
 
+# The files whose change alters what a later run may do: said at review.
+WORKBENCH_RULE_FILES = ("jobs.py", "loop.py", "workflow.py", "execution.py", "xraypublish.py",
+                        "settings.py", "server.py", "cursor_call.py", "check_ui.py")
+
 WORKBENCH_MAP = """WHERE THINGS ARE IN THE WORKBENCH (tools/agent):
 
   ui/index.html, ui/app.js, ui/app.css   the page: one section a tab (Automate Test Case,
@@ -3235,6 +3239,12 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             say("PENDING REVIEW -- read proposed.diff. Nothing is committed "
                 "and nothing has left this machine.")
             if scope["name"] == "workbench":
+                rules = [p for p in (review.get("files") or {}).get("modified", [])
+                         + (review.get("files") or {}).get("created", [])
+                         if os.path.basename(p) in WORKBENCH_RULE_FILES or os.path.basename(p).startswith("test_")]
+                if rules:
+                    say("NOTE this change touches the workbench's own rules or tests -- read these "
+                        "closely, they decide what the next runs may do: " + ", ".join(rules[:12]))
                 job = os.path.basename(job_dir.rstrip("/\\"))
                 say("NOTE the workbench's files on disk are already the new ones: a page refresh "
                     "shows the new page, and the server runs the new Python after a restart. If "
@@ -3538,6 +3548,12 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
         if now_hashes != (ran.get("hashes") or {}):
             say("FAIL the files changed since the tests last ran: run them again.")
             return 1
+        wanted_env = (_load("loop_settings", os.path.join(HERE, "settings.py")).workbench_settings(root)
+                      .get("run_env") or policy.get("run_env") or "stg")
+        if ran.get("env") != wanted_env:
+            say(f"FAIL the last run was on {ran.get('env')}, and the tests run on {wanted_env} "
+                f"(Settings tab): run them on {wanted_env}.")
+            return 1
     diff = _write_diff(root, job_dir, files, generated, gen_backup)
     # What is approved must be what was shown. If a file changed since the
     # diff was produced, show the new diff and ask again.
@@ -3574,6 +3590,15 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
 
     # feature_<story key>; a job without a story key: feature_<job>.
     branch = policy["branch_prefix"] + (story_key_of(job_dir) or job)
+    if not (branch_wanted or "").strip() and story_key_of(job_dir):
+        # The story's branch exists already (an earlier job of the same
+        # story): this job's is named after both, not pushed over it.
+        for ref in (f"refs/heads/{branch}", f"refs/remotes/{policy['remote']}/{branch}"):
+            if git(root, "rev-parse", "--verify", "-q", ref)[0] == 0:
+                branch = f"{branch}_{job}"
+                say(f" .. {policy['branch_prefix']}{story_key_of(job_dir)} exists already: this job "
+                    f"pushes as {branch}")
+                break
     if (branch_wanted or "").strip():
         # The person's name for the branch: a branch name, under the
         # policy's prefix (so that `main` and friends cannot be named), and
