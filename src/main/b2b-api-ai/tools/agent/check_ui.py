@@ -715,6 +715,7 @@ def main() -> int:
             check("Design the tests comes after the specification, before the requirements",
                   html.find('name="spec-from"') < html.find('id="run-design"') < html.find('id="design-requirements"'))
             check("a design can be cleared", 'id="clear-design"' in html)
+            check("the story's existing Xray tests can be taken as the cases", 'id="run-xray-import"' in html)
             check("the requirements are uploaded or pasted, one box at a time, upload first",
                   'name="req-from" value="upload" checked' in html and 'id="req-from-paste" hidden' in html
                   and 'id="req-from-upload" hidden' not in html)

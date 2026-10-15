@@ -347,6 +347,26 @@ Two things it needs before links will work:
   python tools/agent/locate.py --job <job> --rebuild-index
   ```
 
+#### Using the story's Xray tests
+
+When the tests already exist in Jira -- written by a person, linked to
+the story -- **Use the story's Xray tests** (next to *Design the
+tests*) takes them as the cases instead of asking Cursor to propose new
+ones. It reads the story's issue links of the test link type
+(`jira_config.publish.test_link_type`, "Tests" by default: the story
+"is tested by" each test) and each test's steps from Xray (Server / Data
+Center), and writes them as the job's design, one case a test, with the
+test's key recorded. A test with no steps is listed as not used; an
+issue linked another way, or of another type, is left out.
+
+Then the usual flow: review the cases, and the Agentic Test Creation
+step writes REST Assured tests with the real keys in the `jira_xray_id`
+column, so results report to the tests that exist. *Create in Xray*
+finds each one already there and creates nothing. Read it first (the
+job needs its story); a job that already has a design is refused --
+Clear the design first. In mock mode the sample story has two linked
+tests.
+
 #### Clearing a design
 
 A design stays with the job -- reload the page and it is there -- and

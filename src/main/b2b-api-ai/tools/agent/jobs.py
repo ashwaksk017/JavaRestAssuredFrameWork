@@ -135,6 +135,13 @@ RUNNABLES = {
         "label": "Read the story again and say what changed since this job read it",
         "options": {"--job": "text"},
     },
+    # The story's existing Xray tests, with their steps, as the job's design.
+    # Reads Jira; writes design.json, design.md, xray-tests.json. See xrayimport.py.
+    "xray-import": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "xrayimport.py")],
+        "label": "Take the story's existing Xray tests as the cases to automate",
+        "options": {"--job": "text", "--story": "text"},
+    },
     # Xray Test issues from a job's cases. One story, named twice; the
     # result the cases come from is one of two fixed names. See xraytests.py.
     "xray-status": {
@@ -696,7 +703,8 @@ RESULT_FILES = {"jira-": "jira-result.json", "failures-": "failures-result.json"
                 "publish-page": "publish-result.json",
                 "xray-create": "xray-result.json",
                 "story-check": "story-check.json",
-                "fix-brief": "fix-brief.json"}
+                "fix-brief": "fix-brief.json",
+                "xray-import": "xray-import.json"}
 
 
 def clear_result(job: str, runnable: str) -> None:
@@ -1023,7 +1031,7 @@ def read_artifact(job: str, name: str) -> str:
                "manual-result.json", "manual-pull.json", "manual-tests.md",
                "manual-new-cases.csv", "manual-xray-updates.csv", "publish-result.json",
                "xray-tests.json", "xray-result.json", "xray-status.json", "case-review.json",
-               "story-check.json", "fix-brief.json",
+               "story-check.json", "fix-brief.json", "xray-import.json",
                "publish-status.json", "publish.log"}
     if name not in allowed:
         raise ValueError(f"{name!r} is not a readable artifact. "

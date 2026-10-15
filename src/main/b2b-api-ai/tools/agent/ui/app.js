@@ -1052,6 +1052,25 @@ $("run-design").onclick = async () => {
 showDesign();
 showSpec();
 $("job").addEventListener("change", () => { showDesign(); showSpec(); refreshXray("manual"); showReview("manual"); });
+// The story's existing Xray tests, as the design: no Cursor call. Then the
+// usual Review and the Agentic step, with the tests' real keys.
+$("run-xray-import").onclick = async () => {
+  const j = job();
+  if (!j) { setState($("design-state"), "bad", "name the job first"); return; }
+  $("run-xray-import").disabled = true;
+  try {
+    await post("/api/start", { job: j, runnable: "xray-import", options: { "--job": j } });
+    follow("xray-import", $("design-log"), $("design-state"), async () => {
+      $("run-xray-import").disabled = false;
+      const r = await artifactJson(j, "xray-import.json");
+      if (r && r.ok) setState($("design-state"), "ok", r.message);
+      else if (r && r.message) setState($("design-state"), "bad", r.message);
+      showDesign(j, true);
+      if (typeof showFlow === "function") showFlow();
+    }, j);
+  } catch (e) { $("run-xray-import").disabled = false; setState($("design-state"), "bad", e.message); }
+};
+
 $("clear-design").onclick = async () => {
   const j = job();
   if (!j) { setState($("design-state"), "bad", "name the job first"); return; }

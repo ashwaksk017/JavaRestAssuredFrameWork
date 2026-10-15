@@ -1,0 +1,170 @@
+"""A story's existing Xray tests become the cases to automate.
+
+    python tools/agent/test_xrayimport.py
+"""
+from __future__ import annotations
+
+import os as _os
+_os.environ["WORKBENCH_MOCK"] = "0"
+
+import importlib.util
+import io
+import json
+import os
+import shutil
+import sys
+import tempfile
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+xi = _load("xrayimport_under_test", os.path.join(HERE, "xrayimport.py"))
+
+CONN = {"base": "https://jira.example.test", "token": "tok", "api": "/rest/api/2", "timeout": 5}
+LINK = {"name": "Tests", "inward": "is tested by", "outward": "tests"}
+
+
+def link(key, summary, kind="Test", ltype=LINK, side="inwardIssue"):
+    return {"type": ltype, side: {"key": key, "fields": {"summary": summary, "issuetype": {"name": kind},
+                                                          "status": {"name": "Open"}}}}
+
+
+class Jira:
+    def __init__(self, links, steps):
+        self.links, self.steps, self.calls = links, steps, []
+
+    def __call__(self, method, url, token, timeout, body=None):
+        self.calls.append((method, url))
+        if "/rest/raven/2.0/api/test/" in url:
+            key = url.split("/test/")[1].split("/")[0]
+            if key not in self.steps:
+                raise xi.search.JiraError(404, "no such test")
+            return [{"index": n, "step": {"raw": a}, "data": {"raw": d}, "result": {"raw": e}}
+                    for n, (a, d, e) in enumerate(self.steps[key], 1)]
+        if "/issue/ABC-1?fields=summary,issuelinks" in url:
+            return {"key": "ABC-1", "fields": {"summary": "the story", "issuelinks": self.links}}
+        raise AssertionError(f"unexpected {method} {url}")
+
+
+class Base(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="xrayimport-")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.addCleanup(setattr, xi.loop.intake, "ROOT", xi.loop.intake.ROOT)
+        xi.loop.intake.ROOT = self.root
+        self.job = xi.loop.intake.job_dir("j1", self.root)
+        os.makedirs(self.job)
+        with io.open(os.path.join(self.job, "intake.json"), "w", encoding="utf-8") as fh:
+            json.dump({"story": {"key": "ABC-1"}}, fh)
+        with io.open(os.path.join(self.job, "brief.md"), "w", encoding="utf-8") as fh:
+            fh.write("# brief\nthe story\n")
+        self.jira = Jira(
+            [link("ABC-11", "GET spendDetail returns 200 for the coordinator"),
+             link("ABC-12", "A test with no steps"),
+             link("ABC-13", "A bug, not a test", kind="Bug"),
+             link("ABC-14", "Blocked by", ltype={"name": "Blocks", "inward": "is blocked by", "outward": "blocks"}),
+             link("ABC-15", "Linked the other way round", side="outwardIssue")],
+            {"ABC-11": [("GET /members/{memberId}/spendDetail as the coordinator", "a coordinator token",
+                         "200 and a JSON array")],
+             "ABC-12": [],
+             "ABC-15": [("POST /x", "", "201")]})
+
+    def run_it(self, **kw):
+        return xi.run("j1", self.root, conn=dict(CONN), transport=self.jira, cfg={}, **kw)
+
+    def read(self, name):
+        with io.open(os.path.join(self.job, name), encoding="utf-8") as fh:
+            return fh.read()
+
+
+class Importing(Base):
+    def test_the_linked_tests_with_steps_become_the_design_with_their_keys(self):
+        r = self.run_it()
+        self.assertEqual((r["ok"], r["story"], r["count"]), (True, "ABC-1", 2))
+        self.assertEqual(r["keys"], ["ABC-11", "ABC-15"], "Jira's order; the bug and the Blocks link are left out")
+        self.assertEqual(r["not_used"], [{"key": "ABC-12", "why": "it has no steps in Xray"}])
+        d = json.loads(self.read("design.json"))
+        self.assertEqual((d["source"], d["service"], d["mock"]), ("xray", "ABC-1", False))
+        self.assertEqual(d["brief"], xi.loop.brief_fingerprint(self.job), "made from the brief the job has")
+        c = d["test_cases"][0]
+        self.assertEqual((c["id"], c["xray_key"], c["title"]),
+                         ("TC-001", "ABC-11", "GET spendDetail returns 200 for the coordinator"))
+        self.assertEqual(c["steps"], [{"action": "GET /members/{memberId}/spendDetail as the coordinator",
+                                       "data": "a coordinator token", "expected": "200 and a JSON array"}])
+        self.assertIn("## TC-001 [Xray ABC-11]", self.read("design.md"))
+        self.assertIn("- ABC-12: it has no steps in Xray", self.read("design.md"))
+
+    def test_the_keys_reach_the_agentic_step_and_create_in_xray_creates_nothing(self):
+        self.run_it()
+        keys = xi.xt.keys_for(self.job, "design", False)
+        self.assertEqual(keys, {"TC-001": "ABC-11", "TC-002": "ABC-15"})
+        xi.loop.casereview.update(self.job, "design", ["TC-001", "TC-002"], state="approved")
+        text, note = xi.loop.designed_cases(self.job, keys=keys)
+        self.assertIn("TC-001", text)
+        self.assertIn("[Xray ABC-11]", text)
+        entry = json.loads(self.read("xray-tests.json"))["tests"]["design:TC-001"]
+        shaped = xi.xt.cases_of(json.loads(self.read("design.json")), "design")[0]
+        self.assertEqual(entry["fingerprint"], xi.xt.fingerprint(shaped), "Create in Xray sees it as already there")
+        self.assertTrue(entry["imported"])
+
+
+class WhatIsRefused(Base):
+    def test_a_design_already_there_no_story_no_links_no_steps(self):
+        with io.open(os.path.join(self.job, "design.json"), "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        with self.assertRaises(xi.Refused) as got:
+            self.run_it()
+        self.assertIn("Clear the design first", str(got.exception))
+        os.remove(os.path.join(self.job, "design.json"))
+        os.remove(os.path.join(self.job, "intake.json"))
+        with self.assertRaises(xi.Refused) as got:
+            self.run_it()
+        self.assertIn("Read it", str(got.exception))
+        self.jira.links = []
+        with self.assertRaises(xi.Refused) as got:
+            self.run_it(story="ABC-1")
+        self.assertIn("test_link_type", str(got.exception))
+        self.jira.links = [link("ABC-12", "no steps")]
+        with self.assertRaises(xi.Refused) as got:
+            self.run_it(story="ABC-1")
+        self.assertIn("none of the 1 test(s)", str(got.exception))
+        self.assertFalse(os.path.exists(os.path.join(self.job, "design.json")), "nothing written when refused")
+
+    def test_another_link_type_name_is_used_when_configured(self):
+        self.jira.links = [link("ABC-21", "verified", ltype={"name": "Verifies", "inward": "is verified by",
+                                                             "outward": "verifies"})]
+        self.jira.steps["ABC-21"] = [("GET /y", "", "200")]
+        with self.assertRaises(xi.Refused):
+            self.run_it()
+        r = xi.run("j1", self.root, conn=dict(CONN), transport=self.jira,
+                   cfg={"publish": {"test_link_type": "Verifies"}})
+        self.assertEqual(r["keys"], ["ABC-21"])
+
+
+class TheStandIn(unittest.TestCase):
+    def test_the_mock_jira_has_a_story_with_linked_tests_and_steps(self):
+        root = tempfile.mkdtemp(prefix="xrayimport-mock-")
+        self.addCleanup(shutil.rmtree, root, True)
+        saved = xi.loop.intake.ROOT
+        xi.loop.intake.ROOT = root
+        self.addCleanup(setattr, xi.loop.intake, "ROOT", saved)
+        job = xi.loop.intake.job_dir("m1", root)
+        os.makedirs(job)
+        r = xi.run("m1", root, story="ABC-1", conn={"mock": True, "base": "https://jira.example.test",
+                                                     "token": "", "api": "/rest/api/2", "timeout": 5})
+        self.assertTrue(r["ok"] and r["mock_jira"])
+        self.assertGreaterEqual(r["count"], 1)
+        self.assertTrue(json.loads(io.open(os.path.join(job, "design.json"), encoding="utf-8").read())["mock"])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=1)

@@ -261,6 +261,10 @@ CHECKS = [
           "switched on, take a file by name and a target given twice, never "
           "replace or edit, refuse what a stand-in made or what holds a private "
           "value, and record every write before it is made"),
+    Check("agent-xrayimport",
+          [PY, "tools/agent/test_xrayimport.py"],
+          "a story's linked Xray tests, with their steps, become the job's design with their "
+          "keys kept, so the Agentic step writes them and Create in Xray creates nothing"),
     Check("agent-fixbrief",
           [PY, "tools/agent/test_fixbrief.py"],
           "a failing converted case becomes a brief for Cursor from the recorded run, surefire, "

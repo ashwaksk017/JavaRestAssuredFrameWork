@@ -440,6 +440,20 @@ def jira_transport(method: str, url: str, token: str, timeout: int, body=None, r
                                            "issuetype": {"name": row.get("type") or "Test"},
                                            "project": {"key": project},
                                            "status": {"name": "Open"}}}
+        if method == "GET" and "issuelinks" in (m.group(2) or ""):
+            # A story with two Xray tests linked to it, and one other link.
+            # Their steps are the mock's three steps (the raven answer above).
+            tested = {"name": "Tests", "inward": "is tested by", "outward": "tests"}
+            return {"key": key, "fields": {"summary": f"[MOCK] story {key}", "issuelinks": [
+                {"type": tested, "inwardIssue": {"key": f"{project}-201", "fields": {
+                    "summary": "[MOCK] A booking can be made and confirmed",
+                    "issuetype": {"name": "Test"}, "status": {"name": "Open"}}}},
+                {"type": tested, "inwardIssue": {"key": f"{project}-202", "fields": {
+                    "summary": "[MOCK] A booking for past dates is refused",
+                    "issuetype": {"name": "Test"}, "status": {"name": "Open"}}}},
+                {"type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
+                 "inwardIssue": {"key": f"{project}-5", "fields": {"summary": "[MOCK] another story",
+                                                                   "issuetype": {"name": "Story"}}}}]}}
         if method == "GET" and "project" in (m.group(2) or ""):
             return {"key": key, "fields": {"summary": f"[MOCK] story {key}",
                                            "project": {"key": project},
