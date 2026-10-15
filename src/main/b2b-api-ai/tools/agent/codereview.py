@@ -641,7 +641,8 @@ def review(job: str, agent=None, root: str = "") -> dict:
             else:
                 got = design.call_cursor(prompt, root,
                                          lambda line: clog.write("  cursor: " + line),
-                                         followup, "plan", deadline)
+                                         followup, "plan", deadline,
+                                         complete=design.answer_with("findings"))
             model = str(got.get("model") or model or "")
             raw = str(got.get("result") or "")
             clog.block(f"reply ({label})",

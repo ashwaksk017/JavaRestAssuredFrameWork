@@ -1275,24 +1275,41 @@ def design_model(root: str) -> str:
     return value if re.fullmatch(r"[A-Za-z0-9._:-]{1,80}", value) else ""
 
 
-def whole_json(text: str) -> bool:
+def whole_json(text: str, key: str = "") -> bool:
     """Is `text` a JSON answer that reads whole? Asked when a model call
     has ended (its usage line), so the text is all that call wrote: the
     question is only whether it is the answer or words before one. Read as
     every reply is read (jsonfix: a code fence, a trailing comma, a closing
     brace too many -- seen live -- are taken in stride), but never from
-    a cut-off piece: the object must close."""
-    if not jsonfix.first_object(jsonfix.strip_fences(text or "")) and not jsonfix.first_object(text or ""):
-        return False
+    a cut-off piece: the object must close.
+
+    `key`: the list the answer carries ("test_cases", "findings", ...).
+    Given, an object without that list is NOT the answer -- a plan note
+    quoting `{"status": 200}` would otherwise end the run before the real
+    answer came -- and a bare list of objects is (it is read as that list)."""
+    text = text or ""
     try:
-        data, how = jsonfix.loads(text or "")
+        data, how = jsonfix.loads(text, list_key=key)
     except ValueError:
         return False
-    return isinstance(data, dict) and "partial" not in how
+    if key and how.startswith("a bare list"):
+        return True
+    if not jsonfix.first_object(jsonfix.strip_fences(text)) and not jsonfix.first_object(text):
+        return False
+    if not isinstance(data, dict) or "partial" in how:
+        return False
+    if not key:
+        return True
+    return isinstance(cases_in(data) if key == "test_cases" else data.get(key), list)
+
+
+def answer_with(key: str):
+    """The `complete` check of a call whose answer carries the list `key`."""
+    return lambda text: whole_json(text, key)
 
 
 def call_cursor(prompt: str, root: str, on_event, followup, mode: str = "plan",
-                deadline: float = DEFAULT_DEADLINE, complete=whole_json) -> dict:
+                deadline: float = DEFAULT_DEADLINE, complete=answer_with("test_cases")) -> dict:
     """Cursor, in plan mode, started in an empty directory. Every caller
     wants one JSON answer: the run ends as soon as one has come whole
     (`complete`), not when the SDK says so -- see cursor_call.run."""

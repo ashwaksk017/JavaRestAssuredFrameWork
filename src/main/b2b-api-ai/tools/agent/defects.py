@@ -746,7 +746,8 @@ def cmd_suggest(job: str, keys: list = None, agent=None, root: str = "") -> dict
             else:
                 got = design.call_cursor(prompt, root,
                                          lambda line: clog.write("  cursor: " + line),
-                                         followup, "plan", deadline)
+                                         followup, "plan", deadline,
+                                         complete=design.answer_with("defects"))
             reply, _ = design.redact(str(got.get("result") or ""), private)
             clog.block(f"reply ({label})", reply)
             data, _how = jsonfix.loads(reply, partial_key="defects", list_key="defects")

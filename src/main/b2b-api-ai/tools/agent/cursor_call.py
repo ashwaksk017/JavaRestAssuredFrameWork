@@ -420,12 +420,30 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
              + ("the run was cancelled" if live["cancelled"] else
                 "the run could not be cancelled and may still be working"))
 
+    quiet_lock = threading.Lock()
+
     def went_quiet():
+        # Once: the session ends a re-run itself, and the wait may notice
+        # the same stop -- that caller waits until the run is cancelled and
+        # the reason is logged.
+        with quiet_lock:
+            if live.get("quiet_handled"):
+                return
+            live["quiet_handled"] = True
+            _went_quiet()
+
+    def _went_quiet():
         stopped.set()
         live["cancelled"] = _best_effort(live.get("run"), "cancel")
         _best_effort(live.get("agent"), "close")
         if answered.get("text") is not None:
             return                          # ended because the answer was complete
+        if turn["rerun"]:
+            emit("the bridge ran the same request again after Cursor's turn had ended: the run "
+                 "is taken as finished"
+                 + ("" if live["cancelled"] else " (it could not be cancelled and may still be working)")
+                 + "; what it wrote is checked now")
+            return
         if turn["closed"]:
             emit(f"Cursor's turn ended (its usage line) and nothing came for {AFTER_USAGE_QUIET} s: "
                  f"the run is taken as finished"
@@ -491,7 +509,10 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
     usages: list = []
     # `ended`: the last thing Cursor sent was a usage line (its turn ended);
     # `closed`: the run was ended for that.
-    turn = {"ended": False, "closed": False}
+    turn = {"ended": False, "closed": False, "rerun": False}
+    # The answers written since the last usage line: the ones a usage line
+    # is asked about (a whole JSON may be followed by a sentence of its own).
+    mark = {"usage": 0}
 
     def best_answer() -> str:
         """The answer to keep when the run is ended from outside: the last
@@ -530,7 +551,8 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
             if quiet_seconds and quiet_seconds > 0 and heard["any"] and quiet >= quiet_seconds:
                 quiet_stop.set()
                 return
-            if turn["ended"] and answer_complete is None and quiet >= AFTER_USAGE_QUIET:
+            if turn["ended"] and answer_complete is None and quiet >= AFTER_USAGE_QUIET \
+                    and not [k for k in timing if k != "_requests"]:
                 turn["closed"] = True
                 quiet_stop.set()
                 return
@@ -572,13 +594,10 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
         say(f"thought for {secs:.0f}s ({thought['chars']:,} characters of reasoning, not shown)")
 
     plans = {}                      # call id -> its segment, for a createPlan call
-    pending = {"again": None}       # the follow-up prompt, when a turn ended unusable
 
     def consume(messages) -> str:
-        """Log each message. Returns "incomplete" when a one-answer call's
-        turn ends (its usage line) without a whole answer, so that the
-        session can ask once more instead of waiting for an end the SDK
-        never signals; else ""."""
+        """Log each message. Ends the run (`quiet_stop`) when the whole
+        answer has come, or when the bridge runs the same request again."""
         for message in messages:
             heard["any"] = True
             turn["ended"] = (getattr(message, "type", "") or "") == "usage"
@@ -633,23 +652,41 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
             if (getattr(message, "type", "") or "") == "usage":
                 u = getattr(message, "usage", None)
                 tokens_in = getattr(u, "input_tokens", None)
-                if tokens_in is not None and tokens_in in usages:
+                rerun = tokens_in is not None and tokens_in in usages
+                if rerun:
                     say(f"the same request ran again ({tokens_in} tokens in, as before): the SDK's "
                         f"bridge re-ran the turn after the connection sat idle. Each run is paid for.")
                 if tokens_in is not None:
                     usages.append(tokens_in)
                 if answer_complete is not None and segments and answered["text"] is None:
-                    try:
-                        whole = bool(answer_complete(segments[-1]))
-                    except Exception:                    # noqa: BLE001
-                        whole = False
-                    if whole:
-                        answered["text"] = segments[-1]
+                    # Every answer written since the last usage line, newest
+                    # first: a whole JSON may be followed by a sentence.
+                    for s in reversed(segments[mark["usage"]:] or segments[-1:]):
+                        try:
+                            whole = bool(answer_complete(s))
+                        except Exception:                # noqa: BLE001
+                            whole = False
+                        if whole:
+                            answered["text"] = s
+                            break
+                    if answered["text"] is not None:
                         if line:
                             say(line)
                         say("the answer is complete: the run is ended here, with it")
                         quiet_stop.set()
                         return ""
+                mark["usage"] = len(segments)
+                if rerun and answered["text"] is None:
+                    # The first turn is surely over: the bridge only re-runs a
+                    # request whose turn ended. Each more round is paid for and
+                    # writes the same again, and its messages keep the quiet
+                    # rule from ever firing -- the run is ended here, with
+                    # what came.
+                    if line:
+                        say(line)
+                    turn["rerun"] = True
+                    quiet_stop.set()
+                    return ""
                 # A usage line without a whole answer is NOT the end: seen live
                 # (composer-2.5, plan mode), a createPlan call's model step ended
                 # with one, and the JSON answer was still to come in the same
@@ -691,31 +728,16 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
             live["run"] = run_
             still_wanted(agent, run_)
             say("sent; waiting for the agent")
-            if consume(run_.messages()) == "incomplete":
-                # The turn ended (its usage line) without a whole answer.
-                # run_.wait() would wait for an end the SDK does not signal:
-                # ask once more on the same agent now, or end with what came.
-                end_thinking()
-                flush_said()
-                again = pending["again"]
-                if again and not stopped.is_set():
-                    say("the answer was not usable; asking once more on the same agent")
-                    try:
-                        second = agent.send(again)
-                        live["run"] = second
-                        raw["text"] = ""
-                        turn["ended"] = False
-                        last["at"] = time.monotonic()
-                        consume(second.messages())
-                    except Exception as e:               # noqa: BLE001
-                        say(f"the second turn failed ({type(e).__name__}: {e})")
-                if answered["text"] is None:
-                    say("no whole answer came; the run is ended with what Cursor wrote")
-                    turn["closed"] = True
-                return (types.SimpleNamespace(status="quiet", id=str(getattr(run_, "id", "") or "")),
-                        answered["text"] if answered["text"] is not None else best_answer())
+            consume(run_.messages())
+            if turn["rerun"] and answered["text"] is None:
+                # Ended at a re-run of the request: run_.wait() would wait
+                # for an end the SDK does not signal.
+                went_quiet()
+                raise WentQuiet("the bridge ran the same request again")
             if answered["text"] is not None:
                 # The whole answer came: nothing more is waited for or asked.
+                # The run is cancelled, or the bridge may run it again.
+                live["cancelled"] = _best_effort(run_, "cancel")
                 return (types.SimpleNamespace(status="answered", id=str(getattr(run_, "id", "") or "")),
                         answered["text"])
             result = run_.wait()
@@ -772,6 +794,11 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
         return {"status": "quiet", "result": best_answer() or "\n\n".join(parts), "id": run_id,
                 "model": cfg.model, "transport": "session", "quiet": True}
     except TimeoutError as e:
+        if answered["text"] is not None:
+            done.set()
+            return {"status": "answered", "result": answered["text"].strip(),
+                    "id": str(getattr(live.get("run"), "id", "") or ""), "model": cfg.model,
+                    "transport": "session", "answered": True}
         # The hard limit, after Cursor had answered (seen live: the summary
         # at minute 42, the limit at 45). The answer is kept and what was
         # written is checked -- when the run is known to have stopped. A run
@@ -788,6 +815,15 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
                     "cancelled": True}
         raise timed_out(e) from None
     except Exception as e:                               # noqa: BLE001
+        if answered["text"] is not None:
+            # The whole answer came; leaving the session (closing an agent
+            # whose run was still live) then failed. The answer is kept.
+            done.set()
+            emit(f"closing the Cursor session failed after the answer came ({type(e).__name__}: "
+                 f"{_one_line(e, 200)}); the answer is kept")
+            return {"status": "answered", "result": answered["text"].strip(),
+                    "id": str(getattr(live.get("run"), "id", "") or ""), "model": cfg.model,
+                    "transport": "session", "answered": True}
         if startup_error is not None and isinstance(e, startup_error):
             raise CursorCallError(
                 f"the agent did not start: {e}. This is the key, the network "
@@ -806,6 +842,15 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
     status = str(getattr(result, "status", "") or "")
     run_id = str(getattr(result, "id", "") or "")
     if status.lower() == "error":
+        if not str(text).strip() and answer_complete is not None:
+            # Seen live: ERROR "unable to open database file" after re-runs,
+            # with no result -- while a whole answer had been written.
+            kept = best_answer()
+            try:
+                if kept and answer_complete(kept):
+                    text = kept
+            except Exception:                            # noqa: BLE001
+                pass
         if str(text).strip():
             # The SDK's last word on the run was "error", yet the agent had
             # answered -- seen live with the whole summary of the files it

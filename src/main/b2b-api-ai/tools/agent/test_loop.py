@@ -2803,6 +2803,77 @@ class CallingCursor(unittest.TestCase):
         self.assertEqual(asked, [], "nothing asked while the run was still answering")
         self.assertEqual((out["status"], out["result"]), ("answered", answer))
 
+    def test_a_rerun_of_the_same_request_ends_the_run(self):
+        """Seen live: ~35 s after a turn ended, the bridge runs the same
+        request again (same tokens in), and again. Its messages keep the
+        quiet rule from firing: the second same usage line ends the run."""
+        NS = types.SimpleNamespace
+
+        def run():
+            for _ in range(2):
+                yield NS(type="assistant", message=NS(content=[NS(type="text", text="Reading the story.")]))
+                yield NS(type="usage", usage=NS(input_tokens=5, output_tokens=5, total_tokens=10))
+            time.sleep(30)
+        fake = self.use(FakeSdk(messages=run()))
+        lines = []
+        t0 = time.monotonic()
+        out = loop.cursor_call.run("p", self.ca, self.cfg, on_event=lines.append, deadline_seconds=20,
+                                   quiet_seconds=60, answer_complete=lambda text: False)
+        self.assertLess(time.monotonic() - t0, 5)
+        self.assertEqual(out["status"], "quiet")
+        self.assertEqual(out["result"], "Reading the story.")
+        self.assertTrue(any("ran the same request again" in l for l in lines), lines)
+        self.assertTrue(getattr(fake, "cancelled", False), "the run is cancelled")
+
+    def test_a_whole_answer_followed_by_a_sentence_is_the_answer(self):
+        NS = types.SimpleNamespace
+        answer = '{"test_cases": [{"id": "TC-001"}]}'
+
+        def run():
+            yield NS(type="assistant", message=NS(content=[NS(type="text", text=answer)]))
+            yield NS(type="thinking", text="...")
+            yield NS(type="assistant", message=NS(content=[NS(type="text", text="That is the design.")]))
+            yield NS(type="usage", usage=NS(input_tokens=5, output_tokens=9, total_tokens=14))
+            time.sleep(30)
+        self.use(FakeSdk(messages=run()))
+        complete = lambda text: text.strip().startswith("{") and text.strip().endswith("}")
+        out = loop.cursor_call.run("p", self.ca, self.cfg, deadline_seconds=20, answer_complete=complete)
+        self.assertEqual((out["status"], out["result"]), ("answered", answer))
+
+    def test_an_answer_is_kept_when_closing_the_session_fails(self):
+        NS = types.SimpleNamespace
+        answer = '{"test_cases": [{"id": "TC-001"}]}'
+        fake = self.use(FakeSdk(messages=[
+            NS(type="assistant", message=NS(content=[NS(type="text", text=answer)])),
+            NS(type="usage", usage=NS(input_tokens=5, output_tokens=9, total_tokens=14))]))
+        make = fake.module.Agent.create
+
+        class Closing:
+            def __init__(self, inner):
+                self.inner = inner
+
+            def __enter__(self):
+                return self.inner.__enter__()
+
+            def __exit__(self, *exc):
+                raise RuntimeError("agent already has active run")
+        fake.module.Agent.create = staticmethod(lambda options: Closing(make(options)))
+        complete = lambda text: text.strip().endswith("}")
+        out = loop.cursor_call.run("p", self.ca, self.cfg, deadline_seconds=20, answer_complete=complete)
+        self.assertEqual((out["status"], out["result"]), ("answered", answer))
+
+    def test_an_error_status_without_a_result_keeps_a_whole_answer_that_came(self):
+        """Seen live: ERROR "unable to open database file" after re-runs."""
+        NS = types.SimpleNamespace
+        answer = '{"test_cases": [{"id": "TC-001"}]}'
+        self.use(FakeSdk(messages=[
+            NS(type="assistant", message=NS(content=[NS(type="text", text=answer)]))],
+            status="error", result=""))
+        complete = lambda text: text.strip().endswith("}")
+        out = loop.cursor_call.run("p", self.ca, self.cfg, deadline_seconds=20, answer_complete=complete)
+        self.assertTrue(out.get("ended_in_error"))
+        self.assertEqual(out["result"], answer)
+
     def test_an_error_status_with_an_answer_keeps_the_answer_and_says_so(self):
         NS = types.SimpleNamespace
         msgs = [NS(type="tool_call", name="edit", status="completed", call_id="1", result="ok")]

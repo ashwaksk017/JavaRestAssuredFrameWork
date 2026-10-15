@@ -947,7 +947,8 @@ def generate(job: str, app: str = "", speed: str = "balanced", agent=None,
             got = agent(prompt, followup)
         else:
             got = design.call_cursor(prompt, root, lambda line: clog.write("  cursor: " + line),
-                                     followup, "plan", design.deadline_for("manual"))
+                                     followup, "plan", design.deadline_for("manual"),
+                                     complete=design.answer_with("new_cases"))
         raw = str(got.get("result") or "")
         clog.block("reply", design.hide_hosts(design.redact(raw, private)[0])[0])
         data, how = jsonfix.loads(raw, partial_key="new_cases", list_key="new_cases")

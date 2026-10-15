@@ -1157,6 +1157,18 @@ class AWholeAnswer(unittest.TestCase):
         self.assertFalse(design.whole_json("Let me read the specification first."))
         self.assertFalse(design.whole_json(""))
 
+    def test_the_answer_must_carry_its_list(self):
+        note = 'The cases will cover GET /hotels returning {"status": 200}. See the final message.'
+        self.assertTrue(design.whole_json(note), "unkeyed, any closed object reads whole")
+        self.assertFalse(design.whole_json(note, "test_cases"),
+                         "a plan note quoting an object is not the answer")
+        self.assertTrue(design.whole_json('{"cases": [{"id": "TC-001"}]}', "test_cases"),
+                        "any name the cases are known by")
+        self.assertTrue(design.whole_json('{"findings": []}', "findings"), "no findings is an answer")
+        self.assertTrue(design.whole_json('[{"id": "F-1"}]', "findings"), "a bare list is read as the list")
+        self.assertFalse(design.whole_json('[{"id": "F-1"}', "findings"), "a cut-off list is not")
+        self.assertTrue(design.answer_with("defects")('{"defects": [{"id": 1}]}'))
+
 
 class AskingAgainOnTheSameAgent(unittest.TestCase):
     """cursor_call.run(..., followup=): the second turn goes to the SAME
