@@ -595,7 +595,7 @@ def repo_prefix(root: str) -> str:
 
 
 def _lp(path: str) -> str:
-    """On Windows, the extended-length form of `path` (\\?\C:\...), which
+    r"""On Windows, the extended-length form of `path` (\\?\C:\...), which
     is not held to 260 characters. Seen live: the generated tree's longest
     file is 158 characters below a project folder of 112, and the backup
     folder adds ~46; with LongPathsEnabled off, the copy failed with
@@ -1752,6 +1752,34 @@ def write_group_suites(root: str, job_dir: str, scope: dict) -> list:
     return said
 
 
+_STORY_KEY_RX = re.compile(r"^[A-Z][A-Z0-9_]{0,19}-[0-9]{1,9}$")
+
+
+def story_key_block(job_dir: str, scope: dict) -> str:
+    """What the story's key is, said once. Seen live: a job whose story
+    was pasted had none, Cursor found none, and named the configuration
+    keys after the case (`jira.tc-001...`) -- a name the next case of
+    another story could take too."""
+    if scope.get("name") != "new-test":
+        return ""
+    try:
+        with io.open(os.path.join(job_dir, "intake.json"), encoding="utf-8") as fh:
+            story = json.load(fh).get("story")
+        key = str(story.get("key") or "").upper() if isinstance(story, dict) else ""
+    except (OSError, ValueError, AttributeError):
+        key = ""
+    if _STORY_KEY_RX.match(key):
+        return (f"THE STORY'S KEY is {key}. Use it wherever the skill says the story key: "
+                f"@Story, the test_case_id column, and the configuration keys "
+                f"(jira.{key.lower()}.<role>.<field>).")
+    job = os.path.basename(job_dir.rstrip("/\\")).lower()
+    return (f"THIS JOB HAS NO JIRA STORY KEY (the story was pasted, not read from Jira). Do "
+            f"not invent one, and do not use a case id in its place: where the skill says the "
+            f"story key, use the job id `{job}` -- @Story(\"{job} ...\"), and configuration keys "
+            f"jira.{job}.<role>.<field>. Leave @XrayTest out unless a case below carries an "
+            f"[Xray KEY].")
+
+
 def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
                  root: str = "", followup: str = "") -> str:
     plan = _read(os.path.join(job_dir, "plan.md"))
@@ -1816,6 +1844,8 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
         "When you finish, reply with: the files you created or changed, "
         "one line each on what changed and why, and anything in the plan "
         "you could not do.",
+        "",
+        story_key_block(job_dir, scope),
         "",
         brief_head,
         brief or "(empty)",

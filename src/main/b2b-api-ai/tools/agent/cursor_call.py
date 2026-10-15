@@ -127,6 +127,12 @@ _ARG_KEYS = ("command", "cmd", "path", "file_path", "target_file", "file", "patt
              "query", "glob", "url", "relative_workspace_path")
 QUIET_FOR = 60                               # seconds without a word before the log says so
 PULSE_EVERY = 5                              # how often that is looked at
+# Seen live (cursor-sdk 1.0.37): a run's `usage` line comes once, when its
+# turn has ended -- after every tool call of a code-writing run, after the
+# answer of a design. The SDK then never says the run has ended, and ~35 s
+# later its bridge may run the whole request again. Nothing after the usage
+# line for this long is the end of the run.
+AFTER_USAGE_QUIET = 20
 
 
 def _one_line(value, cap: int) -> str:
@@ -419,6 +425,12 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
         _best_effort(live.get("agent"), "close")
         if answered.get("text") is not None:
             return                          # ended because the answer was complete
+        if turn["closed"]:
+            emit(f"Cursor's turn ended (its usage line) and nothing came for {AFTER_USAGE_QUIET} s: "
+                 f"the run is taken as finished"
+                 + ("" if live["cancelled"] else " (it could not be cancelled and may still be working)")
+                 + "; what it wrote is checked now")
+            return
         emit(f"nothing came from Cursor for {quiet_seconds / 60:.0f} min after its last word: "
              f"the run is taken as finished"
              + ("" if live["cancelled"] else " (it could not be cancelled and may still be working)")
@@ -476,6 +488,9 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
     seg = {"open": False}
     answered = {"text": None}
     usages: list = []
+    # `ended`: the last thing Cursor sent was a usage line (its turn ended);
+    # `closed`: the run was ended for that.
+    turn = {"ended": False, "closed": False}
 
     def best_answer() -> str:
         """The answer to keep when the run is ended from outside: the last
@@ -498,18 +513,31 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
     def pulse(done: threading.Event) -> None:
         """While nothing is heard from Cursor, say so once a minute: a log
         that stops at `tool shell started` reads as a hang, and most often
-        it is a long compile."""
+        it is a long compile.
+
+        The silence is counted from the last thing Cursor sent, not from
+        the last heartbeat line: the heartbeat used to reset it, so the
+        silence never passed a minute and `quiet_seconds` (600 for a
+        code-writing run) could never end a finished run -- it waited for
+        the 45-minute limit instead."""
+        last_pulse = time.monotonic()
         while not done.wait(PULSE_EVERY):
-            quiet = time.monotonic() - last["at"]
-            if (quiet_seconds and quiet_seconds > 0 and heard["any"] and quiet >= quiet_seconds
-                    and not stopped.is_set()):
+            now = time.monotonic()
+            quiet = now - last["at"]
+            if stopped.is_set():
+                continue
+            if quiet_seconds and quiet_seconds > 0 and heard["any"] and quiet >= quiet_seconds:
                 quiet_stop.set()
                 return
-            if quiet >= QUIET_FOR and not stopped.is_set():
+            if turn["ended"] and quiet >= AFTER_USAGE_QUIET:
+                turn["closed"] = True
+                quiet_stop.set()
+                return
+            if quiet >= QUIET_FOR and now - last_pulse >= QUIET_FOR:
                 emit(f"still working: nothing from Cursor for {quiet / 60:.0f} min"
                      + (f" (last: {last['line'][:100]})" if last["line"] else "")
-                     + f", {(time.monotonic() - t0) / 60:.0f} min in all")
-                last["at"] = time.monotonic()
+                     + f", {(now - t0) / 60:.0f} min in all")
+                last_pulse = now
     t0 = time.monotonic()
     timing: dict = {}
     # What Cursor says arrives in pieces -- a word, a letter at a time --
@@ -545,6 +573,7 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
     def consume(messages) -> None:
         for message in messages:
             heard["any"] = True
+            turn["ended"] = (getattr(message, "type", "") or "") == "usage"
             if (getattr(message, "type", "") or "") == "thinking":
                 if not thought["on"]:
                     flush_said()

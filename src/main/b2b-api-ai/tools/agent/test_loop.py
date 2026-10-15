@@ -162,6 +162,14 @@ class InsideThePaths(Repo):
         with io.open(loop._lp(full), encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "class Deep {}\n")
 
+    def test_the_real_project_does_not_ignore_the_job_suites(self):
+        """Seen live: `Suites/` in .gitignore matched src/test/resources/suites/
+        on Windows (core.ignorecase), and every Automate run was rejected
+        for the suite files the workbench itself had written."""
+        for rel in (loop.JOB_SUITES + "job1.xml", loop.JOB_SUITES + "group-smoke.xml"):
+            rc, out = loop.git(loop.ROOT, "check-ignore", "-v", rel)
+            self.assertNotEqual(rc, 0, f"{rel} is ignored by: {out.strip()}")
+
     def test_an_ignored_folder_reported_by_its_children_is_not_new(self):
         before = {".workbench", "src/test/resources"}
         self.assertTrue(loop.was_ignored_whole("src/test/resources/csv", before))
@@ -505,6 +513,21 @@ class TheReviewDecidesWhatIsWritten(Repo):
         self.assertIn("src/test/resources/suites/jira/group-regression.xml", created)
         self.assertNotIn("src/test/resources/suites/jira/group-negative.xml", created, "no test is in it")
         self.assertIn("WARN no test of this change is in the group(s) negative", out.getvalue())
+
+    def test_the_prompt_names_the_story_key_or_says_there_is_none(self):
+        self.design(DESIGN_CASE)
+        loop.casereview.update(self.job, "design", ["TC-001"], state="approved")
+        write(self.root, ".workbench/job1/intake.json", json.dumps({"story": None}))
+        seen = {}
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(self.generate(self.agent_that_writes(seen)), 0)
+        self.assertIn("THIS JOB HAS NO JIRA STORY KEY", seen["p"])
+        self.assertIn("jira.job1.<role>.<field>", seen["p"])
+        self.assertEqual(loop.cmd_discard(self.job, self.root, self.policy), 0)
+        write(self.root, ".workbench/job1/intake.json", json.dumps({"story": {"key": "ABC-77"}}))
+        self.assertIn("THE STORY'S KEY is ABC-77", loop.story_key_block(self.job, {"name": "new-test"}))
+        self.assertIn("jira.abc-77.<role>.<field>", loop.story_key_block(self.job, {"name": "new-test"}))
+        self.assertEqual(loop.story_key_block(self.job, {"name": "converter"}), "")
 
     def test_without_a_specification_nothing_is_said_of_one(self):
         self.design(DESIGN_CASE)
@@ -2490,6 +2513,45 @@ class CallingCursor(unittest.TestCase):
         out = loop.cursor_call.run("p", self.ca, self.cfg, deadline_seconds=20, quiet_seconds=0.3)
         self.assertEqual(out["status"], "quiet")
         self.assertEqual(out["result"], '{"a": 1, "b": [', "the last answer, not two run together")
+
+    def test_a_finished_turn_ends_the_run_soon_after_its_usage_line(self):
+        """Seen live: summary, usage line, then silence -- and the run waited
+        for its 45-minute limit."""
+        NS = types.SimpleNamespace
+
+        def works_then_idles():
+            yield NS(type="tool_call", name="edit", status="completed", call_id="1", result="ok")
+            yield NS(type="assistant", message=NS(content=[NS(type="text", text="Files created: XTest.java.")]))
+            yield NS(type="usage", usage=NS(input_tokens=9, output_tokens=2, total_tokens=11))
+            time.sleep(30)
+        self.use(FakeSdk(messages=works_then_idles()))
+        for name, value in (("QUIET_FOR", 5), ("PULSE_EVERY", 0.02), ("AFTER_USAGE_QUIET", 0.3)):
+            self.addCleanup(setattr, loop.cursor_call, name, getattr(loop.cursor_call, name))
+            setattr(loop.cursor_call, name, value)
+        seen = []
+        t0 = time.monotonic()
+        out = loop.cursor_call.run("p", self.ca, self.cfg, on_event=seen.append,
+                                   deadline_seconds=20, quiet_seconds=600)
+        self.assertLess(time.monotonic() - t0, 5, "not the 600 s quiet, not the limit")
+        self.assertEqual(out["status"], "quiet")
+        self.assertEqual(out["result"], "Files created: XTest.java.")
+        self.assertTrue(any("its usage line" in s for s in seen), seen)
+
+    def test_the_heartbeat_does_not_reset_the_silence(self):
+        NS = types.SimpleNamespace
+
+        def speaks_then_stalls():
+            yield NS(type="assistant", message=NS(content=[NS(type="text", text="Working.")]))
+            time.sleep(30)
+        self.use(FakeSdk(messages=speaks_then_stalls()))
+        for name, value in (("QUIET_FOR", 0.1), ("PULSE_EVERY", 0.02)):
+            self.addCleanup(setattr, loop.cursor_call, name, getattr(loop.cursor_call, name))
+            setattr(loop.cursor_call, name, value)
+        seen = []
+        out = loop.cursor_call.run("p", self.ca, self.cfg, on_event=seen.append,
+                                   deadline_seconds=20, quiet_seconds=0.6)
+        self.assertEqual(out["status"], "quiet", "quiet_seconds longer than the heartbeat still ends it")
+        self.assertGreaterEqual(sum(1 for s in seen if s.startswith("still working")), 2, seen)
 
     def test_an_error_status_with_an_answer_keeps_the_answer_and_says_so(self):
         NS = types.SimpleNamespace

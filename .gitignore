@@ -51,7 +51,8 @@ program_configuration.json
 # are not.
 _audit/
 _flows/
-Suites/
+# Anchored: unanchored, it matched src/main/b2b-api-ai/src/test/resources/suites/ on Windows.
+/Suites/
 src/main/java/com/ak/api/rest/clients/
 src/main/java/com/ak/api/support/
 src/main/java/com/ak/api/templates/

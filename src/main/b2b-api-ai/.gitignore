@@ -78,7 +78,11 @@ program_configuration.json
 _audit/
 _flows/
 tools/ra_converter/converter.config.local.json
-Suites/
+# The converter's suites, at the project root only. Unanchored, "Suites/"
+# also matched src/test/resources/suites/ on Windows (core.ignorecase):
+# the test workbench's job and group suites could never be committed, and
+# its new-ignored-file check removed them and rejected the run.
+/Suites/
 src/main/java/com/hi/api/rest/clients/
 src/main/java/com/hi/api/support/
 src/main/java/com/hi/api/templates/
