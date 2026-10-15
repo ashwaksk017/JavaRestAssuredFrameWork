@@ -352,7 +352,7 @@ class _ForwardToLog(logging.Handler):
 
 
 def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
-        deadline_seconds: float = 0, quiet_seconds: float = 0) -> dict:
+        deadline_seconds: float = 0, quiet_seconds: float = 0, answer_complete=None) -> dict:
     """Send one prompt; return {status, result, id, model, transport}.
 
     Raises CursorCallError. `on_event(line)` is called for each status
@@ -377,6 +377,15 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
     minutes of silence up to the hard limit, after which everything it
     had written was undone -- is finished work, and is treated as such.
     0 is off.
+
+    `answer_complete(text)`: for a call that wants ONE answer (a design, a
+    review). Each time a model call ends (its `usage` line), the answer it
+    just wrote is given to it; True ends the run there, with that answer,
+    status "answered". Seen live with cursor-sdk 1.0.37: the answer and its
+    usage line came, the connection then sat idle, the bridge called it
+    "Connection stalled" (a retryable error) about 35 s later and ran the
+    SAME request again -- the same input tokens -- again and again until the
+    time limit. Each round is paid for.
     """
     emit = on_event or (lambda line: None)
     if not getattr(cfg, "api_key", ""):
@@ -408,6 +417,8 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
         stopped.set()
         live["cancelled"] = _best_effort(live.get("run"), "cancel")
         _best_effort(live.get("agent"), "close")
+        if answered.get("text") is not None:
+            return                          # ended because the answer was complete
         emit(f"nothing came from Cursor for {quiet_seconds / 60:.0f} min after its last word: "
              f"the run is taken as finished"
              + ("" if live["cancelled"] else " (it could not be cancelled and may still be working)")
@@ -458,6 +469,26 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
     # at paragraphs and at 1,500 characters; joined again they would put a
     # blank line inside a JSON string, and a design reply is JSON.
     raw = {"text": ""}
+    # The answers one by one: a stretch of assistant text with nothing else
+    # between its pieces. A request run again writes its answer again from
+    # the start; the last complete one is the answer.
+    segments: list = []
+    seg = {"open": False}
+    answered = {"text": None}
+    usages: list = []
+
+    def best_answer() -> str:
+        """The answer to keep when the run is ended from outside: the last
+        complete one when `answer_complete` says which; else the last one
+        written (a request run again starts its answer again)."""
+        for s in reversed(segments):
+            if answer_complete is not None:
+                try:
+                    if answer_complete(s):
+                        return s.strip()
+                except Exception:                        # noqa: BLE001
+                    pass
+        return (segments[-1].strip() if segments else "") or raw["text"].strip()
 
     def say(line: str) -> None:
         if not stopped.is_set():
@@ -525,11 +556,18 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
                     thought["ms"] = ms
                 last["at"] = time.monotonic()
                 last["line"] = "cursor is thinking"
+                seg["open"] = False
                 continue
             end_thinking()
+            if (getattr(message, "type", "") or "") != "assistant":
+                seg["open"] = False
             if (getattr(message, "type", "") or "") == "assistant":
                 piece = _assistant_text(message)
                 if piece:
+                    if not seg["open"]:
+                        segments.append("")
+                        seg["open"] = True
+                    segments[-1] += piece
                     raw["text"] += piece
                     said["text"] += piece
                     last["at"] = time.monotonic()
@@ -539,6 +577,26 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
                 continue
             flush_said()
             line = describe(message, timing)
+            if (getattr(message, "type", "") or "") == "usage":
+                u = getattr(message, "usage", None)
+                tokens_in = getattr(u, "input_tokens", None)
+                if tokens_in is not None and tokens_in in usages:
+                    say(f"the same request ran again ({tokens_in} tokens in, as before): the SDK's "
+                        f"bridge re-ran the turn after the connection sat idle. Each run is paid for.")
+                if tokens_in is not None:
+                    usages.append(tokens_in)
+                if answer_complete is not None and segments and answered["text"] is None:
+                    try:
+                        whole = bool(answer_complete(segments[-1]))
+                    except Exception:                    # noqa: BLE001
+                        whole = False
+                    if whole:
+                        answered["text"] = segments[-1]
+                        if line:
+                            say(line)
+                        say("the answer is complete: the run is ended here, with it")
+                        quiet_stop.set()
+                        return
             if not line:
                 continue
             say(line)
@@ -608,6 +666,13 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
         sdk_log.setLevel(logging.INFO)
     try:
         result, text = bounded(session, deadline_seconds, gave_up, stop=quiet_stop, on_stop=went_quiet)
+        if answered["text"] is not None:
+            # The whole answer came, and the run ended on its own before the
+            # stop was noticed: the answer is still the one kept.
+            done.set()
+            return {"status": "answered", "result": answered["text"].strip(),
+                    "id": str(getattr(result, "id", "") or ""), "model": cfg.model,
+                    "transport": "session", "answered": True}
     except CursorCallError:
         raise
     except WentQuiet:
@@ -616,7 +681,10 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
         # The last words are usually still in the gather buffer: nothing
         # came after them to flush it.
         parts = transcript + ([said["text"].strip()] if said["text"].strip() else [])
-        return {"status": "quiet", "result": raw["text"].strip() or "\n\n".join(parts), "id": run_id,
+        if answered["text"] is not None:
+            return {"status": "answered", "result": answered["text"].strip(), "id": run_id,
+                    "model": cfg.model, "transport": "session", "answered": True}
+        return {"status": "quiet", "result": best_answer() or "\n\n".join(parts), "id": run_id,
                 "model": cfg.model, "transport": "session", "quiet": True}
     except TimeoutError as e:
         # The hard limit, after Cursor had answered (seen live: the summary
@@ -630,7 +698,7 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
             run_id = str(getattr(live.get("run"), "id", "") or "")
             emit("the time limit came after Cursor had answered; the answer is kept and what it "
                  "wrote is checked")
-            return {"status": "timeout", "result": raw["text"].strip() or "\n\n".join(parts), "id": run_id,
+            return {"status": "timeout", "result": best_answer() or "\n\n".join(parts), "id": run_id,
                     "model": cfg.model, "transport": "session", "ended_in_timeout": True,
                     "cancelled": True}
         raise timed_out(e) from None
@@ -661,7 +729,9 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
             emit(f"the run ended with status 'error' (run id {run_id}, after "
                  f"{time.time() - started:.0f}s) but had answered; the answer is kept and what "
                  f"it wrote is checked" + (": " + "; ".join(diagnostics[:3]) if diagnostics else ""))
-            return {"status": status, "result": str(text), "id": run_id, "model": cfg.model,
+            # One answer, not every round of a request the bridge ran again
+            # (the transcript joins them all).
+            return {"status": status, "result": best_answer() or str(text), "id": run_id, "model": cfg.model,
                     "transport": "session", "ended_in_error": True,
                     "diagnostics": diagnostics[:12]}
         raise CursorCallError(

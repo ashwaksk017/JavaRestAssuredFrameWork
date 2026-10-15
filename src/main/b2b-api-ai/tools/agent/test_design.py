@@ -1133,6 +1133,15 @@ class ThePageCannotPointTheStepAtAFile(unittest.TestCase):
             self.server.Handler._download(None, "j", "cursor.log")
 
 
+class AWholeAnswer(unittest.TestCase):
+    def test_only_a_whole_json_object_is_a_whole_answer(self):
+        self.assertTrue(design.whole_json('{"test_cases": []}'))
+        self.assertTrue(design.whole_json('```json\n{"test_cases": [1]}\n```'))
+        self.assertFalse(design.whole_json('{"test_cases": [{"id": "TC-001"'), "cut off is not whole")
+        self.assertFalse(design.whole_json("Let me read the specification first."))
+        self.assertFalse(design.whole_json(""))
+
+
 class AskingAgainOnTheSameAgent(unittest.TestCase):
     """cursor_call.run(..., followup=): the second turn goes to the SAME
     session, once, and only replaces the first answer when it is usable."""

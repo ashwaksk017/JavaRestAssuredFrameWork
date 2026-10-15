@@ -2407,6 +2407,53 @@ class CallingCursor(unittest.TestCase):
         self.assertEqual(out["result"], answer, "no blank line put inside the JSON")
         json.loads(out["result"])
 
+    def test_a_one_answer_call_ends_once_the_answer_is_whole_not_when_the_sdk_says(self):
+        """Seen live: answer, usage line, ~35 s idle, then the bridge ran the
+        same request again, and again, to the time limit."""
+        NS = types.SimpleNamespace
+        answer = '{"test_cases": [{"id": "TC-001", "title": "' + "y" * 300 + '"}]}'
+
+        def answers_then_reruns():
+            yield NS(type="assistant", message=NS(content=[NS(type="text", text="Let me read the spec.")]))
+            yield NS(type="usage", usage=NS(input_tokens=100, output_tokens=5, total_tokens=105))
+            yield NS(type="thinking", text="t")
+            for i in range(0, len(answer), 50):
+                yield NS(type="assistant", message=NS(content=[NS(type="text", text=answer[i:i + 50])]))
+            yield NS(type="usage", usage=NS(input_tokens=100, output_tokens=90, total_tokens=190))
+            time.sleep(30)                           # the bridge would now run it again
+        self.use(FakeSdk(messages=answers_then_reruns()))
+        complete = lambda text: text.strip().startswith("{") and text.strip().endswith("}")
+        seen = []
+        t0 = time.monotonic()
+        out = loop.cursor_call.run("p", self.ca, self.cfg, on_event=seen.append, deadline_seconds=20,
+                                   quiet_seconds=60, answer_complete=complete)
+        self.assertLess(time.monotonic() - t0, 5, "ended at the answer, not at a limit")
+        self.assertEqual(out["status"], "answered")
+        self.assertEqual(out["result"], answer, "the answer, not the words before it")
+        self.assertIn("the answer is complete: the run is ended here, with it", seen)
+        self.assertTrue(any(s.startswith("the same request ran again (100 tokens in") for s in seen), seen)
+        self.assertFalse(any("taken as finished" in s for s in seen), "not worded as a quiet end")
+
+    def test_a_request_run_again_keeps_the_last_whole_answer_at_the_limit(self):
+        NS = types.SimpleNamespace
+        first = '{"a": 1}'
+
+        def reruns():
+            yield NS(type="assistant", message=NS(content=[NS(type="text", text=first)]))
+            yield NS(type="usage", usage=NS(input_tokens=7, output_tokens=1, total_tokens=8))
+            yield NS(type="thinking", text="t")
+            yield NS(type="assistant", message=NS(content=[NS(type="text", text='{"a": 1, "b": [')]))
+            time.sleep(30)                           # cut off mid-way by the limit
+        self.use(FakeSdk(messages=reruns()))
+        # No completeness test here, as for the code-writing loop: the last
+        # answer is what is kept -- not both run together.
+        for name, value in (("QUIET_FOR", 5), ("PULSE_EVERY", 0.02)):
+            self.addCleanup(setattr, loop.cursor_call, name, getattr(loop.cursor_call, name))
+            setattr(loop.cursor_call, name, value)
+        out = loop.cursor_call.run("p", self.ca, self.cfg, deadline_seconds=20, quiet_seconds=0.3)
+        self.assertEqual(out["status"], "quiet")
+        self.assertEqual(out["result"], '{"a": 1, "b": [', "the last answer, not two run together")
+
     def test_an_error_status_with_an_answer_keeps_the_answer_and_says_so(self):
         NS = types.SimpleNamespace
         msgs = [NS(type="tool_call", name="edit", status="completed", call_id="1", result="ok")]

@@ -1258,9 +1258,23 @@ def shares(counts: list, total: int) -> list:
     return out
 
 
+def whole_json(text: str) -> bool:
+    """Is `text` one whole JSON object (a code fence around it allowed)?
+    No repair: an answer cut off part way is not whole."""
+    body = jsonfix.outer_object(jsonfix.strip_fences(text or ""))
+    if not body:
+        return False
+    try:
+        return isinstance(json.loads(body), dict)
+    except ValueError:
+        return False
+
+
 def call_cursor(prompt: str, root: str, on_event, followup, mode: str = "plan",
-                deadline: float = DEFAULT_DEADLINE) -> dict:
-    """Cursor, in plan mode, started in an empty directory."""
+                deadline: float = DEFAULT_DEADLINE, complete=whole_json) -> dict:
+    """Cursor, in plan mode, started in an empty directory. Every caller
+    wants one JSON answer: the run ends as soon as one has come whole
+    (`complete`), not when the SDK says so -- see cursor_call.run."""
     diag.step("Asking Cursor and waiting for its reply (this can take a few minutes)")
     ca, cfg = loop.cursor_config(root)
     hide = lambda s: ca.redact_for_log(str(s), cfg.api_key)
@@ -1273,7 +1287,8 @@ def call_cursor(prompt: str, root: str, on_event, followup, mode: str = "plan",
             out = loop.cursor_call.run(prompt, ca, cfg,
                                        on_event=lambda line: on_event(hide(line)),
                                        followup=followup, mode=mode,
-                                       deadline_seconds=deadline, quiet_seconds=DESIGN_QUIET)
+                                       deadline_seconds=deadline, quiet_seconds=DESIGN_QUIET,
+                                       answer_complete=complete)
         except loop.cursor_call.CursorCallError as e:
             raise loop.CursorFailed(hide(e) + ("\n" + hide(e.details) if e.details else ""),
                                     e.kind, e.cancelled) from e
