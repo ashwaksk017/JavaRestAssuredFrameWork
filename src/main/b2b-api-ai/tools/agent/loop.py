@@ -764,8 +764,28 @@ def was_ignored_whole(entry: str, ignored_before, children: dict = None) -> bool
     return False
 
 
-def remove_new_ignored(root: str, entries, ignored_before) -> list:
+def _born(path: str):
+    """When `path` was created, where the system says so (Windows; Python
+    3.12+ elsewhere); else None."""
+    try:
+        st = os.stat(_lp(path))
+    except OSError:
+        return None
+    born = getattr(st, "st_birthtime", None)
+    if born is None and os.name == "nt":
+        born = st.st_ctime                    # on Windows: the creation time
+    return born
+
+
+def remove_new_ignored(root: str, entries, ignored_before, since: float = 0) -> list:
     """Remove files and folders git newly ignores; returns what was removed.
+
+    `since`: when the run started. Only what was CREATED after it goes.
+    Seen live: the converter's old, ignored `Suites/` at the repository top
+    -- years of nobody touching it -- was listed by git after the run and
+    not before (git lists an ignored folder only as it sees files in it),
+    was taken for new, and was deleted whole. A folder older than the run
+    is never removed whole: only the files in it created since are.
 
     git reports a folder whose every remaining file is ignored as ONE
     entry. So a folder that already held somebody's ignored file (a local
@@ -777,9 +797,15 @@ def remove_new_ignored(root: str, entries, ignored_before) -> list:
     removed = []
     before = [b.rstrip("/") for b in ignored_before]
     long_root = _lp(root)
+    def older(path: str) -> bool:
+        born = _born(path) if since else None
+        return born is not None and born < since - 2
+
     for p in entries:
         full = _lp(os.path.join(root, p))
         if os.path.isfile(full):
+            if older(full):
+                continue
             os.remove(full)
             removed.append(p)
             continue
@@ -790,7 +816,8 @@ def remove_new_ignored(root: str, entries, ignored_before) -> list:
         rc, tracked = git(root, "ls-tree", "-r", "--name-only", "HEAD", "--", base)
         tracked = {_rel(root, top_level(root), l) for l in tracked.splitlines() if l.strip()} \
             if rc == 0 else set()
-        if not mine and not tracked:
+        was_there = older(full)
+        if not mine and not tracked and not was_there:
             shutil.rmtree(full, ignore_errors=True)
             removed.append(p)
             continue
@@ -798,6 +825,8 @@ def remove_new_ignored(root: str, entries, ignored_before) -> list:
             for name in files:
                 rel = os.path.relpath(os.path.join(dirpath, name), long_root).replace(os.sep, "/")
                 if rel in tracked or any(rel == b or rel.startswith(b + "/") for b in mine):
+                    continue
+                if was_there and older(os.path.join(dirpath, name)):
                     continue
                 try:
                     os.remove(os.path.join(dirpath, name))
@@ -2778,6 +2807,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
     commit, branch = head(root)
     before = dirty_paths(root)
     flags_before = hidden_flags(root)
+    ignored_since = time.time()
     ignored_before = ignored_entries(root)
     ignored_kids = ignored_children(root, ignored_before)
     git_before = git_internals(root)
@@ -2988,7 +3018,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                              if not in_roots(p, roots)
                              and not in_roots(p.rstrip("/") + "/", roots)
                              and not was_ignored_whole(p, ignored_before, ignored_kids))
-        new_ignored = remove_new_ignored(root, new_ignored, ignored_before)
+        new_ignored = remove_new_ignored(root, new_ignored, ignored_before, since=ignored_since)
         if new_ignored:
             found.append("files or folders git ignores were created outside the "
                          "allowed paths and have been removed: " + ", ".join(new_ignored[:10]))
@@ -3167,7 +3197,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                              if not in_roots(p, roots)
                              and not in_roots(p.rstrip("/") + "/", roots)
                              and not was_ignored_whole(p, ignored_before, ignored_kids))
-        new_ignored = remove_new_ignored(root, new_ignored, ignored_before)
+        new_ignored = remove_new_ignored(root, new_ignored, ignored_before, since=ignored_since)
         tracked = split_created(root, classify_tracked(before, dirty_paths(root), roots))
         gen = classify_generated(gen_before, snapshot_generated(root, policy), roots)
         changes = {k: sorted(tracked[k] + gen[k]) for k in

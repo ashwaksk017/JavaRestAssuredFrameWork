@@ -882,6 +882,34 @@ class OutsideThePaths(Repo):
         self.assertEqual(self.state()["state"], "rejected")
 
 
+class IgnoredOldFolders(Repo):
+    def test_an_ignored_folder_older_than_the_run_is_never_removed_whole(self):
+        """Seen live: the converter's old ignored Suites/ at the repository
+        top was listed by git after a run, not before, and deleted whole."""
+        write(self.root, "target/old/Old.xml", "<suite/>")
+        os.makedirs(os.path.join(self.root, "target", "empty"))
+        since = time.time() + 5                  # everything above is older than the run
+        self.assertEqual(loop.remove_new_ignored(self.root, ["target/"], [], since=since), [])
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "target", "old", "Old.xml")))
+
+    @unittest.skipUnless(os.name == "nt" or hasattr(os.stat("."), "st_birthtime"),
+                         "creation times are known on Windows")
+    def test_in_an_older_folder_only_what_the_run_created_goes(self):
+        write(self.root, "target/old/Old.xml", "<suite/>")
+        time.sleep(3.5)                          # the run starts after it
+        since = time.time()
+        write(self.root, "target/old/New.xml", "<suite/>")
+        self.assertEqual(loop.remove_new_ignored(self.root, ["target/"], [], since=since),
+                         ["target/old/New.xml"])
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "target", "old", "Old.xml")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "target", "old", "New.xml")))
+
+    def test_without_a_start_time_it_works_as_before(self):
+        write(self.root, "target/x/A.xml", "<a/>")
+        self.assertEqual(loop.remove_new_ignored(self.root, ["target/x/"], []), ["target/x/"])
+        self.assertFalse(os.path.exists(os.path.join(self.root, "target", "x")))
+
+
 class Preconditions(Repo):
     def test_no_plan_no_run(self):
         os.remove(os.path.join(self.job, "plan.md"))
