@@ -35,6 +35,43 @@ _PROJECT_RX = re.compile(r"^[A-Z][A-Z0-9_]{0,19}$")
 _KEY_RX = re.compile(r"^[A-Z][A-Z0-9_]{0,19}-[0-9]{1,9}$")
 
 
+WORKBENCH_FILE = os.path.join(".workbench", "workbench-settings.json")
+_NAME_RX = re.compile(r"^[A-Za-z][A-Za-z0-9 _-]{0,40}$")
+_ENV_RX = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+
+
+def _suitemap():
+    import importlib.util
+    name = "settings_suitemap"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, "suitemap.py"))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+    return sys.modules[name]
+
+
+def workbench_settings(root: str = "") -> dict:
+    """This machine's workflow settings (run environment, time limit),
+    kept in .workbench/ -- out of git, no secret in it."""
+    try:
+        with io.open(os.path.join(root or ROOT, WORKBENCH_FILE), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def environments(root: str = "") -> list:
+    """The environment blocks of program_configuration.json."""
+    try:
+        doc = _read(root)
+    except (OSError, ValueError):
+        return []
+    return sorted(k for k, v in doc.items() if isinstance(v, dict) and not k.startswith("_")
+                  and _ENV_RX.match(k))
+
+
 def _projectconfig():
     sys.path.insert(0, os.path.join(ROOT, "tools", "jira"))
     import projectconfig                                 # noqa: E402
@@ -79,7 +116,20 @@ def status(root: str = "") -> dict:
     jira = block.get("jira_config") if isinstance(block.get("jira_config"), dict) else {}
     conf = block.get("confluence_config") if isinstance(block.get("confluence_config"), dict) else {}
     xray = block.get("xray") if isinstance(block.get("xray"), dict) else {}
+    publish = jira.get("publish") if isinstance(jira.get("publish"), dict) else {}
+    wb = workbench_settings(root)
+    sm = _suitemap()
+    local_map = os.path.join(root, ".workbench", "suite-map.json") if root else sm.LOCAL_MAP
+    mapping = sm.load(local_map if os.path.isfile(local_map) else sm.MAP_FILE)
     return {
+        "xray_create": {"on": publish.get("create_tests") is True,
+                        "projects": [str(p) for p in publish.get("projects") or []],
+                        "issue_type": str(publish.get("test_issue_type") or "Test"),
+                        "link_type": str(publish.get("test_link_type") or "Tests")},
+        "run": {"env": str(wb.get("run_env") or "stg"), "envs": environments(root),
+                "timeout_min": int(wb.get("run_timeout_min") or 45)},
+        "suite_map": {"always": mapping.get("always") or [], "rules": mapping.get("rules") or [],
+                      "local": os.path.isfile(local_map), "problem": mapping.get("problem", "")},
         "env": env, "env_from": source, "file": CONFIG_REL, "exists": os.path.isfile(_path(root)),
         "jira": {"base_urls": [str(u) for u in jira.get("base_urls") or []],
                  "pat": _token_state(jira.get("pat"))},
@@ -186,12 +236,102 @@ def save(changes: dict, root: str = "", busy=None) -> dict:
             else:
                 xray.pop(key, None)
             said.append(key)
+    # Stage 4: Create in Xray (jira_config.publish, where xraytests.py reads it)
+    if any(k in changes for k in ("xray_create_on", "xray_create_projects", "xray_create_issue_type",
+                                  "xray_create_link_type")):
+        publish = jira.setdefault("publish", {})
+        if not isinstance(publish, dict):
+            raise ValueError(f"`{env}.jira_config.publish` in {CONFIG_REL} is not an object")
+        if "xray_create_on" in changes:
+            publish["create_tests"] = bool(changes["xray_create_on"])
+            said.append("creating tests in Xray " + ("on" if changes["xray_create_on"] else "off"))
+        if "xray_create_projects" in changes:
+            keys = [k.strip().upper() for k in re.split(r"[\s,]+", str(changes["xray_create_projects"] or ""))
+                    if k.strip()]
+            bad = [k for k in keys if not _PROJECT_RX.match(k)]
+            if bad:
+                raise ValueError(f"{bad[0]!r} is not a project key like ABC")
+            if keys:
+                publish["projects"] = keys
+            else:
+                publish.pop("projects", None)
+            said.append("projects")
+        for field, key, default in (("xray_create_issue_type", "test_issue_type", "Test"),
+                                    ("xray_create_link_type", "test_link_type", "Tests")):
+            if field in changes:
+                v = str(changes.get(field) or "").strip()
+                if v and not _NAME_RX.match(v):
+                    raise ValueError(f"{v!r} is not a name like {default!r}")
+                if v and v != default:
+                    publish[key] = v
+                else:
+                    publish.pop(key, None)
+                said.append(key)
     if "xray_enabled" in changes:
         xray["enabled"] = "true" if changes.get("xray_enabled") else "false"
         said.append("publishing to Xray " + ("on" if changes.get("xray_enabled") else "off"))
+    # Stage 7: running the tests -- this machine's, in .workbench/ (no secret)
+    wb = workbench_settings(root)
+    wb_changed = False
+    if "run_env" in changes:
+        v = str(changes.get("run_env") or "").strip()
+        if v not in environments(root):
+            raise ValueError(f"{v!r} is not an environment of {CONFIG_REL}")
+        wb["run_env"] = v
+        wb_changed = True
+        said.append(f"tests run against {v}")
+    if "run_timeout_min" in changes:
+        try:
+            minutes = int(changes.get("run_timeout_min"))
+        except (TypeError, ValueError):
+            raise ValueError("the time limit is a number of minutes") from None
+        if not 5 <= minutes <= 240:
+            raise ValueError("the time limit is between 5 and 240 minutes")
+        wb["run_timeout_min"] = minutes
+        wb_changed = True
+        said.append(f"time limit {minutes} min")
+    # Stage 6: the regression mapping -- a local copy of the rules
+    sm = _suitemap()
+    local_map = os.path.join(root, ".workbench", "suite-map.json") if root else sm.LOCAL_MAP
+    map_change = None
+    if changes.get("suite_map_reset"):
+        map_change = "reset"
+        said.append("suite mapping back to the committed rules")
+    elif "suite_map" in changes:
+        m = changes.get("suite_map")
+        if not isinstance(m, dict):
+            raise ValueError("send the suite mapping as an object")
+        always = sm.clean_groups(m.get("always") or [])
+        rules = []
+        for r in m.get("rules") or []:
+            if not isinstance(r, dict):
+                raise ValueError("each rule is an object")
+            group = str(r.get("group") or "").strip().lower()
+            if not sm.GROUP_RX.match(group):
+                raise ValueError(f"{group!r} is not a group name (lower-case letters, digits, - and _)")
+            words = lambda v: [w.strip().lower() for w in (v.split(",") if isinstance(v, str) else v or [])
+                               if str(w).strip()]
+            rules.append({"group": group, "type": words(r.get("type")), "priority": words(r.get("priority"))})
+        map_change = {"about": "This machine's suite mapping, set on the Settings tab.",
+                      "always": always, "rules": rules}
+        said.append("suite mapping")
     if not said:
         return {"saved": False, "said": "nothing to change", "status": status(root)}
     _write(doc, root)
+    if wb_changed:
+        p = os.path.join(root or ROOT, WORKBENCH_FILE)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with io.open(p, "w", encoding="utf-8") as fh:
+            json.dump(wb, fh, indent=1)
+    if map_change == "reset":
+        try:
+            os.remove(local_map)
+        except OSError:
+            pass
+    elif map_change:
+        os.makedirs(os.path.dirname(local_map), exist_ok=True)
+        with io.open(local_map, "w", encoding="utf-8") as fh:
+            json.dump(map_change, fh, indent=1)
     return {"saved": True, "said": ", ".join(said), "env": env, "status": status(root)}
 
 

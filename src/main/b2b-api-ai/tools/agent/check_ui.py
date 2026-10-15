@@ -865,6 +865,8 @@ def main() -> int:
             check("the Settings tab takes the tokens, as password boxes, and shows none back",
                   'id="set-jira-pat"' in set_tab and 'type="password"' in set_tab and 'id="settings-save"' in set_tab)
             code, s = mocked.call("/api/settings")
+            check("the Settings tab sets each workflow stage: Create in Xray, the mapping, the run",
+                  'id="set-xc-on"' in set_tab and 'id="set-sm-rules"' in set_tab and 'id="set-run-env"' in set_tab)
             check("the settings say what is set, never a token", code == 200 and "jira" in s
                   and all(not str(v).startswith("set, ") or "characters" in str(v)
                           for v in (s.get("jira") or {}).values()), str(s)[:200])

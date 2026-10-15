@@ -341,3 +341,7 @@ button.linkish { background: none; border: 0; padding: 0 0 0 .6rem; margin: 0; f
                  font-size: .8rem; color: var(--accent); cursor: pointer; text-transform: none; }
 button.linkish:hover, button.linkish:focus { text-decoration: underline; }
 #cursor-from { margin: .2rem 0 .4rem; }
+
+/* The regression mapping's rules, one a row. */
+.sm-rule { gap: .4rem; }
+.sm-rule input { flex: 1 1 10rem; min-width: 0; }

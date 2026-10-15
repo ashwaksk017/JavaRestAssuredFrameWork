@@ -85,5 +85,36 @@ class Saving(Base):
         self.assertEqual(self.doc()["stg"]["jira_config"]["pat"], "old-token-123", "nothing written")
 
 
+class TheStages(Base):
+    def test_create_in_xray_run_and_mapping_are_saved_where_they_are_read(self):
+        r = st.save({"xray_create_on": True, "xray_create_projects": "abc, def",
+                     "xray_create_issue_type": "Test", "xray_create_link_type": "Verifies",
+                     "run_env": "qa", "run_timeout_min": "30",
+                     "suite_map": {"always": ["regression"], "rules": [
+                         {"group": "smoke", "type": "positive", "priority": "high, p1"}]}}, self.root)
+        self.assertTrue(r["saved"])
+        pub = self.doc()["stg"]["jira_config"]["publish"]
+        self.assertEqual(pub, {"create_tests": True, "projects": ["ABC", "DEF"], "test_link_type": "Verifies"},
+                         "the default issue type is not written")
+        self.assertEqual(st.workbench_settings(self.root), {"run_env": "qa", "run_timeout_min": 30})
+        with io.open(os.path.join(self.root, ".workbench", "suite-map.json"), encoding="utf-8") as fh:
+            m = json.load(fh)
+        self.assertEqual(m["always"], ["jira", "regression"], "jira is always kept")
+        self.assertEqual(m["rules"], [{"group": "smoke", "type": ["positive"], "priority": ["high", "p1"]}])
+        s = st.status(self.root)
+        self.assertEqual((s["xray_create"]["on"], s["run"]["env"], s["run"]["envs"]), (True, "qa", ["qa", "stg"]))
+        st.save({"suite_map_reset": True}, self.root)
+        self.assertFalse(os.path.isfile(os.path.join(self.root, ".workbench", "suite-map.json")))
+
+    def test_what_is_refused_here(self):
+        for changes, why in (({"run_env": "prod"}, "not an environment"),
+                             ({"run_timeout_min": "1"}, "between 5 and 240"),
+                             ({"xray_create_projects": "a b-1"}, "project key"),
+                             ({"suite_map": {"rules": [{"group": "Bad Group"}]}}, "group name")):
+            with self.assertRaises(ValueError) as got:
+                st.save(changes, self.root)
+            self.assertIn(why, str(got.exception))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

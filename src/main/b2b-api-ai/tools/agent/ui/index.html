@@ -747,7 +747,32 @@ Expect 201.'></textarea>
       <input id="set-conf-pat" type="password" autocomplete="new-password" spellcheck="false" placeholder="leave empty to keep it">
       <label class="inline"><input type="checkbox" id="set-conf-pat-clear"> remove the saved token</label>
     </fieldset>
-    <fieldset class="field choice wide"><legend>Xray (Server / Data Center)</legend>
+    <fieldset class="field choice wide"><legend>Create in Xray (workflow: push the cases to Xray)</legend>
+      <label class="inline"><input type="checkbox" id="set-xc-on"> allow creating Test issues in Jira from the approved cases</label>
+      <label for="set-xc-projects">Projects <span class="hint">the only projects tests may be created in, separated by commas; empty: any the token can write to</span></label>
+      <input id="set-xc-projects" type="text" spellcheck="false" placeholder="ABC">
+      <label for="set-xc-type">Test issue type</label>
+      <input id="set-xc-type" type="text" spellcheck="false" placeholder="Test">
+      <label for="set-xc-link">Link type to the story</label>
+      <input id="set-xc-link" type="text" spellcheck="false" placeholder="Tests">
+    </fieldset>
+    <fieldset class="field choice wide"><legend>Regression mapping (workflow: which cases go in which suites)</legend>
+      <label for="set-sm-always">Every case gets <span class="hint">groups, separated by commas</span></label>
+      <input id="set-sm-always" type="text" spellcheck="false" placeholder="jira, regression">
+      <div id="set-sm-rules" class="sm-rules"></div>
+      <div class="row">
+        <button type="button" id="set-sm-add">+ rule</button>
+        <button type="button" id="set-sm-reset" title="forget this machine's rules: tools/agent/suite-map.json is used again">Back to the committed rules</button>
+        <span class="hint" id="set-sm-where"></span>
+      </div>
+    </fieldset>
+    <fieldset class="field choice wide"><legend>Running the tests (workflow: execute)</legend>
+      <label for="set-run-env">Environment <span class="hint">a block of program_configuration.json; the tests call its APIs</span></label>
+      <select id="set-run-env"></select>
+      <label for="set-run-timeout">Time limit, minutes</label>
+      <input id="set-run-timeout" type="number" min="5" max="240" step="5">
+    </fieldset>
+    <fieldset class="field choice wide"><legend>Publishing results to Xray (Server / Data Center)</legend>
       <label for="set-xray-url">Address <span class="hint">your Jira's address: Xray Server answers there</span></label>
       <input id="set-xray-url" type="text" spellcheck="false" placeholder="https://jira.example.com">
       <label class="inline"><input type="checkbox" id="set-xray-same"> use the Jira token for Xray</label>

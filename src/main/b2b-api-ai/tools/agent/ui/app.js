@@ -991,7 +991,12 @@ async function showFlow() {
          s.name + shown));
   }));
   if (wf) {
-    setState($("wf-final-state"), wf.finalized ? "ok" : "", wf.finalized_why);
+    const haveCases = ((wf.stages || [])[0] || {}).done;
+    $("wf-finalize").disabled = !haveCases;
+    setState($("wf-final-state"), wf.finalized ? "ok" : "",
+             !haveCases ? "nothing to finalize yet: design the cases, then approve the ones that stand"
+               : wf.finalized ? wf.finalized_why
+               : "not finalized: approve the cases that stand, then Finalize -- Create in Xray and Automate wait for it");
     const box = $("wf-regression-result");
     if (box) {
       box.replaceChildren(banner(wf.regression_confirmed ? "ok" : "warn",
@@ -1966,7 +1971,43 @@ async function showSettings() {
   $("set-xray-token-state").textContent = s.xray.same_as_jira ? "the Jira token" : s.xray.token;
   for (const id of ["set-jira-pat", "set-conf-pat", "set-xray-token"]) $(id).value = "";
   for (const id of ["set-jira-pat-clear", "set-conf-pat-clear", "set-xray-token-clear"]) $(id).checked = false;
+  const xc = s.xray_create || {};
+  $("set-xc-on").checked = Boolean(xc.on);
+  $("set-xc-projects").value = (xc.projects || []).join(", ");
+  $("set-xc-type").value = xc.issue_type || "";
+  $("set-xc-link").value = xc.link_type || "";
+  const run = s.run || {};
+  $("set-run-env").replaceChildren(...(run.envs || []).map((e) => el("option", { value: e, text: e })));
+  $("set-run-env").value = run.env || "stg";
+  $("set-run-timeout").value = run.timeout_min || 45;
+  const map = s.suite_map || {};
+  $("set-sm-always").value = (map.always || []).join(", ");
+  $("set-sm-rules").replaceChildren();
+  for (const r of map.rules || []) smRule(r);
+  $("set-sm-where").textContent = map.problem ? `problem: ${map.problem}`
+    : (map.local ? "this machine's rules (.workbench/suite-map.json)" : "the committed rules (tools/agent/suite-map.json)");
 }
+// One rule of the regression mapping: its group, and the case types and
+// priorities it takes (empty: any).
+function smRule(r) {
+  const row = el("div", { class: "row sm-rule" },
+    el("input", { type: "text", class: "sm-group", spellcheck: "false", placeholder: "group, e.g. smoke" }),
+    el("input", { type: "text", class: "sm-type", spellcheck: "false", placeholder: "types, e.g. positive, flow (empty: any)" }),
+    el("input", { type: "text", class: "sm-prio", spellcheck: "false", placeholder: "priorities, e.g. high (empty: any)" }),
+    el("button", { type: "button", text: "remove", on: { click: () => row.remove() } }));
+  row.querySelector(".sm-group").value = (r && r.group) || "";
+  row.querySelector(".sm-type").value = ((r && r.type) || []).join(", ");
+  row.querySelector(".sm-prio").value = ((r && r.priority) || []).join(", ");
+  $("set-sm-rules").append(row);
+}
+$("set-sm-add").onclick = () => smRule(null);
+$("set-sm-reset").onclick = async () => {
+  try {
+    const r = await post("/api/settings", { changes: { suite_map_reset: true } });
+    setState($("settings-state"), "ok", `saved: ${r.said}`);
+  } catch (e) { setState($("settings-state"), "bad", e.message); }
+  showSettings();
+};
 onTab.settings = showSettings;
 $("settings-save").onclick = async () => {
   const changes = {
@@ -1983,7 +2024,19 @@ $("settings-save").onclick = async () => {
     jira_pat_clear: $("set-jira-pat-clear").checked,
     confluence_pat_clear: $("set-conf-pat-clear").checked,
     xray_token_clear: $("set-xray-token-clear").checked,
+    xray_create_on: $("set-xc-on").checked,
+    xray_create_projects: $("set-xc-projects").value,
+    xray_create_issue_type: $("set-xc-type").value,
+    xray_create_link_type: $("set-xc-link").value,
+    run_timeout_min: $("set-run-timeout").value,
+    suite_map: {
+      always: $("set-sm-always").value.split(",").map((s) => s.trim()).filter(Boolean),
+      rules: [...document.querySelectorAll("#set-sm-rules .sm-rule")].map((row) => ({
+        group: row.querySelector(".sm-group").value, type: row.querySelector(".sm-type").value,
+        priority: row.querySelector(".sm-prio").value })).filter((r) => r.group.trim()),
+    },
   };
+  if ($("set-run-env").value) changes.run_env = $("set-run-env").value;
   try {
     const r = await post("/api/settings", { changes });
     setState($("settings-state"), r.saved ? "ok" : "", r.saved ? `saved: ${r.said}` : r.said);
@@ -2043,6 +2096,11 @@ async function refreshReview() {
   // is typed in the box when they are clicked.
   $("agent-push").dataset.job = shown;
   $("agent-run").dataset.job = shown;
+  api("/api/settings").then((s) => {
+    const env = (s && s.run && s.run.env) || "stg";
+    $("agent-run").dataset.env = env;
+    $("agent-run").textContent = `Run the tests (${env})`;
+  }).catch(() => {});
   if (typeof showFlow === "function") showFlow();
   $("agent-discard").dataset.job = shown;
   try {
@@ -2586,8 +2644,9 @@ $("agent-dismiss").onclick = async () => {
 // THIS code passed (the server checks the files' hashes too).
 $("agent-run").onclick = () => {
   if (!sameJobOrRefresh($("agent-run"))) return;
-  if (!confirm(`Run the tests of job "${job()}" against stg? They call the real stg APIs.`)) return;
-  runAgent("agent-run-tests", { "--job": job(), "--env": "stg" });
+  const env = $("agent-run").dataset.env || "stg";
+  if (!confirm(`Run the tests of job "${job()}" against ${env}? They call the real ${env} APIs.`)) return;
+  runAgent("agent-run-tests", { "--job": job() });
 };
 // The last run, to Xray: a new Test Execution, and the regression tests to
 // the regression Test Set / Plan named on the Settings tab.

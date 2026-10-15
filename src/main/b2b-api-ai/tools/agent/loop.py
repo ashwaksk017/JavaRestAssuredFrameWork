@@ -3762,7 +3762,9 @@ def cmd_run(job_dir: str, root: str, policy: dict, env: str = "", runner=None) -
     if (review.get("scope") or "new-test") != "new-test":
         say("FAIL only a change of new tests is run here.")
         return 1
-    env = (env or policy.get("run_env") or "stg").strip()
+    wb = _load("loop_settings", os.path.join(HERE, "settings.py")).workbench_settings(root)
+    env = (env or wb.get("run_env") or policy.get("run_env") or "stg").strip()
+    timeout = 60 * int(wb.get("run_timeout_min") or RUN_TIMEOUT // 60)
     if not _ENV_RX.match(env):
         say(f"FAIL {env!r} is not an environment name.")
         return 1
@@ -3788,10 +3790,10 @@ def cmd_run(job_dir: str, root: str, policy: dict, env: str = "", runner=None) -
         if not exe:
             say("FAIL mvn is not on PATH.")
             return 1
-        rc, text = _stream(root, [exe, "-o", "-B", *args], RUN_TIMEOUT)
+        rc, text = _stream(root, [exe, "-o", "-B", *args], timeout)
         if rc != 0 and any(w in text.lower() for w in _NEEDS_NETWORK):
             say(" .. offline was not enough; running online")
-            rc, text = _stream(root, [exe, "-B", *args], RUN_TIMEOUT)
+            rc, text = _stream(root, [exe, "-B", *args], timeout)
     try:
         res = execution.read(results)
     except ValueError as e:

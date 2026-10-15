@@ -28,6 +28,9 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MAP_FILE = os.path.join(HERE, "suite-map.json")
+# Set on the Settings tab: this machine's rules, kept out of git. When it is
+# there it is the one read; "back to the committed rules" removes it.
+LOCAL_MAP = os.path.join(os.path.dirname(os.path.dirname(HERE)), ".workbench", "suite-map.json")
 SUITES_DIR = "Suites/jira/"
 PACKAGE = "com.hi.api.tests.jira"
 GROUP_RX = re.compile(r"^[a-z][a-z0-9_-]{0,30}$")
@@ -41,10 +44,12 @@ def _words(value) -> list:
     return [str(v).strip().lower() for v in value or [] if str(v).strip()]
 
 
-def load(path: str = MAP_FILE) -> dict:
+def load(path: str = "") -> dict:
     """The mapping, checked. A file that cannot be read or holds a bad
     group name is not half-used: the default (jira, regression) is, and
     `problem` says why."""
+    if not path:
+        path = LOCAL_MAP if os.path.isfile(LOCAL_MAP) else MAP_FILE
     try:
         with io.open(path, encoding="utf-8-sig") as fh:
             raw = json.load(fh)
