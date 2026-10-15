@@ -269,3 +269,6 @@ button.waiting { opacity: .6; cursor: progress; }
 fieldset.choice { border: 0; padding: 0; margin: 1rem 0 .3rem; display: flex; flex-wrap: wrap;
                   gap: .4rem 1.4rem; align-items: center; }
 fieldset.choice legend { float: left; padding: 0; margin-right: .6rem; font-weight: 600; }
+
+/* The design step's button sits under its heading, not at the bottom. */
+.row.design-go { margin: .2rem 0 .8rem; }

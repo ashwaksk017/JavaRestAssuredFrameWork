@@ -712,6 +712,9 @@ def main() -> int:
                   and 'id="spec-from-confluence" hidden' in html and 'id="spec-from-upload" hidden' not in html)
             check("the Jira token is not a button of its own on this tab (Read it checks it)",
                   'id="run-jira-verify"' not in html)
+            check("Design the tests sits under its heading, before the specification",
+                  html.find('id="run-design"') > html.find("Design the API tests")
+                  and html.find('id="run-design"') < html.find('name="spec-from"'))
             code, rc = press("intake", None, route="/api/intake", extra={"job": "ABC-201", "again": True})
             told = json.loads(mocked.call("/api/artifact?job=ABC-201&name=intake.json")[1].get("text") or "{}")
             check("mock mode: a job is read again with the links it was given, no box needed",
