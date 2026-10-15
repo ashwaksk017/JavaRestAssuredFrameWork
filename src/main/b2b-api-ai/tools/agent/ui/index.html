@@ -173,9 +173,21 @@ Expect 201.'></textarea>
     <a id="dl-xray" class="dl" hidden>xray.csv</a>
     <span id="design-state" class="state"></span>
   </div>
-  <label for="design-requirements">Requirements <span class="hint">BRD text, acceptance criteria</span></label>
-  <textarea id="design-requirements" rows="5" spellcheck="false"></textarea>
-  <input type="file" id="design-requirements-file" accept=".txt,.md">
+  <fieldset class="choice" id="req-from">
+    <legend>Requirements <span class="hint">BRD text, acceptance criteria</span></legend>
+    <label class="inline"><input type="radio" name="req-from" value="upload" checked> Upload a file</label>
+    <label class="inline"><input type="radio" name="req-from" value="paste"> Paste them</label>
+  </fieldset>
+  <div class="specsrc" id="req-from-upload">
+    <div class="row">
+      <label for="design-requirements-file" class="inline">File <span class="hint">.txt or .md</span></label>
+      <input type="file" id="design-requirements-file" accept=".txt,.md">
+      <span id="design-requirements-loaded" class="state"></span>
+    </div>
+  </div>
+  <div id="req-from-paste" hidden>
+  <textarea id="design-requirements" rows="5" spellcheck="false" aria-label="Requirements, pasted"></textarea>
+  </div>
   <label for="design-notes">Notes for the designer <span class="hint">what to focus on, what to leave out</span></label>
   <textarea id="design-notes" rows="2" spellcheck="false"></textarea>
 

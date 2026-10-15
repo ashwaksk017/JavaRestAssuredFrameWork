@@ -331,7 +331,7 @@ function showChosen(name) {
     if (box) box.hidden = !r.checked;
   }
 }
-for (const name of ["story-from", "pages-from", "spec-from"]) {
+for (const name of ["story-from", "pages-from", "spec-from", "req-from"]) {
   for (const r of document.querySelectorAll(`input[name="${name}"]`)) r.onchange = () => showChosen(name);
   showChosen(name);
 }
@@ -524,12 +524,29 @@ $("run-locate").onclick = async () => {
 };
 
 // ---- tab 1, second half: design the API tests ------------------------
-// A requirements file is read here, in the browser, into its box: what is
-// sent is what is on screen.
+// Requirements come from a file or from the paste box, whichever is
+// chosen. A file is read here, in the browser, and kept apart from the
+// paste box: switching back to Paste does not send the file, nor Upload
+// the pasted text.
+let requirementsFile = null;               // {name, text} of the chosen file
 $("design-requirements-file").onchange = async () => {
   const f = $("design-requirements-file").files[0];
-  if (f) $("design-requirements").value = await f.text();
+  requirementsFile = null;
+  $("design-requirements-loaded").textContent = "";
+  if (!f) return;
+  if (f.size > 2 * 1024 * 1024) {
+    setState($("design-requirements-loaded"), "bad", `${f.name} is over 2 MB; paste the part that matters`);
+    $("design-requirements-file").value = "";
+    return;
+  }
+  requirementsFile = { name: f.name, text: await f.text() };
+  setState($("design-requirements-loaded"), "ok",
+           `${f.name}: ${requirementsFile.text.length.toLocaleString()} characters read`);
 };
+function requirementsGiven() {
+  if (chosen("req-from") === "paste") return $("design-requirements").value;
+  return requirementsFile ? requirementsFile.text : "";
+}
 
 // The specification is different: it is kept as a FILE for the job, under
 // .workbench/<job>/spec/, whether it was chosen here or taken from a
@@ -1015,7 +1032,7 @@ $("run-design").onclick = async () => {
       // Only a pasted specification is sent; an uploaded or fetched one is
       // already kept with the job.
       swagger: chosen("spec-from") === "paste" ? $("design-swagger").value : "",
-      requirements: $("design-requirements").value,
+      requirements: requirementsGiven(),
       notes: $("design-notes").value,
     });
     follow("agent-design", $("design-log"), $("design-state"), () => {

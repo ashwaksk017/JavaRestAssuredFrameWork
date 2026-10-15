@@ -232,7 +232,9 @@ be read, Read it asks Jira about the token, and an expired or wrong
 token is said first -- instead of coming back as a story that does not
 exist. The API
 specification of the design step is likewise **uploaded** (the
-default), **pasted** or **fetched from a Confluence page**.
+default), **pasted** or **fetched from a Confluence page**, and the
+requirements **uploaded** (the default; a .txt or .md file, read in the
+browser) or **pasted**.
 
 Put the story's address or key in **Jira story**. *Read it* then reads,
 from the Jira in your configuration:

@@ -715,6 +715,9 @@ def main() -> int:
             check("Design the tests comes after the specification, before the requirements",
                   html.find('name="spec-from"') < html.find('id="run-design"') < html.find('id="design-requirements"'))
             check("a design can be cleared", 'id="clear-design"' in html)
+            check("the requirements are uploaded or pasted, one box at a time, upload first",
+                  'name="req-from" value="upload" checked' in html and 'id="req-from-paste" hidden' in html
+                  and 'id="req-from-upload" hidden' not in html)
             code, rc = press("intake", None, route="/api/intake", extra={"job": "ABC-201", "again": True})
             told = json.loads(mocked.call("/api/artifact?job=ABC-201&name=intake.json")[1].get("text") or "{}")
             check("mock mode: a job is read again with the links it was given, no box needed",
