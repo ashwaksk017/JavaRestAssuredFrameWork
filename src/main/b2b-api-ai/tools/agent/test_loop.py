@@ -2195,7 +2195,7 @@ class FakeSdk:
     """A stand-in for cursor_sdk with the surface cursor_call.py uses."""
 
     def __init__(self, messages=(), status="finished", result="done", raise_on_create=None,
-                 with_create=True):
+                 with_create=True, second=None):
         outer = self
         self.options = None
         self.sent = []
@@ -2205,8 +2205,11 @@ class FakeSdk:
             pass
 
         class Run:
+            def __init__(self_inner, msgs=None):
+                self_inner.msgs = messages if msgs is None else msgs
+
             def messages(self_inner):
-                return iter(messages)
+                return iter(self_inner.msgs)
 
             def wait(self_inner):
                 return types.SimpleNamespace(status=status, result=result, id="run-7")
@@ -2227,7 +2230,8 @@ class FakeSdk:
 
             def send(self_inner, prompt):
                 outer.sent.append(prompt)
-                return Run()
+                # A second prompt on the same agent gets `second`, when given.
+                return Run(second if (second is not None and len(outer.sent) > 1) else None)
 
         class Agent:
             pass
@@ -2558,6 +2562,42 @@ class CallingCursor(unittest.TestCase):
                                    deadline_seconds=20, quiet_seconds=0.6)
         self.assertEqual(out["status"], "quiet", "quiet_seconds longer than the heartbeat still ends it")
         self.assertGreaterEqual(sum(1 for s in seen if s.startswith("still working")), 2, seen)
+
+    def test_an_answer_put_in_a_plan_is_taken(self):
+        """Seen live: composer-2.5 in plan mode wrote one sentence and put
+        the answer in a createPlan call."""
+        NS = types.SimpleNamespace
+        answer = '{"test_cases": [{"id": "TC-001"}]}'
+        msgs = [NS(type="assistant", message=NS(content=[NS(type="text", text="Designing the cases.")])),
+                NS(type="tool_call", name="createPlan", status="running", call_id="p1", args={"plan": ""}),
+                NS(type="tool_call", name="createPlan", status="completed", call_id="p1", args={"plan": answer}),
+                NS(type="usage", usage=NS(input_tokens=5, output_tokens=5, total_tokens=10))]
+        self.use(FakeSdk(messages=msgs))
+        complete = lambda text: text.strip().startswith("{")
+        seen = []
+        out = loop.cursor_call.run("p", self.ca, self.cfg, on_event=seen.append, answer_complete=complete)
+        self.assertEqual((out["status"], out["result"]), ("answered", answer))
+        self.assertTrue(any(s.startswith("cursor's plan: ") for s in seen), seen)
+
+    def test_a_turn_without_a_whole_answer_is_asked_once_more_without_waiting(self):
+        NS = types.SimpleNamespace
+
+        def first():
+            yield NS(type="assistant", message=NS(content=[NS(type="text", text="Designing the cases.")]))
+            yield NS(type="usage", usage=NS(input_tokens=5, output_tokens=5, total_tokens=10))
+            time.sleep(30)                           # the SDK never says the run ended
+        answer = '{"test_cases": []}'
+        second = [NS(type="assistant", message=NS(content=[NS(type="text", text=answer)])),
+                  NS(type="usage", usage=NS(input_tokens=6, output_tokens=5, total_tokens=11))]
+        self.use(FakeSdk(messages=first(), second=second))
+        complete = lambda text: text.strip().startswith("{")
+        asked = []
+        t0 = time.monotonic()
+        out = loop.cursor_call.run("p", self.ca, self.cfg, deadline_seconds=20, answer_complete=complete,
+                                   followup=lambda text: (asked.append(text), "JSON only")[1])
+        self.assertLess(time.monotonic() - t0, 5, "not waiting for the SDK")
+        self.assertEqual(asked, ["Designing the cases."])
+        self.assertEqual((out["status"], out["result"]), ("answered", answer))
 
     def test_an_error_status_with_an_answer_keeps_the_answer_and_says_so(self):
         NS = types.SimpleNamespace

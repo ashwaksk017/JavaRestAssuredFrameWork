@@ -189,7 +189,8 @@ JSON_ONLY = (
     "Your reply could not be read as JSON. Reply again with ONLY the JSON "
     "object described in the instructions: the same content, no sentence "
     "before or after it, no code fence. If it was too long to finish, keep "
-    "the highest-priority test cases and leave the rest out.")
+    "the highest-priority test cases and leave the rest out. Write it in "
+    "this reply itself, not in a plan or a file.")
 
 
 def say(msg: str) -> None:
@@ -1309,6 +1310,10 @@ def call_cursor(prompt: str, root: str, on_event, followup, mode: str = "plan",
                                      ignore_cleanup_errors=True) as empty:
         cfg.cwd = empty
         try:
+            # Seen live (composer-2.5, plan mode): the answer was put in a
+            # plan (createPlan) and the reply held one sentence.
+            prompt = (prompt.rstrip() + "\n\nWrite your answer -- the JSON object -- in your reply "
+                      "message itself. Do not create a plan, a file or a document for it.")
             out = loop.cursor_call.run(prompt, ca, cfg,
                                        on_event=lambda line: on_event(hide(line)),
                                        followup=followup, mode=mode,

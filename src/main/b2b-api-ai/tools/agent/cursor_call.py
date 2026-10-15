@@ -59,6 +59,7 @@ import logging
 import os
 import sys
 import threading
+import types
 import time
 
 WINDOWS_BRIDGE_TIMEOUT = 90.0
@@ -529,7 +530,7 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
             if quiet_seconds and quiet_seconds > 0 and heard["any"] and quiet >= quiet_seconds:
                 quiet_stop.set()
                 return
-            if turn["ended"] and quiet >= AFTER_USAGE_QUIET:
+            if turn["ended"] and answer_complete is None and quiet >= AFTER_USAGE_QUIET:
                 turn["closed"] = True
                 quiet_stop.set()
                 return
@@ -570,7 +571,14 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
         secs = (thought["ms"] / 1000.0) if thought["ms"] else (time.monotonic() - thought["t"])
         say(f"thought for {secs:.0f}s ({thought['chars']:,} characters of reasoning, not shown)")
 
-    def consume(messages) -> None:
+    plans = {}                      # call id -> its segment, for a createPlan call
+    pending = {"again": None}       # the follow-up prompt, when a turn ended unusable
+
+    def consume(messages) -> str:
+        """Log each message. Returns "incomplete" when a one-answer call's
+        turn ends (its usage line) without a whole answer, so that the
+        session can ask once more instead of waiting for an end the SDK
+        never signals; else ""."""
         for message in messages:
             heard["any"] = True
             turn["ended"] = (getattr(message, "type", "") or "") == "usage"
@@ -606,6 +614,22 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
                 continue
             flush_said()
             line = describe(message, timing)
+            # Seen live (composer-2.5, plan mode): the answer went into a
+            # createPlan tool call, not into the reply. Its `plan` is taken
+            # as an answer like any other.
+            if (getattr(message, "type", "") or "") == "tool_call" and \
+                    "plan" in str(getattr(message, "name", "") or "").lower():
+                args = getattr(message, "args", None)
+                plan = (args.get("plan") if isinstance(args, dict) else getattr(args, "plan", None)) or ""
+                if str(plan).strip():
+                    cid = str(getattr(message, "call_id", "") or id(message))
+                    if cid in plans:
+                        segments[plans[cid]] = str(plan)
+                    else:
+                        plans[cid] = len(segments)
+                        segments.append(str(plan))
+                    seg["open"] = False
+                    say(f"cursor's plan: {len(str(plan)):,} characters, taken as its answer")
             if (getattr(message, "type", "") or "") == "usage":
                 u = getattr(message, "usage", None)
                 tokens_in = getattr(u, "input_tokens", None)
@@ -625,7 +649,19 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
                             say(line)
                         say("the answer is complete: the run is ended here, with it")
                         quiet_stop.set()
-                        return
+                        return ""
+                if answer_complete is not None and answered["text"] is None and followup:
+                    # Asked once more only when the step has words for it;
+                    # otherwise the run is read on.
+                    try:
+                        again = followup(segments[-1] if segments else "")
+                    except Exception:                    # noqa: BLE001
+                        again = None
+                    if again:
+                        pending["again"] = again
+                        if line:
+                            say(line)
+                        return "incomplete"
             if not line:
                 continue
             say(line)
@@ -633,6 +669,7 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
                 diagnostics.append(line)
         end_thinking()
         flush_said()
+        return ""
 
     def drain_bridge(agent) -> None:
         """The bridge's stderr, line by line, into the log as `bridge:`."""
@@ -661,7 +698,29 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
             live["run"] = run_
             still_wanted(agent, run_)
             say("sent; waiting for the agent")
-            consume(run_.messages())
+            if consume(run_.messages()) == "incomplete":
+                # The turn ended (its usage line) without a whole answer.
+                # run_.wait() would wait for an end the SDK does not signal:
+                # ask once more on the same agent now, or end with what came.
+                end_thinking()
+                flush_said()
+                again = pending["again"]
+                if again and not stopped.is_set():
+                    say("the answer was not usable; asking once more on the same agent")
+                    try:
+                        second = agent.send(again)
+                        live["run"] = second
+                        raw["text"] = ""
+                        turn["ended"] = False
+                        last["at"] = time.monotonic()
+                        consume(second.messages())
+                    except Exception as e:               # noqa: BLE001
+                        say(f"the second turn failed ({type(e).__name__}: {e})")
+                if answered["text"] is None:
+                    say("no whole answer came; the run is ended with what Cursor wrote")
+                    turn["closed"] = True
+                return (types.SimpleNamespace(status="quiet", id=str(getattr(run_, "id", "") or "")),
+                        answered["text"] if answered["text"] is not None else best_answer())
             result = run_.wait()
             text = getattr(result, "result", None) or ""
             if not str(text).strip():
