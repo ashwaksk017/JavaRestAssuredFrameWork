@@ -1731,6 +1731,24 @@ book it is held to; an edit there is put back and the run rejected.
 python tools/agent/loop.py discard --job workbench-<date>-<time>
 ```
 
+### The workflow, stage by stage
+
+The strip at the top of the Automate Test Case tab is the job's workflow:
+
+    Read it -> Generate -> Review -> Finalize -> Xray tests -> Automate
+    -> Regression -> Run on stg -> Push -> Publish
+
+Each stage is a link to where it is done, and the server holds the gates
+(`workflow.py`, `jobs.workflow_gate`), whatever the page does:
+
+| Stage | Done when | It unlocks |
+|---|---|---|
+| Finalize | **Finalize the cases** (under the review): the approved cases -- titles, steps, suites, Automate -- frozen. An edit afterwards reopens it. | Create in Xray (designed cases) and Automate |
+| Regression | **Confirm the regression cases** (Commit and push tab): the automated cases in the `regression` group, for the change waiting. A new change needs it again. | Run the tests |
+| Run on stg | **Run the tests (stg)**: every test passed (a row switched off in its sheet aside). | Approve & push |
+| Push | **Approve & push** to `feature_<story key>` (`feature_<job>` without one). | Publish to Xray |
+| Publish | **Publish to Xray**: a new Test Execution with the run's results; the regression tests added to the regression Test Set / Plan (Settings tab). | -- |
+
 ### Settings
 
 The Jira, Confluence and Xray connection of this machine, saved into the

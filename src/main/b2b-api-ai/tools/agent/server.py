@@ -211,6 +211,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(jobs.list_jobs())
             if u.path == "/api/workbench-job":
                 return self._json(jobs.workbench_job())
+            if u.path == "/api/workflow":
+                return self._json(jobs.workflow_status(q.get("job", "")))
             if u.path == "/api/settings":
                 # What is set -- never a token's value.
                 return self._json(jobs.settings.status())
@@ -345,6 +347,8 @@ class Handler(BaseHTTPRequestHandler):
                                                      body.get("suite", ""), body.get("text", "")))
             if u.path == "/api/settings":
                 return self._json(jobs.settings_save(body.get("changes") or {}))
+            if u.path == "/api/workflow":
+                return self._json(jobs.workflow_act(body.get("job", ""), str(body.get("action") or "")))
             if u.path == "/api/settings-check":
                 # Asks Jira who the saved token belongs to; the answer, never the token.
                 conn = jobs.intake.jira_search.connect()

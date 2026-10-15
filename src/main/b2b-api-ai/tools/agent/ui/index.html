@@ -203,6 +203,10 @@ Expect 201.'></textarea>
 
   <h3>Review the designed cases <span class="hint">tick Approve for the cases that stand, Automate for the ones Cursor should write; a title can be corrected in place. Create in Xray and Automate take approved cases only</span></h3>
   <div id="design-review" class="result"></div>
+  <div class="row">
+    <button id="wf-finalize" type="button" title="freeze the approved cases: Create in Xray and Automate take only finalized cases; an edit after it reopens them">Finalize the cases</button>
+    <span id="wf-final-state" class="state"></span>
+  </div>
   <h3>design.md</h3>
   <pre id="design-doc" class="doc">—</pre>
 
@@ -412,6 +416,7 @@ Expect 201.'></textarea>
       <input id="agent-branch" type="text" spellcheck="false" placeholder="feature_<story key>">
     </div>
     <div class="row">
+      <button id="wf-regression" title="confirm which automated cases are regression cases; the tests run only after it">Confirm the regression cases</button>
       <button id="agent-run" title="run this change's tests against stg; Approve &amp; push opens only when they all pass">Run the tests (stg)</button>
       <button id="agent-push" class="go" disabled>Approve</button>
       <button id="agent-xray" disabled title="the last run's results to a new Xray Test Execution, and the regression tests to the regression Test Set or Plan (Settings tab)">Publish to Xray</button>
@@ -420,6 +425,7 @@ Expect 201.'></textarea>
       <button id="agent-review" disabled>Review the change</button>
       <button id="agent-commit-stop" title="stop the review, discard or approve running for this job">Stop</button>
     </div>
+    <div id="wf-regression-result" class="result"></div>
     <div id="agent-run-result" class="result"></div>
     <div id="agent-xray-result" class="result"></div>
   </div>

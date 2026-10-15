@@ -725,6 +725,57 @@ def _settings():
 settings = _settings()
 
 
+def _workflow():
+    spec = importlib.util.spec_from_file_location("jobs_workflow", os.path.join(HERE, "workflow.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+workflow = _workflow()
+
+
+def workflow_status(job: str) -> dict:
+    out = job_dir(job)
+    sm = casereview._suitemap()
+    fin, fin_why = workflow.finalized(out, casereview, sm)
+    reg, reg_why = workflow.regression_confirmed(out)
+    return {"stages": workflow.stages(out, casereview, sm), "finalized": fin, "finalized_why": fin_why,
+            "regression_confirmed": reg, "regression_why": reg_why,
+            "regression_cases": workflow.regression_cases(out, casereview, sm)}
+
+
+def workflow_act(job: str, action: str) -> dict:
+    """A person's decision: the cases are final; these are the regression ones."""
+    out = job_dir(job)
+    sm = casereview._suitemap()
+    if busy(job):
+        raise ValueError(f"{busy(job)} is running for this job; wait for it")
+    if action == "finalize":
+        return {"finalized": workflow.finalize(out, casereview, sm)}
+    if action == "confirm-regression":
+        return {"regression": workflow.confirm_regression(out, casereview, sm)}
+    raise ValueError("unknown workflow action")
+
+
+def workflow_gate(job: str, runnable: str, options: dict) -> str:
+    """Why a stage of the workflow cannot start yet, or ""."""
+    if is_workbench_job(job):
+        return ""
+    out = job_dir(job)
+    if runnable == "agent-automate" or (runnable == "xray-create" and options.get("--what") == "design"):
+        ok, why = workflow.finalized(out, casereview, casereview._suitemap())
+        return "" if ok else why
+    if runnable == "agent-run-tests":
+        ok, why = workflow.regression_confirmed(out)
+        return "" if ok else why
+    if runnable == "xray-publish":
+        state = str(_read_json(os.path.join(out, "review.json")).get("state") or "none")
+        if state != "pushed":
+            return "push the change first (Approve & push): results are published after it"
+    return ""
+
+
 def settings_save(changes: dict) -> dict:
     """The Settings tab's save: refused while anything runs."""
     now = running_now()
@@ -1180,6 +1231,9 @@ def start(job: str, runnable: str, options: dict) -> dict:
             raise ValueError("--confirm must be the id of the job being approved")
     argv = build_argv(runnable, options)      # validates before any mkdir
     out = job_dir(job)                        # validates the job id
+    gate = workflow_gate(job, runnable, options)
+    if gate:
+        raise ValueError(gate)
     wb = is_workbench_job(job)
     if runnable == "agent-generate" and ((options.get("--scope") == "workbench") != wb):
         raise ValueError("a change to the workbench is made from the Logs tab (Change the "

@@ -807,13 +807,10 @@ def main() -> int:
                      "priority": "high", "preconditions": "",
                      "steps": [{"action": "do", "data": "", "expected": "200"}],
                      "requirement_refs": [], "endpoint_in_spec": True}]}, fh)
-            code, rc = press("xray-create", {"--what": "design", "--story": "ABC-123",
-                                             "--confirm-story": "ABC-123", "--expect": "mock"})
-            got = json.loads(mocked.call(f"/api/artifact?job={JOB}&name=xray-result.json")[1]
-                             .get("text") or "{}")
-            check("Create in Xray refuses until a case is approved",
-                  rc == 2 and got.get("refused") is True and "no case is approved" in got.get("message", ""),
-                  str(got)[:300])
+            code, body = mocked.call("/api/start", {"job": JOB, "runnable": "xray-create", "options": {
+                "--what": "design", "--story": "ABC-123", "--confirm-story": "ABC-123", "--expect": "mock"}})
+            check("Create in Xray refuses until the cases are finalized",
+                  code == 400 and "not finalized" in str(body), str(body)[:300])
             code, body = mocked.call("/api/case-review", {"job": JOB, "what": "design", "ids": ["TC-001"],
                                                           "state": "approved", "title": "A case, corrected"})
             check("a decision on a case is kept with the job",
@@ -821,13 +818,16 @@ def main() -> int:
             code, body = mocked.call("/api/case-review", {"job": JOB, "what": "design", "ids": ["TC-001"],
                                                           "state": "maybe"})
             check("a decision that is not one of the three words is refused", code == 400, str(body))
+            code, body = mocked.call("/api/workflow", {"job": JOB, "action": "finalize"})
+            check("the approved cases can be finalized", code == 200 and body.get("finalized", {}).get("cases") == ["TC-001"],
+                  str(body))
             html = mocked.dom("new")
             check("the Automate Test Case tab shows the review table and where the job is",
                   'id="design-review"' in html and "Approve all" in html and 'id="flow"' in html
                   and "Review (1 approved)" in html, html[html.find('id="flow"'):][:400])
             strip = html[html.find('id="flow"'):html.find("</ol>", html.find('id="flow"'))]
             check("each step of the strip is a link to where it is done",
-                  strip.count('class="step-link"') == 7
+                  strip.count('class="step-link"') == 10
                   and 'data-tab="new" data-target="auto-selected"' in strip
                   and 'data-tab="agent" data-target="agent-push"' in strip
                   and 'data-tab="new" data-target="design-review"' in strip, strip[:400])

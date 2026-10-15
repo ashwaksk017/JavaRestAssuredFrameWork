@@ -961,42 +961,63 @@ async function showReview(what) {
 
 // Where the job is, in order: what has been done is read from what the
 // job holds, not remembered by the page.
+// Where the job is, in order -- the workflow, stage by stage, as the server
+// reads it from what the job holds (workflow.py). Each stage is a link to
+// where it is done.
+const STAGE_AT = {
+  "Read it": ["new", "story"], "Generate": ["new", "run-design"], "Review": ["new", "design-review"],
+  "Finalize": ["new", "wf-finalize"], "Xray tests": ["new", "xray-design-create"],
+  "Automate": ["new", "auto-selected"], "Regression": ["agent", "wf-regression"],
+  "Run on stg": ["agent", "agent-run"], "Push": ["agent", "agent-push"], "Publish": ["agent", "agent-xray"],
+};
 async function showFlow() {
   const j = job();
   const flow = $("flow");
   if (!flow) return;
   if (!j) { flow.replaceChildren(); return; }
-  const [brief, plan, design, review, xray, agent] = await Promise.all([
-    artifactText(j, "brief.md"), artifactText(j, "plan.md"), artifactJson(j, "design.json"),
-    artifactJson(j, "case-review.json"), artifactJson(j, "xray-tests.json"), artifactJson(j, "review.json")]);
+  let wf = null;
+  const [brief, w] = await Promise.all([artifactText(j, "brief.md"),
+    api(`/api/workflow?job=${encodeURIComponent(j)}`).catch(() => null)]);
+  wf = w;
   if (j !== job()) return;
-  // Decisions about cases the design still has; a re-design renumbers a
-  // case whose text changed, and the old number's decision is not its.
-  const nowIds = new Set(((design && design.test_cases) || []).map((c) => c && c.id));
-  const approved = Object.entries((review && review.design) || {})
-    .filter(([id, e]) => e && e.state === "approved" && nowIds.has(id)).length;
-  const keys = Object.keys((xray && xray.tests) || {}).filter((k) => k.startsWith("design:")).length;
-  const agentState = (agent && agent.state) || "none";
-  // Each step is a link to where it is done: an element of this tab, or
-  // another tab.
-  const steps = [
-    ["Read it", Boolean(brief), "", "new", "story"],
-    ["Is it automated?", Boolean(plan), "", "new", "run-locate"],
-    ["Design", Boolean(design && design.test_cases && design.test_cases.length), "", "new", "run-design"],
-    ["Review", approved > 0, approved ? `${approved} approved` : "", "new", "design-review"],
-    ["Create in Xray", keys > 0, keys ? `${keys} test(s)` : "", "new", "xray-design-create"],
-    ["Automate", ["pending-review", "approved-local", "pushed"].includes(agentState),
-     agentState !== "none" ? agentState : "", "new", "auto-selected"],
-    ["Commit and push", ["pushed", "approved-local"].includes(agentState), "", "agent", "agent-push"],
-  ];
-  let now = steps.findIndex(([, done]) => !done);
-  flow.replaceChildren(...steps.map(([name, done, detail, tab, target], i) =>
-    el("li", { class: done ? "done" : (i === now ? "now" : "") },
+  const steps = [{ name: "Read it", done: Boolean(brief), detail: "" }, ...((wf && wf.stages) || [])];
+  const now = steps.findIndex((s) => !s.done);
+  flow.replaceChildren(...steps.map((s, i) => {
+    const [tab, target] = STAGE_AT[s.name] || ["new", "flow"];
+    const shown = s.detail && s.detail.length < 40 ? ` (${s.detail})` : "";
+    return el("li", { class: s.done ? "done" : (i === now ? "now" : "") },
       el("button", { type: "button", class: "step-link", "data-tab": tab, "data-target": target,
-                     title: `go to: ${name}`,
-                     on: { click: () => goToStep(tab, target) } },
-         name + (detail ? ` (${detail})` : "")))));
+                     title: s.detail || `go to: ${s.name}`, on: { click: () => goToStep(tab, target) } },
+         s.name + shown));
+  }));
+  if (wf) {
+    setState($("wf-final-state"), wf.finalized ? "ok" : "", wf.finalized_why);
+    const box = $("wf-regression-result");
+    if (box) {
+      box.replaceChildren(banner(wf.regression_confirmed ? "ok" : "warn",
+        (wf.regression_confirmed ? wf.regression_why : "Regression: not confirmed for this change. ") +
+        ` Automated cases in the regression group: ${(wf.regression_cases || []).join(", ") || "none"}.`));
+    }
+  }
 }
+$("wf-finalize").onclick = async () => {
+  const j = job();
+  if (!confirm(`Finalize the approved cases of job "${j}"? Create in Xray and Automate then take ` +
+               "these cases; editing one afterwards reopens them.")) return;
+  try {
+    const r = await post("/api/workflow", { job: j, action: "finalize" });
+    setState($("wf-final-state"), "ok", `finalized: ${r.finalized.cases.length} case(s)`);
+  } catch (e) { setState($("wf-final-state"), "bad", e.message); }
+  showFlow();
+};
+$("wf-regression").onclick = async () => {
+  const j = job();
+  try {
+    const r = await post("/api/workflow", { job: j, action: "confirm-regression" });
+    setState($("agent-state"), "ok", `regression confirmed: ${r.regression.cases.join(", ") || "no case"}`);
+  } catch (e) { setState($("agent-state"), "bad", e.message); }
+  showFlow();
+};
 
 function goToStep(tab, target) {
   const button = document.querySelector(`.tabs button[data-tab="${tab}"]`);
@@ -2008,6 +2029,7 @@ async function refreshReview() {
   // is typed in the box when they are clicked.
   $("agent-push").dataset.job = shown;
   $("agent-run").dataset.job = shown;
+  if (typeof showFlow === "function") showFlow();
   $("agent-discard").dataset.job = shown;
   try {
     const r = await api(
