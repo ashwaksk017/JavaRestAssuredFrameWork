@@ -66,7 +66,7 @@ the TestNG groups -- and so the suites -- its test runs in, from
 `tools/agent/suite-map.json` or set by a person on the review. Put exactly
 those in the `groups` of the method that tests the case; never drop `jira`.
 Cases with different groups do not share a test method. The suite files
-(`src/test/resources/suites/jira/group-<group>.xml`) are written by the
+(`Suites/jira/group-<group>.xml`) are written by the
 workbench; do not write them.
 
 The package must **not** contain `.tests.imported.` — that anchor is what

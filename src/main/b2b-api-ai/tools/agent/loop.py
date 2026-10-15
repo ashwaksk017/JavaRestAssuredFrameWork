@@ -168,7 +168,7 @@ DEFAULT_POLICY = {
             "label": "A new hand-written test",
             "write_roots": ["src/test/java/com/hi/api/tests/jira/",
                             "src/test/resources/csv/manual/",
-                            "src/test/resources/suites/jira/"],
+                            "Suites/jira/"],
             "pushable": True,
             "compile": _MVN,
             "checks": [["tools/check_no_duplicate_methods.py"]],
@@ -1671,7 +1671,7 @@ def not_yours(scope: dict) -> str:
     return "".join(f"\n  - {p}" for p in extra)
 
 
-JOB_SUITES = "src/test/resources/suites/jira/"
+JOB_SUITES = "Suites/jira/"
 _JIRA_TESTS = "src/test/java/com/hi/api/tests/jira/"
 
 
@@ -1683,7 +1683,7 @@ def write_job_suite(root: str, job_dir: str, scope: dict) -> str:
     """A TestNG suite of the test classes this job wrote, so that the
     story's tests run on their own:
 
-        mvn -o test -DsuiteXmlFile=src/test/resources/suites/jira/<job>.xml
+        mvn -o test -DsuiteXmlFile=Suites/jira/<job>.xml
 
     Written by this tool, not by Cursor, each time Cursor finishes: the
     classes are the *Test.java files changed or added under tests/jira/.

@@ -10,7 +10,7 @@ groups and puts them on the test method:
 and each group has a suite file that runs every test of the jira package
 in that group -- no list of classes to keep up to date:
 
-    mvn -o test -DsuiteXmlFile=src/test/resources/suites/jira/group-smoke.xml
+    mvn -o test -DsuiteXmlFile=Suites/jira/group-smoke.xml
 
 The suite files are written by this tool (not by Cursor) when a job first
 uses a group, and are part of that job's change.
@@ -28,7 +28,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MAP_FILE = os.path.join(HERE, "suite-map.json")
-SUITES_DIR = "src/test/resources/suites/jira/"
+SUITES_DIR = "Suites/jira/"
 PACKAGE = "com.hi.api.tests.jira"
 GROUP_RX = re.compile(r"^[a-z][a-z0-9_-]{0,30}$")
 MAX_GROUPS = 8

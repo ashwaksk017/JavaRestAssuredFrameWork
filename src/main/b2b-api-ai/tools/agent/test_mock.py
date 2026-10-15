@@ -428,7 +428,7 @@ class TheAgentLoopAgainstTheStandIn(Mocked):
         self.assertIn("MOCK CURSOR", out)
         review = loop.read_review(self.job)
         self.assertEqual((review["state"], review["mock"]), ("pending-review", True))
-        self.assertEqual(review["files"]["created"], [mock.SAMPLE_TEST, "src/test/resources/suites/jira/j1.xml"],
+        self.assertEqual(sorted(review["files"]["created"]), sorted([mock.SAMPLE_TEST, "Suites/jira/j1.xml"]),
                          "the stand-in's test, and the job's suite the workbench writes")
         body = io.open(os.path.join(self.repo, mock.SAMPLE_TEST), encoding="utf-8").read()
         self.assertIn("MOCK", body)
@@ -459,7 +459,7 @@ class TheAgentLoopAgainstTheStandIn(Mocked):
         self.assertEqual([(f["file"], f["status"], f["why"]) for f in r["files"] if f["file"].endswith(".java")],
                          [(mock.SAMPLE_TEST, "reviewed", "")])
         self.assertEqual({f["file"] for f in r["files"]} - {mock.SAMPLE_TEST},
-                         {"src/test/resources/suites/jira/j1.xml"}, "the only other file is the job's suite")
+                         {"Suites/jira/j1.xml"}, "the only other file is the job's suite")
         self.assertEqual([(x["file"], x["line"], x["where"]) for x in r["findings"]],
                          [(mock.SAMPLE_TEST, want, "added")])
         self.assertEqual((r["whole"], r["mock"], r["failures"]), (True, True, []))

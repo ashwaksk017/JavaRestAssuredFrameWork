@@ -1061,12 +1061,12 @@ tab's state says `verify-failed` with the number of attempts. Set
 #### The suite of a job's tests
 
 When Cursor finishes a new-test job, the workbench writes
-`src/test/resources/suites/jira/<job>.xml`: a TestNG suite of the test
+`Suites/jira/<job>.xml`: a TestNG suite of the test
 classes the job wrote under `tests/jira/`, so the story's tests run on
 their own --
 
 ```
-mvn -o test -DsuiteXmlFile=src/test/resources/suites/jira/<job>.xml
+mvn -o test -DsuiteXmlFile=Suites/jira/<job>.xml
 ```
 
 It is part of the change: in the diff you review, pushed with Approve,
@@ -1085,13 +1085,13 @@ hand (empty the box to go back to the rules).
 
 Cursor is told each case's groups and puts exactly those on its test
 method. When it finishes, the workbench writes the suite file of any
-group that has none yet -- `src/test/resources/suites/jira/group-<group>.xml`,
+group that has none yet -- `Suites/jira/group-<group>.xml`,
 every test of the `tests.jira` package in that group, so no class list
 to keep up to date -- and warns in the log when a group a case was
 mapped to is on none of the change's tests.
 
 ```
-mvn -o test -DsuiteXmlFile=src/test/resources/suites/jira/group-smoke.xml
+mvn -o test -DsuiteXmlFile=Suites/jira/group-smoke.xml
 python tools/agent/suitemap.py --job <job>      # each case's groups
 ```
 

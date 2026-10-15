@@ -82,7 +82,11 @@ tools/ra_converter/converter.config.local.json
 # also matched src/test/resources/suites/ on Windows (core.ignorecase):
 # the test workbench's job and group suites could never be committed, and
 # its new-ignored-file check removed them and rejected the run.
-/Suites/
+/Suites/*
+# ...except the TestNG suites the test workbench writes for Jira stories
+# (a job's suite, and one per group): reviewed, committed and pushed with
+# the story's tests. The converter only writes Suites/<Suite>_*.xml.
+!/Suites/jira/
 src/main/java/com/hi/api/rest/clients/
 src/main/java/com/hi/api/support/
 src/main/java/com/hi/api/templates/

@@ -1,5 +1,5 @@
 {
-  "about": "Which TestNG groups -- and so which suites -- an automated case belongs to. Read by tools/agent/suitemap.py. Every case gets the groups in `always`; a rule adds its group when the case's type AND priority are among those listed (a missing list matches anything). A person can set a case's groups by hand on the review table; that wins. Each group runs as src/test/resources/suites/jira/group-<group>.xml.",
+  "about": "Which TestNG groups -- and so which suites -- an automated case belongs to. Read by tools/agent/suitemap.py. Every case gets the groups in `always`; a rule adds its group when the case's type AND priority are among those listed (a missing list matches anything). A person can set a case's groups by hand on the review table; that wins. Each group runs as Suites/jira/group-<group>.xml.",
   "always": ["jira", "regression"],
   "rules": [
     {"group": "smoke", "type": ["positive", "flow"], "priority": ["critical", "highest", "high", "p0", "p1"]},

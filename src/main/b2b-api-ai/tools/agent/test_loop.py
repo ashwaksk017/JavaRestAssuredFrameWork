@@ -35,7 +35,7 @@ loop = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(loop)
 
 JIRA = "src/test/java/com/hi/api/tests/jira/"
-SUITE = "src/test/resources/suites/jira/job1.xml"   # written by the workbench for every new-test job
+SUITE = "Suites/jira/job1.xml"   # written by the workbench for every new-test job
 GEN = "src/main/java/com/hi/api/support/"
 IMPORTED = "src/test/java/com/hi/api/tests/imported/"
 CSV = "src/test/resources/csv/"
@@ -106,7 +106,7 @@ class InsideThePaths(Repo):
         self.assertEqual(self.generate(agent), 0)
         r = self.state()
         self.assertEqual(r["state"], "pending-review")
-        self.assertEqual(r["files"]["created"], [JIRA + "NewTest.java", "src/test/resources/suites/jira/job1.xml"])
+        self.assertEqual(sorted(r["files"]["created"]), sorted([JIRA + "NewTest.java", "Suites/jira/job1.xml"]))
         self.assertEqual(sh(self.root, "rev-parse", "HEAD"), head)
         diff = io.open(os.path.join(self.job, "proposed.diff"), encoding="utf-8").read()
         self.assertIn("+class NewTest {}", diff)
@@ -117,7 +117,7 @@ class InsideThePaths(Repo):
             return {"result": "edited"}
         self.assertEqual(self.generate(agent), 0)
         self.assertEqual(self.state()["files"]["modified"], [JIRA + "ExistingTest.java"])
-        self.assertEqual(self.state()["files"]["created"], ["src/test/resources/suites/jira/job1.xml"],
+        self.assertEqual(self.state()["files"]["created"], ["Suites/jira/job1.xml"],
                          "the edited test's suite is written; the test itself is a modification")
 
     def test_a_suite_of_the_jobs_tests_is_written_and_is_part_of_the_change(self):
@@ -128,7 +128,7 @@ class InsideThePaths(Repo):
         out = io.StringIO()
         with redirect_stdout(out):
             self.assertEqual(self.generate(agent), 0)
-        rel = "src/test/resources/suites/jira/job1.xml"
+        rel = "Suites/jira/job1.xml"
         with io.open(os.path.join(self.root, rel), encoding="utf-8") as fh:
             xml = fh.read()
         self.assertIn('<class name="com.hi.api.tests.jira.NewTest"/>', xml)
@@ -515,9 +515,9 @@ class TheReviewDecidesWhatIsWritten(Repo):
         self.assertIn("[groups: jira, regression, negative]", seen["p"])
         self.assertIn("@Test(groups = {...})", seen["p"])
         created = self.state()["files"]["created"]
-        self.assertIn("src/test/resources/suites/jira/group-smoke.xml", created, "part of the change")
-        self.assertIn("src/test/resources/suites/jira/group-regression.xml", created)
-        self.assertNotIn("src/test/resources/suites/jira/group-negative.xml", created, "no test is in it")
+        self.assertIn("Suites/jira/group-smoke.xml", created, "part of the change")
+        self.assertIn("Suites/jira/group-regression.xml", created)
+        self.assertNotIn("Suites/jira/group-negative.xml", created, "no test is in it")
         self.assertIn("WARN no test of this change is in the group(s) negative", out.getvalue())
 
     def test_the_prompt_names_the_story_key_or_says_there_is_none(self):
@@ -623,7 +623,7 @@ class AskingForMore(Repo):
         self.assertEqual(st["state"], "pending-review")
         self.assertEqual(st["followups"], ["also cover the 403 case"])
         self.assertEqual(sorted(st["files"]["created"]),
-                         [JIRA + "NewTest.java", JIRA + "NewTestData.java", SUITE])
+                         sorted([JIRA + "NewTest.java", JIRA + "NewTestData.java", SUITE]))
         self.assertIn("THE REVIEWER ASKS", seen["p"])
         self.assertIn("also cover the 403 case", seen["p"])
         self.assertIn("THE CHANGE SO FAR", seen["p"])
@@ -695,7 +695,7 @@ class AskingForMore(Repo):
         self.assertEqual(st["state"], "pending-review")
         self.assertEqual(st["followups"], ["more"])
         self.assertIn("bridge went away", st["followup_failed"])
-        self.assertEqual(sorted(st["files"]["created"]), [JIRA + "NewTest.java", JIRA + "NewTestData.java", SUITE])
+        self.assertEqual(sorted(st["files"]["created"]), sorted([JIRA + "NewTest.java", JIRA + "NewTestData.java", SUITE]))
         self.assertTrue(os.path.isfile(os.path.join(self.job, "proposed.diff")))
         self.assertIn("the follow-up was undone", out.getvalue())
 
@@ -1281,7 +1281,7 @@ class Push(Repo):
         self.assertEqual(self.state()["state"], "pushed")
         self.assertEqual(sh(self.remote, "rev-parse", "main"), main_before)
         files = sh(self.remote, "show", "--name-only", "--format=", "agent/job1")
-        self.assertEqual(files.splitlines(), [JIRA + "NewTest.java", SUITE], "the job's suite is pushed with it")
+        self.assertEqual(sorted(files.splitlines()), sorted([JIRA + "NewTest.java", SUITE]), "the job's suite is pushed with it")
         self.assertEqual(sh(self.root, "rev-parse", "--abbrev-ref", "HEAD"), "main",
                          "the checkout returns to where it was")
 
@@ -1291,7 +1291,7 @@ class Push(Repo):
                               base="main", branch="agent/stays-for-tc")
         self.assertEqual(rc, 0)
         files = sh(self.remote, "show", "--name-only", "--format=", "agent/stays-for-tc")
-        self.assertEqual(files.splitlines(), [JIRA + "NewTest.java", SUITE])
+        self.assertEqual(sorted(files.splitlines()), sorted([JIRA + "NewTest.java", SUITE]))
 
     def test_a_branch_outside_the_agents_prefix_or_with_a_bad_name_is_refused(self):
         self.pending()
@@ -1880,7 +1880,7 @@ class WhatGitWouldNotShow(Repo):
             sh(self.root, "add", JIRA + "NewTest.java")
             return {"result": ""}
         self.assertEqual(self.generate(agent), 0)
-        self.assertEqual(self.state()["files"]["created"], [JIRA + "NewTest.java", SUITE])
+        self.assertEqual(sorted(self.state()["files"]["created"]), sorted([JIRA + "NewTest.java", SUITE]))
         with io.open(os.path.join(self.job, "proposed.diff"), encoding="utf-8") as fh:
             self.assertIn('+class NewTest { String p = "x"; }', fh.read())
 
