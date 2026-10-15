@@ -248,6 +248,24 @@ class InsideThePaths(Repo):
             self.assertEqual(self.generate(agent), 0)
         self.assertIn("src/test/resources/templates/manual/create_account.json", self.state()["files"]["created"])
 
+    def test_what_the_skills_say_to_write_can_be_written(self):
+        """Seen live: a run that followed the skill was rejected for a file it
+        was told to write. Every place the skills and the prompt send a write
+        is a write root of that scope."""
+        scopes = loop.load_policy()["scopes"]
+        for scope, rel in (("new-test", "src/test/resources/templates/manual/a.json"),
+                           ("new-test", "src/test/resources/schemas/jira/a.json"),
+                           ("new-test", "src/test/resources/csv/manual/T/m.csv"),
+                           ("new-test", "Suites/jira/job1.xml"),
+                           ("converter", "src/main/java/com/hi/api/auth/X.java"),
+                           ("converter", "src/main/java/com/hi/api/context/X.java"),
+                           ("converter", "src/main/java/com/hi/api/domain/X.java"),
+                           ("converter", "src/test/java/com/hi/api/tests/ImportedTest.java")):
+            self.assertTrue(loop.in_roots(rel, scopes[scope]["write_roots"]), f"{scope}: {rel}")
+        briefing = loop._SCOPE_BRIEFING
+        self.assertIn("do not run tools/jira/run.py", briefing["new-test"])
+        self.assertIn(".cursor/ is not this job's to change", briefing["converted"])
+
     def test_the_prompt_carries_the_plan_and_the_allowed_paths(self):
         seen = {}
         def agent(prompt):
@@ -1432,6 +1450,33 @@ class Push(Repo):
         with redirect_stdout(io.StringIO()):
             self.assertEqual(self.push(), 0)
         self.assertEqual(self.state()["branch"], "feature_ABC-42_job1")
+
+    def test_a_pushed_change_left_in_the_tree_does_not_block_the_next_job(self):
+        """Seen live: job 2's Automate refused for job 1's pushed test, still
+        uncommitted in the working tree."""
+        self.pending()
+        self.assertEqual(self.push(), 0)
+        job2 = os.path.join(self.root, ".workbench", "job2")
+        os.makedirs(job2)
+        write(self.root, ".workbench/job2/plan.md", "# plan\nanother\n")
+
+        def agent(prompt):
+            write(self.root, JIRA + "OtherTest.java", "class OtherTest {}\n")
+            return {"result": "ok"}
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = loop.cmd_generate(job2, self.root, self.policy, "new-test", "", agent=agent, verifier=OK)
+        self.assertEqual(rc, 0, out.getvalue())
+        self.assertIn("another job's pushed change", out.getvalue())
+        created = loop.read_review(job2)["files"]["created"]
+        self.assertIn(JIRA + "OtherTest.java", created)
+        self.assertNotIn(JIRA + "NewTest.java", created, "job 1's file is not part of job 2's change")
+        # ...but once edited by hand, it is somebody's work again: refused.
+        loop.cmd_discard(job2, self.root, self.policy)
+        write(self.root, JIRA + "NewTest.java", "class NewTest { int mine; }\n")
+        with redirect_stdout(io.StringIO()) as out2:
+            self.assertEqual(loop.cmd_generate(job2, self.root, self.policy, "new-test", "", agent=agent,
+                                               verifier=OK), 1)
 
     def test_the_branch_is_named_after_the_story(self):
         self.policy["branch_prefix"] = "feature_"

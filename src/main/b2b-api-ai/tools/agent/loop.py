@@ -177,6 +177,7 @@ DEFAULT_POLICY = {
             "write_roots": ["src/test/java/com/hi/api/tests/jira/",
                             "src/test/resources/csv/manual/",
                             "src/test/resources/templates/manual/",
+                            "src/test/resources/schemas/jira/",
                             "Suites/jira/"],
             "pushable": True,
             "compile": _MVN,
@@ -211,6 +212,10 @@ DEFAULT_POLICY = {
                 "src/main/java/com/hi/api/config/",
                 "src/main/java/com/hi/api/data/",
                 "src/main/java/com/hi/api/db/",
+                "src/main/java/com/hi/api/auth/",
+                "src/main/java/com/hi/api/context/",
+                "src/main/java/com/hi/api/domain/",
+                "src/test/java/com/hi/api/tests/ImportedTest.java",
                 "src/test/java/com/hi/api/tests/framework/",
                 "src/test/resources/testng-guards.xml",
                 "CreateTestCase.md",
@@ -1031,14 +1036,21 @@ _SCOPE_BRIEFING = {
     "new-test": (
         "You are writing an API test in this repository's own framework "
         "(Java 17, REST Assured, TestNG). Read CreateTestCase.md for how a "
-        "hand-written test is laid out."),
+        "hand-written test is laid out. The brief and the plan below ARE the "
+        "story packet the skill speaks of: do not run tools/jira/run.py or any "
+        "pipeline for it. A request body goes in src/test/resources/templates/manual/; "
+        "a JSON schema a test validates against goes in src/test/resources/schemas/jira/ "
+        "(SchemaValidator.validate(res, \"jira/<name>.json\"))."),
     "converted": (
         "You are changing Java that the ReadyAPI converter already "
         "generated for suite `{suite}` (Java 17, REST Assured, TestNG). "
         "Make the smallest change that does what the plan asks; keep the "
         "generated structure (Specs, Hooks, Phases, Steps, CSV columns) "
         "and its naming. These files are overwritten by the next convert "
-        "of this suite, so do not restructure them."),
+        "of this suite, so do not restructure them. Where the skill says to "
+        "write or update the application's own skill (.cursor/skills/app-<name>/"
+        "SKILL.md), do not: .cursor/ is not this job's to change -- put what it "
+        "should record at the end of your reply, and a person adds it."),
     "converter": (
         "You are changing the ReadyAPI-to-REST-Assured converter "
         "(tools/ra_converter, Python) or the hand-maintained Java runtime "
@@ -2814,6 +2826,17 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             except OSError:
                 continue
     if stale:
+        # An earlier job's change that was pushed (or approved locally) stays
+        # in the working tree until its pull request comes back: it is no
+        # one's unfinished work, and does not hold every later job back.
+        shipped = shipped_elsewhere(root, job_dir)
+        kept = [p for p in stale if p in shipped]
+        stale = [p for p in stale if p not in shipped]
+        if kept:
+            say(f" .. {len(kept)} file(s) here are another job's pushed change, as it was pushed "
+                f"({', '.join(sorted({shipped[p] for p in kept}))}): left as they are, not part of "
+                f"this change")
+    if stale:
         say("FAIL there are uncommitted changes inside the paths the agent "
             "writes to. Commit or remove them first -- otherwise its work "
             "and yours could not be told apart at review:\n  "
@@ -3850,6 +3873,28 @@ def cmd_run(job_dir: str, root: str, policy: dict, env: str = "", runner=None) -
         return 0
     say(f"FAIL on {env}: {why}. Approve & push stays closed until a run of this change passes.")
     return 1
+
+
+def shipped_elsewhere(root: str, job_dir: str) -> dict:
+    """{path: job} of files exactly as another job pushed or approved them
+    (that job's review.json hashes)."""
+    base = os.path.dirname(job_dir.rstrip("/\\"))
+    me = os.path.basename(job_dir.rstrip("/\\"))
+    out = {}
+    try:
+        names = os.listdir(base)
+    except OSError:
+        return out
+    for name in names:
+        if name == me:
+            continue
+        review = read_review(os.path.join(base, name))
+        if review.get("state") not in ("pushed", "approved-local"):
+            continue
+        for rel, sha in (review.get("hashes") or {}).items():
+            if sha and _sha(os.path.join(root, rel)) == sha:
+                out[rel] = name
+    return out
 
 
 def _commit_body(job_dir: str, files: dict) -> str:

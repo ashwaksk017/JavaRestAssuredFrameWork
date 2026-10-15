@@ -17,6 +17,7 @@
         "src/test/java/com/hi/api/tests/jira/",
         "src/test/resources/csv/manual/",
         "src/test/resources/templates/manual/",
+        "src/test/resources/schemas/jira/",
         "Suites/jira/"
       ],
       "pushable": true,
@@ -68,6 +69,10 @@
         "src/main/java/com/hi/api/config/",
         "src/main/java/com/hi/api/data/",
         "src/main/java/com/hi/api/db/",
+        "src/main/java/com/hi/api/auth/",
+        "src/main/java/com/hi/api/context/",
+        "src/main/java/com/hi/api/domain/",
+        "src/test/java/com/hi/api/tests/ImportedTest.java",
         "src/test/java/com/hi/api/tests/framework/",
         "src/test/resources/testng-guards.xml",
         "CreateTestCase.md"
