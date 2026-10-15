@@ -758,6 +758,46 @@ def workflow_act(job: str, action: str) -> dict:
     raise ValueError("unknown workflow action")
 
 
+REFINE_CAP = 18000
+
+
+def refine_notes(job: str, request: str) -> str:
+    """The notes of a design asked to REFINE the cases: the person's request,
+    and the cases as they are now -- with their corrections and decisions --
+    so that Cursor revises the list instead of starting over. The design's
+    usual matching then keeps each unchanged case's id and decision."""
+    request = str(request or "").strip()
+    if not request:
+        raise ValueError("write how the cases should be refined")
+    if len(request) > 4000:
+        raise ValueError("keep the request under 4,000 characters")
+    out = job_dir(job)
+    design = _read_json(os.path.join(out, "design.json"))
+    cases = [c for c in design.get("test_cases") or [] if isinstance(c, dict) and c.get("id")]
+    if not cases:
+        raise ValueError("there are no cases to refine yet: Design the tests first")
+    entries = casereview.read(out)["design"]
+    lines = []
+    for c in casereview.apply(cases, entries):
+        state = c["review"]["state"].upper()
+        lines.append(f"{c['id']} [{state}] [{c.get('type', '')}, {c.get('priority', '')}] "
+                     f"{c.get('endpoint', '')} -- {c.get('title', '')}")
+        for s in c.get("steps") or []:
+            if isinstance(s, dict):
+                lines.append("    " + " | ".join(f"{w}: {s.get(k)}" for k, w in
+                                                 (("action", "do"), ("data", "data"), ("expected", "expect"))
+                                                 if str(s.get(k) or "").strip()))
+    listing = "\n".join(lines)
+    if len(listing) > REFINE_CAP:
+        listing = listing[:REFINE_CAP] + "\n[... the rest of the cases are as before ...]"
+    return ("THE PERSON REVIEWING THE CASES ASKS FOR A REFINEMENT:\n" + request + "\n\n"
+            "Return the WHOLE revised list of test cases, in the usual JSON. Keep every case the "
+            "request does not touch exactly as it is below -- same title and steps -- so the "
+            "review decisions stay with it. Leave out a case marked REJECTED unless the request "
+            "brings it back.\n\nTHE CASES AS THEY ARE NOW (with the person's corrections):\n"
+            + listing)
+
+
 def workflow_gate(job: str, runnable: str, options: dict) -> str:
     """Why a stage of the workflow cannot start yet, or ""."""
     if is_workbench_job(job):

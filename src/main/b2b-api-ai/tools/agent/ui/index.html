@@ -207,6 +207,12 @@ Expect 201.'></textarea>
     <button id="wf-finalize" type="button" title="freeze the approved cases: Create in Xray and Automate take only finalized cases; an edit after it reopens them">Finalize the cases</button>
     <span id="wf-final-state" class="state"></span>
   </div>
+  <label for="refine-ask">Refine with Cursor <span class="hint">how the case list should change -- Cursor revises the cases as they are now, with your corrections; cases it leaves alone keep your decisions</span></label>
+  <textarea id="refine-ask" rows="2" spellcheck="false"
+    placeholder="e.g. Split TC-004 into a 403 and a 404 case, and drop the duplicate paging cases."></textarea>
+  <div class="row">
+    <button id="refine-run" type="button">Refine with Cursor</button>
+  </div>
   <h3>design.md</h3>
   <pre id="design-doc" class="doc">—</pre>
 

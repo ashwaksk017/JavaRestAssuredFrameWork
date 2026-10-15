@@ -1203,8 +1203,19 @@ wireXray("manual");
 // the tab's one Cursor log (at the bottom, "The design").
 $("design-cursor-go").onclick = () => { setCursorSource("design"); goToStep("new", "cursor-log"); };
 
+// Refine with Cursor: the next design run carries this request (the server
+// adds the cases as they are now).
+let pendingRefine = "";
+$("refine-run").onclick = () => {
+  const text = $("refine-ask").value.trim();
+  if (!text) { setState($("design-state"), "bad", "write how the cases should be refined"); return; }
+  if (!confirm("Cursor revises the case list as you ask. Cases it leaves alone keep your decisions; " +
+               "a changed case is reviewed again, and finalized cases reopen. Continue?")) return;
+  pendingRefine = text;
+  $("run-design").onclick();
+};
 $("run-design").onclick = async () => {
-  if (chosen("story-from") === "xray") { xrayImport(); return; }
+  if (chosen("story-from") === "xray" && !pendingRefine) { xrayImport(); return; }
   const button = $("run-design");
   // One at a time: a second click used to wipe the Cursor pane of the run
   // already going, fail with "already running", and stop the pane's timer.
@@ -1235,7 +1246,9 @@ $("run-design").onclick = async () => {
       swagger: chosen("spec-from") === "paste" ? $("design-swagger").value : "",
       requirements: requirementsGiven(),
       notes: $("design-notes").value,
+      refine: pendingRefine || undefined,
     });
+    if (pendingRefine) { pendingRefine = ""; $("refine-ask").value = ""; }
     follow("agent-design", $("design-log"), $("design-state"), () => {
       designRunning = false;
       stopCursorLog();
@@ -1245,6 +1258,7 @@ $("run-design").onclick = async () => {
       button.disabled = false;
     });
   } catch (e) {
+    pendingRefine = "";
     stopCursorLog();
     designRunning = false;
     showReview("design");

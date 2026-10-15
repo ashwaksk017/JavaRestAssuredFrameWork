@@ -450,6 +450,11 @@ class Handler(BaseHTTPRequestHandler):
         out = jobs.job_dir(job)                 # validates the id
         os.makedirs(out, exist_ok=True)
         options = {"--job": job}
+        if str(body.get("refine") or "").strip():
+            # Refine with Cursor: the cases as they are, and the request,
+            # as the design's notes; always asked afresh.
+            body = dict(body, fresh=True,
+                        notes=jobs.refine_notes(job, body["refine"]) + "\n\n" + str(body.get("notes") or ""))
         for field in ("swagger", "requirements", "notes"):
             path = os.path.join(out, f"design-{field}.txt")
             text = body.get(field) or ""

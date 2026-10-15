@@ -868,6 +868,8 @@ def main() -> int:
             check("the settings say what is set, never a token", code == 200 and "jira" in s
                   and all(not str(v).startswith("set, ") or "characters" in str(v)
                           for v in (s.get("jira") or {}).values()), str(s)[:200])
+            check("the cases can be refined with Cursor from the review",
+                  'id="refine-run"' in html and 'id="refine-ask"' in html and 'id="wf-finalize"' in html)
             check("each case's suites show on its row, from the rules",
                   ">Suites<" in html and 'class="groups"' in html and "from the rules" in html)
             bare = subprocess.run(
