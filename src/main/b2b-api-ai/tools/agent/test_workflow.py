@@ -89,13 +89,13 @@ class Refining(Base):
     def test_the_request_and_the_cases_as_they_are_now(self):
         cr.update(self.job, "design", ["TC-001"], state="approved", title="Owner lists every stay")
         cr.update(self.job, "design", ["TC-002"], state="rejected")
-        notes = jobs.refine_notes("j1", "Split TC-001 by role.")
-        self.assertTrue(notes.startswith("THE PERSON REVIEWING THE CASES ASKS FOR A REFINEMENT:\nSplit TC-001 by role."))
-        self.assertIn("TC-001 [APPROVED] [positive, high]  -- Owner lists every stay", notes, "the correction")
-        self.assertIn("TC-002 [REJECTED]", notes)
-        self.assertIn("do: GET | expect: 200", notes)
+        listing = jobs.refine_listing("j1", "Split TC-001 by role.")
+        self.assertNotIn("Split TC-001", listing, "the request goes among the instructions, not here")
+        self.assertIn("TC-001 [APPROVED] [positive, high]  -- Owner lists every stay", listing, "the correction")
+        self.assertIn("TC-002 [REJECTED]", listing)
+        self.assertIn("do: GET | expect: 200", listing)
         with self.assertRaises(ValueError):
-            jobs.refine_notes("j1", "  ")
+            jobs.refine_listing("j1", "  ")
 
 
 class TheGatesHold(Base):

@@ -154,7 +154,9 @@ TEMPLATE = os.path.join(HERE, "prompts", "api_test_design.md")
 SECTION_LIMITS = {"swagger": 80_000, "requirements": 100_000,
                   # The brief: the story, what is around it, and the pages
                   # read with it.
-                  "story": 140_000, "notes": 20_000, "endpoints": 30_000}
+                  "story": 140_000, "notes": 20_000, "endpoints": 30_000,
+                  # Refine with Cursor: the cases as they are now.
+                  "current": 60_000}
 TOTAL_LIMIT = 300_000
 SPEEDS = {"fast": 25, "balanced": 40, "thorough": 80}
 VERBS = ("get", "post", "put", "patch", "delete", "head", "options")
@@ -176,7 +178,28 @@ DESIGN_QUIET = 60
 CURSOR_LOG = "design-cursor.log"
 # What the page pasted, written by the server next to the job's other files.
 PASTED = {"swagger": "design-swagger.txt", "requirements": "design-requirements.txt",
-          "notes": "design-notes.txt"}
+          "notes": "design-notes.txt",
+          # Refine with Cursor: the person's request, and the cases as they are.
+          "refine": "design-refine.txt", "current": "design-current.txt"}
+# Seen live: the refine request ("only 5 of the 40") went in as a NOTE --
+# under a ===== heading, where the template says instructions are material
+# and are NOT followed. Cursor designed afresh, and the new cases came on
+# top of the old ones' numbers. The request is an instruction now.
+REFINE_RULE = """
+THIS IS A REFINEMENT of test cases already designed and reviewed. The
+person reviewing them asks:
+
+    {request}
+
+Do what that request asks. It comes before the priorities and the case
+limit above: it may ask for fewer cases, or for cases to be split,
+merged, dropped or rewritten. Start from the cases listed at the end,
+under THE CASES AS THEY ARE NOW, not from the material: the reply's
+`test_cases` is the WHOLE revised list and nothing else -- a case left
+out of it is dropped. Keep a case the request does not touch exactly as
+it is (same title and steps), so its review decision stays with it.
+Leave out a case marked REJECTED unless the request brings it back.
+"""
 CASE_KEYS = ("test_cases", "testCases", "testcases", "cases", "tests")
 # A specification kept as a FILE for the job -- chosen on the page, or
 # taken from a Confluence page's attachments (see specsource.py).
@@ -1366,7 +1389,7 @@ FOCUS_RULE = (
 def design(job: str, service: str = "", swagger: str = "", requirements: str = "",
            notes: str = "", speed: str = "balanced", root: str = "",
            agent=None, mode: str = "plan", fresh: bool = False,
-           whole_spec: bool = False) -> int:
+           whole_spec: bool = False, refine: str = "", current: str = "") -> int:
     """Run the step. `agent(prompt, followup) -> {"result": text}` replaces
     Cursor in the tests."""
     root = root or ROOT
@@ -1538,6 +1561,10 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         if len(parts) > 1:
             say(f" ..  the specification does not fit one prompt at full "
                 f"detail: {len(parts)} calls, one part of the API each")
+    if refine.strip() and len(parts) > 1:
+        # Each part would hand back the WHOLE revised list: one call.
+        parts = [None]
+        say(" ..  a refinement is asked in one call, with the cases as they are now")
     if len(parts) == 1 and spec is not None:
         warnings += whole_notes
     part_counts = [len(endpoints_of(sub_spec(spec, p))) for p in parts] \
@@ -1730,7 +1757,8 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
                               f"leaves it none. Use a higher limit.")
                 continue
         sections, cut = fit({"swagger": part_spec, "requirements": requirements,
-                             "story": story, "notes": notes, "endpoints": part_listed})
+                             "story": story, "notes": notes, "endpoints": part_listed,
+                             "current": current if refine.strip() else ""})
         for line in cut:
             line = f"{label}: {line}" if label else line
             if line not in warnings:
@@ -1748,6 +1776,10 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
             "requirements": sections["requirements"] or empty,
             "story": sections["story"] or empty,
             "notes": sections["notes"] or empty,
+            "refine": REFINE_RULE.format(request="\n    ".join(refine.strip().splitlines()))
+                      if refine.strip() else "",
+            "current": ("\n===== THE CASES AS THEY ARE NOW =====\n" + (sections["current"] or empty) + "\n")
+                       if refine.strip() else "",
         })
         try:
             data, how, model, keep = ask(prompt, label)
@@ -1942,7 +1974,9 @@ def main(argv=None) -> int:
         text = {k: _read(v or os.path.join(out_dir, PASTED[k])) for k, v in given.items()}
         return design(a.job, a.service, text["swagger"], text["requirements"],
                       text["notes"], a.speed, mode=a.mode, fresh=a.fresh,
-                      whole_spec=a.whole_spec)
+                      whole_spec=a.whole_spec,
+                      refine=_read(os.path.join(out_dir, PASTED["refine"])),
+                      current=_read(os.path.join(out_dir, PASTED["current"])))
     except ValueError as e:                   # an unusable job id
         say(f"FAIL {e}")
         return 1

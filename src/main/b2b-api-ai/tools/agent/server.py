@@ -451,11 +451,12 @@ class Handler(BaseHTTPRequestHandler):
         os.makedirs(out, exist_ok=True)
         options = {"--job": job}
         if str(body.get("refine") or "").strip():
-            # Refine with Cursor: the cases as they are, and the request,
-            # as the design's notes; always asked afresh.
-            body = dict(body, fresh=True,
-                        notes=jobs.refine_notes(job, body["refine"]) + "\n\n" + str(body.get("notes") or ""))
-        for field in ("swagger", "requirements", "notes"):
+            # Refine with Cursor: the request (an instruction to Cursor) and
+            # the cases as they are, each in its own file; always asked afresh.
+            body = dict(body, fresh=True, current=jobs.refine_listing(job, body["refine"]))
+        else:
+            body = dict(body, refine="", current="")   # an earlier refinement is not asked again
+        for field in ("swagger", "requirements", "notes", "refine", "current"):
             path = os.path.join(out, f"design-{field}.txt")
             text = body.get(field) or ""
             if str(text).strip():

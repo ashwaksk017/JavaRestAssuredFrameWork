@@ -491,6 +491,31 @@ class Run(unittest.TestCase):
         self.assertEqual(len(rows), 3)
         self.assertTrue(os.path.isfile(os.path.join(self.out, "xray.csv")))
 
+    def test_a_refinement_is_an_instruction_not_material(self):
+        """Seen live: "give me only 5 of the 40" went under NOTES FROM THE
+        TESTER, where the template says instructions are not followed --
+        Cursor designed afresh and the list grew instead."""
+        self.run_design(self.agent(reply(case())), notes="focus on dates",
+                        refine="Give me only the 5 most important cases.",
+                        current="TC-001 [APPROVED] [positive, high] POST /groups/{groupId}/rates -- Create")
+        p = self.prompts[0]
+        rule = p.index("THIS IS A REFINEMENT")
+        self.assertLess(rule, p.index("REPLY FORMAT"), "among the instructions")
+        first_heading = p.index("\n===== ")
+        self.assertLess(p.index("Give me only the 5 most important cases."), first_heading,
+                        "the request is above every material heading")
+        self.assertEqual([l for l in p[:first_heading].splitlines() if l.startswith("=====")], [],
+                         "no line of the instructions reads as a heading")
+        self.assertIn("===== THE CASES AS THEY ARE NOW =====\nTC-001 [APPROVED]", p)
+        self.assertIn("focus on dates", p, "the person's notes stay notes")
+
+    def test_without_a_refinement_the_prompt_says_nothing_of_one(self):
+        self.run_design(self.agent(reply(case())))
+        self.assertNotIn("REFINEMENT", self.prompts[0])
+        self.assertNotIn("THE CASES AS THEY ARE NOW", self.prompts[0])
+        self.assertNotIn("{{refine}}", self.prompts[0])
+        self.assertNotIn("{{current}}", self.prompts[0])
+
     def test_the_prompt_carries_the_material_and_the_programs_endpoint_list(self):
         self.run_design(self.agent(reply(case())), requirements="AC-1 text", notes="focus on dates",
                         speed="fast")

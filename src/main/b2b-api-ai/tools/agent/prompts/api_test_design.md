@@ -34,7 +34,7 @@ RULES
   never an actual code, account number, e-mail address, host name,
   token or password, even when the material contains one.
 - At most {{max_cases}} test cases. Prefer fewer, sharper ones.
-
+{{refine}}
 REPLY FORMAT
 Reply with ONE JSON object and nothing else: no prose before or after
 it, no code fence. Do not write a plan first and do not use any tool:
@@ -75,3 +75,4 @@ this message. The JSON object is the whole of your answer. Shape:
 
 ===== NOTES FROM THE TESTER =====
 {{notes}}
+{{current}}

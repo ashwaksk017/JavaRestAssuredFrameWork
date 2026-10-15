@@ -758,14 +758,15 @@ def workflow_act(job: str, action: str) -> dict:
     raise ValueError("unknown workflow action")
 
 
-REFINE_CAP = 18000
+REFINE_CAP = 60000                  # design.SECTION_LIMITS["current"]
 
 
-def refine_notes(job: str, request: str) -> str:
-    """The notes of a design asked to REFINE the cases: the person's request,
-    and the cases as they are now -- with their corrections and decisions --
-    so that Cursor revises the list instead of starting over. The design's
-    usual matching then keeps each unchanged case's id and decision."""
+def refine_listing(job: str, request: str) -> str:
+    """The cases as they are now -- with the person's corrections and
+    decisions -- for a design asked to REFINE them (`request` is checked
+    here; the design puts it among its instructions). Cursor revises this
+    list instead of starting over; the design's usual matching then keeps
+    each unchanged case's id and decision."""
     request = str(request or "").strip()
     if not request:
         raise ValueError("write how the cases should be refined")
@@ -789,13 +790,9 @@ def refine_notes(job: str, request: str) -> str:
                                                  if str(s.get(k) or "").strip()))
     listing = "\n".join(lines)
     if len(listing) > REFINE_CAP:
-        listing = listing[:REFINE_CAP] + "\n[... the rest of the cases are as before ...]"
-    return ("THE PERSON REVIEWING THE CASES ASKS FOR A REFINEMENT:\n" + request + "\n\n"
-            "Return the WHOLE revised list of test cases, in the usual JSON. Keep every case the "
-            "request does not touch exactly as it is below -- same title and steps -- so the "
-            "review decisions stay with it. Leave out a case marked REJECTED unless the request "
-            "brings it back.\n\nTHE CASES AS THEY ARE NOW (with the person's corrections):\n"
-            + listing)
+        raise ValueError(f"the cases are {len(listing):,} characters, more than a refinement can "
+                         f"send ({REFINE_CAP:,}): reject the ones not wanted first, or design again")
+    return listing
 
 
 def workflow_gate(job: str, runnable: str, options: dict) -> str:
