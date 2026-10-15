@@ -701,6 +701,17 @@ def main() -> int:
                   rc == 0 and got.get("ok") is True and got.get("changed") is False, str(got)[:300])
             check("the story box offers the check",
                   'id="story-check"' in mocked.dom("new"))
+            html = mocked.dom("new")
+            check("the story is given by link or pasted, one box at a time, link first",
+                  'name="story-from" value="link" checked' in html
+                  and 'id="story-from-paste" hidden' in html and 'id="story-from-link" hidden' not in html)
+            check("the Confluence pages likewise: links first, the paste box hidden",
+                  'name="pages-from" value="link" checked' in html and 'id="pages-from-paste" hidden' in html)
+            check("the specification is uploaded, pasted or fetched, one at a time, upload first",
+                  'name="spec-from" value="upload" checked' in html and 'id="spec-from-paste" hidden' in html
+                  and 'id="spec-from-confluence" hidden' in html and 'id="spec-from-upload" hidden' not in html)
+            check("the Jira token is not a button of its own on this tab (Read it checks it)",
+                  'id="run-jira-verify"' not in html)
             code, rc = press("intake", None, route="/api/intake", extra={"job": "ABC-201", "again": True})
             told = json.loads(mocked.call("/api/artifact?job=ABC-201&name=intake.json")[1].get("text") or "{}")
             check("mock mode: a job is read again with the links it was given, no box needed",

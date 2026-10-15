@@ -264,3 +264,8 @@ button.waiting { opacity: .6; cursor: progress; }
   padding: .5rem .8rem; border: 1px solid var(--line); border-radius: 7px; font-size: .85rem; }
 .repo code { background: rgba(255, 255, 255, .06); padding: 0 .3rem; border-radius: 3px; }
 .repo .dirty { color: var(--warn); }
+
+/* A choice of where an input comes from: one box shows at a time. */
+fieldset.choice { border: 0; padding: 0; margin: 1rem 0 .3rem; display: flex; flex-wrap: wrap;
+                  gap: .4rem 1.4rem; align-items: center; }
+fieldset.choice legend { float: left; padding: 0; margin-right: .6rem; font-weight: 600; }

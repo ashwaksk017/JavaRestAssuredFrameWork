@@ -396,6 +396,19 @@ def _around(issue: dict, how: str, budget: int) -> dict:
             "text": text[:cap], "cut": max(0, len(text) - cap)}
 
 
+def token_verdict(conn: dict, transport=None) -> str:
+    """What Jira says of the configured token, one line; '' when it could
+    not be asked. Only the real transport is used: a reader's stand-in
+    answers for issues, not for /myself."""
+    if transport is not None:
+        return ""
+    try:
+        accepted, said = jira_search.verify(conn)
+    except Exception as e:                               # noqa: BLE001
+        return f"it could not be asked ({type(e).__name__})"
+    return _one_line(said if accepted else f"not accepted: {said}", 300)
+
+
 def gather_jira(link: str, sources: str, slot: str, connect=None, transport=None,
                 attachments=None) -> dict:
     """Read ONE story from the configured Jira into sources/<slot>/.
@@ -467,6 +480,17 @@ def gather_jira(link: str, sources: str, slot: str, connect=None, transport=None
     if not chain or chain[0].get("_error"):
         why = chain[0].get("_error") if chain else "nothing came back"
         out["reason"] = _one_line(conf_fetch.redact(f"{key} could not be read: {why}"), 400)
+        # An expired or wrong token comes back from Jira as "no such
+        # story", which sends a person after the wrong mistake. When the
+        # story cannot be read, the token is asked about, and what Jira
+        # says of it goes first. (The page had a button for this.)
+        if not mocked:
+            diag.step("The story could not be read; checking the Jira token")
+            out["token"] = token_verdict(conn, transport)
+            if out["token"] and not out["token"].startswith("the token is accepted"):
+                out["reason"] = _one_line(conf_fetch.redact(
+                    f"the Jira token was not accepted ({out['token']}): put a current one in "
+                    f"program_configuration.json (jira_config) and read again. ({out['reason']})"), 500)
         return out
     read = [i for i in chain if not i.get("_error")]
     outdir = os.path.join(sources, slot)

@@ -483,6 +483,24 @@ class Story(Base):
         r = self.read()
         self.assertTrue(r["story"]["revision"].startswith("2026-10-01T10:00:00"))
 
+    def test_a_story_that_cannot_be_read_asks_about_the_token_and_says_it_first(self):
+        calls = []
+        self.addCleanup(setattr, intake.jira_search, "verify", intake.jira_search.verify)
+        intake.jira_search.verify = lambda conn, transport=None: (calls.append(1), (False, "401 Unauthorized"))[1]
+        self.addCleanup(setattr, intake.jira_fetch, "fetch_chain", intake.jira_fetch.fetch_chain)
+        intake.jira_fetch.fetch_chain = lambda *a, **k: [{"_error": "404 Issue Does Not Exist"}]
+        got = intake.gather_jira("ABC-1", tempfile.mkdtemp(), "01-jira", connect=None, transport=None)
+        self.assertFalse(got.get("ok"))
+        self.assertTrue(got["reason"].startswith("the Jira token was not accepted (not accepted: 401 Unauthorized)"),
+                        got["reason"])
+        self.assertIn("404 Issue Does Not Exist", got["reason"])
+        self.assertEqual(calls, [1])
+        # A story that is really not there, with a good token: said as before.
+        intake.jira_search.verify = lambda conn, transport=None: (True, "the token is accepted, as Tester")
+        got = intake.gather_jira("ABC-1", tempfile.mkdtemp(), "01-jira", connect=None, transport=None)
+        self.assertTrue(got["reason"].startswith("ABC-1 could not be read: 404"), got["reason"])
+        self.assertEqual(got["token"], "the token is accepted, as Tester")
+
     def test_a_bare_key_is_read_from_the_configured_jira(self):
         r = self.read(links=["abc-1"])
         self.assertEqual(r["story"]["key"], "ABC-1")

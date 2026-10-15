@@ -224,6 +224,16 @@ Writes `brief.md` and `plan.md` into the job directory.
 
 #### Giving it a Jira story
 
+The story is given **by link or key** (the default) or **pasted**, and
+the Confluence pages **by link** (the default) or **pasted** -- a pair
+of choices, each showing one box. Only the box that shows is read; the
+other keeps its text for when it is chosen again. When the story cannot
+be read, Read it asks Jira about the token, and an expired or wrong
+token is said first -- instead of coming back as a story that does not
+exist. The API
+specification of the design step is likewise **uploaded** (the
+default), **pasted** or **fetched from a Confluence page**.
+
 Put the story's address or key in **Jira story**. *Read it* then reads,
 from the Jira in your configuration:
 

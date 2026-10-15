@@ -318,23 +318,57 @@ function storiesNamed(text) {
 }
 const MAX_STORIES = 10;
 
+// Where an input comes from: a radio group shows one box and hides the
+// others. Only the shown box is read -- a hidden one keeps its text for
+// when it is chosen again, but is never sent.
+function chosen(name) {
+  const r = document.querySelector(`input[name="${name}"]:checked`);
+  return r ? r.value : "";
+}
+function showChosen(name) {
+  for (const r of document.querySelectorAll(`input[name="${name}"]`)) {
+    const box = $(`${name}-${r.value}`);
+    if (box) box.hidden = !r.checked;
+  }
+}
+for (const name of ["story-from", "pages-from", "spec-from"]) {
+  for (const r of document.querySelectorAll(`input[name="${name}"]`)) r.onchange = () => showChosen(name);
+  showChosen(name);
+}
+// What Read it is given: the story by link or pasted, the pages by link or
+// pasted -- whichever each choice shows.
+function storyInputs() {
+  const byLink = chosen("story-from") !== "paste";
+  const pagesByLink = chosen("pages-from") !== "paste";
+  return {
+    story: byLink ? $("story").value.trim() : "",
+    text: byLink ? "" : $("text").value,
+    links: pagesByLink ? $("links").value.split("\n").map((s) => s.trim()).filter(Boolean) : [],
+    pages: pagesByLink ? "" : $("pages").value,
+  };
+}
+
 $("run-intake").onclick = async () => {
   try {
     // The story goes first: it is the story of the job, and one a job.
-    const story = $("story").value.trim();
-    const links = $("links").value.split("\n").map((s) => s.trim()).filter(Boolean);
+    const given = storyInputs();
+    const story = given.story;
+    const links = given.links;
     const stories = storiesNamed(story);
-    if (!story && !links.length && !$("text").value.trim() && !$("pages").value.trim()) {
-      setState($("new-state"), "bad",
-               "give a Jira story, paste some text, or add a Confluence link");
+    if (!story && !links.length && !given.text.trim() && !given.pages.trim()) {
+      setState($("new-state"), "bad", chosen("story-from") === "paste"
+        ? "paste the story, or give a Confluence link"
+        : "give a Jira story's link or key, or a Confluence link");
       return;
     }
     if (stories.length > 1) { await readStories(stories, links); return; }
     $("stories").replaceChildren();
+    // The Jira token is checked by Read it itself, before the story is
+    // asked for: an expired token says so instead of "no such story".
     await post("/api/intake", {
       job: job(),
-      text: $("text").value,
-      pages: $("pages").value,
+      text: given.text,
+      pages: given.pages,
       links: (story ? [story] : []).concat(links),
     });
     follow("intake", $("new-log"), $("new-state"),
@@ -351,9 +385,9 @@ async function readStories(stories, links) {
     setState($("new-state"), "bad", `${stories.length} stories; up to ${MAX_STORIES} at a time`);
     return;
   }
-  if ($("text").value.trim() || $("pages").value.trim()) {
-    setState($("new-state"), "warn", "several stories: the pasted text and page text were not " +
-      "used (they belong to one story); read a story on its own to use them");
+  if (storyInputs().pages.trim()) {
+    setState($("new-state"), "warn", "several stories: the pasted page text was not " +
+      "used (it belongs to one story); read a story on its own to use it");
   } else {
     setState($("new-state"), "run", `reading ${stories.length} stories, one job each…`);
   }
@@ -486,13 +520,6 @@ $("run-locate").onclick = async () => {
         } catch { /* leave the generic state */ }
       }
     });
-  } catch (e) { setState($("new-state"), "bad", e.message); }
-};
-
-$("run-jira-verify").onclick = async () => {
-  try {
-    await post("/api/start", { job: job(), runnable: "jira-verify", options: {} });
-    follow("jira-verify", $("new-log"), $("new-state"));
   } catch (e) { setState($("new-state"), "bad", e.message); }
 };
 
@@ -985,7 +1012,9 @@ $("run-design").onclick = async () => {
       mode: $("design-mode").value,
       fresh: $("design-fresh").checked,
       whole_spec: $("design-whole").checked,
-      swagger: $("design-swagger").value,
+      // Only a pasted specification is sent; an uploaded or fetched one is
+      // already kept with the job.
+      swagger: chosen("spec-from") === "paste" ? $("design-swagger").value : "",
       requirements: $("design-requirements").value,
       notes: $("design-notes").value,
     });

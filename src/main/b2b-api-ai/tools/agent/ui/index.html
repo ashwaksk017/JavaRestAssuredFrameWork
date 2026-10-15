@@ -50,6 +50,12 @@
     it writes nothing outside <code>target/</code>.
   </p>
 
+  <fieldset class="choice" id="story-from">
+    <legend>Jira story</legend>
+    <label class="inline"><input type="radio" name="story-from" value="link" checked> A link or a key</label>
+    <label class="inline"><input type="radio" name="story-from" value="paste"> Paste the story</label>
+  </fieldset>
+  <div id="story-from-link">
   <label for="story">Jira story <span class="hint">a link to it, or its key — the story, its comments, its parent, its attachments and the Confluence pages it points at are read for you. Several keys (one a line, or separated by commas) make one job per story, named by its key</span></label>
   <textarea id="story" rows="2" spellcheck="false" autocomplete="off"
     placeholder="https://jira.example.com/browse/ABC-123   or   ABC-123   — or several: ABC-123, ABC-124"></textarea>
@@ -59,8 +65,10 @@
     <span id="story-check-state" class="state"></span>
   </div>
   <div id="story-check-result" class="result"></div>
+  </div>
 
-  <label for="text">Story text / payloads <span class="hint">optional when a Jira story is given — paste here what Jira does not hold</span></label>
+  <div id="story-from-paste" hidden>
+  <label for="text">Story text / payloads <span class="hint">the story, a curl command, or a VERB /path line -- read as the job's story</span></label>
   <textarea id="text" rows="12" spellcheck="false"
     placeholder='Paste the story, a curl command, or a VERB /path line.
 
@@ -69,19 +77,27 @@ curl -X POST "https://host/props/ABC/groups/roomrates" \
   -d &apos;{"arrivalDate":"2026-11-29"}&apos;
 
 Expect 201.'></textarea>
+  </div>
 
-  <label for="links">Confluence pages <span class="hint">one link per line</span></label>
+  <fieldset class="choice" id="pages-from">
+    <legend>Confluence pages</legend>
+    <label class="inline"><input type="radio" name="pages-from" value="link" checked> Links</label>
+    <label class="inline"><input type="radio" name="pages-from" value="paste"> Paste the page</label>
+  </fieldset>
+  <div id="pages-from-link">
+  <label for="links">Confluence links <span class="hint">one link per line; links inside the story are read without being given here</span></label>
   <textarea id="links" rows="3" spellcheck="false"
     placeholder="https://wiki.example.com/display/ABC/Group+Rate+Plan+API"></textarea>
-
-  <label for="pages">Page text <span class="hint">when a Confluence page cannot be read, open it and paste what it says here (tables included) — it is read like a fetched page</span></label>
+  </div>
+  <div id="pages-from-paste" hidden>
+  <label for="pages">Page text <span class="hint">open the page and paste what it says (tables included) -- it is read like a fetched page</span></label>
   <textarea id="pages" rows="4" spellcheck="false"
-    placeholder="Paste the page here only if the link above was refused. Leave empty otherwise."></textarea>
+    placeholder="Paste the page here."></textarea>
+  </div>
 
   <div class="row">
     <button id="run-intake" class="go">Read it</button>
     <button id="run-locate">Then: is it already automated?</button>
-    <button id="run-jira-verify" title="Asks Jira who the configured token belongs to. An expired token otherwise shows up as a story that 'does not exist'.">Check the Jira token</button>
     <span id="new-state" class="state"></span>
   </div>
 
@@ -121,14 +137,21 @@ Expect 201.'></textarea>
       </select>
     </div>
   </div>
-  <label for="design-swagger">API specification <span class="hint">OpenAPI / Swagger, JSON or YAML. Paste it here, or leave this empty and use a file below.</span></label>
-  <textarea id="design-swagger" rows="6" spellcheck="false"></textarea>
+  <fieldset class="choice" id="spec-from">
+    <legend>API specification <span class="hint">OpenAPI / Swagger, JSON or YAML</span></legend>
+    <label class="inline"><input type="radio" name="spec-from" value="upload" checked> Upload a file</label>
+    <label class="inline"><input type="radio" name="spec-from" value="paste"> Paste it</label>
+    <label class="inline"><input type="radio" name="spec-from" value="confluence"> From a Confluence page</label>
+  </fieldset>
+  <div id="spec-from-paste" hidden>
+  <textarea id="design-swagger" rows="6" spellcheck="false" aria-label="API specification, pasted"></textarea>
+  </div>
   <div class="specsrc">
-    <div class="row">
-      <label for="design-swagger-file" class="inline">From a file</label>
+    <div class="row" id="spec-from-upload">
+      <label for="design-swagger-file" class="inline">File</label>
       <input type="file" id="design-swagger-file" accept=".json,.yaml,.yml">
     </div>
-    <div class="row">
+    <div class="row" id="spec-from-confluence" hidden>
       <label for="design-spec-link" class="inline">From a Confluence page</label>
       <input id="design-spec-link" type="text" spellcheck="false" class="grow"
              placeholder="the page's link — the specification is taken from its attachments">
