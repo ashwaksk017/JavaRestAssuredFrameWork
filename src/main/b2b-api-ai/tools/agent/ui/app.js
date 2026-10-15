@@ -3026,6 +3026,73 @@ showMockBanner();
 
 // Whatever tab the address names, open it -- after every tab above has
 // said what it does when opened.
+// ---- Change the workbench (the Logs tab) --------------------------------
+// Cursor changing the workbench itself, in a job of its own (workbench-...),
+// only while nothing else runs. Its conversation is workbench-cursor.log.
+let wbJob = "";
+let wbTimer = null;
+let wbOffset = 0;
+function wbWatch(j) {
+  clearInterval(wbTimer);
+  wbOffset = 0;
+  $("wb-cursor-log").textContent = "";
+  if (!j) return;
+  const read = async () => {
+    try {
+      const c = await api(`/api/log?job=${encodeURIComponent(j)}&runnable=workbench-cursor&offset=${wbOffset}`);
+      if (c.restarted) $("wb-cursor-log").textContent = "";
+      if (c.text) {
+        wbOffset = c.offset;
+        $("wb-cursor-log").textContent += c.text;
+        $("wb-cursor-log").scrollTop = $("wb-cursor-log").scrollHeight;
+      }
+    } catch { /* no log yet */ }
+  };
+  read();
+  wbTimer = setInterval(read, 1500);
+}
+async function wbRefresh() {
+  try {
+    const r = await api("/api/workbench-job");
+    wbJob = r.new ? (r.latest || "") : r.job;
+    $("wb-job").textContent = wbJob ? `job ${wbJob}` + (r.new ? "" : ` -- ${r.state.replace("-", " ")}`) : "";
+    wbWatch(wbJob);
+  } catch { /* the server is older than this page */ }
+}
+$("wb-run").onclick = async () => {
+  const text = $("wb-ask").value.trim();
+  if (!text) { setState($("wb-state"), "bad", "write what should be different in the workbench"); return; }
+  if (!confirm("Cursor will change the workbench itself (tools/agent) as you ask. Nothing else can " +
+               "run until it has finished, and the change waits for your review. Continue?")) return;
+  $("wb-run").disabled = true;
+  try {
+    const r = await post("/api/workbench-ask", { text });
+    wbJob = r.job;
+    $("wb-job").textContent = `job ${wbJob}`;
+    $("wb-ask").value = "";
+    wbWatch(wbJob);
+    follow(r.runnable, $("wb-log"), $("wb-state"), () => { $("wb-run").disabled = false; wbRefresh(); }, wbJob);
+  } catch (e) { $("wb-run").disabled = false; setState($("wb-state"), "bad", e.message); }
+};
+$("wb-stop").onclick = async () => {
+  if (!wbJob) { setState($("wb-state"), "", "nothing to stop"); return; }
+  try {
+    let stopped = false;
+    for (const r of ["agent-generate", "agent-followup"]) {
+      const out = await post("/api/stop", { job: wbJob, runnable: r });
+      if (out && out.stopped) { stopped = true; break; }
+    }
+    setState($("wb-state"), stopped ? "warn" : "", stopped ? "stopped -- Discard it on the Commit and push tab" : "nothing was running");
+  } catch (e) { setState($("wb-state"), "bad", e.message); }
+};
+$("wb-review").onclick = () => {
+  if (!wbJob) { setState($("wb-state"), "", "no change to the workbench yet"); return; }
+  $("job").value = wbJob;
+  $("job").dispatchEvent(new Event("change"));
+  goToStep("agent", "agent-push");
+};
+document.querySelector('.tabs button[data-tab="logs"]').addEventListener("click", wbRefresh);
+
 // The jobs kept on disk, newest first, offered in the job box.
 api("/api/jobs").then((list) => {
   const box = $("known-jobs");

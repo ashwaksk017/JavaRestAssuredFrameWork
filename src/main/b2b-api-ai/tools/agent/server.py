@@ -209,6 +209,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"pid": os.getpid(), "root": ROOT})
             if u.path == "/api/jobs":
                 return self._json(jobs.list_jobs())
+            if u.path == "/api/workbench-job":
+                return self._json(jobs.workbench_job())
             if u.path == "/api/suite-groups":
                 # Which suites each designed case's test runs in.
                 sm = jobs.casereview._suitemap()
@@ -338,6 +340,10 @@ class Handler(BaseHTTPRequestHandler):
                 # job's brief and plan, or added to the change already waiting.
                 return self._json(jobs.migration_ask(body.get("job", ""), body.get("scope", ""),
                                                      body.get("suite", ""), body.get("text", "")))
+            if u.path == "/api/workbench-ask":
+                # A change to the workbench itself: its own job, and only
+                # while nothing else runs (jobs.workbench_ask).
+                return self._json(jobs.workbench_ask(body.get("text")))
             if u.path == "/api/agent-followup":
                 # What the reviewer asks Cursor to change, kept with the job
                 # under a fixed name; the command reads it from there.

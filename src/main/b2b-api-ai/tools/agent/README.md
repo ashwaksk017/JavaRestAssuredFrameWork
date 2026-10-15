@@ -1705,6 +1705,32 @@ The tab is in the address: `http://127.0.0.1:8787/#jira`, `#failures`,
 `http://127.0.0.1:8787/?job=release-6#jira`. The Jira, Defects and Failures tabs show
 the last result of that job when they are opened.
 
+#### Change the workbench
+
+At the bottom of the Logs tab, Cursor can change the workbench itself: this
+page, its server and their tests (`tools/agent/`, the "workbench" scope of
+`policy.json`). It never changes `policy.json` or `mock.json` -- the rule
+book it is held to; an edit there is put back and the run rejected.
+
+- Its own job, `workbench-<date>-<time>`, one change at a time; a request
+  while a change waits is added to it.
+- It runs only while nothing else runs, and nothing else starts until it has
+  finished: every other command is started by, or reads, the files it
+  changes.
+- Before review the change must pass `python tools/agent/check_workbench.py`:
+  every Python file compiles, `ui/app.js` parses, the workbench's quick tests
+  and the page checks pass. (`test_loop.py`, seven minutes, is not run: run
+  it yourself before approving a change to `loop.py` or `cursor_call.py`.)
+- **Review it** opens the change on the Commit and push tab. After Approve &
+  push, Stop and Start the workbench to run the changed server; refresh the
+  page for the changed page.
+- The files on disk change as soon as Cursor writes them, so a broken page
+  can stop you from pressing Discard. From a terminal:
+
+```
+python tools/agent/loop.py discard --job workbench-<date>-<time>
+```
+
 ## Where the state lives
 
 Everything is under **`.workbench/`** at the module root (gitignored),

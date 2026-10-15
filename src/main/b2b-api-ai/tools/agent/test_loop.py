@@ -176,6 +176,34 @@ class InsideThePaths(Repo):
             rc, out = loop.git(loop.ROOT, "check-ignore", "-v", rel)
             self.assertNotEqual(rc, 0, f"{rel} is ignored by: {out.strip()}")
 
+    def test_a_workbench_change_is_held_to_tools_agent_and_never_its_policy(self):
+        write(self.root, "tools/agent/ui/app.js", "// the page\n")
+        write(self.root, "tools/agent/policy.json", "{}\n")
+        sh(self.root, "add", "-A")
+        sh(self.root, "commit", "-q", "-m", "the workbench")
+        self.policy["protected_files"] = list(self.policy.get("protected_files") or []) + ["tools/agent/policy.json"]
+        seen = {}
+
+        def agent(prompt):
+            seen["p"] = prompt
+            write(self.root, "tools/agent/ui/app.js", "// the page, changed\n")
+            return {"result": "ok"}
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(self.generate(agent, scope="workbench"), 0)
+        self.assertIn("WHERE THINGS ARE IN THE WORKBENCH", seen["p"])
+        self.assertIn("tools/agent/policy.json", seen["p"].split("NEVER touch:")[1][:600])
+        self.assertEqual(self.state()["files"]["modified"], ["tools/agent/ui/app.js"])
+        self.assertEqual(loop.cmd_discard(self.job, self.root, self.policy), 0)
+
+        def widens(prompt):
+            write(self.root, "tools/agent/policy.json", '{"scopes": {"workbench": {"write_roots": [""]}}}\n')
+            return {"result": "ok"}
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(self.generate(widens, scope="workbench"), 1)
+        with io.open(os.path.join(self.root, "tools", "agent", "policy.json"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "{}\n", "the rule book is put back")
+
     def test_an_ignored_folder_reported_by_its_children_is_not_new(self):
         before = {".workbench", "src/test/resources"}
         self.assertTrue(loop.was_ignored_whole("src/test/resources/csv", before))

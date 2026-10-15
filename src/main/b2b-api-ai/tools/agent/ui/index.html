@@ -679,6 +679,30 @@ Expect 201.'></textarea>
   <pre id="logs-job" class="log tall">—</pre>
   <h3>The web server <span class="hint">.workbench/server.log — failed requests, everything that starts or changes something, errors in this page</span></h3>
   <pre id="logs-server" class="log tall">—</pre>
+
+  <h2 class="part" id="workbench-part">Change the workbench <span class="hint">Cursor changes this page, its server and their tests (tools/agent)</span></h2>
+  <p class="lede">
+    Say what should be different in the workbench. Cursor changes <code>tools/agent/</code> only --
+    never <code>policy.json</code>, which says what each run may change. It runs only while
+    nothing else runs, and nothing else starts until it has finished. Before you review it, the
+    change must pass the workbench checks: the Python compiles, the page parses, the workbench's
+    tests and the page checks pass. It then waits on the Commit and push tab under its own job
+    (<b>Review it</b> opens it). After Approve &amp; push, <b>Stop and Start the workbench</b> to
+    run the changed server. If the page itself stops working, put everything back from a terminal:
+    <code>python tools/agent/loop.py discard --job &lt;the workbench job&gt;</code>.
+  </p>
+  <textarea id="wb-ask" rows="4" spellcheck="false"
+    placeholder="e.g. Show the number of approved cases beside the Automate the approved cases button."></textarea>
+  <div class="row">
+    <button id="wb-run" class="go">Ask Cursor</button>
+    <button id="wb-stop">Stop</button>
+    <button id="wb-review">Review it</button>
+    <span id="wb-state" class="state"></span>
+  </div>
+  <div class="split">
+    <div><h3>Command log <span class="hint" id="wb-job"></span></h3><pre id="wb-log" class="log"></pre></div>
+    <div><h3>Cursor log</h3><pre id="wb-cursor-log" class="log cursor"></pre></div>
+  </div>
 </section>
 
 <script src="/app.js"></script>

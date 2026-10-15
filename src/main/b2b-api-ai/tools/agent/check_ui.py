@@ -851,6 +851,12 @@ def main() -> int:
                   "runnable: \"migration-cursor\"" in io.open(os.path.join(HERE, "ui", "app.js"), encoding="utf-8").read())
             check("Ask Cursor is one box for a change, a new request or a question",
                   '>Ask Cursor</button>' in html and 'id="agent-ask-send" disabled' not in tab_new)
+            logs_tab = mocked.dom("logs")
+            check("the Logs tab can ask Cursor to change the workbench itself",
+                  'id="wb-run"' in logs_tab and 'id="wb-cursor-log"' in logs_tab and 'id="wb-review"' in logs_tab)
+            code, st = mocked.call("/api/workbench-job")
+            check("the workbench's own job is named, not taken from the job box",
+                  code == 200 and str(st.get("job", "")).startswith("workbench-"), str(st))
             check("each case's suites show on its row, from the rules",
                   ">Suites<" in html and 'class="groups"' in html and "from the rules" in html)
             bare = subprocess.run(

@@ -471,6 +471,60 @@ class AMigrationRequest(unittest.TestCase):
         self.assertEqual(self.started, [])
 
 
+class ChangingTheWorkbench(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="jobs_wb_")
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        for owner in (jobs, jobs.intake):
+            self.addCleanup(setattr, owner, "ROOT", owner.ROOT)
+            owner.ROOT = self.root
+        self.addCleanup(jobs._RUNNING.clear)
+        self.started = []
+        self.addCleanup(setattr, jobs, "start", jobs.start)
+        real_start = jobs.start
+        jobs.start = lambda job, runnable, options: (self.started.append((job, runnable, options)),
+                                                     {"started": True})[1]
+        self.real_start = real_start
+
+    def test_a_request_starts_a_change_in_a_workbench_job_of_its_own(self):
+        r = jobs.workbench_ask("Show the count beside the button.")
+        self.assertTrue(r["job"].startswith("workbench-"))
+        self.assertEqual(self.started, [(r["job"], "agent-generate", {"--job": r["job"], "--scope": "workbench"})])
+        with io.open(os.path.join(jobs.job_dir(r["job"]), "plan.md"), encoding="utf-8") as fh:
+            self.assertTrue(fh.read().startswith("# Plan: workbench change"))
+
+    def test_a_request_while_its_change_waits_is_added_to_it(self):
+        job = "workbench-20261015-120000"
+        os.makedirs(jobs.job_dir(job))
+        with io.open(os.path.join(jobs.job_dir(job), "review.json"), "w", encoding="utf-8") as fh:
+            fh.write('{"state": "pending-review"}')
+        r = jobs.workbench_ask("Also wrap the label.")
+        self.assertEqual((r["job"], r["runnable"]), (job, "agent-followup"))
+
+    def test_nothing_else_may_run_and_nothing_starts_while_it_runs(self):
+        class Alive:
+            def poll(self):
+                return None
+        jobs._RUNNING[("job-1", "convert")] = Alive()
+        with self.assertRaises(ValueError) as got:
+            jobs.workbench_ask("x")
+        self.assertIn("only while nothing else runs", str(got.exception))
+        jobs._RUNNING.clear()
+        jobs.start = self.real_start
+        jobs._RUNNING[("workbench-20261015-130000", "agent-generate")] = Alive()
+        with self.assertRaises(RuntimeError) as got:
+            jobs.start("job-2", "intake", {"--job": "job-2"})
+        self.assertIn("changing the workbench itself", str(got.exception))
+
+    def test_the_workbench_scope_only_in_a_workbench_job_and_only_it_there(self):
+        jobs.start = self.real_start
+        with self.assertRaises(ValueError):
+            jobs.start("job-3", "agent-generate", {"--job": "job-3", "--scope": "workbench"})
+        with self.assertRaises(ValueError):
+            jobs.start("workbench-20261015-140000", "agent-generate",
+                       {"--job": "workbench-20261015-140000", "--scope": "new-test"})
+
+
 class WorkbookSteps(unittest.TestCase):
     def test_only_a_datasource_that_reads_a_file_counts(self):
         d = tempfile.mkdtemp(prefix="jobs_wb_")

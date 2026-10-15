@@ -81,11 +81,26 @@
       "checks": [],
       "gate": true,
       "skill": ".cursor/skills/readyapi-restassured-migration/SKILL.md"
+    },
+    "workbench": {
+      "label": "The workbench itself: this page, its server and their tests (tools/agent)",
+      "write_roots": [
+        "tools/agent/"
+      ],
+      "pushable": true,
+      "compile": [],
+      "checks": [
+        [
+          "tools/agent/check_workbench.py"
+        ]
+      ]
     }
   },
   "protected_files": [
     "src/main/resources/program_configuration.json",
-    "tools/ra_converter/cursor_agent.json"
+    "tools/ra_converter/cursor_agent.json",
+    "tools/agent/policy.json",
+    "tools/agent/mock.json"
   ],
   "repair_attempts": "until-fixed",
   "repair_max_attempts": 8,

@@ -755,7 +755,8 @@ def job_dir(job: str) -> str:
 # Logs that are not a runnable's own output but may be read like one.
 EXTRA_LOGS = {"cursor",       # cursor.log: the conversation with Cursor
               "design-cursor",  # design-cursor.log: the design step's
-              "migration-cursor"}  # migration-cursor.log: the Migration tab's runs
+              "migration-cursor",  # migration-cursor.log: the Migration tab's runs
+              "workbench-cursor"}  # workbench-cursor.log: a change to the workbench itself
 
 
 def _known(runnable: str) -> str:
@@ -924,6 +925,79 @@ def migration_ask(job: str, scope: str, suite: str, text: str) -> dict:
     return dict(start(job, "agent-generate", options), runnable="agent-generate")
 
 
+# ---- a change to the workbench itself (the "workbench" scope) ----------------
+# Cursor changing tools/agent: the page, its server, their tests. Its own
+# jobs (workbench-<time>), one change at a time, and only while NOTHING else
+# runs -- nor does anything start while it runs: every other command reads
+# or is started by the very files it changes.
+WORKBENCH_PREFIX = "workbench-"
+_WAITING = ("pending-review", "verify-failed", "generating")
+
+
+def is_workbench_job(job) -> bool:
+    return str(job or "").startswith(WORKBENCH_PREFIX)
+
+
+def running_now() -> list:
+    """[(job, runnable)] of what this server started and is still running."""
+    with _LOCK:
+        return [(j, r) for (j, r), p in _RUNNING.items() if p.poll() is None]
+
+
+def workbench_job() -> dict:
+    """{job, state, latest}: the workbench job a change is waiting in (or
+    running in), else a new id; `latest` is the newest workbench job there
+    is, for its logs."""
+    base = os.path.join(ROOT, ".workbench")
+    try:
+        names = sorted((d for d in os.listdir(base)
+                        if is_workbench_job(d) and os.path.isdir(os.path.join(base, d))), reverse=True)
+    except OSError:
+        names = []
+    for name in names:
+        state = str(_read_json(os.path.join(base, name, "review.json")).get("state") or "none")
+        if state in _WAITING:
+            return {"job": name, "state": state, "latest": names[0]}
+    new = WORKBENCH_PREFIX + datetime.now().strftime("%Y%m%d-%H%M%S")
+    return {"job": new, "state": "none", "new": True, "latest": names[0] if names else ""}
+
+
+def workbench_ask(text: str) -> dict:
+    """What a person asks Cursor to change in the workbench. Refused while
+    anything else runs. A change waiting for review is added to; else the
+    request starts one in a new workbench job."""
+    text = str(text or "").strip()
+    if not text:
+        raise ValueError("write what should be different in the workbench")
+    if len(text) > 20000:
+        raise ValueError("that is more than 20,000 characters; keep the request short")
+    busy_now = running_now()
+    if busy_now:
+        j, r = busy_now[0]
+        raise ValueError(f"{r} is running (job {j}): the workbench is changed only while nothing "
+                         f"else runs. Wait for it, or Stop it.")
+    cur = workbench_job()
+    job = cur["job"]
+    out = job_dir(job)
+    if cur["state"] == "generating":
+        raise ValueError(f"a change to the workbench did not finish (job {job}): Discard it on the "
+                         f"Commit and push tab first")
+    os.makedirs(out, exist_ok=True)
+    if cur["state"] in ("pending-review", "verify-failed"):
+        with io.open(os.path.join(out, "agent-followup.txt"), "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return dict(start(job, "agent-followup", {"--job": job}), runnable="agent-followup", job=job)
+    with io.open(os.path.join(out, "brief.md"), "w", encoding="utf-8") as fh:
+        fh.write(f"# Workbench change\n\n- job: {job}\n- change: the workbench itself (tools/agent)"
+                 f"\n\n## What is asked\n\n{text}\n")
+    with io.open(os.path.join(out, "plan.md"), "w", encoding="utf-8") as fh:
+        fh.write(f"# Plan: workbench change\n\nCHANGE -- the workbench (tools/agent), as the brief "
+                 f"asks:\n\n{text}\n\nKeep everything that is not asked for as it is; add or extend "
+                 f"a test for the change.\n")
+    return dict(start(job, "agent-generate", {"--job": job, "--scope": "workbench"}),
+                runnable="agent-generate", job=job)
+
+
 def converted_suites() -> list:
     """The suites converted on this machine (folders under support/)."""
     base = os.path.join(ROOT, "src", "main", "java", "com", "hi", "api", "support")
@@ -1009,7 +1083,7 @@ def dismiss_review(job: str) -> dict:
         full = os.path.join(out, name)
         if not os.path.isfile(full):
             continue
-        agent_file = (name in ("cursor.log", "migration-cursor.log")
+        agent_file = (name in ("cursor.log", "migration-cursor.log", "workbench-cursor.log")
                       or any(name in (f"{r}.log", f"{r}.status.json") for r in AGENT_RUNNABLES)
                       or name.startswith(("agent-prompt-", "agent-answer-"))
                       or name in ("proposed.diff", "agent-followup.txt"))
@@ -1074,6 +1148,10 @@ def start(job: str, runnable: str, options: dict) -> dict:
             raise ValueError("--confirm must be the id of the job being approved")
     argv = build_argv(runnable, options)      # validates before any mkdir
     out = job_dir(job)                        # validates the job id
+    wb = is_workbench_job(job)
+    if runnable == "agent-generate" and ((options.get("--scope") == "workbench") != wb):
+        raise ValueError("a change to the workbench is made from the Logs tab (Change the "
+                         "workbench), in a workbench job of its own -- and only there")
     if runnable == "agent-generate" and options.get("--scope") in MIGRATION_SCOPES:
         why = migration_refusal(job, options["--scope"], str(options.get("--suite") or ""))
         if why:
@@ -1097,6 +1175,16 @@ def start(job: str, runnable: str, options: dict) -> dict:
                         f"rewrites or checks the same files this would, so "
                         f"only one of convert / agent run / approve / "
                         f"discard / re-apply runs at a time. Wait for it.")
+        # The workbench is changed alone: nothing else running when its
+        # change starts, nothing starting while it runs.
+        alive = [(j, r) for (j, r), p in _RUNNING.items() if p.poll() is None]
+        if wb and runnable in AGENT_RUNNABLES and alive:
+            raise RuntimeError(f"{alive[0][1]} is running for job {alive[0][0]!r}: the "
+                               f"workbench is changed only while nothing else runs. Wait for it.")
+        if not wb and any(is_workbench_job(j) for j, _r in alive):
+            raise RuntimeError("Cursor is changing the workbench itself: nothing else starts "
+                               "until that run has finished. Wait for it, or Stop it on the "
+                               "Logs tab.")
 
     status = {"state": "running", "runnable": runnable, "job": job,
               "argv": argv[2:], "started": _now()}

@@ -164,6 +164,13 @@ DEFAULT_POLICY = {
     # Tracked paths that sit inside a generated root.
     "generated_exclude": ["src/test/resources/csv/manual/"],
     "scopes": {
+        "workbench": {
+            "label": "The workbench itself (tools/agent)",
+            "write_roots": ["tools/agent/"],
+            "pushable": True,
+            "compile": [],
+            "checks": [["tools/agent/check_workbench.py"]],
+        },
         "new-test": {
             "label": "A new hand-written test",
             "write_roots": ["src/test/java/com/hi/api/tests/jira/",
@@ -341,9 +348,31 @@ class RepoLock:
 def cursor_log_name(scope_name) -> str:
     """The file a run's conversation with Cursor goes to: cursor.log for new
     tests (the Automate Test Case tab), migration-cursor.log for a converted
-    suite or the converter (the Migration tab) -- so neither tab shows the
-    other's conversation, even in one job."""
+    suite or the converter (the Migration tab), workbench-cursor.log for a
+    change to the workbench (the Logs tab) -- so no tab shows another's."""
+    if scope_name == "workbench":
+        return "workbench-cursor.log"
     return "migration-cursor.log" if scope_name in ("converted", "converter") else "cursor.log"
+
+
+WORKBENCH_MAP = """WHERE THINGS ARE IN THE WORKBENCH (tools/agent):
+
+  ui/index.html, ui/app.js, ui/app.css   the page: one section a tab (Automate Test Case,
+                                         Migration from ReadyAPI, Commit and push, ...)
+  server.py                              the HTTP server: every /api/... route
+  jobs.py                                what a button may start (RUNNABLES), job folders,
+                                         start/stop, status and logs
+  loop.py                                the Cursor runs: prompt, write roots, verify, review,
+                                         approve, discard
+  cursor_call.py                         one call to Cursor through cursor-sdk
+  design.py, casereview.py, suitemap.py  designing and reviewing test cases
+  intake.py, xraytests.py, xrayimport.py reading a story; Xray tests
+  manualtests.py, defects.py, codereview.py, publish.py, fixbrief.py, ...  the other tabs
+  test_*.py                              unit tests (python tools/agent/test_<name>.py)
+  check_ui.py                            the page checks: a headless browser against the server
+  check_workbench.py                     what this run is verified with
+  README.md                              what a person reads about each tab
+"""
 
 
 class CursorLog:
@@ -984,6 +1013,15 @@ def _read(path: str, cap: int = 60000) -> str:
 
 
 _SCOPE_BRIEFING = {
+    "workbench": (
+        "You are changing the test workbench itself: the web page (tools/agent/ui: "
+        "index.html, app.js, app.css -- plain JavaScript, no framework, no build step) "
+        "and its Python server and commands (tools/agent/*.py, standard library only). "
+        "Text from Jira, Confluence, Cursor or a test run reaches the page only as "
+        "TEXT (el(..., {text}) / textContent), never as HTML. Keep the page's look "
+        "and wording. Add or extend a test for what you change: test_*.py for Python, "
+        "check_ui.py for the page. The person restarts the workbench to use the "
+        "change."),
     "new-test": (
         "You are writing an API test in this repository's own framework "
         "(Java 17, REST Assured, TestNG). Read CreateTestCase.md for how a "
@@ -1166,6 +1204,8 @@ def pattern_example(root: str, policy: dict, scope: dict) -> tuple:
     policy may name the files (`pattern_example`: a list of paths); else
     the smallest test class is used. Other scopes have their own listing
     (the suite briefing) or no pattern to copy (the converter)."""
+    if scope.get("name") == "workbench":
+        return "", []
     if scope.get("name") != "new-test":
         return "", []
     wanted = [str(p) for p in (policy.get("pattern_example") or []) if isinstance(p, str)]
@@ -1509,6 +1549,7 @@ def _dirs_in(root: str, rel: str) -> list:
 
 def project_map(root: str, policy: dict, scope: dict) -> str:
     """Where the project keeps its tests, suites, data sheets and steps.
+    For a change to the workbench, where the workbench keeps its parts.
 
     Cursor was told where it may WRITE and left to find everything else.
     This is read from the folders as they are now -- with how many of each
@@ -1516,6 +1557,8 @@ def project_map(root: str, policy: dict, scope: dict) -> str:
     the agent looks in the right place before it writes, and so that the
     Cursor log shows a person what it was told.
     """
+    if scope.get("name") == "workbench":
+        return WORKBENCH_MAP
     tests = "src/test/java/com/hi/api/tests/"
     csv_root = "src/test/resources/csv/"
     suites = _dirs_in(root, tests + "imported")
@@ -1665,6 +1708,12 @@ def not_yours(scope: dict) -> str:
     instructions are named."""
     if scope.get("name") == "converter":
         extra = [".cursor/**", "AGENTS.md", "CURSOR.md"]
+    elif scope.get("name") == "workbench":
+        # Its own folder only; never the rule book it is held to.
+        return "".join(f"\n  - {p}" for p in (
+            "tools/ (anything outside tools/agent/)", "tools/agent/policy.json",
+            "tools/agent/mock.json", "src/**", ".cursor/**", "AGENTS.md", "CURSOR.md",
+            "README.md", "pom.xml"))
     else:
         extra = ["tools/**", ".cursor/**", "AGENTS.md", "CURSOR.md", "README.md", "pom.xml"]
     extra = [p for p in extra if not in_roots(p.rstrip("*"), scope.get("write_roots") or [])]
@@ -1824,10 +1873,14 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
         gen + ("\n  (other than the paths listed above)" if scope["name"] == "converted" else "")
         + not_yours(scope),
         "",
-        "AGENTS.md, CURSOR.md, the READMEs and .cursor/rules are written for people and "
-        "agents working ON the converter and this tool; they do not apply to this job. Do "
-        "not follow their instructions to run tools/verify_all.py or any script under "
-        "tools/, and do not edit their files: a change there fails the whole job.",
+        ("AGENTS.md, CURSOR.md and .cursor/rules are about the converter; they do not apply "
+         "to this job. Do not run the server, a browser, the tests or any script: this tool "
+         "runs tools/agent/check_workbench.py the moment you finish and hands you every "
+         "failure." if scope["name"] == "workbench" else
+         "AGENTS.md, CURSOR.md, the READMEs and .cursor/rules are written for people and "
+         "agents working ON the converter and this tool; they do not apply to this job. Do "
+         "not follow their instructions to run tools/verify_all.py or any script under "
+         "tools/, and do not edit their files: a change there fails the whole job."),
         "",
         "Do not delete any file. Do not run git commit, git push, git "
         "checkout or git reset -- this tool commits, after a person has "
@@ -3169,6 +3222,12 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             clog.write("PENDING REVIEW")
             say("PENDING REVIEW -- read proposed.diff. Nothing is committed "
                 "and nothing has left this machine.")
+            if scope["name"] == "workbench":
+                job = os.path.basename(job_dir.rstrip("/\\"))
+                say("NOTE the workbench's files on disk are already the new ones: a page refresh "
+                    "shows the new page, and the server runs the new Python after a restart. If "
+                    "the page no longer works, put everything back from a terminal:\n"
+                    f"       python tools/agent/loop.py discard --job {job}")
             return 0
         failed = result["steps"][-1]
         say(f"FAIL verify step `{failed['name']}` exited {failed['rc']}")
@@ -3629,6 +3688,9 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
         f"was pushed to {base}. Your checkout was not switched, so the files "
         f"are still in your working tree as uncommitted changes -- they come "
         f"back through the pull request.")
+    if review.get("scope") == "workbench":
+        say("RESTART the workbench (Stop, then Start) to run the changed server; refresh "
+            "the page for the changed page.")
     return 0
 
 
