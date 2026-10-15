@@ -1968,6 +1968,8 @@ async function refreshReview() {
     detail = "Rejected — the Cursor call did not finish in time. No rule was broken; the files it had written were put back.";
   else if (state === "rejected" && review.why === "call")
     detail = "Rejected — the Cursor call failed.";
+  else if (state === "rejected" && review.why === "answered")
+    detail = "Cursor answered and changed nothing — its answer is in the command log under Ask Cursor.";
   if (review.mock) detail = "MOCK RUN — written by the stand-in for Cursor; it cannot be " +
                             "approved, only discarded. " + detail;
   if (review.reason) detail += " " + review.reason;
@@ -2015,8 +2017,17 @@ async function refreshReview() {
   if (f.created || f.modified) await showArtifact("proposed.diff", $("agent-diff"));
   else $("agent-diff").textContent = "—";
   $("agent-review").disabled = !(state === "pending-review" || state === "verify-failed");
-  $("agent-ask-send").disabled = !(state === "pending-review" || state === "verify-failed") || Boolean(review.mock);
-  $("agent-ask-send").title = review.mock ? "The change waiting here was made by the stand-in; there is nothing real to ask Cursor to change." : "";
+  // Ask Cursor works in any state but these: it changes a change waiting,
+  // starts one when none is, and answers a question. Where it cannot, the
+  // button says why instead of only being grey.
+  const askBlocked = review.mock && ["pending-review", "verify-failed"].includes(state)
+    ? "The change waiting here was made by the stand-in (mock Cursor): Discard it first."
+    : state === "generating" ? "A run of this job did not finish: Discard it on the Commit and push tab first."
+    : ["pushed", "approved-local"].includes(state) ? "This job's change was already approved: ask in a new job."
+    : state === "push-failed" ? "The push failed: push again on the Commit and push tab first." : "";
+  $("agent-ask-send").disabled = Boolean(askBlocked);
+  $("agent-ask-send").title = askBlocked;
+  $("agent-ask-send").dataset.waiting = ["pending-review", "verify-failed"].includes(state) ? "1" : "";
   $("agent-review").dataset.job = shown;
   await showCodeReview(shown, review);
 }
@@ -2263,9 +2274,13 @@ let agentRunning = "agent-generate";     // what Stop stops
 
 $("agent-ask-send").onclick = async () => {
   const text = $("agent-ask").value.trim();
-  if (!text) { setState($("auto-state"), "bad", "write what Cursor should change"); return; }
-  if (!confirm(`Cursor will change what it wrote for job "${job()}" as you ask, within the same paths. ` +
-               "Nothing is committed. Continue?")) return;
+  if (!text) { setState($("auto-state"), "bad", "write what Cursor should change, or ask it something"); return; }
+  const adds = $("agent-ask-send").dataset.waiting === "1";
+  if (!confirm(adds
+      ? `Cursor will change what it wrote for job "${job()}" as you ask, within the same paths -- or, ` +
+        "for a question, answer it. Nothing is committed. Continue?"
+      : `No change is waiting for job "${job()}": Cursor starts one as you ask, in tests/jira/ and ` +
+        "csv/manual/ -- or, for a question, answers it. Nothing is committed. Continue?")) return;
   agentRunning = "agent-followup";
   try {
     await post("/api/agent-followup", { job: job(), text });

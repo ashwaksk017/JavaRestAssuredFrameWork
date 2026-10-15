@@ -491,8 +491,12 @@ class TheReviewDecidesWhatIsWritten(Repo):
             self.assertEqual(loop.cmd_automate(self.job, self.root, self.policy, ["TC-001"],
                                                agent=self.agent_that_writes({}), verifier=OK), 0)
             write(self.root, ".workbench/job1/agent-followup.txt", "Rename the test method.")
+            def renames(prompt):
+                seen["p"] = prompt
+                write(self.root, JIRA + "NewTest.java", "class NewTest { int renamed; }\n")
+                return {"result": "ok"}
             self.assertEqual(loop.cmd_followup(self.job, self.root, self.policy,
-                                               agent=self.agent_that_writes(seen), verifier=OK), 0)
+                                               agent=renames, verifier=OK), 0)
         cases = seen["p"].split("===== TEST CASES PROPOSED FOR THIS JOB")[1].split("===== end of proposed")[0]
         self.assertIn("TC-001", cases)
         self.assertNotIn("TC-002", cases, "a case nobody asked for is not handed over")
@@ -534,6 +538,47 @@ class TheReviewDecidesWhatIsWritten(Repo):
         self.assertIn("THE STORY'S KEY is ABC-77", loop.story_key_block(self.job, {"name": "new-test"}))
         self.assertIn("jira.abc-77.<role>.<field>", loop.story_key_block(self.job, {"name": "new-test"}))
         self.assertEqual(loop.story_key_block(self.job, {"name": "converter"}), "")
+
+    def test_ask_with_no_change_waiting_starts_one(self):
+        os.remove(os.path.join(self.job, "plan.md"))
+        write(self.root, ".workbench/job1/agent-followup.txt", "Add a test that GET /x returns 200.")
+        seen = {}
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = loop.cmd_ask(self.job, self.root, self.policy, agent=self.agent_that_writes(seen), verifier=OK)
+        self.assertEqual(rc, 0, out.getvalue())
+        self.assertIn("the request starts one", out.getvalue())
+        self.assertIn("===== THE PERSON ASKS =====", seen["p"])
+        self.assertIn("Add a test that GET /x returns 200.", seen["p"])
+        self.assertIn("# Plan: as the person asks", seen["p"])
+        self.assertEqual(self.state()["state"], "pending-review")
+        self.assertEqual(loop._REQUEST["text"], "", "nothing left behind")
+
+    def test_a_question_is_answered_not_failed(self):
+        write(self.root, ".workbench/job1/agent-followup.txt", "What is the command to run the test?")
+
+        def answers(prompt):
+            return {"result": "Run: mvn -o test -Dtest=NewTest"}
+        out = io.StringIO()
+        with redirect_stdout(out):
+            loop.cmd_ask(self.job, self.root, self.policy, agent=answers, verifier=OK)
+        self.assertIn("Cursor changed no file. It answered:", out.getvalue())
+        self.assertIn("    Run: mvn -o test -Dtest=NewTest", out.getvalue())
+        self.assertNotIn("FAIL the agent changed no file", out.getvalue())
+        self.assertEqual(self.state()["why"], "answered")
+        # ...and on a change waiting, the change stays as it was.
+        self.design(DESIGN_CASE)
+        loop.casereview.update(self.job, "design", ["TC-001"], state="approved")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(loop.cmd_automate(self.job, self.root, self.policy, ["TC-001"],
+                                               agent=self.agent_that_writes({}), verifier=OK), 0)
+        write(self.root, ".workbench/job1/agent-followup.txt", "What does this test assert?")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            loop.cmd_ask(self.job, self.root, self.policy,
+                         agent=lambda p: {"result": "It asserts 201."}, verifier=OK)
+        self.assertIn("    It asserts 201.", out.getvalue())
+        self.assertEqual(self.state()["state"], "pending-review", "the change waiting stays")
 
     def test_without_a_specification_nothing_is_said_of_one(self):
         self.design(DESIGN_CASE)

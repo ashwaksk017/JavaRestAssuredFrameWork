@@ -227,11 +227,11 @@ Expect 201.'></textarea>
     <button id="agent-stop">Stop</button>
     <span id="auto-state" class="state"></span>
   </div>
-  <label for="agent-ask">Ask Cursor to change it <span class="hint">what should be different in the change above, in your words — Cursor works on the same files, the diff below becomes the whole change, and it waits for your review again</span></label>
+  <label for="agent-ask">Ask Cursor <span class="hint">in your words: what should be different in the change waiting (Cursor works on the same files and it waits for your review again), something new when none is waiting, or a question -- answered in the command log, nothing changed</span></label>
   <textarea id="agent-ask" rows="3" spellcheck="false"
     placeholder="e.g. Use the member's email from the CSV instead of a fixed one, and assert the 403 body carries an error code."></textarea>
   <div class="row">
-    <button id="agent-ask-send" disabled>Ask Cursor to change it</button>
+    <button id="agent-ask-send">Ask Cursor</button>
   </div>
   <div class="split">
     <div><h3>Command log</h3><pre id="auto-log" class="log"></pre></div>
