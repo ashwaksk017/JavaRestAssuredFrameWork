@@ -728,8 +728,9 @@ def remove_new_ignored(root: str, entries, ignored_before) -> list:
     """
     removed = []
     before = [b.rstrip("/") for b in ignored_before]
+    long_root = _lp(root)
     for p in entries:
-        full = os.path.join(root, p)
+        full = _lp(os.path.join(root, p))
         if os.path.isfile(full):
             os.remove(full)
             removed.append(p)
@@ -747,7 +748,7 @@ def remove_new_ignored(root: str, entries, ignored_before) -> list:
             continue
         for dirpath, _dirs, files in os.walk(full):
             for name in files:
-                rel = os.path.relpath(os.path.join(dirpath, name), root).replace(os.sep, "/")
+                rel = os.path.relpath(os.path.join(dirpath, name), long_root).replace(os.sep, "/")
                 if rel in tracked or any(rel == b or rel.startswith(b + "/") for b in mine):
                     continue
                 try:
@@ -3176,12 +3177,18 @@ def undo_from_pre_state(root: str, job_dir: str, policy: dict) -> list:
 def _prune_backup(gen_backup: str, keep) -> None:
     """Keep only the copies of files the accepted run changed: they are
     what the diff, a discard and the stored patch need."""
-    keep = {k.replace("\\", "/") for k in keep}
-    for dirpath, _dirs, files in os.walk(gen_backup, topdown=False):
+    keep = {_bk(k.replace("\\", "/")) for k in keep}
+    # Long-path form (see _lp): seen live, this crashed on a 260+ character
+    # copy after the run had verified, leaving the job "generating".
+    base = _lp(gen_backup)
+    for dirpath, _dirs, files in os.walk(base, topdown=False):
         for name in files:
             p = os.path.join(dirpath, name)
-            if os.path.relpath(p, gen_backup).replace("\\", "/") not in keep:
-                os.remove(p)
+            if os.path.relpath(p, base).replace("\\", "/") not in keep:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
         try:
             os.rmdir(dirpath)
         except OSError:

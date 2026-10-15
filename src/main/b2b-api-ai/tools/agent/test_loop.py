@@ -161,6 +161,12 @@ class InsideThePaths(Repo):
         self.assertEqual(loop.restore_generated(self.root, [deep], dest), [f"restored {deep}"])
         with io.open(loop._lp(full), encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "class Deep {}\n")
+        # The copies of files the run did not change are dropped after it
+        # verifies -- a long one among them crashed it.
+        loop.backup(self.root, [deep, GEN + "amex/Hooks.java"], dest)
+        loop._prune_backup(dest, [GEN + "amex/Hooks.java"])
+        self.assertFalse(os.path.isfile(loop._lp(os.path.join(dest, *deep.split("/")))))
+        self.assertTrue(os.path.isfile(os.path.join(dest, *(GEN + "amex/Hooks.java").split("/"))))
 
     def test_the_real_project_does_not_ignore_the_job_suites(self):
         """Seen live: `Suites/` in .gitignore matched src/test/resources/suites/
