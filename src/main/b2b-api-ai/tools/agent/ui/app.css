@@ -326,3 +326,9 @@ details.more[open] > summary { margin-bottom: .4rem; }
 .review textarea.groups { width: 100%; min-width: 10rem; font-size: .85rem; line-height: 1.35; resize: vertical; }
 /* Review rows are tall (every step shows whole): more of them on screen. */
 .review .scroll { max-height: 75vh; }
+
+/* A button that reads as a link (the design's "Cursor log" pointer). */
+button.linkish { background: none; border: 0; padding: 0 0 0 .6rem; margin: 0; font: inherit;
+                 font-size: .8rem; color: var(--accent); cursor: pointer; text-transform: none; }
+button.linkish:hover, button.linkish:focus { text-decoration: underline; }
+#cursor-from { margin: .2rem 0 .4rem; }

@@ -1116,32 +1116,9 @@ function wireXray(what) {
 wireXray("design");
 wireXray("manual");
 
-let designCursorTimer = null;
-// cursor.log is appended to across runs. This pane shows THIS run: it
-// starts at the end the file has now, not at the beginning.
-async function followDesignCursorLog(j) {
-  let offset = 0;
-  const el = $("design-cursor-log");
-  el.textContent = "";
-  clearInterval(designCursorTimer);
-  try {
-    offset = (await api(
-      `/api/log?job=${encodeURIComponent(j)}&runnable=design-cursor&offset=0`)).offset || 0;
-  } catch { /* no cursor log yet: start at 0 */ }
-  const read = async () => {
-    try {
-      const chunk = await api(
-        `/api/log?job=${encodeURIComponent(j)}&runnable=design-cursor&offset=${offset}`);
-      if (chunk.text) {
-        offset = chunk.offset;
-        el.textContent += chunk.text;
-        el.scrollTop = el.scrollHeight;
-      }
-    } catch { /* no cursor log yet */ }
-  };
-  designCursorTimer = setInterval(read, 1500);
-  return () => { clearInterval(designCursorTimer); read(); };
-}
+// The design's conversation with Cursor is in design-cursor.log, shown in
+// the tab's one Cursor log (at the bottom, "The design").
+$("design-cursor-go").onclick = () => { setCursorSource("design"); goToStep("new", "cursor-log"); };
 
 $("run-design").onclick = async () => {
   const button = $("run-design");
@@ -1158,7 +1135,8 @@ $("run-design").onclick = async () => {
     const j = job();
     // Where the Cursor log ends NOW, read before the run starts, so the
     // pane shows this run and nothing is lost between start and first poll.
-    stopCursorLog = await followDesignCursorLog(j);
+    setCursorSource("design");
+    watchCursorLog();
     await post("/api/design", {
       job: j,
       service: $("design-service").value.trim(),
@@ -1219,6 +1197,7 @@ $("clear-design").onclick = async () => {
     $("design-log").textContent = "";
     showDesign(j, true);
     if (typeof showFlow === "function") showFlow();
+    pollCursorLog(false);              // the design's log went with it
   } catch (e) { setState($("design-state"), "bad", e.message); }
 };
 
@@ -2067,31 +2046,80 @@ async function showCodeReview(j, run) {
   box.replaceChildren(...kids);
 }
 
-// The cursor log is its own file (cursor.log), appended to across runs.
-// Read it by byte offset like any other log, on its own timer, so it
-// keeps moving while a long Cursor call is in flight.
-let cursorOffset = 0;
+// Cursor's conversations are files of the job, appended to across runs:
+// cursor.log for the code it writes (Automate, Ask Cursor, the Migration
+// tab), design-cursor.log for the design. Each is read by byte offset on
+// its own timer, so it keeps moving while a long call is in flight.
+//
+// The Automate Test Case tab has ONE Cursor log, showing either file
+// ("Show: The design / Writing the tests"); it turns to whichever a run
+// started from this page is writing, and on load to whichever ran last.
+// The Migration tab's pane always shows cursor.log.
 let cursorTimer = null;
-// The Cursor log shows in two places: under Automate the cases, and under
-// Ask Cursor on the Migration tab. Both panes get the same text.
-const cursorPanes = () => [$("cursor-log"), $("mig-cursor-log")].filter(Boolean);
-async function pollCursorLog(reset) {
-  if (reset) { cursorOffset = 0; for (const p of cursorPanes()) p.textContent = ""; }
+let cursorSource = "tests";
+const cursorStreams = {
+  tests: { runnable: "cursor", offset: 0 },
+  design: { runnable: "design-cursor", offset: 0 },
+};
+function panesFor(src) {
+  const out = [];
+  if (src === "tests" && $("mig-cursor-log")) out.push($("mig-cursor-log"));
+  if (src === cursorSource && $("cursor-log")) out.push($("cursor-log"));
+  return out;
+}
+async function pollStream(src, reset) {
+  const s = cursorStreams[src];
+  if (reset) { s.offset = 0; for (const p of panesFor(src)) p.textContent = ""; }
   try {
     const chunk = await api(
-      `/api/log?job=${encodeURIComponent(job())}&runnable=cursor&offset=${cursorOffset}`);
-    if (chunk.restarted) for (const p of cursorPanes()) p.textContent = "";
+      `/api/log?job=${encodeURIComponent(job())}&runnable=${s.runnable}&offset=${s.offset}`);
+    // Gone (Clear the design, Dismiss) or started again: the pane starts again.
+    const gone = !chunk.text && !chunk.offset && s.offset > 0;
+    if (chunk.restarted || gone) { s.offset = 0; for (const p of panesFor(src)) p.textContent = ""; }
     if (chunk.text) {
-      cursorOffset = chunk.offset;
-      for (const p of cursorPanes()) { p.textContent += chunk.text; p.scrollTop = p.scrollHeight; }
+      s.offset = chunk.offset;
+      for (const p of panesFor(src)) { p.textContent += chunk.text; p.scrollTop = p.scrollHeight; }
     }
-  } catch { /* no cursor log for this job yet */ }
+  } catch { /* no such log for this job yet */ }
 }
+async function pollCursorLog(reset) {
+  await pollStream("tests", reset);
+  await pollStream("design", reset);
+}
+function setCursorSource(src) {
+  if (!cursorStreams[src]) return;
+  const box = document.querySelector(`input[name="cursor-from"][value="${src}"]`);
+  if (box) box.checked = true;
+  if (src === cursorSource) return;
+  cursorSource = src;
+  // The pane shows the other file now: read it from its beginning. (The
+  // Migration pane keeps its place: only this stream starts again.)
+  $("cursor-log").textContent = "";
+  const s = cursorStreams[src];
+  s.offset = 0;
+  pollStream(src, false);
+}
+document.querySelectorAll('input[name="cursor-from"]').forEach((r) =>
+  r.addEventListener("change", () => { if (r.checked) setCursorSource(r.value); }));
 function watchCursorLog() {
   clearInterval(cursorTimer);
   pollCursorLog(true);
   cursorTimer = setInterval(() => pollCursorLog(false), 1500);
 }
+// On load, and for another job: the conversation of whatever ran last.
+async function pickCursorSource() {
+  const j = job();
+  if (!j) return;
+  const when = async (r) => {
+    try { return String((await api(`/api/status?job=${encodeURIComponent(j)}&runnable=${r}`)).started || ""); }
+    catch { return ""; }
+  };
+  const [d, ...others] = await Promise.all(["agent-design", "agent-automate", "agent-generate", "agent-followup"].map(when));
+  const lastTests = others.sort().pop() || "";
+  setCursorSource(d && d > lastTests ? "design" : "tests");
+}
+pickCursorSource();
+$("job").addEventListener("change", pickCursorSource);
 
 // ---- the repository: where the agent's branch goes ----------------------
 // Read from git each time the tab is opened; the page remembers nothing
@@ -2166,6 +2194,7 @@ $("agent-ask-send").onclick = async () => {
   try {
     await post("/api/agent-followup", { job: job(), text });
     $("agent-ask").value = "";
+    setCursorSource("tests");
     watchCursorLog();
     follow("agent-followup", $("auto-log"), $("auto-state"), () => {
       refreshReview();
@@ -2181,7 +2210,10 @@ function runAgent(runnable, options, logEl, stateEl) {
   stateEl = stateEl || $("agent-state");
   return post("/api/start", { job: job(), runnable, options })
     .then(() => {
-      if (["agent-generate", "agent-followup", "agent-automate"].includes(runnable)) watchCursorLog();
+      if (["agent-generate", "agent-followup", "agent-automate"].includes(runnable)) {
+        setCursorSource("tests");
+        watchCursorLog();
+      }
     })
     .then(() => follow(runnable, logEl, stateEl, () => {
       refreshReview();

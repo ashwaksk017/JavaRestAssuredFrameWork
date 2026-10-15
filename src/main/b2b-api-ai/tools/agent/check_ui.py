@@ -837,6 +837,11 @@ def main() -> int:
                   'id="agent-commit-stop"' in commit_tab)
             code, st = mocked.call("/api/stop", {"job": JOB, "runnable": "agent-review"})
             check("Stop with nothing running says so, and harms nothing", code == 200 and not st.get("stopped"), str(st))
+            tab_new = mocked.dom("new")
+            tab_new = tab_new[tab_new.find('id="tab-new"'):tab_new.find('id="tab-convert"')]
+            check("the Automate Test Case tab has ONE Cursor log, showing the design or the tests",
+                  tab_new.count('class="log cursor"') == 1 and 'name="cursor-from"' in tab_new
+                  and 'id="design-cursor-log"' not in tab_new and 'id="design-cursor-go"' in tab_new)
             check("each case's suites show on its row, from the rules",
                   ">Suites<" in html and 'class="groups"' in html and "from the rules" in html)
             bare = subprocess.run(

@@ -209,10 +209,9 @@ Expect 201.'></textarea>
   </div>
   <div id="xray-design-result" class="result"></div>
   <pre id="xray-design-log" class="log" hidden></pre>
-  <div class="split">
-    <div><h3>Command log</h3><pre id="design-log" class="log"></pre></div>
-    <div><h3>Cursor log</h3><pre id="design-cursor-log" class="log cursor"></pre></div>
-  </div>
+  <h3>Command log <button type="button" id="design-cursor-go" class="linkish"
+      title="the design's conversation with Cursor, in the Cursor log at the bottom of this tab">Cursor log ↓</button></h3>
+  <pre id="design-log" class="log"></pre>
 
   <h2 class="part" id="automate-part">Automate the cases <span class="hint">Cursor writes REST Assured tests for the approved cases</span></h2>
   <p class="lede">
@@ -234,6 +233,11 @@ Expect 201.'></textarea>
   <div class="split">
     <div><h3>Command log</h3><pre id="auto-log" class="log"></pre></div>
     <div><h3>Cursor log <span class="hint">what was asked, what it answered, what it changed</span></h3>
+      <fieldset class="choice" id="cursor-from">
+        <legend>Show</legend>
+        <label><input type="radio" name="cursor-from" value="design"> The design</label>
+        <label><input type="radio" name="cursor-from" value="tests" checked> Writing the tests</label>
+      </fieldset>
       <pre id="cursor-log" class="log cursor"></pre></div>
   </div>
 </section>
