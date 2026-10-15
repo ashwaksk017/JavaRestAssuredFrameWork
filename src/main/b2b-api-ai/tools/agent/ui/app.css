@@ -50,8 +50,9 @@ h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .07em;
   color: var(--dim); background: var(--bg); border: 1px solid var(--line);
   border-radius: 8px; transition: background .12s, border-color .12s, color .12s;
 }
-.tabs button .name { font-weight: 650; font-size: .95rem; white-space: nowrap;
-                     overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+/* A name that does not fit wraps to a second line, whole, rather than being cut. */
+.tabs button .name { font-weight: 650; font-size: .95rem; white-space: normal;
+                     text-align: center; line-height: 1.2; overflow-wrap: break-word; max-width: 100%; }
 .tabs button .what { font-size: .72rem; color: #6f768a; white-space: nowrap;
                      overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .tabs button:hover { color: var(--ink); border-color: #3a4157; background: #1e2230; }

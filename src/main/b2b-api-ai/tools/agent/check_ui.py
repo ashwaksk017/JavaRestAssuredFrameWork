@@ -747,8 +747,8 @@ def main() -> int:
 
             bar = html[html.find('class="tabs"'):html.find("</nav>")]
             check("the tabs are named for what is done on them, in order",
-                  0 < bar.find("Automate Test Case") < bar.find("Commit and push")
-                  < bar.find("Manual tests") < bar.find("Migration from ReadyAPI")
+                  0 < bar.find("Automate Test Case") < bar.find("Migration from ReadyAPI")
+                  < bar.find("Commit and push") < bar.find("Manual tests")
                   and "Agentic Test Creation<" not in bar and "Convert ReadyAPI<" not in bar)
             check("Cursor is run from where the cases are, and setup is not a button",
                   'id="auto-selected"' in html and 'id="agent-ask"' in html and 'id="cursor-log"' in html
