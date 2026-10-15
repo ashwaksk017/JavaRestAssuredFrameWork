@@ -802,6 +802,7 @@ function reviewTable(j, what, cases, entries, after, done, change, suites) {
                                 title: "Cursor writes this case's test, in the job's one change",
                                 on: { click: () => automateCases([c.id], j) } });
       go.disabled = !(state === "approved" && e.automate !== false);
+      if (!go.disabled) go.dataset.ready = "1";      // approved: then Finalize decides
       row.push(el("div", { class: "automate-cell" }, go,
         ran ? el("small", { class: `flag ${ran.written && ran.state === "pending-review" ? "" : "differs"}`, text: ran.said || ran.state }) : null));
     }
@@ -902,15 +903,31 @@ function stepEditor(given, save, st) {
 // "Automate the approved cases" can be pressed only when there is one, and
 // not while a design runs (it would hand Cursor a design about to change).
 let designRunning = false;
+// Automate waits for Finalize: the server refuses it, and the page says so
+// before anyone presses. Set by showFlow from /api/workflow.
+let wfFinalized = { ok: false, why: "finalize the cases first" };
+let lastAuto = { cases: [], entries: {} };
 function automateReady(cases, entries) {
+  lastAuto = { cases: cases || [], entries: entries || {} };
   const b = $("auto-selected");
   if (!b) return;
   const n = (cases || []).filter((c) => c && entries[c.id] && entries[c.id].state === "approved"
                                         && entries[c.id].automate !== false).length;
-  b.disabled = designRunning || n === 0;
+  b.disabled = designRunning || n === 0 || !wfFinalized.ok;
   b.title = designRunning ? "a design is running; automate when it has finished"
-    : n ? `Cursor writes the tests of the ${n} approved case(s) marked Automate`
-        : "approve a case and tick Automate first (Review the designed cases)";
+    : !n ? "approve a case and tick Automate first (Review the designed cases)"
+    : !wfFinalized.ok ? `${wfFinalized.why} -- Automate takes finalized cases only`
+    : `Cursor writes the tests of the ${n} approved case(s) marked Automate`;
+}
+// The row's Automate buttons follow the same rule.
+function rowAutomateReady() {
+  for (const go of document.querySelectorAll("#design-review .automate-cell button")) {
+    if (go.dataset.ready === "1") {
+      go.disabled = !wfFinalized.ok;
+      go.title = wfFinalized.ok ? "Cursor writes this case's test, in the job's one change"
+        : `${wfFinalized.why} -- Automate takes finalized cases only`;
+    }
+  }
 }
 
 async function showReview(what) {
@@ -991,6 +1008,9 @@ async function showFlow() {
          s.name + shown));
   }));
   if (wf) {
+    wfFinalized = { ok: Boolean(wf.finalized), why: wf.finalized_why || "finalize the cases first" };
+    automateReady(lastAuto.cases, lastAuto.entries);   // the rule changed: apply it again
+    rowAutomateReady();
     const haveCases = ((wf.stages || [])[0] || {}).done;
     $("wf-finalize").disabled = !haveCases;
     setState($("wf-final-state"), wf.finalized ? "ok" : "",

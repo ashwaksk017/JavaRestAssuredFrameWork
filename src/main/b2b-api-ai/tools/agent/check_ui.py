@@ -818,6 +818,9 @@ def main() -> int:
             code, body = mocked.call("/api/case-review", {"job": JOB, "what": "design", "ids": ["TC-001"],
                                                           "state": "maybe"})
             check("a decision that is not one of the three words is refused", code == 400, str(body))
+            before = mocked.dom("new")
+            check("a case's Automate waits for Finalize, and says so",
+                  "Automate takes finalized cases only" in before, before[before.find('class="automate-cell"'):][:300])
             code, body = mocked.call("/api/workflow", {"job": JOB, "action": "finalize"})
             check("the approved cases can be finalized", code == 200 and body.get("finalized", {}).get("cases") == ["TC-001"],
                   str(body))
@@ -831,6 +834,9 @@ def main() -> int:
                   and 'data-tab="new" data-target="auto-selected"' in strip
                   and 'data-tab="agent" data-target="agent-push"' in strip
                   and 'data-tab="new" data-target="design-review"' in strip, strip[:400])
+            check("once finalized, a case's Automate can be pressed",
+                  'data-ready="1">Automate</button>' in html and "Automate takes finalized cases only" not in html,
+                  html[html.find('class="automate-cell"'):][:300])
             check("each approved case can be automated from its row",
                   ">Automate</button>" in html or ">Again</button>" in html)
             commit_tab = mocked.dom("agent")
