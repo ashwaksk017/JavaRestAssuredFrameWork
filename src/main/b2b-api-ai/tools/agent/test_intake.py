@@ -409,6 +409,8 @@ class Story(Base):
                 (intake.jira_search, "connect", lambda: dict(conn)),
                 (intake.jira_fetch, "_urllib_transport", transport),
                 (intake.jira_fetch, "download_attachments", lambda *a, **k: []),
+                # A story that fails to read asks /myself; never a real request.
+                (intake.jira_search, "verify", lambda conn, transport=None: (True, "the token is accepted")),
                 (intake.projectconfig, "section", lambda name: ({}, "test"))):
             self.addCleanup(setattr, owner, name, getattr(owner, name))
             setattr(owner, name, value)
@@ -500,6 +502,11 @@ class Story(Base):
         got = intake.gather_jira("ABC-1", tempfile.mkdtemp(), "01-jira", connect=None, transport=None)
         self.assertTrue(got["reason"].startswith("ABC-1 could not be read: 404"), got["reason"])
         self.assertEqual(got["token"], "the token is accepted, as Tester")
+        # Jira down or failing: the token is not blamed for it.
+        intake.jira_search.verify = lambda conn, transport=None: (False, "503 Service Unavailable")
+        got = intake.gather_jira("ABC-1", tempfile.mkdtemp(), "01-jira", connect=None, transport=None)
+        self.assertTrue(got["reason"].startswith("ABC-1 could not be read: 404"), got["reason"])
+        self.assertIn("(the Jira token could not be checked: 503", got["reason"])
 
     def test_a_bare_key_is_read_from_the_configured_jira(self):
         r = self.read(links=["abc-1"])

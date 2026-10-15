@@ -147,6 +147,31 @@ class InsideThePaths(Repo):
         self.assertFalse(loop.was_ignored_whole("src/test/resourcesX", before))
         self.assertFalse(loop.was_ignored_whole("src/main/secret", before))
         self.assertFalse(loop.was_ignored_whole("src/test/resources", before), "the same entry is not inside itself")
+        # With what was in the folder before the run: only that is exempt.
+        kids = {"src/test/resources": {"csv"}}
+        self.assertTrue(loop.was_ignored_whole("src/test/resources/csv/amex/", before, kids))
+        self.assertFalse(loop.was_ignored_whole("src/test/resources/sneaky", before, kids),
+                         "a folder the agent made inside an ignored one is new")
+
+    def test_the_suite_keeps_the_classes_it_listed_and_skips_abstract_ones(self):
+        write(self.root, SUITE, '<suite><test><classes>\n'
+              '<class name="com.hi.api.tests.jira.ExistingTest"/>\n'
+              '<class name="com.hi.api.tests.jira.GoneTest"/>\n</classes></test></suite>\n')
+        sh(self.root, "add", "-A")
+        sh(self.root, "commit", "-q", "-m", "an earlier job's suite")
+
+        def agent(prompt):
+            write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
+            write(self.root, JIRA + "BaseStoryTest.java", "public abstract class BaseStoryTest {}\n")
+            return {"result": ""}
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(self.generate(agent), 0)
+        with io.open(os.path.join(self.root, SUITE), encoding="utf-8") as fh:
+            xml = fh.read()
+        self.assertIn('"com.hi.api.tests.jira.NewTest"', xml)
+        self.assertIn('"com.hi.api.tests.jira.ExistingTest"', xml, "a class an earlier run wrote stays")
+        self.assertNotIn("GoneTest", xml, "a class that is gone is not listed")
+        self.assertNotIn("BaseStoryTest", xml, "an abstract class is not a test to run")
 
     def test_the_prompt_carries_the_plan_and_the_allowed_paths(self):
         seen = {}
@@ -363,6 +388,64 @@ class TheReviewDecidesWhatIsWritten(Repo):
         self.assertIn("Not in the specification (write these from the case alone, and say so): GET /nowhere", p)
         self.assertIn("design-swagger.txt", p, "where the whole file is")
         self.assertLess(p.index("end of proposed test cases"), p.index("THE API SPECIFICATION"))
+
+    def test_the_specification_sent_names_no_host_and_no_extension(self):
+        spec = json.loads(SPEC_FOR_CASES)
+        spec["securityDefinitions"] = {"oauth": {"type": "oauth2", "flow": "application",
+                                                 "tokenUrl": "https://auth.example.test/oauth/token"}}
+        spec["x-internal-owner"] = "team-somebody"
+        with io.open(os.path.join(self.job, "design-swagger.txt"), "w", encoding="utf-8") as fh:
+            json.dump(spec, fh)
+        block, _note = loop.spec_for_cases(self.job, ["POST /x"], self.root)
+        self.assertIn("/oauth/token", block, "the path of the token URL stays")
+        self.assertNotIn("auth.example.test", block)
+        self.assertNotIn("team-somebody", block)
+
+    def test_automate_refuses_to_add_to_a_change_of_another_scope_or_a_pushed_one(self):
+        self.design(DESIGN_CASE)
+        loop.casereview.update(self.job, "design", ["TC-001"], state="approved")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            loop.write_review(self.job, {"state": "pending-review", "scope": "converter"})
+            self.assertEqual(loop.cmd_automate(self.job, self.root, self.policy, ["TC-001"], agent=lambda p: 1/0), 1)
+            loop.write_review(self.job, {"state": "pushed", "scope": "new-test", "branch": "agent/job1"})
+            self.assertEqual(loop.cmd_automate(self.job, self.root, self.policy, ["TC-001"], agent=lambda p: 1/0), 1)
+        self.assertIn("not for new tests", out.getvalue())
+        self.assertIn("already approved and pushed as agent/job1", out.getvalue())
+        self.assertEqual(loop.automated_cases(self.job), {}, "a refused run records nothing")
+
+    def test_a_rejected_addition_is_recorded_as_not_written(self):
+        self.design(DESIGN_CASE, dict(DESIGN_CASE, id="TC-002", title="Second"))
+        loop.casereview.update(self.job, "design", ["TC-001", "TC-002"], state="approved")
+
+        def outside(prompt):
+            write(self.root, "README.md", "changed\n")
+            return {"result": "ok"}
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(loop.cmd_automate(self.job, self.root, self.policy, ["TC-001"],
+                                               agent=self.agent_that_writes({}), verifier=OK), 0)
+            self.assertEqual(loop.cmd_automate(self.job, self.root, self.policy, ["TC-002"],
+                                               agent=outside, verifier=OK), 1)
+        done = loop.automated_cases(self.job)
+        self.assertTrue(done["TC-001"]["written"])
+        self.assertFalse(done["TC-002"]["written"])
+        self.assertTrue(done["TC-002"]["said"].startswith("not written"), done["TC-002"]["said"])
+        self.assertEqual(self.state()["state"], "pending-review", "the first case's change still waits")
+
+    def test_a_plain_follow_up_hands_over_only_the_cases_written(self):
+        self.design(DESIGN_CASE, dict(DESIGN_CASE, id="TC-002", title="Second"))
+        loop.casereview.update(self.job, "design", ["TC-001", "TC-002"], state="approved")
+        seen = {}
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(loop.cmd_automate(self.job, self.root, self.policy, ["TC-001"],
+                                               agent=self.agent_that_writes({}), verifier=OK), 0)
+            write(self.root, ".workbench/job1/agent-followup.txt", "Rename the test method.")
+            self.assertEqual(loop.cmd_followup(self.job, self.root, self.policy,
+                                               agent=self.agent_that_writes(seen), verifier=OK), 0)
+        cases = seen["p"].split("===== TEST CASES PROPOSED FOR THIS JOB")[1].split("===== end of proposed")[0]
+        self.assertIn("TC-001", cases)
+        self.assertNotIn("TC-002", cases, "a case nobody asked for is not handed over")
+        self.assertEqual(loop.automate_only(self.job), set(), "no filter is left behind")
 
     def test_without_a_specification_nothing_is_said_of_one(self):
         self.design(DESIGN_CASE)

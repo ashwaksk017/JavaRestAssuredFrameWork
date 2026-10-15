@@ -419,10 +419,40 @@ class AMigrationRequest(unittest.TestCase):
     def test_a_request_while_a_change_waits_is_added_to_it(self):
         os.makedirs(self.job)
         with io.open(os.path.join(self.job, "review.json"), "w", encoding="utf-8") as fh:
-            fh.write('{"state": "pending-review"}')
+            fh.write('{"state": "pending-review", "scope": "converter"}')
+        with self.assertRaises(ValueError) as got:
+            jobs.migration_ask("m1", "converted", "amex", "Something else.")
+        self.assertIn("the change waiting for this job is for converter", str(got.exception))
+        self.assertFalse(os.path.exists(os.path.join(self.job, "agent-followup.txt")), "nothing written")
         r = jobs.migration_ask("m1", "converter", "", "Also handle the JDBC step.")
         self.assertEqual(r["runnable"], "agent-followup")
         self.assertEqual(self.read("agent-followup.txt"), "Also handle the JDBC step.")
+
+    def test_nothing_is_written_when_it_is_refused(self):
+        os.makedirs(self.job)
+        with io.open(os.path.join(self.job, "plan.md"), "w", encoding="utf-8") as fh:
+            fh.write("# Plan: fix the converted Java of suite amex\n\nthe brief\n")
+        with self.assertRaises(ValueError) as got:
+            jobs.migration_ask("m1", "converted", "amex", "Something of mine.")
+        self.assertIn("leave the box empty", str(got.exception))
+        self.assertTrue(self.read("plan.md").startswith("# Plan: fix"), "the fix brief is kept")
+        with io.open(os.path.join(self.job, "review.json"), "w", encoding="utf-8") as fh:
+            fh.write('{"state": "generating"}')
+        with self.assertRaises(ValueError) as got:
+            jobs.migration_ask("m1", "converter", "", "x")
+        self.assertIn("is running for this job", str(got.exception))
+        self.assertEqual(self.started, [])
+
+    def test_the_empty_box_run_is_checked_against_the_plan(self):
+        os.makedirs(self.job)
+        with io.open(os.path.join(self.job, "plan.md"), "w", encoding="utf-8") as fh:
+            fh.write("# Plan: fix the converted Java of suite amex\n")
+        self.assertEqual(jobs.migration_refusal("m1", "converted", "amex"), "")
+        self.assertIn("not converter", jobs.migration_refusal("m1", "converter", ""))
+        self.assertIn("not converted suite goal", jobs.migration_refusal("m1", "converted", "goal"))
+        with io.open(os.path.join(self.job, "plan.md"), "w", encoding="utf-8") as fh:
+            fh.write("# Plan: B2B story\n")
+        self.assertIn("not a migration request", jobs.migration_refusal("m1", "converter", ""))
 
     def test_what_is_refused(self):
         for scope, suite, text, why in (("new-test", "", "x", "choose what Cursor may change"),

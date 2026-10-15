@@ -539,13 +539,19 @@ $("design-requirements-file").onchange = async () => {
     $("design-requirements-file").value = "";
     return;
   }
-  requirementsFile = { name: f.name, text: await f.text() };
+  requirementsFile = { name: f.name, text: await f.text(), job: job() };
   setState($("design-requirements-loaded"), "ok",
            `${f.name}: ${requirementsFile.text.length.toLocaleString()} characters read`);
 };
+// Another job: the file read for the last one is not this one's.
+$("job").addEventListener("change", () => {
+  requirementsFile = null;
+  $("design-requirements-file").value = "";
+  $("design-requirements-loaded").textContent = "";
+});
 function requirementsGiven() {
   if (chosen("req-from") === "paste") return $("design-requirements").value;
-  return requirementsFile ? requirementsFile.text : "";
+  return requirementsFile && requirementsFile.job === job() ? requirementsFile.text : "";
 }
 
 // The specification is different: it is kept as a FILE for the job, under
@@ -690,7 +696,7 @@ async function decide(j, what, ids, fields, stateEl) {
   }
 }
 
-function reviewTable(j, what, cases, entries, after, done) {
+function reviewTable(j, what, cases, entries, after, done, change) {
   const box = el("div", { class: "review" });
   const st = el("span", { class: "state" });
   const entryOf = (c) => entries[c.id] || {};
@@ -718,7 +724,9 @@ function reviewTable(j, what, cases, entries, after, done) {
     };
     const automate = el("input", { type: "checkbox" });
     automate.checked = e.automate !== false;
-    automate.onchange = () => decide(j, what, [c.id], { automate: automate.checked }, st);
+    automate.onchange = async () => {
+      if (await decide(j, what, [c.id], { automate: automate.checked }, st)) after();
+    };
     const title = el("input", { type: "text", value: e.title || c.title || "" });
     title.onchange = () => {
       if (title.value.trim()) decide(j, what, [c.id], { title: title.value.trim() }, st);
@@ -736,13 +744,17 @@ function reviewTable(j, what, cases, entries, after, done) {
     if (what === "design") row.push(el("code", { text: c.endpoint || "" }));
     row.push(steps, el("div", {}, note));
     if (what === "design") {
-      const ran = (done || {})[c.id];
-      const go = el("button", { type: "button", text: ran ? "Again" : "Automate",
+      // What the case's last run came to -- if it is about the change
+      // there is now. A case written into a change since discarded (or a
+      // design since cleared) is not "written" any more.
+      let ran = (done || {})[c.id];
+      if (ran && ran.written && (!change || ran.change !== change)) ran = null;
+      const go = el("button", { type: "button", text: ran && ran.written ? "Again" : "Automate",
                                 title: "Cursor writes this case's test, in the job's one change",
-                                on: { click: () => automateCases([c.id]) } });
+                                on: { click: () => automateCases([c.id], j) } });
       go.disabled = !(state === "approved" && e.automate !== false);
       row.push(el("div", { class: "automate-cell" }, go,
-        ran ? el("small", { class: `flag ${ran.state === "pending-review" ? "" : "differs"}`, text: ran.said || ran.state }) : null));
+        ran ? el("small", { class: `flag ${ran.written && ran.state === "pending-review" ? "" : "differs"}`, text: ran.said || ran.state }) : null));
     }
     return row;
   })));
@@ -793,10 +805,24 @@ async function showReview(what) {
   const j = job();
   const box = $(`${what}-review`);
   if (!j) { box.replaceChildren(); return; }
-  const [result, review, done] = await Promise.all([
+  // Someone is typing in the table: redraw when they leave it, not under
+  // their hands (the field's change is saved first).
+  const typing = document.activeElement;
+  if (typing && box.contains(typing) && typing.matches("input[type=text], textarea")) {
+    if (!box.dataset.redraw) {
+      box.dataset.redraw = "1";
+      box.addEventListener("focusout", () => setTimeout(() => {
+        delete box.dataset.redraw;
+        showReview(what);
+      }, 300), { once: true });
+    }
+    return;
+  }
+  const [result, review, done, agentReview] = await Promise.all([
     artifactJson(j, what === "design" ? "design.json" : "manual-result.json"),
     artifactJson(j, "case-review.json"),
-    what === "design" ? artifactJson(j, "automated-cases.json") : Promise.resolve(null)]);
+    what === "design" ? artifactJson(j, "automated-cases.json") : Promise.resolve(null),
+    what === "design" ? artifactJson(j, "review.json") : Promise.resolve(null)]);
   if (j !== job()) return;
   const cases = (result && (what === "design" ? result.test_cases : result.new_cases)) || [];
   const entries = (review && review[what]) || {};
@@ -807,10 +833,12 @@ async function showReview(what) {
   }
   const kids = [];
   if (result.mock) kids.push(banner("warn", "These are a stand-in's cases (mock Cursor); a review of them goes nowhere real."));
+  const live = agentReview && ["pending-review", "verify-failed", "pushed", "approved-local", "push-failed"]
+    .includes(agentReview.state) ? agentReview.change : "";
   kids.push(reviewTable(j, what, cases.filter((c) => c && c.id), entries, () => {
     showReview(what);
     refreshXray(what, true);
-  }, done));
+  }, done, live));
   box.replaceChildren(...kids);
   showFlow();
 }
@@ -1067,6 +1095,11 @@ $("run-design").onclick = async () => {
   // already going, fail with "already running", and stop the pane's timer.
   button.disabled = true;
   let stopCursorLog = () => {};
+  if (chosen("req-from") === "upload" && $("design-requirements-file").files.length && !requirementsGiven()) {
+    setState($("design-state"), "bad", "the requirements file is still being read, or could not be; choose it again");
+    button.disabled = false;
+    return;
+  }
   try {
     const j = job();
     // Where the Cursor log ends NOW, read before the run starts, so the
@@ -1136,8 +1169,10 @@ $("clear-design").onclick = async () => {
 };
 
 $("stop-design").onclick = async () => {
-  try { await post("/api/stop", { job: job(), runnable: "agent-design" }); }
-  catch (e) { setState($("design-state"), "bad", e.message); }
+  try {
+    const r = await post("/api/stop", { job: job(), runnable: "agent-design" });
+    if (!(r && r.stopped)) await post("/api/stop", { job: job(), runnable: "xray-import" });
+  } catch (e) { setState($("design-state"), "bad", e.message); }
 };
 
 // ---- tab 2: convert ---------------------------------------------------
@@ -2077,6 +2112,7 @@ $("agent-ask-send").onclick = async () => {
   try {
     await post("/api/agent-followup", { job: job(), text });
     $("agent-ask").value = "";
+    watchCursorLog();
     follow("agent-followup", $("auto-log"), $("auto-state"), () => {
       refreshReview();
       pollCursorLog(false);
@@ -2090,6 +2126,9 @@ function runAgent(runnable, options, logEl, stateEl) {
   logEl = logEl || $("agent-log");
   stateEl = stateEl || $("agent-state");
   return post("/api/start", { job: job(), runnable, options })
+    .then(() => {
+      if (["agent-generate", "agent-followup", "agent-automate"].includes(runnable)) watchCursorLog();
+    })
     .then(() => follow(runnable, logEl, stateEl, () => {
       refreshReview();
       pollCursorLog(false);
@@ -2102,15 +2141,32 @@ function runAgent(runnable, options, logEl, stateEl) {
 // ---- Automate the cases (the Automate Test Case tab) ----------------------
 // One row's case, or every approved case marked Automate. The command adds
 // to the job's change when one is waiting, and checks the Cursor setup first.
-function automateCases(ids) {
+async function automateCases(ids, forJob) {
   const j = job();
   if (!j) { setState($("auto-state"), "bad", "name the job (top right) first"); return; }
+  if (forJob && forJob !== j) {
+    setState($("auto-state"), "bad", `the table is job "${forJob}", the box says "${j}"; refreshed, check it again`);
+    showReview("design");
+    return;
+  }
   if (!ids.length) {
     setState($("auto-state"), "bad", "approve a case and tick Automate first (Review the designed cases)");
     return;
   }
+  const waiting = await artifactJson(j, "review.json");
+  const st = (waiting && waiting.state) || "none";
+  if (["pending-review", "verify-failed"].includes(st) && waiting.mock) {
+    setState($("auto-state"), "bad", "the change waiting was made by the stand-in (mock Cursor): Discard it on the Commit and push tab first");
+    return;
+  }
+  if (["pending-review", "verify-failed"].includes(st) && (waiting.scope || "new-test") !== "new-test") {
+    setState($("auto-state"), "bad", `the change waiting for this job is for ${waiting.scope}: Approve or Discard it on the Commit and push tab first`);
+    return;
+  }
+  const adds = ["pending-review", "verify-failed"].includes(st);
   if (!confirm(`Cursor writes the test(s) of ${ids.join(", ")} for job "${j}", in tests/jira/ and ` +
-               "csv/manual/. Nothing is committed. Continue?")) return;
+               `csv/manual/${adds ? ", added to the change already waiting for review" : ""}. ` +
+               "Nothing is committed. Continue?")) return;
   runAgent("agent-automate", { "--job": j, "--cases": ids.join(",") }, $("auto-log"), $("auto-state"));
 }
 $("auto-selected").onclick = async () => {
@@ -2165,6 +2221,7 @@ $("mig-run").onclick = async () => {
     const runnable = (r && r.runnable) || "agent-generate";
     agentRunning = runnable;
     $("mig-ask").value = "";
+    watchCursorLog();
     follow(runnable, $("mig-log"), $("mig-state"), () => {
       refreshReview();
       pollCursorLog(false);
@@ -2180,7 +2237,8 @@ api("/api/converted-suites").then((r) => {
 // server, not remembered: after a reload, or with the job box changed
 // since, what this page started last is not what is running.
 async function stopAgent(stateEl) {
-  const others = ["agent-generate", "agent-automate", "agent-review", "agent-followup"].filter((r) => r !== agentRunning);
+  const others = ["agent-generate", "agent-automate", "agent-review", "agent-followup", "agent-patches",
+                  "agent-reapply", "fix-brief"].filter((r) => r !== agentRunning);
   try {
     let stopped = false;
     for (const runnable of [agentRunning, ...others]) {
@@ -2260,8 +2318,15 @@ $("agent-push").onclick = () => {
   runAgent("agent-approve", options);
 };
 onTab.agent = () => { showRepo(); };
-document.querySelector('.tabs button[data-tab="agent"]')
-  .addEventListener("click", () => { refreshReview(); watchCursorLog(); });
+// The review state drives buttons on three tabs (Ask Cursor to change it,
+// the Migration tab's Ask Cursor, Commit and push): read it when any of
+// them is opened, and once at load.
+for (const tab of ["agent", "new", "convert"]) {
+  const b = document.querySelector(`.tabs button[data-tab="${tab}"]`);
+  if (b) b.addEventListener("click", () => { refreshReview(); watchCursorLog(); });
+}
+refreshReview();
+watchCursorLog();
 $("job").addEventListener("change", () => { refreshReview(); pollCursorLog(true); });
 
 // ---- building what is shown -------------------------------------------

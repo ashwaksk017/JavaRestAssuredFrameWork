@@ -752,8 +752,10 @@ def log_path(job: str, runnable: str) -> str:
 # generating hold files: Discard first. A rejection that still needs a
 # Discard says so (needs_discard) and is kept until it has had one.
 DISMISSABLE = ("rejected", "discarded", "pushed", "approved-local")
-AGENT_RUNNABLES = ("agent-generate", "agent-followup", "agent-approve", "agent-discard",
-                   "agent-reapply")
+AGENT_RUNNABLES = ("agent-generate", "agent-followup", "agent-automate", "agent-approve",
+                   "agent-discard", "agent-reapply")
+# What reads or writes a job's design and its Cursor change while it runs.
+JOB_WRITERS = AGENT_RUNNABLES + ("agent-design", "xray-import")
 
 
 DESIGN_FILES = ("design.json", "design.md", "test-cases.csv", "xray.csv",
@@ -761,6 +763,70 @@ DESIGN_FILES = ("design.json", "design.md", "test-cases.csv", "xray.csv",
 
 
 MIGRATION_SCOPES = ("converted", "converter")
+
+
+def busy(job: str, runnables=JOB_WRITERS) -> str:
+    """The first of `runnables` running for the job, or ""."""
+    for r in runnables:
+        if read_status(job, r).get("state") == "running":
+            return r
+    return ""
+
+
+def _read_json(path: str) -> dict:
+    try:
+        with io.open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def migration_held(job: str) -> list:
+    """What makes a job a story's, not a migration request's."""
+    out = job_dir(job)
+    held = [n for n in ("design.json", "case-review.json") if os.path.isfile(os.path.join(out, n))]
+    if isinstance(_read_json(os.path.join(out, "intake.json")).get("story"), dict):
+        held.append("a story")
+    return held
+
+
+def plan_scope(job: str) -> tuple:
+    """(kind, scope, suite) of the job's plan.md: kind is "migration",
+    "fix", "other" or "" (no plan). What a migration run with an empty box
+    would act on."""
+    try:
+        with io.open(os.path.join(job_dir(job), "plan.md"), encoding="utf-8") as fh:
+            head = fh.read(400).lstrip().split("\n", 1)[0]
+    except OSError:
+        return "", "", ""
+    m = re.match(r"# Plan: migration change \((converted|converter)\)", head)
+    if m:
+        return "migration", m.group(1), ""
+    m = re.match(r"# Plan: fix the converted Java of suite ([a-z0-9_]+)", head)
+    if m:
+        return "fix", "converted", m.group(1)
+    if head.startswith("# Plan: fix the converter"):
+        return "fix", "converter", ""
+    return ("other", "", "") if head.strip() else ("", "", "")
+
+
+def migration_refusal(job: str, scope: str, suite: str) -> str:
+    """Why a migration run (Cursor on a converted suite or the converter)
+    cannot start for this job, or "". The page's empty-box Ask Cursor
+    starts agent-generate directly, so start() asks this too."""
+    held = migration_held(job)
+    if held:
+        return (f"this job holds {', '.join(held)}; a migration request is its own job -- "
+                f"name a new job (top right)")
+    kind, p_scope, p_suite = plan_scope(job)
+    if kind == "other":
+        return "this job's plan is not a migration request; name a new job (top right)"
+    if kind and (p_scope != scope or (p_suite and p_suite != suite)):
+        return (f"this job's plan is for {p_scope}" + (f" suite {p_suite}" if p_suite else "")
+                + f", not {scope}" + (f" suite {suite}" if suite else "")
+                + ". Choose that, or name a new job (top right).")
+    return ""
 
 
 def migration_ask(job: str, scope: str, suite: str, text: str) -> dict:
@@ -785,22 +851,30 @@ def migration_ask(job: str, scope: str, suite: str, text: str) -> dict:
         raise ValueError("write what Cursor should change")
     if len(text) > 20000:
         raise ValueError("that is more than 20,000 characters; keep the request short")
-    os.makedirs(out, exist_ok=True)
-    held = [n for n in ("design.json", "case-review.json") if os.path.isfile(os.path.join(out, n))]
-    try:
-        with io.open(os.path.join(out, "intake.json"), encoding="utf-8") as fh:
-            if isinstance(json.load(fh).get("story"), dict):
-                held.append("a story")
-    except (OSError, ValueError):
-        pass
+    # Everything that can refuse is asked BEFORE a file is written: a
+    # refusal must not leave the job's brief or plan replaced.
+    running = busy(job)
+    review = _read_json(os.path.join(out, "review.json"))
+    if running or review.get("state") == "generating":
+        raise ValueError(f"{running or 'a Cursor run'} is running for this job; wait for it, or Stop it")
+    held = migration_held(job)
     if held:
         raise ValueError(f"this job holds {', '.join(held)}; a migration request is its own job -- "
                          f"name a new job (top right)")
-    try:
-        with io.open(os.path.join(out, "review.json"), encoding="utf-8") as fh:
-            waiting = json.load(fh).get("state") in ("pending-review", "verify-failed")
-    except (OSError, ValueError):
-        waiting = False
+    waiting = review.get("state") in ("pending-review", "verify-failed")
+    if waiting:
+        if (review.get("scope") or "") != scope or (scope == "converted" and (review.get("suite") or "") != suite):
+            raise ValueError(f"the change waiting for this job is for {review.get('scope')}"
+                             + (f" suite {review.get('suite')}" if review.get("suite") else "")
+                             + "; a request adds to it, so choose that -- or Approve or Discard it first")
+    else:
+        kind, _s, _u = plan_scope(job)
+        if kind == "other":
+            raise ValueError("this job's plan is not a migration request; name a new job (top right)")
+        if kind == "fix":
+            raise ValueError("this job holds the brief Fix with Cursor wrote: leave the box empty and "
+                             "press Ask Cursor to run it, or name a new job for a request of your own")
+    os.makedirs(out, exist_ok=True)
     if waiting:
         with io.open(os.path.join(out, "agent-followup.txt"), "w", encoding="utf-8") as fh:
             fh.write(text)
@@ -842,15 +916,22 @@ def clear_design(job: str) -> dict:
     -- which name issues that exist in Jira -- stay and follow the cases
     that come back. What was pasted or uploaded for the design stays."""
     out = job_dir(job)
-    if read_status(job, "agent-design").get("state") == "running":
-        raise ValueError("a design is running for this job; Stop it first")
-    names = [n for n in DESIGN_FILES if os.path.isfile(os.path.join(out, n))]
+    running = busy(job, ("agent-design", "xray-import", "agent-automate", "agent-generate",
+                         "agent-followup"))
+    if running:
+        raise ValueError(f"{running} is running for this job and uses its design; wait for it, "
+                         f"or Stop it first")
+    names = [n for n in DESIGN_FILES + ("automated-cases.json",) if os.path.isfile(os.path.join(out, n))]
     cache = os.path.isdir(os.path.join(out, "design-cache"))
     if not names and not cache:
         return {"cleared": False, "moved": []}
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     archive = os.path.join(out, "design-cleared-" + now.replace(":", "").replace("-", ""))
-    os.makedirs(archive, exist_ok=True)
+    n = 1
+    while os.path.exists(archive):          # two clears in one second
+        n += 1
+        archive = os.path.join(out, "design-cleared-" + now.replace(":", "").replace("-", "") + f"-{n}")
+    os.makedirs(archive)
     if "design.json" in names:
         try:
             with io.open(os.path.join(out, "design.json"), encoding="utf-8") as fh:
@@ -966,6 +1047,10 @@ def start(job: str, runnable: str, options: dict) -> dict:
             raise ValueError("--confirm must be the id of the job being approved")
     argv = build_argv(runnable, options)      # validates before any mkdir
     out = job_dir(job)                        # validates the job id
+    if runnable == "agent-generate" and options.get("--scope") in MIGRATION_SCOPES:
+        why = migration_refusal(job, options["--scope"], str(options.get("--suite") or ""))
+        if why:
+            raise ValueError(why)
     os.makedirs(out, exist_ok=True)
     clear_result(job, runnable)
 

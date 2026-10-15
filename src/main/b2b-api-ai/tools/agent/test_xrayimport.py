@@ -117,6 +117,21 @@ class Importing(Base):
         self.assertTrue(entry["imported"])
 
 
+class NumberingAfterAClear(Base):
+    def test_an_old_decision_never_lands_on_a_different_test(self):
+        # TC-001 of a cleared design was approved and edited; TC-002 was
+        # created in Xray as ABC-15.
+        xi.loop.casereview.update(self.job, "design", ["TC-001", "TC-002"], state="approved")
+        kept = xi.xt.read_keys(self.job)
+        kept["tests"]["design:TC-002"] = {"key": "ABC-15", "title": "x", "fingerprint": "f"}
+        xi.xt.write_keys(self.job, kept)
+        self.run_it()
+        ids = {c["xray_key"]: c["id"] for c in json.loads(self.read("design.json"))["test_cases"]}
+        self.assertEqual(ids["ABC-15"], "TC-002", "the same Xray test keeps its case, and its decision")
+        self.assertNotIn(ids["ABC-11"], ("TC-001", "TC-002"), "a new test takes an id nobody decided on")
+        self.assertEqual(xi.xt.read_keys(self.job)["tests"]["design:TC-002"]["key"], "ABC-15")
+
+
 class EndpointsAndTheSpecification(Base):
     def test_the_endpoint_is_read_from_the_steps_and_checked_against_the_specification(self):
         with io.open(os.path.join(self.job, "design-swagger.txt"), "w", encoding="utf-8") as fh:

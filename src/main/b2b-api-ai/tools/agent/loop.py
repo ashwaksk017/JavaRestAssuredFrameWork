@@ -657,7 +657,22 @@ def ignored_entries(root: str) -> set:
             if e.startswith("!! ")} if rc == 0 else set()
 
 
-def was_ignored_whole(entry: str, ignored_before) -> bool:
+def ignored_children(root: str, ignored_before) -> dict:
+    """{ignored folder: the names directly inside it}, taken before the run,
+    for was_ignored_whole."""
+    out = {}
+    for b in ignored_before:
+        b = str(b).replace("\\", "/").rstrip("/")
+        full = os.path.join(root, b.replace("/", os.sep))
+        if b and os.path.isdir(full):
+            try:
+                out[b] = set(os.listdir(full))
+            except OSError:
+                out[b] = set()
+    return out
+
+
+def was_ignored_whole(entry: str, ignored_before, children: dict = None) -> bool:
     """Was `entry` inside a folder git already ignored whole before the run?
 
     git reports a folder whose every file is ignored as ONE entry
@@ -665,12 +680,20 @@ def was_ignored_whole(entry: str, ignored_before) -> bool:
     new folder of the agent's, inside its paths -- git reports the
     ignored children instead (`src/test/resources/csv`). Such a child is
     not new: it was ignored before, under its parent's name. Taking it
-    for new removed the whole folder."""
+    for new removed the whole folder.
+
+    With `children` (ignored_children, before the run) the child must
+    also have BEEN there: a folder the agent made inside an ignored one
+    -- with its own `.gitignore` of `*` -- is new, and goes."""
     e = entry.replace("\\", "/").rstrip("/")
     for b in ignored_before:
         b = str(b).replace("\\", "/").rstrip("/")
         if b and e.startswith(b + "/"):
-            return True
+            if children is None:
+                return True
+            first = e[len(b) + 1:].split("/", 1)[0]
+            if first in children.get(b, set()):
+                return True
     return False
 
 
@@ -1248,7 +1271,7 @@ def designed_case_ids(job_dir: str) -> set:
             if line and not line.startswith("    ")}
 
 
-def designed_cases(job_dir: str, cap: int = 20000, keys: dict = None) -> tuple:
+def designed_cases(job_dir: str, cap: int = 20000, keys: dict = None, only_ids=None) -> tuple:
     """(text, note). The cases design.py wrote for this job, one line per
     step. Text is "" when there is no design, when it was made from a
     different brief than the job has now, or when it is unreadable; the
@@ -1267,6 +1290,10 @@ def designed_cases(job_dir: str, cap: int = 20000, keys: dict = None) -> tuple:
     if data.get("mock"):
         # Two cases per endpoint from the stand-in. Never handed to an
         # agent as what somebody proposed should be tested.
+        if data.get("source") == "xray":
+            return "", ("the cases of this job were imported from the stand-in Jira "
+                        "(tools/agent/mock.json); they are not used. Set \"jira\": false, Clear "
+                        "the design, and take the story's Xray tests again.")
         return "", ("the design of this job is a MOCK (tools/agent/mock.json); it "
                     "is not used. Design again with \"cursor\": false.")
     if data.get("brief", "") != brief_fingerprint(job_dir):
@@ -1280,7 +1307,7 @@ def designed_cases(job_dir: str, cap: int = 20000, keys: dict = None) -> tuple:
     cases = [c for c in cases if isinstance(c, dict)] if isinstance(cases, list) else []
     # A run for some of the cases only (Automate on one row, or on the ones
     # ticked): the others are not handed over this time.
-    only = automate_only(job_dir)
+    only = automate_only(job_dir) or set(only_ids or ())
     if only:
         cases = [c for c in cases if str(c.get("id") or "") in only]
     left_out = ""
@@ -1329,7 +1356,7 @@ _CASE_ENDPOINT_RX = re.compile(r"\b(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(\
 def _design_module():
     """design.py, for its specification helpers. Loaded when needed: it
     loads this module itself, so not at import time."""
-    return _load("loop_design", os.path.join(HERE, "design.py"))
+    return sys.modules.get("loop_design") or _load("loop_design", os.path.join(HERE, "design.py"))
 
 
 def job_spec(job_dir: str) -> tuple:
@@ -1368,7 +1395,17 @@ def endpoints_of_cases(designed_text: str) -> list:
     return out
 
 
-def spec_for_cases(job_dir: str, endpoints: list) -> tuple:
+_URL_RX = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^/\s\"']+")
+
+
+def _no_hosts(sub: dict) -> dict:
+    """The slice without top-level x- extensions, and with the host taken
+    out of every URL in it (an OAuth tokenUrl names one)."""
+    sub = {k: v for k, v in sub.items() if not str(k).startswith("x-")}
+    return json.loads(_URL_RX.sub("", json.dumps(sub, ensure_ascii=False)))
+
+
+def spec_for_cases(job_dir: str, endpoints: list, root: str = "") -> tuple:
     """(prompt block or "", note). The part of the job's specification the
     cases' endpoints need -- their paths, and the schemas, parameters and
     responses those refer to -- so that a request body is built from the
@@ -1396,7 +1433,12 @@ def spec_for_cases(job_dir: str, endpoints: list) -> tuple:
     if not paths:
         return "", ("none of the cases' endpoints is in the specification ("
                     + ", ".join(missing[:5]) + "); none was sent")
-    text, notes = d.spec_text(d.sub_spec(spec, paths), SPEC_SLICE_CAP)
+    sub = _no_hosts(d.sub_spec(spec, paths))
+    text, notes = d.spec_text(sub, SPEC_SLICE_CAP)
+    for value in sorted(config_secrets(os.path.join(
+            root or ROOT, "src", "main", "resources", "program_configuration.json")), key=len, reverse=True):
+        if len(value) >= 4:
+            text = text.replace(value, "<a value from the configuration>")
     if len(text) > SPEC_SLICE_CAP:
         text = text[:SPEC_SLICE_CAP] + "\n... cut here; the rest is in the file"
     block = ["===== THE API SPECIFICATION, for the endpoints of these cases =====",
@@ -1597,6 +1639,10 @@ JOB_SUITES = "src/test/resources/suites/jira/"
 _JIRA_TESTS = "src/test/java/com/hi/api/tests/jira/"
 
 
+def _abstract(path: str) -> bool:
+    return bool(re.search(r"\babstract\s+class\b", _read(path, 200_000)))
+
+
 def write_job_suite(root: str, job_dir: str, scope: dict) -> str:
     """A TestNG suite of the test classes this job wrote, so that the
     story's tests run on their own:
@@ -1613,16 +1659,23 @@ def write_job_suite(root: str, job_dir: str, scope: dict) -> str:
     job = os.path.basename(job_dir.rstrip("/\\"))
     rel = JOB_SUITES + job + ".xml"
     path = os.path.join(root, rel.replace("/", os.sep))
-    classes = sorted(p[len("src/test/java/"):-len(".java")].replace("/", ".")
-                     for p, h in dirty_paths(root).items()
-                     if h is not None and p.startswith(_JIRA_TESTS) and p.endswith("Test.java"))
+    found = {p[len("src/test/java/"):-len(".java")].replace("/", ".")
+             for p, h in dirty_paths(root).items()
+             if h is not None and p.startswith(_JIRA_TESTS) and p.endswith("Test.java")
+             and not _abstract(os.path.join(root, p.replace("/", os.sep)))}
+    # The classes an earlier version of this suite named, if still there:
+    # a later run must not drop the tests a pushed run wrote.
+    for c in re.findall(r'<class name="([A-Za-z0-9_.$]+)"', _read(path)):
+        if os.path.isfile(os.path.join(root, "src", "test", "java", *c.split(".")) + ".java"):
+            found.add(c)
+    classes = sorted(found)
     if not classes:
         return ""
     body = "\n".join(
         ['<?xml version="1.0" encoding="UTF-8"?>',
          '<!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">',
          "",
-         f"<!-- The tests written for job {job}. Written by the test workbench",
+         f"<!-- The tests written for job {job.replace('-', '- ')}. Written by the test workbench",
          "     (tools/agent) when Cursor finished; run on their own with",
          f"       mvn -o test -DsuiteXmlFile={rel}",
          "     testng-jira.xml runs them too, with every other story's. -->",
@@ -1648,7 +1701,13 @@ def write_job_suite(root: str, job_dir: str, scope: dict) -> str:
 def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
                  root: str = "", followup: str = "") -> str:
     plan = _read(os.path.join(job_dir, "plan.md"))
-    designed, _note = designed_cases(job_dir, keys=xray_keys(job_dir, mocked=mock_cursor()))
+    # A follow-up that is not an Automate run: the cases already written in
+    # this change, not every approved one -- "rename a method" must not
+    # read as "and write the rest".
+    only_ids = written_cases(job_dir, str(read_review(job_dir).get("change") or "")) \
+        if followup and not automate_only(job_dir) else None
+    designed, _note = designed_cases(job_dir, keys=xray_keys(job_dir, mocked=mock_cursor()),
+                                     only_ids=only_ids)
     decided = bool(designed) and scope["name"] != "converter" and bool(
         casereview.reviewed(casereview.read(job_dir)["design"], design_cases_raw(job_dir)))
     brief_head, brief = brief_for_agent(job_dir, policy, decided)
@@ -1737,7 +1796,7 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
                   "test method that takes no row. Never invent a key, and never "
                   "put one key on two cases.", "", designed,
                   "===== end of proposed test cases ====="]
-        spec_block, _spec_note = spec_for_cases(job_dir, endpoints_of_cases(designed))
+        spec_block, _spec_note = spec_for_cases(job_dir, endpoints_of_cases(designed), root)
         if spec_block:
             parts += ["", spec_block]
     if followup:
@@ -2163,19 +2222,28 @@ def cmd_setup(job_dir: str, root: str) -> int:
     return 0
 
 
-AUTOMATE_FILE = "automate-cases.json"      # the cases of the run in progress
+AUTOMATE_FILE = "automate-cases.json"      # written by earlier versions; removed when seen
 AUTOMATED_FILE = "automated-cases.json"    # what each case's last run came to
 _CASE_ID_RX = re.compile(r"^[A-Za-z]{1,6}-[0-9]{1,6}$")
+# The cases of the Automate run in progress. Kept in this process, not in
+# a file: a run that is stopped (taskkill) leaves nothing behind to narrow
+# the next run to an old subset.
+_AUTOMATE_ONLY: set = set()
 
 
 def automate_only(job_dir: str) -> set:
     """The case ids the run in progress is for, or an empty set (all)."""
-    try:
-        with io.open(os.path.join(job_dir, AUTOMATE_FILE), encoding="utf-8") as fh:
-            ids = json.load(fh)
-    except (OSError, ValueError):
+    return set(_AUTOMATE_ONLY)
+
+
+def written_cases(job_dir: str, change: str) -> set:
+    """The cases an Automate run wrote into THIS change (review.json
+    `change`). A plain follow-up hands over only these: the others were
+    not asked for."""
+    if not change:
         return set()
-    return {str(i) for i in ids if isinstance(i, str) and _CASE_ID_RX.match(i)} if isinstance(ids, list) else set()
+    return {i for i, e in automated_cases(job_dir).items()
+            if isinstance(e, dict) and e.get("written") and e.get("change") == change}
 
 
 def automated_cases(job_dir: str) -> dict:
@@ -2187,17 +2255,13 @@ def automated_cases(job_dir: str) -> dict:
         return {}
 
 
-def cmd_automate(job_dir: str, root: str, policy: dict, ids, agent=None, verifier=None) -> int:
-    """Cursor writes the tests of some of the approved cases (one row's
-    Automate, or the ticked ones). All of a job's runs make ONE change: a
-    run when a change is already waiting adds to it, as Ask Cursor to
-    change it does; otherwise it starts the change. What each case's run
-    came to is kept for the page (automated-cases.json)."""
+def automate_refusal(job_dir: str, ids) -> str:
+    """Why these cases cannot be automated now, or "". Checked before the
+    Cursor setup is, so a refused run costs nothing."""
     ids = [str(i).strip() for i in (ids or []) if str(i).strip()]
     bad = [i for i in ids if not _CASE_ID_RX.match(i)]
     if not ids or bad:
-        say(f"FAIL name the case(s) to automate, like TC-001{' (not: ' + ', '.join(bad[:3]) + ')' if bad else ''}")
-        return 1
+        return f"name the case(s) to automate, like TC-001{' (not: ' + ', '.join(bad[:3]) + ')' if bad else ''}"
     try:
         with io.open(os.path.join(job_dir, "design.json"), encoding="utf-8") as fh:
             known = {str(c.get("id")) for c in json.load(fh).get("test_cases") or [] if isinstance(c, dict)}
@@ -2205,42 +2269,84 @@ def cmd_automate(job_dir: str, root: str, policy: dict, ids, agent=None, verifie
         known = set()
     missing = [i for i in ids if i not in known]
     if missing:
-        say(f"FAIL {', '.join(missing[:5])} is not a case of this job's design")
-        return 1
+        return f"{', '.join(missing[:5])} is not a case of this job's design"
     entries = casereview.read(job_dir)["design"]
     not_approved = [i for i in ids if (entries.get(i) or {}).get("state") != "approved"
                     or (entries.get(i) or {}).get("automate") is False]
     if not_approved:
-        say(f"FAIL approve the case(s) and tick Automate first: {', '.join(not_approved[:8])}")
-        return 1
-    with io.open(os.path.join(job_dir, AUTOMATE_FILE), "w", encoding="utf-8") as fh:
-        json.dump(ids, fh)
+        return f"approve the case(s) and tick Automate first: {', '.join(not_approved[:8])}"
     prior = read_review(job_dir)
-    adding = prior.get("state") in ("pending-review", "verify-failed") and not prior.get("mock")
+    state = prior.get("state")
+    if state == "generating":
+        return "a run of this job is still going. Wait for it, or Stop it."
+    if state in ("pending-review", "verify-failed"):
+        if prior.get("mock"):
+            return ("the change waiting was made by the stand-in (mock Cursor). Discard it on the "
+                    "Commit and push tab, set \"cursor\": false in tools/agent/mock.json, then Automate.")
+        if (prior.get("scope") or "new-test") != "new-test":
+            return (f"the change waiting for this job was made for {prior.get('scope')}"
+                    + (f" (suite {prior.get('suite')})" if prior.get("suite") else "")
+                    + ", not for new tests. Approve or Discard it on the Commit and push tab "
+                      "first; a migration request is its own job.")
+    if state == "push-failed":
+        return ("this job's change was committed but the push failed. Push it again on the Commit "
+                "and push tab first.")
+    if state in ("pushed", "approved-local"):
+        return ("this job's change was already approved"
+                + (f" and pushed as {prior.get('branch')}" if prior.get("branch") else "")
+                + ". Its files are still in your working tree, uncommitted. Automate more cases "
+                  "once its pull request is merged and pulled, from a new job.")
+    return ""
+
+
+def cmd_automate(job_dir: str, root: str, policy: dict, ids, agent=None, verifier=None) -> int:
+    """Cursor writes the tests of some of the approved cases (one row's
+    Automate, or the ticked ones). All of a job's runs make ONE change: a
+    run when a change is already waiting adds to it, as Ask Cursor to
+    change it does; otherwise it starts the change. What each case's run
+    came to is kept for the page (automated-cases.json)."""
+    global _AUTOMATE_ONLY
+    why = automate_refusal(job_dir, ids)
+    if why:
+        say(f"FAIL {why}")
+        return 1
+    ids = [str(i).strip() for i in ids if str(i).strip()]
+    try:
+        os.remove(os.path.join(job_dir, AUTOMATE_FILE))      # left by an earlier version
+    except OSError:
+        pass
+    prior = read_review(job_dir)
+    adding = prior.get("state") in ("pending-review", "verify-failed")
+    _AUTOMATE_ONLY = set(ids)
     try:
         if adding:
             say(f" .. a change is waiting for review: these case(s) are added to it: {', '.join(ids)}")
-            with io.open(os.path.join(job_dir, FOLLOWUP_FILE), "w", encoding="utf-8") as fh:
-                fh.write(f"Write the tests of the designed case(s) {', '.join(ids)} (listed below), in the "
-                         f"same change: keep everything already written, and add to it.")
-            rc = cmd_followup(job_dir, root, policy, agent, verifier)
+            rc = cmd_followup(job_dir, root, policy, agent, verifier, text=(
+                f"Write the tests of the designed case(s) {', '.join(ids)} (listed above, under "
+                f"TEST CASES PROPOSED FOR THIS JOB), in the same change: keep everything already "
+                f"written, and add to it."))
         else:
             say(f" .. Cursor writes the test(s) of: {', '.join(ids)}")
             rc = cmd_generate(job_dir, root, policy, "new-test", "", agent, verifier)
     finally:
-        try:
-            os.remove(os.path.join(job_dir, AUTOMATE_FILE))
-        except OSError:
-            pass
+        _AUTOMATE_ONLY = set()
     after = read_review(job_dir)
-    done = automated_cases(job_dir)
     state = str(after.get("state") or "none")
-    word = {"pending-review": "written -- in the change waiting for review",
-            "verify-failed": "written, but the change does not compile",
-            "rejected": "not written -- the run was rejected",
-            }.get(state, state)
+    ran = after.get("started") != prior.get("started")      # this run wrote review.json
+    if rc == 0 and state == "pending-review" and ran:
+        written, word = True, "written -- in the change waiting for review"
+    elif state == "verify-failed" and ran:
+        written, word = True, "written, but the change does not compile"
+    elif adding and after.get("followup_failed"):
+        written, word = False, "not written -- " + _one_line(after.get("followup_failed"), 200)
+    elif state == "rejected" and ran:
+        written, word = False, "not written -- the run was rejected: " + _one_line(after.get("reason"), 200)
+    else:
+        written, word = False, "not written -- the run ended early; see its log"
+    done = automated_cases(job_dir)
     for i in ids:
-        done[i] = {"state": state, "said": word, "at": _now(), "rc": rc}
+        done[i] = {"state": state, "said": word, "at": _now(), "rc": rc, "written": written,
+                   "change": str(after.get("change") or "") if written else ""}
     with io.open(os.path.join(job_dir, AUTOMATED_FILE), "w", encoding="utf-8") as fh:
         json.dump(done, fh, indent=1)
     return rc
@@ -2250,14 +2356,16 @@ FOLLOWUP_FILE = "agent-followup.txt"
 MAX_FOLLOWUP = 20000
 
 
-def cmd_followup(job_dir: str, root: str, policy: dict, agent=None, verifier=None) -> int:
+def cmd_followup(job_dir: str, root: str, policy: dict, agent=None, verifier=None,
+                 text: str = None) -> int:
     """The reviewer asks Cursor to change what it wrote: the same run as
     generate, on top of the change waiting for review, with the person's
     words and the diff so far in the prompt. The scope is the one the
     change was made in; the baseline stays the tree as it was before the
     FIRST run, so Discard still puts everything back and the diff shows
-    the whole change."""
-    text = _read(os.path.join(job_dir, FOLLOWUP_FILE)).strip()
+    the whole change. `text`: the request, when it is not the one typed in
+    the box (Automate's) -- the box's own text is left as it is."""
+    text = (_read(os.path.join(job_dir, FOLLOWUP_FILE)) if text is None else text).strip()
     if not text:
         say("FAIL nothing was asked: write what Cursor should change in the box first.")
         return 1
@@ -2409,6 +2517,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
     before = dirty_paths(root)
     flags_before = hidden_flags(root)
     ignored_before = ignored_entries(root)
+    ignored_kids = ignored_children(root, ignored_before)
     git_before = git_internals(root)
     stale = [p for p in before if in_roots(p, roots)]
     if followup:
@@ -2493,7 +2602,10 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         "mock": mocked,
         "pushable": bool(scope.get("pushable")), "base_commit": commit,
         "base_branch": branch, "started": _now(),
+        "change": str((prior or {}).get("change") or "") if followup else "",
         "followups": asked})
+    if not review["change"]:
+        review = write_review(job_dir, dict(review, change=review["started"]))
     if followup:
         say(f" .. a follow-up on the change waiting for review (#{len(asked)}): "
             f"{_one_line(followup, 160)}")
@@ -2591,7 +2703,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         new_ignored = sorted(p for p in ignored_entries(root) - ignored_before
                              if not in_roots(p, roots)
                              and not in_roots(p.rstrip("/") + "/", roots)
-                             and not was_ignored_whole(p, ignored_before))
+                             and not was_ignored_whole(p, ignored_before, ignored_kids))
         new_ignored = remove_new_ignored(root, new_ignored, ignored_before)
         if new_ignored:
             found.append("files or folders git ignores were created outside the "
@@ -2767,7 +2879,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         new_ignored = sorted(p for p in ignored_entries(root) - ignored_before
                              if not in_roots(p, roots)
                              and not in_roots(p.rstrip("/") + "/", roots)
-                             and not was_ignored_whole(p, ignored_before))
+                             and not was_ignored_whole(p, ignored_before, ignored_kids))
         new_ignored = remove_new_ignored(root, new_ignored, ignored_before)
         tracked = split_created(root, classify_tracked(before, dirty_paths(root), roots))
         gen = classify_generated(gen_before, snapshot_generated(root, policy), roots)
@@ -3300,11 +3412,12 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
     rc, out = git(root, "-c", f"core.hooksPath={nohooks}", "push", "--no-verify",
                   remote, f"{ref}:{ref}")
     if rc != 0:
+        said = _URL_RX.sub("<the remote>", out.strip())[-400:]
         write_review(job_dir, dict(review, state="push-failed", branch=branch,
-                                   commit=sha, reason=out.strip()[-400:]))
+                                   commit=sha, reason=said))
         clog.write(f"push FAILED; commit {sha[:8]} kept on {branch}")
         say(f"FAIL push failed; the commit is kept on local branch "
-            f"{branch}:\n{out.strip()[-400:]}")
+            f"{branch}:\n{said}")
         return 1
     write_review(job_dir, dict(review, state="pushed", branch=branch,
                                commit=sha, pushed=_now()))
@@ -3348,6 +3461,11 @@ def main(argv=None) -> int:
     policy = load_policy()
     if args.command == "setup":
         return cmd_setup(job_dir, ROOT)
+    if args.command == "automate":
+        why = automate_refusal(job_dir, args.cases.split(","))
+        if why:
+            say(f"FAIL {why}")
+            return 1
     if args.command in ("followup", "generate", "automate"):
         # Every run checks the Cursor setup first (the SDK, the key, the
         # bridge, the work tree): a run that would fail on one says so in

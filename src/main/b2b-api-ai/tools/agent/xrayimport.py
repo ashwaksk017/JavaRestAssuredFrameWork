@@ -224,6 +224,7 @@ def run(job: str, root: str = "", story: str = "", conn=None, transport=None, cf
     if not cases:
         raise Refused(f"none of the {len(tests)} test(s) linked to {story} has steps to automate: "
                       + "; ".join(f"{n['key']} ({n['why']})" for n in not_used[:8]))
+    number_cases(job_dir, cases)
     design = {"kind": "design", "source": "xray", "mock": mocked, "at": _now(), "job": job,
               "service": story, "brief": loop.brief_fingerprint(job_dir),
               "summary": (f"{len(cases)} case(s) taken from the Xray tests linked to {story}, as "
@@ -250,6 +251,36 @@ def run(job: str, root: str = "", story: str = "", conn=None, transport=None, cf
             "count": len(cases), "keys": [c["xray_key"] for c in cases], "not_used": not_used,
             "mock_jira": mocked,
             "message": design["summary"] + " Review them, then Automate them."}
+
+
+def number_cases(job_dir: str, cases: list) -> None:
+    """Give each imported case its id. A test this job already keyed to a
+    case (Create in Xray, or an earlier import) gets THAT case's id back,
+    and with it the review decision about that same test. Every other
+    case takes an id no decision or Xray key is held under: TC-001 of a
+    cleared design was approved and edited as a different case, and an
+    import that reused the number inherited both."""
+    reserved = loop._design_module().reserved_ids(job_dir)
+    by_key = {}
+    for name, entry in (xt.read_keys(job_dir).get("tests") or {}).items():
+        if str(name).startswith("design:") and isinstance(entry, dict) and entry.get("key"):
+            by_key.setdefault(str(entry["key"]), str(name).split(":", 1)[1])
+    used, n = set(), 0
+    for c in cases:
+        old = by_key.get(c["xray_key"])
+        if old and old not in used:
+            c["id"] = old
+            used.add(old)
+    for c in cases:
+        if c["id"] in used and by_key.get(c["xray_key"]) == c["id"]:
+            continue
+        while True:
+            n += 1
+            candidate = f"TC-{n:03d}"
+            if candidate not in reserved and candidate not in used:
+                break
+        c["id"] = candidate
+        used.add(candidate)
 
 
 def _redact(text: str, private: dict) -> str:

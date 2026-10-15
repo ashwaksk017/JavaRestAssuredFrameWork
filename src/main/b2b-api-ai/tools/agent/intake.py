@@ -396,17 +396,29 @@ def _around(issue: dict, how: str, budget: int) -> dict:
             "text": text[:cap], "cut": max(0, len(text) - cap)}
 
 
+_TOKEN_REFUSED_RX = re.compile(r"\b(401|403)\b|unauthori[sz]ed|forbidden|anonymous", re.I)
+
+
 def token_verdict(conn: dict, transport=None) -> str:
     """What Jira says of the configured token, one line; '' when it could
     not be asked. Only the real transport is used: a reader's stand-in
-    answers for issues, not for /myself."""
+    answers for issues, not for /myself.
+
+    "not accepted: ..." only when Jira said so (401, 403, or an anonymous
+    answer). Jira down, a 5xx or a 429 is "could not be checked: ...": the
+    token is not to blame for those."""
     if transport is not None:
         return ""
     try:
         accepted, said = jira_search.verify(conn)
     except Exception as e:                               # noqa: BLE001
-        return f"it could not be asked ({type(e).__name__})"
-    return _one_line(said if accepted else f"not accepted: {said}", 300)
+        diag.trace()
+        return f"could not be checked ({type(e).__name__})"
+    if accepted:
+        return _one_line(said, 300)
+    if _TOKEN_REFUSED_RX.search(str(said)):
+        return _one_line(f"not accepted: {said}", 300)
+    return _one_line(f"could not be checked: {said}", 300)
 
 
 def gather_jira(link: str, sources: str, slot: str, connect=None, transport=None,
@@ -487,10 +499,13 @@ def gather_jira(link: str, sources: str, slot: str, connect=None, transport=None
         if not mocked:
             diag.step("The story could not be read; checking the Jira token")
             out["token"] = token_verdict(conn, transport)
-            if out["token"] and not out["token"].startswith("the token is accepted"):
+            if out["token"].startswith("not accepted"):
                 out["reason"] = _one_line(conf_fetch.redact(
                     f"the Jira token was not accepted ({out['token']}): put a current one in "
                     f"program_configuration.json (jira_config) and read again. ({out['reason']})"), 500)
+            elif out["token"].startswith("could not be checked"):
+                out["reason"] = _one_line(conf_fetch.redact(
+                    f"{out['reason']} (the Jira token {out['token']})"), 500)
         return out
     read = [i for i in chain if not i.get("_error")]
     outdir = os.path.join(sources, slot)
