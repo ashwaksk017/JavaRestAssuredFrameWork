@@ -871,6 +871,17 @@ it (a converted suite's change is kept on this machine instead);
 
 #### Automate the cases
 
+The prompt of every run carries **the part of the job's specification
+the cases need**: the paths of the cases' endpoints, and the schemas,
+parameters and responses they refer to (through `$ref`s), so that a
+request body -- its required fields, its allowed values -- is built from
+the contract rather than guessed. The specification is the one the
+design used (pasted, uploaded, fetched from Confluence, or found in the
+story's pages); hosts and servers are never sent; an endpoint not in it
+is named so Cursor says so. With no specification nothing is sent.
+Cases taken from Xray get their endpoint from their steps (`GET
+/path`), checked against the specification the same way.
+
 Each case of the review table has an **Automate** button (enabled once
 it is approved and marked Automate); **Automate the approved cases**
 does every such case in one run. Cursor is handed only those cases. When

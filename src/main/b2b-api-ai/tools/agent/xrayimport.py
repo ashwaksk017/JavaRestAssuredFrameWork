@@ -63,6 +63,28 @@ MAX_TESTS = 40
 MAX_STEPS = 40
 MAX_TEXT = 2000
 _KEY_RX = re.compile(r"^[A-Z][A-Z0-9_]{0,19}-[0-9]{1,9}$")
+_STEP_ENDPOINT_RX = re.compile(r"\b(GET|POST|PUT|PATCH|DELETE)[:\s]+(/[^\s\"'`,;)]+)")
+
+
+def endpoint_in_steps(steps: list) -> str:
+    """The first `VERB /path` a test's steps name, or ""."""
+    for s in steps:
+        for field in ("action", "data", "expected"):
+            m = _STEP_ENDPOINT_RX.search(str(s.get(field) or ""))
+            if m:
+                return f"{m.group(1)} {m.group(2).rstrip('.')}"
+    return ""
+
+
+def spec_keys(job_dir: str) -> set:
+    """The endpoints of the job's specification, as endpoint_key writes
+    them; an empty set when there is none."""
+    spec, _where, _rel = loop.job_spec(job_dir)
+    if spec is None:
+        return set()
+    d = loop._design_module()
+    lines = d.match_lines(d.endpoints_of(spec), d.base_paths(spec))
+    return {d.endpoint_key(line) for line in lines} - {""}
 
 
 class Refused(RuntimeError):
@@ -126,12 +148,16 @@ def design_md(design: dict) -> str:
          design["summary"], ""]
     for c in design["test_cases"]:
         L += [f"## {c['id']} [Xray {c['xray_key']}] {c['title']}", ""]
+        if c.get("endpoint"):
+            L += [f"Endpoint: `{c['endpoint']}`", ""]
         for n, s in enumerate(c["steps"], 1):
             L.append(f"{n}. {s['action']}" + (f" -- data: {s['data']}" if s["data"] else ""))
             L.append(f"   - expect: {s['expected'] or '(nothing stated)'}")
         L.append("")
     if design["not_used"]:
         L += ["## Not used", ""] + [f"- {n['key']}: {n['why']}" for n in design["not_used"]] + [""]
+    if design.get("warnings"):
+        L += ["## Warnings", ""] + [f"- {w}" for w in design["warnings"]] + [""]
     return "\n".join(L).rstrip() + "\n"
 
 
@@ -162,6 +188,8 @@ def run(job: str, root: str = "", story: str = "", conn=None, transport=None, cf
     private = loop.config_secrets(os.path.join(root, "src", "main", "resources", "program_configuration.json"))
     hide = lambda s: _redact(s, private)
     cases, not_used = [], []
+    known = spec_keys(job_dir)
+    off_spec = []
     for t in tests:
         diag.step(f"Reading the steps of {t['key']}")
         try:
@@ -176,13 +204,23 @@ def run(job: str, root: str = "", story: str = "", conn=None, transport=None, cf
         if not steps:
             not_used.append({"key": t["key"], "why": "it has no steps in Xray"})
             continue
+        endpoint = endpoint_in_steps(steps)
+        in_spec = None
+        if endpoint and known:
+            in_spec = loop._design_module().endpoint_key(endpoint) in known
+            if not in_spec:
+                off_spec.append(f"{t['key']}: {endpoint}")
         cases.append({
             "id": f"TC-{len(cases) + 1:03d}", "title": hide(t["summary"]) or t["key"],
-            "endpoint": "", "type": "xray", "priority": "", "preconditions": "",
+            "endpoint": hide(endpoint), "type": "xray", "priority": "", "preconditions": "",
             "steps": [{"action": hide(_text(s.get("action"), MAX_TEXT)),
                        "data": hide(_text(s.get("data"), MAX_TEXT)),
                        "expected": hide(_text(s.get("expected"), MAX_TEXT))} for s in steps[:MAX_STEPS]],
             "requirement_refs": [story], "xray_key": t["key"], "xray_status": t["status"]})
+        if in_spec:
+            # Only ever True: a test from Xray is automated even when its
+            # endpoint is not in the specification -- that is said, below.
+            cases[-1]["endpoint_in_spec"] = True
     if not cases:
         raise Refused(f"none of the {len(tests)} test(s) linked to {story} has steps to automate: "
                       + "; ".join(f"{n['key']} ({n['why']})" for n in not_used[:8]))
@@ -190,7 +228,10 @@ def run(job: str, root: str = "", story: str = "", conn=None, transport=None, cf
               "service": story, "brief": loop.brief_fingerprint(job_dir),
               "summary": (f"{len(cases)} case(s) taken from the Xray tests linked to {story}, as "
                           f"written in Xray" + (f"; {len(not_used)} not used" if not_used else "") + "."),
-              "test_cases": cases, "open_questions": [], "warnings": [], "not_used": not_used}
+              "test_cases": cases, "open_questions": [],
+              "warnings": ([f"{len(off_spec)} test(s) name an endpoint the specification does not have: "
+                            + "; ".join(off_spec[:8])] if off_spec else []),
+              "not_used": not_used}
     os.makedirs(job_dir, exist_ok=True)
     with io.open(os.path.join(job_dir, "design.json"), "w", encoding="utf-8") as fh:
         json.dump(design, fh, indent=1, ensure_ascii=False)

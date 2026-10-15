@@ -161,6 +161,14 @@ class InsideThePaths(Repo):
         self.assertIn("Do not run mvn, gradle, the tests or any other build yourself", seen["p"])
 
 
+SPEC_FOR_CASES = '''{"swagger": "2.0", "info": {"title": "things"}, "host": "api.example.test", "basePath": "/v1",
+ "paths": {"/x": {"post": {"summary": "create a thing", "parameters": [{"in": "body", "name": "body",
+   "schema": {"$ref": "#/definitions/Thing"}}], "responses": {"201": {"description": "made"}}}},
+  "/other": {"get": {"summary": "something else", "responses": {"200": {"description": "ok"}}}}},
+ "definitions": {"Thing": {"type": "object", "required": ["rateType"],
+   "properties": {"rateType": {"type": "string", "enum": ["BAR", "CORP"]}}},
+  "Unused": {"type": "object", "properties": {"nobodyAsks": {"type": "string"}}}}}'''
+
 DESIGN_CASE = {"id": "TC-001", "title": "Create a thing returns 201", "endpoint": "POST /x",
                "type": "positive", "priority": "high", "preconditions": "",
                "steps": [{"action": "POST a valid thing", "data": "valid values",
@@ -337,6 +345,33 @@ class TheReviewDecidesWhatIsWritten(Repo):
             self.assertEqual(loop.cmd_automate(self.job, self.root, self.policy, ["../x"]), 1)
         self.assertIn("approve the case(s)", out.getvalue())
         self.assertIn("is not a case of this job's design", out.getvalue())
+
+    def test_the_specification_for_the_cases_endpoints_goes_with_them(self):
+        with io.open(os.path.join(self.job, "design-swagger.txt"), "w", encoding="utf-8") as fh:
+            fh.write(SPEC_FOR_CASES)
+        self.design(DESIGN_CASE, dict(DESIGN_CASE, id="TC-002", title="Not in the spec", endpoint="GET /nowhere"))
+        loop.casereview.update(self.job, "design", ["TC-001", "TC-002"], state="approved")
+        seen = {}
+        self.assertEqual(self.generate(self.agent_that_writes(seen)), 0)
+        p = seen["p"]
+        self.assertIn("===== THE API SPECIFICATION, for the endpoints of these cases =====", p)
+        self.assertIn('"rateType"', p, "the body's schema, through its $ref")
+        self.assertIn('"BAR"', p, "the allowed values")
+        self.assertNotIn("/other", p, "a path no case needs is not sent")
+        self.assertNotIn("nobodyAsks", p, "a schema no case needs is not sent")
+        self.assertNotIn("api.example.test", p, "the host is never sent")
+        self.assertIn("Not in the specification (write these from the case alone, and say so): GET /nowhere", p)
+        self.assertIn("design-swagger.txt", p, "where the whole file is")
+        self.assertLess(p.index("end of proposed test cases"), p.index("THE API SPECIFICATION"))
+
+    def test_without_a_specification_nothing_is_said_of_one(self):
+        self.design(DESIGN_CASE)
+        loop.casereview.update(self.job, "design", ["TC-001"], state="approved")
+        seen = {}
+        self.assertEqual(self.generate(self.agent_that_writes(seen)), 0)
+        self.assertNotIn("THE API SPECIFICATION", seen["p"])
+        self.assertEqual(loop.endpoints_of_cases("TC-001 [positive, high] [Xray ABC-9] POST /x -- t\n    do: a"),
+                         ["POST /x"])
 
     def test_with_nothing_decided_every_case_goes_and_the_plan_leads(self):
         self.design(DESIGN_CASE, dict(DESIGN_CASE, id="TC-002", title="Second"))

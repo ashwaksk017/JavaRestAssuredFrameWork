@@ -117,6 +117,29 @@ class Importing(Base):
         self.assertTrue(entry["imported"])
 
 
+class EndpointsAndTheSpecification(Base):
+    def test_the_endpoint_is_read_from_the_steps_and_checked_against_the_specification(self):
+        with io.open(os.path.join(self.job, "design-swagger.txt"), "w", encoding="utf-8") as fh:
+            json.dump({"swagger": "2.0", "info": {"title": "t"}, "paths": {
+                "/members/{memberId}/spendDetail": {"get": {"responses": {"200": {"description": "ok"}}}}}}, fh)
+        self.jira.steps["ABC-15"] = [("POST: /x/y as a member", "", "201")]
+        r = self.run_it()
+        d = json.loads(self.read("design.json"))
+        by_key = {c["xray_key"]: c for c in d["test_cases"]}
+        self.assertEqual(by_key["ABC-11"]["endpoint"], "GET /members/{memberId}/spendDetail")
+        self.assertTrue(by_key["ABC-11"]["endpoint_in_spec"])
+        self.assertEqual(by_key["ABC-15"]["endpoint"], "POST /x/y")
+        self.assertNotIn("endpoint_in_spec", by_key["ABC-15"], "never False: an Xray test is still automated")
+        self.assertEqual(d["warnings"], ["1 test(s) name an endpoint the specification does not have: ABC-15: POST /x/y"])
+        self.assertIn("## Warnings", self.read("design.md"))
+        self.assertEqual(r["count"], 2)
+
+    def test_steps_that_name_no_endpoint_leave_it_empty(self):
+        self.assertEqual(xi.endpoint_in_steps([{"action": "Log in as a member", "data": "", "expected": "ok"}]), "")
+        self.assertEqual(xi.endpoint_in_steps([{"action": "send it", "data": "GET /a/b, then", "expected": ""}]),
+                         "GET /a/b")
+
+
 class WhatIsRefused(Base):
     def test_a_design_already_there_no_story_no_links_no_steps(self):
         with io.open(os.path.join(self.job, "design.json"), "w", encoding="utf-8") as fh:
