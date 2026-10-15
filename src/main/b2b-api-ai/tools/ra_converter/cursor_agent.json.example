@@ -1,8 +1,0 @@
-{
-  "enabled": false,
-  "apiKey": "",
-  "model": "composer-2.5",
-  "runtime": "local",
-  "cwd": "",
-  "maxSamplesPerCategory": 3
-}

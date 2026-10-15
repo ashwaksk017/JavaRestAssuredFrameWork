@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">
+
+<!-- Every story test (package com.hi.api.tests.jira) in the group smoke.
+     Written by the test workbench (tools/agent/suitemap.py) the first
+     time a job's cases were mapped to this group; run with
+       mvn -o test -DsuiteXmlFile=src/test/resources/suites/jira/group-smoke.xml
+     Which cases are in it: tools/agent/suite-map.json, or the case's
+     groups set by hand on the review table. -->
+<suite name="jira-smoke" verbose="1">
+    <listeners>
+        <listener class-name="io.qameta.allure.testng.AllureTestNg"/>
+    </listeners>
+    <test name="jira-smoke">
+        <groups>
+            <run>
+                <include name="smoke"/>
+            </run>
+        </groups>
+        <packages>
+            <package name="com.hi.api.tests.jira"/>
+        </packages>
+    </test>
+</suite>

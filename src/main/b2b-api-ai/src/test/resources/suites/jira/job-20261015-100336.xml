@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">
+
+<!-- The tests written for job job- 20261015- 100336. Written by the test workbench
+     (tools/agent) when Cursor finished; run on their own with
+       mvn -o test -DsuiteXmlFile=src/test/resources/suites/jira/job-20261015-100336.xml
+     testng-jira.xml runs them too, with every other story's. -->
+<suite name="jira-job-20261015-100336" verbose="1">
+    <listeners>
+        <listener class-name="io.qameta.allure.testng.AllureTestNg"/>
+    </listeners>
+    <test name="job-20261015-100336">
+        <groups>
+            <run>
+                <include name="jira"/>
+            </run>
+        </groups>
+        <classes>
+            <class name="com.hi.api.tests.jira.H4bMemberStaysTest"/>
+        </classes>
+    </test>
+</suite>
