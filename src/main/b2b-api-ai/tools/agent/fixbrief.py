@@ -251,7 +251,7 @@ def _resolve(root: str, cls: str, method: str, suite: str) -> tuple:
         return cls, "", ""           # named a suite that does not hold it: the caller leaves it out
     raise Ambiguous(f"{cls}.{method} exists in suites {', '.join(sorted({c[2] for c in cands}))} and "
                     f"neither surefire nor the audit says which one failed: name the suite in the "
-                    f"Agentic tab's Suite box (or --suite)")
+                    f"Suite box of the Migration from ReadyAPI tab (or --suite)")
 
 
 def _suite_of(class_file: str) -> str:
@@ -426,7 +426,7 @@ def gather(root: str, signature: str = "", test: str = "", suite: str = "", scop
         })
     if len(suites) > 1:
         raise Refused(f"the chosen failures span {len(suites)} suites ({', '.join(sorted(suites))}); "
-                      f"a converted job is one suite -- name the suite in the Agentic tab's Suite box "
+                      f"a converted job is one suite -- name the suite in the Migration tab's Suite box "
                       f"(or --suite) and the job takes that suite's cases")
     if not cases:
         raise Refused(f"none of the chosen failures is in suite {suite}; they are in: "
@@ -498,7 +498,7 @@ def brief_text(g: dict, job: str) -> str:
     if g["suite_files"]:
         L += [f"## This suite's generated classes (`src/main/java/com/hi/api/support/{g['suite']}/`)", "",
               ", ".join(g["suite_files"]), ""]
-    L += ["## Next", "", "Run Cursor on the Agentic Test Creation tab with the scope and suite above."]
+    L += ["## Next", "", "On the Migration from ReadyAPI tab, press Ask Cursor with the box empty: it runs on this brief."]
     return "\n".join(L).rstrip() + "\n"
 
 
@@ -596,7 +596,7 @@ def main(argv=None) -> int:
             pass
         return 1
     print(f" ok   {len(g['cases'])} failing case(s) of suite {g['suite'] or '-'} in the brief; "
-          f"scope {g['scope']}. Next: the Agentic Test Creation tab, Run Cursor.")
+          f"scope {g['scope']}. Next: the Migration from ReadyAPI tab, Ask Cursor.")
     for c in g["cases"]:
         print(f"  - {c['test']}" + (f" [row {c['row']}]" if c['row'] and c['row'] != '-' else ""))
     return 0

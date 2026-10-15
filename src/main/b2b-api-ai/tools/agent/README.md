@@ -797,9 +797,20 @@ python tools/agent/manualtests.py inventory --job <job> --project ABC
 python tools/agent/manualtests.py generate  --job <job> --app "Group booking"
 ```
 
-### Convert ReadyAPI
+### Migration from ReadyAPI
 
-Converts ReadyAPI project files into this project. The page shows the
+*(Was "Convert ReadyAPI".)* Converts ReadyAPI project files into this
+project, and below the converter, **Ask Cursor**: say what should be
+different, and choose what Cursor may change -- this suite's converted
+Java (kept on this machine, re-applied after every reconvert of the
+suite) or the converter itself (committed and pushed). A job's first
+request becomes its brief and plan; a request while a change is waiting
+adds to it. A job that holds a story or a design is refused: a migration
+request is its own job. Fix with Cursor on the Failures tab writes the
+request for you -- leave the box empty and press Ask Cursor. The change
+waits on the Commit and push tab.
+
+The converter itself: The page shows the
 handful of options a person sets; everything else keeps the converter's
 own default. The command that ran is in the job's status file, so a run
 can always be repeated in a terminal.
@@ -842,10 +853,32 @@ and will run without it. When the suite does read workbooks, leaving it
 out empties every DataSource column, and the run then looks like an API
 problem rather than a missing path, which is why the form says so.
 
-### Agentic Test Creation
+### Commit and push
 
-The only tab that writes code. It takes the plan the Automate Test Case tab produced and has
-**Cursor** act on it.
+*(Was "Agentic Test Creation". Cursor is now run where the work starts:
+**Automate the cases** at the bottom of the Automate Test Case tab --
+a case's own Automate button, or every approved case at once -- and
+**Ask Cursor** on the Migration from ReadyAPI tab. All of a job's runs
+make one change; this tab is where it is reviewed and pushed. The
+Cursor setup is checked as every run starts; there is no button for it.
+What this section says about running Cursor, its log and the follow-up
+box now happens on those two tabs.)*
+
+The change Cursor made for the job waits here: its files, its diff, a
+code review. **Approve & push** commits it to its own branch and pushes
+it (a converted suite's change is kept on this machine instead);
+**Discard** puts everything back; **Dismiss** puts an outcome away.
+
+#### Automate the cases
+
+Each case of the review table has an **Automate** button (enabled once
+it is approved and marked Automate); **Automate the approved cases**
+does every such case in one run. Cursor is handed only those cases. When
+a change is already waiting, the run adds to it -- the cases written
+before stay -- so a job has one change however many runs it took. Each
+row then says what its last run came to (written, does not compile,
+rejected). **Ask Cursor to change it** sits beside, for anything the
+cases do not say.
 
 **The repository, and where the branch goes.** The strip at the top of
 the tab reads git each time the tab is opened: the branch checked out,

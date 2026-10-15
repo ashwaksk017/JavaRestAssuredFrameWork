@@ -533,7 +533,8 @@ def main() -> int:
             html = page.dom("convert")
             # Only the Convert tab's own part of the page: another tab's
             # help text names some of these options.
-            html = html[html.index('id="tab-convert"'):html.index('id="tab-agent"')]
+            # The converter's form: the Migration tab up to its Ask Cursor part.
+            html = html[html.index('id="tab-convert"'):html.index('id="migration-ask-part"')]
             check("the Convert tab lists what was chosen, with where it was put",
                   "Check Ui Suite.xml" in html
                   and "target/convert-input/Check Ui Suite.xml" in html)
@@ -745,10 +746,18 @@ def main() -> int:
                   'id="story"' in html and 'for="story"' in html and "Confluence pages" in html)
 
             bar = html[html.find('class="tabs"'):html.find("</nav>")]
-            check("the two tabs that belong together stand together, under their names",
-                  0 < bar.find("Automate Test Case") < bar.find("Agentic Test Creation")
-                  < bar.find("Manual tests") and "New test case<" not in html
-                  and "Agent loop<" not in html)
+            check("the tabs are named for what is done on them, in order",
+                  0 < bar.find("Automate Test Case") < bar.find("Commit and push")
+                  < bar.find("Manual tests") < bar.find("Migration from ReadyAPI")
+                  and "Agentic Test Creation<" not in bar and "Convert ReadyAPI<" not in bar)
+            check("Cursor is run from where the cases are, and setup is not a button",
+                  'id="auto-selected"' in html and 'id="agent-ask"' in html and 'id="cursor-log"' in html
+                  and 'id="agent-setup"' not in html and 'id="agent-generate"' not in html)
+            mig = mocked.dom("convert")
+            mig = mig[mig.find('id="migration-ask-part"'):]
+            check("the Migration tab asks Cursor about a converted suite or the converter, nothing else",
+                  'id="mig-run"' in mig and 'value="converted"' in mig and 'value="converter"' in mig
+                  and 'value="new-test"' not in mig and 'id="converted-suites"' in mig)
             check("the design can be asked for the whole specification",
                   'id="design-whole"' in html)
             code, r = mocked.call("/api/repo")
@@ -816,9 +825,12 @@ def main() -> int:
                   and "Review (1 approved)" in html, html[html.find('id="flow"'):][:400])
             strip = html[html.find('id="flow"'):html.find("</ol>", html.find('id="flow"'))]
             check("each step of the strip is a link to where it is done",
-                  strip.count('class="step-link"') == 6
-                  and 'data-tab="agent" data-target="agent-generate"' in strip
+                  strip.count('class="step-link"') == 7
+                  and 'data-tab="new" data-target="auto-selected"' in strip
+                  and 'data-tab="agent" data-target="agent-push"' in strip
                   and 'data-tab="new" data-target="design-review"' in strip, strip[:400])
+            check("each approved case can be automated from its row",
+                  ">Automate</button>" in html or ">Again</button>" in html)
             code, rc = press("xray-create", {"--what": "design", "--story": "ABC-123",
                                              "--confirm-story": "ABC-123", "--expect": "mock"})
             got = json.loads(mocked.call(f"/api/artifact?job={JOB}&name=xray-result.json")[1]
@@ -893,11 +905,13 @@ def main() -> int:
             with io.open(os.path.join(job_dir, "proposed.diff"), "a", encoding="utf-8") as fh:
                 fh.write("--- a/later.txt\n+++ b/later.txt\n@@ -1 +1 @@\n-a\n+b\n")
             html = mocked.dom("agent")
+            html = html[html.find('id="tab-agent"'):]          # the Commit and push tab only
             check("a diff written again after the review is said not to be the one read",
                   "WRITTEN AGAIN" in html
                   and html.index("WRITTEN AGAIN") < html.index("[MOCK] the test is switched off"))
             waiting("2026-10-10T11:11:11Z")
             html = mocked.dom("agent")
+            html = html[html.find('id="tab-agent"'):]
             check("a review of an earlier run says so, above what it found",
                   "EARLIER run" in html
                   and html.index("EARLIER run") < html.index("[MOCK] the test is switched off"))
@@ -1160,8 +1174,8 @@ def main() -> int:
                 with io.open(store, "w", encoding="utf-8") as fh:
                     fh.write(kept)
             os.environ["WORKBENCH_MOCK"] = "0"
-        check("a field the page hid stays hidden (the Suite box, for a new test)",
-              'id="agent-suite-field" hidden' in html or 'id="agent-suite-field" hidden=""' in html)
+        check("the Suite box shows for a converted suite, the Migration tab's default",
+              'id="agent-suite-field" hidden' not in html and 'id="agent-suite-field"' in html)
     finally:
         srv.terminate()
         search.connect, search.ROOT = saved

@@ -291,6 +291,53 @@ class TheReviewDecidesWhatIsWritten(Repo):
         self.assertIn("Review the cases on the Automate Test Case tab again", out.getvalue())
         self.assertNotIn("every designed case is rejected", out.getvalue(), "not the wrong reason")
 
+    def test_automating_one_case_hands_over_only_that_case_and_records_it(self):
+        self.design(DESIGN_CASE, dict(DESIGN_CASE, id="TC-002", title="Second"))
+        loop.casereview.update(self.job, "design", ["TC-001", "TC-002"], state="approved")
+        seen = {}
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = loop.cmd_automate(self.job, self.root, self.policy, ["TC-002"],
+                                   agent=self.agent_that_writes(seen), verifier=OK)
+        self.assertEqual(rc, 0)
+        self.assertIn("TC-002", seen["p"])
+        self.assertNotIn("TC-001", seen["p"], "only the case asked for")
+        self.assertFalse(os.path.exists(os.path.join(self.job, loop.AUTOMATE_FILE)), "the filter is gone after")
+        done = loop.automated_cases(self.job)
+        self.assertEqual(done["TC-002"]["state"], "pending-review")
+        self.assertNotIn("TC-001", done)
+
+    def test_a_second_case_is_added_to_the_change_waiting(self):
+        self.design(DESIGN_CASE, dict(DESIGN_CASE, id="TC-002", title="Second"))
+        loop.casereview.update(self.job, "design", ["TC-001", "TC-002"], state="approved")
+        prompts = []
+
+        def agent(prompt):
+            prompts.append(prompt)
+            write(self.root, JIRA + ("FirstTest.java" if len(prompts) == 1 else "SecondTest.java"), "class X {}\n")
+            return {"result": "ok"}
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(loop.cmd_automate(self.job, self.root, self.policy, ["TC-001"], agent=agent, verifier=OK), 0)
+            self.assertEqual(loop.cmd_automate(self.job, self.root, self.policy, ["TC-002"], agent=agent, verifier=OK), 0)
+        self.assertIn("added to it", out.getvalue())
+        self.assertIn("THE REVIEWER ASKS", prompts[1])
+        self.assertIn("TC-002", prompts[1])
+        created = self.state()["files"]["created"]
+        self.assertIn(JIRA + "FirstTest.java", created, "the first case's test stays in the one change")
+        self.assertIn(JIRA + "SecondTest.java", created)
+        self.assertEqual(set(loop.automated_cases(self.job)), {"TC-001", "TC-002"})
+
+    def test_a_case_not_approved_or_not_in_the_design_is_refused(self):
+        self.design(DESIGN_CASE)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(loop.cmd_automate(self.job, self.root, self.policy, ["TC-001"]), 1)
+            self.assertEqual(loop.cmd_automate(self.job, self.root, self.policy, ["TC-009"]), 1)
+            self.assertEqual(loop.cmd_automate(self.job, self.root, self.policy, ["../x"]), 1)
+        self.assertIn("approve the case(s)", out.getvalue())
+        self.assertIn("is not a case of this job's design", out.getvalue())
+
     def test_with_nothing_decided_every_case_goes_and_the_plan_leads(self):
         self.design(DESIGN_CASE, dict(DESIGN_CASE, id="TC-002", title="Second"))
         seen = {}

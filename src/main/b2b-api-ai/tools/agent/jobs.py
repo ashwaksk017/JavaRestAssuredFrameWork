@@ -291,6 +291,11 @@ RUNNABLES = {
     },
     # The reviewer's words are written by the server to a fixed file in the
     # job directory; the command reads them from there, never from a path.
+    "agent-automate": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "loop.py"), "automate"],
+        "label": "Cursor writes the tests of the chosen approved cases, in the job's one change",
+        "options": {"--job": "text", "--cases": "text"},
+    },
     "agent-followup": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "loop.py"), "followup"],
         "label": "Cursor changes what it wrote, as the reviewer asks; then it is verified",
@@ -330,7 +335,7 @@ RUNNABLES = {
 # convert during an agent run would look like the agent rewriting every
 # suite; an agent run during a convert would "put back" half-written
 # files.
-EXCLUSIVE = {"convert", "agent-generate", "agent-followup", "agent-approve", "agent-discard",
+EXCLUSIVE = {"convert", "agent-generate", "agent-followup", "agent-automate", "agent-approve", "agent-discard",
              "agent-reapply", "verify-all"}
 
 # The only options that may be given more than once.
@@ -755,6 +760,79 @@ DESIGN_FILES = ("design.json", "design.md", "test-cases.csv", "xray.csv",
                 "agent-design.log", "agent-design.status.json")
 
 
+MIGRATION_SCOPES = ("converted", "converter")
+
+
+def migration_ask(job: str, scope: str, suite: str, text: str) -> dict:
+    """A request from the Migration from ReadyAPI tab: Cursor changes a
+    converted suite's Java (kept on this machine, put back after every
+    reconvert) or the converter itself. A job's first request becomes its
+    brief and plan; a request while a change is waiting adds to that
+    change. A job that holds a story or a design is refused: a migration
+    request is its own job."""
+    out = job_dir(job)
+    scope = str(scope or "").strip()
+    suite = str(suite or "").strip()
+    text = str(text or "").strip()
+    if scope not in MIGRATION_SCOPES:
+        raise ValueError("choose what Cursor may change: this suite's converted Java, or the converter")
+    if scope == "converted":
+        if not re.fullmatch(r"[a-z0-9_]{1,80}", suite):
+            raise ValueError("name the converted suite (its folder under support/)")
+        if not os.path.isdir(os.path.join(ROOT, "src", "main", "java", "com", "hi", "api", "support", suite)):
+            raise ValueError(f"suite {suite} is not converted on this machine")
+    if not text:
+        raise ValueError("write what Cursor should change")
+    if len(text) > 20000:
+        raise ValueError("that is more than 20,000 characters; keep the request short")
+    os.makedirs(out, exist_ok=True)
+    held = [n for n in ("design.json", "case-review.json") if os.path.isfile(os.path.join(out, n))]
+    try:
+        with io.open(os.path.join(out, "intake.json"), encoding="utf-8") as fh:
+            if isinstance(json.load(fh).get("story"), dict):
+                held.append("a story")
+    except (OSError, ValueError):
+        pass
+    if held:
+        raise ValueError(f"this job holds {', '.join(held)}; a migration request is its own job -- "
+                         f"name a new job (top right)")
+    try:
+        with io.open(os.path.join(out, "review.json"), encoding="utf-8") as fh:
+            waiting = json.load(fh).get("state") in ("pending-review", "verify-failed")
+    except (OSError, ValueError):
+        waiting = False
+    if waiting:
+        with io.open(os.path.join(out, "agent-followup.txt"), "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return dict(start(job, "agent-followup", {"--job": job}), runnable="agent-followup")
+    what = (f"suite {suite}'s converted Java: support/{suite}/, tests/imported/{suite}/, "
+            f"templates/{suite}/, csv/{suite}/ and its client" if scope == "converted"
+            else "the converter (tools/ra_converter/) and the runtime under it")
+    with io.open(os.path.join(out, "brief.md"), "w", encoding="utf-8") as fh:
+        fh.write(f"# Migration request\n\n- job: {job}\n- change: {what}\n\n## What is asked\n\n{text}\n")
+    with io.open(os.path.join(out, "plan.md"), "w", encoding="utf-8") as fh:
+        fh.write(f"# Plan: migration change ({scope})\n\nCHANGE -- {what}, as the brief asks:\n\n{text}\n\n"
+                 + ("Change only this suite's generated files; if the cause is in a class every suite "
+                    "shares, or in what the converter writes, say so and change nothing.\n"
+                    if scope == "converted" else
+                    "Fix the emitter, never a generated copy; add or extend a test_*.py; name the "
+                    "suites to convert again.\n"))
+    options = {"--job": job, "--scope": scope}
+    if scope == "converted":
+        options["--suite"] = suite
+    return dict(start(job, "agent-generate", options), runnable="agent-generate")
+
+
+def converted_suites() -> list:
+    """The suites converted on this machine (folders under support/)."""
+    base = os.path.join(ROOT, "src", "main", "java", "com", "hi", "api", "support")
+    try:
+        return sorted(d for d in os.listdir(base)
+                      if os.path.isdir(os.path.join(base, d)) and re.fullmatch(r"[a-z0-9_]{1,80}", d))
+    except OSError:
+        return []
+
+
 def clear_design(job: str) -> dict:
     """Take a job's design out: its result files, its log, and the kept
     Cursor replies (design-cache/) that a design asked again would
@@ -1023,7 +1101,7 @@ def read_artifact(job: str, name: str) -> str:
     The name is checked against a list rather than joined, so a job's
     directory cannot be used to read arbitrary files through the API.
     """
-    allowed = {"brief.md", "plan.md", "intake.json", "locate.json",
+    allowed = {"brief.md", "plan.md", "intake.json", "locate.json", "automated-cases.json",
                "proposed.diff", "review.json",
                "design.json", "design.md", "test-cases.csv", "xray.csv",
                "jira-result.json", "failures-result.json", "defects-result.json",

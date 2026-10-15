@@ -690,7 +690,7 @@ async function decide(j, what, ids, fields, stateEl) {
   }
 }
 
-function reviewTable(j, what, cases, entries, after) {
+function reviewTable(j, what, cases, entries, after, done) {
   const box = el("div", { class: "review" });
   const st = el("span", { class: "state" });
   const entryOf = (c) => entries[c.id] || {};
@@ -706,7 +706,7 @@ function reviewTable(j, what, cases, entries, after) {
     el("button", { type: "button", on: { click: bulk({ state: "rejected" }) } }, "Reject all"),
     el("small", { text: `${counts.approved} approved, ${counts.rejected} rejected, ${counts.proposed} not yet decided` }),
     st));
-  const headers = what === "design" ? ["Approve", "Automate", "Case", "Title", "Endpoint", "Steps", "Note"]
+  const headers = what === "design" ? ["Approve", "Automate", "Case", "Title", "Endpoint", "Steps", "Note", "Write it"]
                                     : ["Approve", "Case", "Title", "Steps", "Note"];
   box.append(table(headers, cases.map((c) => {
     const e = entryOf(c);
@@ -735,6 +735,15 @@ function reviewTable(j, what, cases, entries, after) {
     row.push(cell, el("div", {}, title));
     if (what === "design") row.push(el("code", { text: c.endpoint || "" }));
     row.push(steps, el("div", {}, note));
+    if (what === "design") {
+      const ran = (done || {})[c.id];
+      const go = el("button", { type: "button", text: ran ? "Again" : "Automate",
+                                title: "Cursor writes this case's test, in the job's one change",
+                                on: { click: () => automateCases([c.id]) } });
+      go.disabled = !(state === "approved" && e.automate !== false);
+      row.push(el("div", { class: "automate-cell" }, go,
+        ran ? el("small", { class: `flag ${ran.state === "pending-review" ? "" : "differs"}`, text: ran.said || ran.state }) : null));
+    }
     return row;
   })));
   return box;
@@ -784,9 +793,10 @@ async function showReview(what) {
   const j = job();
   const box = $(`${what}-review`);
   if (!j) { box.replaceChildren(); return; }
-  const [result, review] = await Promise.all([
+  const [result, review, done] = await Promise.all([
     artifactJson(j, what === "design" ? "design.json" : "manual-result.json"),
-    artifactJson(j, "case-review.json")]);
+    artifactJson(j, "case-review.json"),
+    what === "design" ? artifactJson(j, "automated-cases.json") : Promise.resolve(null)]);
   if (j !== job()) return;
   const cases = (result && (what === "design" ? result.test_cases : result.new_cases)) || [];
   const entries = (review && review[what]) || {};
@@ -800,7 +810,7 @@ async function showReview(what) {
   kids.push(reviewTable(j, what, cases.filter((c) => c && c.id), entries, () => {
     showReview(what);
     refreshXray(what, true);
-  }));
+  }, done));
   box.replaceChildren(...kids);
   showFlow();
 }
@@ -831,8 +841,9 @@ async function showFlow() {
     ["Design", Boolean(design && design.test_cases && design.test_cases.length), "", "new", "run-design"],
     ["Review", approved > 0, approved ? `${approved} approved` : "", "new", "design-review"],
     ["Create in Xray", keys > 0, keys ? `${keys} test(s)` : "", "new", "xray-design-create"],
-    ["Agentic Test Creation", ["pending-review", "approved", "pushed"].includes(agentState),
-     agentState !== "none" ? agentState : "", "agent", "agent-generate"],
+    ["Automate", ["pending-review", "approved-local", "pushed"].includes(agentState),
+     agentState !== "none" ? agentState : "", "new", "auto-selected"],
+    ["Commit and push", ["pushed", "approved-local"].includes(agentState), "", "agent", "agent-push"],
   ];
   let now = steps.findIndex(([, done]) => !done);
   flow.replaceChildren(...steps.map(([name, done, detail, tab, target], i) =>
@@ -1972,16 +1983,18 @@ async function showCodeReview(j, run) {
 // keeps moving while a long Cursor call is in flight.
 let cursorOffset = 0;
 let cursorTimer = null;
+// The Cursor log shows in two places: under Automate the cases, and under
+// Ask Cursor on the Migration tab. Both panes get the same text.
+const cursorPanes = () => [$("cursor-log"), $("mig-cursor-log")].filter(Boolean);
 async function pollCursorLog(reset) {
-  if (reset) { cursorOffset = 0; $("cursor-log").textContent = ""; }
+  if (reset) { cursorOffset = 0; for (const p of cursorPanes()) p.textContent = ""; }
   try {
     const chunk = await api(
       `/api/log?job=${encodeURIComponent(job())}&runnable=cursor&offset=${cursorOffset}`);
-    if (chunk.restarted) $("cursor-log").textContent = "";
+    if (chunk.restarted) for (const p of cursorPanes()) p.textContent = "";
     if (chunk.text) {
       cursorOffset = chunk.offset;
-      $("cursor-log").textContent += chunk.text;
-      $("cursor-log").scrollTop = $("cursor-log").scrollHeight;
+      for (const p of cursorPanes()) { p.textContent += chunk.text; p.scrollTop = p.scrollHeight; }
     }
   } catch { /* no cursor log for this job yet */ }
 }
@@ -2057,28 +2070,57 @@ let agentRunning = "agent-generate";     // what Stop stops
 
 $("agent-ask-send").onclick = async () => {
   const text = $("agent-ask").value.trim();
-  if (!text) { setState($("agent-state"), "bad", "write what Cursor should change"); return; }
+  if (!text) { setState($("auto-state"), "bad", "write what Cursor should change"); return; }
   if (!confirm(`Cursor will change what it wrote for job "${job()}" as you ask, within the same paths. ` +
                "Nothing is committed. Continue?")) return;
   agentRunning = "agent-followup";
   try {
     await post("/api/agent-followup", { job: job(), text });
     $("agent-ask").value = "";
-    follow("agent-followup", $("agent-log"), $("agent-state"), () => {
+    follow("agent-followup", $("auto-log"), $("auto-state"), () => {
       refreshReview();
       pollCursorLog(false);
     });
-  } catch (e) { setState($("agent-state"), "bad", e.message); }
+  } catch (e) { setState($("auto-state"), "bad", e.message); }
 };
-function runAgent(runnable, options) {
-  if (runnable === "agent-generate" || runnable === "agent-review" || runnable === "agent-followup") agentRunning = runnable;
+// A command of the agent: its log and its label are those of the tab it was
+// started from (the Commit and push tab's, unless said).
+function runAgent(runnable, options, logEl, stateEl) {
+  if (["agent-generate", "agent-review", "agent-followup", "agent-automate"].includes(runnable)) agentRunning = runnable;
+  logEl = logEl || $("agent-log");
+  stateEl = stateEl || $("agent-state");
   return post("/api/start", { job: job(), runnable, options })
-    .then(() => follow(runnable, $("agent-log"), $("agent-state"), () => {
+    .then(() => follow(runnable, logEl, stateEl, () => {
       refreshReview();
       pollCursorLog(false);
+      showReview("design");
+      if (typeof showFlow === "function") showFlow();
     }))
-    .catch((e) => setState($("agent-state"), "bad", e.message));
+    .catch((e) => setState(stateEl, "bad", e.message));
 }
+
+// ---- Automate the cases (the Automate Test Case tab) ----------------------
+// One row's case, or every approved case marked Automate. The command adds
+// to the job's change when one is waiting, and checks the Cursor setup first.
+function automateCases(ids) {
+  const j = job();
+  if (!j) { setState($("auto-state"), "bad", "name the job (top right) first"); return; }
+  if (!ids.length) {
+    setState($("auto-state"), "bad", "approve a case and tick Automate first (Review the designed cases)");
+    return;
+  }
+  if (!confirm(`Cursor writes the test(s) of ${ids.join(", ")} for job "${j}", in tests/jira/ and ` +
+               "csv/manual/. Nothing is committed. Continue?")) return;
+  runAgent("agent-automate", { "--job": j, "--cases": ids.join(",") }, $("auto-log"), $("auto-state"));
+}
+$("auto-selected").onclick = async () => {
+  const j = job();
+  const [design, review] = await Promise.all([artifactJson(j, "design.json"), artifactJson(j, "case-review.json")]);
+  const entries = (review && review.design) || {};
+  const ids = ((design && design.test_cases) || []).map((c) => c && c.id)
+    .filter((id) => id && entries[id] && entries[id].state === "approved" && entries[id].automate !== false);
+  automateCases(ids);
+};
 
 const SCOPE_NOTE = {
   "new-test": "Tracked files. Approve commits them to branch agent/<job> and pushes it.",
@@ -2096,38 +2138,60 @@ function scopeChanged() {
 $("agent-scope").onchange = scopeChanged;
 scopeChanged();
 
-$("agent-setup").onclick = () => runAgent("agent-setup", { "--job": job() });
-$("agent-generate").onclick = () => {
+// ---- Ask Cursor (the Migration from ReadyAPI tab) -------------------------
+// A request in the box becomes the job's brief and plan (or is added to the
+// change waiting). An empty box runs on the brief already written -- by Fix
+// with Cursor on the Failures tab.
+$("mig-run").onclick = async () => {
+  const j = job();
+  if (!j) { setState($("mig-state"), "bad", "name the job (top right) first"); return; }
   const scope = $("agent-scope").value;
   const suite = $("agent-suite").value.trim();
-  if (scope === "converted" && !suite) {
-    setState($("agent-state"), "bad", "name the suite Cursor may change");
+  const text = $("mig-ask").value.trim();
+  if (scope === "converted" && !suite) { setState($("mig-state"), "bad", "name the suite Cursor may change"); return; }
+  const what = scope === "converted" ? `the converted files of suite "${suite}"` : "the converter and its runtime";
+  if (!text) {
+    const plan = await artifactText(j, "plan.md");
+    if (!plan.trim()) { setState($("mig-state"), "bad", "write what Cursor should change"); return; }
+    if (!confirm(`Cursor will change ${what} for job "${j}", as the job's brief says. Nothing is committed. Continue?`)) return;
+    const options = { "--job": j, "--scope": scope };
+    if (scope === "converted") options["--suite"] = suite;
+    runAgent("agent-generate", options, $("mig-log"), $("mig-state"));
     return;
   }
-  const what = scope === "converted" ? `the converted files of suite "${suite}"`
-             : scope === "converter" ? "the converter and its runtime"
-             : "tests/jira/ and csv/manual/";
-  if (!confirm(`Cursor will change ${what} for job "${job()}". ` +
-               "Nothing is committed. Continue?")) return;
-  const options = { "--job": job(), "--scope": scope };
-  if (scope === "converted") options["--suite"] = suite;
-  runAgent("agent-generate", options);
+  if (!confirm(`Cursor will change ${what} for job "${j}" as you ask. Nothing is committed. Continue?`)) return;
+  try {
+    const r = await post("/api/migration-ask", { job: j, scope, suite, text });
+    const runnable = (r && r.runnable) || "agent-generate";
+    agentRunning = runnable;
+    $("mig-ask").value = "";
+    follow(runnable, $("mig-log"), $("mig-state"), () => {
+      refreshReview();
+      pollCursorLog(false);
+    }, j);
+  } catch (e) { setState($("mig-state"), "bad", e.message); }
 };
-$("agent-stop").onclick = async () => {
-  // The one this page started last: a review can take as long as a run,
-  // and stopping a review must not end a run that is also going.
-  // Asked of the server, not remembered: after a reload, or with the job
-  // box changed since, what this page started last is not what is running.
-  const others = ["agent-generate", "agent-review", "agent-followup"].filter((r) => r !== agentRunning);
+// The converted suites, offered in the Suite box.
+api("/api/converted-suites").then((r) => {
+  $("converted-suites").replaceChildren(...((r && r.suites) || []).map((s) => el("option", { value: s })));
+}).catch(() => { /* none listed: the box still takes a name */ });
+
+// Stop: the one this page started last, then the others. Asked of the
+// server, not remembered: after a reload, or with the job box changed
+// since, what this page started last is not what is running.
+async function stopAgent(stateEl) {
+  const others = ["agent-generate", "agent-automate", "agent-review", "agent-followup"].filter((r) => r !== agentRunning);
   try {
     let stopped = false;
     for (const runnable of [agentRunning, ...others]) {
       const r = await post("/api/stop", { job: job(), runnable });
       if (r && r.stopped) { stopped = true; break; }
     }
-    if (!stopped) setState($("agent-state"), "", "nothing was running for this job");
-  } catch (e) { setState($("agent-state"), "bad", e.message); }
-};
+    if (!stopped) setState(stateEl, "", "nothing was running for this job");
+  } catch (e) { setState(stateEl, "bad", e.message); }
+}
+$("agent-stop").onclick = () => stopAgent($("auto-state"));
+$("mig-stop").onclick = () => stopAgent($("mig-state"));
 $("agent-refresh").onclick = () => { refreshReview(); pollCursorLog(true); };
 $("agent-dismiss").onclick = async () => {
   const j = job();
@@ -2148,12 +2212,12 @@ $("agent-review").onclick = () => {
 };
 $("agent-patches").onclick = () => {
   const suite = $("agent-suite").value.trim();
-  runAgent("agent-patches", suite ? { "--suite": suite } : {});
+  runAgent("agent-patches", suite ? { "--suite": suite } : {}, $("mig-log"), $("mig-state"));
 };
 $("agent-reapply").onclick = () => {
   const suite = $("agent-suite").value.trim();
-  if (!suite) { setState($("agent-state"), "bad", "name the suite"); return; }
-  runAgent("agent-reapply", { "--suite": suite });
+  if (!suite) { setState($("mig-state"), "bad", "name the suite"); return; }
+  runAgent("agent-reapply", { "--suite": suite }, $("mig-log"), $("mig-state"));
 };
 $("agent-discard").onclick = () => {
   if (!sameJobOrRefresh($("agent-discard"))) return;
@@ -2538,7 +2602,7 @@ async function fixWithCursor(sid, scope) {
   // The Suite box of the Agentic tab may hold another job's suite. It
   // applies only after this signature was refused for spanning suites.
   const suite = $("agent-suite").value.trim();
-  if (suite && fixNeedsSuite.has(sid)) options["--suite"] = suite;
+  if (suite && fixNeedsSuite.has(sid)) options["--suite"] = suite;   // the Migration tab's Suite box
   busy(failUi.buttons, true);
   try {
     await post("/api/start", { job: j, runnable: "fix-brief", options });
@@ -2550,16 +2614,18 @@ async function fixWithCursor(sid, scope) {
         if (/name the suite/i.test(why)) {
           fixNeedsSuite.add(sid);
           $("fail-detail").replaceChildren(banner("warn", why +
-            " Type it in the Suite box of the Agentic Test Creation tab, then click again."));
+            " Type it in the Suite box of the Migration from ReadyAPI tab (Ask Cursor), then click again."));
         } else $("fail-detail").replaceChildren(banner("bad", why));
         return;
       }
       $("fail-detail").replaceChildren(banner("ok", `Brief written for ${r.cases.length} case(s)` +
-        (r.suite ? ` of suite ${r.suite}` : "") + `; the Agentic tab is set to scope ${r.scope}.`));
+        (r.suite ? ` of suite ${r.suite}` : "") + `. On the Migration from ReadyAPI tab, press Ask Cursor ` +
+        `with the box empty to run on it.`));
       $("agent-scope").value = r.scope;
       $("agent-scope").dispatchEvent(new Event("change"));
       if (r.suite) $("agent-suite").value = r.suite;
-      goToStep("agent", "agent-generate");
+      $("mig-ask").value = "";
+      goToStep("convert", "mig-run");
     }, j);
   } catch (e) { busy(failUi.buttons, false); setState($("fail-state"), "bad", e.message); }
 }
@@ -2608,7 +2674,7 @@ function signatureCard(s) {
   // the run left behind, and the Agentic tab opens on the right scope.
   card.append(el("div", { class: "noterow" },
     el("button", { "data-fail": "", class: "go", text: "Fix with Cursor (this suite's Java)",
-                   title: "writes the brief for this signature; then Run Cursor on the Agentic tab, scope Converted",
+                   title: "writes the brief for this signature; then Ask Cursor on the Migration from ReadyAPI tab",
                    on: { click: () => fixWithCursor(s.id, "converted") } }),
     el("button", { "data-fail": "", text: "Fix the converter with Cursor",
                    title: "the same brief, for the emitter: scope The converter itself",

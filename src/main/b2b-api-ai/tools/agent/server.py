@@ -195,6 +195,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({k: {"label": v["label"],
                                        "options": v["options"]}
                                    for k, v in jobs.RUNNABLES.items()})
+            if u.path == "/api/converted-suites":
+                return self._json({"suites": jobs.converted_suites()})
             if u.path == "/api/repo":
                 # The page is told THAT there is a remote, never its address.
                 info = jobs.repo.info(ROOT)
@@ -325,6 +327,11 @@ class Handler(BaseHTTPRequestHandler):
                 # The last outcome, put away: only one that left nothing in
                 # the tree; refused while an agent command runs.
                 return self._json(jobs.dismiss_review(body.get("job", "")))
+            if u.path == "/api/migration-ask":
+                # A request from the Migration from ReadyAPI tab: written as the
+                # job's brief and plan, or added to the change already waiting.
+                return self._json(jobs.migration_ask(body.get("job", ""), body.get("scope", ""),
+                                                     body.get("suite", ""), body.get("text", "")))
             if u.path == "/api/agent-followup":
                 # What the reviewer asks Cursor to change, kept with the job
                 # under a fixed name; the command reads it from there.

@@ -506,7 +506,7 @@ def create(job: str, what: str, story: str, confirm: str, root: str = "", conn=N
     done["message"] = ("; ".join(bits) + "."
                        + (" MOCK: a file on this machine was changed; no Jira was contacted."
                           if mocked else "")
-                       + (" The keys are in xray-tests.json; the Agentic Test Creation step "
+                       + (" The keys are in xray-tests.json; Automate "
                           "puts them in the jira_xray_id column." if made_n or done["kept"] else ""))
     _log(job_dir, f"END {done['message']}")
     return done

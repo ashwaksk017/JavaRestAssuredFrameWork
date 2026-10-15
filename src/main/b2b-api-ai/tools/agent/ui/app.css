@@ -286,3 +286,6 @@ details.more[open] > summary { margin-bottom: .4rem; }
 .steps-edit .more-step { justify-self: start; }
 @media (max-width: 760px) { .steps-edit { min-width: 0; } .steps-edit .step { grid-template-columns: 1.4rem 1fr auto; }
   .steps-edit .step input { grid-column: 2; } }
+
+/* A case's Automate button and what its last run came to. */
+.automate-cell { display: grid; gap: .25rem; justify-items: start; min-width: 8rem; }

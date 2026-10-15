@@ -390,6 +390,57 @@ class Artifacts(unittest.TestCase):
 
 
 
+class AMigrationRequest(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="jobs_mig_")
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        for owner in (jobs, jobs.intake):
+            self.addCleanup(setattr, owner, "ROOT", owner.ROOT)
+            owner.ROOT = self.root
+        os.makedirs(os.path.join(self.root, "src", "main", "java", "com", "hi", "api", "support", "amex"))
+        self.started = []
+        self.addCleanup(setattr, jobs, "start", jobs.start)
+        jobs.start = lambda job, runnable, options: (self.started.append((runnable, options)), {"started": True})[1]
+        self.job = jobs.job_dir("m1")
+
+    def read(self, name):
+        with io.open(os.path.join(self.job, name), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_a_first_request_becomes_the_brief_and_plan_and_starts_a_run(self):
+        r = jobs.migration_ask("m1", "converted", "amex", "Use the employee's token in getSpend403.")
+        self.assertEqual(r["runnable"], "agent-generate")
+        self.assertEqual(self.started, [("agent-generate", {"--job": "m1", "--scope": "converted", "--suite": "amex"})])
+        self.assertIn("Use the employee's token in getSpend403.", self.read("brief.md"))
+        self.assertIn("support/amex/", self.read("plan.md"))
+        self.assertTrue(self.read("plan.md").startswith("# Plan: migration change (converted)"))
+        self.assertEqual(jobs.converted_suites(), ["amex"])
+
+    def test_a_request_while_a_change_waits_is_added_to_it(self):
+        os.makedirs(self.job)
+        with io.open(os.path.join(self.job, "review.json"), "w", encoding="utf-8") as fh:
+            fh.write('{"state": "pending-review"}')
+        r = jobs.migration_ask("m1", "converter", "", "Also handle the JDBC step.")
+        self.assertEqual(r["runnable"], "agent-followup")
+        self.assertEqual(self.read("agent-followup.txt"), "Also handle the JDBC step.")
+
+    def test_what_is_refused(self):
+        for scope, suite, text, why in (("new-test", "", "x", "choose what Cursor may change"),
+                                        ("converted", "", "x", "name the converted suite"),
+                                        ("converted", "goal", "x", "not converted on this machine"),
+                                        ("converter", "", "  ", "write what Cursor should change")):
+            with self.assertRaises(ValueError) as got:
+                jobs.migration_ask("m1", scope, suite, text)
+            self.assertIn(why, str(got.exception))
+        os.makedirs(self.job, exist_ok=True)
+        with io.open(os.path.join(self.job, "design.json"), "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        with self.assertRaises(ValueError) as got:
+            jobs.migration_ask("m1", "converter", "", "x")
+        self.assertIn("its own job", str(got.exception))
+        self.assertEqual(self.started, [])
+
+
 class ClearingADesign(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="jobs_clear_")

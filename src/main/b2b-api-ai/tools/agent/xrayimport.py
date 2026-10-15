@@ -208,7 +208,7 @@ def run(job: str, root: str = "", story: str = "", conn=None, transport=None, cf
     return {"kind": "xray-import", "ok": True, "story": story, "link_type": opts["link_type"],
             "count": len(cases), "keys": [c["xray_key"] for c in cases], "not_used": not_used,
             "mock_jira": mocked,
-            "message": design["summary"] + " Review them, then the Agentic Test Creation tab."}
+            "message": design["summary"] + " Review them, then Automate them."}
 
 
 def _redact(text: str, private: dict) -> str:

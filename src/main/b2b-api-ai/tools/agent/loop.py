@@ -1278,6 +1278,11 @@ def designed_cases(job_dir: str, cap: int = 20000, keys: dict = None) -> tuple:
     # title and steps as corrected.
     entries = casereview.read(job_dir)["design"]
     cases = [c for c in cases if isinstance(c, dict)] if isinstance(cases, list) else []
+    # A run for some of the cases only (Automate on one row, or on the ones
+    # ticked): the others are not handed over this time.
+    only = automate_only(job_dir)
+    if only:
+        cases = [c for c in cases if str(c.get("id") or "") in only]
     left_out = ""
     if casereview.stale(entries, cases):
         return "", ("the cases were reviewed, but not THESE: a re-design renumbered them since "
@@ -2061,6 +2066,89 @@ def cmd_setup(job_dir: str, root: str) -> int:
     CursorLog(job_dir, cfg.api_key).write(
         f"setup ok: cursor-sdk {how}, model {cfg.model}")
     return 0
+
+
+AUTOMATE_FILE = "automate-cases.json"      # the cases of the run in progress
+AUTOMATED_FILE = "automated-cases.json"    # what each case's last run came to
+_CASE_ID_RX = re.compile(r"^[A-Za-z]{1,6}-[0-9]{1,6}$")
+
+
+def automate_only(job_dir: str) -> set:
+    """The case ids the run in progress is for, or an empty set (all)."""
+    try:
+        with io.open(os.path.join(job_dir, AUTOMATE_FILE), encoding="utf-8") as fh:
+            ids = json.load(fh)
+    except (OSError, ValueError):
+        return set()
+    return {str(i) for i in ids if isinstance(i, str) and _CASE_ID_RX.match(i)} if isinstance(ids, list) else set()
+
+
+def automated_cases(job_dir: str) -> dict:
+    try:
+        with io.open(os.path.join(job_dir, AUTOMATED_FILE), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def cmd_automate(job_dir: str, root: str, policy: dict, ids, agent=None, verifier=None) -> int:
+    """Cursor writes the tests of some of the approved cases (one row's
+    Automate, or the ticked ones). All of a job's runs make ONE change: a
+    run when a change is already waiting adds to it, as Ask Cursor to
+    change it does; otherwise it starts the change. What each case's run
+    came to is kept for the page (automated-cases.json)."""
+    ids = [str(i).strip() for i in (ids or []) if str(i).strip()]
+    bad = [i for i in ids if not _CASE_ID_RX.match(i)]
+    if not ids or bad:
+        say(f"FAIL name the case(s) to automate, like TC-001{' (not: ' + ', '.join(bad[:3]) + ')' if bad else ''}")
+        return 1
+    try:
+        with io.open(os.path.join(job_dir, "design.json"), encoding="utf-8") as fh:
+            known = {str(c.get("id")) for c in json.load(fh).get("test_cases") or [] if isinstance(c, dict)}
+    except (OSError, ValueError, AttributeError):
+        known = set()
+    missing = [i for i in ids if i not in known]
+    if missing:
+        say(f"FAIL {', '.join(missing[:5])} is not a case of this job's design")
+        return 1
+    entries = casereview.read(job_dir)["design"]
+    not_approved = [i for i in ids if (entries.get(i) or {}).get("state") != "approved"
+                    or (entries.get(i) or {}).get("automate") is False]
+    if not_approved:
+        say(f"FAIL approve the case(s) and tick Automate first: {', '.join(not_approved[:8])}")
+        return 1
+    with io.open(os.path.join(job_dir, AUTOMATE_FILE), "w", encoding="utf-8") as fh:
+        json.dump(ids, fh)
+    prior = read_review(job_dir)
+    adding = prior.get("state") in ("pending-review", "verify-failed") and not prior.get("mock")
+    try:
+        if adding:
+            say(f" .. a change is waiting for review: these case(s) are added to it: {', '.join(ids)}")
+            with io.open(os.path.join(job_dir, FOLLOWUP_FILE), "w", encoding="utf-8") as fh:
+                fh.write(f"Write the tests of the designed case(s) {', '.join(ids)} (listed below), in the "
+                         f"same change: keep everything already written, and add to it.")
+            rc = cmd_followup(job_dir, root, policy, agent, verifier)
+        else:
+            say(f" .. Cursor writes the test(s) of: {', '.join(ids)}")
+            rc = cmd_generate(job_dir, root, policy, "new-test", "", agent, verifier)
+    finally:
+        try:
+            os.remove(os.path.join(job_dir, AUTOMATE_FILE))
+        except OSError:
+            pass
+    after = read_review(job_dir)
+    done = automated_cases(job_dir)
+    state = str(after.get("state") or "none")
+    word = {"pending-review": "written -- in the change waiting for review",
+            "verify-failed": "written, but the change does not compile",
+            "rejected": "not written -- the run was rejected",
+            }.get(state, state)
+    for i in ids:
+        done[i] = {"state": state, "said": word, "at": _now(), "rc": rc}
+    with io.open(os.path.join(job_dir, AUTOMATED_FILE), "w", encoding="utf-8") as fh:
+        json.dump(done, fh, indent=1)
+    return rc
 
 
 FOLLOWUP_FILE = "agent-followup.txt"
@@ -3146,8 +3234,9 @@ def _commit_body(job_dir: str, files: dict) -> str:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("command",
-                    choices=("setup", "generate", "followup", "approve", "push", "discard",
+                    choices=("setup", "generate", "followup", "automate", "approve", "push", "discard",
                              "reapply"))
+    ap.add_argument("--cases", default="", help="automate: the case ids, comma-separated")
     ap.add_argument("--job", required=True)
     ap.add_argument("--scope", default="new-test")
     ap.add_argument("--suite", default="")
@@ -3164,10 +3253,20 @@ def main(argv=None) -> int:
     policy = load_policy()
     if args.command == "setup":
         return cmd_setup(job_dir, ROOT)
+    if args.command in ("followup", "generate", "automate"):
+        # Every run checks the Cursor setup first (the SDK, the key, the
+        # bridge, the work tree): a run that would fail on one says so in
+        # seconds, not after the prompt is built. There is no button for it.
+        diag.step("Checking the Cursor setup")
+        rc = cmd_setup(job_dir, ROOT)
+        if rc:
+            return rc
     if args.command == "followup":
         return cmd_followup(job_dir, ROOT, policy)
     if args.command == "generate":
         return cmd_generate(job_dir, ROOT, policy, args.scope, args.suite)
+    if args.command == "automate":
+        return cmd_automate(job_dir, ROOT, policy, args.cases.split(","))
     if args.command == "discard":
         return cmd_discard(job_dir, ROOT, policy)
     if args.command == "reapply":

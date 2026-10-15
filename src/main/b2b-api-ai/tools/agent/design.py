@@ -1835,7 +1835,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         say(f" ..  {w}")
     say(f" ok  {len(cases)} test case(s) designed"
         + (" -- PARTIAL" if is_partial else "")
-        + f". Read design.md, then the Agentic Test Creation tab can implement them.")
+        + f". Read design.md, review the cases, then Automate them.")
     return 0
 
 

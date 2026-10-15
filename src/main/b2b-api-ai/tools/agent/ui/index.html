@@ -24,11 +24,11 @@
   <button role="tab" aria-selected="true"  data-tab="new">
     <span class="name">Automate Test Case</span><span class="what">read a story, plan, design</span></button>
   <button role="tab" aria-selected="false" data-tab="agent">
-    <span class="name">Agentic Test Creation</span><span class="what">Cursor writes, you review</span></button>
+    <span class="name">Commit and push</span><span class="what">review the change, push it</span></button>
   <button role="tab" aria-selected="false" data-tab="manual">
     <span class="name">Manual tests</span><span class="what">new cases, and Xray updates</span></button>
   <button role="tab" aria-selected="false" data-tab="convert">
-    <span class="name">Convert ReadyAPI</span><span class="what">run the converter</span></button>
+    <span class="name">Migration from ReadyAPI</span><span class="what">convert, then ask Cursor</span></button>
   <button role="tab" aria-selected="false" data-tab="jira">
     <span class="name">Jira</span><span class="what">stories, releases, tests</span></button>
   <button role="tab" aria-selected="false" data-tab="defects">
@@ -114,7 +114,7 @@ Expect 201.'></textarea>
     above, and proposes test cases with steps and expected results. It
     is asked in plan mode, from an empty directory; host names and the
     private configuration's values are taken out of what is sent. Read
-    the result before the Agentic Test Creation tab implements it.
+    the result before the cases are automated (Automate the cases, below).
   </p>
   <details class="more" id="design-options">
   <summary>Options <span class="hint">service name, how many cases, how Cursor is run -- the defaults suit most designs</span></summary>
@@ -195,12 +195,12 @@ Expect 201.'></textarea>
   <label for="design-notes">Notes for the designer <span class="hint">what to focus on, what to leave out</span></label>
   <textarea id="design-notes" rows="2" spellcheck="false"></textarea>
 
-  <h3>Review the designed cases <span class="hint">tick Approve for the cases that stand, Automate for the ones Cursor should write; a title can be corrected in place. Create in Xray and the Agentic step take approved cases only</span></h3>
+  <h3>Review the designed cases <span class="hint">tick Approve for the cases that stand, Automate for the ones Cursor should write; a title can be corrected in place. Create in Xray and Automate take approved cases only</span></h3>
   <div id="design-review" class="result"></div>
   <h3>design.md</h3>
   <pre id="design-doc" class="doc">—</pre>
 
-  <h3>Create in Xray <span class="hint">one Jira Test issue a case, with its steps, linked to the story; the keys then go into the rows the Agentic Test Creation step writes</span></h3>
+  <h3>Create in Xray <span class="hint">one Jira Test issue a case, with its steps, linked to the story; the keys then go into the rows the Automate step writes</span></h3>
   <div class="row">
     <input id="xray-design-story" type="text" spellcheck="false" placeholder="story key, e.g. ABC-12">
     <button id="xray-design-create" disabled>Create in Xray as Jira test cases</button>
@@ -211,6 +211,29 @@ Expect 201.'></textarea>
   <div class="split">
     <div><h3>Command log</h3><pre id="design-log" class="log"></pre></div>
     <div><h3>Cursor log</h3><pre id="design-cursor-log" class="log cursor"></pre></div>
+  </div>
+
+  <h2 class="part" id="automate-part">Automate the cases <span class="hint">Cursor writes REST Assured tests for the approved cases</span></h2>
+  <p class="lede">
+    Automate one case from its row in the review above, or every approved case marked
+    Automate at once. Each run adds to the job's one change; the Cursor setup is checked as
+    the run starts. Review the change and push it on the Commit and push tab.
+  </p>
+  <div class="row">
+    <button id="auto-selected" class="go">Automate the approved cases</button>
+    <button id="agent-stop">Stop</button>
+    <span id="auto-state" class="state"></span>
+  </div>
+  <label for="agent-ask">Ask Cursor to change it <span class="hint">what should be different in the change above, in your words — Cursor works on the same files, the diff below becomes the whole change, and it waits for your review again</span></label>
+  <textarea id="agent-ask" rows="3" spellcheck="false"
+    placeholder="e.g. Use the member's email from the CSV instead of a fixed one, and assert the 403 body carries an error code."></textarea>
+  <div class="row">
+    <button id="agent-ask-send" disabled>Ask Cursor to change it</button>
+  </div>
+  <div class="split">
+    <div><h3>Command log</h3><pre id="auto-log" class="log"></pre></div>
+    <div><h3>Cursor log <span class="hint">what was asked, what it answered, what it changed</span></h3>
+      <pre id="cursor-log" class="log cursor"></pre></div>
   </div>
 </section>
 
@@ -298,37 +321,29 @@ Expect 201.'></textarea>
     <h3>Verify all <span id="verify-state" class="state"></span></h3>
     <pre id="verify-log" class="log"></pre>
   </div>
-</section>
 
-<!-- ───────────────────────────── tab 3 ───────────────────────────── -->
-<section id="tab-agent" class="tab" role="tabpanel" hidden>
+  <h2 class="part" id="migration-ask-part">Ask Cursor <span class="hint">change a converted suite's Java, or the converter itself</span></h2>
   <p class="lede">
-    Takes the plan from the Automate Test Case tab and has Cursor act on it. This is the only
-    tab that writes code. Choose what Cursor may change — it is held to
-    that, and anything else fails the job and is put back.
+    Say what should be different. Cursor is held to what you choose below; the change waits
+    on the Commit and push tab. A converted suite's change is kept on this machine and put
+    back after every convert of the suite; a change to the converter is committed and pushed.
+    A request while a change is waiting adds to it. From the Failures tab, Fix with Cursor
+    writes the request for you: leave the box empty and press Ask Cursor.
   </p>
-
-  <div id="repo" class="repo">
-    <span id="repo-where">reading the repository…</span>
-    <select id="repo-branches" aria-label="branches"></select>
-    <button id="repo-switch" type="button" disabled>Switch to it</button>
-    <span id="repo-state" class="state"></span>
-  </div>
-
   <div class="form">
     <div class="field req">
       <label for="agent-scope">What may Cursor change?</label>
       <select id="agent-scope">
-        <option value="new-test">A new hand-written test — tests/jira/, csv/manual/</option>
         <option value="converted">Converted Java of one suite — after a convert</option>
         <option value="converter">The converter itself, and the runtime under it</option>
       </select>
       <small id="agent-scope-note"></small>
     </div>
-    <div class="field" id="agent-suite-field" hidden>
+    <div class="field" id="agent-suite-field">
       <label for="agent-suite">Suite</label>
-      <input id="agent-suite" type="text" spellcheck="false"
+      <input id="agent-suite" type="text" spellcheck="false" list="converted-suites"
              placeholder="amexbackbook">
+      <datalist id="converted-suites"></datalist>
       <small>The lower-case suite directory under <code>support/</code>.
              Cursor is limited to this suite's generated files; another
              suite's classes and the shared ones are put back if touched.</small>
@@ -342,10 +357,37 @@ Expect 201.'></textarea>
     </div>
   </div>
 
+  <label for="mig-ask">What should change</label>
+  <textarea id="mig-ask" rows="4" spellcheck="false"
+    placeholder="e.g. The getSpend403 case sends the admin's token; the employee's token from the CSV is the one the case means."></textarea>
   <div class="row">
-    <button id="agent-setup">Check Cursor setup</button>
-    <button id="agent-generate" class="go">Run Cursor</button>
-    <button id="agent-stop">Stop</button>
+    <button id="mig-run" class="go">Ask Cursor</button>
+    <button id="mig-stop">Stop</button>
+    <span id="mig-state" class="state"></span>
+  </div>
+  <div class="split">
+    <div><h3>Command log</h3><pre id="mig-log" class="log"></pre></div>
+    <div><h3>Cursor log</h3><pre id="mig-cursor-log" class="log cursor"></pre></div>
+  </div>
+</section>
+
+<!-- ───────────────────────────── tab 3 ───────────────────────────── -->
+<section id="tab-agent" class="tab" role="tabpanel" hidden>
+  <p class="lede">
+    The change Cursor made for this job -- on the Automate Test Case tab or the Migration from
+    ReadyAPI tab -- waits here: its files, its diff and a code review. Approve commits it to
+    its own branch and pushes it (a converted suite's change is kept on this machine instead);
+    Discard puts everything back.
+  </p>
+
+  <div id="repo" class="repo">
+    <span id="repo-where">reading the repository…</span>
+    <select id="repo-branches" aria-label="branches"></select>
+    <button id="repo-switch" type="button" disabled>Switch to it</button>
+    <span id="repo-state" class="state"></span>
+  </div>
+
+  <div class="row">
     <button id="agent-refresh">Refresh</button>
     <span id="agent-state" class="state"></span>
   </div>
@@ -365,12 +407,6 @@ Expect 201.'></textarea>
       <button id="agent-dismiss" disabled title="put the last outcome away; nothing in the working tree changes">Dismiss</button>
       <button id="agent-review" disabled>Review the change</button>
     </div>
-    <label for="agent-ask">Ask Cursor to change it <span class="hint">what should be different in the change above, in your words — Cursor works on the same files, the diff below becomes the whole change, and it waits for your review again</span></label>
-    <textarea id="agent-ask" rows="3" spellcheck="false"
-      placeholder="e.g. Use the member's email from the CSV instead of a fixed one, and assert the 403 body carries an error code."></textarea>
-    <div class="row">
-      <button id="agent-ask-send" disabled>Ask Cursor to change it</button>
-    </div>
   </div>
 
   <h3>Code review <span class="hint">Cursor reads the change and lists what looks wrong — advice, it does not block Approve</span>
@@ -383,9 +419,7 @@ Expect 201.'></textarea>
   </div>
   <h3>proposed.diff</h3>
   <pre id="agent-diff" class="log diff">—</pre>
-  <h3>Cursor log <span class="hint">what was asked, what it answered, what it changed</span></h3>
-  <pre id="cursor-log" class="log cursor"></pre>
-  <h3>Command log</h3>
+  <h3>Command log <span class="hint">Approve, Discard, the code review</span></h3>
   <pre id="agent-log" class="log"></pre>
 </section>
 
@@ -446,7 +480,7 @@ Expect 201.'></textarea>
   <h3>Review the manual cases <span class="hint">tick Approve for the cases that stand; a title can be corrected in place. Create in Xray takes approved cases only</span></h3>
   <div id="manual-review" class="result"></div>
 
-  <h3>Create in Xray <span class="hint">one Jira Test issue a case, with its steps, linked to the story; the keys then go into the rows the Agentic Test Creation step writes</span></h3>
+  <h3>Create in Xray <span class="hint">one Jira Test issue a case, with its steps, linked to the story; the keys then go into the rows the Automate step writes</span></h3>
   <div class="row">
     <input id="xray-manual-story" type="text" spellcheck="false" placeholder="story key, e.g. ABC-12">
     <button id="xray-manual-create" disabled>Create in Xray as Jira test cases</button>
