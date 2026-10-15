@@ -116,9 +116,11 @@ Expect 201.'></textarea>
     private configuration's values are taken out of what is sent. Read
     the result before the Agentic Test Creation tab implements it.
   </p>
+  <details class="more" id="design-options">
+  <summary>Options <span class="hint">service name, how many cases, how Cursor is run -- the defaults suit most designs</span></summary>
   <div class="form">
     <div class="field">
-      <label for="design-service">Service name</label>
+      <label for="design-service">Service name <span class="hint">empty: the specification's title</span></label>
       <input id="design-service" type="text" spellcheck="false" placeholder="group-rates">
     </div>
     <div class="field">
@@ -137,6 +139,7 @@ Expect 201.'></textarea>
       </select>
     </div>
   </div>
+  </details>
   <fieldset class="choice" id="spec-from">
     <legend>API specification <span class="hint">OpenAPI / Swagger, JSON or YAML</span></legend>
     <label class="inline"><input type="radio" name="spec-from" value="upload" checked> Upload a file</label>

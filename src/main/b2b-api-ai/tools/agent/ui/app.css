@@ -272,3 +272,8 @@ fieldset.choice legend { float: left; padding: 0; margin-right: .6rem; font-weig
 
 /* The design step's button sits under its heading, not at the bottom. */
 .row.design-go { margin: .2rem 0 .8rem; }
+
+/* Options a step rarely needs: folded, one line when closed. */
+details.more { margin: .6rem 0 .2rem; }
+details.more > summary { cursor: pointer; font-weight: 600; }
+details.more[open] > summary { margin-bottom: .4rem; }
