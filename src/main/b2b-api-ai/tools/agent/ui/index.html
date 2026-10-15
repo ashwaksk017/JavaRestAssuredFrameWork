@@ -40,6 +40,8 @@
     <span class="name">Publish</span><span class="what">to a Jira issue, a Confluence page</span></button>
   <button role="tab" aria-selected="false" data-tab="logs">
     <span class="name">Logs</span><span class="what">what ran, and what went wrong</span></button>
+  <button role="tab" aria-selected="false" data-tab="settings">
+    <span class="name">Settings</span><span class="what">Jira, Confluence and Xray tokens</span></button>
 </nav>
 
 <!-- ───────────────────────────── tab 1 ───────────────────────────── -->
@@ -704,6 +706,51 @@ Expect 201.'></textarea>
   <div class="split">
     <div><h3>Command log <span class="hint" id="wb-job"></span></h3><pre id="wb-log" class="log"></pre></div>
     <div><h3>Cursor log</h3><pre id="wb-cursor-log" class="log cursor"></pre></div>
+  </div>
+</section>
+
+<section id="tab-settings" class="tab" role="tabpanel" hidden>
+  <p class="lede">
+    How this machine reaches Jira, Confluence and Xray. Saved into the active environment's
+    block of <code>src/main/resources/program_configuration.json</code> -- gitignored, the only
+    place a credential belongs. A token is never shown again: the page says only whether it is
+    set. Leave a token box empty to keep the token as it is. Each save keeps a copy of the
+    file as it was in <code>.workbench/settings/</code>. Nothing can be saved while a command runs.
+  </p>
+  <div id="settings-env" class="result"></div>
+  <form id="settings-form" class="form" autocomplete="off" onsubmit="return false">
+    <fieldset class="field choice wide"><legend>Jira</legend>
+      <label for="set-jira-urls">Address <span class="hint">https://..., several separated by commas: stories are read only from these</span></label>
+      <input id="set-jira-urls" type="text" spellcheck="false" placeholder="https://jira.example.com">
+      <label for="set-jira-pat">Personal access token <span class="hint" id="set-jira-pat-state"></span></label>
+      <input id="set-jira-pat" type="password" autocomplete="new-password" spellcheck="false" placeholder="leave empty to keep it">
+      <label class="inline"><input type="checkbox" id="set-jira-pat-clear"> remove the saved token</label>
+    </fieldset>
+    <fieldset class="field choice wide"><legend>Confluence</legend>
+      <label for="set-conf-urls">Address</label>
+      <input id="set-conf-urls" type="text" spellcheck="false" placeholder="https://wiki.example.com">
+      <label for="set-conf-pat">Personal access token <span class="hint" id="set-conf-pat-state"></span></label>
+      <input id="set-conf-pat" type="password" autocomplete="new-password" spellcheck="false" placeholder="leave empty to keep it">
+      <label class="inline"><input type="checkbox" id="set-conf-pat-clear"> remove the saved token</label>
+    </fieldset>
+    <fieldset class="field choice wide"><legend>Xray (Server / Data Center)</legend>
+      <label for="set-xray-url">Address <span class="hint">your Jira's address: Xray Server answers there</span></label>
+      <input id="set-xray-url" type="text" spellcheck="false" placeholder="https://jira.example.com">
+      <label class="inline"><input type="checkbox" id="set-xray-same"> use the Jira token for Xray</label>
+      <label for="set-xray-token">Token <span class="hint" id="set-xray-token-state"></span></label>
+      <input id="set-xray-token" type="password" autocomplete="new-password" spellcheck="false" placeholder="leave empty to keep it">
+      <label class="inline"><input type="checkbox" id="set-xray-token-clear"> remove the saved token</label>
+      <label for="set-xray-project">Project <span class="hint">where a new Test Execution is made</span></label>
+      <input id="set-xray-project" type="text" spellcheck="false" placeholder="ABC">
+      <label for="set-xray-regression">Regression Test Set or Test Plan <span class="hint">regression cases are added to it</span></label>
+      <input id="set-xray-regression" type="text" spellcheck="false" placeholder="ABC-123">
+      <label class="inline"><input type="checkbox" id="set-xray-enabled"> publish test results to Xray</label>
+    </fieldset>
+  </form>
+  <div class="row">
+    <button id="settings-save" class="go">Save</button>
+    <button id="settings-check">Check the Jira token</button>
+    <span id="settings-state" class="state"></span>
   </div>
 </section>
 

@@ -211,6 +211,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(jobs.list_jobs())
             if u.path == "/api/workbench-job":
                 return self._json(jobs.workbench_job())
+            if u.path == "/api/settings":
+                # What is set -- never a token's value.
+                return self._json(jobs.settings.status())
             if u.path == "/api/suite-groups":
                 # Which suites each designed case's test runs in.
                 sm = jobs.casereview._suitemap()
@@ -340,6 +343,12 @@ class Handler(BaseHTTPRequestHandler):
                 # job's brief and plan, or added to the change already waiting.
                 return self._json(jobs.migration_ask(body.get("job", ""), body.get("scope", ""),
                                                      body.get("suite", ""), body.get("text", "")))
+            if u.path == "/api/settings":
+                return self._json(jobs.settings_save(body.get("changes") or {}))
+            if u.path == "/api/settings-check":
+                # Asks Jira who the saved token belongs to; the answer, never the token.
+                conn = jobs.intake.jira_search.connect()
+                return self._json({"jira": jobs.intake.token_verdict(conn) or "it could not be asked"})
             if u.path == "/api/workbench-ask":
                 # A change to the workbench itself: its own job, and only
                 # while nothing else runs (jobs.workbench_ask).

@@ -859,6 +859,13 @@ def main() -> int:
                   code == 200 and str(st.get("job", "")).startswith("workbench-"), str(st))
             check("the change's tests run on stg before it can be pushed",
                   'id="agent-run"' in mocked.dom("agent") and 'id="agent-run-result"' in mocked.dom("agent"))
+            set_tab = mocked.dom("settings")
+            check("the Settings tab takes the tokens, as password boxes, and shows none back",
+                  'id="set-jira-pat"' in set_tab and 'type="password"' in set_tab and 'id="settings-save"' in set_tab)
+            code, s = mocked.call("/api/settings")
+            check("the settings say what is set, never a token", code == 200 and "jira" in s
+                  and all(not str(v).startswith("set, ") or "characters" in str(v)
+                          for v in (s.get("jira") or {}).values()), str(s)[:200])
             check("each case's suites show on its row, from the rules",
                   ">Suites<" in html and 'class="groups"' in html and "from the rules" in html)
             bare = subprocess.run(
@@ -1053,7 +1060,7 @@ def main() -> int:
             check("the Manual tests tab lists the file and where it was put",
                   "Booking Rules.md" in html
                   and f".workbench/{JOB}/docs/Booking Rules.md" in html
-                  and html.count('role="tab"') == 9)
+                  and html.count('role="tab"') == 10)
             code, rc = press("manual-inventory", {"--project": "ABC"})
             html = mocked.dom("manual")
             check("mock mode: Read existing tests, with their steps, and says it is sample data",
@@ -1099,7 +1106,7 @@ def main() -> int:
                 check("the Publish tab says what is switched on, and that these are stand-ins",
                       rc == 0 and "Attaching to Jira is ON" in html
                       and "Creating Confluence pages is ON for space(s) QA" in html
-                      and "contacts nobody" in html and html.count('role="tab"') == 9, f"rc={rc}")
+                      and "contacts nobody" in html and html.count('role="tab"') == 10, f"rc={rc}")
                 check("only this job's own results are offered, by name",
                       '<option value="manual-tests.md">' in html
                       and '<option value="manual">Manual test cases</option>' in html

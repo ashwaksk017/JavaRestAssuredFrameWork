@@ -1731,6 +1731,20 @@ book it is held to; an edit there is put back and the run rejected.
 python tools/agent/loop.py discard --job workbench-<date>-<time>
 ```
 
+### Settings
+
+The Jira, Confluence and Xray connection of this machine, saved into the
+active environment's block of `src/main/resources/program_configuration.json`
+(gitignored) -- `jira_config.base_urls/pat`, `confluence_config.base_urls/pat`,
+`xray.baseUrl/token/projectKey/regressionKey/enabled` -- where the readers
+already look. A token is never shown again: the page says "set, N
+characters" or "not set". An empty token box keeps the token; "remove the
+saved token" removes it. On Xray Server / Data Center the Jira token is the
+Xray token: tick "use the Jira token for Xray". Each save keeps the file as
+it was in `.workbench/settings/` (the last five). Nothing is saved while a
+command runs: a Cursor run guards that file. **Check the Jira token** asks
+Jira who the saved token belongs to.
+
 ## Where the state lives
 
 Everything is under **`.workbench/`** at the module root (gitignored),

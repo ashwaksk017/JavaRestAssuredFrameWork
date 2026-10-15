@@ -708,6 +708,22 @@ def _casereview():
 casereview = _casereview()
 
 
+def _settings():
+    spec = importlib.util.spec_from_file_location("jobs_settings", os.path.join(HERE, "settings.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+settings = _settings()
+
+
+def settings_save(changes: dict) -> dict:
+    """The Settings tab's save: refused while anything runs."""
+    now = running_now()
+    return settings.save(changes, busy=f"{now[0][1]} (job {now[0][0]})" if now else "")
+
+
 def spec_clear(job: str) -> bool:
     return _specsource().clear(job_dir(job))
 

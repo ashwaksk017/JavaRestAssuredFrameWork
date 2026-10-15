@@ -1907,6 +1907,63 @@ $("logs-refresh").onclick = showLogs;
 $("logs-errors").onchange = showLogs;
 onTab.logs = showLogs;
 
+// ---- Settings: the Jira, Confluence and Xray connection ---------------------
+// The server says what is set; it never sends a token back. A token box left
+// empty keeps the token; the boxes are emptied after every save.
+async function showSettings() {
+  let s;
+  try { s = await api("/api/settings"); }
+  catch (e) { setState($("settings-state"), "bad", e.message); return; }
+  const box = $("settings-env");
+  box.replaceChildren();
+  if (s.problem) { box.append(banner("bad", s.problem)); return; }
+  box.append(banner("ok", `Environment ${s.env} (chosen by ${s.env_from}); file ${s.file}` +
+    (s.exists ? "" : " -- not there yet: Save makes it")));
+  $("set-jira-urls").value = (s.jira.base_urls || []).join(", ");
+  $("set-conf-urls").value = (s.confluence.base_urls || []).join(", ");
+  $("set-xray-url").value = s.xray.base_url || "";
+  $("set-xray-project").value = s.xray.project_key || "";
+  $("set-xray-regression").value = s.xray.regression_key || "";
+  $("set-xray-enabled").checked = Boolean(s.xray.enabled);
+  $("set-xray-same").checked = Boolean(s.xray.same_as_jira);
+  $("set-jira-pat-state").textContent = s.jira.pat;
+  $("set-conf-pat-state").textContent = s.confluence.pat;
+  $("set-xray-token-state").textContent = s.xray.same_as_jira ? "the Jira token" : s.xray.token;
+  for (const id of ["set-jira-pat", "set-conf-pat", "set-xray-token"]) $(id).value = "";
+  for (const id of ["set-jira-pat-clear", "set-conf-pat-clear", "set-xray-token-clear"]) $(id).checked = false;
+}
+onTab.settings = showSettings;
+$("settings-save").onclick = async () => {
+  const changes = {
+    jira_base_urls: $("set-jira-urls").value,
+    confluence_base_urls: $("set-conf-urls").value,
+    xray_base_url: $("set-xray-url").value,
+    xray_project_key: $("set-xray-project").value,
+    xray_regression_key: $("set-xray-regression").value,
+    xray_enabled: $("set-xray-enabled").checked,
+    xray_same_as_jira: $("set-xray-same").checked,
+    jira_pat: $("set-jira-pat").value,
+    confluence_pat: $("set-conf-pat").value,
+    xray_token: $("set-xray-same").checked ? "" : $("set-xray-token").value,
+    jira_pat_clear: $("set-jira-pat-clear").checked,
+    confluence_pat_clear: $("set-conf-pat-clear").checked,
+    xray_token_clear: $("set-xray-token-clear").checked,
+  };
+  try {
+    const r = await post("/api/settings", { changes });
+    setState($("settings-state"), r.saved ? "ok" : "", r.saved ? `saved: ${r.said}` : r.said);
+  } catch (e) { setState($("settings-state"), "bad", e.message); }
+  // The token boxes are emptied either way: nothing typed stays on the page.
+  for (const id of ["set-jira-pat", "set-conf-pat", "set-xray-token"]) $(id).value = "";
+  showSettings();
+};
+$("settings-check").onclick = async () => {
+  try {
+    const r = await post("/api/settings-check", {});
+    setState($("settings-state"), String(r.jira).startsWith("the token is accepted") ? "ok" : "bad", `Jira: ${r.jira}`);
+  } catch (e) { setState($("settings-state"), "bad", e.message); }
+};
+
 // A fault in this page's own script is otherwise seen by nobody: the
 // button "does nothing". It is sent to the server's log, a bounded number
 // of times per page load.
