@@ -31,6 +31,11 @@ def read(path: str) -> dict:
     except (OSError, ET.ParseError) as e:
         raise ValueError(f"no readable test results ({type(e).__name__})") from None
     out = {"passed": 0, "failed": 0, "skipped": 0, "switched_off": 0, "tests": []}
+    # The groups of each method: TestNG lists them apart, by class and name.
+    groups = {}
+    for g in root.iter("group"):
+        for m in g.findall("method"):
+            groups.setdefault((m.get("class", ""), m.get("name", "")), []).append(g.get("name", ""))
     for cls in root.iter("class"):
         cname = cls.get("name", "")
         for m in cls.findall("test-method"):
@@ -38,9 +43,13 @@ def read(path: str) -> dict:
             config = (m.get("is-config") or "").lower() == "true"
             if config and status != "FAIL":
                 continue
+            value = m.find("./params/param/value")
             entry = {"class": cname, "method": m.get("name", ""), "status": status,
                      "message": _message(m) if status != "PASS" else "",
-                     "ms": int(m.get("duration-ms") or 0), "config": config}
+                     "ms": int(m.get("duration-ms") or 0), "config": config,
+                     # The data row, as TestNG wrote it: {jira_xray_id=ABC-1, ...}
+                     "params": " ".join(((value.text if value is not None else "") or "").split())[:2000],
+                     "groups": sorted(set(groups.get((cname, m.get("name", "")), [])))}
             if status == "PASS":
                 out["passed"] += 1
             elif status == "SKIP" and SWITCHED_OFF in entry["message"]:

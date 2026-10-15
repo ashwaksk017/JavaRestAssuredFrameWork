@@ -296,6 +296,13 @@ RUNNABLES = {
         "label": "Cursor writes the tests of the chosen approved cases, in the job's one change",
         "options": {"--job": "text", "--cases": "text"},
     },
+    # The last run's results, to a new Xray Test Execution; the regression
+    # tests to the regression Test Set / Plan (the Settings tab's).
+    "xray-publish": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "xraypublish.py")],
+        "label": "Publish the last run's results to Xray, and the regression tests",
+        "options": {"--job": "text"},
+    },
     # The change's tests, run against an environment; what came of it is
     # what Approve & push is gated on.
     "agent-run-tests": {
@@ -758,7 +765,8 @@ RESULT_FILES = {"jira-": "jira-result.json", "failures-": "failures-result.json"
                 "story-check": "story-check.json",
                 "fix-brief": "fix-brief.json",
                 "xray-import": "xray-import.json",
-                "agent-run-tests": "execution.json"}
+                "agent-run-tests": "execution.json",
+                "xray-publish": "xray-publish.json"}
 
 
 def clear_result(job: str, runnable: str) -> None:

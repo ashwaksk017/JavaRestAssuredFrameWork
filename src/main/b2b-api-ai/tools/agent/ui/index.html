@@ -414,12 +414,14 @@ Expect 201.'></textarea>
     <div class="row">
       <button id="agent-run" title="run this change's tests against stg; Approve &amp; push opens only when they all pass">Run the tests (stg)</button>
       <button id="agent-push" class="go" disabled>Approve</button>
+      <button id="agent-xray" disabled title="the last run's results to a new Xray Test Execution, and the regression tests to the regression Test Set or Plan (Settings tab)">Publish to Xray</button>
       <button id="agent-discard" disabled>Discard</button>
       <button id="agent-dismiss" disabled title="put the last outcome away; nothing in the working tree changes">Dismiss</button>
       <button id="agent-review" disabled>Review the change</button>
       <button id="agent-commit-stop" title="stop the review, discard or approve running for this job">Stop</button>
     </div>
     <div id="agent-run-result" class="result"></div>
+    <div id="agent-xray-result" class="result"></div>
   </div>
 
   <h3>Code review <span class="hint">Cursor reads the change and lists what looks wrong — advice, it does not block Approve</span>

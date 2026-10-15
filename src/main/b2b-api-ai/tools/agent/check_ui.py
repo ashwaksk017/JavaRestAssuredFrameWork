@@ -857,6 +857,8 @@ def main() -> int:
             code, st = mocked.call("/api/workbench-job")
             check("the workbench's own job is named, not taken from the job box",
                   code == 200 and str(st.get("job", "")).startswith("workbench-"), str(st))
+            check("a run's results can be published to Xray from the Commit and push tab",
+                  'id="agent-xray"' in mocked.dom("agent"))
             check("the change's tests run on stg before it can be pushed",
                   'id="agent-run"' in mocked.dom("agent") and 'id="agent-run-result"' in mocked.dom("agent"))
             set_tab = mocked.dom("settings")

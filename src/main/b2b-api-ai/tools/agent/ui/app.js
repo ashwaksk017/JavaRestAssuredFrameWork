@@ -2091,6 +2091,8 @@ async function refreshReview() {
   const newTests = (review.scope || "new-test") === "new-test";
   const ran = review.execution || null;
   $("agent-run").disabled = !(state === "pending-review" && newTests && !review.mock);
+  // Publishing needs a run; it is the last step, after the push.
+  $("agent-xray").disabled = !ran;
   if (state === "pending-review" && newTests && !review.mock && (!ran || !ran.ok)) {
     $("agent-push").disabled = true;
     $("agent-push").title = ran ? `the last run on ${ran.env} did not pass: ${ran.why}` : "run the tests first: only a change whose tests all passed is pushed";
@@ -2550,6 +2552,27 @@ $("agent-run").onclick = () => {
   if (!sameJobOrRefresh($("agent-run"))) return;
   if (!confirm(`Run the tests of job "${job()}" against stg? They call the real stg APIs.`)) return;
   runAgent("agent-run-tests", { "--job": job(), "--env": "stg" });
+};
+// The last run, to Xray: a new Test Execution, and the regression tests to
+// the regression Test Set / Plan named on the Settings tab.
+$("agent-xray").onclick = async () => {
+  const j = job();
+  if (!confirm(`Publish the last run of job "${j}" to Xray? It creates a new Test Execution, and adds ` +
+               "the regression tests to the regression Test Set or Test Plan (Settings tab).")) return;
+  try {
+    await post("/api/start", { job: j, runnable: "xray-publish", options: { "--job": j } });
+    follow("xray-publish", $("agent-log"), $("agent-state"), async () => {
+      const r = await artifactJson(j, "xray-publish.json");
+      const box = $("agent-xray-result");
+      box.replaceChildren();
+      if (r) box.append(banner(r.ok ? "ok" : "bad",
+        `Xray: Test Execution ${r.execution || "(none)"}${r.mock ? " (mock: nothing was contacted)" : ""}, ` +
+        `${Object.keys(r.published || {}).length} test(s) published` +
+        ((r.not_published || []).length ? `, ${r.not_published.length} without an Xray key` : "") +
+        (r.regression && r.regression.added && r.regression.added.length
+          ? `; ${r.regression.added.length} regression test(s) added to ${r.regression.key}` : "")));
+    }, j);
+  } catch (e) { setState($("agent-state"), "bad", e.message); }
 };
 $("agent-review").onclick = () => {
   if (!sameJobOrRefresh($("agent-review"))) return;
