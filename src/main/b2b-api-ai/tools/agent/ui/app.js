@@ -345,9 +345,21 @@ function chosen(name) {
   return r ? r.value : "";
 }
 function showChosen(name) {
+  // "Use the story's Xray tests" reads the story by its link, as "A link or
+  // a key" does: it shows that box, with a note on what Design then does.
+  const pick = chosen(name);
+  const show = name === "story-from" && pick === "xray" ? "link" : pick;
   for (const r of document.querySelectorAll(`input[name="${name}"]`)) {
     const box = $(`${name}-${r.value}`);
-    if (box) box.hidden = !r.checked;
+    if (box) box.hidden = r.value !== show;
+  }
+  if (name === "story-from") {
+    const xray = pick === "xray";
+    if ($("story-xray-note")) $("story-xray-note").hidden = !xray;
+    if ($("run-design")) {
+      $("run-design").textContent = xray ? "Design from the Xray tests" : "Design the tests";
+      $("run-design").title = xray ? "the Xray tests linked to the story, with their steps, become the cases; Cursor is not asked" : "";
+    }
   }
 }
 for (const name of ["story-from", "pages-from", "spec-from", "req-from"]) {
@@ -1171,6 +1183,7 @@ wireXray("manual");
 $("design-cursor-go").onclick = () => { setCursorSource("design"); goToStep("new", "cursor-log"); };
 
 $("run-design").onclick = async () => {
+  if (chosen("story-from") === "xray") { xrayImport(); return; }
   const button = $("run-design");
   // One at a time: a second click used to wipe the Cursor pane of the run
   // already going, fail with "already running", and stop the pane's timer.
@@ -1224,22 +1237,24 @@ showSpec();
 $("job").addEventListener("change", () => { showDesign(); showSpec(); refreshXray("manual"); showReview("manual"); });
 // The story's existing Xray tests, as the design: no Cursor call. Then the
 // usual Review and the Agentic step, with the tests' real keys.
-$("run-xray-import").onclick = async () => {
+// Started by Design the tests when the Jira story choice is "Use the
+// story's Xray tests".
+async function xrayImport() {
   const j = job();
   if (!j) { setState($("design-state"), "bad", "name the job first"); return; }
-  $("run-xray-import").disabled = true;
+  $("run-design").disabled = true;
   try {
     await post("/api/start", { job: j, runnable: "xray-import", options: { "--job": j } });
     follow("xray-import", $("design-log"), $("design-state"), async () => {
-      $("run-xray-import").disabled = false;
+      $("run-design").disabled = false;
       const r = await artifactJson(j, "xray-import.json");
       if (r && r.ok) setState($("design-state"), "ok", r.message);
       else if (r && r.message) setState($("design-state"), "bad", r.message);
       showDesign(j, true);
       if (typeof showFlow === "function") showFlow();
     }, j);
-  } catch (e) { $("run-xray-import").disabled = false; setState($("design-state"), "bad", e.message); }
-};
+  } catch (e) { $("run-design").disabled = false; setState($("design-state"), "bad", e.message); }
+}
 
 $("clear-design").onclick = async () => {
   const j = job();

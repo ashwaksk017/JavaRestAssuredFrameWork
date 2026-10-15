@@ -728,7 +728,9 @@ def main() -> int:
             check("the design's options are folded away, closed, their defaults kept",
                   '<details class="more" id="design-options">' in html
                   and 'value="balanced" selected' in html and 'value="plan" selected' in html)
-            check("the story's existing Xray tests can be taken as the cases", 'id="run-xray-import"' in html)
+            check("the story's existing Xray tests are a choice of the Jira story, not a button of their own",
+                  'name="story-from" value="xray"' in html and 'id="run-xray-import"' not in html
+                  and 'id="story-xray-note"' in html)
             check("the requirements are uploaded or pasted, one box at a time, upload first",
                   'name="req-from" value="upload" checked' in html and 'id="req-from-paste" hidden' in html
                   and 'id="req-from-upload" hidden' not in html)

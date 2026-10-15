@@ -55,8 +55,12 @@
     <legend>Jira story</legend>
     <label class="inline"><input type="radio" name="story-from" value="link" checked> A link or a key</label>
     <label class="inline"><input type="radio" name="story-from" value="paste"> Paste the story</label>
+    <label class="inline"><input type="radio" name="story-from" value="xray"> Use the story's Xray tests</label>
   </fieldset>
   <div id="story-from-link">
+  <p class="hint" id="story-xray-note" hidden>The story is read by its link or key, as usual. <b>Design the tests</b>
+    then takes the Xray tests already linked to it -- with their steps -- as the cases, instead of
+    Cursor proposing new ones; review and Automate them as any others.</p>
   <label for="story">Jira story <span class="hint">a link to it, or its key — the story, its comments, its parent, its attachments and the Confluence pages it points at are read for you. Several keys (one a line, or separated by commas) make one job per story, named by its key</span></label>
   <textarea id="story" rows="2" spellcheck="false" autocomplete="off"
     placeholder="https://jira.example.com/browse/ABC-123   or   ABC-123   — or several: ABC-123, ABC-124"></textarea>
@@ -168,7 +172,6 @@ Expect 201.'></textarea>
   </div>
   <div class="row design-go">
     <button id="run-design" class="go">Design the tests</button>
-    <button id="run-xray-import" type="button" title="the Xray tests already linked to the job's story, with their steps, become the cases -- instead of Cursor proposing new ones">Use the story's Xray tests</button>
     <label class="inline" title="A design request that has not changed reuses the reply kept from last time instead of paying for it again. Tick this to forget every reply kept for this job and ask Cursor."><input type="checkbox" id="design-fresh"> Ask again</label>
     <label class="inline" title="When the job has a story, the tests are designed for the endpoints the story names, and the result says which those were. Tick this to design every endpoint of the specification instead."><input type="checkbox" id="design-whole"> Design the whole specification, not only what the story touches</label>
     <button id="stop-design">Stop</button>

@@ -355,7 +355,9 @@ Two things it needs before links will work:
 #### Using the story's Xray tests
 
 When the tests already exist in Jira -- written by a person, linked to
-the story -- **Use the story's Xray tests** (next to *Design the
+the story -- choose **Use the story's Xray tests** as the Jira story
+(beside *A link or a key* and *Paste the story*): the story is read by its
+link or key as usual, and **Design the tests** (now *Design from the Xray
 tests*) takes them as the cases instead of asking Cursor to propose new
 ones. It reads the story's issue links of the test link type
 (`jira_config.publish.test_link_type`, "Tests" by default: the story
