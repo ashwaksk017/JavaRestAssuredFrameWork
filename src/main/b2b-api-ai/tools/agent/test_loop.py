@@ -361,6 +361,21 @@ class TheReviewDecidesWhatIsWritten(Repo):
         self.assertIn(JIRA + "SecondTest.java", created)
         self.assertEqual(set(loop.automated_cases(self.job)), {"TC-001", "TC-002"})
 
+    def test_automate_without_a_plan_takes_the_approved_cases_as_the_plan(self):
+        os.remove(os.path.join(self.job, "plan.md"))
+        self.design(DESIGN_CASE)
+        loop.casereview.update(self.job, "design", ["TC-001"], state="approved")
+        seen = {}
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = loop.cmd_automate(self.job, self.root, self.policy, ["TC-001"],
+                                   agent=self.agent_that_writes(seen), verifier=OK)
+        self.assertEqual(rc, 0, out.getvalue())
+        self.assertIn("the approved cases are the plan", out.getvalue())
+        self.assertIn("# Plan: automate the designed cases", seen["p"])
+        self.assertIn("TC-001", seen["p"])
+        self.assertTrue(loop.automated_cases(self.job)["TC-001"]["written"])
+
     def test_a_case_not_approved_or_not_in_the_design_is_refused(self):
         self.design(DESIGN_CASE)
         out = io.StringIO()

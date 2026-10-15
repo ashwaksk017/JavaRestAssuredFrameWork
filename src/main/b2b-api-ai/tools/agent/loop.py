@@ -2289,6 +2289,21 @@ def automated_cases(job_dir: str) -> dict:
         return {}
 
 
+AUTOMATE_PLAN = """# Plan: automate the designed cases
+
+Written by Automate: this job's story was not located against the tests the
+project already has ("Is it automated?" was not run).
+
+CREATE -- one new test for each approved case listed under TEST CASES
+PROPOSED FOR THIS JOB, under src/test/java/com/hi/api/tests/jira/.
+
+Before writing one, look for an existing test of the same endpoint and
+behaviour (tests/jira/, tests/manual/, and the converted tests under
+tests/imported/). If one already covers a case, write nothing for it and
+name that test in your reply.
+"""
+
+
 def automate_refusal(job_dir: str, ids) -> str:
     """Why these cases cannot be automated now, or "". Checked before the
     Cursor setup is, so a refused run costs nothing."""
@@ -2351,6 +2366,14 @@ def cmd_automate(job_dir: str, root: str, policy: dict, ids, agent=None, verifie
         pass
     prior = read_review(job_dir)
     adding = prior.get("state") in ("pending-review", "verify-failed")
+    plan_path = os.path.join(job_dir, "plan.md")
+    if not _read(plan_path).strip():
+        # "Is it automated?" was not run: there is no plan. The approved
+        # cases are the request; the plan says so, and says where the
+        # existing tests are to be looked at first.
+        with io.open(plan_path, "w", encoding="utf-8") as fh:
+            fh.write(AUTOMATE_PLAN)
+        say(" .. no plan.md (\"Is it automated?\" was not run): the approved cases are the plan")
     _AUTOMATE_ONLY = set(ids)
     try:
         if adding:
