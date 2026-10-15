@@ -2779,24 +2779,28 @@ class CallingCursor(unittest.TestCase):
         self.assertEqual((out["status"], out["result"]), ("answered", answer))
         self.assertTrue(any(s.startswith("cursor's plan: ") for s in seen), seen)
 
-    def test_a_turn_without_a_whole_answer_is_asked_once_more_without_waiting(self):
+    def test_a_usage_line_before_the_answer_is_not_the_end(self):
+        """Seen live: a sentence, a createPlan call with a note, a usage line --
+        and the JSON answer still to come in the same run."""
         NS = types.SimpleNamespace
+        answer = '{"test_cases": [{"id": "TC-001"}]}'
 
-        def first():
+        def run():
             yield NS(type="assistant", message=NS(content=[NS(type="text", text="Designing the cases.")]))
+            yield NS(type="tool_call", name="createPlan", status="completed", call_id="p1",
+                     args={"plan": "# Note -- see the final message for the JSON."})
             yield NS(type="usage", usage=NS(input_tokens=5, output_tokens=5, total_tokens=10))
+            yield NS(type="assistant", message=NS(content=[NS(type="text", text=answer)]))
+            yield NS(type="usage", usage=NS(input_tokens=5, output_tokens=9, total_tokens=14))
             time.sleep(30)                           # the SDK never says the run ended
-        answer = '{"test_cases": []}'
-        second = [NS(type="assistant", message=NS(content=[NS(type="text", text=answer)])),
-                  NS(type="usage", usage=NS(input_tokens=6, output_tokens=5, total_tokens=11))]
-        self.use(FakeSdk(messages=first(), second=second))
-        complete = lambda text: text.strip().startswith("{")
+        self.use(FakeSdk(messages=run()))
+        complete = lambda text: text.strip().startswith("{") and text.strip().endswith("}")
         asked = []
         t0 = time.monotonic()
         out = loop.cursor_call.run("p", self.ca, self.cfg, deadline_seconds=20, answer_complete=complete,
                                    followup=lambda text: (asked.append(text), "JSON only")[1])
-        self.assertLess(time.monotonic() - t0, 5, "not waiting for the SDK")
-        self.assertEqual(asked, ["Designing the cases."])
+        self.assertLess(time.monotonic() - t0, 5)
+        self.assertEqual(asked, [], "nothing asked while the run was still answering")
         self.assertEqual((out["status"], out["result"]), ("answered", answer))
 
     def test_an_error_status_with_an_answer_keeps_the_answer_and_says_so(self):

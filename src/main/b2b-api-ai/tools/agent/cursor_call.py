@@ -650,18 +650,11 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
                         say("the answer is complete: the run is ended here, with it")
                         quiet_stop.set()
                         return ""
-                if answer_complete is not None and answered["text"] is None and followup:
-                    # Asked once more only when the step has words for it;
-                    # otherwise the run is read on.
-                    try:
-                        again = followup(segments[-1] if segments else "")
-                    except Exception:                    # noqa: BLE001
-                        again = None
-                    if again:
-                        pending["again"] = again
-                        if line:
-                            say(line)
-                        return "incomplete"
+                # A usage line without a whole answer is NOT the end: seen live
+                # (composer-2.5, plan mode), a createPlan call's model step ended
+                # with one, and the JSON answer was still to come in the same
+                # run -- asking again then failed ("already has active run").
+                # The run is read on; the answer ends it when it comes whole.
             if not line:
                 continue
             say(line)
@@ -721,6 +714,10 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
                     turn["closed"] = True
                 return (types.SimpleNamespace(status="quiet", id=str(getattr(run_, "id", "") or "")),
                         answered["text"] if answered["text"] is not None else best_answer())
+            if answered["text"] is not None:
+                # The whole answer came: nothing more is waited for or asked.
+                return (types.SimpleNamespace(status="answered", id=str(getattr(run_, "id", "") or "")),
+                        answered["text"])
             result = run_.wait()
             text = getattr(result, "result", None) or ""
             if not str(text).strip():
