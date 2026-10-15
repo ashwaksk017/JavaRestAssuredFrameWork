@@ -845,6 +845,8 @@ def main() -> int:
             check("each field of a step can be removed, and a step as a whole",
                   'class="drop d-do"' in html and 'class="drop d-expect"' in html
                   and ">Remove step</button>" in html, html[html.find('class="steps-edit"'):][:300])
+            check("the Migration tab's Cursor log follows its own file, not the Automate tab's",
+                  "runnable: \"migration-cursor\"" in io.open(os.path.join(HERE, "ui", "app.js"), encoding="utf-8").read())
             check("each case's suites show on its row, from the rules",
                   ">Suites<" in html and 'class="groups"' in html and "from the rules" in html)
             bare = subprocess.run(

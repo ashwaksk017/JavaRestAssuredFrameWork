@@ -44,7 +44,7 @@ class AChosenFileBecomesAPath(unittest.TestCase):
         got = self.put("Account Member Regression.xml")
         self.assertEqual(got, {"name": "Account Member Regression.xml",
                                "path": "target/convert-input/Account Member Regression.xml",
-                               "bytes": 42})
+                               "bytes": 42, "workbooks": 0})
         self.assertNotIn("\\", got["path"])
         there = os.path.join(self.root, "target", "convert-input", "Account Member Regression.xml")
         self.assertTrue(os.path.isfile(there))
@@ -469,6 +469,23 @@ class AMigrationRequest(unittest.TestCase):
             jobs.migration_ask("m1", "converter", "", "x")
         self.assertIn("its own job", str(got.exception))
         self.assertEqual(self.started, [])
+
+
+class WorkbookSteps(unittest.TestCase):
+    def test_only_a_datasource_that_reads_a_file_counts(self):
+        d = tempfile.mkdtemp(prefix="jobs_wb_")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        p = os.path.join(d, "s.xml")
+        xml = ('<con:testStep type="restrequest" name="a"><con:file>x.xlsx</con:file></con:testStep>'
+               '<con:testStep type="datasource" name="b"><con:config><con:dataSource type="Grid">'
+               '</con:dataSource></con:config></con:testStep>'
+               '<con:testStep type="datasource" name="c"><con:config><configuration>'
+               '<file>C:/data/members.xlsx</file><worksheet>S1</worksheet></configuration>'
+               '</con:config></con:testStep>')
+        with io.open(p, "w", encoding="utf-8") as fh:
+            fh.write(xml)
+        self.assertEqual(jobs.workbook_steps(p), 1, "a grid DataSource and another step's file do not count")
+        self.assertEqual(jobs.workbook_steps(os.path.join(d, "none.xml")), 0)
 
 
 class ClearingADesign(unittest.TestCase):

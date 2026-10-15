@@ -338,6 +338,14 @@ class RepoLock:
 
 # ---- the cursor log --------------------------------------------------
 
+def cursor_log_name(scope_name) -> str:
+    """The file a run's conversation with Cursor goes to: cursor.log for new
+    tests (the Automate Test Case tab), migration-cursor.log for a converted
+    suite or the converter (the Migration tab) -- so neither tab shows the
+    other's conversation, even in one job."""
+    return "migration-cursor.log" if scope_name in ("converted", "converter") else "cursor.log"
+
+
 class CursorLog:
     """Append-only record of the conversation with Cursor for one job."""
 
@@ -2597,7 +2605,8 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
     private = config_secrets(os.path.join(
         root, "src", "main", "resources", "program_configuration.json"))
     clog = CursorLog(job_dir, secret, [v for v, why in private.items()
-                                       if why.startswith("value of")])
+                                       if why.startswith("value of")],
+                     name=cursor_log_name(scope["name"]))
     roots = scope["write_roots"]
     compile_before = None
     if verifier is None and scope.get("compile"):
@@ -2829,7 +2838,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
     for attempt in range(1, attempts + 1):
         say(f" .. calling Cursor (attempt {attempt}"
             + (f", until it verifies or {attempts} attempts" if until_fixed else f" of {attempts}")
-            + ") -- the conversation is in cursor.log")
+            + f") -- the conversation is in {cursor_log_name(scope['name'])}")
         prompt = build_prompt(job_dir, policy, scope, repair, root, followup=followup)
         tag = f"f{len(asked)}-" if followup else ""
         with io.open(os.path.join(job_dir, f"agent-prompt-{tag}{attempt}.txt"),
@@ -3046,8 +3055,8 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                 say(f"FAIL {p}")
             return reject(" | ".join(problems))
         if not changes["created"] and not changes["modified"]:
-            say("FAIL the agent changed no file. Its answer is in "
-                "cursor.log -- it usually says why.")
+            say(f"FAIL the agent changed no file. Its answer is in "
+                f"{cursor_log_name(scope['name'])} -- it usually says why.")
             return reject("the agent changed no file", restore=False)
 
         say(f" ok  {len(changes['created'])} created, "
@@ -3282,7 +3291,7 @@ def _discard(job_dir: str, root: str, review: dict, policy: dict = None) -> int:
         if again:
             say(" .. Discard can be used again for this job while that run "
                 "keeps writing. End its process to make it stop.")
-        CursorLog(job_dir).write("DISCARDED an unfinished run")
+        CursorLog(job_dir, name=cursor_log_name(review.get("scope"))).write("DISCARDED an unfinished run")
         say("discarded")
         return 0
     if review.get("state") not in ("pending-review", "verify-failed"):
@@ -3307,7 +3316,7 @@ def _discard(job_dir: str, root: str, review: dict, policy: dict = None) -> int:
         say(f" .. restored {rel}" if rc == 0
             else f" .. COULD NOT restore {rel}: {out.strip()[:120]}")
     write_review(job_dir, dict(review, state="discarded"))
-    CursorLog(job_dir).write("DISCARDED by the reviewer")
+    CursorLog(job_dir, name=cursor_log_name(review.get("scope"))).write("DISCARDED by the reviewer")
     say("discarded")
     return 0
 
@@ -3354,7 +3363,7 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
     if not paths:
         say("FAIL the review lists no files.")
         return 1
-    clog = CursorLog(job_dir)
+    clog = CursorLog(job_dir, name=cursor_log_name(review.get("scope")))
     generated = review.get("generated") or []
     gen_backup = os.path.join(job_dir, "pre-generated")
     # review.json is a file on disk; do not take its word for where the

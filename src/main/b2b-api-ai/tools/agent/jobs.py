@@ -468,11 +468,36 @@ def upload_name(name: str) -> str:
     return base
 
 
+_STEP_RX = re.compile(r"<con:testStep\b[^>]*>", re.I)
+_DATASOURCE_RX = re.compile(r"""\btype\s*=\s*["']datasource["']""", re.I)
+_WORKBOOK_RX = re.compile(r"<(?:con:)?(?:file|fileName|excelFile)>\s*[^<\s][^<]*</", re.I)
+
+
+def workbook_steps(path: str) -> int:
+    """How many DataSource steps of a ReadyAPI project read a file (an
+    Excel workbook or a CSV): those are the ones a workbooks folder
+    (--data-dir) is for. 0 for a project with none -- the page then has
+    no reason to warn that the folder is not set."""
+    try:
+        with io.open(path, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return 0
+    starts = [m.start() for m in _STEP_RX.finditer(text)] + [len(text)]
+    n = 0
+    for a, b in zip(starts, starts[1:]):
+        head = text[a:text.find(">", a) + 1]
+        if _DATASOURCE_RX.search(head) and _WORKBOOK_RX.search(text[a:b]):
+            n += 1
+    return n
+
+
 def _upload_entry(name: str) -> dict:
     # Forward slashes whatever the machine: the same text is a valid path
     # on Windows, macOS and Linux, and it is relative to the project.
+    full = os.path.join(upload_dir(), name)
     return {"name": name, "path": "/".join((*UPLOAD_DIR, name)),
-            "bytes": os.path.getsize(os.path.join(upload_dir(), name))}
+            "bytes": os.path.getsize(full), "workbooks": workbook_steps(full)}
 
 
 def list_uploads() -> list:
@@ -729,7 +754,8 @@ def job_dir(job: str) -> str:
 
 # Logs that are not a runnable's own output but may be read like one.
 EXTRA_LOGS = {"cursor",       # cursor.log: the conversation with Cursor
-              "design-cursor"}  # design-cursor.log: the design step's
+              "design-cursor",  # design-cursor.log: the design step's
+              "migration-cursor"}  # migration-cursor.log: the Migration tab's runs
 
 
 def _known(runnable: str) -> str:
@@ -983,7 +1009,7 @@ def dismiss_review(job: str) -> dict:
         full = os.path.join(out, name)
         if not os.path.isfile(full):
             continue
-        agent_file = (name == "cursor.log"
+        agent_file = (name in ("cursor.log", "migration-cursor.log")
                       or any(name in (f"{r}.log", f"{r}.status.json") for r in AGENT_RUNNABLES)
                       or name.startswith(("agent-prompt-", "agent-answer-"))
                       or name in ("proposed.diff", "agent-followup.txt"))

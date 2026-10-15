@@ -1368,11 +1368,15 @@ function warn() {
     msgs.push("Cursor assist calls the REAL Cursor after the convert, whatever " +
               "tools/agent/mock.json says. It can cost money and edit files.");
   }
-  if (!o["--data-dir"]) {
-    msgs.push("No workbooks folder is set. Fine for a suite whose ReadyAPI " +
-              "project has no DataSource workbooks. If it does have them, " +
-              "every DataSource column comes out EMPTY and the run looks " +
-              "like an API problem rather than a missing path.");
+  // Only for a chosen file that has DataSource steps reading a workbook:
+  // the server counts them (jobs.workbook_steps). A suite with none needs
+  // no folder, and was warned about for nothing.
+  const reads = uploaded.filter((f) => (f.workbooks || 0) > 0);
+  if (!o["--data-dir"] && reads.length) {
+    msgs.push(`No workbooks folder is set, and ${reads.map((f) => `${f.name} has ${f.workbooks} ` +
+              "DataSource step(s) reading a workbook").join("; ")}. Without the folder ` +
+              "every such DataSource column comes out EMPTY and the run looks like an API " +
+              "problem rather than a missing path.");
   }
   const box = $("convert-warnings");
   box.hidden = msgs.length === 0;
@@ -2115,12 +2119,13 @@ let cursorSource = "tests";
 const cursorStreams = {
   tests: { runnable: "cursor", offset: 0 },
   design: { runnable: "design-cursor", offset: 0 },
+  // The Migration tab's own runs (a converted suite, the converter), in
+  // migration-cursor.log: never the Automate tab's conversation.
+  migration: { runnable: "migration-cursor", offset: 0 },
 };
 function panesFor(src) {
-  const out = [];
-  if (src === "tests" && $("mig-cursor-log")) out.push($("mig-cursor-log"));
-  if (src === cursorSource && $("cursor-log")) out.push($("cursor-log"));
-  return out;
+  if (src === "migration") return $("mig-cursor-log") ? [$("mig-cursor-log")] : [];
+  return src === cursorSource && $("cursor-log") ? [$("cursor-log")] : [];
 }
 async function pollStream(src, reset) {
   const s = cursorStreams[src];
@@ -2140,6 +2145,7 @@ async function pollStream(src, reset) {
 async function pollCursorLog(reset) {
   await pollStream("tests", reset);
   await pollStream("design", reset);
+  await pollStream("migration", reset);
 }
 function setCursorSource(src) {
   if (!cursorStreams[src]) return;
