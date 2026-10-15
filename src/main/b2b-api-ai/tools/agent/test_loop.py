@@ -237,6 +237,17 @@ class InsideThePaths(Repo):
         self.assertNotIn("GoneTest", xml, "a class that is gone is not listed")
         self.assertNotIn("BaseStoryTest", xml, "an abstract class is not a test to run")
 
+    def test_a_request_body_template_goes_with_the_test(self):
+        """Seen live: the skill puts a request body in templates/manual/, and
+        the run was rejected for writing there."""
+        def agent(prompt):
+            write(self.root, JIRA + "BodyTest.java", "class BodyTest {}\n")
+            write(self.root, "src/test/resources/templates/manual/create_account.json", "{}\n")
+            return {"result": "ok"}
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(self.generate(agent), 0)
+        self.assertIn("src/test/resources/templates/manual/create_account.json", self.state()["files"]["created"])
+
     def test_the_prompt_carries_the_plan_and_the_allowed_paths(self):
         seen = {}
         def agent(prompt):

@@ -176,6 +176,7 @@ DEFAULT_POLICY = {
             "label": "A new hand-written test",
             "write_roots": ["src/test/java/com/hi/api/tests/jira/",
                             "src/test/resources/csv/manual/",
+                            "src/test/resources/templates/manual/",
                             "Suites/jira/"],
             "pushable": True,
             "compile": _MVN,
