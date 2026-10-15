@@ -743,6 +743,47 @@ AGENT_RUNNABLES = ("agent-generate", "agent-followup", "agent-approve", "agent-d
                    "agent-reapply")
 
 
+DESIGN_FILES = ("design.json", "design.md", "test-cases.csv", "xray.csv",
+                "agent-design.log", "agent-design.status.json")
+
+
+def clear_design(job: str) -> dict:
+    """Take a job's design out: its result files, its log, and the kept
+    Cursor replies (design-cache/) that a design asked again would
+    otherwise reuse. They go into design-cleared-<time>/ in the job, so
+    nothing is lost. The cleared design becomes design.previous.json:
+    the next design is matched to it, and review decisions and Xray keys
+    -- which name issues that exist in Jira -- stay and follow the cases
+    that come back. What was pasted or uploaded for the design stays."""
+    out = job_dir(job)
+    if read_status(job, "agent-design").get("state") == "running":
+        raise ValueError("a design is running for this job; Stop it first")
+    names = [n for n in DESIGN_FILES if os.path.isfile(os.path.join(out, n))]
+    cache = os.path.isdir(os.path.join(out, "design-cache"))
+    if not names and not cache:
+        return {"cleared": False, "moved": []}
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    archive = os.path.join(out, "design-cleared-" + now.replace(":", "").replace("-", ""))
+    os.makedirs(archive, exist_ok=True)
+    if "design.json" in names:
+        try:
+            with io.open(os.path.join(out, "design.json"), encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict) and not data.get("mock") and data.get("test_cases"):
+                with io.open(os.path.join(out, "design.previous.json"), "w", encoding="utf-8") as fh:
+                    json.dump(data, fh, indent=1, ensure_ascii=False)
+        except (OSError, ValueError):
+            pass
+    moved = []
+    for n in names:
+        os.replace(os.path.join(out, n), os.path.join(archive, n))
+        moved.append(n)
+    if cache:
+        os.replace(os.path.join(out, "design-cache"), os.path.join(archive, "design-cache"))
+        moved.append("design-cache/")
+    return {"cleared": True, "moved": moved, "archive": os.path.basename(archive)}
+
+
 def dismiss_review(job: str) -> dict:
     """Put away the agent loop's last outcome for a job: review.json goes
     back to state none, and what it said is kept in review-dismissed.json.

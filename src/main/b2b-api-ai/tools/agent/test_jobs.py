@@ -390,6 +390,40 @@ class Artifacts(unittest.TestCase):
 
 
 
+class ClearingADesign(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="jobs_clear_")
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        for owner in (jobs, jobs.intake):
+            self.addCleanup(setattr, owner, "ROOT", owner.ROOT)
+            owner.ROOT = self.root
+        self.job = jobs.job_dir("j1")
+        os.makedirs(os.path.join(self.job, "design-cache"))
+
+    def put(self, name, text="x"):
+        with io.open(os.path.join(self.job, name), "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+    def test_the_design_and_its_kept_replies_go_and_the_review_stays(self):
+        import json
+        self.put("design.json", json.dumps({"test_cases": [{"id": "TC-001"}]}))
+        for n in ("design.md", "test-cases.csv", "agent-design.log", "case-review.json", "xray-tests.json",
+                  "design-swagger.txt", "brief.md"):
+            self.put(n)
+        self.put("design-cache/abc.json")
+        got = jobs.clear_design("j1")
+        self.assertTrue(got["cleared"])
+        self.assertIn("design-cache/", got["moved"])
+        for n in ("design.json", "design.md", "test-cases.csv", "agent-design.log", "design-cache"):
+            self.assertFalse(os.path.exists(os.path.join(self.job, n)), n)
+            self.assertTrue(os.path.exists(os.path.join(self.job, got["archive"], n)), n)
+        for n in ("case-review.json", "xray-tests.json", "design-swagger.txt", "brief.md"):
+            self.assertTrue(os.path.isfile(os.path.join(self.job, n)), f"{n} stays")
+        with io.open(os.path.join(self.job, "design.previous.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["test_cases"][0]["id"], "TC-001", "the next design is matched to it")
+        self.assertEqual(jobs.clear_design("j1"), {"cleared": False, "moved": []})
+
+
 class PuttingAnOutcomeAway(unittest.TestCase):
     """The agent loop's last outcome can be dismissed from the page when it
     left nothing in the working tree."""

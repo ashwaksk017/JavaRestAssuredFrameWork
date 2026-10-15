@@ -345,6 +345,19 @@ Two things it needs before links will work:
   python tools/agent/locate.py --job <job> --rebuild-index
   ```
 
+#### Clearing a design
+
+A design stays with the job -- reload the page and it is there -- and
+so do the Cursor replies it was made from: a design asked again with
+nothing changed reuses the kept reply instead of paying for it twice
+(tick *Ask again* to ask anyway). **Clear the design** takes the cases,
+`design.md`, the CSVs, the design's log and the kept replies out of the
+job, into `design-cleared-<time>/` beside them, so the next design asks
+Cursor afresh. Review decisions and Xray keys stay -- they name issues
+that exist in Jira -- and the next design is matched to the cleared
+one, so a case that comes back keeps its id, its decision and its test.
+What was pasted or uploaded for the design stays too.
+
 #### When the story changes
 
 A job reads its story once, and everything after is made from that

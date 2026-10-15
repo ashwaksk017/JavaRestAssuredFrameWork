@@ -1035,6 +1035,20 @@ $("run-design").onclick = async () => {
 showDesign();
 showSpec();
 $("job").addEventListener("change", () => { showDesign(); showSpec(); refreshXray("manual"); showReview("manual"); });
+$("clear-design").onclick = async () => {
+  const j = job();
+  if (!j) { setState($("design-state"), "bad", "name the job first"); return; }
+  if (!confirm("Clear this job's design? The cases, design.md and the kept Cursor replies are moved " +
+               "aside; the next design asks Cursor afresh. Review decisions and Xray keys stay.")) return;
+  try {
+    const r = await post("/api/design-clear", { job: j });
+    setState($("design-state"), r.cleared ? "ok" : "", r.cleared ? "design cleared" : "no design to clear");
+    $("design-log").textContent = "";
+    showDesign(j, true);
+    if (typeof showFlow === "function") showFlow();
+  } catch (e) { setState($("design-state"), "bad", e.message); }
+};
+
 $("stop-design").onclick = async () => {
   try { await post("/api/stop", { job: job(), runnable: "agent-design" }); }
   catch (e) { setState($("design-state"), "bad", e.message); }

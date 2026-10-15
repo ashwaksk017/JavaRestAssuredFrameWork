@@ -109,16 +109,6 @@ Expect 201.'></textarea>
   <pre id="new-log" class="log"></pre>
 
   <h2 class="part">Design the API tests <span class="hint">optional — what should be tested, before any code</span></h2>
-  <div class="row design-go">
-    <button id="run-design" class="go">Design the tests</button>
-    <label class="inline" title="A design request that has not changed reuses the reply kept from last time instead of paying for it again. Tick this to forget every reply kept for this job and ask Cursor."><input type="checkbox" id="design-fresh"> Ask again</label>
-    <label class="inline" title="When the job has a story, the tests are designed for the endpoints the story names, and the result says which those were. Tick this to design every endpoint of the specification instead."><input type="checkbox" id="design-whole"> Design the whole specification, not only what the story touches</label>
-    <button id="stop-design">Stop</button>
-    <a id="dl-design" class="dl" hidden>design.md</a>
-    <a id="dl-cases" class="dl" hidden>test-cases.csv</a>
-    <a id="dl-xray" class="dl" hidden>xray.csv</a>
-    <span id="design-state" class="state"></span>
-  </div>
   <p class="lede">
     Cursor reads the API specification, the requirements and the brief
     above, and proposes test cases with steps and expected results. It
@@ -171,6 +161,17 @@ Expect 201.'></textarea>
       <span id="design-spec-state" class="state"></span>
     </div>
     <div id="design-spec" class="result"></div>
+  </div>
+  <div class="row design-go">
+    <button id="run-design" class="go">Design the tests</button>
+    <label class="inline" title="A design request that has not changed reuses the reply kept from last time instead of paying for it again. Tick this to forget every reply kept for this job and ask Cursor."><input type="checkbox" id="design-fresh"> Ask again</label>
+    <label class="inline" title="When the job has a story, the tests are designed for the endpoints the story names, and the result says which those were. Tick this to design every endpoint of the specification instead."><input type="checkbox" id="design-whole"> Design the whole specification, not only what the story touches</label>
+    <button id="stop-design">Stop</button>
+    <button id="clear-design" type="button" title="takes this job's design and the kept Cursor replies out, so the next design asks Cursor afresh; review decisions and Xray keys stay">Clear the design</button>
+    <a id="dl-design" class="dl" hidden>design.md</a>
+    <a id="dl-cases" class="dl" hidden>test-cases.csv</a>
+    <a id="dl-xray" class="dl" hidden>xray.csv</a>
+    <span id="design-state" class="state"></span>
   </div>
   <label for="design-requirements">Requirements <span class="hint">BRD text, acceptance criteria</span></label>
   <textarea id="design-requirements" rows="5" spellcheck="false"></textarea>

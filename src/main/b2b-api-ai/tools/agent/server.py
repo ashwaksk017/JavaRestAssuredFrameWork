@@ -314,6 +314,10 @@ class Handler(BaseHTTPRequestHandler):
                         lock=lock))
                 except jobs.repo.Refused as e:
                     raise ValueError(str(e)) from None
+            if u.path == "/api/design-clear":
+                # The design and its kept replies, out of the job (kept in a
+                # folder of their own); refused while a design runs.
+                return self._json(jobs.clear_design(body.get("job", "")))
             if u.path == "/api/agent-dismiss":
                 # The last outcome, put away: only one that left nothing in
                 # the tree; refused while an agent command runs.
