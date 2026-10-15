@@ -844,8 +844,8 @@ The only tab that writes code. It takes the plan the Automate Test Case tab prod
 
 **The repository, and where the branch goes.** The strip at the top of
 the tab reads git each time the tab is opened: the branch checked out,
-whether the tree is clean, the remote (its address shown without any
-credentials), and how far the branch is from its upstream. **Switch to
+whether the tree is clean, the remote Approve & push sends to (by name
+only: its address is never shown or sent to the page), and how far the branch is from its upstream. **Switch to
 it** checks out another branch -- only on a clean tree, with no agent job
 running, and with the name typed again; a branch known only on the
 remote is checked out tracking it. Under the review controls, **Build

@@ -1969,15 +1969,18 @@ async function showRepo() {
     return;
   }
   where.append("on ", el("code", { text: r.branch || "(detached)" }),
-    r.head ? el("small", { text: ` ${r.head}` }) : null,
+    ...(r.head ? [el("small", { text: ` ${r.head}` })] : []),
     r.clean ? el("span", { text: ", clean" })
       : el("span", { class: r.switchable ? "" : "dirty",
                      title: [...(r.modified || []), ...(r.untracked || []).map((p) => p + " (untracked)")].join("\n"),
                      text: `, ${(r.modified || []).length} changed` +
                            ((r.blocking || []).length ? ` (${r.blocking.join(", ")})` : "") +
                            `, ${(r.untracked || []).length} untracked` }),
-    r.remote_url ? el("span", {}, `; ${r.remote} → `, el("code", { text: r.remote_url })) : el("span", { class: "dirty", text: `; no remote "${r.remote}"` }),
-    r.upstream && (r.ahead || r.behind) ? el("small", { text: ` (${r.ahead} ahead, ${r.behind} behind ${r.upstream})` }) : null);
+    r.has_remote ? el("span", { title: "Approve & push sends the agent/<job> branch to this remote" },
+                      `; pushes to ${r.remote}`)
+                 : el("span", { class: "dirty", text: `; no remote "${r.remote}" -- Approve & push has nowhere to push` }),
+    // append() prints a null as the text "null": only real parts go in.
+    ...(r.upstream && (r.ahead || r.behind) ? [el("small", { text: ` (${r.ahead} ahead, ${r.behind} behind ${r.upstream})` })] : []));
   const names = [...new Set([...(r.local_branches || []), ...(r.remote_branches || [])])].sort();
   sel.replaceChildren(...names.map((n) => el("option", { value: n, text: n + (r.local_branches.includes(n) ? "" : `  (${r.remote} only)`) })));
   sel.value = r.branch;

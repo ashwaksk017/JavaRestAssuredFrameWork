@@ -715,6 +715,13 @@ def main() -> int:
             check("Design the tests comes after the specification, before the requirements",
                   html.find('name="spec-from"') < html.find('id="run-design"') < html.find('id="design-requirements"'))
             check("a design can be cleared", 'id="clear-design"' in html)
+            agent_html = mocked.dom("agent")
+            strip = agent_html.split('id="repo-where"', 1)[-1].split('id="repo-branches"', 1)[0]
+            check("the repository strip names the remote but never its address, and never prints null",
+                  "pushes to origin" in strip and "://" not in strip and "null" not in strip, strip[:300])
+            code, info = mocked.call("/api/repo")
+            check("the page is never sent the remote's address", "remote_url" not in info and "has_remote" in info,
+                  str(sorted(info))[:200])
             check("the design's options are folded away, closed, their defaults kept",
                   '<details class="more" id="design-options">' in html
                   and 'value="balanced" selected' in html and 'value="plan" selected' in html)

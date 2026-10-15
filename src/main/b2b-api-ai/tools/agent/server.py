@@ -196,7 +196,10 @@ class Handler(BaseHTTPRequestHandler):
                                        "options": v["options"]}
                                    for k, v in jobs.RUNNABLES.items()})
             if u.path == "/api/repo":
-                return self._json(jobs.repo.info(ROOT))
+                # The page is told THAT there is a remote, never its address.
+                info = jobs.repo.info(ROOT)
+                info["has_remote"] = bool(info.pop("remote_url", ""))
+                return self._json(info)
             if u.path == "/api/whoami":
                 # Which process this is and which folder it serves, so that
                 # the launcher stops THIS workbench and no other program
