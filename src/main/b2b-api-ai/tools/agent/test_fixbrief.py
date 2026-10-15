@@ -189,6 +189,15 @@ class TheDigestsOwnNames(Base):
         self.assertEqual(g["cases"][0]["class_file"], "src/test/java/com/hi/api/tests/imported/goal/spend/SpendTest.java")
         self.assertEqual(g["cases"][0]["log"], {}, "a simple name matches only its own class's logs")
 
+    def test_a_run_of_one_class_is_read_from_its_own_report(self):
+        os.remove(os.path.join(self.root, "target", "surefire-reports", "TEST-TestSuite.xml"))
+        write(self.root, "target/surefire-reports/junitreports/TEST-com.hi.api.tests.imported.amex.spend.SpendTest.xml",
+              '<testsuite><testcase name="getSpend403Test" classname="com.hi.api.tests.imported.amex.spend.SpendTest">'
+              '<failure message="expected [200] but found [403]" type="java.lang.AssertionError">boom</failure>'
+              "</testcase></testsuite>")
+        g = fb.build("fix1", self.root, test="getSpend403Test", suite="amex")
+        self.assertIn("expected [200] but found [403]", g["cases"][0]["surefire"]["message"])
+
     def test_a_log_of_another_row_is_said_to_be_possibly_so(self):
         write(self.root, "logs/com_hi_api_tests_imported_amex_spend_SpendTest__getSpend403Test__row7b.log", "later row\n")
         write(self.root, "logs/com_hi_api_tests_imported_amex_spend_OtherSpendTest__getSpend403Test__rowzz.log", "not ours\n")

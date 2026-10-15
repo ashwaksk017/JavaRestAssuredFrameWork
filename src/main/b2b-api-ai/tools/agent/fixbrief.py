@@ -183,17 +183,37 @@ def _candidates(root: str, cls: str) -> list:
     return sorted(out)
 
 
+def _testcases(root: str) -> list:
+    """Every <testcase> of the last run's reports. A suite run writes
+    TEST-TestSuite.xml; a run of one class (-Dtest=...) writes
+    TEST-<class>.xml beside it and in junitreports/: all are read, the
+    suite's first, each test case once."""
+    base = os.path.join(root, os.path.dirname(fh.SUREFIRE))
+    files = [os.path.join(root, fh.SUREFIRE)]
+    for sub in ("", "junitreports"):
+        d = os.path.join(base, sub)
+        try:
+            files += sorted(os.path.join(d, n) for n in os.listdir(d)
+                            if n.startswith("TEST-") and n.endswith(".xml"))
+        except OSError:
+            pass
+    out, seen = [], set()
+    for path in files:
+        if not os.path.isfile(path) or path in seen:
+            continue
+        seen.add(path)
+        try:
+            tree = ET.parse(path)
+        except (ET.ParseError, OSError):
+            continue
+        out += list(tree.iter("testcase"))
+    return out
+
+
 def _surefire_classnames(root: str, method: str, simple: str) -> set:
     """The qualified class names surefire ran `method` on, ending in the
     simple name."""
-    path = os.path.join(root, fh.SUREFIRE)
-    if not os.path.isfile(path):
-        return set()
-    try:
-        tree = ET.parse(path)
-    except (ET.ParseError, OSError):
-        return set()
-    return {tc.get("classname", "") for tc in tree.iter("testcase")
+    return {tc.get("classname", "") for tc in _testcases(root)
             if tc.get("name") == method and tc.get("classname", "").endswith("." + simple)}
 
 
@@ -248,15 +268,18 @@ def cn_ok(cn: str, cls: str, simple: str) -> bool:
 
 def _surefire(root: str, cls: str, method: str, redact) -> dict:
     """{message, type, stack} for the test from surefire's report, or {}."""
-    path = os.path.join(root, fh.SUREFIRE)
-    if not os.path.isfile(path):
-        return {}
-    try:
-        tree = ET.parse(path)
-    except (ET.ParseError, OSError):
-        return {}
     simple = cls.rsplit(".", 1)[-1] if cls else ""
-    cases = [tc for tc in tree.iter("testcase") if tc.get("name") == method]
+    every = _testcases(root)
+    if not every:
+        return {}
+    # The same case can be in two reports (suite and per class): one is enough,
+    # and the one that failed is the one to show.
+    cases, seen = [], set()
+    for tc in sorted((tc for tc in every if tc.get("name") == method),
+                     key=lambda tc: 0 if (tc.find("failure") is not None or tc.find("error") is not None) else 1):
+        if tc.get("classname", "") not in seen:
+            seen.add(tc.get("classname", ""))
+            cases.append(tc)
     exact = [tc for tc in cases if tc.get("classname", "") == cls]
     if exact:
         cases = exact
