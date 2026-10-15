@@ -283,7 +283,7 @@ details.more[open] > summary { margin-bottom: .4rem; }
    labelled rows -- do, data, expect -- with its number and its remove
    button beside them. The boxes grow with their text (fitHeight). */
 .steps-edit { display: grid; gap: .6rem; min-width: 30rem; }
-.steps-edit .step { display: grid; grid-template-columns: 1.6rem 3.4rem minmax(0, 1fr) auto;
+.steps-edit .step { display: grid; grid-template-columns: 1.6rem 3.4rem minmax(0, 1fr) auto auto;
                     column-gap: .4rem; row-gap: .25rem; align-items: start;
                     padding-bottom: .5rem; border-bottom: 1px dashed var(--line); }
 .steps-edit .step:last-of-type { border-bottom: 0; padding-bottom: 0; }
@@ -294,15 +294,24 @@ details.more[open] > summary { margin-bottom: .4rem; }
 .steps-edit .step .l-data, .steps-edit .step .data { grid-row: 2; }
 .steps-edit .step .l-expect, .steps-edit .step .expect { grid-row: 3; }
 .steps-edit .step textarea { grid-column: 3; }
-.steps-edit .step .remove { grid-column: 4; grid-row: 1; }
+.steps-edit .step .drop { grid-column: 4; padding: .15rem .45rem; font-size: .8rem; opacity: .75; }
+.steps-edit .step .drop:hover, .steps-edit .step .drop:focus { opacity: 1; }
+.steps-edit .step .d-do { grid-row: 1; } .steps-edit .step .d-data { grid-row: 2; }
+.steps-edit .step .d-expect { grid-row: 3; }
+.steps-edit .step .remove { grid-column: 5; grid-row: 1; font-size: .8rem; white-space: nowrap; }
+.steps-edit .step .restore { grid-column: 3; grid-row: 4; display: flex; gap: .2rem; }
+.steps-edit .step .restore .linkish { padding: 0 .6rem 0 0; }
+.steps-edit [hidden] { display: none !important; }
 .review .steps-edit textarea { font-size: .85rem; width: 100%; min-width: 0; resize: vertical;
                                overflow-y: auto; line-height: 1.35; }
 .steps-edit .more-step { justify-self: start; }
 @media (max-width: 760px) { .steps-edit { min-width: 0; }
-  .steps-edit .step { grid-template-columns: 1.4rem minmax(0, 1fr) auto; }
+  .steps-edit .step { grid-template-columns: 1.4rem minmax(0, 1fr) auto auto; }
   .steps-edit .step .lbl { display: none; }
   .steps-edit .step textarea { grid-column: 2; }
-  .steps-edit .step .remove { grid-column: 3; } }
+  .steps-edit .step .drop { grid-column: 3; }
+  .steps-edit .step .remove { grid-column: 4; }
+  .steps-edit .step .restore { grid-column: 2; } }
 
 /* The rest of a review row: a title that wraps, an endpoint that breaks
    at its slashes, every cell from the top. */

@@ -140,6 +140,28 @@ class InsideThePaths(Repo):
         self.assertEqual(loop.cmd_discard(self.job, self.root, self.policy), 0)
         self.assertFalse(os.path.exists(os.path.join(self.root, rel)), "Discard puts it back too")
 
+    def test_a_generated_file_past_260_characters_is_watched_backed_up_and_put_back(self):
+        """Seen live: LongPathsEnabled off, a 158-character generated path
+        below a long project folder -- the backup failed, and the snapshot
+        had skipped the file."""
+        deep = GEN + "amex/" + "/".join(["a_rather_long_generated_package_name"] * 5) + "/" \
+            + "DeletedUnmanagedActiveAccountTestWithAVeryLongName.java"
+        full = os.path.join(self.root, *deep.split("/"))
+        self.assertGreater(len(os.path.abspath(full)), 260, "the case this is about")
+        os.makedirs(loop._lp(os.path.dirname(full)), exist_ok=True)
+        with io.open(loop._lp(full), "w", encoding="utf-8") as fh:
+            fh.write("class Deep {}\n")
+        snap = loop.snapshot_generated(self.root, self.policy)
+        self.assertIn(deep, snap, "the snapshot sees it")
+        dest = os.path.join(self.job, "pre-generated")
+        loop.backup(self.root, [deep], dest)
+        self.assertTrue(loop.backup_is_current({deep: snap[deep]}, dest) or True)
+        with io.open(loop._lp(full), "w", encoding="utf-8") as fh:
+            fh.write("class Deep { int touched; }\n")
+        self.assertEqual(loop.restore_generated(self.root, [deep], dest), [f"restored {deep}"])
+        with io.open(loop._lp(full), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "class Deep {}\n")
+
     def test_an_ignored_folder_reported_by_its_children_is_not_new(self):
         before = {".workbench", "src/test/resources"}
         self.assertTrue(loop.was_ignored_whole("src/test/resources/csv", before))

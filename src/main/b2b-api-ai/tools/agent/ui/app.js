@@ -824,18 +824,52 @@ function stepEditor(given, save, st) {
     save(clean);
   };
   const add = (s) => {
-    const r = {
-      action: el("textarea", { rows: "1", spellcheck: "false", class: "do", placeholder: "what is sent / done" }),
-      data: el("textarea", { rows: "1", spellcheck: "false", class: "data", placeholder: "the data it needs (optional)" }),
-      expected: el("textarea", { rows: "1", spellcheck: "false", class: "expect", placeholder: "what is expected" }),
-    };
-    r.action.value = s.action || ""; r.data.value = s.data || ""; r.expected.value = s.expected || "";
-    for (const f of [r.action, r.data, r.expected]) { f.onchange = send; fitHeight(f, 8); }
-    const remove = el("button", { type: "button", class: "remove", title: "remove this step", text: "×" });
-    r.node = el("div", { class: "step" }, el("span", { class: "n" }),
-      el("span", { class: "lbl l-do", text: "do" }), r.action,
-      el("span", { class: "lbl l-data", text: "data" }), r.data,
-      el("span", { class: "lbl l-expect", text: "expect" }), r.expected, remove);
+    // Each of a step's three fields can be removed (its ×) and brought back
+    // (+ do / + data / + expect). A field the case has no text for starts
+    // removed; a new step shows all three. A step keeps a do or an expect.
+    const r = {};
+    const fresh = !s.action && !s.data && !s.expected;
+    const parts = [el("span", { class: "n" })];
+    const restore = el("div", { class: "restore" });
+    const shows = [];
+    for (const [key, word, cls, hint] of [["action", "do", "do", "what is sent / done"],
+                                          ["data", "data", "data", "the data it needs"],
+                                          ["expected", "expect", "expect", "what is expected"]]) {
+      const field = el("textarea", { rows: "1", spellcheck: "false", class: cls, placeholder: hint });
+      field.value = s[key] || "";
+      field.onchange = send;
+      fitHeight(field, 8);
+      const lbl = el("span", { class: `lbl l-${cls}`, text: word });
+      const drop = el("button", { type: "button", class: `drop d-${cls}`, text: "×",
+                                  title: `remove the ${word} of this step` });
+      const back = el("button", { type: "button", class: "linkish", text: `+ ${word}`,
+                                  title: `give this step a ${word} again` });
+      r[key] = field;
+      const show = (on) => {
+        for (const n of [lbl, field, drop]) n.hidden = !on;
+        back.hidden = on;
+        restore.hidden = ![...restore.children].some((c) => !c.hidden);
+      };
+      r["show_" + key] = show;
+      drop.onclick = () => {
+        const other = key === "action" ? r.expected : key === "expected" ? r.action : null;
+        const keeps = (key === "data") || (other && !other.hidden && other.value.trim());
+        if (!keeps) {
+          setState(st, "bad", "a step needs a do or an expect: to drop the whole step, press Remove step");
+          return;
+        }
+        field.value = "";
+        show(false);
+        send();
+      };
+      back.onclick = () => { show(true); field.focus(); };
+      parts.push(lbl, field, drop);
+      restore.append(back);
+      shows.push([show, fresh || Boolean(String(s[key] || "").trim())]);
+    }
+    const remove = el("button", { type: "button", class: "remove", title: "remove this step", text: "Remove step" });
+    r.node = el("div", { class: "step" }, ...parts, remove, restore);
+    for (const [show, on] of shows) show(on);
     remove.onclick = () => {
       if (rows.length === 1) { setState(st, "bad", "a case needs at least one step"); return; }
       rows.splice(rows.indexOf(r), 1); r.node.remove(); number(); send();

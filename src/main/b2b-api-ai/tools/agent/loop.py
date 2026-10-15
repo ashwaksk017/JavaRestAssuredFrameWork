@@ -594,9 +594,27 @@ def repo_prefix(root: str) -> str:
     return out.strip() if rc == 0 else ""
 
 
+def _lp(path: str) -> str:
+    """On Windows, the extended-length form of `path` (\\?\C:\...), which
+    is not held to 260 characters. Seen live: the generated tree's longest
+    file is 158 characters below a project folder of 112, and the backup
+    folder adds ~46; with LongPathsEnabled off, the copy failed with
+    "path not found" -- and, quieter, os.walk and the hash had skipped
+    every file over the limit, so those were neither watched nor backed
+    up. Elsewhere, and for "", the path unchanged."""
+    if os.name != "nt" or not path:
+        return path
+    p = os.path.abspath(path)
+    if p.startswith("\\\\?\\"):
+        return p
+    if p.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + p[2:]
+    return "\\\\?\\" + p
+
+
 def _sha(path: str):
     try:
-        with io.open(path, "rb") as fh:
+        with io.open(_lp(path), "rb") as fh:
             return hashlib.sha1(fh.read()).hexdigest()
     except OSError:
         return None
@@ -793,12 +811,13 @@ def snapshot_generated(root: str, policy: dict) -> dict:
     and it is a HASH, not a timestamp: a write that keeps the size and
     resets the mtime would otherwise pass unseen."""
     snap = {}
+    long_root = _lp(root)
     for gen in policy["generated_roots"]:
-        base = os.path.join(root, gen)
+        base = _lp(os.path.join(root, gen))
         for dirpath, _dirs, files in os.walk(base):
             for name in files:
                 p = os.path.join(dirpath, name)
-                rel = os.path.relpath(p, root).replace("\\", "/")
+                rel = os.path.relpath(p, long_root).replace("\\", "/")
                 if in_roots(rel, policy["generated_exclude"]):
                     continue
                 digest = _sha(p)
@@ -815,11 +834,11 @@ def _bk(rel: str) -> str:
 
 def backup(root: str, paths, dest: str) -> None:
     """Copy files so a violation can put back exactly what was there."""
-    shutil.rmtree(dest, ignore_errors=True)
+    shutil.rmtree(_lp(dest), ignore_errors=True)
     for rel in paths:
-        src = os.path.join(root, rel)
+        src = _lp(os.path.join(root, rel))
         if os.path.isfile(src):
-            out = os.path.join(dest, _bk(rel))
+            out = _lp(os.path.join(dest, _bk(rel)))
             os.makedirs(os.path.dirname(out), exist_ok=True)
             shutil.copy2(src, out)
 
@@ -856,7 +875,7 @@ def backup_is_current(snap: dict, dest: str) -> bool:
         return False
     if marked != _snapshot_digest(snap):
         return False
-    return all(os.path.isfile(os.path.join(dest, _bk(rel))) for rel in snap)
+    return all(os.path.isfile(_lp(os.path.join(dest, _bk(rel)))) for rel in snap)
 
 
 def classify_tracked(before: dict, after: dict, roots) -> dict:
@@ -909,8 +928,8 @@ def classify_generated(before: dict, after: dict, roots) -> dict:
 def restore_tracked(root: str, rels, before: dict, backup_dir: str) -> list:
     notes = []
     for rel in rels:
-        full = os.path.join(root, rel)
-        saved = os.path.join(backup_dir, _bk(rel))
+        full = _lp(os.path.join(root, rel))
+        saved = _lp(os.path.join(backup_dir, _bk(rel)))
         if os.path.isfile(saved):                 # was already changed: exact copy
             os.makedirs(os.path.dirname(full), exist_ok=True)
             shutil.copy2(saved, full)
@@ -933,8 +952,8 @@ def restore_generated(root: str, rels, backup_dir: str) -> list:
     agent created the file -- removed."""
     notes = []
     for rel in rels:
-        full = os.path.join(root, rel)
-        saved = os.path.join(backup_dir, rel)
+        full = _lp(os.path.join(root, rel))
+        saved = _lp(os.path.join(backup_dir, _bk(rel)))
         if os.path.isfile(saved):
             os.makedirs(os.path.dirname(full), exist_ok=True)
             shutil.copy2(saved, full)
@@ -949,7 +968,7 @@ def restore_generated(root: str, rels, backup_dir: str) -> list:
 
 def _read(path: str, cap: int = 60000) -> str:
     try:
-        with io.open(path, encoding="utf-8", errors="replace") as fh:
+        with io.open(_lp(path), encoding="utf-8", errors="replace") as fh:
             return fh.read(cap)
     except OSError:
         return ""
@@ -1337,9 +1356,13 @@ def designed_cases(job_dir: str, cap: int = 20000, keys: dict = None, only_ids=N
         for s in c.get("steps") or []:
             if not isinstance(s, dict):
                 continue
-            given = f" | data: {_one_line(s.get('data'))}" if s.get("data") else ""
-            lines.append(f"    do: {_one_line(s.get('action'))}{given} "
-                         f"| expect: {_one_line(s.get('expected'))}")
+            # A field a person removed (or the design left empty) is not
+            # shown as "do: " with nothing after it.
+            said = [f"{word}: {_one_line(s.get(key))}" for key, word in
+                    (("action", "do"), ("data", "data"), ("expected", "expect"))
+                    if str(s.get(key) or "").strip()]
+            if said:
+                lines.append("    " + " | ".join(said))
     text = "\n".join(lines)
     if len(text) > cap:
         text = text[:cap] + "\n[... the rest is in design.md ...]"
@@ -2604,10 +2627,10 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         # file in scope; without a copy, Discard could only remove it.
         gen_backup = os.path.join(job_dir, "pre-generated")
         for rel, _sig in gen_before.items():
-            if in_roots(rel, roots) and not os.path.isfile(os.path.join(gen_backup, _bk(rel))):
-                src = os.path.join(root, rel)
+            if in_roots(rel, roots) and not os.path.isfile(_lp(os.path.join(gen_backup, _bk(rel)))):
+                src = _lp(os.path.join(root, rel))
                 if os.path.isfile(src):
-                    out = os.path.join(gen_backup, _bk(rel))
+                    out = _lp(os.path.join(gen_backup, _bk(rel)))
                     os.makedirs(os.path.dirname(out), exist_ok=True)
                     shutil.copy2(src, out)
         # 3. The change the person has already read, kept whole: a follow-up
@@ -3232,7 +3255,7 @@ def _discard(job_dir: str, root: str, review: dict, policy: dict = None) -> int:
     generated = set(review.get("generated") or [])
     gen_backup = os.path.join(job_dir, "pre-generated")
     for rel in files.get("created") or []:
-        full = os.path.join(root, rel)
+        full = _lp(os.path.join(root, rel))
         if rel not in generated:
             git(root, "rm", "--cached", "-q", "--ignore-unmatch", "--", rel)
         if os.path.isfile(full):

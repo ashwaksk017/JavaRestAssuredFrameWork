@@ -842,6 +842,9 @@ def main() -> int:
             check("the Automate Test Case tab has ONE Cursor log, showing the design or the tests",
                   tab_new.count('class="log cursor"') == 1 and 'name="cursor-from"' in tab_new
                   and 'id="design-cursor-log"' not in tab_new and 'id="design-cursor-go"' in tab_new)
+            check("each field of a step can be removed, and a step as a whole",
+                  'class="drop d-do"' in html and 'class="drop d-expect"' in html
+                  and ">Remove step</button>" in html, html[html.find('class="steps-edit"'):][:300])
             check("each case's suites show on its row, from the rules",
                   ">Suites<" in html and 'class="groups"' in html and "from the rules" in html)
             bare = subprocess.run(
