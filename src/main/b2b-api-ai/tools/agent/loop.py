@@ -3127,7 +3127,8 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                 for line in said.splitlines()[:60]:
                     say("    " + line[:400])
                 clog.write("ANSWERED without changing a file")
-                return reject("Cursor answered and changed no file", restore=False, why="answered")
+                reject("Cursor answered and changed no file", restore=False, why="answered")
+                return 0                    # an answer is what was asked for
             say(f"FAIL the agent changed no file. Its answer is in "
                 f"{cursor_log_name(scope['name'])} -- it usually says why.")
             return reject("the agent changed no file", restore=False)
