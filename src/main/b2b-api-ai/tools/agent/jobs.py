@@ -296,6 +296,13 @@ RUNNABLES = {
         "label": "Cursor writes the tests of the chosen approved cases, in the job's one change",
         "options": {"--job": "text", "--cases": "text"},
     },
+    # The change's tests, run against an environment; what came of it is
+    # what Approve & push is gated on.
+    "agent-run-tests": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "loop.py"), "run"],
+        "label": "Run the change's tests against an environment (stg)",
+        "options": {"--job": "text", "--env": "text"},
+    },
     "agent-followup": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "loop.py"), "followup"],
         "label": "Cursor changes what it wrote, as the reviewer asks; then it is verified",
@@ -335,7 +342,7 @@ RUNNABLES = {
 # convert during an agent run would look like the agent rewriting every
 # suite; an agent run during a convert would "put back" half-written
 # files.
-EXCLUSIVE = {"convert", "agent-generate", "agent-followup", "agent-automate", "agent-approve", "agent-discard",
+EXCLUSIVE = {"convert", "agent-generate", "agent-followup", "agent-automate", "agent-run-tests", "agent-approve", "agent-discard",
              "agent-reapply", "verify-all"}
 
 # The only options that may be given more than once.
@@ -734,7 +741,8 @@ RESULT_FILES = {"jira-": "jira-result.json", "failures-": "failures-result.json"
                 "xray-create": "xray-result.json",
                 "story-check": "story-check.json",
                 "fix-brief": "fix-brief.json",
-                "xray-import": "xray-import.json"}
+                "xray-import": "xray-import.json",
+                "agent-run-tests": "execution.json"}
 
 
 def clear_result(job: str, runnable: str) -> None:
@@ -780,7 +788,7 @@ def log_path(job: str, runnable: str) -> str:
 # generating hold files: Discard first. A rejection that still needs a
 # Discard says so (needs_discard) and is kept until it has had one.
 DISMISSABLE = ("rejected", "discarded", "pushed", "approved-local")
-AGENT_RUNNABLES = ("agent-generate", "agent-followup", "agent-automate", "agent-approve",
+AGENT_RUNNABLES = ("agent-generate", "agent-followup", "agent-automate", "agent-run-tests", "agent-approve",
                    "agent-discard", "agent-reapply")
 # What reads or writes a job's design and its Cursor change while it runs.
 JOB_WRITERS = AGENT_RUNNABLES + ("agent-design", "xray-import")

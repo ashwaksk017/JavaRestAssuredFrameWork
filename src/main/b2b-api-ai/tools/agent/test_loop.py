@@ -1358,6 +1358,51 @@ class Push(Repo):
         self.assertEqual(sh(self.root, "rev-parse", "--abbrev-ref", "HEAD"), "main",
                          "the checkout returns to where it was")
 
+    def run_tests(self, xml):
+        def runner(args):
+            self.assertIn("-Denv=stg", args)
+            self.assertIn("-DsuiteXmlFile=" + SUITE, args)
+            write(self.root, "target/surefire-reports/testng-results.xml", xml)
+            return 0, "Tests run: 1"
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = loop.cmd_run(self.job, self.root, self.policy, "stg", runner=runner)
+        return rc, out.getvalue()
+
+    def test_a_change_is_pushed_only_after_its_tests_passed_on_stg(self):
+        self.policy["require_green_run"] = True
+        self.pending()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(self.push(), 1)
+        self.assertIn("run the tests first", out.getvalue())
+        rc, said = self.run_tests('<?xml version="1.0" encoding="UTF-8"?>\n<testng-results ignored="0" total="4" passed="1" failed="1" skipped="2">\n  <suite name="s"><test name="t">\n    <class name="com.hi.api.tests.jira.NewTest">\n      <test-method status="PASS" name="setUp" is-config="true" duration-ms="1"/>\n      <test-method status="PASS" name="get_200" duration-ms="120"/>\n      <test-method status="FAIL" name="get_403" duration-ms="80">\n        <exception class="java.lang.AssertionError"><message><![CDATA[expected [403] but found [200]]]></message></exception>\n      </test-method>\n      <test-method status="SKIP" name="get_404" duration-ms="1">\n        <exception class="org.testng.SkipException"><message><![CDATA[config key jira.abc-1.owner.guest_id is not set]]></message></exception>\n      </test-method>\n      <test-method status="SKIP" name="row_off" duration-ms="1">\n        <exception class="org.testng.SkipException"><message><![CDATA[execute=N [test_case_id=r] -- switched off in the data sheet, not a failure]]></message></exception>\n      </test-method>\n    </class>\n  </test></suite>\n</testng-results>\n')
+        self.assertEqual(rc, 1)
+        self.assertIn("1 test(s) failed", said)
+        self.assertIn("expected [403] but found [200]", said)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(self.push(), 1)
+        self.assertIn("did not pass", out.getvalue())
+        rc, said = self.run_tests('<?xml version="1.0" encoding="UTF-8"?>\n<testng-results ignored="0" total="1" passed="1" failed="0" skipped="0">\n  <suite name="s"><test name="t"><class name="com.hi.api.tests.jira.NewTest">\n    <test-method status="PASS" name="get_200" duration-ms="120"/>\n  </class></test></suite>\n</testng-results>\n')
+        self.assertEqual(rc, 0, said)
+        self.assertTrue(os.path.isfile(os.path.join(self.job, "execution.json")))
+        self.assertTrue(self.state()["execution"]["results_file"].startswith("testng-results-"))
+        write(self.root, JIRA + "NewTest.java", "class NewTest { int edited; }\n")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(self.push(), 1)
+        self.assertIn("changed since the tests last ran", out.getvalue())
+        write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
+        self.assertEqual(self.push(), 0)
+
+    def test_the_branch_is_named_after_the_story(self):
+        self.policy["branch_prefix"] = "feature_"
+        write(self.root, ".workbench/job1/intake.json", json.dumps({"story": {"key": "ABC-42"}}))
+        self.pending()
+        self.assertEqual(self.push(), 0)
+        self.assertEqual(self.state()["branch"], "feature_ABC-42")
+
     def test_the_branch_can_be_named_and_based_by_the_reviewer(self):
         self.pending()
         rc = loop.cmd_approve(self.job, self.root, self.policy, "job1", "job1",

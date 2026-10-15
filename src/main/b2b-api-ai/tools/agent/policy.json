@@ -118,10 +118,12 @@
     "review": 900,
     "manual": 1200
   },
-  "branch_prefix": "agent/",
+  "branch_prefix": "feature_",
   "remote": "origin",
   "protected_branches": [
     "main",
     "master"
-  ]
+  ],
+  "require_green_run": true,
+  "run_env": "stg"
 }

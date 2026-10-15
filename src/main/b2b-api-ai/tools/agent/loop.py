@@ -132,6 +132,7 @@ def _load(name: str, path: str):
 intake = _load("loop_intake", os.path.join(HERE, "intake.py"))
 casereview = _load("loop_casereview", os.path.join(HERE, "casereview.py"))
 suitemap = _load("loop_suitemap", os.path.join(HERE, "suitemap.py"))
+execution = _load("loop_execution", os.path.join(HERE, "execution.py"))
 patches = _load("loop_patches", os.path.join(HERE, "patches.py"))
 cursor_call = _load("loop_cursor_call", os.path.join(HERE, "cursor_call.py"))
 mock = _load("loop_mock", os.path.join(HERE, "mock.py"))
@@ -1811,6 +1812,17 @@ def write_group_suites(root: str, job_dir: str, scope: dict) -> list:
 
 
 _STORY_KEY_RX = re.compile(r"^[A-Z][A-Z0-9_]{0,19}-[0-9]{1,9}$")
+
+
+def story_key_of(job_dir: str) -> str:
+    """The key of the job's Jira story, or "" (a pasted story has none)."""
+    try:
+        with io.open(os.path.join(job_dir, "intake.json"), encoding="utf-8") as fh:
+            story = json.load(fh).get("story")
+        key = str(story.get("key") or "").upper() if isinstance(story, dict) else ""
+    except (OSError, ValueError, AttributeError):
+        key = ""
+    return key if _STORY_KEY_RX.match(key) else ""
 
 
 def story_key_block(job_dir: str, scope: dict) -> str:
@@ -3511,6 +3523,21 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
     if stray:
         say("FAIL the review lists files outside its scope: " + ", ".join(stray[:5]))
         return 1
+    if policy.get("require_green_run") and scope["name"] == "new-test":
+        # Pushed only when the tests of THIS code ran, and all passed.
+        ran = review.get("execution") or {}
+        if not ran:
+            say(f"FAIL run the tests first (Run the tests, on {policy.get('run_env') or 'stg'}): "
+                f"only a change whose tests all passed is pushed.")
+            return 1
+        if not ran.get("ok"):
+            say(f"FAIL the last run, on {ran.get('env')}, did not pass: {ran.get('why')}. Fix it "
+                f"(Ask Cursor) and run the tests again.")
+            return 1
+        now_hashes = {p: _sha(os.path.join(root, p)) for p in paths}
+        if now_hashes != (ran.get("hashes") or {}):
+            say("FAIL the files changed since the tests last ran: run them again.")
+            return 1
     diff = _write_diff(root, job_dir, files, generated, gen_backup)
     # What is approved must be what was shown. If a file changed since the
     # diff was produced, show the new diff and ask again.
@@ -3545,7 +3572,8 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
             f"{entry} and will be put back after every convert of `{suite}`.")
         return 0
 
-    branch = policy["branch_prefix"] + job
+    # feature_<story key>; a job without a story key: feature_<job>.
+    branch = policy["branch_prefix"] + (story_key_of(job_dir) or job)
     if (branch_wanted or "").strip():
         # The person's name for the branch: a branch name, under the
         # policy's prefix (so that `main` and friends cannot be named), and
@@ -3694,6 +3722,108 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
     return 0
 
 
+RUN_RESULTS = os.path.join("target", "surefire-reports", "testng-results.xml")
+RUN_TIMEOUT = 45 * 60
+_ENV_RX = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+_RUN_SHOWN = ("Running ", "Tests run:", "[ERROR]", "BUILD ", "FAIL", "PASSED", "SKIPPED")
+
+
+def _stream(root: str, argv: list, timeout: float) -> tuple:
+    """Run a command, printing the lines worth seeing as they come; (rc, text)."""
+    proc = subprocess.Popen(argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    lines, start = [], time.time()
+    try:
+        for raw in iter(proc.stdout.readline, b""):
+            line = raw.decode("utf-8", "replace").rstrip()
+            lines.append(line)
+            if any(w in line for w in _RUN_SHOWN):
+                say("    " + line[:300])
+            if time.time() - start > timeout:
+                proc.kill()
+                lines.append(f"stopped after {timeout:.0f}s")
+                break
+        proc.wait(timeout=60)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    return proc.returncode if proc.returncode is not None else 124, "\n".join(lines)
+
+
+def cmd_run(job_dir: str, root: str, policy: dict, env: str = "", runner=None) -> int:
+    """Run the tests of the change waiting for review, against an
+    environment (the policy's run_env, stg), and record what came of it:
+    execution.json in the job, and its summary in review.json -- with the
+    files' hashes, so that Approve can tell the run was of THIS code. A
+    copy of TestNG's results is kept for publishing to Xray."""
+    review = read_review(job_dir)
+    if review.get("state") != "pending-review":
+        say(f"FAIL there is no change waiting for review to run (state: {review.get('state')}).")
+        return 1
+    if (review.get("scope") or "new-test") != "new-test":
+        say("FAIL only a change of new tests is run here.")
+        return 1
+    env = (env or policy.get("run_env") or "stg").strip()
+    if not _ENV_RX.match(env):
+        say(f"FAIL {env!r} is not an environment name.")
+        return 1
+    job = os.path.basename(job_dir.rstrip("/\\"))
+    suite = JOB_SUITES + job + ".xml"
+    if not os.path.isfile(os.path.join(root, suite.replace("/", os.sep))):
+        say(f"FAIL this job has no suite ({suite}): there is no test of it to run.")
+        return 1
+    files = review.get("files") or {}
+    paths = list(files.get("created") or []) + list(files.get("modified") or [])
+    results = os.path.join(root, RUN_RESULTS)
+    try:
+        os.remove(results)                  # never read an earlier run's results as this one's
+    except OSError:
+        pass
+    diag.step(f"Running the job's tests against {env}")
+    say(f" .. running {suite} against {env} (mvn test -Denv={env}); this can take minutes")
+    args = ["test", f"-DsuiteXmlFile={suite}", f"-Denv={env}", "-DfailIfNoTests=false"]
+    if runner is not None:
+        rc, text = runner(args)
+    else:
+        exe = shutil.which("mvn")
+        if not exe:
+            say("FAIL mvn is not on PATH.")
+            return 1
+        rc, text = _stream(root, [exe, "-o", "-B", *args], RUN_TIMEOUT)
+        if rc != 0 and any(w in text.lower() for w in _NEEDS_NETWORK):
+            say(" .. offline was not enough; running online")
+            rc, text = _stream(root, [exe, "-B", *args], RUN_TIMEOUT)
+    try:
+        res = execution.read(results)
+    except ValueError as e:
+        say(f"FAIL the run left no test results ({e}). The end of its output:")
+        for line in text.strip().splitlines()[-25:]:
+            say("    " + line[:300])
+        return 1
+    ok, why = execution.verdict(res)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    kept = f"testng-results-{stamp}.xml"
+    try:
+        shutil.copy2(results, os.path.join(job_dir, kept))
+    except OSError:
+        kept = ""
+    record = {"at": _now(), "env": env, "rc": rc, "ok": ok, "why": why, "suite": suite,
+              "passed": res["passed"], "failed": res["failed"], "skipped": res["skipped"],
+              "switched_off": res["switched_off"], "results_file": kept,
+              "hashes": {p: _sha(os.path.join(root, p)) for p in paths}}
+    with io.open(os.path.join(job_dir, "execution.json"), "w", encoding="utf-8") as fh:
+        json.dump(dict(record, tests=res["tests"]), fh, indent=1)
+    write_review(job_dir, dict(review, execution=record))
+    for test in res["tests"]:
+        line = f"{test['status']:<4} {test['class'].rsplit('.', 1)[-1]}.{test['method']}"
+        say(("  ok  " if test["status"] == "PASS" else "  ..  ") + line
+            + (f" -- {test['message'][:240]}" if test["message"] else ""))
+    if ok:
+        say(f"PASSED on {env}: {why}. Approve & push is open for this change.")
+        return 0
+    say(f"FAIL on {env}: {why}. Approve & push stays closed until a run of this change passes.")
+    return 1
+
+
 def _commit_body(job_dir: str, files: dict) -> str:
     """Only the file list. The pasted story is NOT quoted here: it can
     carry an internal URL or a customer name, and a commit message is
@@ -3708,7 +3838,8 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("command",
                     choices=("setup", "generate", "followup", "automate", "approve", "push", "discard",
-                             "reapply"))
+                             "reapply", "run"))
+    ap.add_argument("--env", default="", help="run: the environment (default: the policy's run_env)")
     ap.add_argument("--cases", default="", help="automate: the case ids, comma-separated")
     ap.add_argument("--job", required=True)
     ap.add_argument("--scope", default="new-test")
@@ -3745,6 +3876,8 @@ def main(argv=None) -> int:
         return cmd_generate(job_dir, ROOT, policy, args.scope, args.suite)
     if args.command == "automate":
         return cmd_automate(job_dir, ROOT, policy, args.cases.split(","))
+    if args.command == "run":
+        return cmd_run(job_dir, ROOT, policy, args.env)
     if args.command == "discard":
         return cmd_discard(job_dir, ROOT, policy)
     if args.command == "reapply":

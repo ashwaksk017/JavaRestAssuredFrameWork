@@ -1950,6 +1950,7 @@ async function refreshReview() {
   // The buttons act on the job whose review is on screen, not on whatever
   // is typed in the box when they are clicked.
   $("agent-push").dataset.job = shown;
+  $("agent-run").dataset.job = shown;
   $("agent-discard").dataset.job = shown;
   try {
     const r = await api(
@@ -2028,6 +2029,22 @@ async function refreshReview() {
   $("agent-ask-send").disabled = Boolean(askBlocked);
   $("agent-ask-send").title = askBlocked;
   $("agent-ask-send").dataset.waiting = ["pending-review", "verify-failed"].includes(state) ? "1" : "";
+  // Run the tests: for a change of new tests waiting for review. Approve &
+  // push: only once a run of it passed.
+  const newTests = (review.scope || "new-test") === "new-test";
+  const ran = review.execution || null;
+  $("agent-run").disabled = !(state === "pending-review" && newTests && !review.mock);
+  if (state === "pending-review" && newTests && !review.mock && (!ran || !ran.ok)) {
+    $("agent-push").disabled = true;
+    $("agent-push").title = ran ? `the last run on ${ran.env} did not pass: ${ran.why}` : "run the tests first: only a change whose tests all passed is pushed";
+  }
+  const runBox = $("agent-run-result");
+  if (runBox) {
+    runBox.replaceChildren();
+    if (ran) runBox.append(banner(ran.ok ? "ok" : "bad",
+      `Last run on ${ran.env} at ${ran.at}: ${ran.passed} passed, ${ran.failed} failed, ${ran.skipped} skipped` +
+      (ran.switched_off ? `, ${ran.switched_off} switched off in the data sheet` : "") + ` -- ${ran.why}`));
+  }
   $("agent-review").dataset.job = shown;
   await showCodeReview(shown, review);
 }
@@ -2250,8 +2267,11 @@ async function showRepo() {
   const bases = (r.remote_branches || []).slice().sort((a, b) => (a === r.branch ? -1 : b === r.branch ? 1 : a.localeCompare(b)));
   base.replaceChildren(...bases.map((n) => el("option", { value: n, text: `${r.remote}/${n}` + (n === r.branch ? "  (checked out)" : "") })));
   if (!bases.length) base.append(el("option", { value: "", text: `no branch of ${r.remote} is known here (fetch first)` }));
-  if (!$("agent-branch").value.trim() || $("agent-branch").dataset.auto === "1") {
-    $("agent-branch").value = `agent/${job()}`;
+  // Left empty, the branch is feature_<story key> (feature_<job> without one):
+  // the server knows the key.
+  if ($("agent-branch").dataset.auto !== "0") {
+    $("agent-branch").value = "";
+    $("agent-branch").placeholder = "feature_<story key>  (feature_<job> when the job has no Jira key)";
     $("agent-branch").dataset.auto = "1";
   }
 }
@@ -2467,6 +2487,13 @@ $("agent-dismiss").onclick = async () => {
   } catch (e) { setState($("agent-state"), "bad", e.message); }
   refreshReview();
 };
+// The change's tests on stg. Approve & push opens only when the last run of
+// THIS code passed (the server checks the files' hashes too).
+$("agent-run").onclick = () => {
+  if (!sameJobOrRefresh($("agent-run"))) return;
+  if (!confirm(`Run the tests of job "${job()}" against stg? They call the real stg APIs.`)) return;
+  runAgent("agent-run-tests", { "--job": job(), "--env": "stg" });
+};
 $("agent-review").onclick = () => {
   if (!sameJobOrRefresh($("agent-review"))) return;
   runAgent("agent-review", { "--job": job() });
@@ -2505,7 +2532,7 @@ $("agent-push").onclick = () => {
   const j = job();
   const pushes = $("agent-push").dataset.pushable !== "false";
   const base = $("agent-base").value;
-  const branch = $("agent-branch").value.trim() || `agent/${j}`;
+  const branch = $("agent-branch").value.trim() || "feature_<the story's key>";
   const remote = (repoInfo && repoInfo.remote) || "origin";
   if (pushes && !base) { setState($("agent-state"), "bad", `no branch of ${remote} to build on; fetch first`); return; }
   const msg = pushes
@@ -2517,7 +2544,7 @@ $("agent-push").onclick = () => {
       "stored and put back after every convert of the suite.";
   if (!confirm(msg)) return;
   const options = { "--job": j, "--confirm": j };
-  if (pushes) { options["--base"] = base; options["--branch"] = branch; }
+  if (pushes) { options["--base"] = base; if ($("agent-branch").value.trim()) options["--branch"] = branch; }
   runAgent("agent-approve", options);
 };
 onTab.agent = () => { showRepo(); };

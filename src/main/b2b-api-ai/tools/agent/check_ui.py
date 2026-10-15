@@ -857,6 +857,8 @@ def main() -> int:
             code, st = mocked.call("/api/workbench-job")
             check("the workbench's own job is named, not taken from the job box",
                   code == 200 and str(st.get("job", "")).startswith("workbench-"), str(st))
+            check("the change's tests run on stg before it can be pushed",
+                  'id="agent-run"' in mocked.dom("agent") and 'id="agent-run-result"' in mocked.dom("agent"))
             check("each case's suites show on its row, from the rules",
                   ">Suites<" in html and 'class="groups"' in html and "from the rules" in html)
             bare = subprocess.run(

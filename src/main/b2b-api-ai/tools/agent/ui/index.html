@@ -407,15 +407,17 @@ Expect 201.'></textarea>
       <label class="inline" for="agent-base">Build on <span class="hint">the remote branch the job's branch starts from</span></label>
       <select id="agent-base"></select>
       <label class="inline" for="agent-branch">Push as</label>
-      <input id="agent-branch" type="text" spellcheck="false" placeholder="agent/<job>">
+      <input id="agent-branch" type="text" spellcheck="false" placeholder="feature_<story key>">
     </div>
     <div class="row">
+      <button id="agent-run" title="run this change's tests against stg; Approve &amp; push opens only when they all pass">Run the tests (stg)</button>
       <button id="agent-push" class="go" disabled>Approve</button>
       <button id="agent-discard" disabled>Discard</button>
       <button id="agent-dismiss" disabled title="put the last outcome away; nothing in the working tree changes">Dismiss</button>
       <button id="agent-review" disabled>Review the change</button>
       <button id="agent-commit-stop" title="stop the review, discard or approve running for this job">Stop</button>
     </div>
+    <div id="agent-run-result" class="result"></div>
   </div>
 
   <h3>Code review <span class="hint">Cursor reads the change and lists what looks wrong — advice, it does not block Approve</span>
