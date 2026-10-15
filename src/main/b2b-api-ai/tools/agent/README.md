@@ -376,6 +376,26 @@ job needs its story); a job that already has a design is refused --
 Clear the design first. In mock mode the sample story has two linked
 tests.
 
+#### How long a design takes
+
+One Cursor call: a few seconds to start, the model thinking (60-100 s with
+a reasoning model such as grok-4.6), then writing the JSON (35-45 s for
+15,000-18,000 tokens, about 28 cases). The design, Manual tests, Defects
+and the code review can use a model of their own -- a faster one -- set as
+`designModel` in `tools/ra_converter/cursor_agent.json`:
+
+```
+{"apiKey": "...", "model": "grok-4.6", "designModel": "composer-2.5"}
+```
+
+The Cursor log names the model of each call. Fewer cases (speed "fast")
+also means less to write.
+
+cursor-sdk's bridge re-runs a request when the connection sits idle after
+the answer ("the same request ran again" in the Cursor log). These calls
+therefore end as soon as one whole JSON answer has come ("the answer is
+complete: the run is ended here").
+
 #### Clearing a design
 
 A design stays with the job -- reload the page and it is there -- and

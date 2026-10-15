@@ -853,6 +853,20 @@ function stepEditor(given, save, st) {
   return box;
 }
 
+// "Automate the approved cases" can be pressed only when there is one, and
+// not while a design runs (it would hand Cursor a design about to change).
+let designRunning = false;
+function automateReady(cases, entries) {
+  const b = $("auto-selected");
+  if (!b) return;
+  const n = (cases || []).filter((c) => c && entries[c.id] && entries[c.id].state === "approved"
+                                        && entries[c.id].automate !== false).length;
+  b.disabled = designRunning || n === 0;
+  b.title = designRunning ? "a design is running; automate when it has finished"
+    : n ? `Cursor writes the tests of the ${n} approved case(s) marked Automate`
+        : "approve a case and tick Automate first (Review the designed cases)";
+}
+
 async function showReview(what) {
   const j = job();
   const box = $(`${what}-review`);
@@ -880,6 +894,7 @@ async function showReview(what) {
   const cases = (result && (what === "design" ? result.test_cases : result.new_cases)) || [];
   const entries = (review && review[what]) || {};
   if (!cases.length) {
+    if (what === "design") automateReady([], {});
     box.replaceChildren(el("small", { text: `no ${what} cases in this job yet` }));
     showFlow();
     return;
@@ -887,6 +902,7 @@ async function showReview(what) {
   const kids = [];
   if (result.mock) kids.push(banner("warn", "These are a stand-in's cases (mock Cursor); a review of them goes nowhere real."));
   if (suites && suites.problem) kids.push(banner("warn", `suite-map.json: ${suites.problem}. Every case gets the default groups.`));
+  if (what === "design") automateReady(cases, entries);
   const live = agentReview && ["pending-review", "verify-failed", "pushed", "approved-local", "push-failed"]
     .includes(agentReview.state) ? agentReview.change : "";
   kids.push(reviewTable(j, what, cases.filter((c) => c && c.id), entries, () => {
@@ -1137,6 +1153,8 @@ $("run-design").onclick = async () => {
     // pane shows this run and nothing is lost between start and first poll.
     setCursorSource("design");
     watchCursorLog();
+    designRunning = true;
+    $("auto-selected").disabled = true;
     await post("/api/design", {
       job: j,
       service: $("design-service").value.trim(),
@@ -1151,6 +1169,7 @@ $("run-design").onclick = async () => {
       notes: $("design-notes").value,
     });
     follow("agent-design", $("design-log"), $("design-state"), () => {
+      designRunning = false;
       stopCursorLog();
       showDesign(j, true);
       // One run. Left ticked, every later click would pay again in silence.
@@ -1159,6 +1178,8 @@ $("run-design").onclick = async () => {
     });
   } catch (e) {
     stopCursorLog();
+    designRunning = false;
+    showReview("design");
     button.disabled = false;
     setState($("design-state"), "bad", e.message);
   }

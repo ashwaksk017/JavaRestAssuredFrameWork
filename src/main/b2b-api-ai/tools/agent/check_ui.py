@@ -848,6 +848,9 @@ def main() -> int:
                 [mocked.browser, "--headless=new", "--disable-gpu", "--no-first-run",
                  "--disable-extensions", "--virtual-time-budget=9000", "--dump-dom", f"{mocked.base}/#new"],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=120).stdout.decode("utf-8", "replace")
+            check("Automate the approved cases cannot be pressed on a job with no cases",
+                  'id="auto-selected" class="go" disabled' in bare or 'id="auto-selected" disabled' in bare,
+                  bare[bare.find('id="auto-selected"') - 10:][:120])
             check("a fresh start opens a new, empty job: no earlier job's cases show",
                   "no design cases in this job yet" in bare and 'class="automate-cell"' not in bare
                   and 'id="known-jobs"' in bare, bare[bare.find('id="design-review"'):][:300])

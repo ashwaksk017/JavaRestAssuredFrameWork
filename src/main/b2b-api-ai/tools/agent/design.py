@@ -1258,16 +1258,36 @@ def shares(counts: list, total: int) -> list:
     return out
 
 
+def design_model(root: str) -> str:
+    """`designModel` in tools/ra_converter/cursor_agent.json, or "". The
+    model for the one-answer calls (design, Manual tests, Defects, code
+    review). Seen live: with a reasoning model each call thinks 60-100 s
+    before it writes; these calls read and write JSON, and a faster model
+    is the biggest saving. Unset, they use `model`, as before."""
+    try:
+        with io.open(os.path.join(root, "tools", "ra_converter", "cursor_agent.json"),
+                     encoding="utf-8-sig") as fh:
+            value = json.load(fh).get("designModel")
+    except (OSError, ValueError, AttributeError):
+        return ""
+    value = str(value or "").strip()
+    return value if re.fullmatch(r"[A-Za-z0-9._:-]{1,80}", value) else ""
+
+
 def whole_json(text: str) -> bool:
-    """Is `text` one whole JSON object (a code fence around it allowed)?
-    No repair: an answer cut off part way is not whole."""
-    body = jsonfix.outer_object(jsonfix.strip_fences(text or ""))
-    if not body:
+    """Is `text` a JSON answer that reads whole? Asked when a model call
+    has ended (its usage line), so the text is all that call wrote: the
+    question is only whether it is the answer or words before one. Read as
+    every reply is read (jsonfix: a code fence, a trailing comma, a closing
+    brace too many -- seen live -- are taken in stride), but never from
+    a cut-off piece: the object must close."""
+    if not jsonfix.first_object(jsonfix.strip_fences(text or "")) and not jsonfix.first_object(text or ""):
         return False
     try:
-        return isinstance(json.loads(body), dict)
+        data, how = jsonfix.loads(text or "")
     except ValueError:
         return False
+    return isinstance(data, dict) and "partial" not in how
 
 
 def call_cursor(prompt: str, root: str, on_event, followup, mode: str = "plan",
@@ -1277,7 +1297,12 @@ def call_cursor(prompt: str, root: str, on_event, followup, mode: str = "plan",
     (`complete`), not when the SDK says so -- see cursor_call.run."""
     diag.step("Asking Cursor and waiting for its reply (this can take a few minutes)")
     ca, cfg = loop.cursor_config(root)
+    quick = design_model(root)
+    if quick:
+        cfg.model = quick
     hide = lambda s: ca.redact_for_log(str(s), cfg.api_key)
+    on_event(f"model {cfg.model}" + (" (designModel)" if quick else
+                                     " (set designModel in cursor_agent.json for a faster one here)"))
     # The SDK's child process can still hold the directory when this
     # block ends. A failed clean-up must not cost a reply already paid for.
     with tempfile.TemporaryDirectory(prefix="b2b-design-",

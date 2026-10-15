@@ -40,6 +40,15 @@ def outer_object(text: str) -> str:
     return text[a:b + 1] if a != -1 and b > a else ""
 
 
+def first_object(text: str) -> str:
+    """The object the first `{` opens, up to the bracket closing it."""
+    a = (text or "").find("{")
+    if a == -1:
+        return ""
+    b = _matching(text, a)
+    return text[a:b + 1] if b != -1 else ""
+
+
 def _matching(text: str, start: int) -> int:
     """Index of the bracket closing the one at `start`, or -1. Strings skipped."""
     pairs = {"{": "}", "[": "]"}
@@ -140,6 +149,12 @@ def loads(text: str, partial_key: str = "", list_key: str = "") -> tuple:
         body = outer_object(source)
         if body and body not in [c for _l, c in candidates]:
             candidates.append((label, body))
+        # The object the first `{` opens, and nothing after it: seen live, a
+        # reply ending `...]} }` -- one closing brace too many -- which the
+        # first-to-last-brace reading cannot parse.
+        first = first_object(source)
+        if first and first not in [c for _l, c in candidates]:
+            candidates.append((label + "text after the object ignored; ", first))
     for label, body in candidates:
         for how, attempt in _repairs(body):
             try:

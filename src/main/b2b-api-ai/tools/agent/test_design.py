@@ -1133,11 +1133,27 @@ class ThePageCannotPointTheStepAtAFile(unittest.TestCase):
             self.server.Handler._download(None, "j", "cursor.log")
 
 
+class TheDesignModel(unittest.TestCase):
+    def test_designModel_is_read_and_checked(self):
+        root = tempfile.mkdtemp(prefix="design-model-")
+        self.addCleanup(shutil.rmtree, root, True)
+        self.assertEqual(design.design_model(root), "", "no file: the usual model")
+        os.makedirs(os.path.join(root, "tools", "ra_converter"))
+        path = os.path.join(root, "tools", "ra_converter", "cursor_agent.json")
+        for value, want in (("composer-2.5", "composer-2.5"), ("", ""), ("bad model; rm", "")):
+            with io.open(path, "w", encoding="utf-8") as fh:
+                json.dump({"model": "grok-4.6", "designModel": value}, fh)
+            self.assertEqual(design.design_model(root), want, value)
+
+
 class AWholeAnswer(unittest.TestCase):
     def test_only_a_whole_json_object_is_a_whole_answer(self):
         self.assertTrue(design.whole_json('{"test_cases": []}'))
         self.assertTrue(design.whole_json('```json\n{"test_cases": [1]}\n```'))
         self.assertFalse(design.whole_json('{"test_cases": [{"id": "TC-001"'), "cut off is not whole")
+        self.assertTrue(design.whole_json('{"test_cases": [], "open_questions": ["x"]} }'),
+                        "seen live: one closing brace too many")
+        self.assertTrue(design.whole_json('{"test_cases": [1],}'), "a trailing comma")
         self.assertFalse(design.whole_json("Let me read the specification first."))
         self.assertFalse(design.whole_json(""))
 
