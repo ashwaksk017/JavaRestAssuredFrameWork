@@ -261,6 +261,10 @@ CHECKS = [
           "switched on, take a file by name and a target given twice, never "
           "replace or edit, refuse what a stand-in made or what holds a private "
           "value, and record every write before it is made"),
+    Check("agent-fixbrief",
+          [PY, "tools/agent/test_fixbrief.py"],
+          "a failing converted case becomes a brief for Cursor from the recorded run, surefire, "
+          "the per-row log and the converter's audit notes, redacted, one suite a job"),
     Check("agent-storycheck",
           [PY, "tools/agent/test_storycheck.py"],
           "a story read again is compared with what the job holds, by revision and "

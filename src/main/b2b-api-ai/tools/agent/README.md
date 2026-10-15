@@ -1253,6 +1253,36 @@ a live Jira or the real Cursor service.
 
 ### Failures
 
+#### Fix with Cursor
+
+A signature card has two buttons. **Fix with Cursor (this suite's
+Java)** writes the job's `brief.md` and `plan.md` from what the run left
+behind -- the failing (test, row, signature) lines of the latest
+recorded run (or the digest in `target/`), surefire's message and stack,
+the tail of the case's request/response log under `logs/`, the
+converter's notes on the case from `_audit/<suite>/` (which ReadyAPI
+case it is, its data row, what was skipped, placeholders, preflight),
+and the note a person attached to the signature -- then opens the
+Agentic tab on scope *Converted Java of one suite* with the suite set.
+From there it is the usual run: Cursor, compile and checks, review,
+Approve (the change is stored and re-applied after every reconvert) or
+Discard. **Fix the converter with Cursor** writes the same brief with the
+plan for the emitter, scope *The converter itself*.
+
+One suite a job: a signature that several suites share is refused until
+the suite is named in the Agentic tab's Suite box (the box is read only
+after such a refusal); the brief then takes that suite's cases and names
+the others as left out. The digest names a test class by its simple name
+and the converted tree holds the same simple name in several suites, so
+the class is told apart by what surefire ran and by the suite's own
+audit mapping, and refused -- naming the suites -- when neither says.
+Everything quoted from the run is redacted, hosts included. A brief
+longer than one prompt can carry drops whole cases from the end and
+names them. A job that already holds a story, a design, a review, Xray
+keys or a plan of another kind is refused -- a fix is its own job. The command is `python tools/agent/fixbrief.py --job J
+--signature ID [--suite S] [--scope converted|converter]`, or `--test
+<part of the name>` instead of a signature.
+
 After a test run. **Record the last run and compare** reads
 `target/failure-digest.txt`, keeps one small snapshot of the run in
 `.failure-history/` (which git ignores), and shows:

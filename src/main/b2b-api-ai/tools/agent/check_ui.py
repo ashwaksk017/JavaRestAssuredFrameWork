@@ -312,6 +312,8 @@ def main() -> int:
                        "Signatures in this run", "RESEMBLES", "A pointer, not a diagnosis",
                        "Save note", "Every run it was in"):
             check(f"Failures tab shows: {needle}", needle in html)
+        check("a signature offers Fix with Cursor, for the suite's Java and for the converter",
+              "Fix with Cursor (this suite" in html and "Fix the converter with Cursor" in html)
         check("a note is shown as text, not run as markup",
               "the token was for &lt;b&gt;another&lt;/b&gt; account" in html
               and "<b>another</b>" not in html)

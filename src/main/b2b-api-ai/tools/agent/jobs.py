@@ -119,6 +119,15 @@ RUNNABLES = {
                     "--parent": "text", "--title": "text", "--confirm-title": "text",
                     "--expect": "text"},
     },
+    # A failing converted case becomes a job for Cursor: brief.md and
+    # plan.md from the recorded run, surefire, the per-row log and the
+    # converter's audit notes. Reads the project; writes only the job.
+    "fix-brief": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "fixbrief.py")],
+        "label": "Write the brief for Cursor to fix a failing converted case",
+        "options": {"--job": "text", "--signature": "text", "--test": "text", "--suite": "text",
+                    "--scope": "text"},
+    },
     # Has the story changed since the job read it? Reads Jira; writes only
     # story-check.json. See storycheck.py.
     "story-check": {
@@ -686,7 +695,8 @@ RESULT_FILES = {"jira-": "jira-result.json", "failures-": "failures-result.json"
                 "publish-attach": "publish-result.json",
                 "publish-page": "publish-result.json",
                 "xray-create": "xray-result.json",
-                "story-check": "story-check.json"}
+                "story-check": "story-check.json",
+                "fix-brief": "fix-brief.json"}
 
 
 def clear_result(job: str, runnable: str) -> None:
@@ -972,7 +982,7 @@ def read_artifact(job: str, name: str) -> str:
                "manual-result.json", "manual-pull.json", "manual-tests.md",
                "manual-new-cases.csv", "manual-xray-updates.csv", "publish-result.json",
                "xray-tests.json", "xray-result.json", "xray-status.json", "case-review.json",
-               "story-check.json",
+               "story-check.json", "fix-brief.json",
                "publish-status.json", "publish.log"}
     if name not in allowed:
         raise ValueError(f"{name!r} is not a readable artifact. "

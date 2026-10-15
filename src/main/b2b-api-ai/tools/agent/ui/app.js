@@ -2405,6 +2405,44 @@ onTab.defects = () => showResult(job(), defectUi);
 // comparison read again, the note in it. (It used to be followed by a
 // `record`, which wiped a failed note's error from the page, and after a
 // new test run quietly recorded that run.)
+// A signature's failures, written as the job's brief and plan, then the
+// Agentic tab on the scope and suite the brief found. The suite box of
+// the Agentic tab, when filled, picks the suite for a signature that
+// several suites share; otherwise the brief tells it from the test.
+const fixNeedsSuite = new Set();   // signatures refused for spanning suites: the Suite box applies
+async function fixWithCursor(sid, scope) {
+  const j = job();
+  if (!j) { setState($("fail-state"), "bad", "name the job (top right) first"); return; }
+  const options = { "--job": j, "--signature": sid, "--scope": scope };
+  // The Suite box of the Agentic tab may hold another job's suite. It
+  // applies only after this signature was refused for spanning suites.
+  const suite = $("agent-suite").value.trim();
+  if (suite && fixNeedsSuite.has(sid)) options["--suite"] = suite;
+  busy(failUi.buttons, true);
+  try {
+    await post("/api/start", { job: j, runnable: "fix-brief", options });
+    follow("fix-brief", failUi.log, failUi.state, async () => {
+      busy(failUi.buttons, false);
+      const r = await artifactJson(j, "fix-brief.json");
+      if (!r || !r.ok) {
+        const why = (r && r.message) || "the brief could not be written; the log above says why";
+        if (/name the suite/i.test(why)) {
+          fixNeedsSuite.add(sid);
+          $("fail-detail").replaceChildren(banner("warn", why +
+            " Type it in the Suite box of the Agentic Test Creation tab, then click again."));
+        } else $("fail-detail").replaceChildren(banner("bad", why));
+        return;
+      }
+      $("fail-detail").replaceChildren(banner("ok", `Brief written for ${r.cases.length} case(s)` +
+        (r.suite ? ` of suite ${r.suite}` : "") + `; the Agentic tab is set to scope ${r.scope}.`));
+      $("agent-scope").value = r.scope;
+      $("agent-scope").dispatchEvent(new Event("change"));
+      if (r.suite) $("agent-suite").value = r.suite;
+      goToStep("agent", "agent-generate");
+    }, j);
+  } catch (e) { busy(failUi.buttons, false); setState($("fail-state"), "bad", e.message); }
+}
+
 const failUi = { buttons: "[data-fail]", log: $("fail-log"), state: $("fail-state"),
                  artifact: "failures-result.json", render: renderFailures,
                  clear: () => { $("fail-detail").replaceChildren(); } };
@@ -2445,6 +2483,15 @@ function signatureCard(s) {
     } } }),
     el("button", { "data-fail": "", text: "Every run it was in", on: { click: () =>
       runTool("failures-show", { "--id": s.id }, failUi) } })));
+  // The failure becomes a job for Cursor: the brief is written from what
+  // the run left behind, and the Agentic tab opens on the right scope.
+  card.append(el("div", { class: "noterow" },
+    el("button", { "data-fail": "", class: "go", text: "Fix with Cursor (this suite's Java)",
+                   title: "writes the brief for this signature; then Run Cursor on the Agentic tab, scope Converted",
+                   on: { click: () => fixWithCursor(s.id, "converted") } }),
+    el("button", { "data-fail": "", text: "Fix the converter with Cursor",
+                   title: "the same brief, for the emitter: scope The converter itself",
+                   on: { click: () => fixWithCursor(s.id, "converter") } })));
   return card;
 }
 
