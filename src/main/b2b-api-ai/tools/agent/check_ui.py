@@ -831,6 +831,12 @@ def main() -> int:
                   and 'data-tab="new" data-target="design-review"' in strip, strip[:400])
             check("each approved case can be automated from its row",
                   ">Automate</button>" in html or ">Again</button>" in html)
+            commit_tab = mocked.dom("agent")
+            commit_tab = commit_tab[commit_tab.find('id="tab-agent"'):]
+            check("the Commit and push tab has a Stop of its own",
+                  'id="agent-commit-stop"' in commit_tab)
+            code, st = mocked.call("/api/stop", {"job": JOB, "runnable": "agent-review"})
+            check("Stop with nothing running says so, and harms nothing", code == 200 and not st.get("stopped"), str(st))
             check("each case's suites show on its row, from the rules",
                   ">Suites<" in html and 'class="groups"' in html and "from the rules" in html)
             bare = subprocess.run(

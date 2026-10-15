@@ -2305,6 +2305,32 @@ async function stopAgent(stateEl) {
 $("agent-stop").onclick = () => stopAgent($("auto-state"));
 $("mig-stop").onclick = () => stopAgent($("mig-state"));
 $("agent-refresh").onclick = () => { refreshReview(); pollCursorLog(true); };
+// What runs from this tab: the code review, Discard, Approve. A review
+// stops at once. Discard and Approve are asked about first: stopped
+// half-way, Discard has put back only some files (run it again), and
+// Approve may have made its commit or branch without pushing it.
+$("agent-commit-stop").onclick = async () => {
+  const j = job();
+  if (!j) return;
+  const running = [];
+  for (const r of ["agent-review", "agent-discard", "agent-approve"]) {
+    try {
+      const s = await api(`/api/status?job=${encodeURIComponent(j)}&runnable=${r}`);
+      if (s && s.state === "running") running.push(r);
+    } catch { /* not known: not running */ }
+  }
+  if (!running.length) { setState($("agent-state"), "", "nothing is running for this job on this tab"); return; }
+  const r = running[0];
+  if (r === "agent-discard" && !confirm("Stop Discard half-way? Some files will be back as they were and " +
+      "others not. Press Discard again afterwards to finish.")) return;
+  if (r === "agent-approve" && !confirm("Stop Approve half-way? Its commit or branch may already exist " +
+      "without having been pushed; the log says how far it got. Approve again afterwards, or tidy the branch by hand.")) return;
+  try {
+    const out = await post("/api/stop", { job: j, runnable: r });
+    setState($("agent-state"), out && out.stopped ? "warn" : "", out && out.stopped ? `${r} was stopped` : `${r} had already finished`);
+  } catch (e) { setState($("agent-state"), "bad", e.message); }
+  refreshReview();
+};
 $("agent-dismiss").onclick = async () => {
   const j = job();
   if (!j || $("agent-dismiss").dataset.job !== j) { refreshReview(); return; }

@@ -72,11 +72,13 @@ class Base(unittest.TestCase):
              link("ABC-12", "A test with no steps"),
              link("ABC-13", "A bug, not a test", kind="Bug"),
              link("ABC-14", "Blocked by", ltype={"name": "Blocks", "inward": "is blocked by", "outward": "blocks"}),
-             link("ABC-15", "Linked the other way round", side="outwardIssue")],
+             link("ABC-15", "Linked the other way round", side="outwardIssue"),
+             link("ABC-16", "POST x creates one")],
             {"ABC-11": [("GET /members/{memberId}/spendDetail as the coordinator", "a coordinator token",
                          "200 and a JSON array")],
              "ABC-12": [],
-             "ABC-15": [("POST /x", "", "201")]})
+             "ABC-15": [("POST /x", "", "201")],
+             "ABC-16": [("POST /x", "", "201")]})
 
     def run_it(self, **kw):
         return xi.run("j1", self.root, conn=dict(CONN), transport=self.jira, cfg={}, **kw)
@@ -90,8 +92,10 @@ class Importing(Base):
     def test_the_linked_tests_with_steps_become_the_design_with_their_keys(self):
         r = self.run_it()
         self.assertEqual((r["ok"], r["story"], r["count"]), (True, "ABC-1", 2))
-        self.assertEqual(r["keys"], ["ABC-11", "ABC-15"], "Jira's order; the bug and the Blocks link are left out")
-        self.assertEqual(r["not_used"], [{"key": "ABC-12", "why": "it has no steps in Xray"}])
+        self.assertEqual(r["keys"], ["ABC-11", "ABC-16"], "the bug, the Blocks link and the reversed link are left out")
+        self.assertEqual([n["key"] for n in r["not_used"]], ["ABC-15", "ABC-12"])
+        self.assertIn("linked the other way round", r["not_used"][0]["why"], "named, not lost")
+        self.assertEqual(r["not_used"][1], {"key": "ABC-12", "why": "it has no steps in Xray"})
         d = json.loads(self.read("design.json"))
         self.assertEqual((d["source"], d["service"], d["mock"]), ("xray", "ABC-1", False))
         self.assertEqual(d["brief"], xi.loop.brief_fingerprint(self.job), "made from the brief the job has")
@@ -106,7 +110,7 @@ class Importing(Base):
     def test_the_keys_reach_the_agentic_step_and_create_in_xray_creates_nothing(self):
         self.run_it()
         keys = xi.xt.keys_for(self.job, "design", False)
-        self.assertEqual(keys, {"TC-001": "ABC-11", "TC-002": "ABC-15"})
+        self.assertEqual(keys, {"TC-001": "ABC-11", "TC-002": "ABC-16"})
         xi.loop.casereview.update(self.job, "design", ["TC-001", "TC-002"], state="approved")
         text, note = xi.loop.designed_cases(self.job, keys=keys)
         self.assertIn("TC-001", text)
@@ -117,19 +121,37 @@ class Importing(Base):
         self.assertTrue(entry["imported"])
 
 
+class TheLinksTaken(Base):
+    def test_over_the_cap_the_rest_are_named(self):
+        self.jira.links = [link(f"ABC-{100 + n}", f"test {n}") for n in range(xi.MAX_TESTS + 2)]
+        for n in range(xi.MAX_TESTS + 2):
+            self.jira.steps[f"ABC-{100 + n}"] = [("GET /y", "", "200")]
+        r = self.run_it()
+        self.assertEqual(r["count"], xi.MAX_TESTS)
+        over = [n for n in r["not_used"] if "not read" in n["why"]]
+        self.assertEqual([n["key"] for n in over], [f"ABC-{100 + xi.MAX_TESTS}", f"ABC-{101 + xi.MAX_TESTS}"])
+        self.assertIn(f"ABC-{100 + xi.MAX_TESTS}: over the first", self.read("design.md"))
+
+    def test_only_reversed_links_is_refused_with_the_reason(self):
+        self.jira.links = [link("ABC-15", "the other way", side="outwardIssue")]
+        with self.assertRaises(xi.Refused) as got:
+            self.run_it()
+        self.assertIn("linked the other way round: ABC-15", str(got.exception))
+
+
 class NumberingAfterAClear(Base):
     def test_an_old_decision_never_lands_on_a_different_test(self):
         # TC-001 of a cleared design was approved and edited; TC-002 was
         # created in Xray as ABC-15.
         xi.loop.casereview.update(self.job, "design", ["TC-001", "TC-002"], state="approved")
         kept = xi.xt.read_keys(self.job)
-        kept["tests"]["design:TC-002"] = {"key": "ABC-15", "title": "x", "fingerprint": "f"}
+        kept["tests"]["design:TC-002"] = {"key": "ABC-16", "title": "x", "fingerprint": "f"}
         xi.xt.write_keys(self.job, kept)
         self.run_it()
         ids = {c["xray_key"]: c["id"] for c in json.loads(self.read("design.json"))["test_cases"]}
-        self.assertEqual(ids["ABC-15"], "TC-002", "the same Xray test keeps its case, and its decision")
+        self.assertEqual(ids["ABC-16"], "TC-002", "the same Xray test keeps its case, and its decision")
         self.assertNotIn(ids["ABC-11"], ("TC-001", "TC-002"), "a new test takes an id nobody decided on")
-        self.assertEqual(xi.xt.read_keys(self.job)["tests"]["design:TC-002"]["key"], "ABC-15")
+        self.assertEqual(xi.xt.read_keys(self.job)["tests"]["design:TC-002"]["key"], "ABC-16")
 
 
 class EndpointsAndTheSpecification(Base):
@@ -137,15 +159,15 @@ class EndpointsAndTheSpecification(Base):
         with io.open(os.path.join(self.job, "design-swagger.txt"), "w", encoding="utf-8") as fh:
             json.dump({"swagger": "2.0", "info": {"title": "t"}, "paths": {
                 "/members/{memberId}/spendDetail": {"get": {"responses": {"200": {"description": "ok"}}}}}}, fh)
-        self.jira.steps["ABC-15"] = [("POST: /x/y as a member", "", "201")]
+        self.jira.steps["ABC-16"] = [("POST: /x/y as a member", "", "201")]
         r = self.run_it()
         d = json.loads(self.read("design.json"))
         by_key = {c["xray_key"]: c for c in d["test_cases"]}
         self.assertEqual(by_key["ABC-11"]["endpoint"], "GET /members/{memberId}/spendDetail")
         self.assertTrue(by_key["ABC-11"]["endpoint_in_spec"])
-        self.assertEqual(by_key["ABC-15"]["endpoint"], "POST /x/y")
-        self.assertNotIn("endpoint_in_spec", by_key["ABC-15"], "never False: an Xray test is still automated")
-        self.assertEqual(d["warnings"], ["1 test(s) name an endpoint the specification does not have: ABC-15: POST /x/y"])
+        self.assertEqual(by_key["ABC-16"]["endpoint"], "POST /x/y")
+        self.assertNotIn("endpoint_in_spec", by_key["ABC-16"], "never False: an Xray test is still automated")
+        self.assertEqual(d["warnings"], ["1 test(s) name an endpoint the specification does not have: ABC-16: POST /x/y"])
         self.assertIn("## Warnings", self.read("design.md"))
         self.assertEqual(r["count"], 2)
 

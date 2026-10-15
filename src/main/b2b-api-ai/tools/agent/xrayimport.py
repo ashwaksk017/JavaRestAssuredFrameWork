@@ -112,11 +112,18 @@ def story_of(job_dir: str) -> str:
         return ""
 
 
-def linked_tests(issue: dict, link_type: str, test_type: str) -> list:
+def linked_tests(issue: dict, link_type: str, test_type: str, other_way: list = None) -> list:
     """[{key, summary, status}] of the issues linked to the story by the
-    test link type, in Jira's order. The name of the link type, or its
-    wording ("is tested by" / "tests"), decides; an issue whose type is
-    named and is not the test type is left out."""
+    test link type, in Jira's order -- every one; the caller caps them.
+    The name of the link type, or its wording ("is tested by" / "tests"),
+    decides; an issue whose type is named and is not the test type is
+    left out.
+
+    The direction counts. Read from the story, a test that tests it sits
+    on the link's INWARD side (the story "is tested by" it). An issue on
+    the outward side is one the story itself "tests": not taken, and --
+    when `other_way` is given -- added to it as {key, why}, so a link
+    made the wrong way round is named, not lost."""
     fields = issue.get("fields") if isinstance(issue.get("fields"), dict) else {}
     out, seen = [], set()
     for link in fields.get("issuelinks") or []:
@@ -126,7 +133,8 @@ def linked_tests(issue: dict, link_type: str, test_type: str) -> list:
         words = {str(kind.get(k) or "").strip().lower() for k in ("name", "inward", "outward")}
         if link_type.lower() not in words and not ({"is tested by", "tests"} & words):
             continue
-        other = link.get("inwardIssue") or link.get("outwardIssue")
+        inward = isinstance(link.get("inwardIssue"), dict)
+        other = link.get("inwardIssue") if inward else link.get("outwardIssue")
         if not isinstance(other, dict):
             continue
         key = str(other.get("key") or "").upper()
@@ -136,11 +144,19 @@ def linked_tests(issue: dict, link_type: str, test_type: str) -> list:
         itype = f.get("issuetype") if isinstance(f.get("issuetype"), dict) else {}
         if itype.get("name") and str(itype["name"]).lower() != test_type.lower():
             continue
+        if not inward:
+            if other_way is not None:
+                seen.add(key)
+                phrase = _one(kind.get("outward"), 40) or "tests"
+                other_way.append({"key": key, "why": f"it is linked the other way round (the story "
+                                                     f"\"{phrase}\" it); link the test to the story "
+                                                     f"in Jira to take it"})
+            continue
         status = f.get("status") if isinstance(f.get("status"), dict) else {}
         seen.add(key)
         out.append({"key": key, "summary": _one(f.get("summary"), 300),
                     "status": _one(status.get("name"), 60)})
-    return out[:MAX_TESTS]
+    return out
 
 
 def design_md(design: dict) -> str:
@@ -180,14 +196,25 @@ def run(job: str, root: str = "", story: str = "", conn=None, transport=None, cf
         opts = {"link_type": xt.DEFAULT_LINK, "issue_type": xt.DEFAULT_TYPE}
     diag.step(f"Asking Jira for the tests linked to {story} ({opts['link_type']})")
     issue = search._call(conn, "GET", f"/issue/{story}?fields=summary,issuelinks", None, transport)
-    tests = linked_tests(issue if isinstance(issue, dict) else {}, opts["link_type"], opts["issue_type"])
+    other_way = []
+    tests = linked_tests(issue if isinstance(issue, dict) else {}, opts["link_type"], opts["issue_type"],
+                         other_way)
+    beyond = tests[MAX_TESTS:]
+    tests = tests[:MAX_TESTS]
+    if not tests and other_way:
+        raise Refused(f"every test linked to {story} is linked the other way round: "
+                      + ", ".join(o["key"] for o in other_way[:8])
+                      + f". In Jira, link each test to the story (the story \"is tested by\" it).")
     if not tests:
         raise Refused(f"{story} has no issue linked as a test (link type {opts['link_type']!r}). "
                       f"If your Jira links tests another way, set jira_config.publish.test_link_type "
                       f"to that link type's name.")
     private = loop.config_secrets(os.path.join(root, "src", "main", "resources", "program_configuration.json"))
     hide = lambda s: _redact(s, private)
-    cases, not_used = [], []
+    cases, not_used = [], list(other_way)
+    # Over the cap: named, one line each, so nobody thinks the story has
+    # only the tests that were taken.
+    not_used += [{"key": b["key"], "why": f"over the first {MAX_TESTS} linked tests; not read"} for b in beyond]
     known = spec_keys(job_dir)
     off_spec = []
     for t in tests:

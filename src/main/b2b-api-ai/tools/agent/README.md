@@ -362,7 +362,11 @@ ones. It reads the story's issue links of the test link type
 "is tested by" each test) and each test's steps from Xray (Server / Data
 Center), and writes them as the job's design, one case a test, with the
 test's key recorded. A test with no steps is listed as not used; an
-issue linked another way, or of another type, is left out.
+issue of another link type, or of another type, is left out. The
+direction counts: a test linked the other way round (the story "tests"
+it) is listed as not used, with that reason, and a story whose every
+test is linked that way is refused with their keys. The first 40 linked
+tests are read; any after them are listed as not used ("not read").
 
 Then the usual flow: review the cases, and the Agentic Test Creation
 step writes REST Assured tests with the real keys in the `jira_xray_id`
@@ -873,6 +877,10 @@ The change Cursor made for the job waits here: its files, its diff, a
 code review. **Approve & push** commits it to its own branch and pushes
 it (a converted suite's change is kept on this machine instead);
 **Discard** puts everything back; **Dismiss** puts an outcome away.
+**Stop** stops what is running from this tab: the code review at once;
+Discard or Approve only after you confirm, since stopped half-way
+Discard has put back some files (press it again), and Approve may have
+made its commit or branch without pushing it.
 
 #### Automate the cases
 
