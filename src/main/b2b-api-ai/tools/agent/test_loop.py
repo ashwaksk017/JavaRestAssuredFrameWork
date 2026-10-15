@@ -1451,6 +1451,25 @@ class Push(Repo):
             self.assertEqual(self.push(), 0)
         self.assertEqual(self.state()["branch"], "feature_ABC-42_job1")
 
+    def test_a_change_waiting_for_review_is_named_when_it_blocks_the_next_job(self):
+        """Seen live: job 2's Automate refused for job 1's test, still
+        waiting for review -- and only the path was said."""
+        self.pending()
+        job2 = os.path.join(self.root, ".workbench", "job2")
+        os.makedirs(job2)
+        write(self.root, ".workbench/job2/plan.md", "# plan\nanother\n")
+        write(self.root, JIRA + "Mine.java", "class Mine {}\n")
+        called = []
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = loop.cmd_generate(job2, self.root, self.policy, "new-test", "",
+                                   agent=lambda p: called.append(1) or {"result": ""}, verifier=OK)
+        self.assertEqual((rc, called), (1, []))
+        said = out.getvalue()
+        self.assertIn(JIRA + "NewTest.java  -- job job1's change (pending-review): Approve & push or "
+                      "Discard it on the Commit and push tab (job job1)", said)
+        self.assertIn(JIRA + "Mine.java  -- not from a workbench job: commit or remove it", said)
+
     def test_a_pushed_change_left_in_the_tree_does_not_block_the_next_job(self):
         """Seen live: job 2's Automate refused for job 1's pushed test, still
         uncommitted in the working tree."""

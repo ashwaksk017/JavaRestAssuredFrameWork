@@ -2837,10 +2837,21 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                 f"({', '.join(sorted({shipped[p] for p in kept}))}): left as they are, not part of "
                 f"this change")
     if stale:
+        # Seen live: the file was another job's change, still waiting for
+        # review -- and the list of paths did not say so, or what to do.
+        owners = unfinished_elsewhere(root, job_dir)
+        lines = []
+        for p in sorted(stale)[:20]:
+            if p in owners:
+                job, state = owners[p]
+                lines.append(f"{p}  -- job {job}'s change ({state}): Approve & push or Discard it "
+                             f"on the Commit and push tab (job {job})")
+            else:
+                lines.append(f"{p}  -- not from a workbench job: commit or remove it")
         say("FAIL there are uncommitted changes inside the paths the agent "
             "writes to. Commit or remove them first -- otherwise its work "
             "and yours could not be told apart at review:\n  "
-            + "\n  ".join(sorted(stale)[:20]))
+            + "\n  ".join(lines))
         return 1
     backup_dir = os.path.join(job_dir, "pre")
     gen_backup = os.path.join(job_dir, "pre-generated")
@@ -3894,6 +3905,30 @@ def shipped_elsewhere(root: str, job_dir: str) -> dict:
         for rel, sha in (review.get("hashes") or {}).items():
             if sha and _sha(os.path.join(root, rel)) == sha:
                 out[rel] = name
+    return out
+
+
+def unfinished_elsewhere(root: str, job_dir: str) -> dict:
+    """{path: (job, state)} of files another job's change wrote and that
+    change is not finished: waiting for review, failed its checks, or
+    still being written."""
+    base = os.path.dirname(job_dir.rstrip("/\\"))
+    me = os.path.basename(job_dir.rstrip("/\\"))
+    out = {}
+    try:
+        names = sorted(os.listdir(base))
+    except OSError:
+        return out
+    for name in names:
+        if name == me:
+            continue
+        review = read_review(os.path.join(base, name))
+        state = review.get("state")
+        if state not in ("pending-review", "verify-failed", "generating", "push-failed"):
+            continue
+        files = review.get("files") or {}
+        for rel in (files.get("created") or []) + (files.get("modified") or []):
+            out[rel] = (name, state)
     return out
 
 
