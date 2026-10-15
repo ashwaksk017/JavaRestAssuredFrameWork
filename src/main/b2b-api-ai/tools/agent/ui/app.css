@@ -277,3 +277,12 @@ fieldset.choice legend { float: left; padding: 0; margin-right: .6rem; font-weig
 details.more { margin: .6rem 0 .2rem; }
 details.more > summary { cursor: pointer; font-weight: 600; }
 details.more[open] > summary { margin-bottom: .4rem; }
+
+/* A case's steps, editable in the review table. */
+.steps-edit { display: grid; gap: .35rem; min-width: 26rem; }
+.steps-edit .step { display: grid; grid-template-columns: 1.4rem 1fr 7rem 1fr auto; gap: .3rem; align-items: start; }
+.steps-edit .step .n { padding-top: .35rem; opacity: .7; }
+.steps-edit textarea, .steps-edit input { font-size: .85rem; width: 100%; min-width: 0; }
+.steps-edit .more-step { justify-self: start; }
+@media (max-width: 760px) { .steps-edit { min-width: 0; } .steps-edit .step { grid-template-columns: 1.4rem 1fr auto; }
+  .steps-edit .step input { grid-column: 2; } }

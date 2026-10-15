@@ -127,14 +127,19 @@ switch for each:
 
 ```
 {
-  "jira": true,
-  "cursor": true
+  "jira": false,
+  "cursor": false
 }
 ```
 
+Both are **off as committed**: a fresh clone reaches the real Jira and
+Cursor configured in `program_configuration.json` and
+`tools/ra_converter/cursor_agent.json`. Set a switch to `true` to try
+the workbench without them.
+
 With a switch `true`, the workbench answers from sample data on this
 machine. The buttons, the commands, the checks and the results are the
-same; nothing leaves the machine. Set it to `false` and the same button
+same; nothing leaves the machine. Set it back to `false` and the same button
 reaches the real service. Nothing else has to change, and no restart is
 needed: each command reads the file when it starts.
 
@@ -975,6 +980,21 @@ failing output exactly as it was -- Cursor going round in circles -- after
 which no further attempt is made. The log says which, and the Agentic
 tab's state says `verify-failed` with the number of attempts. Set
 `repair_attempts` to a number for that many repairs instead.
+
+#### The suite of a job's tests
+
+When Cursor finishes a new-test job, the workbench writes
+`src/test/resources/suites/jira/<job>.xml`: a TestNG suite of the test
+classes the job wrote under `tests/jira/`, so the story's tests run on
+their own --
+
+```
+mvn -o test -DsuiteXmlFile=src/test/resources/suites/jira/<job>.xml
+```
+
+It is part of the change: in the diff you review, pushed with Approve,
+put back with Discard. `testng-jira.xml` still runs every story's tests
+together.
 
 #### What Approve & push publishes
 

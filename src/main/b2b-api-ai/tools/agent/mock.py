@@ -1,6 +1,6 @@
 """Stand-ins for Jira and Cursor, switched by a file.
 
-    tools/agent/mock.json      {"jira": true, "cursor": true}
+    tools/agent/mock.json      {"jira": false, "cursor": false}   (off as committed)
 
 The workbench talks to two services nobody wants to meet for the first
 time by pressing a button: a Jira that holds real tickets, and Cursor,

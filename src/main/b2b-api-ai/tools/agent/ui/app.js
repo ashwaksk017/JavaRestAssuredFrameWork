@@ -725,12 +725,11 @@ function reviewTable(j, what, cases, entries, after) {
     };
     const note = el("input", { type: "text", value: e.note || "", placeholder: "why, if rejected or changed" });
     note.onchange = () => decide(j, what, [c.id], { note: note.value.trim() }, st);
-    const steps = el("ol", {}, (e.steps || c.steps || []).map((s) => el("li", {},
-      el("span", { text: (s.action || "") + (s.data ? ` [${s.data}]` : "") }),
-      s.expected ? el("small", { text: `→ ${s.expected}` }) : null)));
+    const steps = stepEditor(e.steps || c.steps || [], (clean) => decide(j, what, [c.id], { steps: clean }, st), st);
     const cell = el("div", {}, el("code", { text: c.id }),
       el("small", { class: `flag ${state === "rejected" ? "differs" : ""}`, text: state }),
-      e.title && e.title !== c.title ? el("small", { text: "title changed" }) : null);
+      e.title && e.title !== c.title ? el("small", { text: "title changed" }) : null,
+      e.steps ? el("small", { text: "steps changed" }) : null);
     const row = [approve];
     if (what === "design") row.push(automate);
     row.push(cell, el("div", {}, title));
@@ -738,6 +737,46 @@ function reviewTable(j, what, cases, entries, after) {
     row.push(steps, el("div", {}, note));
     return row;
   })));
+  return box;
+}
+
+// A case's steps, editable: action, data and expected result of each, a
+// step added or removed. Saved as the person's correction when a field is
+// left; the Agentic step and Create in Xray use the corrected steps.
+function stepEditor(given, save, st) {
+  const box = el("div", { class: "steps-edit" });
+  const rows = [];
+  const send = () => {
+    const clean = rows.map((r) => ({ action: r.action.value.trim(), data: r.data.value.trim(),
+                                     expected: r.expected.value.trim() }))
+                      .filter((s) => s.action || s.expected);
+    if (!clean.length) { setState(st, "bad", "a case needs at least one step with an action or an expected result"); return; }
+    save(clean);
+  };
+  const add = (s) => {
+    const r = {
+      action: el("textarea", { rows: "2", spellcheck: "false", placeholder: "what is sent / done" }),
+      data: el("input", { type: "text", spellcheck: "false", placeholder: "data" }),
+      expected: el("textarea", { rows: "2", spellcheck: "false", placeholder: "what is expected" }),
+    };
+    r.action.value = s.action || ""; r.data.value = s.data || ""; r.expected.value = s.expected || "";
+    for (const f of [r.action, r.data, r.expected]) f.onchange = send;
+    const remove = el("button", { type: "button", title: "remove this step", text: "×" });
+    r.node = el("div", { class: "step" }, el("span", { class: "n" }), r.action, r.data, r.expected, remove);
+    remove.onclick = () => {
+      if (rows.length === 1) { setState(st, "bad", "a case needs at least one step"); return; }
+      rows.splice(rows.indexOf(r), 1); r.node.remove(); number(); send();
+    };
+    rows.push(r);
+    box.insertBefore(r.node, more);
+    number();
+  };
+  const number = () => rows.forEach((r, i) => { r.node.querySelector(".n").textContent = `${i + 1}.`; });
+  const more = el("button", { type: "button", class: "more-step", text: "+ step",
+                              on: { click: () => add({}) } });
+  box.append(more);
+  for (const s of given) add(s);
+  if (!given.length) add({});
   return box;
 }
 

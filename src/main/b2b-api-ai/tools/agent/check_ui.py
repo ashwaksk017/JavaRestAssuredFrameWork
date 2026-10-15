@@ -715,6 +715,8 @@ def main() -> int:
             check("Design the tests comes after the specification, before the requirements",
                   html.find('name="spec-from"') < html.find('id="run-design"') < html.find('id="design-requirements"'))
             check("a design can be cleared", 'id="clear-design"' in html)
+            check("the review's steps can be edited in place", "stepEditor" in io.open(
+                os.path.join(HERE, "ui", "app.js"), encoding="utf-8").read())
             agent_html = mocked.dom("agent")
             strip = agent_html.split('id="repo-where"', 1)[-1].split('id="repo-branches"', 1)[0]
             check("the repository strip names the remote but never its address, and never prints null",

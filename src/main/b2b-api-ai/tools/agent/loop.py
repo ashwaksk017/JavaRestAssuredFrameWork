@@ -166,7 +166,8 @@ DEFAULT_POLICY = {
         "new-test": {
             "label": "A new hand-written test",
             "write_roots": ["src/test/java/com/hi/api/tests/jira/",
-                            "src/test/resources/csv/manual/"],
+                            "src/test/resources/csv/manual/",
+                            "src/test/resources/suites/jira/"],
             "pushable": True,
             "compile": _MVN,
             "checks": [["tools/check_no_duplicate_methods.py"]],
@@ -654,6 +655,23 @@ def ignored_entries(root: str) -> set:
                   "--untracked-files=normal")
     return {_rel(root, top, e[3:]) for e in out.split("\0")
             if e.startswith("!! ")} if rc == 0 else set()
+
+
+def was_ignored_whole(entry: str, ignored_before) -> bool:
+    """Was `entry` inside a folder git already ignored whole before the run?
+
+    git reports a folder whose every file is ignored as ONE entry
+    (`src/test/resources`). Once anything not ignored appears in it -- a
+    new folder of the agent's, inside its paths -- git reports the
+    ignored children instead (`src/test/resources/csv`). Such a child is
+    not new: it was ignored before, under its parent's name. Taking it
+    for new removed the whole folder."""
+    e = entry.replace("\\", "/").rstrip("/")
+    for b in ignored_before:
+        b = str(b).replace("\\", "/").rstrip("/")
+        if b and e.startswith(b + "/"):
+            return True
+    return False
 
 
 def remove_new_ignored(root: str, entries, ignored_before) -> list:
@@ -1349,7 +1367,9 @@ def project_map(root: str, policy: dict, scope: dict) -> str:
         f"    shared base    {tests}BaseApiTest.java, {tests}ImportedTest.java",
         "",
         "  Test suites (what TestNG runs): src/test/resources/"
-        + (", ".join(runs) if runs else "testng*.xml"),
+        + (", ".join(runs) if runs else "testng*.xml")
+        + ("; and this job's own suite, " + JOB_SUITES + "<job>.xml, which THIS TOOL writes "
+           "when you finish -- do not write it" if scope.get("name") == "new-test" else ""),
         "",
         "  Data sheets (CSV; one file a test method, one row a case, the `execute` "
         "column switches a row off)",
@@ -1474,6 +1494,58 @@ def not_yours(scope: dict) -> str:
         extra = ["tools/**", ".cursor/**", "AGENTS.md", "CURSOR.md", "README.md", "pom.xml"]
     extra = [p for p in extra if not in_roots(p.rstrip("*"), scope.get("write_roots") or [])]
     return "".join(f"\n  - {p}" for p in extra)
+
+
+JOB_SUITES = "src/test/resources/suites/jira/"
+_JIRA_TESTS = "src/test/java/com/hi/api/tests/jira/"
+
+
+def write_job_suite(root: str, job_dir: str, scope: dict) -> str:
+    """A TestNG suite of the test classes this job wrote, so that the
+    story's tests run on their own:
+
+        mvn -o test -DsuiteXmlFile=src/test/resources/suites/jira/<job>.xml
+
+    Written by this tool, not by Cursor, each time Cursor finishes: the
+    classes are the *Test.java files changed or added under tests/jira/.
+    It is part of the change, reviewed and pushed with it, and put back
+    with it on Discard. Returns its path, or "" (another scope, or no
+    test class)."""
+    if scope.get("name") != "new-test" or not in_roots(JOB_SUITES, scope.get("write_roots") or []):
+        return ""
+    job = os.path.basename(job_dir.rstrip("/\\"))
+    rel = JOB_SUITES + job + ".xml"
+    path = os.path.join(root, rel.replace("/", os.sep))
+    classes = sorted(p[len("src/test/java/"):-len(".java")].replace("/", ".")
+                     for p, h in dirty_paths(root).items()
+                     if h is not None and p.startswith(_JIRA_TESTS) and p.endswith("Test.java"))
+    if not classes:
+        return ""
+    body = "\n".join(
+        ['<?xml version="1.0" encoding="UTF-8"?>',
+         '<!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">',
+         "",
+         f"<!-- The tests written for job {job}. Written by the test workbench",
+         "     (tools/agent) when Cursor finished; run on their own with",
+         f"       mvn -o test -DsuiteXmlFile={rel}",
+         "     testng-jira.xml runs them too, with every other story's. -->",
+         f'<suite name="jira-{job}" verbose="1">',
+         "    <listeners>",
+         '        <listener class-name="io.qameta.allure.testng.AllureTestNg"/>',
+         "    </listeners>",
+         f'    <test name="{job}">',
+         "        <groups>",
+         "            <run>",
+         '                <include name="jira"/>',
+         "            </run>",
+         "        </groups>",
+         "        <classes>"]
+        + [f'            <class name="{c}"/>' for c in classes]
+        + ["        </classes>", "    </test>", "</suite>", ""])
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with io.open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(body)
+    return rel
 
 
 def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
@@ -2335,7 +2407,8 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                          "to them; the marks were removed: " + ", ".join(newly_hidden[:10]))
         new_ignored = sorted(p for p in ignored_entries(root) - ignored_before
                              if not in_roots(p, roots)
-                             and not in_roots(p.rstrip("/") + "/", roots))
+                             and not in_roots(p.rstrip("/") + "/", roots)
+                             and not was_ignored_whole(p, ignored_before))
         new_ignored = remove_new_ignored(root, new_ignored, ignored_before)
         if new_ignored:
             found.append("files or folders git ignores were created outside the "
@@ -2482,6 +2555,11 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         else:
             say(" .. Cursor finished; checking what it changed")
 
+        suite_rel = write_job_suite(root, job_dir, scope)
+        if suite_rel:
+            say(f" .. the suite of this job's tests: {suite_rel}")
+            clog.write(f"suite written: {suite_rel}")
+
         commit_now, branch_now = head(root)
         if (commit_now, branch_now) != (commit, branch):
             msg = (f"HEAD moved ({branch}@{commit[:8]} -> {branch_now}@"
@@ -2505,7 +2583,8 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                 "--no-skip-worktree", "--", *newly_hidden)
         new_ignored = sorted(p for p in ignored_entries(root) - ignored_before
                              if not in_roots(p, roots)
-                             and not in_roots(p.rstrip("/") + "/", roots))
+                             and not in_roots(p.rstrip("/") + "/", roots)
+                             and not was_ignored_whole(p, ignored_before))
         new_ignored = remove_new_ignored(root, new_ignored, ignored_before)
         tracked = split_created(root, classify_tracked(before, dirty_paths(root), roots))
         gen = classify_generated(gen_before, snapshot_generated(root, policy), roots)
