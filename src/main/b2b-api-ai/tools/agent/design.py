@@ -165,6 +165,15 @@ CACHE_DIR = "design-cache"
 CACHE_KEEP = 24               # replies kept per job
 CACHE_VERSION = 1             # bump when a reply would be READ differently
 DEFAULT_DEADLINE = 900        # seconds for one call, when the policy has none
+# A design is one answer in plan mode. Seen live: the whole reply and its
+# usage line came, and then the run never said it had ended -- the step
+# waited for the 900 s limit. Once Cursor has written and then says
+# nothing (no text, no thinking, no tool) for this long, its answer is
+# taken as complete.
+DESIGN_QUIET = 60
+# The design's conversation with Cursor, apart from cursor.log (the code
+# Cursor writes): the two panes of the Automate Test Case tab show one each.
+CURSOR_LOG = "design-cursor.log"
 # What the page pasted, written by the server next to the job's other files.
 PASTED = {"swagger": "design-swagger.txt", "requirements": "design-requirements.txt",
           "notes": "design-notes.txt"}
@@ -1264,7 +1273,7 @@ def call_cursor(prompt: str, root: str, on_event, followup, mode: str = "plan",
             out = loop.cursor_call.run(prompt, ca, cfg,
                                        on_event=lambda line: on_event(hide(line)),
                                        followup=followup, mode=mode,
-                                       deadline_seconds=deadline)
+                                       deadline_seconds=deadline, quiet_seconds=DESIGN_QUIET)
         except loop.cursor_call.CursorCallError as e:
             raise loop.CursorFailed(hide(e) + ("\n" + hide(e.details) if e.details else ""),
                                     e.kind, e.cancelled) from e
@@ -1542,7 +1551,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         forgotten = cache_clear(out_dir, only_model="mock" if mocked else "")
         if forgotten:
             say(f" ..  --fresh: {forgotten} kept reply(ies) for this job were forgotten")
-    clog = loop.CursorLog(out_dir, secret, list(private))
+    clog = loop.CursorLog(out_dir, secret, list(private), name=CURSOR_LOG)
     clog.write(f"===== design the API tests: job {job}, speed {speed} "
                f"(at most {max_cases}), {len(parts)} call(s) =====")
     deadline = deadline_for("design")

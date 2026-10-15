@@ -728,7 +728,8 @@ def job_dir(job: str) -> str:
 
 
 # Logs that are not a runnable's own output but may be read like one.
-EXTRA_LOGS = {"cursor"}       # cursor.log: the conversation with Cursor
+EXTRA_LOGS = {"cursor",       # cursor.log: the conversation with Cursor
+              "design-cursor"}  # design-cursor.log: the design step's
 
 
 def _known(runnable: str) -> str:
@@ -759,7 +760,7 @@ JOB_WRITERS = AGENT_RUNNABLES + ("agent-design", "xray-import")
 
 
 DESIGN_FILES = ("design.json", "design.md", "test-cases.csv", "xray.csv",
-                "agent-design.log", "agent-design.status.json")
+                "agent-design.log", "agent-design.status.json", "design-cursor.log")
 
 
 MIGRATION_SCOPES = ("converted", "converter")

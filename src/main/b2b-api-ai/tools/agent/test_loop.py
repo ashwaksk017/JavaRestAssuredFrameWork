@@ -2353,6 +2353,60 @@ class CallingCursor(unittest.TestCase):
         self.assertTrue(any("taken as finished" in s for s in seen), seen)
         self.assertFalse(any("time limit" in s for s in seen))
 
+    def test_thinking_is_cursor_working_said_without_its_text(self):
+        NS = types.SimpleNamespace
+        msgs = [NS(type="status", status="RUNNING", message=""),
+                NS(type="thinking", text="private reasoning one"),
+                NS(type="thinking", text="private two", thinking_duration_ms=142000),
+                NS(type="assistant", message=NS(content=[NS(type="text", text="The design.")]))]
+        self.use(FakeSdk(messages=msgs))
+        seen = []
+        loop.cursor_call.run("p", self.ca, self.cfg, on_event=seen.append)
+        self.assertIn("cursor is thinking", seen)
+        self.assertEqual(sum(1 for s in seen if s == "cursor is thinking"), 1, "once a stretch of thinking")
+        self.assertIn("thought for 142s (32 characters of reasoning, not shown)", seen)
+        self.assertLess(seen.index("thought for 142s (32 characters of reasoning, not shown)"),
+                        seen.index("cursor says: The design."))
+        self.assertFalse(any("private" in s for s in seen), "the reasoning itself is not logged")
+
+    def test_a_long_think_after_the_first_words_is_not_a_run_gone_quiet(self):
+        NS = types.SimpleNamespace
+
+        def speaks_thinks_answers():
+            yield NS(type="assistant", message=NS(content=[NS(type="text", text="Reading.\n\n")]))
+            for _ in range(10):              # 1s of thinking, well past quiet_seconds
+                time.sleep(0.1)
+                yield NS(type="thinking", text="x")
+            yield NS(type="assistant", message=NS(content=[NS(type="text", text="Done.")]))
+        self.use(FakeSdk(messages=speaks_thinks_answers()))
+        for name, value in (("QUIET_FOR", 5), ("PULSE_EVERY", 0.02)):
+            self.addCleanup(setattr, loop.cursor_call, name, getattr(loop.cursor_call, name))
+            setattr(loop.cursor_call, name, value)
+        seen = []
+        out = loop.cursor_call.run("p", self.ca, self.cfg, on_event=seen.append,
+                                   deadline_seconds=20, quiet_seconds=0.3)
+        self.assertNotEqual(out["status"], "quiet", seen)
+        self.assertFalse(any("taken as finished" in s for s in seen), seen)
+        self.assertIn("cursor says: Done.", seen)
+
+    def test_a_quiet_end_returns_the_answer_exactly_as_cursor_wrote_it(self):
+        NS = types.SimpleNamespace
+        answer = '{"test_cases": [{"title": "' + "x" * 1700 + '"}]}'
+
+        def json_then_stalls():
+            for i in range(0, len(answer), 100):     # streamed in pieces, past the log's 1,500 cut
+                yield NS(type="assistant", message=NS(content=[NS(type="text", text=answer[i:i + 100])]))
+            yield NS(type="usage", usage=NS(input_tokens=1, output_tokens=2, total_tokens=3))
+            time.sleep(30)                           # the run never says it ended
+        self.use(FakeSdk(messages=json_then_stalls()))
+        for name, value in (("QUIET_FOR", 5), ("PULSE_EVERY", 0.02)):
+            self.addCleanup(setattr, loop.cursor_call, name, getattr(loop.cursor_call, name))
+            setattr(loop.cursor_call, name, value)
+        out = loop.cursor_call.run("p", self.ca, self.cfg, deadline_seconds=20, quiet_seconds=0.3)
+        self.assertEqual(out["status"], "quiet")
+        self.assertEqual(out["result"], answer, "no blank line put inside the JSON")
+        json.loads(out["result"])
+
     def test_an_error_status_with_an_answer_keeps_the_answer_and_says_so(self):
         NS = types.SimpleNamespace
         msgs = [NS(type="tool_call", name="edit", status="completed", call_id="1", result="ok")]
@@ -2409,7 +2463,9 @@ class CallingCursor(unittest.TestCase):
         self.assertIn("status running", seen)
         self.assertIn("tool edit_file completed", seen)
         self.assertIn("tool run_terminal error: denied", seen)
-        self.assertEqual(len(seen), 4, "sent + three describable messages; the fourth has no line")
+        self.assertEqual(len(seen), 6, "sent + three describable messages + the thinking's start and length")
+        self.assertEqual(seen[-2], "cursor is thinking")
+        self.assertTrue(seen[-1].startswith("thought for "), seen[-1])
 
     def test_a_run_that_never_started_says_so(self):
         self.use(FakeSdk(raise_on_create="startup"))

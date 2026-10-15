@@ -1126,12 +1126,12 @@ async function followDesignCursorLog(j) {
   clearInterval(designCursorTimer);
   try {
     offset = (await api(
-      `/api/log?job=${encodeURIComponent(j)}&runnable=cursor&offset=0`)).offset || 0;
+      `/api/log?job=${encodeURIComponent(j)}&runnable=design-cursor&offset=0`)).offset || 0;
   } catch { /* no cursor log yet: start at 0 */ }
   const read = async () => {
     try {
       const chunk = await api(
-        `/api/log?job=${encodeURIComponent(j)}&runnable=cursor&offset=${offset}`);
+        `/api/log?job=${encodeURIComponent(j)}&runnable=design-cursor&offset=${offset}`);
       if (chunk.text) {
         offset = chunk.offset;
         el.textContent += chunk.text;

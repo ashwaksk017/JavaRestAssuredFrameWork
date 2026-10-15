@@ -510,7 +510,7 @@ class Run(unittest.TestCase):
         self.run_design(self.agent(reply(case())),
                         requirements="use Zx9-very-private-value to log in")
         self.assertNotIn("Zx9-very-private-value", self.prompts[0])
-        self.assertNotIn("Zx9-very-private-value", self.read("cursor.log"))
+        self.assertNotIn("Zx9-very-private-value", self.read("design-cursor.log"))
 
     def test_an_unreadable_reply_is_asked_for_again_once(self):
         rc = self.run_design(self.agent("Sure! I designed 12 tests for you.", reply(case())))
@@ -537,7 +537,7 @@ class Run(unittest.TestCase):
         leaky = reply(case(title="Log in with Zx9-very-private-value"),
                       summary="the secret is Zx9-very-private-value")
         self.assertEqual(self.run_design(self.agent(leaky)), 0)
-        for name in design.ARTIFACTS + ("cursor.log",):
+        for name in design.ARTIFACTS + ("design-cursor.log",):
             self.assertNotIn("Zx9-very-private-value", self.read(name), name)
         d = json.loads(self.read("design.json"))
         self.assertTrue(any("were in Cursor's reply" in w for w in d["warnings"]))
@@ -693,7 +693,7 @@ class Run(unittest.TestCase):
         self.assertEqual(d["reused_calls"], 1)
         self.assertTrue(d["reused_from"])
         self.assertIn("Cursor was NOT asked again", self.read("design.md"))
-        self.assertIn("Cursor was not called", self.read("cursor.log"))
+        self.assertIn("Cursor was not called", self.read("design-cursor.log"))
 
     def test_any_change_to_what_is_sent_asks_again(self):
         self.run_design(self.agent(reply(case())), fresh=False)
@@ -803,7 +803,7 @@ class Run(unittest.TestCase):
         self.assertEqual(len(self.prompts), 2)
         self.assertEqual(json.loads(self.read("design.json"))["test_cases"][0]["title"],
                          "asked again")
-        self.assertIn("can no longer be read", self.read("cursor.log"))
+        self.assertIn("can no longer be read", self.read("design-cursor.log"))
 
     def test_fresh_forgets_the_parts_it_never_reached_too(self):
         self.small_limit(4000)
@@ -967,7 +967,7 @@ class Run(unittest.TestCase):
         def boom(prompt, followup):
             raise RuntimeError("the agent did not start: 401")
         self.assertEqual(self.run_design(boom), 1)
-        self.assertIn("did not start", self.read("cursor.log"))
+        self.assertIn("did not start", self.read("design-cursor.log"))
 
     def test_without_a_specification_the_requests_intake_read_are_the_endpoints(self):
         os.makedirs(self.out)

@@ -452,7 +452,12 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
     last = {"at": time.monotonic(), "line": ""}
     heard = {"any": False}          # has anything at all come from the run?
     quiet_stop = threading.Event()
-    transcript: list = []           # every `cursor says:` whole, for a quiet end
+    transcript: list = []           # every `cursor says:` whole, for the log
+    # What Cursor wrote, exactly as it came: the answer of a run that is
+    # ended for going quiet or for the time limit. The log's pieces are cut
+    # at paragraphs and at 1,500 characters; joined again they would put a
+    # blank line inside a JSON string, and a design reply is JSON.
+    raw = {"text": ""}
 
     def say(line: str) -> None:
         if not stopped.is_set():
@@ -491,12 +496,41 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
         if whole:
             say(f"cursor says: {whole}")
 
+    # The model reasoning before it answers arrives as `thinking` messages.
+    # Their text is private and is not logged, but they ARE Cursor working:
+    # each one counts as a sign of life (the heartbeat does not say
+    # "nothing from Cursor", and a long think after the first words is not
+    # taken for a run gone quiet), and the log says when thinking starts
+    # and how long it took.
+    thought = {"on": False, "t": 0.0, "ms": 0, "chars": 0}
+
+    def end_thinking() -> None:
+        if not thought["on"]:
+            return
+        thought["on"] = False
+        secs = (thought["ms"] / 1000.0) if thought["ms"] else (time.monotonic() - thought["t"])
+        say(f"thought for {secs:.0f}s ({thought['chars']:,} characters of reasoning, not shown)")
+
     def consume(messages) -> None:
         for message in messages:
             heard["any"] = True
+            if (getattr(message, "type", "") or "") == "thinking":
+                if not thought["on"]:
+                    flush_said()
+                    thought.update(on=True, t=time.monotonic(), ms=0, chars=0)
+                    say("cursor is thinking")
+                thought["chars"] += len(str(getattr(message, "text", "") or ""))
+                ms = getattr(message, "thinking_duration_ms", None)
+                if isinstance(ms, int) and ms > 0:
+                    thought["ms"] = ms
+                last["at"] = time.monotonic()
+                last["line"] = "cursor is thinking"
+                continue
+            end_thinking()
             if (getattr(message, "type", "") or "") == "assistant":
                 piece = _assistant_text(message)
                 if piece:
+                    raw["text"] += piece
                     said["text"] += piece
                     last["at"] = time.monotonic()
                     last["line"] = f"cursor is writing: {_one_line(said['text'], 80)}"
@@ -510,6 +544,7 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
             say(line)
             if " error" in line:
                 diagnostics.append(line)
+        end_thinking()
         flush_said()
 
     def drain_bridge(agent) -> None:
@@ -551,6 +586,7 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
                 try:
                     second = agent.send(again)
                     live["run"] = second
+                    raw["text"] = ""            # the answer is now this turn's
                     consume(second.messages())
                     result2 = second.wait()
                     text2 = getattr(result2, "result", None) or _conversation_text(second)
@@ -580,7 +616,7 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
         # The last words are usually still in the gather buffer: nothing
         # came after them to flush it.
         parts = transcript + ([said["text"].strip()] if said["text"].strip() else [])
-        return {"status": "quiet", "result": "\n\n".join(parts), "id": run_id,
+        return {"status": "quiet", "result": raw["text"].strip() or "\n\n".join(parts), "id": run_id,
                 "model": cfg.model, "transport": "session", "quiet": True}
     except TimeoutError as e:
         # The hard limit, after Cursor had answered (seen live: the summary
@@ -594,7 +630,7 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
             run_id = str(getattr(live.get("run"), "id", "") or "")
             emit("the time limit came after Cursor had answered; the answer is kept and what it "
                  "wrote is checked")
-            return {"status": "timeout", "result": "\\n\\n".join(parts), "id": run_id,
+            return {"status": "timeout", "result": raw["text"].strip() or "\n\n".join(parts), "id": run_id,
                     "model": cfg.model, "transport": "session", "ended_in_timeout": True,
                     "cancelled": True}
         raise timed_out(e) from None

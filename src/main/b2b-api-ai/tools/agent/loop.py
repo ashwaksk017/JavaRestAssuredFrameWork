@@ -341,8 +341,8 @@ class RepoLock:
 class CursorLog:
     """Append-only record of the conversation with Cursor for one job."""
 
-    def __init__(self, job_dir: str, secret: str = "", secrets=()):
-        self.path = os.path.join(job_dir, "cursor.log")
+    def __init__(self, job_dir: str, secret: str = "", secrets=(), name: str = "cursor.log"):
+        self.path = os.path.join(job_dir, name)
         # The Cursor key, plus every credential VALUE in the private
         # config: an agent that read the config may quote it back.
         self.secrets = [s for s in [secret or "", *secrets] if s and len(s) >= 6]
