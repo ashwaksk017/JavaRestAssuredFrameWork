@@ -66,6 +66,7 @@ every host and secret value in the gitignored
 from __future__ import annotations
 
 import argparse
+import csv
 import difflib
 import hashlib
 import importlib
@@ -1388,7 +1389,49 @@ def designed_case_ids(job_dir: str) -> set:
             if line and not line.startswith("    ")}
 
 
-def designed_cases(job_dir: str, cap: int = 20000, keys: dict = None, only_ids=None) -> tuple:
+_XRAY_ANN_RX = re.compile(r'@XrayTest\(\s*"([A-Z][A-Z0-9_]*-[0-9]+)"\s*\)')
+
+
+def automated_by_key(root: str, keys) -> dict:
+    """{Xray key: [files]} of the tests that carry one of `keys` already:
+    @XrayTest("KEY") on a method, or KEY in the `jira_xray_id` column of a
+    data sheet. Read from the files, not guessed: a story's existing Xray
+    tests that are automated already are UPDATED, not written twice."""
+    keys = {str(k).upper() for k in keys or () if k}
+    out: dict = {}
+    if not keys:
+        return out
+    base = os.path.join(root, "src", "test")
+    for dirpath, _dirs, files in os.walk(_lp(base)):
+        for name in files:
+            low = name.lower()
+            if not low.endswith((".java", ".csv")):
+                continue
+            full = os.path.join(dirpath, name)
+            text = _read(full, 5_000_000)
+            if not text:
+                continue
+            rel = os.path.relpath(full, _lp(root)).replace(os.sep, "/")
+            if low.endswith(".java"):
+                hits = {k for k in _XRAY_ANN_RX.findall(text) if k in keys}
+            else:
+                head = text.split("\n", 1)[0]
+                if "jira_xray_id" not in head:
+                    continue
+                rows = csv.reader(io.StringIO(text),
+                                  delimiter=";" if head.count(";") > head.count(",") else ",")
+                header = [h.strip().lstrip("\ufeff") for h in next(rows, [])]
+                if "jira_xray_id" not in header:
+                    continue
+                col = header.index("jira_xray_id")
+                hits = {r[col].strip().upper() for r in rows if len(r) > col} & keys
+            for k in sorted(hits):
+                out.setdefault(k, []).append(rel)
+    return out
+
+
+def designed_cases(job_dir: str, cap: int = 20000, keys: dict = None, only_ids=None,
+                   automated: dict = None, roots=()) -> tuple:
     """(text, note). The cases design.py wrote for this job, one line per
     step. Text is "" when there is no design, when it was made from a
     different brief than the job has now, or when it is unreadable; the
@@ -1445,9 +1488,14 @@ def designed_cases(job_dir: str, cap: int = 20000, keys: dict = None, only_ids=N
             continue
         key = (keys or {}).get(_one_line(c.get("id"), 40), "")
         groups = suitemap.groups_for(c, mapping, (entries.get(str(c.get("id") or "")) or {}).get("groups"))
+        where = (automated or {}).get(key.upper(), []) if key else []
+        mine = [w for w in where if in_roots(w, roots)]
+        theirs = [w for w in where if not in_roots(w, roots)]
         lines.append(f"{_one_line(c.get('id'), 40)} [{_one_line(c.get('type'), 20)}, "
                      f"{_one_line(c.get('priority'), 20)}]"
                      + (f" [Xray {key}]" if key else "")
+                     + (f" [AUTOMATED IN {', '.join(mine[:3])}]" if mine else "")
+                     + (f" [AUTOMATED OUTSIDE YOUR PATHS: {', '.join(theirs[:3])}]" if theirs and not mine else "")
                      + f" [groups: {', '.join(groups)}] "
                      f"{_one_line(c.get('endpoint'), 200)} -- {_one_line(c.get('title'))}")
         for s in c.get("steps") or []:
@@ -1467,6 +1515,9 @@ def designed_cases(job_dir: str, cap: int = 20000, keys: dict = None, only_ids=N
     with_key = sum(1 for l in lines if not l.startswith("    ") and "[Xray " in l)
     if with_key:
         note += f", {with_key} with an Xray key"
+    done = sum(1 for l in lines if not l.startswith("    ") and "[AUTOMATED " in l)
+    if done:
+        note += f", {done} automated already (by its Xray key): updated, not written again"
     if data.get("partial"):
         note += " (the design is PARTIAL: its reply was cut off)"
     return text, note
@@ -1815,6 +1866,9 @@ def write_job_suite(root: str, job_dir: str, scope: dict) -> str:
          f'<suite name="jira-{job}" verbose="1">',
          "    <listeners>",
          '        <listener class-name="io.qameta.allure.testng.AllureTestNg"/>',
+         "        <!-- Reports each result to Xray at the end of the run; does nothing",
+         "             while xray.enabled is off (Settings tab). -->",
+         '        <listener class-name="com.hi.api.reporting.XrayReportListener"/>',
          "    </listeners>",
          f'    <test name="{job}">',
          "        <groups>",
@@ -1905,8 +1959,10 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
     # read as "and write the rest".
     only_ids = written_cases(job_dir, str(read_review(job_dir).get("change") or "")) \
         if followup and not automate_only(job_dir) else None
-    designed, _note = designed_cases(job_dir, keys=xray_keys(job_dir, mocked=mock_cursor()),
-                                     only_ids=only_ids)
+    keys = xray_keys(job_dir, mocked=mock_cursor())
+    designed, _note = designed_cases(job_dir, keys=keys, only_ids=only_ids,
+                                     automated=automated_by_key(root or ROOT, keys.values()),
+                                     roots=scope["write_roots"])
     decided = bool(designed) and scope["name"] != "converter" and bool(
         casereview.reviewed(casereview.read(job_dir)["design"], design_cases_raw(job_dir)))
     brief_head, brief = brief_for_agent(job_dir, policy, decided)
@@ -2003,7 +2059,14 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
                   "column of the data row you write for it (add the column "
                   "when the sheet has none), or in `@XrayTest(\"KEY\")` on a "
                   "test method that takes no row. Never invent a key, and never "
-                  "put one key on two cases. A case's [groups: ...] are the TestNG "
+                  "put one key on two cases. A case marked [AUTOMATED IN file] has "
+                  "a test carrying its key already, found in that file: UPDATE "
+                  "that test -- its data row and assertions -- so it checks what "
+                  "the case's steps say now, keep its key, and do not write a "
+                  "second test for it. A case marked [AUTOMATED OUTSIDE YOUR "
+                  "PATHS: file] is tested where this job may not write: write "
+                  "nothing for it and name that test in your reply. Every other "
+                  "case: CREATE its test. A case's [groups: ...] are the TestNG "
                   "groups -- and so the suites -- its test runs in: put exactly those "
                   "in @Test(groups = {...}) of the method that tests it. Cases with "
                   "different groups do not share a test method.", "", designed,
@@ -2484,8 +2547,10 @@ PROPOSED FOR THIS JOB, under src/test/java/com/hi/api/tests/jira/.
 
 Before writing one, look for an existing test of the same endpoint and
 behaviour (tests/jira/, tests/manual/, and the converted tests under
-tests/imported/). If one already covers a case, write nothing for it and
-name that test in your reply.
+tests/imported/). One in the paths you may write that already covers a
+case is UPDATED to the case -- with the case's Xray key, when it has
+one -- instead of a second test being written. One outside those paths:
+write nothing for it and name that test in your reply.
 """
 
 
@@ -3904,7 +3969,19 @@ def cmd_run(job_dir: str, root: str, policy: dict, env: str = "", runner=None) -
         shutil.copy2(results, os.path.join(job_dir, kept))
     except OSError:
         kept = ""
+    # The suite's own listener reported the results to Xray when xray.enabled
+    # was on: Publish then makes no second Test Execution.
+    try:
+        auto = bool(_load("loop_settings", os.path.join(HERE, "settings.py")).status(root)
+                    .get("xray", {}).get("enabled")) \
+            and "XrayReportListener" in _read(os.path.join(root, suite.replace("/", os.sep)), 400_000)
+    except Exception:                                    # noqa: BLE001
+        auto = False
+    if auto:
+        say(" ..  xray.enabled is on: the suite's listener reported these results to Xray itself "
+            "(its Test Execution is in the Maven output above)")
     record = {"at": _now(), "env": env, "rc": rc, "ok": ok, "why": why, "suite": suite,
+              "reported_by_run": auto,
               "passed": res["passed"], "failed": res["failed"], "skipped": res["skipped"],
               "switched_off": res["switched_off"], "results_file": kept,
               "hashes": {p: _sha(os.path.join(root, p)) for p in paths}}

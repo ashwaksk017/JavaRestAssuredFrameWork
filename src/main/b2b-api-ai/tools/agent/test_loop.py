@@ -910,6 +910,46 @@ class IgnoredOldFolders(Repo):
         self.assertFalse(os.path.exists(os.path.join(self.root, "target", "x")))
 
 
+class AutomatedByKey(Repo):
+    def test_a_key_is_found_on_an_annotation_and_in_a_data_sheet(self):
+        write(self.root, JIRA + "StaysTest.java",
+              'class StaysTest {\n  @XrayTest("ABC-11")\n  void a() {}\n}\n')
+        write(self.root, "src/test/resources/csv/manual/stays.csv",
+              "test_case_id,jira_xray_id,execute\nr1,ABC-12,Y\nr2,abc-13,Y\n")
+        write(self.root, "src/test/resources/csv/manual/other.csv", "a,b\nABC-14,x\n")
+        found = loop.automated_by_key(self.root, ["ABC-11", "ABC-12", "ABC-13", "ABC-14", "ABC-99"])
+        self.assertEqual(found, {"ABC-11": [JIRA + "StaysTest.java"],
+                                 "ABC-12": ["src/test/resources/csv/manual/stays.csv"],
+                                 "ABC-13": ["src/test/resources/csv/manual/stays.csv"]},
+                         "only the jira_xray_id column counts; an unknown key is not found")
+
+    def test_an_automated_case_is_marked_for_update_inside_the_paths_and_left_outside(self):
+        write(self.root, JIRA + "StaysTest.java",
+              'class StaysTest {\n  @XrayTest("ABC-11")\n  void a() {}\n}\n')
+        write(self.root, IMPORTED + "amex/AmexStaysTest.java",
+              'class AmexStaysTest {\n  @XrayTest("ABC-12")\n  void b() {}\n}\n')
+        write(self.root, ".workbench/job1/design.json", json.dumps({
+            "brief": loop.brief_fingerprint(self.job), "test_cases": [
+                {"id": "TC-001", "title": "one", "endpoint": "GET /a", "type": "positive",
+                 "priority": "high", "steps": [{"action": "GET", "expected": "200"}]},
+                {"id": "TC-002", "title": "two", "endpoint": "GET /b", "type": "positive",
+                 "priority": "high", "steps": [{"action": "GET", "expected": "200"}]},
+                {"id": "TC-003", "title": "three", "endpoint": "GET /c", "type": "positive",
+                 "priority": "high", "steps": [{"action": "GET", "expected": "200"}]}]}))
+        keys = {"TC-001": "ABC-11", "TC-002": "ABC-12", "TC-003": "ABC-13"}
+        text, note = loop.designed_cases(self.job, keys=keys,
+                                         automated=loop.automated_by_key(self.root, keys.values()),
+                                         roots=[JIRA, "src/test/resources/csv/manual/"])
+        lines = {l.split()[0]: l for l in text.splitlines() if not l.startswith("    ")}
+        self.assertIn("[AUTOMATED IN " + JIRA + "StaysTest.java]", lines["TC-001"])
+        self.assertIn("[AUTOMATED OUTSIDE YOUR PATHS: " + IMPORTED + "amex/AmexStaysTest.java]", lines["TC-002"])
+        self.assertNotIn("AUTOMATED", lines["TC-003"], "not automated: created, with its key")
+        self.assertIn("2 automated already", note)
+
+    def test_the_job_suite_reports_to_xray(self):
+        self.assertIn("com.hi.api.reporting.XrayReportListener", loop.suitemap.suite_xml("smoke"))
+
+
 class Preconditions(Repo):
     def test_no_plan_no_run(self):
         os.remove(os.path.join(self.job, "plan.md"))

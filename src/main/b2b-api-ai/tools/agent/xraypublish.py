@@ -206,7 +206,17 @@ def run(job: str, root: str = "", transport=None, conf: dict = None, mocked: boo
     regression_keys = sorted(k for k in by_key if k in in_regression)
     # Pressed again for a run already made a new Test Execution: no second
     # one. What may be left is the regression add, once the change is pushed.
+    # A run whose suite listener reported to Xray itself (xray.enabled on)
+    # made its Test Execution already, too.
     only_regression = False
+    if ran.get("reported_by_run") and not execution and not made:
+        made = "(reported by the run itself)"
+        if not (pushed and regression_keys and not regression_done):
+            raise Refused("this run reported its results to Xray itself (xray.enabled is on: the "
+                          "suite's listener made the Test Execution -- its key is in the run's "
+                          "log). Nothing more to publish"
+                          + ("; the regression tests are added after Approve & push"
+                             if regression_keys and not pushed else ""))
     if made and not execution:
         if pushed and regression_keys and not regression_done:
             only_regression = True

@@ -153,6 +153,9 @@ def suite_xml(group: str) -> str:
         f'<suite name="jira-{group}" verbose="1">',
         "    <listeners>",
         '        <listener class-name="io.qameta.allure.testng.AllureTestNg"/>',
+        "        <!-- Reports each result to Xray at the end of the run; does nothing",
+        "             while xray.enabled is off (Settings tab). -->",
+        '        <listener class-name="com.hi.api.reporting.XrayReportListener"/>',
         "    </listeners>",
         f'    <test name="jira-{group}">',
         "        <groups>",
@@ -177,6 +180,16 @@ def write_suites(root: str, groups) -> list:
         rel = suite_rel(g)
         path = os.path.join(root, rel.replace("/", os.sep))
         if os.path.isfile(path):
+            # A suite written before it reported to Xray: the listener is
+            # added beside Allure's, and nothing else is touched.
+            with io.open(path, encoding="utf-8") as fh:
+                text = fh.read()
+            allure = '<listener class-name="io.qameta.allure.testng.AllureTestNg"/>'
+            if "XrayReportListener" not in text and text.count(allure) == 1:
+                with io.open(path, "w", encoding="utf-8", newline="\n") as fh:
+                    fh.write(text.replace(allure, allure + '\n        <listener class-name='
+                                                   '"com.hi.api.reporting.XrayReportListener"/>'))
+                written.append(rel)
             continue
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with io.open(path, "w", encoding="utf-8", newline="\n") as fh:

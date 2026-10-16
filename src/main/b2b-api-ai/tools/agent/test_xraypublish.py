@@ -223,6 +223,24 @@ class GapsFromReview(Base):
         self.assertIn("Create in Xray", str(got.exception))
 
 
+class ReportedByTheRun(Base):
+    def test_a_run_that_reported_itself_is_not_published_again(self):
+        self.ran["reported_by_run"] = True
+        with io.open(os.path.join(self.job, "execution.json"), "w", encoding="utf-8") as fh:
+            json.dump(self.ran, fh)
+        self.change("pending-review")
+        with self.assertRaises(xp.Refused) as got:
+            xp.run("j1", self.root, transport=Xray(), conf=dict(CONF), mocked=False)
+        self.assertIn("reported its results to Xray itself", str(got.exception))
+        self.change("pushed")
+        x = Xray()
+        r = xp.run("j1", self.root, transport=x, conf=dict(CONF), mocked=False)
+        self.assertFalse(any(c[1].endswith("/import/execution") for c in x.calls), "no second execution")
+        self.assertEqual(r["regression"]["added"], ["ABC-11", "ABC-12"], "only the regression add is left")
+        # Into an existing execution: still allowed.
+        xp.run("j1", self.root, transport=Xray(), conf=dict(CONF), mocked=False, execution="ABC-777")
+
+
 class WhatIsRefused(Base):
     def test_no_run_no_settings_no_keys_cloud_wrong_issue_type(self):
         with self.assertRaises(xp.Refused) as got:

@@ -378,6 +378,26 @@ job needs its story); a job that already has a design is refused --
 Clear the design first. In mock mode the sample story has two linked
 tests.
 
+**Automated already? Updated, not written twice.** Before Automate asks
+Cursor, the workbench looks for each case's Xray key in the tests that
+exist: `@XrayTest("KEY")` on a method, or KEY in the `jira_xray_id` column
+of a data sheet under `src/test` (`loop.automated_by_key`). A case found
+in the paths the job may write is marked `[AUTOMATED IN <file>]`, and
+Cursor UPDATES that test -- its row and assertions -- to the case's steps
+as they are in Xray now, keeping its key. One found outside them (a
+converted test) is marked so, and Cursor writes nothing for it and names
+it. Every other case is CREATED, with its key in `jira_xray_id`. Automate's
+log says how many were found automated already.
+
+**Results reach Xray when the tests run.** The job's suite and the group
+suites (`Suites/jira/`) list `com.hi.api.reporting.XrayReportListener`:
+with `xray.enabled` on (Settings tab), each run posts its results to Xray
+by their keys at the end of the run, and Publish to Xray then makes no
+second Test Execution for it (it still adds the regression tests after the
+push, or puts the results into an existing execution named beside it).
+With `xray.enabled` off the listener does nothing, and Publish to Xray is
+how results get there.
+
 #### How long a design takes
 
 One Cursor call: a few seconds to start, the model thinking (60-100 s with
