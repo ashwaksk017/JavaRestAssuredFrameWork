@@ -1,136 +1,140 @@
 {
-  "generated_roots": [
-    "src/main/java/com/hi/api/support/",
-    "src/main/java/com/hi/api/rest/clients/",
-    "src/test/java/com/hi/api/tests/imported/",
-    "src/test/java/com/hi/api/tests/classic/",
-    "src/main/resources/templates/",
-    "src/test/resources/csv/"
-  ],
-  "generated_exclude": [
-    "src/test/resources/csv/manual/"
-  ],
-  "scopes": {
-    "new-test": {
-      "label": "A new hand-written test",
-      "write_roots": [
-        "src/test/java/com/hi/api/tests/jira/",
-        "src/test/resources/csv/manual/",
-        "src/test/resources/templates/manual/",
-        "src/test/resources/schemas/jira/",
-        "Suites/jira/"
-      ],
-      "pushable": true,
-      "compile": [
-        "mvn",
-        "-q",
-        "-DskipTests",
-        "test-compile"
-      ],
-      "checks": [
-        [
-          "tools/check_no_duplicate_methods.py"
-        ]
-      ],
-      "skill": ".cursor/skills/jira-to-restassured/SKILL.md"
-    },
-    "converted": {
-      "label": "Converted Java of one suite (stays on this machine)",
-      "needs_suite": true,
-      "write_roots": [
-        "src/main/java/com/hi/api/support/{suite}/",
-        "src/test/java/com/hi/api/tests/imported/{suite}/",
-        "src/main/resources/templates/{suite}/",
-        "src/test/resources/csv/{suite}/",
-        "src/main/java/com/hi/api/rest/clients/{Suite}Client.java"
-      ],
-      "pushable": false,
-      "compile": [
-        "mvn",
-        "-q",
-        "-DskipTests",
-        "test-compile"
-      ],
-      "checks": [
-        [
-          "tools/check_no_duplicate_methods.py"
-        ]
-      ],
-      "skill": ".cursor/skills/converted-app-environment/SKILL.md"
-    },
-    "converter": {
-      "label": "The converter and the runtime under it",
-      "write_roots": [
-        "tools/ra_converter/",
-        "tools/verify_all.py",
-        "src/main/java/com/hi/api/rest/utilities/",
-        "src/main/java/com/hi/api/rest/ApiRoutes.java",
-        "src/main/java/com/hi/api/retry/",
-        "src/main/java/com/hi/api/config/",
-        "src/main/java/com/hi/api/data/",
-        "src/main/java/com/hi/api/db/",
-        "src/main/java/com/hi/api/auth/",
-        "src/main/java/com/hi/api/context/",
-        "src/main/java/com/hi/api/domain/",
-        "src/test/java/com/hi/api/tests/ImportedTest.java",
-        "src/test/java/com/hi/api/tests/framework/",
-        "src/test/resources/testng-guards.xml",
-        "CreateTestCase.md"
-      ],
-      "pushable": true,
-      "compile": [
-        "mvn",
-        "-q",
-        "-DskipTests",
-        "test-compile"
-      ],
-      "checks": [],
-      "gate": true,
-      "skill": ".cursor/skills/readyapi-restassured-migration/SKILL.md"
-    },
-    "workbench": {
-      "label": "The workbench itself: this page, its server and their tests (tools/agent)",
-      "write_roots": [
-        "tools/agent/"
-      ],
-      "pushable": true,
-      "compile": [],
-      "checks": [
-        [
-          "tools/agent/check_workbench.py"
-        ]
-      ]
-    }
+ "generated_roots": [
+  "src/main/java/com/hi/api/support/",
+  "src/main/java/com/hi/api/rest/clients/",
+  "src/test/java/com/hi/api/tests/imported/",
+  "src/test/java/com/hi/api/tests/classic/",
+  "src/main/resources/templates/",
+  "src/test/resources/csv/"
+ ],
+ "generated_exclude": [
+  "src/test/resources/csv/manual/"
+ ],
+ "scopes": {
+  "new-test": {
+   "label": "A new hand-written test (anything under src/ but the converter's output)",
+   "write_roots": [
+    "src/",
+    "!src/main/java/com/hi/api/support/",
+    "!src/main/java/com/hi/api/rest/clients/",
+    "!src/test/java/com/hi/api/tests/imported/",
+    "!src/test/java/com/hi/api/tests/classic/",
+    "!src/main/resources/templates/",
+    "!src/test/resources/csv/",
+    "src/test/resources/csv/manual/",
+    "Suites/jira/"
+   ],
+   "pushable": true,
+   "compile": [
+    "mvn",
+    "-q",
+    "-DskipTests",
+    "test-compile"
+   ],
+   "checks": [
+    [
+     "tools/check_no_duplicate_methods.py"
+    ]
+   ],
+   "skill": ".cursor/skills/jira-to-restassured/SKILL.md"
   },
-  "protected_files": [
-    "src/main/resources/program_configuration.json",
-    "tools/ra_converter/cursor_agent.json",
-    "tools/agent/policy.json",
-    "tools/agent/mock.json",
-    "tools/agent/check_workbench.py"
-  ],
-  "repair_attempts": "until-fixed",
-  "repair_max_attempts": 8,
-  "agent_brief": "story",
-  "repeat_discard": false,
-  "handwritten_roots": [
-    "src/test/java/com/hi/api/tests/manual/",
-    "src/test/java/com/hi/api/tests/jira/",
-    "src/main/java/com/hi/api/dsl/"
-  ],
-  "cursor_quiet_seconds": 600,
-  "cursor_deadline_seconds": {
-    "generate": 2700,
-    "design": 900,
-    "review": 900,
-    "manual": 1200
+  "converted": {
+   "label": "Converted Java of one suite (stays on this machine)",
+   "needs_suite": true,
+   "write_roots": [
+    "src/main/java/com/hi/api/support/{suite}/",
+    "src/test/java/com/hi/api/tests/imported/{suite}/",
+    "src/main/resources/templates/{suite}/",
+    "src/test/resources/csv/{suite}/",
+    "src/main/java/com/hi/api/rest/clients/{Suite}Client.java"
+   ],
+   "pushable": false,
+   "compile": [
+    "mvn",
+    "-q",
+    "-DskipTests",
+    "test-compile"
+   ],
+   "checks": [
+    [
+     "tools/check_no_duplicate_methods.py"
+    ]
+   ],
+   "skill": ".cursor/skills/converted-app-environment/SKILL.md"
   },
-  "branch_prefix": "feature_",
-  "remote": "origin",
-  "protected_branches": [
-    "main",
-    "master"
-  ],
-  "require_green_run": true,
-  "run_env": "stg"
+  "converter": {
+   "label": "The converter and the runtime under it",
+   "write_roots": [
+    "tools/ra_converter/",
+    "tools/verify_all.py",
+    "src/main/java/com/hi/api/rest/utilities/",
+    "src/main/java/com/hi/api/rest/ApiRoutes.java",
+    "src/main/java/com/hi/api/retry/",
+    "src/main/java/com/hi/api/config/",
+    "src/main/java/com/hi/api/data/",
+    "src/main/java/com/hi/api/db/",
+    "src/main/java/com/hi/api/auth/",
+    "src/main/java/com/hi/api/context/",
+    "src/main/java/com/hi/api/domain/",
+    "src/test/java/com/hi/api/tests/ImportedTest.java",
+    "src/test/java/com/hi/api/tests/framework/",
+    "src/test/resources/testng-guards.xml",
+    "CreateTestCase.md"
+   ],
+   "pushable": true,
+   "compile": [
+    "mvn",
+    "-q",
+    "-DskipTests",
+    "test-compile"
+   ],
+   "checks": [],
+   "gate": true,
+   "skill": ".cursor/skills/readyapi-restassured-migration/SKILL.md"
+  },
+  "workbench": {
+   "label": "The workbench itself: this page, its server and their tests (tools/agent)",
+   "write_roots": [
+    "tools/agent/"
+   ],
+   "pushable": true,
+   "compile": [],
+   "checks": [
+    [
+     "tools/agent/check_workbench.py"
+    ]
+   ]
+  }
+ },
+ "protected_files": [
+  "src/main/resources/program_configuration.json",
+  "tools/ra_converter/cursor_agent.json",
+  "tools/agent/policy.json",
+  "tools/agent/mock.json",
+  "tools/agent/check_workbench.py"
+ ],
+ "repair_attempts": "until-fixed",
+ "repair_max_attempts": 8,
+ "agent_brief": "story",
+ "repeat_discard": false,
+ "handwritten_roots": [
+  "src/test/java/com/hi/api/tests/manual/",
+  "src/test/java/com/hi/api/tests/jira/",
+  "src/main/java/com/hi/api/dsl/"
+ ],
+ "cursor_quiet_seconds": 600,
+ "cursor_deadline_seconds": {
+  "generate": 2700,
+  "design": 900,
+  "review": 900,
+  "manual": 1200
+ },
+ "branch_prefix": "feature_",
+ "remote": "origin",
+ "protected_branches": [
+  "main",
+  "master"
+ ],
+ "require_green_run": true,
+ "run_env": "stg"
 }

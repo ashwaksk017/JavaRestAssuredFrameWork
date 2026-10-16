@@ -1051,7 +1051,7 @@ Run Cursor  ->  guardrails  ->  verify  ->  PENDING REVIEW
 
 | scope | Cursor may write | verify | Approve does |
 |---|---|---|---|
-| **A new hand-written test** | `tests/jira/`, `csv/manual/` | compile + duplicate-method check | commits to branch `agent/<job>` and pushes it |
+| **A new hand-written test** | all of `src/` **except** the converter's output (`support/`, `rest/clients/`, `tests/imported/`, `tests/classic/`, `src/main/resources/templates/`, `src/test/resources/csv/` -- but `csv/manual/` is in); and `Suites/jira/`. A root starting `!` takes a path out; the most specific root decides | compile + duplicate-method check | commits to branch `agent/<job>` and pushes it |
 | **Converted Java of one suite** | that suite's `support/<suite>/`, `tests/imported/<suite>/`, `templates/<suite>/`, `csv/<suite>/`, `<Suite>Client.java` | compile + duplicate-method check | keeps the files on this machine; stores the change so it survives a convert |
 | **The converter itself** | `tools/ra_converter/`, the hand-maintained runtime (`rest/utilities/`, `retry/`, `config/`, `data/`, `db/`), framework tests | compile + the whole gate, before and after | commits to branch `agent/<job>` and pushes it |
 

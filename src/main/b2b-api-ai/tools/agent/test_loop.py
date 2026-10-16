@@ -262,6 +262,17 @@ class InsideThePaths(Repo):
                            ("converter", "src/main/java/com/hi/api/domain/X.java"),
                            ("converter", "src/test/java/com/hi/api/tests/ImportedTest.java")):
             self.assertTrue(loop.in_roots(rel, scopes[scope]["write_roots"]), f"{scope}: {rel}")
+        roots = scopes["new-test"]["write_roots"]
+        for rel in ("src/test/java/com/hi/api/tests/manual/GoalShopSinglePropTest.java",
+                    "src/main/java/com/hi/api/rest/utilities/RestUtilities.java",
+                    "src/test/java/com/hi/api/tests/BaseApiTest.java"):
+            self.assertTrue(loop.in_roots(rel, roots), f"seen live: a fix there was refused: {rel}")
+        for rel in ("src/main/java/com/hi/api/support/goal/GoalSteps.java",
+                    "src/test/java/com/hi/api/tests/imported/goal/GoalTest.java",
+                    "src/test/resources/csv/goal/rows.csv", "src/main/resources/templates/goal/a.json",
+                    "tools/agent/server.py", "pom.xml"):
+            self.assertFalse(loop.in_roots(rel, roots), f"the converter's output, or not src/: {rel}")
+        self.assertFalse(loop.in_roots("src/x", ["src/", "!src/"]), "the same path both ways: out")
         briefing = loop._SCOPE_BRIEFING
         self.assertIn("do not run tools/jira/run.py", briefing["new-test"])
         self.assertIn(".cursor/ is not this job's to change", briefing["converted"])
@@ -274,7 +285,8 @@ class InsideThePaths(Repo):
             return {"result": ""}
         self.generate(agent)
         self.assertIn("create POST /x", seen["p"])
-        self.assertIn(JIRA + "**", seen["p"])
+        self.assertIn("  - src/**", seen["p"])
+        self.assertIn("EXCEPT src/test/java/com/hi/api/tests/imported/**", seen["p"])
         self.assertIn("Do not delete any file", seen["p"])
         self.assertIn("Do not run mvn, gradle, the tests or any other build yourself", seen["p"])
 
@@ -805,10 +817,10 @@ class AskingForMore(Repo):
         self.first_run()
 
         def agent(_prompt):
-            write(self.root, "src/main/java/Framework.java", "class Framework { /* changed by a follow-up */ }\n")
+            write(self.root, "README.md", "changed by a follow-up\n")
             return {"result": "oops"}
         self.assertNotEqual(self.ask("break out", agent), 0)
-        with io.open(os.path.join(self.root, "src/main/java/Framework.java"), encoding="utf-8") as fh:
+        with io.open(os.path.join(self.root, "README.md"), encoding="utf-8") as fh:
             self.assertNotIn("changed by a follow-up", fh.read(), "the committed file is put back")
         # ...and the reviewed change is still there, waiting.
         self.assertEqual(self.state()["state"], "pending-review")
@@ -1105,7 +1117,7 @@ class VerifyAndRepair(Repo):
 
         def breaks_a_rule(_prompt):
             write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
-            write(self.root, "src/main/java/Framework.java", "class Framework { /* no */ }\n")
+            write(self.root, "README.md", "no\n")
             return {"result": ""}
         with redirect_stdout(out):
             self.assertEqual(self.generate(breaks_a_rule), 1)
@@ -2196,12 +2208,12 @@ class WhatGitWouldNotShow(Repo):
     def test_a_folder_that_ignores_itself_is_found_and_removed(self):
         def agent(_prompt):
             self.new_test()
-            write(self.root, "src/main/java/sneaky/.gitignore", "*\n")
-            write(self.root, "src/main/java/sneaky/Evil.java", "class Evil {}\n")
+            write(self.root, "tools/sneaky/.gitignore", "*\n")
+            write(self.root, "tools/sneaky/Evil.java", "class Evil {}\n")
             return {"result": ""}
         self.assertEqual(self.generate(agent), 1)
         self.assertIn("git ignores", self.state()["reason"])
-        self.assertFalse(os.path.exists(os.path.join(self.root, "src/main/java/sneaky")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "tools/sneaky")))
 
     def test_a_hook_or_a_config_change_inside_dot_git_is_put_back(self):
         hook = os.path.join(self.root, ".git", "hooks", "pre-commit")
@@ -3177,6 +3189,10 @@ class WhereThingsAre(Repo):
         write(self.root, "src/test/resources/csv/OneTest/one.csv", "a\n1\n")
         write(self.root, "src/main/java/com/hi/api/dsl/Flow.java", "class Flow {}\n")
         write(self.root, "CreateTestCase.md", "# how\n")
+        # Committed, as in a real project: an uncommitted file under src/ is
+        # somebody's work in the paths a new test may write, and blocks a run.
+        sh(self.root, "add", "-A")
+        sh(self.root, "commit", "-q", "-m", "layout")
 
     def map(self, scope=None):
         return loop.project_map(self.root, loop.DEFAULT_POLICY, scope or {"name": "new-test"})

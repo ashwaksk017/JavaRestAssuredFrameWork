@@ -176,11 +176,11 @@ DEFAULT_POLICY = {
         },
         "new-test": {
             "label": "A new hand-written test",
-            "write_roots": ["src/test/java/com/hi/api/tests/jira/",
-                            "src/test/resources/csv/manual/",
-                            "src/test/resources/templates/manual/",
-                            "src/test/resources/schemas/jira/",
-                            "Suites/jira/"],
+            # All of src/ (the person asked for it: a run's error may be in a
+            # test or class outside tests/jira/) -- but never the converter's
+            # generated output, which the next convert overwrites. The
+            # manual CSVs inside the generated csv/ are this scope's again.
+            "write_roots": ["src/", "!src/main/java/com/hi/api/support/", "!src/main/java/com/hi/api/rest/clients/", "!src/test/java/com/hi/api/tests/imported/", "!src/test/java/com/hi/api/tests/classic/", "!src/main/resources/templates/", "!src/test/resources/csv/", "src/test/resources/csv/manual/", "Suites/jira/"],
             "pushable": True,
             "compile": _MVN,
             "checks": [["tools/check_no_duplicate_methods.py"]],
@@ -422,8 +422,9 @@ def _norm(roots) -> list:
     out = []
     for r in roots:
         r = r.replace("\\", "/")
+        bang, r = ("!", r[1:]) if r.startswith("!") else ("", r)
         # A directory root ends in "/"; a single file is kept as it is.
-        out.append(r if r.endswith("/") or "." in r.rsplit("/", 1)[-1] else r + "/")
+        out.append(bang + (r if r.endswith("/") or "." in r.rsplit("/", 1)[-1] else r + "/"))
     return out
 
 
@@ -881,8 +882,19 @@ def head(root: str) -> tuple:
 
 
 def in_roots(rel: str, roots) -> bool:
+    """Is `rel` in one of `roots`? A root starting with "!" takes its path
+    OUT; the most specific root that matches decides -- so `src/`,
+    `!src/test/resources/csv/` and `src/test/resources/csv/manual/` allow
+    all of src/ but the generated CSVs, and the manual ones within them."""
     rel = rel.replace("\\", "/")
-    return any(rel == r or (r.endswith("/") and rel.startswith(r)) for r in roots)
+    best, allowed = -1, False
+    for r in roots:
+        out = r.startswith("!")
+        path = r[1:] if out else r
+        if rel == path or (path.endswith("/") and rel.startswith(path)):
+            if len(path) > best or (len(path) == best and out):   # a tie: out
+                best, allowed = len(path), not out
+    return allowed
 
 
 def snapshot_generated(root: str, policy: dict) -> dict:
@@ -1067,7 +1079,11 @@ _SCOPE_BRIEFING = {
     "new-test": (
         "You are writing an API test in this repository's own framework "
         "(Java 17, REST Assured, TestNG). Read CreateTestCase.md for how a "
-        "hand-written test is laid out. The brief and the plan below ARE the "
+        "hand-written test is laid out. You may change any file under src/ "
+        "that the converter does not generate (the list below says which are "
+        "its); a new test goes in src/test/java/com/hi/api/tests/jira/. "
+        "Change a shared class only when the task needs it, and say so. "
+        "The brief and the plan below ARE the "
         "story packet the skill speaks of: do not run tools/jira/run.py or any "
         "pipeline for it. A request body goes in src/test/resources/templates/manual/; "
         "a JSON schema a test validates against goes in src/test/resources/schemas/jira/ "
@@ -1966,7 +1982,8 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
     decided = bool(designed) and scope["name"] != "converter" and bool(
         casereview.reviewed(casereview.read(job_dir)["design"], design_cases_raw(job_dir)))
     brief_head, brief = brief_for_agent(job_dir, policy, decided)
-    roots = "\n".join(f"  - {r}{'**' if r.endswith('/') else ''}"
+    roots = "\n".join((f"  - EXCEPT {r[1:]}**  (the converter writes it; never edit it)"
+                       if r.startswith("!") else f"  - {r}{'**' if r.endswith('/') else ''}")
                       for r in scope["write_roots"])
     gen = "\n".join(f"  - {r}**" for r in policy["generated_roots"]
                     if not in_roots(r, scope["write_roots"]))
@@ -2877,7 +2894,9 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
     ignored_before = ignored_entries(root)
     ignored_kids = ignored_children(root, ignored_before)
     git_before = git_internals(root)
-    stale = [p for p in before if in_roots(p, roots)]
+    # A protected file (the credentials) is never the agent's to change and
+    # is put back after every run: an uncommitted one does not block a run.
+    stale = [p for p in before if in_roots(p, roots) and p not in (policy.get("protected_files") or [])]
     if followup:
         # On top of the change waiting for review. The baseline is the one
         # the first run saved, NOT the tree as it is now: the files in the
