@@ -135,6 +135,21 @@ PULSE_EVERY = 5                              # how often that is looked at
 # line for this long is the end of the run.
 AFTER_USAGE_QUIET = 20
 
+# Images pasted with the request (paste.py), for the next run's first
+# message. Taken by that run: they go once, and are kept nowhere.
+_ATTACHED: list = []
+IMAGES_NOTE = ("\n\nThe person attached {n} image(s) to this request -- screenshots of what "
+               "they mean. Look at them; they are part of the request.")
+
+
+def attach(images) -> None:
+    """The images ({"data": base64, "mimeType": ...}) the next run sends."""
+    _ATTACHED[:] = list(images or [])
+
+
+def attached() -> int:
+    return len(_ATTACHED)
+
 
 def _one_line(value, cap: int) -> str:
     s = " ".join(str(value if value is not None else "").split())
@@ -395,6 +410,8 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
     time limit. Each round is paid for.
     """
     emit = on_event or (lambda line: None)
+    images = list(_ATTACHED)
+    _ATTACHED.clear()                        # one run takes them
     if not getattr(cfg, "api_key", ""):
         raise CursorCallError(
             "no Cursor API key. Set CURSOR_API_KEY, or put it in "
@@ -724,10 +741,12 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
             live["agent"] = agent
             still_wanted(agent)
             drain_bridge(agent)
-            run_ = agent.send(prompt)
+            run_ = agent.send({"text": prompt.rstrip() + IMAGES_NOTE.format(n=len(images)),
+                               "images": images} if images else prompt)
             live["run"] = run_
             still_wanted(agent, run_)
-            say("sent; waiting for the agent")
+            say("sent; waiting for the agent"
+                + (f" ({len(images)} pasted image(s) went with the request)" if images else ""))
             consume(run_.messages())
             if turn["rerun"] and answered["text"] is None:
                 # Ended at a re-run of the request: run_.wait() would wait

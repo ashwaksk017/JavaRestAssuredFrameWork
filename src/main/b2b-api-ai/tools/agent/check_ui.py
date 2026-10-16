@@ -878,6 +878,10 @@ def main() -> int:
                           for v in (s.get("jira") or {}).values()), str(s)[:200])
             check("the cases can be refined with Cursor from the review",
                   'id="refine-run"' in html and 'id="refine-ask"' in html and 'id="wf-finalize"' in html)
+            check("a screenshot can be pasted into each box whose words go to Cursor",
+                  all(f'id="{b}-pasted"' in html for b in
+                      ("refine-ask", "design-notes", "agent-ask", "mig-ask", "wb-ask", "manual-notes"))
+                  and "Ctrl+V pastes a screenshot for Cursor" in html)
             check("each case's suites show on its row, from the rules",
                   ">Suites<" in html and 'class="groups"' in html and "from the rules" in html)
             bare = subprocess.run(

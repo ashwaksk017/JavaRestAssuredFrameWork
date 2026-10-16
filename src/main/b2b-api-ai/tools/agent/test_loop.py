@@ -2850,6 +2850,19 @@ class CallingCursor(unittest.TestCase):
         self.assertEqual(asked, [], "nothing asked while the run was still answering")
         self.assertEqual((out["status"], out["result"]), ("answered", answer))
 
+    def test_pasted_images_go_with_the_first_message_once(self):
+        fake = self.use(FakeSdk())
+        image = {"data": "iVBORw0KGgo=", "mimeType": "image/png"}
+        loop.cursor_call.attach([image])
+        loop.cursor_call.run("fix the alignment", self.ca, self.cfg)
+        sent = fake.sent[0]
+        self.assertEqual(sent["images"], [image])
+        self.assertTrue(sent["text"].startswith("fix the alignment"))
+        self.assertIn("attached 1 image(s)", sent["text"])
+        self.assertEqual(loop.cursor_call.attached(), 0, "taken by the run")
+        loop.cursor_call.run("again", self.ca, self.cfg)
+        self.assertEqual(fake.sent[1], "again", "the next run sends text only")
+
     def test_a_rerun_of_the_same_request_ends_the_run(self):
         """Seen live: ~35 s after a turn ended, the bridge runs the same
         request again (same tokens in), and again. Its messages keep the

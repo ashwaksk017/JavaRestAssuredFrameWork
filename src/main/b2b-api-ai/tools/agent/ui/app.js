@@ -1277,7 +1277,9 @@ $("run-design").onclick = async () => {
       requirements: requirementsGiven(),
       notes: $("design-notes").value,
       refine: pendingRefine || undefined,
+      images: pastedFor("design-notes", pendingRefine ? "refine-ask" : null),
     });
+    clearPasted("design-notes", pendingRefine ? "refine-ask" : null);
     if (pendingRefine) { pendingRefine = ""; $("refine-ask").value = ""; }
     follow("agent-design", $("design-log"), $("design-state"), () => {
       designRunning = false;
@@ -1712,7 +1714,9 @@ $("manual-run").onclick = async () => {
   $("manual-run").disabled = true;
   try {
     await post("/api/manual", { job: j, app: $("manual-app").value.trim(),
-                                speed: $("manual-speed").value, notes: $("manual-notes").value });
+                                speed: $("manual-speed").value, notes: $("manual-notes").value,
+                                images: pastedFor("manual-notes") });
+    clearPasted("manual-notes");
     follow("manual-generate", $("manual-log"), $("manual-state"), () => {
       $("manual-run").disabled = false;
       showManual(j);
@@ -2490,8 +2494,9 @@ $("agent-ask-send").onclick = async () => {
         "csv/manual/ -- or, for a question, answers it. Nothing is committed. Continue?")) return;
   agentRunning = "agent-followup";
   try {
-    await post("/api/agent-followup", { job: job(), text });
+    await post("/api/agent-followup", { job: job(), text, images: pastedFor("agent-ask") });
     $("agent-ask").value = "";
+    clearPasted("agent-ask");
     setCursorSource("tests");
     watchCursorLog();
     follow("agent-followup", $("auto-log"), $("auto-state"), () => {
@@ -2601,7 +2606,8 @@ $("mig-run").onclick = async () => {
   }
   if (!confirm(`Cursor will change ${what} for job "${j}" as you ask. Nothing is committed. Continue?`)) return;
   try {
-    const r = await post("/api/migration-ask", { job: j, scope, suite, text });
+    const r = await post("/api/migration-ask", { job: j, scope, suite, text, images: pastedFor("mig-ask") });
+    clearPasted("mig-ask");
     const runnable = (r && r.runnable) || "agent-generate";
     agentRunning = runnable;
     $("mig-ask").value = "";
@@ -2786,6 +2792,55 @@ function el(tag, props, ...kids) {
   return n;
 }
 const banner = (cls, text) => el("div", { class: `banner ${cls}`, text });
+
+// ---- pasted images ---------------------------------------------------
+// Ctrl+V a screenshot into a box whose words go to Cursor: it goes with the
+// request, as an image Cursor looks at, and is deleted once the run has
+// read it (paste.py). Nothing keeps it.
+const PASTE_MAX = 4, PASTE_EACH = 5 * 1024 * 1024;
+const PASTE_TYPES = /^image\/(png|jpeg|gif|webp)$/;
+const pasted = {};                       // textarea id -> [{data, size}]
+function drawPasted(id) {
+  const strip = $(`${id}-pasted`);
+  if (!strip) return;
+  const list = pasted[id] || [];
+  strip.replaceChildren(
+    ...list.map((p, i) => el("span", { class: "paste-thumb" },
+      el("img", { src: p.data, alt: `pasted image ${i + 1}` }),
+      el("button", { type: "button", class: "x", title: "remove this image", "aria-label": `remove image ${i + 1}`,
+                     on: { click: () => { list.splice(i, 1); drawPasted(id); } } }, "\u00d7"))),
+    el("small", { class: "dim", text: list.length
+      ? `${list.length} image(s) go to Cursor with this request, and are deleted once it has read them`
+      : "Ctrl+V pastes a screenshot for Cursor (up to 4)" }));
+}
+function acceptPaste(id) {
+  const box = $(id);
+  if (!box || $(`${id}-pasted`)) return;
+  pasted[id] = [];
+  box.after(el("div", { class: "paste-strip", id: `${id}-pasted` }));
+  box.addEventListener("paste", (ev) => {
+    const files = [...((ev.clipboardData && ev.clipboardData.items) || [])]
+      .filter((i) => i.kind === "file" && PASTE_TYPES.test(i.type)).map((i) => i.getAsFile()).filter(Boolean);
+    if (!files.length) return;           // text is pasted as text
+    ev.preventDefault();
+    for (const f of files) {
+      if (pasted[id].length >= PASTE_MAX) { alert(`At most ${PASTE_MAX} images go with one request.`); break; }
+      if (f.size > PASTE_EACH) { alert("That image is over 5 MB; paste a smaller one."); continue; }
+      const r = new FileReader();
+      r.onload = () => {
+        if (pasted[id].length < PASTE_MAX) pasted[id].push({ data: r.result, size: f.size });
+        drawPasted(id);
+      };
+      r.readAsDataURL(f);
+    }
+  });
+  drawPasted(id);
+}
+const pastedFor = (...ids) => ids.filter(Boolean).flatMap((id) => (pasted[id] || []).map((p) => ({ data: p.data })));
+function clearPasted(...ids) {
+  for (const id of ids.filter(Boolean)) { pasted[id] = []; drawPasted(id); }
+}
+for (const id of ["refine-ask", "design-notes", "agent-ask", "mig-ask", "wb-ask", "manual-notes"]) acceptPaste(id);
 const MAX_TABLE_ROWS = 500;
 function table(headers, rows) {
   const shown = rows.slice(0, MAX_TABLE_ROWS);
@@ -3302,7 +3357,8 @@ $("wb-run").onclick = async () => {
                "run until it has finished, and the change waits for your review. Continue?")) return;
   $("wb-run").disabled = true;
   try {
-    const r = await post("/api/workbench-ask", { text });
+    const r = await post("/api/workbench-ask", { text, images: pastedFor("wb-ask") });
+    clearPasted("wb-ask");
     wbJob = r.job;
     $("wb-job").textContent = `job ${wbJob}`;
     $("wb-ask").value = "";

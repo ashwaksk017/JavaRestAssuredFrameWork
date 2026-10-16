@@ -1735,6 +1735,19 @@ book it is held to; an edit there is put back and the run rejected.
 python tools/agent/loop.py discard --job workbench-<date>-<time>
 ```
 
+### Screenshots for Cursor
+
+Every box whose words go to Cursor takes a pasted image as well: Ctrl+V a
+screenshot into Refine with Cursor, the design notes, the manual tests'
+notes, Ask Cursor, the Migration tab's request or Change the workbench. Up
+to 4 images of 5 MB each (PNG, JPEG, GIF, WebP -- read from the bytes, not
+the name). They go with that request's first message to Cursor, as images
+it looks at, and nothing keeps them: the run reads them into memory when it
+starts and deletes their files at once (`paste.py`, under
+`.workbench/<job>/paste/` for those few seconds). A request that does not
+start removes them. A design asked with images is never answered from the
+kept replies, which never saw them.
+
 ### The workflow, stage by stage
 
 The strip at the top of the Automate Test Case tab is the job's workflow:

@@ -42,7 +42,7 @@ ROOT = jobs.ROOT
 diag = jobs.diag
 _PAGE_ERRORS = [0]               # how many the page has reported to this process
 UI_DIR = os.path.join(HERE, "ui")
-MAX_BODY = 8 * 1024 * 1024       # an OpenAPI document is pasted whole
+MAX_BODY = 16 * 1024 * 1024      # an OpenAPI document is pasted whole; or screenshots
 DOWNLOADS = {"design.md": "text/markdown", "design.json": "application/json",
              "test-cases.csv": "text/csv", "xray.csv": "text/csv",
              "code-review.md": "text/markdown", "manual-tests.md": "text/markdown",
@@ -321,7 +321,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"removed": jobs.remove_doc(
                     body.get("job", ""), str(body["name"]))})
             if u.path == "/api/manual":
-                return self._json(self._manual(body))
+                return self._json(self._pasted(body, lambda: self._manual(body)))
             if u.path == "/api/repo-checkout":
                 # Switches the working tree: clean tree, no job running, the
                 # branch named twice. Refusals come back as one line.
@@ -343,8 +343,9 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/migration-ask":
                 # A request from the Migration from ReadyAPI tab: written as the
                 # job's brief and plan, or added to the change already waiting.
-                return self._json(jobs.migration_ask(body.get("job", ""), body.get("scope", ""),
-                                                     body.get("suite", ""), body.get("text", "")))
+                return self._json(self._pasted(body, lambda: jobs.migration_ask(
+                    body.get("job", ""), body.get("scope", ""), body.get("suite", ""),
+                    body.get("text", ""))))
             if u.path == "/api/settings":
                 return self._json(jobs.settings_save(body.get("changes") or {}))
             if u.path == "/api/workflow":
@@ -356,7 +357,7 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/workbench-ask":
                 # A change to the workbench itself: its own job, and only
                 # while nothing else runs (jobs.workbench_ask).
-                return self._json(jobs.workbench_ask(body.get("text")))
+                return self._json(jobs.workbench_ask(body.get("text"), body.get("images")))
             if u.path == "/api/agent-followup":
                 # What the reviewer asks Cursor to change, kept with the job
                 # under a fixed name; the command reads it from there.
@@ -369,8 +370,8 @@ class Handler(BaseHTTPRequestHandler):
                 os.makedirs(out, exist_ok=True)
                 with io.open(os.path.join(out, "agent-followup.txt"), "w", encoding="utf-8") as fh:
                     fh.write(text)
-                return self._json(jobs.start(body.get("job", ""), "agent-followup",
-                                             {"--job": body.get("job", "")}))
+                return self._json(self._pasted(body, lambda: jobs.start(
+                    body.get("job", ""), "agent-followup", {"--job": body.get("job", "")})))
             if u.path == "/api/case-review":
                 # A person's decision on proposed cases: validated field by
                 # field in casereview.py, written only under the job.
@@ -397,7 +398,7 @@ class Handler(BaseHTTPRequestHandler):
                 # line: argv has a length limit and a story does not.
                 return self._json(self._intake(body))
             if u.path == "/api/design":
-                return self._json(self._design(body))
+                return self._json(self._pasted(body, lambda: self._design(body)))
             return self._json({"error": "no such route"}, 404)
         except PermissionError as e:
             return self._fail(e, 403)
@@ -473,6 +474,19 @@ class Handler(BaseHTTPRequestHandler):
         if body.get("whole_spec") is True:
             options["--whole-spec"] = True
         return jobs.start(job, "agent-design", options)
+
+    def _pasted(self, body: dict, start):
+        """Images pasted with a request to Cursor (paste.py): kept for the
+        run `start` begins, which takes them; removed when it does not
+        begin. Without images, whatever an earlier request left goes."""
+        out = jobs.job_dir(body.get("job", ""))  # validates the id
+        os.makedirs(out, exist_ok=True)
+        jobs.paste.save(out, body.get("images"))
+        try:
+            return start()
+        except BaseException:
+            jobs.paste.clear(out)
+            raise
 
     def _manual(self, body: dict) -> dict:
         """The notes go into the job directory under a fixed name, which is

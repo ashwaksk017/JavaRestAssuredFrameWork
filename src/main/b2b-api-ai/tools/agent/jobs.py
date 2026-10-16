@@ -735,6 +735,16 @@ def _workflow():
 workflow = _workflow()
 
 
+def _paste():
+    spec = importlib.util.spec_from_file_location("jobs_paste", os.path.join(HERE, "paste.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+paste = _paste()
+
+
 def workflow_status(job: str) -> dict:
     out = job_dir(job)
     sm = casereview._suitemap()
@@ -1097,7 +1107,7 @@ def workbench_job() -> dict:
     return {"job": new, "state": "none", "new": True, "latest": names[0] if names else ""}
 
 
-def workbench_ask(text: str) -> dict:
+def workbench_ask(text: str, images=None) -> dict:
     """What a person asks Cursor to change in the workbench. Refused while
     anything else runs. A change waiting for review is added to; else the
     request starts one in a new workbench job."""
@@ -1118,6 +1128,15 @@ def workbench_ask(text: str) -> dict:
         raise ValueError(f"a change to the workbench did not finish (job {job}): Discard it on the "
                          f"Commit and push tab first")
     os.makedirs(out, exist_ok=True)
+    paste.save(out, images)
+    try:
+        return _workbench_start(job, out, cur, text)
+    except BaseException:
+        paste.clear(out)                     # a request that did not start keeps nothing
+        raise
+
+
+def _workbench_start(job: str, out: str, cur: dict, text: str) -> dict:
     if cur["state"] in ("pending-review", "verify-failed"):
         with io.open(os.path.join(out, "agent-followup.txt"), "w", encoding="utf-8") as fh:
             fh.write(text)

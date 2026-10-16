@@ -345,3 +345,12 @@ button.linkish:hover, button.linkish:focus { text-decoration: underline; }
 /* The regression mapping's rules, one a row. */
 .sm-rule { gap: .4rem; }
 .sm-rule input { flex: 1 1 10rem; min-width: 0; }
+
+/* Pasted images, under a box whose words go to Cursor. */
+.paste-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 8px; }
+.paste-strip small { color: var(--dim); }
+.paste-thumb { position: relative; display: inline-block; }
+.paste-thumb img { height: 56px; max-width: 160px; object-fit: cover; border: 1px solid var(--line);
+                   border-radius: 4px; display: block; }
+.paste-thumb .x { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; padding: 0;
+                  border-radius: 50%; line-height: 16px; font-size: 13px; }

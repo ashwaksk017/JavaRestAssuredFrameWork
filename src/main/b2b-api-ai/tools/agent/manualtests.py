@@ -818,6 +818,8 @@ def generate(job: str, app: str = "", speed: str = "balanced", agent=None,
     Cursor in the tests."""
     root = root or ROOT
     job_dir = loop.intake.job_dir(job, root)
+    # Images pasted with the notes: read now, their files deleted now.
+    design.loop.cursor_call.attach(design.loop.paste.take(job_dir))
     if speed not in SPEEDS:
         raise Refused(f"unknown speed {speed!r}. Known: {', '.join(SPEEDS)}")
     max_cases = SPEEDS[speed]

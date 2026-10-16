@@ -1674,7 +1674,8 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
                 return JSON_ONLY
 
         key = cache_key(prompt, mode, asked_model)
-        hit = None if fresh else cache_get(out_dir, key)
+        # A kept reply never saw the images pasted with this request.
+        hit = None if (fresh or loop.cursor_call.attached()) else cache_get(out_dir, key)
         if hit:
             try:
                 read_reply(redact(hit["reply"], private)[0])
@@ -1971,6 +1972,8 @@ def main(argv=None) -> int:
             return 1
     try:
         out_dir = loop.intake.job_dir(a.job)
+        # Images pasted with the request: read now, their files deleted now.
+        loop.cursor_call.attach(loop.paste.take(out_dir))
         # No file named: what the page pasted for this job, if anything.
         # The server removes these when a box is left empty.
         given = {"swagger": a.swagger_file, "requirements": a.requirements_file,

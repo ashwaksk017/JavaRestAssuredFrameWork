@@ -135,6 +135,7 @@ suitemap = _load("loop_suitemap", os.path.join(HERE, "suitemap.py"))
 execution = _load("loop_execution", os.path.join(HERE, "execution.py"))
 patches = _load("loop_patches", os.path.join(HERE, "patches.py"))
 cursor_call = _load("loop_cursor_call", os.path.join(HERE, "cursor_call.py"))
+paste = _load("loop_paste", os.path.join(HERE, "paste.py"))
 mock = _load("loop_mock", os.path.join(HERE, "mock.py"))
 
 
@@ -3992,6 +3993,8 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     job_dir = intake.job_dir(args.job)
     os.makedirs(job_dir, exist_ok=True)
+    # Images pasted with the request: read now, their files deleted now.
+    cursor_call.attach(paste.take(job_dir))
     policy = load_policy()
     if args.command == "setup":
         return cmd_setup(job_dir, ROOT)
