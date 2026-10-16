@@ -169,18 +169,17 @@ DEFAULT_POLICY = {
     "scopes": {
         "workbench": {
             "label": "The workbench itself (tools/agent)",
-            "write_roots": ["tools/agent/"],
+            "write_roots": ["**"],
             "pushable": True,
             "compile": [],
             "checks": [["tools/agent/check_workbench.py"]],
         },
         "new-test": {
             "label": "A new hand-written test",
-            # All of src/ (the person asked for it: a run's error may be in a
-            # test or class outside tests/jira/) -- but never the converter's
-            # generated output, which the next convert overwrites. The
-            # manual CSVs inside the generated csv/ are this scope's again.
-            "write_roots": ["src/", "!src/main/java/com/hi/api/support/", "!src/main/java/com/hi/api/rest/clients/", "!src/test/java/com/hi/api/tests/imported/", "!src/test/java/com/hi/api/tests/classic/", "!src/main/resources/templates/", "!src/test/resources/csv/", "src/test/resources/csv/manual/", "Suites/jira/"],
+            # Anywhere (the person asked: nothing is off limits). What still
+            # holds is not a path: the credential files are put back, .git
+            # is put back, and a file git ignores is never pushed.
+            "write_roots": ["**"],
             "pushable": True,
             "compile": _MVN,
             "checks": [["tools/check_no_duplicate_methods.py"]],
@@ -197,6 +196,7 @@ DEFAULT_POLICY = {
                 "src/main/resources/templates/{suite}/",
                 "src/test/resources/csv/{suite}/",
                 "src/main/java/com/hi/api/rest/clients/{Suite}Client.java",
+                "**",                         # and the rest: nothing is off limits
             ],
             "pushable": False,
             "compile": _MVN,
@@ -206,6 +206,7 @@ DEFAULT_POLICY = {
         "converter": {
             "label": "The converter and the runtime under it",
             "write_roots": [
+                "**",                         # nothing is off limits
                 "tools/ra_converter/",
                 "tools/verify_all.py",
                 "src/main/java/com/hi/api/rest/utilities/",
@@ -423,6 +424,9 @@ def _norm(roots) -> list:
     for r in roots:
         r = r.replace("\\", "/")
         bang, r = ("!", r[1:]) if r.startswith("!") else ("", r)
+        if r == "**":                        # the whole repository
+            out.append(bang + r)
+            continue
         # A directory root ends in "/"; a single file is kept as it is.
         out.append(bang + (r if r.endswith("/") or "." in r.rsplit("/", 1)[-1] else r + "/"))
     return out
@@ -891,6 +895,12 @@ def in_roots(rel: str, roots) -> bool:
     for r in roots:
         out = r.startswith("!")
         path = r[1:] if out else r
+        if path == "**":                     # all of THIS project
+            # Not above it: the repository's top is three folders up, and
+            # holds other projects that are no job's here.
+            if best < 0 and not rel.startswith("../"):
+                best, allowed = 0, not out
+            continue
         if rel == path or (path.endswith("/") and rel.startswith(path)):
             if len(path) > best or (len(path) == best and out):   # a tie: out
                 best, allowed = len(path), not out
@@ -1824,6 +1834,8 @@ def not_yours(scope: dict) -> str:
     if scope.get("name") == "converter":
         extra = [".cursor/**", "AGENTS.md", "CURSOR.md"]
     elif scope.get("name") == "workbench":
+        if "**" in (scope.get("write_roots") or []):
+            return ""                        # nothing is off limits
         # Its own folder only; never the rule book it is held to.
         return "".join(f"\n  - {p}" for p in (
             "tools/ (anything outside tools/agent/)", "tools/agent/policy.json",
@@ -1982,9 +1994,10 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
     decided = bool(designed) and scope["name"] != "converter" and bool(
         casereview.reviewed(casereview.read(job_dir)["design"], design_cases_raw(job_dir)))
     brief_head, brief = brief_for_agent(job_dir, policy, decided)
-    roots = "\n".join((f"  - EXCEPT {r[1:]}**  (the converter writes it; never edit it)"
+    roots = "\n".join(("  - anywhere in this project folder" if r == "**" else
+                       f"  - EXCEPT {r[1:]}**  (the converter writes it; never edit it)"
                        if r.startswith("!") else f"  - {r}{'**' if r.endswith('/') else ''}")
-                      for r in scope["write_roots"])
+                      for r in scope["write_roots"] if not ("**" in scope["write_roots"] and r != "**"))
     gen = "\n".join(f"  - {r}**" for r in policy["generated_roots"]
                     if not in_roots(r, scope["write_roots"]))
     briefing = _SCOPE_BRIEFING.get(scope["name"], _SCOPE_BRIEFING["new-test"])
@@ -2002,8 +2015,15 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
         roots,
         "",
         "NEVER touch:",
-        gen + ("\n  (other than the paths listed above)" if scope["name"] == "converted" else "")
-        + not_yours(scope),
+        (gen + ("\n  (other than the paths listed above)" if scope["name"] == "converted" else "")
+         + not_yours(scope)).rstrip("\n")
+        + "".join(f"\n  - {p}  (credentials: put back after every run)"
+                  for p in policy.get("protected_files") or []),
+        ("Files the converter generates (src/main/java/com/hi/api/support/, rest/clients/, "
+         "tests/imported/, the generated templates and CSVs) may be changed, but git ignores "
+         "them: they stay on this machine, a push never carries them, and the next convert "
+         "overwrites them. Prefer a fix that lives in a committed file."
+         if "**" in scope["write_roots"] else ""),
         "",
         ("AGENTS.md, CURSOR.md and .cursor/rules are about the converter; they do not apply "
          "to this job. Do not run the server, a browser, the tests or any script: this tool "
@@ -2012,7 +2032,8 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
          "AGENTS.md, CURSOR.md, the READMEs and .cursor/rules are written for people and "
          "agents working ON the converter and this tool; they do not apply to this job. Do "
          "not follow their instructions to run tools/verify_all.py or any script under "
-         "tools/, and do not edit their files: a change there fails the whole job."),
+         "tools/" + ("." if "**" in scope["write_roots"] else
+                     ", and do not edit their files: a change there fails the whole job.")),
         "",
         "Do not delete any file. Do not run git commit, git push, git "
         "checkout or git reset -- this tool commits, after a person has "
@@ -2918,7 +2939,27 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         # theirs, and would be swallowed into the change and lost on Discard.
         mine = set(((prior or {}).get("files") or {}).get("created") or []) | set(
             ((prior or {}).get("files") or {}).get("modified") or [])
-        stale = [p for p in dirty_paths(root) if in_roots(p, roots) and p not in mine]
+        now_dirty = dirty_paths(root)
+        stale = [p for p in now_dirty if in_roots(p, roots) and p not in mine
+                 and p not in (policy.get("protected_files") or [])]
+        # Uncommitted work no longer stops a follow-up (the person asked). A
+        # file of theirs made or edited since the first run joins the
+        # baseline AS IT IS NOW -- so it is in the change only if Cursor
+        # edits it -- and is backed up, so Discard puts their version back.
+        theirs = {rel: now_dirty[rel] for rel in stale if before.get(rel) != now_dirty[rel]}
+        if theirs:
+            before.update(theirs)
+            # Added to the first run's copies -- backup() would start the
+            # folder over, and Discard would lose what the first run kept.
+            for rel, h in theirs.items():
+                src = _lp(os.path.join(root, rel))
+                if h is not None and os.path.isfile(src):
+                    dst = _lp(os.path.join(job_dir, "pre", _bk(rel)))
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    shutil.copy2(src, dst)
+            pre["before"] = before
+            with io.open(os.path.join(job_dir, "pre-state.json"), "w", encoding="utf-8") as fh:
+                json.dump(pre, fh)
         # 2. The first run's accepted copy of the generated tree was pruned
         # to the files it changed. A follow-up may touch another generated
         # file in scope; without a copy, Discard could only remove it.
@@ -2963,11 +3004,13 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                              f"on the Commit and push tab (job {job})")
             else:
                 lines.append(f"{p}  -- not from a workbench job: commit or remove it")
-        say("FAIL there are uncommitted changes inside the paths the agent "
-            "writes to. Commit or remove them first -- otherwise its work "
-            "and yours could not be told apart at review:\n  "
-            + "\n  ".join(lines))
-        return 1
+        # Not a block (the person asked): Cursor's work is told from yours by
+        # content -- a file it does not change is not in its change -- and
+        # every one of these is backed up first, so discard puts yours back.
+        say(f"WARN {len(stale)} uncommitted file(s) in the paths the agent writes to. They are "
+            f"not part of its change unless it edits them; if it does, the change carries your "
+            f"edit too, and Discard puts your version back:\n  " + "\n  ".join(lines))
+        stale = []
     backup_dir = os.path.join(job_dir, "pre")
     gen_backup = os.path.join(job_dir, "pre-generated")
     if not followup:
@@ -3136,7 +3179,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                 shown = pattern_example(root, policy, scope)[1]
                 if shown:
                     clog.write("shown as the example of how a test is written: " + ", ".join(shown))
-        clog.block("prompt", prompt, cap=6000)
+        clog.block("prompt", prompt, cap=12000)
         started = time.time()
         try:
             answer = call(prompt)
@@ -3622,6 +3665,14 @@ def _discard(job_dir: str, root: str, review: dict, policy: dict = None) -> int:
             for note in restore_generated(root, [rel], gen_backup):
                 say(f" .. {note}")
             continue
+        # A file that was somebody's uncommitted work before the run goes
+        # back to THEIR version (copied before the run), not to the last
+        # commit: uncommitted work no longer stops a run, so this happens.
+        saved = _lp(os.path.join(job_dir, "pre", _bk(rel)))
+        if os.path.isfile(saved):
+            shutil.copy2(saved, _lp(os.path.join(root, rel)))
+            say(f" .. restored {rel} (your uncommitted version from before the run)")
+            continue
         rc, out = git(root, "checkout", "HEAD", "--", rel)
         say(f" .. restored {rel}" if rc == 0
             else f" .. COULD NOT restore {rel}: {out.strip()[:120]}")
@@ -3831,6 +3882,19 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
     except OSError:
         pass
     env = {"GIT_INDEX_FILE": index}
+    # A file git ignores (the converter's output, a local setting) stays on
+    # this machine: the repository is public, and that output can hold an
+    # application's API details.
+    rc_ig, ignored_out = git(root, "check-ignore", "--no-index", "--", *paths)
+    ignored = {l.strip().replace("\\", "/") for l in ignored_out.splitlines() if l.strip()} \
+        if rc_ig == 0 else set()
+    if ignored:
+        say(f" .. {len(ignored)} changed file(s) git ignores stay on this machine and are not "
+            f"pushed: " + ", ".join(sorted(ignored)[:10]))
+        paths = [p for p in paths if p.replace("\\", "/") not in ignored]
+        if not paths:
+            say("FAIL every file of this change is one git ignores: there is nothing to push.")
+            return 1
     steps = (("read-tree", upstream), ("add", "--", *paths))
     for args in steps:
         rc, out = git(root, *args, env=env)

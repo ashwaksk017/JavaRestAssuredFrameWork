@@ -12,17 +12,9 @@
  ],
  "scopes": {
   "new-test": {
-   "label": "A new hand-written test (anything under src/ but the converter's output)",
+   "label": "A new hand-written test (anywhere in the repository)",
    "write_roots": [
-    "src/",
-    "!src/main/java/com/hi/api/support/",
-    "!src/main/java/com/hi/api/rest/clients/",
-    "!src/test/java/com/hi/api/tests/imported/",
-    "!src/test/java/com/hi/api/tests/classic/",
-    "!src/main/resources/templates/",
-    "!src/test/resources/csv/",
-    "src/test/resources/csv/manual/",
-    "Suites/jira/"
+    "**"
    ],
    "pushable": true,
    "compile": [
@@ -46,7 +38,8 @@
     "src/test/java/com/hi/api/tests/imported/{suite}/",
     "src/main/resources/templates/{suite}/",
     "src/test/resources/csv/{suite}/",
-    "src/main/java/com/hi/api/rest/clients/{Suite}Client.java"
+    "src/main/java/com/hi/api/rest/clients/{Suite}Client.java",
+    "**"
    ],
    "pushable": false,
    "compile": [
@@ -65,21 +58,7 @@
   "converter": {
    "label": "The converter and the runtime under it",
    "write_roots": [
-    "tools/ra_converter/",
-    "tools/verify_all.py",
-    "src/main/java/com/hi/api/rest/utilities/",
-    "src/main/java/com/hi/api/rest/ApiRoutes.java",
-    "src/main/java/com/hi/api/retry/",
-    "src/main/java/com/hi/api/config/",
-    "src/main/java/com/hi/api/data/",
-    "src/main/java/com/hi/api/db/",
-    "src/main/java/com/hi/api/auth/",
-    "src/main/java/com/hi/api/context/",
-    "src/main/java/com/hi/api/domain/",
-    "src/test/java/com/hi/api/tests/ImportedTest.java",
-    "src/test/java/com/hi/api/tests/framework/",
-    "src/test/resources/testng-guards.xml",
-    "CreateTestCase.md"
+    "**"
    ],
    "pushable": true,
    "compile": [
@@ -95,7 +74,7 @@
   "workbench": {
    "label": "The workbench itself: this page, its server and their tests (tools/agent)",
    "write_roots": [
-    "tools/agent/"
+    "**"
    ],
    "pushable": true,
    "compile": [],
@@ -108,10 +87,7 @@
  },
  "protected_files": [
   "src/main/resources/program_configuration.json",
-  "tools/ra_converter/cursor_agent.json",
-  "tools/agent/policy.json",
-  "tools/agent/mock.json",
-  "tools/agent/check_workbench.py"
+  "tools/ra_converter/cursor_agent.json"
  ],
  "repair_attempts": "until-fixed",
  "repair_max_attempts": 8,

@@ -1049,9 +1049,11 @@ Run Cursor  ->  guardrails  ->  verify  ->  PENDING REVIEW
 
 #### Choose what Cursor may change
 
+**Uncommitted work never blocks a run.** It is listed as a warning, each file with whose it is (another job's change waiting for review, or not from a workbench job). Cursor's change is told from yours by content: a file it does not edit is not part of its change. Every one of your files is copied before the run (in a follow-up too), so Discard puts YOUR version back -- not the last commit. If Cursor does edit one of your files, the change -- and a push -- carries your edit too.
+
 | scope | Cursor may write | verify | Approve does |
 |---|---|---|---|
-| **A new hand-written test** | all of `src/` **except** the converter's output (`support/`, `rest/clients/`, `tests/imported/`, `tests/classic/`, `src/main/resources/templates/`, `src/test/resources/csv/` -- but `csv/manual/` is in); and `Suites/jira/`. A root starting `!` takes a path out; the most specific root decides | compile + duplicate-method check | commits to branch `agent/<job>` and pushes it |
+| **A new hand-written test** | anywhere in this project folder (`**`): nothing is off limits. What still holds is not a path: the credential files (`program_configuration.json`, `cursor_agent.json`) and `.git` are put back after every run, and a file git ignores (the converter's output) can be changed but is never pushed. A scope may still be given limits: a root starting `!` takes a path out, and the most specific root decides | compile + duplicate-method check | commits to branch `agent/<job>` and pushes it |
 | **Converted Java of one suite** | that suite's `support/<suite>/`, `tests/imported/<suite>/`, `templates/<suite>/`, `csv/<suite>/`, `<Suite>Client.java` | compile + duplicate-method check | keeps the files on this machine; stores the change so it survives a convert |
 | **The converter itself** | `tools/ra_converter/`, the hand-maintained runtime (`rest/utilities/`, `retry/`, `config/`, `data/`, `db/`), framework tests | compile + the whole gate, before and after | commits to branch `agent/<job>` and pushes it |
 

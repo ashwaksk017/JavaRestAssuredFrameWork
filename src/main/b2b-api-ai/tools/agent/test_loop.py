@@ -81,6 +81,12 @@ class Repo(unittest.TestCase):
         write(self.root, ".workbench/job1/plan.md", "# plan\ncreate POST /x\n")
         write(self.root, ".workbench/job1/brief.md", "# brief\nPOST /x expect 201\n")
         self.policy = loop.load_policy(os.path.join(self.root, "no-policy.json"))
+        # The guards of a scope WITH limits are still the code's to keep: these
+        # tests hold a new-test scope of all of src/ but the converter's output.
+        self.policy["scopes"]["new-test"]["write_roots"] = loop._norm(["src/", "!src/main/java/com/hi/api/support/", "!src/main/java/com/hi/api/rest/clients/", "!src/test/java/com/hi/api/tests/imported/", "!src/test/java/com/hi/api/tests/classic/", "!src/main/resources/templates/", "!src/test/resources/csv/", "src/test/resources/csv/manual/", "Suites/jira/"])
+        for name in ("converted", "converter"):           # their limits, as they were
+            self.policy["scopes"][name]["write_roots"] = [
+                r for r in self.policy["scopes"][name]["write_roots"] if r != "**"]
 
     def generate(self, agent, verifier=OK, scope="new-test", suite=""):
         return loop.cmd_generate(self.job, self.root, self.policy, scope, suite,
@@ -262,17 +268,24 @@ class InsideThePaths(Repo):
                            ("converter", "src/main/java/com/hi/api/domain/X.java"),
                            ("converter", "src/test/java/com/hi/api/tests/ImportedTest.java")):
             self.assertTrue(loop.in_roots(rel, scopes[scope]["write_roots"]), f"{scope}: {rel}")
-        roots = scopes["new-test"]["write_roots"]
-        for rel in ("src/test/java/com/hi/api/tests/manual/GoalShopSinglePropTest.java",
-                    "src/main/java/com/hi/api/rest/utilities/RestUtilities.java",
-                    "src/test/java/com/hi/api/tests/BaseApiTest.java"):
-            self.assertTrue(loop.in_roots(rel, roots), f"seen live: a fix there was refused: {rel}")
-        for rel in ("src/main/java/com/hi/api/support/goal/GoalSteps.java",
-                    "src/test/java/com/hi/api/tests/imported/goal/GoalTest.java",
-                    "src/test/resources/csv/goal/rows.csv", "src/main/resources/templates/goal/a.json",
-                    "tools/agent/server.py", "pom.xml"):
-            self.assertFalse(loop.in_roots(rel, roots), f"the converter's output, or not src/: {rel}")
+        # Nothing is off limits (the person asked), in every scope.
+        for name in ("new-test", "workbench", "converter"):
+            for rel in ("src/test/java/com/hi/api/tests/manual/GoalShopSinglePropTest.java",
+                        "src/main/java/com/hi/api/support/goal/GoalSteps.java",
+                        "tools/agent/server.py", "pom.xml", ".cursor/skills/x/SKILL.md"):
+                self.assertTrue(loop.in_roots(rel, scopes[name]["write_roots"]), f"{name}: {rel}")
+        self.assertEqual(loop.load_policy()["protected_files"],
+                         ["src/main/resources/program_configuration.json",
+                          "tools/ra_converter/cursor_agent.json"], "the credentials stay put back")
+        # The rule itself, for a scope with limits:
+        roots = ["src/", "!src/main/java/com/hi/api/support/", "!src/main/java/com/hi/api/rest/clients/", "!src/test/java/com/hi/api/tests/imported/", "!src/test/java/com/hi/api/tests/classic/", "!src/main/resources/templates/", "!src/test/resources/csv/", "src/test/resources/csv/manual/", "Suites/jira/"]
+        self.assertTrue(loop.in_roots("src/test/resources/csv/manual/T/m.csv", roots))
+        self.assertFalse(loop.in_roots("src/test/resources/csv/goal/rows.csv", roots))
+        self.assertFalse(loop.in_roots("pom.xml", roots))
         self.assertFalse(loop.in_roots("src/x", ["src/", "!src/"]), "the same path both ways: out")
+        self.assertTrue(loop.in_roots("anything/at/all.txt", ["**"]))
+        self.assertFalse(loop.in_roots("../../../TOP.md", ["**"]), "not above the project folder")
+        self.assertFalse(loop.in_roots("tools/x.py", ["**", "!tools/"]), "a more specific root wins")
         briefing = loop._SCOPE_BRIEFING
         self.assertIn("do not run tools/jira/run.py", briefing["new-test"])
         self.assertIn(".cursor/ is not this job's to change", briefing["converted"])
@@ -780,15 +793,32 @@ class AskingForMore(Repo):
         self.assertIn("nothing was asked", out.getvalue())
         self.assertEqual(self.state()["state"], "pending-review")
 
-    def test_a_file_the_reviewer_made_in_the_roots_is_theirs_and_stops_the_follow_up(self):
+    def test_a_follow_up_that_edits_the_reviewers_file_is_discarded_back_to_theirs(self):
+        self.first_run()
+        write(self.root, JIRA + "Mine.java", "class Mine { /* the reviewer's */ }\n")
+
+        def agent(_prompt):
+            write(self.root, JIRA + "Mine.java", "class Mine { /* Cursor's */ }\n")
+            return {"result": "ok"}
+        with redirect_stdout(io.StringIO()):
+            self.ask("change Mine too", agent)
+        self.assertIn(JIRA + "Mine.java", self.state()["files"]["modified"],
+                      "edited by Cursor: now in the change")
+        with redirect_stdout(io.StringIO()):
+            loop.cmd_discard(self.job, self.root, self.policy)
+        with io.open(os.path.join(self.root, JIRA, "Mine.java"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "class Mine { /* the reviewer's */ }\n", "Discard: theirs again")
+
+    def test_a_file_the_reviewer_made_in_the_roots_is_theirs_and_not_swept_in(self):
         self.first_run()
         write(self.root, JIRA + "Mine.java", "class Mine {}\n")
         out = io.StringIO()
         with redirect_stdout(out):
-            rc = self.ask("tidy", lambda p: {"result": "ok"})
-        self.assertEqual(rc, 1)
-        self.assertIn("uncommitted changes inside the paths", out.getvalue())
+            self.ask("tidy", lambda p: {"result": "ok"})
+        self.assertIn("uncommitted file(s) in the paths", out.getvalue())
         self.assertIn("Mine.java", out.getvalue())
+        files = self.state()["files"]
+        self.assertNotIn(JIRA + "Mine.java", files["created"] + files["modified"])
         self.assertTrue(os.path.isfile(os.path.join(self.root, JIRA, "Mine.java")))
         self.assertEqual(self.state()["state"], "pending-review")
 
@@ -969,11 +999,23 @@ class Preconditions(Repo):
         self.assertEqual(self.generate(lambda p: called.append(1) or {"result": ""}), 1)
         self.assertEqual(called, [])
 
-    def test_uncommitted_work_inside_the_write_paths_blocks_the_run(self):
+    def test_uncommitted_work_inside_the_write_paths_warns_and_is_not_swept_in(self):
+        """The person asked: uncommitted work never blocks a run. It is said,
+        and kept out of the agent's change (told apart by content)."""
         write(self.root, JIRA + "Mine.java", "class Mine {}\n")
-        called = []
-        self.assertEqual(self.generate(lambda p: called.append(1) or {"result": ""}), 1)
-        self.assertEqual(called, [], "the agent must not be called")
+
+        def agent(_prompt):
+            write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
+            return {"result": "ok"}
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(self.generate(agent), 0)
+        self.assertIn("WARN 1 uncommitted file(s)", out.getvalue())
+        self.assertIn(JIRA + "Mine.java  -- not from a workbench job", out.getvalue())
+        files = self.state()["files"]
+        self.assertIn(JIRA + "NewTest.java", files["created"])
+        self.assertNotIn(JIRA + "Mine.java", files["created"] + files["modified"])
+        self.assertTrue(os.path.isfile(os.path.join(self.root, JIRA, "Mine.java")))
 
     def test_a_pending_review_blocks_a_second_generate(self):
         def agent(_prompt):
@@ -1467,6 +1509,19 @@ class Push(Repo):
         self.assertEqual(sh(self.root, "rev-parse", "--abbrev-ref", "HEAD"), "main",
                          "the checkout returns to where it was")
 
+    def test_a_file_git_ignores_is_never_pushed(self):
+        """Nothing is off limits to write -- but the repository is public:
+        a file git ignores stays on this machine."""
+        self.pending()
+        write(self.root, ".gitignore", io.open(os.path.join(self.root, ".gitignore")).read()
+              + JIRA + "NewTest.java\n")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(self.push(), 0, out.getvalue())
+        self.assertIn("stay on this machine and are not pushed", out.getvalue())
+        files = sh(self.remote, "show", "--name-only", "--format=", "agent/job1")
+        self.assertNotIn(JIRA + "NewTest.java", files)
+
     def run_tests(self, xml):
         def runner(args):
             self.assertIn("-Denv=stg", args)
@@ -1531,9 +1586,23 @@ class Push(Repo):
             self.assertEqual(self.push(), 0)
         self.assertEqual(self.state()["branch"], "feature_ABC-42_job1")
 
-    def test_a_change_waiting_for_review_is_named_when_it_blocks_the_next_job(self):
+    def test_discard_puts_back_the_persons_uncommitted_edit_not_the_last_commit(self):
+        write(self.root, JIRA + "ExistingTest.java", "class ExistingTest { /* mine, uncommitted */ }\n")
+
+        def agent(_prompt):
+            write(self.root, JIRA + "ExistingTest.java", "class ExistingTest { /* Cursor's */ }\n")
+            return {"result": "ok"}
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(loop.cmd_generate(self.job, self.root, self.policy, "new-test", "",
+                                               agent=agent, verifier=OK), 0)
+            loop.cmd_discard(self.job, self.root, self.policy)
+        with io.open(os.path.join(self.root, JIRA, "ExistingTest.java"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "class ExistingTest { /* mine, uncommitted */ }\n")
+
+    def test_a_change_waiting_for_review_is_named_when_the_next_job_runs(self):
         """Seen live: job 2's Automate refused for job 1's test, still
-        waiting for review -- and only the path was said."""
+        waiting for review -- and only the path was said. Now it runs, and
+        each file is named with whose it is."""
         self.pending()
         job2 = os.path.join(self.root, ".workbench", "job2")
         os.makedirs(job2)
@@ -1544,7 +1613,7 @@ class Push(Repo):
         with redirect_stdout(out):
             rc = loop.cmd_generate(job2, self.root, self.policy, "new-test", "",
                                    agent=lambda p: called.append(1) or {"result": ""}, verifier=OK)
-        self.assertEqual((rc, called), (1, []))
+        self.assertEqual(called, [1], "uncommitted work does not block the run")
         said = out.getvalue()
         self.assertIn(JIRA + "NewTest.java  -- job job1's change (pending-review): Approve & push or "
                       "Discard it on the Commit and push tab (job job1)", said)
@@ -1570,12 +1639,16 @@ class Push(Repo):
         created = loop.read_review(job2)["files"]["created"]
         self.assertIn(JIRA + "OtherTest.java", created)
         self.assertNotIn(JIRA + "NewTest.java", created, "job 1's file is not part of job 2's change")
-        # ...but once edited by hand, it is somebody's work again: refused.
+        # ...and once edited by hand it is somebody's work again: said, not
+        # swept into job 2's change.
         loop.cmd_discard(job2, self.root, self.policy)
         write(self.root, JIRA + "NewTest.java", "class NewTest { int mine; }\n")
         with redirect_stdout(io.StringIO()) as out2:
             self.assertEqual(loop.cmd_generate(job2, self.root, self.policy, "new-test", "", agent=agent,
-                                               verifier=OK), 1)
+                                               verifier=OK), 0)
+        self.assertIn("WARN", out2.getvalue())
+        self.assertNotIn(JIRA + "NewTest.java", loop.read_review(job2)["files"]["created"]
+                         + loop.read_review(job2)["files"]["modified"])
 
     def test_the_branch_is_named_after_the_story(self):
         self.policy["branch_prefix"] = "feature_"
@@ -3279,12 +3352,18 @@ class WhereThingsAre(Repo):
         self.assertLess(len(block), loop.SKILL_CAP + 700)
 
     def test_the_converter_scope_may_touch_tools_but_not_the_agent_instructions(self):
-        scope = dict(loop.DEFAULT_POLICY["scopes"]["converter"], name="converter")
-        text = loop.not_yours(scope)
+        # Nothing is off limits by default (the person asked) ...
+        for name in ("converter", "new-test", "workbench"):
+            self.assertEqual(loop.not_yours(dict(loop.DEFAULT_POLICY["scopes"][name], name=name)), "")
+        # ... and a scope given limits still names what it may not touch.
+        conv = dict(loop.DEFAULT_POLICY["scopes"]["converter"], name="converter")
+        conv["write_roots"] = [r for r in conv["write_roots"] if r != "**"]
+        text = loop.not_yours(conv)
         self.assertNotIn("tools/**", text)
         self.assertIn("  - .cursor/**", text)
         self.assertIn("  - AGENTS.md", text)
-        new_test = dict(loop.DEFAULT_POLICY["scopes"]["new-test"], name="new-test")
+        new_test = dict(loop.DEFAULT_POLICY["scopes"]["new-test"], name="new-test",
+                        write_roots=["src/", "!src/main/java/com/hi/api/support/", "!src/main/java/com/hi/api/rest/clients/", "!src/test/java/com/hi/api/tests/imported/", "!src/test/java/com/hi/api/tests/classic/", "!src/main/resources/templates/", "!src/test/resources/csv/", "src/test/resources/csv/manual/", "Suites/jira/"])
         self.assertIn("  - tools/**", loop.not_yours(new_test))
         self.assertIn("  - pom.xml", loop.not_yours(new_test))
 
