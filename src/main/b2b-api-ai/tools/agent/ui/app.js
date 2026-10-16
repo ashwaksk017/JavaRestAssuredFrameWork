@@ -2214,16 +2214,13 @@ async function refreshReview() {
   const newTests = (review.scope || "new-test") === "new-test";
   const ran = review.execution || null;
   $("agent-run").disabled = !(state === "pending-review" && newTests && !review.mock);
-  // Publishing is the last step: after the push.
-  $("agent-xray").disabled = !(ran && state === "pushed");
-  $("agent-xray").title = state === "pushed" ? "" : "push the change first (Approve & push)";
+  // Any run is published, passed or not; the push still needs a green one.
+  $("agent-xray").disabled = !ran;
+  $("agent-xray").title = ran ? "" : "run the tests first: there is no run to publish";
   artifactJson(shown, "xray-publish.json").then((r) => {
     const box = $("agent-xray-result");
     box.replaceChildren();
-    if (r && shown === job()) box.append(banner(r.ok ? "ok" : "bad",
-      `Xray: Test Execution ${r.execution || "(none)"}${r.mock ? " (mock)" : ""}, ` +
-      `${Object.keys(r.published || {}).length} test(s) published` +
-      (r.regression && r.regression.error ? `; ${r.regression.error}` : "")));
+    if (r && shown === job()) box.append(banner(r.ok ? "ok" : "bad", xrayPublished(r)));
   });
   if (state === "pending-review" && newTests && !review.mock && (!ran || !ran.ok)) {
     $("agent-push").disabled = true;
@@ -2690,22 +2687,40 @@ $("agent-run").onclick = () => {
 };
 // The last run, to Xray: a new Test Execution, and the regression tests to
 // the regression Test Set / Plan named on the Settings tab.
+// What a publish did, in one line: where the results went, and what is left.
+function xrayPublished(r) {
+  const reg = r.regression || {};
+  return `Xray: Test Execution ${r.execution || "(none)"}` +
+    (r.existing ? " (an existing one: its results updated)" : "") +
+    (r.mock ? " (mock: nothing was contacted)" : "") +
+    `, ${Object.keys(r.published || {}).length} test(s) published` +
+    (r.run_ok === false ? " from a run that did not pass" : "") +
+    ((r.not_published || []).length ? `, ${r.not_published.length} without an Xray key` : "") +
+    (reg.added && reg.added.length ? `; ${reg.added.length} regression test(s) added to ${reg.key}` : "") +
+    (reg.error ? `; ${reg.error}` : "") + (reg.note ? `; ${reg.note}` : "") +
+    (r.warning ? `; ${r.warning}` : "");
+}
 $("agent-xray").onclick = async () => {
   const j = job();
-  if (!confirm(`Publish the last run of job "${j}" to Xray? It creates a new Test Execution, and adds ` +
-               "the regression tests to the regression Test Set or Test Plan (Settings tab).")) return;
+  const exec = $("agent-xray-exec").value.trim().toUpperCase();
+  if (exec && !/^[A-Z][A-Z0-9_]{0,19}-[0-9]{1,9}$/.test(exec)) {
+    setState($("agent-state"), "bad", `${exec} is not a Jira issue key (like ABC-123)`);
+    return;
+  }
+  if (!confirm(`Publish the last run of job "${j}" to Xray, passed or not? ` +
+               (exec ? `Its results go into the existing Test Execution ${exec}. `
+                     : "It creates a new Test Execution. ") +
+               "Once the change is pushed, the regression tests are added to the regression Test Set or " +
+               "Test Plan (Settings tab).")) return;
   try {
-    await post("/api/start", { job: j, runnable: "xray-publish", options: { "--job": j } });
+    const options = { "--job": j };
+    if (exec) options["--execution"] = exec;
+    await post("/api/start", { job: j, runnable: "xray-publish", options });
     follow("xray-publish", $("agent-log"), $("agent-state"), async () => {
       const r = await artifactJson(j, "xray-publish.json");
       const box = $("agent-xray-result");
       box.replaceChildren();
-      if (r) box.append(banner(r.ok ? "ok" : "bad",
-        `Xray: Test Execution ${r.execution || "(none)"}${r.mock ? " (mock: nothing was contacted)" : ""}, ` +
-        `${Object.keys(r.published || {}).length} test(s) published` +
-        ((r.not_published || []).length ? `, ${r.not_published.length} without an Xray key` : "") +
-        (r.regression && r.regression.added && r.regression.added.length
-          ? `; ${r.regression.added.length} regression test(s) added to ${r.regression.key}` : "")));
+      if (r) box.append(banner(r.ok ? "ok" : "bad", xrayPublished(r)));
     }, j);
   } catch (e) { setState($("agent-state"), "bad", e.message); }
 };

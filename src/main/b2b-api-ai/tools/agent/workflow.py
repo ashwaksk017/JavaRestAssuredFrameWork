@@ -15,7 +15,8 @@ xray-publish.json). The two decisions are kept in workflow.json:
 
 The gates (jobs.start): Create in Xray (design) and Automate need the cases
 finalized; Run the tests needs the regression confirmed; Publish to Xray
-needs the change pushed. Approve & push needs a green run (loop.py).
+needs a run (passed or not; the regression tests are added once the
+change is pushed). Approve & push needs a green run (loop.py).
 """
 from __future__ import annotations
 

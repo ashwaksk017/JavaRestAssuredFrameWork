@@ -78,11 +78,12 @@ class Regression(Base):
         self.write("review.json", {"state": "pending-review", "change": "c2"})
         self.assertIn("earlier change", jobs.workflow_gate("j1", "agent-run-tests", {}))
 
-    def test_publish_waits_for_the_push(self):
+    def test_publish_waits_for_a_run_not_for_the_push(self):
         self.write("review.json", {"state": "pending-review"})
-        self.assertIn("push the change first", jobs.workflow_gate("j1", "xray-publish", {}))
-        self.write("review.json", {"state": "pushed"})
-        self.assertEqual(jobs.workflow_gate("j1", "xray-publish", {}), "")
+        self.assertIn("run the tests first", jobs.workflow_gate("j1", "xray-publish", {}))
+        self.write("execution.json", {"ok": False, "at": "2026-10-16T10:00:00Z"})
+        self.assertEqual(jobs.workflow_gate("j1", "xray-publish", {}), "",
+                         "a failed run of a change not pushed is published too")
 
 
 class Refining(Base):

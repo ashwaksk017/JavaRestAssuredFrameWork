@@ -1764,7 +1764,7 @@ Each stage is a link to where it is done, and the server holds the gates
 | Regression | **Confirm the regression cases** (Commit and push tab): the automated cases in the `regression` group, for the change as it is now -- a follow-up or another Automate needs it again. Publish adds exactly these to the regression Test Set / Plan. | Run the tests |
 | Run on stg | **Run the tests**, on the environment of the Settings tab: every test passed (a row switched off in its sheet aside; an attempt retried to a pass is not a skip). | Approve & push -- for a run on that environment, of exactly these files |
 | Push | **Approve & push** to `feature_<story key>` (`feature_<job>` without one; `feature_<key>_<job>` when the story's branch exists already). | Publish to Xray |
-| Publish | **Publish to Xray**: a new Test Execution with the run's results (once a run: publishing the same run again is refused); the confirmed regression cases added to the regression Test Set / Plan (Settings tab). If adding them fails, the execution is still on record. | -- |
+| Publish | **Publish to Xray**: any run, passed or not -- a failure is a result Xray should hold too (the push still needs a green run; publishing does not). A new Test Execution with the run's results (publishing the same run again as a new one is refused), or, with a key in the box beside the button, the results put into that **existing** Test Execution (its summary, description and plan left as they are; it must be a Test Execution). Once the change is pushed, the confirmed regression cases are added to the regression Test Set / Plan (Settings tab); before that they are not -- publish again after the push. If adding them fails, the execution is still on record. | -- |
 
 ### Settings
 

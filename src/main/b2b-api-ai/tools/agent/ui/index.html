@@ -425,7 +425,9 @@ Expect 201.'></textarea>
       <button id="wf-regression" title="confirm which automated cases are regression cases; the tests run only after it">Confirm the regression cases</button>
       <button id="agent-run" title="run this change's tests against stg; Approve &amp; push opens only when they all pass">Run the tests (stg)</button>
       <button id="agent-push" class="go" disabled>Approve</button>
-      <button id="agent-xray" disabled title="the last run's results to a new Xray Test Execution, and the regression tests to the regression Test Set or Plan (Settings tab)">Publish to Xray</button>
+      <button id="agent-xray" disabled title="the last run's results, passed or not, to Xray; and, once pushed, the regression tests to the regression Test Set or Plan (Settings tab)">Publish to Xray</button>
+      <input id="agent-xray-exec" size="12" spellcheck="false" autocomplete="off" aria-label="existing Test Execution key"
+        placeholder="into Test Execution (optional)" title="empty: a new Test Execution. A key (ABC-123): the results go into that existing Test Execution">
       <button id="agent-discard" disabled>Discard</button>
       <button id="agent-dismiss" disabled title="put the last outcome away; nothing in the working tree changes">Dismiss</button>
       <button id="agent-review" disabled>Review the change</button>

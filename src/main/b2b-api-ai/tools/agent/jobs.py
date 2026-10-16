@@ -301,7 +301,7 @@ RUNNABLES = {
     "xray-publish": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "xraypublish.py")],
         "label": "Publish the last run's results to Xray, and the regression tests",
-        "options": {"--job": "text"},
+        "options": {"--job": "text", "--execution": "text"},
     },
     # The change's tests, run against an environment; what came of it is
     # what Approve & push is gated on.
@@ -830,9 +830,10 @@ def workflow_gate(job: str, runnable: str, options: dict) -> str:
         ok, why = workflow.regression_confirmed(out)
         return "" if ok else why
     if runnable == "xray-publish":
-        state = str(_read_json(os.path.join(out, "review.json")).get("state") or "none")
-        if state != "pushed":
-            return "push the change first (Approve & push): results are published after it"
+        # Any run, passed or not: a failure is a result Xray should hold too.
+        # (The push needs a green run; publishing does not.)
+        if not os.path.isfile(os.path.join(out, "execution.json")):
+            return "run the tests first (Run the tests): there is no run to publish"
     return ""
 
 

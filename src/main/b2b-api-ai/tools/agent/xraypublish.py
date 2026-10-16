@@ -7,15 +7,21 @@ Reads the job's last run (execution.json, written by `loop.py run`) and the
 Xray settings (the Settings tab: xray.baseUrl, .token, .projectKey,
 .regressionKey in program_configuration.json).
 
+- Any run, passed or not, once it has run: a failure is a result Xray
+  should hold too. (The push still needs a green run; publishing does not.)
 - One NEW Test Execution per publish, in xray.projectKey, labelled with
   the run's environment: POST <baseUrl>/rest/raven/1.0/import/execution.
+  Or, with --execution KEY, the results go into that EXISTING Test
+  Execution (`testExecutionKey`); its summary and description are left as
+  they are.
 - Each result's Xray key: its data row's `jira_xray_id`, else
   @XrayTest("KEY") on its method. A key run for several rows gets the worst
   of them (FAIL over TODO over PASS). A result with no key is listed as not
   published -- never guessed.
 - The tests in the `regression` group are added to xray.regressionKey: a
   Test Set or a Test Plan, whichever Jira says it is; with a Test Plan the
-  execution is put in it too.
+  execution is put in it too. Only once the change is pushed: tests that
+  are not on a branch yet are not regression tests yet.
 - Mock Jira (tools/agent/mock.json): what would be sent is recorded and
   nothing is contacted.
 
@@ -128,9 +134,21 @@ def _xray_settings(root: str) -> dict:
             "regression": str(xray.get("regressionKey") or "").strip()}
 
 
-def run(job: str, root: str = "", transport=None, conf: dict = None, mocked: bool = None) -> dict:
+def _issue_type(xconn: dict, key: str, transport) -> str:
+    issue = search._call(dict(xconn, api="/rest/api/2"), "GET", f"/issue/{key}?fields=issuetype",
+                         None, transport)
+    return str(((issue or {}).get("fields") or {}).get("issuetype", {}).get("name") or "")
+
+
+def run(job: str, root: str = "", transport=None, conf: dict = None, mocked: bool = None,
+        execution: str = "") -> dict:
+    """`execution`: an existing Test Execution's key to put the results in;
+    empty for a new one."""
     root = root or ROOT
     job_dir = loop.intake.job_dir(job, root)
+    execution = str(execution or "").strip().upper()
+    if execution and not _KEY_RX.match(execution):
+        raise Refused(f"{execution!r} is not a Jira issue key (like ABC-123)")
     try:
         with io.open(os.path.join(job_dir, "execution.json"), encoding="utf-8") as fh:
             ran = json.load(fh)
@@ -141,9 +159,11 @@ def run(job: str, root: str = "", transport=None, conf: dict = None, mocked: boo
             before = json.load(fh)
     except (OSError, ValueError):
         before = {}
-    if before.get("ok") and before.get("run_at") == ran.get("at") and not before.get("mock"):
+    if (before.get("ok") and before.get("run_at") == ran.get("at") and not before.get("mock")
+            and not execution and not before.get("existing")):
         raise Refused(f"this run was published already, as {before.get('execution')}: run the tests "
-                      f"again for a new Test Execution")
+                      f"again for a new Test Execution, or name an existing Test Execution to put "
+                      f"its results in")
     mocked = search.mock_jira() if mocked is None else mocked
     conf = conf or _xray_settings(root)
     if not mocked:
@@ -157,18 +177,30 @@ def run(job: str, root: str = "", transport=None, conf: dict = None, mocked: boo
     if not by_key:
         raise Refused("none of the run's tests carries an Xray key (a jira_xray_id column, or "
                       "@XrayTest): there is nothing to publish to")
+    try:
+        with io.open(os.path.join(job_dir, "review.json"), encoding="utf-8") as fh:
+            change = str(json.load(fh).get("state") or "none")
+    except (OSError, ValueError, AttributeError):
+        change = "none"
+    pushed = change == "pushed"
     story = loop.story_key_of(job_dir)
     info = {"summary": f"{story or job}: automated run on {ran.get('env')} ({ran.get('at')})",
             "description": (f"Run by the test workbench, job {job}: {ran.get('passed')} passed, "
-                            f"{ran.get('failed')} failed, {ran.get('skipped')} skipped."),
+                            f"{ran.get('failed')} failed, {ran.get('skipped')} skipped."
+                            + ("" if pushed else " The tests' change is not pushed yet.")),
             "project": conf.get("project") or "MOCK", "testEnvironments": [str(ran.get("env") or "")]}
     out = {"kind": "xray-publish", "at": _now(), "job": job, "mock": bool(mocked),
-           "run_at": ran.get("at"), "published": by_key, "not_published": unkeyed}
+           "run_at": ran.get("at"), "run_ok": bool(ran.get("ok")), "change": change,
+           "existing": bool(execution), "published": by_key, "not_published": unkeyed}
     in_regression = set(_regression_keys(root, ran, job_dir, mocked))
     regression_keys = sorted(k for k in by_key if k in in_regression)
     xconn = {"base": conf.get("base") or "https://xray.mock", "api": "", "token": conf.get("token") or "",
              "timeout": 60}
-    reg = conf.get("regression")
+    if execution and not mocked:
+        found = _issue_type(xconn, execution, transport)
+        if found != "Test Execution":
+            raise Refused(f"{execution} is a {found or 'issue of an unknown type'}, not a Test Execution")
+    reg = conf.get("regression") if pushed else ""
     reg_type = ""
     if reg:
         # Looked up whatever the run holds: a Test Plan takes the execution
@@ -176,24 +208,27 @@ def run(job: str, root: str = "", transport=None, conf: dict = None, mocked: boo
         if mocked:
             reg_type = "Test Set"
         else:
-            issue = search._call(dict(xconn, api="/rest/api/2"), "GET", f"/issue/{reg}?fields=issuetype",
-                                 None, transport)
-            reg_type = str(((issue or {}).get("fields") or {}).get("issuetype", {}).get("name") or "")
+            reg_type = _issue_type(xconn, reg, transport)
             if reg_type not in ("Test Set", "Test Plan"):
                 raise Refused(f"{reg} is a {reg_type or 'issue of an unknown type'}, not a Test Set or a "
                               f"Test Plan (Settings tab)")
-        if reg_type == "Test Plan":
+        if reg_type == "Test Plan" and not execution:
             info["testPlanKey"] = reg
-    body = {"info": info, "tests": [{"testKey": k, "status": s,
-                                     "comment": f"workbench job {job}, {ran.get('env')}"}
-                                    for k, s in sorted(by_key.items())]}
+    tests = [{"testKey": k, "status": s, "comment": f"workbench job {job}, {ran.get('env')}"}
+             for k, s in sorted(by_key.items())]
+    # An existing execution keeps its own summary, description and plan:
+    # only the results go in.
+    body = {"testExecutionKey": execution, "tests": tests} if execution else {"info": info, "tests": tests}
     if mocked:
-        out.update(execution="MOCK-EXEC", sent=body, note="mock Jira: nothing was contacted")
+        out.update(execution=execution or "MOCK-EXEC", sent=body, note="mock Jira: nothing was contacted")
     else:
-        diag.step("Creating the Test Execution in Xray")
+        diag.step(f"Putting the results in {execution}" if execution else "Creating the Test Execution in Xray")
         answer = search._call(xconn, "POST", IMPORT_PATH, body, transport)
-        key = str(((answer or {}).get("testExecIssue") or {}).get("key") or "")
+        answered = str(((answer or {}).get("testExecIssue") or {}).get("key") or "")
+        key = execution or answered
         out["execution"] = key
+        if execution and answered and answered != execution:
+            out["warning"] = f"Xray answered with {answered}, not the Test Execution {execution} named"
         if not key:
             out["warning"] = "Xray answered without the key of a Test Execution: " + json.dumps(answer)[:300]
     out["ok"] = bool(out.get("execution"))
@@ -209,6 +244,10 @@ def run(job: str, root: str = "", transport=None, conf: dict = None, mocked: boo
             except search.JiraError as e:
                 out["regression"] = {"key": reg, "type": reg_type, "added": [],
                                      "error": f"Xray refused adding them (HTTP {e.status}): {str(e)[:200]}"}
+    elif regression_keys and not pushed:
+        out["regression"] = {"key": "", "added": [],
+                             "note": "the regression tests are added once the change is pushed "
+                                     "(publish again after Approve & push)"}
     elif regression_keys:
         out["regression"] = {"key": "", "added": [],
                              "note": "no regression Test Set or Test Plan is set (Settings tab)"}
@@ -240,9 +279,11 @@ def _regression_keys(root: str, ran: dict, job_dir: str = "", mocked: bool = Fal
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--job", required=True)
+    ap.add_argument("--execution", default="",
+                    help="an existing Test Execution's key: the results go into it, not a new one")
     args = ap.parse_args(argv)
     try:
-        r = run(loop.intake.safe_job(args.job))
+        r = run(loop.intake.safe_job(args.job), execution=args.execution)
     except (Refused, search.Refused) as e:
         print(f"FAIL {e}")
         return 1
@@ -250,8 +291,12 @@ def main(argv=None) -> int:
         print(f"FAIL Xray refused it (HTTP {e.status}): {str(e)[:300]}")
         return 1
     print((" ok  " if r["ok"] else "WARN ") + f"Test Execution {r.get('execution') or '(none)'}"
+          + (" (an existing one: its results updated)" if r.get("existing") else "")
           + (" (mock: nothing was contacted)" if r["mock"] else "")
-          + f": {len(r['published'])} test(s) published")
+          + f": {len(r['published'])} test(s) published"
+          + ("" if r.get("run_ok") else " -- a run that did not pass, published as it ran"))
+    if r.get("warning"):
+        print(f"WARN {r['warning']}")
     for key, status in sorted(r["published"].items()):
         print(f"      {status:<4} {key}")
     for n in r["not_published"]:

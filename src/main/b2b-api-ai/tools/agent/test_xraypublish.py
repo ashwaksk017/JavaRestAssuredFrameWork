@@ -36,6 +36,10 @@ class Xray:
             return {"testExecIssue": {"key": "ABC-901"}}
         if "/issue/ABC-500" in url:
             return {"fields": {"issuetype": {"name": self.reg_type}}}
+        if "/issue/ABC-777" in url:
+            return {"fields": {"issuetype": {"name": "Test Execution"}}}
+        if "/issue/ABC-778" in url:
+            return {"fields": {"issuetype": {"name": "Story"}}}
         if "/test" in url:
             return {}
         raise AssertionError(url)
@@ -64,6 +68,11 @@ class Base(unittest.TestCase):
                          "params": "", "groups": ["jira"]}]}
         with io.open(os.path.join(self.job, "execution.json"), "w", encoding="utf-8") as fh:
             json.dump(self.ran, fh)
+        self.change("pushed")
+
+    def change(self, state):
+        with io.open(os.path.join(self.job, "review.json"), "w", encoding="utf-8") as fh:
+            json.dump({"state": state}, fh)
 
 
 class Publishing(Base):
@@ -139,6 +148,39 @@ class TheGapsClosed(Base):
         self.assertIn("HTTP 403", r["regression"]["error"])
         with io.open(os.path.join(self.job, "xray-publish.json"), encoding="utf-8") as fh:
             self.assertEqual(json.load(fh)["execution"], "ABC-901")
+
+
+class AnyRunAnyExecution(Base):
+    def test_a_failed_run_of_a_change_not_pushed_is_published_without_regression(self):
+        self.change("pending-review")
+        x = Xray()
+        r = xp.run("j1", self.root, transport=x, conf=dict(CONF), mocked=False)
+        self.assertEqual((r["execution"], r["change"]), ("ABC-901", "pending-review"))
+        self.assertEqual(r["published"]["ABC-12"], "FAIL", "the failure is published as it ran")
+        self.assertFalse(any(c[1].endswith("/test") for c in x.calls), "no regression add before the push")
+        self.assertFalse(any("/issue/ABC-500" in c[1] for c in x.calls))
+        self.assertIn("once the change is pushed", r["regression"]["note"])
+        post = [c for c in x.calls if c[1].endswith("/import/execution")][0]
+        self.assertIn("not pushed yet", post[2]["info"]["description"])
+
+    def test_results_go_into_an_existing_test_execution(self):
+        x = Xray("Test Plan")
+        r = xp.run("j1", self.root, transport=x, conf=dict(CONF), mocked=False, execution="abc-777")
+        post = [c for c in x.calls if c[1].endswith("/import/execution")][0]
+        self.assertEqual(post[2]["testExecutionKey"], "ABC-777")
+        self.assertNotIn("info", post[2], "its summary, description and plan are left as they are")
+        self.assertEqual({t["testKey"]: t["status"] for t in post[2]["tests"]}, {"ABC-11": "PASS", "ABC-12": "FAIL"})
+        self.assertEqual((r["execution"], r["existing"]), ("ABC-777", True))
+        self.assertIn("not the Test Execution ABC-777", r["warning"], "this fake answers ABC-901: said")
+        # The same run again, into the same execution: allowed (it updates).
+        xp.run("j1", self.root, transport=Xray(), conf=dict(CONF), mocked=False, execution="ABC-777")
+
+    def test_an_existing_execution_must_be_a_test_execution(self):
+        with self.assertRaises(xp.Refused) as got:
+            xp.run("j1", self.root, transport=Xray(), conf=dict(CONF), mocked=False, execution="ABC-778")
+        self.assertIn("not a Test Execution", str(got.exception))
+        with self.assertRaises(xp.Refused):
+            xp.run("j1", self.root, transport=Xray(), conf=dict(CONF), mocked=False, execution="ABC 1; drop")
 
 
 class WhatIsRefused(Base):
