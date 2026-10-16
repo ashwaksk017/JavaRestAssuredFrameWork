@@ -738,7 +738,7 @@ in the job directory, and that is the only place the command looks
 unless a file is named on the command line.
 
 Output, in the job directory: `design.md`, `design.json`,
-`test-cases.csv` (one row per step, `;` separated) and `xray.csv` (one
+`test-cases.csv` (one row per step, `,` separated, so it opens in columns in Excel) and `xray.csv` (one
 row per step grouped by `TCID`, laid out for Xray's Test Case Importer
 — map the columns in its wizard; this layout has not been tried
 against a live Jira). The page links to all but the JSON.

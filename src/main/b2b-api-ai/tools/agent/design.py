@@ -15,7 +15,7 @@ It writes into .workbench/<job>/ and nowhere else:
 
     design.json      everything, for the next stage and for the page
     design.md        the same, to read
-    test-cases.csv   one row per step, `;` separated
+    test-cases.csv   one row per step, `,` separated (opens in columns in Excel)
     xray.csv         one row per step, grouped by test, for Xray's importer
 
 WHAT IS CHECKED HERE RATHER THAN TRUSTED
@@ -914,9 +914,9 @@ def _cell(value) -> str:
     return "'" + s if s[:1] in ("=", "+", "-", "@", "\t") else s
 
 
-def write_csv(path: str, header: list, rows: list) -> None:
+def write_csv(path: str, header: list, rows: list, delimiter: str = ";") -> None:
     with io.open(path, "w", encoding="utf-8-sig", newline="") as fh:
-        w = csv.writer(fh, delimiter=";", quoting=csv.QUOTE_MINIMAL)
+        w = csv.writer(fh, delimiter=delimiter, quoting=csv.QUOTE_MINIMAL)
         w.writerow(header)
         for row in rows:
             w.writerow([_cell(c) for c in row])
@@ -941,7 +941,11 @@ def write_outputs(out_dir: str, design: dict) -> None:
                          s["action"], s["data"], s["expected"]])
     write_csv(os.path.join(out_dir, "test-cases.csv"),
               ["TestID", "Summary", "Description", "Test Type", "Priority",
-               "Endpoint", "Step", "Data", "Expected Result", "Requirement"], rows)
+               "Endpoint", "Step", "Data", "Expected Result", "Requirement"], rows,
+              # Seen live: with `;`, Excel (US settings) put each row in ONE
+              # column. A comma is what it splits on; cells holding commas
+              # are quoted. xray.csv keeps `;`: an Xray import is set up for it.
+              delimiter=",")
     write_csv(os.path.join(out_dir, "xray.csv"),
               ["TCID", "Summary", "Description", "Priority", "Labels",
                "Action", "Data", "Expected Result"], xray)

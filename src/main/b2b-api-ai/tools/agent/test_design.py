@@ -485,11 +485,21 @@ class Run(unittest.TestCase):
         md = self.read("design.md")
         self.assertIn("[NOT IN THE SPECIFICATION]", md)
         self.assertIn("expect: 201 and the body carries rateId", md)
-        rows = list(csv.reader(io.StringIO(self.read("test-cases.csv")), delimiter=";"))
+        rows = list(csv.reader(io.StringIO(self.read("test-cases.csv"))))
         self.assertEqual(rows[0][0], "TestID")
         self.assertEqual(rows[1][0], "TC-001")
         self.assertEqual(len(rows), 3)
         self.assertTrue(os.path.isfile(os.path.join(self.out, "xray.csv")))
+
+    def test_the_cases_csv_opens_in_columns(self):
+        """Seen live: `;`-separated, Excel put each row in one column."""
+        self.run_design(self.agent(reply(case(title="Create, then read; a rate"))))
+        text = self.read("test-cases.csv")
+        self.assertTrue(text.startswith("TestID,Summary,Description,Test Type,Priority,"), text[:80])
+        rows = list(csv.reader(io.StringIO(text)))
+        self.assertEqual([len(r) for r in rows], [10, 10], "every row splits into the ten columns")
+        self.assertEqual(rows[1][1], "Create, then read; a rate", "a comma in a cell is quoted")
+        self.assertTrue(self.read("xray.csv").startswith("TCID;Summary;"), "xray.csv keeps `;`")
 
     def test_a_refinement_is_an_instruction_not_material(self):
         """Seen live: "give me only 5 of the 40" went under NOTES FROM THE
@@ -1025,7 +1035,7 @@ class Run(unittest.TestCase):
         self.run_design(self.agent(reply(case(title="=HYPERLINK(\"http://x\")",
                                               steps=[{"action": "+1", "data": "-2",
                                                       "expected": "@x"}]))))
-        rows = list(csv.reader(io.StringIO(self.read("test-cases.csv")), delimiter=";"))
+        rows = list(csv.reader(io.StringIO(self.read("test-cases.csv"))))
         self.assertTrue(all(not c or c[0] not in "=+-@" for c in rows[1]), rows[1])
 
     def test_an_unusable_job_id_is_refused(self):
