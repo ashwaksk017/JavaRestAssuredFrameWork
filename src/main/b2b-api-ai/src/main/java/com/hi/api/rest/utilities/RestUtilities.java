@@ -709,6 +709,14 @@ public class RestUtilities {
      * SecretRedactingRewritePolicy like every other log event, so a
      * credential column is masked rather than printed.</p>
      *
+     * <p>"csv" in {@code origin} only means "found in the row". Seen live:
+     * a row a test built in code, holding generated values, was logged as
+     * origin=csv. The row's own record says where each value came from
+     * (PayloadProvenance.originOf): csv, generated, a context value, or
+     * set by the test. A column named like a credential is masked: a
+     * password a test generates is in no configuration file, so the
+     * redacting log policy cannot know it.</p>
+     *
      * @param origin "csv", "csv(case-folded)", "FALLBACK" or "UNRESOLVED"
      */
     private static void logSubstitution(Map<String, String> dataMap, String key,
@@ -716,9 +724,26 @@ public class RestUtilities {
         if (!LOG.isInfoEnabled()) {
             return;
         }
+        String said = origin;
+        if (origin != null && origin.startsWith("csv")) {
+            said = com.hi.api.data.PayloadProvenance.originOf(dataMap, key)
+                    + (origin.contains("case-folded") ? " (case-folded)" : "");
+        }
         LOG.info("[subst] {} | column={} | origin={} | value={}",
                 com.hi.api.data.PayloadProvenance.shortOf(dataMap),
-                key, origin, value);
+                key, said, shownValue(key, value));
+    }
+
+    private static final Pattern CREDENTIAL_COLUMN = Pattern.compile(
+            "(?i).*(password|passwd|pwd|secret|token|apikey|api_key|api-key).*");
+
+    /** The value as a log line may show it: a credential column's is masked. */
+    public static String shownValue(String column, String value) {
+        if (column != null && value != null && !value.isEmpty()
+                && CREDENTIAL_COLUMN.matcher(column).matches()) {
+            return "****";
+        }
+        return value;
     }
 
     private static String substitute(String schema, Pattern pattern, Map<String, String> dataMap,

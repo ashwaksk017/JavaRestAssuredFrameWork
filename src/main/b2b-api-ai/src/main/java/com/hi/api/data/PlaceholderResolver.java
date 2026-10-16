@@ -358,9 +358,29 @@ public final class PlaceholderResolver {
             java.util.Map<String, String> row, java.util.Map<String, String> ctx) {
         if (row == null || row.isEmpty()) return row;
         java.util.LinkedHashMap<String, String> out = new java.util.LinkedHashMap<>(row.size());
+        // Where each value comes from, said by the [subst] log line: a
+        // token is generated, a ${ref} is a context value, anything else is
+        // the CSV cell -- or, in a row a test built in code, the test's.
+        boolean fromCsv = row.get(PayloadProvenance.SOURCE_KEY) != null;
+        java.util.Map<String, String> origins = new java.util.HashMap<>();
         for (java.util.Map.Entry<String, String> e : row.entrySet()) {
-            out.put(e.getKey(), resolveAll(e.getValue(), ctx));
+            String raw = e.getValue();
+            out.put(e.getKey(), resolveAll(raw, ctx));
+            if (PayloadProvenance.isReserved(e.getKey())) {
+                continue;
+            }
+            Matcher token = raw == null ? null : FAKER_TOKEN.matcher(raw);
+            Matcher ref = raw == null ? null : DOLLAR_REF.matcher(raw);
+            if (token != null && token.find()) {
+                origins.put(e.getKey(), "generated " + token.group());
+            } else if (ref != null && ref.find()) {
+                origins.put(e.getKey(), "from " + ref.group()
+                        + " (an earlier step's value, or a generated identity field)");
+            } else {
+                origins.put(e.getKey(), fromCsv ? "csv" : "set by the test (not from a data sheet)");
+            }
         }
+        PayloadProvenance.noteOrigins(out, origins);
         return out;
     }
 

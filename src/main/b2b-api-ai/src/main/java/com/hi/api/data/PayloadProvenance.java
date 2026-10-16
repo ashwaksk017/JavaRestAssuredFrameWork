@@ -37,6 +37,36 @@ public final class PayloadProvenance {
     }
 
     /**
+     * Where each value of the row last resolved on this thread came from,
+     * kept beside the row rather than in it: a key added to the row would
+     * reach everything that walks its columns. The substitution that
+     * follows on the same thread reads it back by the row's identity.
+     */
+    private static final ThreadLocal<Object[]> LAST_ORIGINS = new ThreadLocal<>();
+
+    /** Record, for the resolved row {@code data}, where each value came from. */
+    public static void noteOrigins(Map<String, String> data, Map<String, String> origins) {
+        LAST_ORIGINS.set(new Object[] {data, origins});
+    }
+
+    /**
+     * Where the value under {@code key} came from, in words: {@code csv},
+     * {@code generated <<email>>}, {@code from ${name} (...)}, or
+     * {@code set by the test} for a row a test built in code.
+     */
+    @SuppressWarnings("unchecked")
+    public static String originOf(Map<String, String> data, String key) {
+        Object[] last = LAST_ORIGINS.get();
+        if (last != null && last[0] == data) {
+            String o = ((Map<String, String>) last[1]).get(key);
+            if (o != null) {
+                return o;
+            }
+        }
+        return data != null && data.get(SOURCE_KEY) != null ? "csv" : "set by the test (not from a data sheet)";
+    }
+
+    /**
      * The CSV origin stamped on this row, or a readable stand-in.
      *
      * <p>Returns {@code "(no csv)"} rather than null so a log line is
