@@ -735,6 +735,16 @@ Expect 201.'></textarea>
   </p>
   <div id="settings-env" class="result"></div>
   <form id="settings-form" class="form" autocomplete="off" onsubmit="return false">
+    <fieldset class="field choice wide"><legend>Cursor</legend>
+      <label for="set-cursor-key">API key <span class="hint" id="set-cursor-key-state"></span></label>
+      <input id="set-cursor-key" type="password" autocomplete="new-password" spellcheck="false" placeholder="leave empty to keep it">
+      <label class="inline"><input type="checkbox" id="set-cursor-key-clear"> remove the saved key</label>
+      <label for="set-cursor-model">Model <span class="hint">writes and changes the tests (Automate, Ask Cursor); default composer-2.5</span></label>
+      <input id="set-cursor-model" type="text" spellcheck="false" list="cursor-models" placeholder="composer-2.5">
+      <label for="set-cursor-design-model">Design model <span class="hint">designs, refines and reviews (JSON answers); empty: the model above. A faster one helps here</span></label>
+      <input id="set-cursor-design-model" type="text" spellcheck="false" list="cursor-models" placeholder="the model above">
+      <datalist id="cursor-models"><option value="composer-2.5"><option value="grok-4.6"></datalist>
+    </fieldset>
     <fieldset class="field choice wide"><legend>Jira</legend>
       <label for="set-jira-urls">Address <span class="hint">https://..., several separated by commas: stories are read only from these</span></label>
       <input id="set-jira-urls" type="text" spellcheck="false" placeholder="https://jira.example.com">

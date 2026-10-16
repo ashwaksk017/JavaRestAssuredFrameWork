@@ -85,6 +85,42 @@ class Saving(Base):
         self.assertEqual(self.doc()["stg"]["jira_config"]["pat"], "old-token-123", "nothing written")
 
 
+class CursorSettings(Base):
+    def cursor_file(self):
+        with io.open(os.path.join(self.root, *st.CURSOR_REL.split("/")), encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_key_and_models_go_to_the_converters_file_and_the_key_is_never_shown(self):
+        os.makedirs(os.path.join(self.root, "tools", "ra_converter"))
+        with io.open(os.path.join(self.root, *st.CURSOR_REL.split("/")), "w", encoding="utf-8") as fh:
+            json.dump({"enabled": True, "runtime": "local", "maxSamplesPerCategory": 3}, fh)
+        r = st.save({"cursor_key": "key_abcdef0123456789", "cursor_model": "composer-2.5",
+                     "cursor_design_model": "grok-4.6"}, self.root)
+        self.assertTrue(r["saved"], r)
+        data = self.cursor_file()
+        self.assertEqual((data["apiKey"], data["model"], data["designModel"]),
+                         ("key_abcdef0123456789", "composer-2.5", "grok-4.6"))
+        self.assertEqual((data["enabled"], data["maxSamplesPerCategory"]), (True, 3), "the converter's own fields stay")
+        shown = json.dumps(st.status(self.root))
+        self.assertNotIn("key_abcdef0123456789", shown)
+        self.assertEqual(st.status(self.root)["cursor"]["design_model"], "grok-4.6")
+        with io.open(os.path.join(self.root, *st.CURSOR_REL.split("/")), "rb") as fh:
+            self.assertFalse(fh.read().startswith(bytes([0xEF, 0xBB, 0xBF])), "no BOM: the converter reads plain UTF-8")
+
+    def test_an_empty_key_keeps_it_clear_removes_it_and_a_bad_model_is_refused(self):
+        st.save({"cursor_key": "key_abcdef0123456789"}, self.root)
+        st.save({"cursor_key": "", "cursor_model": "grok-4.6"}, self.root)
+        self.assertEqual(self.cursor_file()["apiKey"], "key_abcdef0123456789")
+        st.save({"cursor_key_clear": True}, self.root)
+        self.assertNotIn("apiKey", self.cursor_file())
+        with self.assertRaises(ValueError):
+            st.save({"cursor_model": "grok 4.6; rm"}, self.root)
+        with self.assertRaises(ValueError):
+            st.save({"cursor_key": "has space in it"}, self.root)
+        st.save({"cursor_design_model": ""}, self.root)
+        self.assertNotIn("designModel", self.cursor_file(), "empty: the main model is used")
+
+
 class TheCopies(Base):
     def test_a_copy_keeps_no_token_and_an_unchanged_save_writes_nothing(self):
         st.save({"jira_pat": "brand-new-token-9"}, self.root)

@@ -1788,6 +1788,16 @@ Each stage is a link to where it is done, and the server holds the gates
 
 ### Settings
 
+**Cursor**: the API key, the model that writes the tests (Automate, Ask
+Cursor; `composer-2.5` by default) and the design model (designs,
+refinements and reviews; empty: the model above). Saved into
+`tools/ra_converter/cursor_agent.json` (gitignored) as `apiKey`, `model`
+and `designModel`, where the converter and the workbench read them; the
+file's other settings stay as they are. The key is never shown again, and
+when the `CURSOR_API_KEY` environment variable is set the page says it is
+used instead. A change applies to the next Cursor call; nothing needs a
+restart.
+
 The Jira, Confluence and Xray connection of this machine, saved into the
 active environment's block of `src/main/resources/program_configuration.json`
 (gitignored) -- `jira_config.base_urls/pat`, `confluence_config.base_urls/pat`,

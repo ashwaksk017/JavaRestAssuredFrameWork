@@ -870,6 +870,9 @@ def main() -> int:
             set_tab = mocked.dom("settings")
             check("the Settings tab takes the tokens, as password boxes, and shows none back",
                   'id="set-jira-pat"' in set_tab and 'type="password"' in set_tab and 'id="settings-save"' in set_tab)
+            check("the Settings tab takes the Cursor key (a password box) and its models",
+                  'id="set-cursor-key"' in set_tab and 'id="set-cursor-model"' in set_tab
+                  and 'id="set-cursor-design-model"' in set_tab)
             code, s = mocked.call("/api/settings")
             check("the Settings tab sets each workflow stage: Create in Xray, the mapping, the run",
                   'id="set-xc-on"' in set_tab and 'id="set-sm-rules"' in set_tab and 'id="set-run-env"' in set_tab)

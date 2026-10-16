@@ -36,6 +36,35 @@ _KEY_RX = re.compile(r"^[A-Z][A-Z0-9_]{0,19}-[0-9]{1,9}$")
 
 
 WORKBENCH_FILE = os.path.join(".workbench", "workbench-settings.json")
+# Cursor's key and models: the converter's own file (gitignored), where
+# loop.cursor_config and design.design_model read them. CURSOR_API_KEY, when
+# set, wins over the file's key.
+CURSOR_REL = "tools/ra_converter/cursor_agent.json"
+_MODEL_RX = re.compile(r"^[A-Za-z0-9._:-]{1,80}$")
+
+
+def _cursor_path(root: str = "") -> str:
+    return os.path.join(root or ROOT, *CURSOR_REL.split("/"))
+
+
+def _cursor_read(root: str = "") -> dict:
+    try:
+        with io.open(_cursor_path(root), encoding="utf-8-sig") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _cursor_write(data: dict, root: str = "") -> None:
+    """Without a BOM (the converter reads it as plain UTF-8), and through a
+    temporary file: a run reading it half-written would read no key."""
+    p = _cursor_path(root)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    tmp = p + ".tmp"
+    with io.open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2)
+    os.replace(tmp, p)
 _NAME_RX = re.compile(r"^[A-Za-z][A-Za-z0-9 _-]{0,40}$")
 _ENV_RX = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 
@@ -106,6 +135,7 @@ def _token_state(value) -> str:
 
 
 def status(root: str = "") -> dict:
+    cur = _cursor_read(root)
     """What is set, for the page -- never a token's value."""
     env, source = _env(root)
     try:
@@ -135,6 +165,10 @@ def status(root: str = "") -> dict:
                  "pat": _token_state(jira.get("pat"))},
         "confluence": {"base_urls": [str(u) for u in conf.get("base_urls") or []],
                        "pat": _token_state(conf.get("pat"))},
+        "cursor": {"key": _token_state(cur.get("apiKey") or cur.get("api_key")),
+                   "key_from_env": bool((os.environ.get("CURSOR_API_KEY") or "").strip()),
+                   "model": str(cur.get("model") or ""), "design_model": str(cur.get("designModel") or ""),
+                   "file": CURSOR_REL},
         "xray": {"base_url": str(xray.get("baseUrl") or ""), "token": _token_state(xray.get("token")),
                  "project_key": str(xray.get("projectKey") or ""),
                  "regression_key": str(xray.get("regressionKey") or ""),
@@ -270,6 +304,29 @@ def save(changes: dict, root: str = "", busy=None) -> dict:
     if "xray_enabled" in changes:
         xray["enabled"] = "true" if changes.get("xray_enabled") else "false"
         said.append("publishing to Xray " + ("on" if changes.get("xray_enabled") else "off"))
+    # Cursor: its own file, not program_configuration.json
+    cur = _cursor_read(root)
+    cur_before = json.dumps(cur, sort_keys=True)
+    if changes.get("cursor_key_clear"):
+        cur.pop("apiKey", None)
+        cur.pop("api_key", None)
+        said.append("Cursor key removed")
+    elif str(changes.get("cursor_key") or "").strip():
+        cur.pop("api_key", None)
+        cur["apiKey"] = _token(changes["cursor_key"], "Cursor API")
+        said.append("Cursor key")
+    for field, key, what in (("cursor_model", "model", "Cursor model"),
+                             ("cursor_design_model", "designModel", "design model")):
+        if field in changes:
+            v = str(changes.get(field) or "").strip()
+            if v and not _MODEL_RX.match(v):
+                raise ValueError(f"{v!r} is not a model name (letters, digits, . _ : -)")
+            if v:
+                cur[key] = v
+            else:
+                cur.pop(key, None)
+            said.append(what)
+    cur_changed = json.dumps(cur, sort_keys=True) != cur_before
     # Stage 7: running the tests -- this machine's, in .workbench/ (no secret)
     wb = workbench_settings(root)
     wb_changed = False
@@ -316,10 +373,13 @@ def save(changes: dict, root: str = "", busy=None) -> dict:
                       "always": always, "rules": rules}
         said.append("suite mapping")
     unchanged = json.dumps(doc, sort_keys=True) == json.dumps(_read(root), sort_keys=True)
-    if not said or (unchanged and not wb_changed and map_change is None):
+    if not said or (unchanged and not wb_changed and map_change is None and not cur_changed):
         return {"saved": False, "said": "nothing to change", "status": status(root)}
     if not unchanged:
         _write(doc, root)
+    if cur_changed:
+        cur.setdefault("enabled", False)        # the converter's own assist stays as it was
+        _cursor_write(cur, root)
     if wb_changed:
         p = os.path.join(root or ROOT, WORKBENCH_FILE)
         os.makedirs(os.path.dirname(p), exist_ok=True)

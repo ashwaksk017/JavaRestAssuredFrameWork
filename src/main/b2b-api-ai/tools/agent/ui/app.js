@@ -1995,6 +1995,14 @@ async function showSettings() {
   $("set-xray-regression").value = s.xray.regression_key || "";
   $("set-xray-enabled").checked = Boolean(s.xray.enabled);
   $("set-xray-same").checked = Boolean(s.xray.same_as_jira);
+  const cur = s.cursor || {};
+  $("set-cursor-key-state").textContent = (cur.key || "") + (cur.key_from_env
+    ? " -- the CURSOR_API_KEY environment variable is set, and is used instead" : "")
+    + (cur.file ? ` (in ${cur.file}, gitignored)` : "");
+  $("set-cursor-model").value = cur.model || "";
+  $("set-cursor-design-model").value = cur.design_model || "";
+  $("set-cursor-key").value = "";
+  $("set-cursor-key-clear").checked = false;
   $("set-jira-pat-state").textContent = s.jira.pat;
   $("set-conf-pat-state").textContent = s.confluence.pat;
   $("set-xray-token-state").textContent = s.xray.same_as_jira ? "the Jira token" : s.xray.token;
@@ -2058,6 +2066,10 @@ $("settings-save").onclick = async () => {
     xray_create_issue_type: $("set-xc-type").value,
     xray_create_link_type: $("set-xc-link").value,
     run_timeout_min: $("set-run-timeout").value,
+    cursor_key: $("set-cursor-key").value,
+    cursor_key_clear: $("set-cursor-key-clear").checked,
+    cursor_model: $("set-cursor-model").value,
+    cursor_design_model: $("set-cursor-design-model").value,
     suite_map: {
       always: $("set-sm-always").value.split(",").map((s) => s.trim()).filter(Boolean),
       rules: [...document.querySelectorAll("#set-sm-rules .sm-rule")].map((row) => ({
@@ -2071,7 +2083,7 @@ $("settings-save").onclick = async () => {
     setState($("settings-state"), r.saved ? "ok" : "", r.saved ? `saved: ${r.said}` : r.said);
   } catch (e) { setState($("settings-state"), "bad", e.message); }
   // The token boxes are emptied either way: nothing typed stays on the page.
-  for (const id of ["set-jira-pat", "set-conf-pat", "set-xray-token"]) $(id).value = "";
+  for (const id of ["set-jira-pat", "set-conf-pat", "set-xray-token", "set-cursor-key"]) $(id).value = "";
   showSettings();
 };
 $("settings-check").onclick = async () => {
