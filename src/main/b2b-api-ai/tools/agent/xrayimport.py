@@ -212,6 +212,7 @@ def run(job: str, root: str = "", story: str = "", conn=None, transport=None, cf
     private = loop.config_secrets(os.path.join(root, "src", "main", "resources", "program_configuration.json"))
     hide = lambda s: _redact(s, private)
     cases, not_used = [], list(other_way)
+    stamps = {}                                 # key -> Jira's `updated` of the version taken
     # Over the cap: named, one line each, so nobody thinks the story has
     # only the tests that were taken.
     not_used += [{"key": b["key"], "why": f"over the first {MAX_TESTS} linked tests; not read"} for b in beyond]
@@ -231,6 +232,16 @@ def run(job: str, root: str = "", story: str = "", conn=None, transport=None, cf
         if not steps:
             not_used.append({"key": t["key"], "why": "it has no steps in Xray"})
             continue
+        stamp = ""
+        if not mocked:
+            # Jira's time of the version taken: Update in Xray tells from it
+            # whether anyone changed the test since.
+            try:
+                got = search._call(conn, "GET", f"/issue/{t['key']}?fields=updated", None, transport)
+                stamp = str(((got or {}).get("fields") or {}).get("updated") or "") if isinstance(got, dict) else ""
+            except Exception:                            # noqa: BLE001
+                diag.trace()                             # a time not known: never a failed import
+                stamp = ""
         endpoint = endpoint_in_steps(steps)
         in_spec = None
         if endpoint and known:
@@ -244,6 +255,7 @@ def run(job: str, root: str = "", story: str = "", conn=None, transport=None, cf
                        "data": hide(_text(s.get("data"), MAX_TEXT)),
                        "expected": hide(_text(s.get("expected"), MAX_TEXT))} for s in steps[:MAX_STEPS]],
             "requirement_refs": [story], "xray_key": t["key"], "xray_status": t["status"]})
+        stamps[t["key"]] = stamp
         if in_spec:
             # Only ever True: a test from Xray is automated even when its
             # endpoint is not in the specification -- that is said, below.
@@ -272,7 +284,11 @@ def run(job: str, root: str = "", story: str = "", conn=None, transport=None, cf
     for c, s in zip(cases, shaped):
         kept["tests"][f"design:{c['id']}"] = {"key": c["xray_key"], "title": s["title"],
                                               "fingerprint": xt.fingerprint(s), "story": story,
-                                              "mock": mocked, "at": _now(), "imported": True}
+                                              "mock": mocked, "at": _now(), "imported": True,
+                                              # As Xray had it: Update in Xray's base.
+                                              "base": {"title": s["title"], "preconditions": s["preconditions"],
+                                                       "steps": s["steps"]},
+                                              "synced_updated": stamps.get(c["xray_key"], "")}
     xt.write_keys(job_dir, kept)
     return {"kind": "xray-import", "ok": True, "story": story, "link_type": opts["link_type"],
             "count": len(cases), "keys": [c["xray_key"] for c in cases], "not_used": not_used,

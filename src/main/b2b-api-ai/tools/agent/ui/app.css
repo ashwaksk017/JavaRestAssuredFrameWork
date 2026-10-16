@@ -354,3 +354,9 @@ button.linkish:hover, button.linkish:focus { text-decoration: underline; }
                    border-radius: 4px; display: block; }
 .paste-thumb .x { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; padding: 0;
                   border-radius: 50%; line-height: 16px; font-size: 13px; }
+
+/* Update in Xray: ours / Xray now / last synced, side by side. */
+.xu-diff { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 6px; }
+.xu-diff pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; margin: 0; padding: 6px;
+               border: 1px solid var(--line); border-radius: 4px; }
+@media (max-width: 800px) { .xu-diff { grid-template-columns: 1fr; } }

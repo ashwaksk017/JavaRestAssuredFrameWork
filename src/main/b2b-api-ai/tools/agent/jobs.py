@@ -149,6 +149,17 @@ RUNNABLES = {
         "label": "What this job could create in Xray, and what it already has",
         "options": {"--job": "text"},
     },
+    # Update in Xray: a preview that reads, then the chosen changes only.
+    "xray-update-plan": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "xrayupdate.py"), "plan"],
+        "label": "Compare the cases with their Xray tests (reads only)",
+        "options": {"--job": "text"},
+    },
+    "xray-update": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "xrayupdate.py"), "apply"],
+        "label": "Send the chosen cases' steps to Xray, or take Xray's into the cases",
+        "options": {"--job": "text", "--choices": "text"},
+    },
     "xray-create": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "xraytests.py"), "create"],
         "label": "Create the cases as Xray Test issues in Jira, linked to the story",
@@ -874,6 +885,10 @@ RESULT_FILES = {"jira-": "jira-result.json", "failures-": "failures-result.json"
                 "publish-attach": "publish-result.json",
                 "publish-page": "publish-result.json",
                 "xray-create": "xray-result.json",
+                # A new preview clears the last outcome too; sending keeps
+                # the preview it was chosen from.
+                "xray-update-plan": "xray-update-plan.json",
+                "xray-update": "xray-update.json",
                 "story-check": "story-check.json",
                 "fix-brief": "fix-brief.json",
                 "xray-import": "xray-import.json",
@@ -1482,6 +1497,7 @@ def read_artifact(job: str, name: str) -> str:
                "manual-new-cases.csv", "manual-xray-updates.csv", "publish-result.json",
                "xray-tests.json", "xray-result.json", "xray-status.json", "case-review.json",
                "story-check.json", "fix-brief.json", "xray-import.json",
+               "xray-update-plan.json", "xray-update.json",
                "publish-status.json", "publish.log"}
     if name not in allowed:
         raise ValueError(f"{name!r} is not a readable artifact. "

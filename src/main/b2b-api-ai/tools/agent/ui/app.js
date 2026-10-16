@@ -1229,6 +1229,82 @@ function wireXray(what) {
 wireXray("design");
 wireXray("manual");
 
+// ---- Update in Xray: preview, choose per test, send -----------------------
+const XU_LABEL = { same: "in step", update: "changed here: send it", xray_newer: "newer in Xray",
+                   conflict: "changed on both sides", unreadable: "not readable" };
+const XU_WORDS = { send: "send ours to Xray", take: "take Xray's into the case", skip: "skip" };
+function xuText(sh) {
+  if (!sh) return "(not kept for this test)";
+  return [sh.title, ...(sh.steps || []).map((s, i) => `${i + 1}. ${s.action}` +
+    (s.data ? ` | data: ${s.data}` : "") + (s.expected ? ` | expect: ${s.expected}` : ""))].join("\n");
+}
+async function showXrayUpdate(j) {
+  const box = $("xray-update-result");
+  $("xray-update-send").disabled = true;
+  const p = await artifactJson(j, "xray-update-plan.json");
+  box.replaceChildren();
+  if (!p || j !== job()) return;
+  if (p.kind === "error") { box.append(banner("bad", p.message || "the preview failed")); return; }
+  const rows = (p.tests || []).map((t) => {
+    let pick = "";
+    if (["update", "xray_newer", "conflict"].includes(t.status)) {
+      const offer = t.status === "update" ? ["send", "skip"] : t.status === "xray_newer" ? ["skip", "take"]
+                                                                                       : ["skip", "take", "send"];
+      pick = el("select", { class: "xu-choice", "data-id": t.id, "aria-label": `what to do with ${t.key}` },
+        ...offer.map((v) => el("option", { value: v, text: XU_WORDS[v] })));
+      pick.value = t.default || "skip";
+      if (!t.editable) for (const o of pick.options) if (o.value === "send") {
+        o.disabled = true; o.textContent += " (Xray gave no step ids)";
+      }
+    }
+    const when = t.xray_updated ? `changed in Jira ${t.xray_updated}${t.last_by ? ` by ${t.last_by}` : ""}` +
+      (t.synced_updated ? (t.changed_after_sync ? `, AFTER our last sync (${t.synced_updated})`
+                                                : `, not since our last sync (${t.synced_updated})`) : "") : "";
+    const compare = (t.status === "same" || t.status === "unreadable") ? el("small", { text: t.note || "" })
+      : el("details", {}, el("summary", { text: "ours / Xray now / last synced" }),
+          el("div", { class: "xu-diff" }, el("pre", { text: "OURS\n" + xuText(t.ours) }),
+             el("pre", { text: "XRAY NOW\n" + xuText(t.xray) }), el("pre", { text: "LAST SYNCED\n" + xuText(t.base) })));
+    return [el("code", { text: t.id }), el("code", { text: t.key }),
+            el("div", {}, el("span", { text: XU_LABEL[t.status] || t.status }), when ? el("small", { text: when }) : null),
+            compare, pick];
+  });
+  box.append(banner("ok", (p.message || "") + (p.mock ? " (mock Jira)" : "")),
+             table(["Case", "Xray test", "What changed", "Compare", "Do"], rows));
+  $("xray-update-send").disabled = !box.querySelector(".xu-choice");
+}
+$("xray-update-preview").onclick = async () => {
+  const j = job();
+  $("xray-update-log").hidden = false;
+  try {
+    await post("/api/start", { job: j, runnable: "xray-update-plan", options: { "--job": j } });
+    follow("xray-update-plan", $("xray-update-log"), $("xray-update-state"), () => showXrayUpdate(j), j);
+  } catch (e) { setState($("xray-update-state"), "bad", e.message); }
+};
+$("xray-update-send").onclick = async () => {
+  const j = job();
+  const picks = [...document.querySelectorAll("#xray-update-result .xu-choice")].map((s) => `${s.dataset.id}=${s.value}`);
+  const sends = picks.filter((c) => c.endsWith("=send")).length;
+  const takes = picks.filter((c) => c.endsWith("=take")).length;
+  if (!sends && !takes) { setState($("xray-update-state"), "bad", "nothing is chosen to send or take"); return; }
+  if (!confirm(`Send ${sends} case(s) to Xray -- their steps there are overwritten; what Xray had is kept in the ` +
+               `job -- and take Xray's steps into ${takes} case(s)? A test changed in Xray since the preview ` +
+               "is skipped, not overwritten.")) return;
+  $("xray-update-send").disabled = true;
+  try {
+    await post("/api/start", { job: j, runnable: "xray-update", options: { "--job": j, "--choices": picks.join(",") } });
+    follow("xray-update", $("xray-update-log"), $("xray-update-state"), async () => {
+      const r = await artifactJson(j, "xray-update.json");
+      const box = $("xray-update-result");
+      if (!r) { box.replaceChildren(banner("bad", "The outcome could not be read; look at the log.")); return; }
+      const kids = [banner(r.ok ? "ok" : "bad", r.message || "")];
+      for (const s of r.skipped || []) if (s.why !== "skipped") kids.push(banner("warn", `${s.id}${s.key ? ` (${s.key})` : ""}: ${s.why}`));
+      for (const s of r.failed || []) kids.push(banner("bad", `${s.id} (${s.key}): ${s.why}`));
+      box.replaceChildren(...kids);
+      if (j === job()) { showReview("design"); refreshXray("design", true); }
+    }, j);
+  } catch (e) { $("xray-update-send").disabled = false; setState($("xray-update-state"), "bad", e.message); }
+};
+
 // The design's conversation with Cursor is in design-cursor.log, shown in
 // the tab's one Cursor log (at the bottom, "The design").
 $("design-cursor-go").onclick = () => { setCursorSource("design"); goToStep("new", "cursor-log"); };

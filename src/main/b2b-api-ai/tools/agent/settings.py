@@ -421,9 +421,16 @@ def _write(doc: dict, root: str = "") -> None:
         # a token removed on the page must not live on in a copy.
         with io.open(p, encoding="utf-8-sig") as fh:
             before = json.load(fh)
-        with io.open(os.path.join(keep, "program_configuration-"
-                                  + datetime.now().strftime("%Y%m%d-%H%M%S-%f") + ".json"),
-                     "w", encoding="utf-8") as fh:
+        # The clock alone does not name two saves apart: on Windows two
+        # saves in a row can read the same time, and the second copy then
+        # replaced the first.
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        n = 1                                   # numbered, so the names sort in order
+        name = f"program_configuration-{stamp}-{n:02d}.json"
+        while os.path.exists(os.path.join(keep, name)):
+            n += 1
+            name = f"program_configuration-{stamp}-{n:02d}.json"
+        with io.open(os.path.join(keep, name), "w", encoding="utf-8") as fh:
             json.dump(_without_tokens(before), fh, indent=2)
         old = sorted(n for n in os.listdir(keep) if n.startswith("program_configuration-"))
         for name in old:

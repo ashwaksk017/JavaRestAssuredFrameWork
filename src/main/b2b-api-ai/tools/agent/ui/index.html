@@ -224,6 +224,15 @@ Expect 201.'></textarea>
   </div>
   <div id="xray-design-result" class="result"></div>
   <pre id="xray-design-log" class="log" hidden></pre>
+
+  <h3>Update in Xray <span class="hint">the cases' steps to the Xray tests they have: compared first (ours, Xray now, last synced); a test changed in Xray is never overwritten unless you choose it</span></h3>
+  <div class="row">
+    <button id="xray-update-preview" type="button">Update in Xray: preview</button>
+    <button id="xray-update-send" type="button" disabled>Send the chosen</button>
+    <span id="xray-update-state" class="state"></span>
+  </div>
+  <div id="xray-update-result" class="result"></div>
+  <pre id="xray-update-log" class="log" hidden></pre>
   <h3>Command log <button type="button" id="design-cursor-go" class="linkish"
       title="the design's conversation with Cursor, in the Cursor log at the bottom of this tab">Cursor log ↓</button></h3>
   <pre id="design-log" class="log"></pre>

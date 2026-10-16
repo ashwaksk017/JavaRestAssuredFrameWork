@@ -463,7 +463,11 @@ def create(job: str, what: str, story: str, confirm: str, root: str = "", conn=N
         row = {"id": case["id"], "key": key, "title": case["title"], "steps": 0,
                "steps_of": len(case["steps"]), "linked": False}
         kept["tests"][ident] = {"key": key, "title": case["title"], "fingerprint": fingerprint(case),
-                                "story": story, "mock": mocked, "at": _now()}
+                                "story": story, "mock": mocked, "at": _now(),
+                                # What was sent, whole: Update in Xray tells from it which
+                                # side changed since (xrayupdate.py).
+                                "base": {"title": case["title"], "preconditions": case["preconditions"],
+                                         "steps": case["steps"]}}
         write_keys(job_dir, kept)                        # the moment it is known
         _log(job_dir, f"DONE issue {ident} -> {key}")
         for s in case["steps"]:
@@ -488,6 +492,17 @@ def create(job: str, what: str, story: str, confirm: str, root: str = "", conn=N
             _log(job_dir, f"REFUSED BY JIRA link {key} -> {story}: HTTP {e.status}")
             row["note"] = (row.get("note", "") + f" Not linked to {story} (HTTP {e.status}); "
                            f"link it in Jira, or set jira_config.publish.test_link_type.").strip()
+        if not mocked:
+            # Jira's own time of our last write to it: Update in Xray tells
+            # from it whether anyone changed the test since.
+            try:
+                got = search._call(conn, "GET", f"/issue/{key}?fields=updated", None, transport)
+                stamp = str(((got or {}).get("fields") or {}).get("updated") or "") if isinstance(got, dict) else ""
+                if stamp:
+                    kept["tests"][ident]["synced_updated"] = stamp
+                    write_keys(job_dir, kept)
+            except Exception:                            # noqa: BLE001
+                diag.trace()                             # a time not known: never a failed create
         done["created"].append(row)
     made_n = len(done["created"])
     done["ok"] = not done["failed"] if (made_n or done["kept"] or done["changed"]) else False

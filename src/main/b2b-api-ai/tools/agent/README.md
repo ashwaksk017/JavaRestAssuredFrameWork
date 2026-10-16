@@ -398,6 +398,40 @@ push, or puts the results into an existing execution named beside it).
 With `xray.enabled` off the listener does nothing, and Publish to Xray is
 how results get there.
 
+#### Update in Xray
+
+Cases change after their Xray test exists -- a review edit, a refinement.
+**Update in Xray: preview** (under Create in Xray) compares each case that
+has an Xray key in three versions: **ours** (the case now), **Xray now**
+(read live), and **last synced** (what the workbench last sent to the test
+or took from it -- kept with the key since this version). It sends nothing.
+
+| ours vs last synced | Xray vs last synced | proposed |
+|---|---|---|
+| same | same | nothing (in step) |
+| changed | same | **send** ours |
+| same | changed | **newer in Xray**: skip, or take Xray's steps into the case |
+| changed | changed | **conflict**: skip (the default), take Xray's, or send ours |
+
+Each row also says when Jira last changed the test, and by whom (its
+changelog), and whether that was after our last sync. The times compared
+are both Jira's: right after each create, import, send or take, the
+workbench records the `updated` Jira gives the test. Jira counts any edit
+(a comment, a link, a status), so the time is shown and used for keys kept
+before snapshots; the steps themselves decide.
+
+**Send the chosen** reads each test again first: one changed in Xray since
+the preview is skipped and said, never overwritten. Before a test is
+overwritten, what Xray had is added to `xray-update-backup.json` in the
+job. Steps are edited in place (POST `.../test/<key>/step/<id>`), extra
+ones added, surplus ones removed; the summary follows the case's title, and
+a test the workbench created gets its description rewritten too (one taken
+from the story keeps its own). "Take" changes the case -- as a review
+correction, so Finalize must be pressed again -- and nothing in Jira.
+Sending needs `jira_config.publish.create_tests` (Settings: Create in Xray).
+Xray Server / Data Center only; the step calls are Xray Server's REST API
+and have not been run against a live Xray.
+
 #### How long a design takes
 
 One Cursor call: a few seconds to start, the model thinking (60-100 s with
