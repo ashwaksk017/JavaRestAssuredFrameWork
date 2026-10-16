@@ -1569,6 +1569,12 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         # Each part would hand back the WHOLE revised list: one call.
         parts = [None]
         say(" ..  a refinement is asked in one call, with the cases as they are now")
+    if refine.strip():
+        # The request comes before the case limit (REFINE_RULE): 40 cases
+        # with one split must not come back cut to 40, the last one lost.
+        now = len(re.findall(r"(?m)^\S+ \[", current or ""))
+        if now + 20 > max_cases:
+            max_cases = now + 20
     if len(parts) == 1 and spec is not None:
         warnings += whole_notes
     part_counts = [len(endpoints_of(sub_spec(spec, p))) for p in parts] \
@@ -1674,8 +1680,10 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
                 return JSON_ONLY
 
         key = cache_key(prompt, mode, asked_model)
-        # A kept reply never saw the images pasted with this request.
-        hit = None if (fresh or loop.cursor_call.attached()) else cache_get(out_dir, key)
+        # A kept reply never saw the images pasted with this request -- and a
+        # reply that saw them is not kept for a request without them.
+        with_images = bool(loop.cursor_call.attached())
+        hit = None if (fresh or with_images) else cache_get(out_dir, key)
         if hit:
             try:
                 read_reply(redact(hit["reply"], private)[0])
@@ -1733,7 +1741,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
                 # answer worth repeating.
                 one_turn = first.get("text") in (None, reply)
                 keep = (key, reply, str(got.get("model", "") or asked_model)) \
-                    if (not hit and not partial and text is reply and one_turn) else None
+                    if (not hit and not partial and text is reply and one_turn and not with_images) else None
                 return data, how, got.get("model", ""), keep
         raise RuntimeError("Cursor answered, but no test cases could be read "
                            "from the reply. It is in the Cursor log.")

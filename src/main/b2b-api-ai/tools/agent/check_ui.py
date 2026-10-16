@@ -878,6 +878,8 @@ def main() -> int:
                           for v in (s.get("jira") or {}).values()), str(s)[:200])
             check("the cases can be refined with Cursor from the review",
                   'id="refine-run"' in html and 'id="refine-ask"' in html and 'id="wf-finalize"' in html)
+            check("Publish to Xray can name an existing Test Execution",
+                  'id="agent-xray"' in html and 'id="agent-xray-exec"' in html)
             check("a screenshot can be pasted into each box whose words go to Cursor",
                   all(f'id="{b}-pasted"' in html for b in
                       ("refine-ask", "design-notes", "agent-ask", "mig-ask", "wb-ask", "manual-notes"))

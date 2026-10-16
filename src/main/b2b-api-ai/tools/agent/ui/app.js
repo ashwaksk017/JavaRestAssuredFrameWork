@@ -2851,7 +2851,14 @@ function acceptPaste(id) {
   });
   drawPasted(id);
 }
-const pastedFor = (...ids) => ids.filter(Boolean).flatMap((id) => (pasted[id] || []).map((p) => ({ data: p.data })));
+const PASTE_TOTAL = 8 * 1024 * 1024;     // in all, per request: the server's body limit
+function pastedFor(...ids) {
+  const list = ids.filter(Boolean).flatMap((id) => pasted[id] || []);
+  if (list.length > PASTE_MAX) throw new Error(`${list.length} images; at most ${PASTE_MAX} go with one request -- remove some`);
+  const total = list.reduce((n, p) => n + (p.size || 0), 0);
+  if (total > PASTE_TOTAL) throw new Error(`${(total / 1048576).toFixed(1)} MB of images; at most 8 MB go with one request`);
+  return list.map((p) => ({ data: p.data }));
+}
 function clearPasted(...ids) {
   for (const id of ids.filter(Boolean)) { pasted[id] = []; drawPasted(id); }
 }

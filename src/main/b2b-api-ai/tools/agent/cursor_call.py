@@ -410,8 +410,9 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
     time limit. Each round is paid for.
     """
     emit = on_event or (lambda line: None)
+    # Taken when they are SENT: a run that fails before that leaves them
+    # for the next attempt.
     images = list(_ATTACHED)
-    _ATTACHED.clear()                        # one run takes them
     if not getattr(cfg, "api_key", ""):
         raise CursorCallError(
             "no Cursor API key. Set CURSOR_API_KEY, or put it in "
@@ -497,6 +498,10 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
     if not hasattr(Agent, "create"):
         emit("this cursor-sdk has no Agent.create; using the single "
              "blocking call (no progress until it returns)")
+        if images:
+            emit(f"{len(images)} pasted image(s) were NOT sent: this cursor-sdk's single call "
+                 f"takes text only (upgrade cursor-sdk)")
+            _ATTACHED.clear()
         try:
             out = bounded(lambda: ca._sdk_prompt(prompt, cfg), deadline_seconds, gave_up)
         except TimeoutError as e:
@@ -743,6 +748,7 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
             drain_bridge(agent)
             run_ = agent.send({"text": prompt.rstrip() + IMAGES_NOTE.format(n=len(images)),
                                "images": images} if images else prompt)
+            _ATTACHED.clear()                # sent: one run takes them
             live["run"] = run_
             still_wanted(agent, run_)
             say("sent; waiting for the agent"

@@ -148,5 +148,9 @@ def stages(job_dir: str, casereview, suitemap) -> list:
         {"name": "Run on stg", "done": bool(ran.get("ok")),
          "detail": (f"{ran.get('passed')} passed, {ran.get('failed')} failed" if ran else "")},
         {"name": "Push", "done": state == "pushed", "detail": review.get("branch") or ""},
-        {"name": "Publish", "done": bool(pub.get("ok")), "detail": pub.get("execution") or ""},
+        # Done when nothing is left: a publish before the push still owes
+        # the regression add.
+        {"name": "Publish", "done": bool(pub.get("ok")) and not (pub.get("regression") or {}).get("pending"),
+         "detail": (pub.get("execution") or "")
+                   + (" (regression after the push)" if (pub.get("regression") or {}).get("pending") else "")},
     ]

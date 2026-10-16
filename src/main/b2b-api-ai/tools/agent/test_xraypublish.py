@@ -136,6 +136,10 @@ class TheGapsClosed(Base):
         with self.assertRaises(xp.Refused) as got:
             xp.run("j1", self.root, transport=Xray(), conf=dict(CONF), mocked=False)
         self.assertIn("published already, as ABC-901", str(got.exception))
+        # ...also after a publish into an existing execution in between.
+        xp.run("j1", self.root, transport=Xray(), conf=dict(CONF), mocked=False, execution="ABC-777")
+        with self.assertRaises(xp.Refused):
+            xp.run("j1", self.root, transport=Xray(), conf=dict(CONF), mocked=False)
 
     def test_a_failed_regression_add_keeps_the_execution_on_record(self):
         class Refuses(Xray):
@@ -181,6 +185,42 @@ class AnyRunAnyExecution(Base):
         self.assertIn("not a Test Execution", str(got.exception))
         with self.assertRaises(xp.Refused):
             xp.run("j1", self.root, transport=Xray(), conf=dict(CONF), mocked=False, execution="ABC 1; drop")
+
+
+class GapsFromReview(Base):
+    def test_published_before_the_push_then_again_after_adds_only_the_regression(self):
+        self.change("pending-review")
+        first = Xray()
+        r1 = xp.run("j1", self.root, transport=first, conf=dict(CONF), mocked=False)
+        self.assertTrue(r1["regression"]["pending"])
+        self.change("pushed")
+        second = Xray()
+        r2 = xp.run("j1", self.root, transport=second, conf=dict(CONF), mocked=False)
+        self.assertFalse(any(c[1].endswith("/import/execution") for c in second.calls), "no second execution")
+        self.assertEqual(r2["execution"], "ABC-901")
+        self.assertEqual(r2["regression"]["added"], ["ABC-11", "ABC-12"])
+        with self.assertRaises(xp.Refused):
+            xp.run("j1", self.root, transport=Xray(), conf=dict(CONF), mocked=False)
+
+    def test_a_run_of_files_changed_since_is_not_published(self):
+        path = os.path.join(self.root, "src", "test", "java", "com", "hi", "api", "tests", "jira", "StaysTest.java")
+        rel = "src/test/java/com/hi/api/tests/jira/StaysTest.java"
+        self.ran["hashes"] = {rel: xp.loop._sha(path)}
+        with io.open(os.path.join(self.job, "execution.json"), "w", encoding="utf-8") as fh:
+            json.dump(self.ran, fh)
+        with io.open(path, "a", encoding="utf-8") as fh:
+            fh.write("// edited by hand\n")
+        with self.assertRaises(xp.Refused) as got:
+            xp.run("j1", self.root, transport=Xray(), conf=dict(CONF), mocked=False)
+        self.assertIn("changed since this run", str(got.exception))
+
+    def test_no_key_says_how_a_test_gets_one(self):
+        self.ran["tests"] = [t for t in self.ran["tests"] if t["method"] == "noKey"]
+        with io.open(os.path.join(self.job, "execution.json"), "w", encoding="utf-8") as fh:
+            json.dump(self.ran, fh)
+        with self.assertRaises(xp.Refused) as got:
+            xp.run("j1", self.root, transport=Xray(), conf=dict(CONF), mocked=False)
+        self.assertIn("Create in Xray", str(got.exception))
 
 
 class WhatIsRefused(Base):

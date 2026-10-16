@@ -473,7 +473,17 @@ class Handler(BaseHTTPRequestHandler):
             options["--fresh"] = True
         if body.get("whole_spec") is True:
             options["--whole-spec"] = True
-        return jobs.start(job, "agent-design", options)
+        try:
+            return jobs.start(job, "agent-design", options)
+        except BaseException:
+            # Not started: a refinement left here would be asked by the next
+            # design nobody meant as one.
+            for field in ("refine", "current"):
+                try:
+                    os.remove(os.path.join(out, f"design-{field}.txt"))
+                except OSError:
+                    pass
+            raise
 
     def _pasted(self, body: dict, start):
         """Images pasted with a request to Cursor (paste.py): kept for the

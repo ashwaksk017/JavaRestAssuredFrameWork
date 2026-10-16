@@ -159,11 +159,19 @@ def run(job: str, root: str = "", transport=None, conf: dict = None, mocked: boo
             before = json.load(fh)
     except (OSError, ValueError):
         before = {}
-    if (before.get("ok") and before.get("run_at") == ran.get("at") and not before.get("mock")
-            and not execution and not before.get("existing")):
-        raise Refused(f"this run was published already, as {before.get('execution')}: run the tests "
-                      f"again for a new Test Execution, or name an existing Test Execution to put "
-                      f"its results in")
+    # This run's earlier publishes (`history`): a run becomes ONE new Test
+    # Execution, however often Publish is pressed or which way.
+    history = [h for h in (before.get("history") or [])
+               if isinstance(h, dict) and h.get("run_at") == ran.get("at") and not h.get("mock")]
+    made = next((h.get("execution") for h in history if h.get("new") and h.get("execution")), "")
+    regression_done = any(h.get("regression_added") for h in history)
+    # Seen in review: Approve refuses a run of files edited since; publishing
+    # it would report on code that no longer exists.
+    changed = sorted(p for p, h in (ran.get("hashes") or {}).items()
+                     if loop._sha(os.path.join(root, p.replace("/", os.sep))) != h)
+    if changed:
+        raise Refused(f"the files changed since this run ({', '.join(changed[:5])}): run the tests "
+                      f"again, then publish")
     mocked = search.mock_jira() if mocked is None else mocked
     conf = conf or _xray_settings(root)
     if not mocked:
@@ -176,7 +184,9 @@ def run(job: str, root: str = "", transport=None, conf: dict = None, mocked: boo
     by_key, unkeyed = keyed(root, ran.get("tests") or [])
     if not by_key:
         raise Refused("none of the run's tests carries an Xray key (a jira_xray_id column, or "
-                      "@XrayTest): there is nothing to publish to")
+                      "@XrayTest): there is nothing to publish to. A test gets its case's key "
+                      "when the case is in Xray BEFORE Automate: Create in Xray (Review the "
+                      "designed cases), then Automate again -- or ask Cursor to add the keys")
     try:
         with io.open(os.path.join(job_dir, "review.json"), encoding="utf-8") as fh:
             change = str(json.load(fh).get("state") or "none")
@@ -194,6 +204,16 @@ def run(job: str, root: str = "", transport=None, conf: dict = None, mocked: boo
            "existing": bool(execution), "published": by_key, "not_published": unkeyed}
     in_regression = set(_regression_keys(root, ran, job_dir, mocked))
     regression_keys = sorted(k for k in by_key if k in in_regression)
+    # Pressed again for a run already made a new Test Execution: no second
+    # one. What may be left is the regression add, once the change is pushed.
+    only_regression = False
+    if made and not execution:
+        if pushed and regression_keys and not regression_done:
+            only_regression = True
+        else:
+            raise Refused(f"this run was published already, as {made}: run the tests again for a "
+                          f"new Test Execution, or name an existing Test Execution to put its "
+                          f"results in")
     xconn = {"base": conf.get("base") or "https://xray.mock", "api": "", "token": conf.get("token") or "",
              "timeout": 60}
     if execution and not mocked:
@@ -219,7 +239,11 @@ def run(job: str, root: str = "", transport=None, conf: dict = None, mocked: boo
     # An existing execution keeps its own summary, description and plan:
     # only the results go in.
     body = {"testExecutionKey": execution, "tests": tests} if execution else {"info": info, "tests": tests}
-    if mocked:
+    if only_regression:
+        out.update(execution=made, existing=False, note=f"the results are in {made} already: only the "
+                                                         f"regression tests are added now")
+        diag.step(f"The results are in {made} already; adding the regression tests")
+    elif mocked:
         out.update(execution=execution or "MOCK-EXEC", sent=body, note="mock Jira: nothing was contacted")
     else:
         diag.step(f"Putting the results in {execution}" if execution else "Creating the Test Execution in Xray")
@@ -232,6 +256,10 @@ def run(job: str, root: str = "", transport=None, conf: dict = None, mocked: boo
         if not key:
             out["warning"] = "Xray answered without the key of a Test Execution: " + json.dumps(answer)[:300]
     out["ok"] = bool(out.get("execution"))
+    out["history"] = list(before.get("history") or [])
+    if out["ok"] and not only_regression:
+        out["history"].append({"run_at": ran.get("at"), "execution": out["execution"],
+                               "new": not execution, "mock": bool(mocked), "at": out["at"]})
     _keep(job_dir, out)                     # the execution exists now, whatever follows
     if reg and regression_keys:
         kind = "testplan" if reg_type == "Test Plan" else "testset"
@@ -244,10 +272,14 @@ def run(job: str, root: str = "", transport=None, conf: dict = None, mocked: boo
             except search.JiraError as e:
                 out["regression"] = {"key": reg, "type": reg_type, "added": [],
                                      "error": f"Xray refused adding them (HTTP {e.status}): {str(e)[:200]}"}
+        if out["regression"].get("added"):
+            out["history"].append({"run_at": ran.get("at"), "execution": out["execution"],
+                                   "regression_added": True, "mock": bool(mocked), "at": out["at"]})
     elif regression_keys and not pushed:
-        out["regression"] = {"key": "", "added": [],
+        out["regression"] = {"key": "", "added": [], "pending": True,
                              "note": "the regression tests are added once the change is pushed "
-                                     "(publish again after Approve & push)"}
+                                     "(press Publish again after Approve & push: no second "
+                                     "Test Execution is made)"}
     elif regression_keys:
         out["regression"] = {"key": "", "added": [],
                              "note": "no regression Test Set or Test Plan is set (Settings tab)"}

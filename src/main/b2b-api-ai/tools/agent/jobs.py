@@ -877,8 +877,10 @@ RESULT_FILES = {"jira-": "jira-result.json", "failures-": "failures-result.json"
                 "story-check": "story-check.json",
                 "fix-brief": "fix-brief.json",
                 "xray-import": "xray-import.json",
-                "agent-run-tests": "execution.json",
-                "xray-publish": "xray-publish.json"}
+                # Not xray-publish: its record is what stops the same run
+                # becoming a second Test Execution, and a refused publish
+                # must not erase the last good one.
+                "agent-run-tests": "execution.json"}
 
 
 def clear_result(job: str, runnable: str) -> None:

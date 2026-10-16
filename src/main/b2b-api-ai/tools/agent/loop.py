@@ -3286,6 +3286,11 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         handed = xray_keys(job_dir, mocked=mocked)
         given_ids = designed_case_ids(job_dir)
         handed = {case: key for case, key in handed.items() if case in given_ids}
+        if given_ids and not handed:
+            say(f"WARN none of the {len(given_ids)} case(s) written is in Xray yet, so their tests "
+                f"carry no Xray key and Publish to Xray will have nothing to send for them. "
+                f"Create in Xray first (Review the designed cases), then Automate -- or ask "
+                f"Cursor to add the keys once they exist.")
         if handed:
             landed = xray_landed(root, files, handed)
             review["xray"] = landed
