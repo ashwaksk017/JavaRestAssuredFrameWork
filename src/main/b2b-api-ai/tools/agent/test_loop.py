@@ -1641,6 +1641,103 @@ class VerifyAndRepair(Repo):
         self.assertEqual((rc, len(prompts)), (1, 2))
         self.assertIn("not getting anywhere", out.getvalue())
 
+    def test_a_repair_attempt_sends_only_what_failed_to_the_same_conversation(self):
+        calls = []
+
+        def fake_call(prompt, root, **kw):
+            calls.append((prompt, kw.get("resume_id", ""), kw.get("fresh_prompt", "")))
+            write(self.root, JIRA + "NewTest.java", "class NewTest { /* v%d */ }\n" % len(calls))
+            return {"result": "", "agent_id": "ag-1", "resumed": bool(kw.get("resume_id"))}
+        orig = loop.call_cursor
+        loop.call_cursor = fake_call
+        results = [{"ok": False, "steps": [{"name": "compile", "rc": 1,
+                                            "tail": "NewTest.java:1: error: ';' expected"}]}, OK()]
+        try:
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(self.generate(None, lambda: results.pop(0)), 0)
+        finally:
+            loop.call_cursor = orig
+        self.assertEqual(len(calls), 2)
+        first, second = calls
+        self.assertEqual(first[1], "", "the first call starts a conversation")
+        self.assertEqual(second[1], "ag-1", "the repair reopens it")
+        self.assertIn("';' expected", second[0])
+        self.assertTrue(second[0].startswith("===== YOUR LAST CHANGE DID NOT VERIFY"))
+        self.assertLess(len(second[0]), len(first[0]) / 3, "a fraction of the whole request")
+        self.assertIn("YOUR PREVIOUS ATTEMPT DID NOT VERIFY", second[2],
+                      "the whole request, with the errors, is kept for a new conversation")
+        self.assertGreater(len(second[2]), len(first[0]))
+        self.assertIn("repair to the same conversation", self.cursor_log())
+
+    def test_with_the_switch_off_every_attempt_is_the_whole_request(self):
+        self.policy["repair_same_conversation"] = False
+        calls = []
+
+        def fake_call(prompt, root, **kw):
+            calls.append(kw.get("resume_id", ""))
+            write(self.root, JIRA + "NewTest.java", "class NewTest { /* v%d */ }\n" % len(calls))
+            return {"result": "", "agent_id": "ag-1"}
+        orig = loop.call_cursor
+        loop.call_cursor = fake_call
+        results = [{"ok": False, "steps": [{"name": "compile", "rc": 1, "tail": "x"}]}, OK()]
+        try:
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(self.generate(None, lambda: results.pop(0)), 0)
+        finally:
+            loop.call_cursor = orig
+        self.assertEqual(calls, ["", ""])
+
+    def fast_verify(self, fast_rc, compile_before=None):
+        os.makedirs(os.path.join(self.root, "target", "classes"), exist_ok=True)
+        write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
+        path = os.path.join(self.root, JIRA, "NewTest.java")
+        os.utime(path, (1_000_000, 1_000_000))
+        argvs = []
+
+        def runner(argv):
+            argvs.append(list(argv))
+            fast = any("useIncrementalCompilation=false" in a for a in argv)
+            rc = fast_rc if fast else 0
+            out = (b"[ERROR] /x/" + JIRA.encode() + b"NewTest.java:[1,20] ';' expected\n") if rc else b""
+            return subprocess.CompletedProcess(argv, rc, out, b"")
+        scope = {"compile": ["mvn", "-q", "-DskipTests", "test-compile"], "checks": []}
+        orig = loop.shutil.which
+        loop.shutil.which = lambda name: "mvn"
+        try:
+            with redirect_stdout(io.StringIO()):
+                res = loop.run_verify(self.root, scope, runner=runner, compile_before=compile_before)
+        finally:
+            loop.shutil.which = orig
+        return res, argvs, os.path.getmtime(path)
+
+    def test_a_change_that_does_not_compile_is_told_without_the_whole_project_compile(self):
+        res, argvs, _ = self.fast_verify(fast_rc=1)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["steps"][-1]["name"], "compile (the changed files)")
+        self.assertIn("';' expected", res["steps"][-1]["tail"])
+        self.assertEqual(len(argvs), 1, "the full compile is not run for it")
+
+    def test_a_change_that_compiles_is_still_compiled_with_the_whole_project(self):
+        res, argvs, mtime = self.fast_verify(fast_rc=0)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(len(argvs), 2)
+        self.assertTrue(any("useIncrementalCompilation=false" in a for a in argvs[0]))
+        self.assertFalse(any("useIncrementalCompilation" in a for a in argvs[1]), "the full compile, as before")
+        self.assertGreater(mtime, 1_000_000,
+                           "marked changed again, or the full compile finds nothing to do")
+
+    def test_a_tree_that_did_not_compile_before_gets_only_the_full_compile(self):
+        res, argvs, _ = self.fast_verify(fast_rc=1, compile_before=set())
+        self.assertEqual(len(argvs), 1)
+        self.assertFalse(any("useIncrementalCompilation" in a for a in argvs[0]))
+
+    def test_the_fast_command_is_only_for_a_maven_compile(self):
+        self.assertEqual(loop.fast_compile_cmd(["mvn", "-q", "test-compile"])[-1],
+                         "-Dmaven.compiler.useIncrementalCompilation=false")
+        self.assertIsNone(loop.fast_compile_cmd(["gradle", "compileJava"]))
+        self.assertIsNone(loop.fast_compile_cmd(["mvn", "test"]))
+        self.assertIsNone(loop.fast_compile_cmd([]))
+
     def test_it_keeps_repairing_while_the_errors_change_until_it_verifies(self):
         results = [{"ok": False, "steps": [{"name": "compile", "rc": 1, "tail": f"error {n}"}]}
                    for n in range(4)] + [OK()]
@@ -3203,6 +3300,8 @@ class FakeSdk:
                 outer.cancelled = True
 
         class Session:
+            agent_id = "ag-new"
+
             def __enter__(self_inner):
                 return self_inner
 
@@ -3226,8 +3325,20 @@ class FakeSdk:
                 raise raise_on_create
             return Session()
 
+        self.resumed_ids = []
+
+        def resume(agent_id, options):
+            outer.resumed_ids.append(agent_id)
+            if outer.resume_raises:
+                raise outer.resume_raises
+            s = Session()
+            s.agent_id = agent_id
+            return s
+
+        self.resume_raises = None
         if with_create:
             Agent.create = staticmethod(create)
+            Agent.resume = staticmethod(resume)
         self.module = types.ModuleType("cursor_sdk")
         self.module.Agent = Agent
         self.module.AgentOptions = lambda **kw: types.SimpleNamespace(**kw)
@@ -3260,6 +3371,32 @@ class CallingCursor(unittest.TestCase):
     def use(self, fake):
         sys.modules["cursor_sdk"] = fake.module
         return fake
+
+    def test_a_repair_goes_to_the_same_conversation_with_only_what_failed(self):
+        fake = self.use(FakeSdk())
+        info = {}
+        loop.cursor_call.run("fix: X.java:3 cannot find symbol", self.ca, self.cfg,
+                             resume_id="ag-1", fresh_prompt="THE WHOLE REQUEST", info=info)
+        self.assertEqual(fake.resumed_ids, ["ag-1"])
+        self.assertEqual(fake.sent, ["fix: X.java:3 cannot find symbol"])
+        self.assertEqual(info, {"resumed": True, "agent_id": "ag-1"})
+        self.assertTrue(fake.closed)
+
+    def test_a_conversation_that_cannot_be_reopened_gets_the_whole_request_in_a_new_one(self):
+        fake = self.use(FakeSdk())
+        fake.resume_raises = RuntimeError("agent not found")
+        info, seen = {}, []
+        loop.cursor_call.run("fix only", self.ca, self.cfg, on_event=seen.append,
+                             resume_id="ag-gone", fresh_prompt="THE WHOLE REQUEST", info=info)
+        self.assertEqual(fake.sent, ["THE WHOLE REQUEST"])
+        self.assertEqual(info, {"resumed": False, "agent_id": "ag-new"})
+        self.assertTrue(any("could not be reopened" in s for s in seen), seen)
+
+    def test_a_first_call_says_which_conversation_it_was(self):
+        self.use(FakeSdk())
+        info = {}
+        loop.cursor_call.run("write the test", self.ca, self.cfg, info=info)
+        self.assertEqual(info, {"resumed": False, "agent_id": "ag-new"})
 
     def test_it_runs_in_agent_mode_in_one_directory_and_closes_the_session(self):
         fake = self.use(FakeSdk())

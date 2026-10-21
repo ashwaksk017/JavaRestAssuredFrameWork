@@ -600,24 +600,42 @@ def cursor_quiet(policy: dict, default: float = 600) -> float:
 
 
 def call_cursor(prompt: str, root: str, on_event=None, deadline: float = 0,
-                quiet: float = 0, what: str = "") -> dict:
+                quiet: float = 0, what: str = "", resume_id: str = "",
+                fresh_prompt: str = "") -> dict:
     """One prompt to Cursor in this repository. See cursor_call.py for why
     it is a session with streamed progress rather than one blocking call."""
     diag.step(what or "Asking Cursor to write the change (this can take several minutes)")
     ca, cfg = cursor_config(root)
     redact = lambda s: ca.redact_for_log(str(s), cfg.api_key)
+    info = {}
     try:
         out = cursor_call.run(prompt, ca, cfg,
                               on_event=(lambda line: on_event(redact(line)))
                               if on_event else None,
-                              deadline_seconds=deadline, quiet_seconds=quiet)
+                              deadline_seconds=deadline, quiet_seconds=quiet,
+                              resume_id=resume_id, fresh_prompt=fresh_prompt, info=info)
     except cursor_call.CursorCallError as e:
         msg = redact(e)
         if e.details:
             msg += "\n" + redact(e.details)
         raise CursorFailed(msg, e.kind, e.cancelled) from e
     out["result"] = redact(out.get("result") or "")
+    out["agent_id"] = info.get("agent_id", "")
+    out["resumed"] = bool(info.get("resumed"))
     return out
+
+
+def repair_message(repair: str) -> str:
+    """What a repair attempt sends to the SAME conversation. It already
+    holds the whole request -- skill, example, brief, rules, ~28k
+    characters -- so only what failed goes again."""
+    return "\n".join([
+        "===== YOUR LAST CHANGE DID NOT VERIFY =====",
+        "The workbench ran its checks on the files you wrote. Fix only what this "
+        "output reports, in the same paths and under the same rules as the first "
+        "request in this conversation. Do not start over, and do not undo what "
+        "already works.", "", repair[-12000:], "",
+        "When you are done, end with the same final summary the first request asked for."])
 
 
 # ---- the working tree ------------------------------------------------
@@ -2921,6 +2939,24 @@ def _after_cursor(attempt: int, detail: str) -> str:
     return f"Cursor has finished writing the code. {detail} - not ready to test until this passes"
 
 
+def fast_compile_cmd(cmd: list):
+    """The compile command, compiling only the sources changed since the
+    last build -- or None when it is not a Maven compile. With
+    useIncrementalCompilation=false the compiler plugin passes javac only
+    the stale files (true recompiles the whole module on any change).
+    Measured on this tree: 7 s against 20 s for one changed test file;
+    78 s seen for the full compile on the remote machine."""
+    if not cmd:
+        return None
+    if os.path.basename(cmd[0]).lower().split(".")[0] not in ("mvn", "mvnw"):
+        return None
+    if not ({"compile", "test-compile"} & set(cmd[1:])):
+        return None
+    if any("useIncrementalCompilation" in str(a) for a in cmd):
+        return None
+    return list(cmd) + ["-Dmaven.compiler.useIncrementalCompilation=false"]
+
+
 def run_verify(root: str, scope: dict, runner=None, gate_before=None,
                gate_json: str = "", compile_before=None, attempt: int = 1) -> dict:
     """Compile, then the scope's checks. {ok, steps:[{name, rc, tail}]}."""
@@ -2936,6 +2972,39 @@ def run_verify(root: str, scope: dict, runner=None, gate_before=None,
                                   f"change cannot be called verified without "
                                   f"a compile."})
             return {"ok": False, "steps": steps}
+        fast = fast_compile_cmd(compile_cmd) if (
+            compile_before is None and scope.get("fast_compile", True)
+            and os.path.isdir(os.path.join(root, "target", "classes"))) else None
+        changed_java = []
+        if fast:
+            try:
+                changed_java = [p for p in dirty_paths(root)
+                                if p.endswith(".java") and os.path.isfile(os.path.join(root, p))]
+            except RuntimeError:
+                changed_java = []
+        if fast and changed_java:
+            diag.step(_after_cursor(attempt, "Compiling the changed files"))
+            say(f" .. verify: the {len(changed_java)} changed Java file(s) first "
+                f"({' '.join(fast)})")
+            started_at = time.time()
+            r, how = run_build(run, exe, fast)
+            if r.returncode != 0:
+                say(f" .. the changed files do NOT compile ({how}, {time.time() - started_at:.0f}s); "
+                    f"the whole project is not compiled for this attempt")
+                steps.append({"name": "compile (the changed files)", "rc": r.returncode,
+                              "tail": compile_report(r.stdout), "errors": compile_errors(r.stdout)})
+                return {"ok": False, "steps": steps}
+            say(f" .. the changed files compile ({time.time() - started_at:.0f}s); now the whole project")
+            # Their classes are now newer than their sources, so the full
+            # compile would find nothing to do and never recompile the files
+            # that USE them (measured: "Nothing to compile"). Marked changed
+            # again -- content untouched -- it recompiles the module as before.
+            later = time.time() + 1
+            for p in changed_java:
+                try:
+                    os.utime(os.path.join(root, p), (later, later))
+                except OSError:
+                    pass
         diag.step(_after_cursor(attempt, "Checking that the project still compiles"))
         say(f" .. verify: {' '.join(compile_cmd)}")
         started_at = time.time()
@@ -3486,13 +3555,29 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
     diag.step("Writing the placeholder test (mock mode: Cursor is not asked)" if mocked
               else "Getting ready to ask Cursor for the change")
     cursor_attempt = [1]
-    call = agent or (lambda prompt: call_cursor(
-        prompt, root, on_event=lambda line: clog.write("  cursor: " + line),
-        deadline=cursor_deadline(policy, "generate"), quiet=cursor_quiet(policy),
-        what=("Asking Cursor to write the change (this can take several minutes)"
-              if cursor_attempt[0] == 1 else
-              "Cursor is writing the code again (attempt "
-              f"{cursor_attempt[0]}). The last check did not pass")))
+    # The conversation of this run's first call, and what a repair sends to it.
+    conv = {"id": "", "repair": ""}
+
+    def real_call(prompt):
+        short = conv["repair"] if (conv["id"] and conv["repair"]
+                                   and policy.get("repair_same_conversation", True)) else ""
+        if short:
+            clog.write(f"repair to the same conversation: {len(short)} characters "
+                       f"(the whole request is {len(prompt)}, kept for a new one if needed)")
+        out = call_cursor(
+            short or prompt, root, on_event=lambda line: clog.write("  cursor: " + line),
+            deadline=cursor_deadline(policy, "generate"), quiet=cursor_quiet(policy),
+            what=("Asking Cursor to write the change (this can take several minutes)"
+                  if cursor_attempt[0] == 1 else
+                  "Cursor is fixing what the check found (attempt "
+                  f"{cursor_attempt[0]})"),
+            resume_id=conv["id"] if short else "", fresh_prompt=prompt if short else "")
+        if out.get("agent_id"):
+            conv["id"] = out["agent_id"]
+        if short and not out.get("resumed"):
+            clog.write("the conversation could not be reopened: the whole request went to a new one")
+        return out
+    call = agent or real_call
     design_text, design_note = designed_cases(job_dir)
     if design_note and scope_name != "converter":
         say(f" ..  {design_note}")
@@ -3833,6 +3918,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         started = time.time()
         call_commit, _call_branch = head(root)      # HEAD may not move during the call
         try:
+            conv["repair"] = repair_message(repair) if (attempt > 1 and repair) else ""
             answer = call(prompt)
         except Exception as e:                           # noqa: BLE001
             diag.trace()

@@ -387,7 +387,8 @@ class _ForwardToLog(logging.Handler):
 
 
 def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
-        deadline_seconds: float = 0, quiet_seconds: float = 0, answer_complete=None) -> dict:
+        deadline_seconds: float = 0, quiet_seconds: float = 0, answer_complete=None,
+        resume_id: str = "", fresh_prompt: str = "", info: dict = None) -> dict:
     """Send one prompt; return {status, result, id, model, transport}.
 
     Raises CursorCallError. `on_event(line)` is called for each status
@@ -421,7 +422,18 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
     "Connection stalled" (a retryable error) about 35 s later and ran the
     SAME request again -- the same input tokens -- again and again until the
     time limit. Each round is paid for.
+
+    `resume_id`: the conversation of an earlier call (its `info["agent_id"]`)
+    to send `prompt` to -- a repair, which that conversation already has the
+    whole request for. Measured: a first call read ~290k input tokens; a
+    repair as a NEW conversation read them all again. When the conversation
+    cannot be reopened, or the first send to it fails, a new one is started
+    with `fresh_prompt` (the full request), as before -- and said.
+
+    `info`: filled with {"agent_id", "resumed"} for the caller.
     """
+    info = info if info is not None else {}
+    info["resumed"] = False
     emit = on_event or (lambda line: None)
     # Taken when they are SENT: a run that fails before that leaves them
     # for the next attempt.
@@ -765,12 +777,31 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
     def session():
         options = AgentOptions(api_key=cfg.api_key, model=cfg.model, mode=mode,
                                local=LocalAgentOptions(cwd=cwd))
-        with Agent.create(options) as agent:
+        reopened, first = None, None
+        if resume_id:
+            # Anything that goes wrong reopening it -- an SDK without
+            # resume, the bridge, a conversation that is gone -- is a new
+            # conversation with the full request, as before.
+            try:
+                reopened = Agent.resume(resume_id, options)
+                first = reopened.send(prompt)
+                info["resumed"] = True
+                say(f"reopened the conversation {resume_id[:24]}: only what failed was sent "
+                    f"({len(prompt)} characters)")
+            except Exception as e:                       # noqa: BLE001
+                say(f"the conversation could not be reopened ({type(e).__name__}: "
+                    f"{str(e)[:200]}); a new one gets the whole request")
+                if reopened is not None:
+                    _best_effort(reopened, "close")
+                reopened, first = None, None
+        text = prompt if first is not None else (fresh_prompt or prompt)
+        with (reopened if reopened is not None else Agent.create(options)) as agent:
             live["agent"] = agent
+            info["agent_id"] = str(getattr(agent, "agent_id", "") or resume_id or "")
             still_wanted(agent)
             drain_bridge(agent)
-            run_ = agent.send({"text": prompt.rstrip() + IMAGES_NOTE.format(n=len(images)),
-                               "images": images} if images else prompt)
+            run_ = first or agent.send({"text": text.rstrip() + IMAGES_NOTE.format(n=len(images)),
+                                        "images": images} if images else text)
             _ATTACHED.clear()                # sent: one run takes them
             live["run"] = run_
             still_wanted(agent, run_)
