@@ -382,7 +382,8 @@ Rules for the `@Test` body:
 - Call `ManualCleanup.afterEachTest(ctx)` in `@AfterMethod`, before
   `ImportedScenario.unbind()`, or the rows this test creates are never
   deleted.
-- `softAssert.assertAll()` belongs at the end of the method (and `BaseApiTest` also asserts in `@AfterMethod`).
+- Do not call `softAssert.assertAll()`: `BaseApiTest` does it in `@AfterMethod` and stamps the
+  failures on the `@Test` result. A second call reports the same failures twice.
 - `@Test` signature must be `(Map<String, String> row)`.
 
 You no longer need `AuthHelper.primeClientCredentialsToken(ctx)` in

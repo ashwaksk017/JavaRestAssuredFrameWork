@@ -104,6 +104,7 @@ config helper **fails the workbench's checks** (`story-test-shared-helpers`):
 | A value from the row, else the configuration | `rowOrConfig(row, column, key)` (skips when unset); `rowOrConfig(row, column, key, fallbackKey)`; `optionalRowOrConfig(row, column, key[, fallbackKey])` (null, no skip); `truthyRowOrConfig(row, column, key)` |
 | Setup: a new guest | `String guestId = enrollGuest(row, "templates/manual/<job>_enroll_guest.json", CASE)` -- null when it failed (stop; its `CASE/SETUP` assertions say why) |
 | Setup: a program account for that guest | `String accountId = createProgramAccount(row, template, guestId, guestToken, CASE)` |
+| Act: the create itself (its AC is the create) | `Response res = createProgramAccountResponse(row, template, guestId, guestToken, CASE)` -- unasserted, you assert it with AC tags |
 | Blank enrolment columns filled (ALLOWED_DOMAINS-aware) | `fillEnrollFields(row)` (enrollGuest calls it) |
 | A named Allure step around a call | `step("verbName: VERB /path", () -> RestUtilities.getResponseGet(url, headers))` |
 | A list in a response, never null | `listAt(res, "items.id")` |
@@ -286,8 +287,8 @@ Before writing Java, complete this checklist (paste it in your final reply):
 ```
 [ ] HTTP_PLAN numbered (setup / probe / act) — step 1 is token unless documented otherwise
 [ ] Each path {guestId} has a source kind (EXTRACT / TOKEN / CONFIG) named in DATA_INVENTORY
-[ ] Enroll in the flow → guestId from safeJsonExtract(enrollRes, "guestId"), not config
-[ ] Existing persona on /guests/{guestId}/… → guestId from token body or JWT claims when possible
+[ ] Enroll in the flow → guestId = enrollGuest(row, template, CASE) (StoryTestBase), not config
+[ ] Existing persona on /guests/{guestId}/… → ownerSession(...).requireGuestId() (token body or JWT claims)
 [ ] templates/manual/*.json listed; every #placeholder# mapped to CSV, ctx, or <<faker>>
 [ ] csv/manual/<Class>/<method>.csv header quoted in reply (group A + C + D columns)
 [ ] DATA_INVENTORY Javadoc on the test class
@@ -305,7 +306,10 @@ String guestId = enrollGuest(row, "templates/manual/<job>_enroll_guest.json", CA
 if (guestId == null) return;                       // SETUP assertions say why
 JsonTokens.Session guest = guestSession(row.get("enroll_username"), row.get("enroll_password"));
 String accountId = createProgramAccount(row, "templates/manual/<job>_create_program_account.json",
-        guestId, guest.accessToken, CASE);         // or the act itself, asserted with the AC tag
+        guestId, guest.accessToken, CASE);         // SETUP: asserted, reduced to the id
+// When the create IS the act (its AC is the create's status/body):
+// Response res = createProgramAccountResponse(row, template, guestId, guest.accessToken, CASE);
+// then assert res with "TC-00n/AC-n: " tags.
 ```
 
 The order (client-credentials token → enrol → guestId from the enrol

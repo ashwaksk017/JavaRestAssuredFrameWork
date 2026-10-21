@@ -72,6 +72,26 @@ public class StoryTestBaseTest {
     }
 
     @Test(groups = {"unit"})
+    public void bothTokenUrlsAreAskedTheConfiguredOneFirst() {
+        System.setProperty("api_config.token_end_point", "https://auth.example.test/base");
+        System.setProperty("api_config.token_route", "/oauth/token");
+        java.util.List<String> urls = JsonTokens.tokenUrls();
+        Assert.assertEquals(urls.size(), 2, urls.toString());
+        Assert.assertEquals(urls.get(0), "https://auth.example.test/base/oauth/token");
+        Assert.assertTrue(urls.get(1).endsWith("/realms/applications/token"), urls.toString());
+        System.setProperty("api_config.token_route", "");
+        Assert.assertEquals(JsonTokens.tokenUrls().size(), 1, "nothing configured: the realms route only");
+    }
+
+    @Test(groups = {"unit"})
+    public void aPlaceholderIsNotAValue() {
+        Map<String, String> row = new HashMap<>();
+        row.put("username", "__SET_ME__");
+        Assert.assertNull(Probe.opt(row, "username", "jira.abc-1.owner.username", null),
+                "a placeholder in the row is not a persona: unset, so the test is skipped, not run with it");
+    }
+
+    @Test(groups = {"unit"})
     public void aSessionWithoutAGuestIdSaysSoWhenOneIsNeeded() {
         Assert.assertEquals(new JsonTokens.Session("t", "42").requireGuestId(), "42");
         Assert.assertThrows(IllegalStateException.class, () -> new JsonTokens.Session("t", null).requireGuestId());

@@ -1277,6 +1277,50 @@ class PatchManualCsvXray(unittest.TestCase):
                      encoding="utf-8") as fh:
             self.assertIn("B2B-99801", fh.read())
 
+    def sheet(self, rel):
+        with io.open(os.path.join(self.root, rel.replace("/", os.sep)), encoding="utf-8") as fh:
+            return list(csv.DictReader(fh))
+
+    def test_another_jobs_placeholder_is_that_jobs_row(self):
+        rel = "src/test/resources/csv/manual/T/a.csv"
+        write(self.root, rel, "description,test_case_id,jira_issue\n"
+                              "mine,TC-001,job1\nother job,TC-002,job-20261001-101010\n")
+        path = os.path.join(self.root, rel.replace("/", os.sep))
+        self.assertTrue(loop.patch_one_manual_csv(
+            path, story="B2B-99454", keys_by_case={"TC-001": "B2B-99771", "TC-002": "B2B-99772"},
+            job_id="job1"))
+        rows = self.sheet(rel)
+        self.assertEqual(rows[0]["jira_issue"], "B2B-99454")
+        self.assertEqual(rows[1]["jira_issue"], "job-20261001-101010")
+        self.assertEqual(rows[1]["jira_xray_id"], "")
+
+    def test_with_no_case_ids_known_only_unowned_rows_are_filled(self):
+        rel = "src/test/resources/csv/manual/T/b.csv"
+        write(self.root, rel, "description,test_case_id,jira_issue\n"
+                              "new,TC-001,\nowned,TC-002,B2B-11111\n")
+        path = os.path.join(self.root, rel.replace("/", os.sep))
+        self.assertTrue(loop.patch_one_manual_csv(path, story="B2B-99454", case_ids=set(), job_id="job1"))
+        rows = self.sheet(rel)
+        self.assertEqual(rows[0]["jira_issue"], "B2B-99454")
+        self.assertEqual(rows[1]["jira_issue"], "B2B-11111")
+
+    def test_with_no_story_a_row_owned_elsewhere_gets_no_key(self):
+        rel = "src/test/resources/csv/manual/T/c.csv"
+        write(self.root, rel, "description,test_case_id,jira_issue\nowned,TC-001,B2B-11111\n")
+        details = []
+        path = os.path.join(self.root, rel.replace("/", os.sep))
+        loop.patch_one_manual_csv(path, story="", keys_by_case={"TC-001": "B2B-99771"},
+                                  details=details, job_id="job1")
+        self.assertIn("B2B-11111", " ".join(details))
+        self.assertEqual(self.sheet(rel)[0]["jira_xray_id"], "", "another story's row gets no key")
+
+    def test_a_discarded_change_holds_no_sheet(self):
+        rel = "src/test/resources/csv/manual/T/d.csv"
+        write(self.root, rel, "description,test_case_id\nx,TC-001\n")
+        write(self.root, ".workbench/job1/review.json",
+              json.dumps({"state": "discarded", "files": {"created": [rel], "modified": []}}))
+        self.assertEqual(loop.job_sheets(self.root, self.job), [])
+
     def test_another_storys_sheet_with_the_same_case_id_is_never_touched(self):
         """Seen in review: TC-001 is in every job, and Create in Xray gave
         another story's sheet this story and this key, on every row."""
@@ -1393,6 +1437,65 @@ class SharedHelperGate(unittest.TestCase):
     def test_the_policy_shows_cursor_the_example_not_a_story_test(self):
         ex = loop.load_policy()["scopes"]["new-test"]["pattern_example"]
         self.assertEqual(ex, ["src/test/java/com/hi/api/tests/examples/StoryTestExample.java"])
+
+    def test_a_helper_declared_over_several_lines_is_found(self):
+        text = ('public class T extends StoryTestBase {\n'
+                '  private static String\n'
+                '      rowOrConfig(Map<String, String> row,\n'
+                '                  String col)\n'
+                '      throws Exception {\n'
+                '    return null; }\n'
+                '}\n')
+        self.assertTrue(any("rowOrConfig" in i for i in self.issues(text)), self.issues(text))
+
+    def test_a_call_to_a_helper_is_not_a_declaration(self):
+        text = ('public class T extends StoryTestBase {\n'
+                '  @Test(groups = {"jira"}) public void a(Map<String, String> row) {\n'
+                '    String u = flag ? rowOrConfig(row, "u", "k", null)\n'
+                '        : optionalRowOrConfig(row, "u", "k", null);\n'
+                '    String t = clientToken(); }\n'
+                '}\n')
+        self.assertEqual(self.issues(text), [])
+
+    def test_a_test_of_the_token_end_point_says_so_and_passes(self):
+        body = ('  @Test(groups = {"jira"}) public void a() {\n'
+                '    payload.put("client_secret", Config.get("api_config.client_secret", "")); }\n')
+        raw = 'public class T extends StoryTestBase {\n' + body + '}\n'
+        self.assertTrue(any("requests or decodes a token itself" in i for i in self.issues(raw)))
+        marked = ('public class T extends StoryTestBase {\n'
+                  '  // workbench: token end point under test\n' + body + '}\n')
+        self.assertEqual(self.issues(marked), [])
+
+    def test_a_helper_class_beside_the_tests_is_checked_too(self):
+        root = tempfile.mkdtemp(prefix="gate_")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        rel = "src/test/java/com/hi/api/tests/jira/StoryHelpers.java"
+        write(root, rel, 'class StoryHelpers {\n'
+                         '  static Map<String, String> apiHeaders(String t) { return null; }\n}\n')
+        said = " | ".join(loop.storytests.jira_parity_issues(root, [rel]))
+        self.assertIn("apiHeaders", said)
+
+    def test_a_test_from_before_storytestbase_is_failed_only_for_what_the_change_adds(self):
+        root = tempfile.mkdtemp(prefix="gate_")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        sh(root, "init", "-q", "-b", "main")
+        sh(root, "config", "user.email", "t@example.com")
+        sh(root, "config", "user.name", "t")
+        sh(root, "config", "core.autocrlf", "false")
+        rel = "src/test/java/com/hi/api/tests/jira/OldTest.java"
+        old = ('public class OldTest extends BaseApiTest {\n'
+               '  private static Map<String, String> apiHeaders(String t) { return null; }\n}\n')
+        write(root, rel, old)
+        sh(root, "add", "-A")
+        sh(root, "commit", "-q", "-m", "old")
+        issues = loop.storytests._new_shared_helper_issues(root, rel, old)
+        self.assertEqual(issues, [], "touching an old test does not demand its migration")
+        added = old.replace("}\n}\n", "}\n  private String fetchAccessToken() { return null; }\n}\n")
+        issues = loop.storytests._new_shared_helper_issues(root, rel, added)
+        said = " | ".join(issues)
+        self.assertIn("fetchAccessToken", said)
+        self.assertNotIn("apiHeaders", said)
+        self.assertIn("from before StoryTestBase", said)
 
 
 class Preconditions(Repo):

@@ -1390,7 +1390,8 @@ def pattern_example(root: str, policy: dict, scope: dict, bundled_with_skill: bo
     cap = GOLDEN_JAVA_CAP if others else EXAMPLE_JAVA_CAP
     if bundled_with_skill:
         lines = ["===== GOLDEN EXAMPLE (form only — the skill wins on rules) =====",
-                 "Shows HTTP order (token → enroll → extract guestId → act), ManualBody "
+                 "Shows HTTP order (token → enroll → guestId → act) through StoryTestBase's "
+                 "helpers (ownerSession, enrollGuest, createProgramAccount, step), ManualBody "
                  "templates, and csv/manual/ columns. Endpoints, ids and assertions are not "
                  "yours; copy the shape, not the story."]
     else:
@@ -1656,7 +1657,7 @@ _JOB_ID_RX = re.compile(r"^job-\d{8}-\d{6}$", re.I)
 
 
 def patch_one_manual_csv(path: str, story: str = "", keys_by_case: dict = None,
-                         details: list = None, case_ids=None) -> bool:
+                         details: list = None, case_ids=None, job_id: str = "") -> bool:
     """Add or fill jira_xray_id and jira_issue on a csv/manual data sheet --
     on THIS job's rows only.
 
@@ -1665,7 +1666,12 @@ def patch_one_manual_csv(path: str, story: str = "", keys_by_case: dict = None,
     when its test_case_id is one of `case_ids` (default: the cases with a
     key). Its jira_issue is filled when empty or a job-id placeholder, and
     never replaced when it names another story -- that row is left, and
-    said. A row without a test_case_id is left as it is."""
+    said. A row without a test_case_id is left as it is.
+
+    The placeholder is THIS job's id (`job_id`); another job's id is that
+    job's row. With no case ids known at all (no Xray keys, no designed
+    cases), a row is this job's only when its jira_issue is empty, this
+    job's id, or this story -- never by case id alone."""
     keys_by_case = {str(k): str(v).upper() for k, v in (keys_by_case or {}).items() if v}
     mine = {str(c).strip() for c in (case_ids if case_ids is not None else keys_by_case) if str(c).strip()}
 
@@ -1705,15 +1711,27 @@ def patch_one_manual_csv(path: str, story: str = "", keys_by_case: dict = None,
     if not data_rows and not changed:
         return False
     story_up = story.upper() if story else ""
+    job_up = (job_id or "").strip().upper()
+
+    def placeholder(issue: str) -> bool:
+        # This job's id; without one, any job id (older callers).
+        return issue == job_up if job_up else bool(_JOB_ID_RX.match(issue))
+
     any_mine = False
     for row in data_rows:
         tid = str(row.get("test_case_id") or "").strip()
-        if not tid or tid not in mine:
-            continue                       # not this job's row
-        any_mine = True
         have_issue = str(row.get("jira_issue") or "").strip().upper()
-        if story_up and have_issue and have_issue != story_up and not _JOB_ID_RX.match(have_issue):
-            note(f"{tid}: left as it is -- its jira_issue is {have_issue}, another story's")
+        if not tid:
+            continue
+        if mine:
+            if tid not in mine:
+                continue                   # not this job's row
+        elif have_issue and have_issue != story_up and not placeholder(have_issue):
+            continue                       # no case ids known: owned rows are not ours
+        any_mine = True
+        if have_issue and have_issue != story_up and not placeholder(have_issue):
+            note(f"{tid}: left as it is -- its jira_issue is {have_issue}, "
+                 + ("another story's" if story_up else "and this job has no story to compare"))
             continue
         want_xray = keys_by_case.get(tid, "")
         if want_xray:
@@ -1784,8 +1802,10 @@ def manual_csvs_for_jira_java(root: str, java_rel_paths: list) -> list:
 def job_sheets(root: str, job_dir: str, extra_paths=()) -> list:
     """The csv/manual sheets of THIS job's change: the ones it created or
     edited, and the sheets of the story test classes it changed. Never a
-    walk of every sheet for a case id -- case ids repeat in every job."""
-    files = read_review(job_dir).get("files") or {}
+    walk of every sheet for a case id -- case ids repeat in every job.
+    A discarded change holds nothing: its files are put back."""
+    review = read_review(job_dir)
+    files = {} if review.get("state") == "discarded" else (review.get("files") or {})
     paths = [str(p).replace("\\", "/") for p in
              list(files.get("created") or []) + list(files.get("modified") or []) + list(extra_paths or [])]
     sheets = {p for p in paths if p.startswith("src/test/resources/csv/manual/") and p.lower().endswith(".csv")}
@@ -1869,7 +1889,8 @@ def ensure_manual_csv_xray(root: str, job_dir: str, change_paths: list, mocked: 
             emit(f"SKIP  {norm}  file missing on disk")
             continue
         details = []
-        if patch_one_manual_csv(path, story=story, keys_by_case=keys, details=details, case_ids=mine):
+        if patch_one_manual_csv(path, story=story, keys_by_case=keys, details=details, case_ids=mine,
+                                job_id=os.path.basename(job_dir)):
             emit(f"PATCHED  {norm}  " + "; ".join(details[:12]))
             touched.append(norm)
         else:
@@ -1919,7 +1940,8 @@ def patch_manual_csv_by_case_ids(root: str, job_dir: str, case_ids, mocked: bool
             emit(f"SKIP  {rel}  file missing on disk")
             continue
         details = []
-        if patch_one_manual_csv(path, story=story, keys_by_case=keys, details=details, case_ids=case_ids):
+        if patch_one_manual_csv(path, story=story, keys_by_case=keys, details=details, case_ids=case_ids,
+                                job_id=os.path.basename(job_dir)):
             emit(f"PATCHED  {rel}  " + "; ".join(details[:12]))
             touched.append(rel)
         else:
@@ -2242,7 +2264,8 @@ def project_map(root: str, policy: dict, scope: dict) -> str:
     lines += [
         f"    converted      {tests}imported/<suite>/  ({len(suites)} suite(s) converted here"
         + (f": {shown}" if suites else "") + ")  GENERATED",
-        f"    shared base    {tests}BaseApiTest.java, {tests}ImportedTest.java",
+        f"    shared base    {tests}StoryTestBase.java (story tests extend it), "
+        f"{tests}BaseApiTest.java, {tests}ImportedTest.java",
         "",
         "  Test suites (what TestNG runs): src/test/resources/"
         + (", ".join(runs) if runs else "testng*.xml")
@@ -3795,8 +3818,10 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                 # else, "put the files back" would put back the AGENT's
                 # commit. Nothing is reverted; Discard does that from the
                 # saved state once the branch is where it was.
-                reason += (" HEAD moved while it ran: the agent committed or "
-                           "switched branch. Nothing was reverted for this: check "
+                reason += (f" HEAD moved while it ran ({call_commit[:8] or commit[:8]} -> "
+                           f"{branch_now}@{commit_now[:8]}): the agent, or anyone committing "
+                           "during the call, committed or switched branch. Nothing was "
+                           "reverted for this: check "
                            "`git reflog`, put the branch back by hand, then use "
                            "Discard for the files.")
                 if found:
@@ -3888,10 +3913,13 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         commit_now, branch_now = head(root)
         if head_forbidden(commit, branch, commit_now, branch_now, bool(followup),
                           continuous=continuous, call_commit=call_commit):
-            msg = (f"HEAD moved ({branch}@{commit[:8]} -> {branch_now}@"
-                   f"{commit_now[:8]}). The agent must not commit or switch "
-                   f"branches. Nothing was reverted for this: check `git "
-                   f"reflog` and put the branch back by hand.")
+            was = call_commit if (call_commit and branch_now == branch) else commit
+            msg = (f"HEAD moved ({branch}@{was[:8]} -> {branch_now}@"
+                   f"{commit_now[:8]})"
+                   + (" during the Cursor call" if was == call_commit and call_commit else "")
+                   + ". Nothing may commit or switch branches while Cursor runs -- "
+                   f"not the agent, not anyone else. Nothing was reverted for this: "
+                   f"check `git reflog` and put the branch back by hand.")
             say(f"FAIL {msg}")
             review = dict(review, needs_discard=True)
             return reject(msg, restore=False)

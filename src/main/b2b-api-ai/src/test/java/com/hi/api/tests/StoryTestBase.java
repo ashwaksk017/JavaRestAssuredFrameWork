@@ -89,8 +89,9 @@ public abstract class StoryTestBase extends BaseApiTest {
         return v != null && ("true".equalsIgnoreCase(v) || "yes".equalsIgnoreCase(v) || "y".equalsIgnoreCase(v));
     }
 
+    /** A real value: not blank, not "null", not a placeholder (__SET_ME__, TODO ... -- Config.isUnset). */
     private static boolean present(String v) {
-        return v != null && !v.trim().isEmpty() && !"null".equalsIgnoreCase(v.trim());
+        return v != null && !v.trim().isEmpty() && !"null".equalsIgnoreCase(v.trim()) && !Config.isUnset(v);
     }
 
     // ---- tokens -------------------------------------------------------------------
@@ -98,7 +99,7 @@ public abstract class StoryTestBase extends BaseApiTest {
     /** The application's own token (client credentials); the test is skipped when it is not configured. */
     protected String clientToken() {
         requireTokenConfig();
-        return step("token: client credentials", JsonTokens::clientCredentials);
+        return step("tokenRequest: client-credentials grant", JsonTokens::clientCredentials);
     }
 
     /**
@@ -123,7 +124,7 @@ public abstract class StoryTestBase extends BaseApiTest {
     /** A token, and its guest id, for a username and password the test has (e.g. a guest it enrolled). */
     protected JsonTokens.Session guestSession(String username, String password) {
         requireTokenConfig();
-        return step("token: resource owner", () -> JsonTokens.resourceOwner(username, password));
+        return step("tokenRequest: resource-owner grant", () -> JsonTokens.resourceOwner(username, password));
     }
 
     private static void requireTokenConfig() {
@@ -182,15 +183,20 @@ public abstract class StoryTestBase extends BaseApiTest {
 
     /** One of the configured ALLOWED_DOMAINS, else a random {@code word.com} (and a warning, once). */
     protected static String allowedDomainOrRandom() {
-        String configured = Config.get("ALLOWED_DOMAINS", "");
+        String configured = Config.get(Config.get("identity.allowed_domains_key", "ALLOWED_DOMAINS"), "");
         if (present(configured)) {
-            String[] domains = configured.trim().split("[,;\\s]+");
-            if (domains.length > 0 && !domains[0].isEmpty()) {
-                return domains[java.util.concurrent.ThreadLocalRandom.current().nextInt(domains.length)];
+            java.util.List<String> domains = new java.util.ArrayList<>();
+            for (String d : configured.trim().split("[,;\\s]+")) {
+                String clean = d.trim().toLowerCase(java.util.Locale.ROOT).replaceFirst("^www\\.", "");
+                if (!clean.isEmpty()) {
+                    domains.add(clean);
+                }
+            }
+            if (!domains.isEmpty()) {
+                return domains.get(java.util.concurrent.ThreadLocalRandom.current().nextInt(domains.size()));
             }
         }
-        if (!WARNED_DOMAINS) {
-            WARNED_DOMAINS = true;
+        if (WARNED_DOMAINS.compareAndSet(false, true)) {
             LOG.warn("ALLOWED_DOMAINS is not configured -- a generated email uses a random word.com domain, "
                     + "which the target's domain allowlist rejects. Set ALLOWED_DOMAINS in "
                     + "program_configuration.json, or pass -DALLOWED_DOMAINS=a.com,b.com.");
@@ -198,7 +204,8 @@ public abstract class StoryTestBase extends BaseApiTest {
         return FakeData.username() + ".com";
     }
 
-    private static volatile boolean WARNED_DOMAINS = false;
+    private static final java.util.concurrent.atomic.AtomicBoolean WARNED_DOMAINS =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
 
     /**
      * Setup: enrol a new guest and return its guest id, or null when the
@@ -244,6 +251,23 @@ public abstract class StoryTestBase extends BaseApiTest {
         String accountId = RestUtilities.safeJsonExtract(res, "accountId");
         softAssert.assertTrue(present(accountId), tag + "/SETUP: the create response carries an accountId");
         return "200".equals(status) && present(accountId) ? accountId.trim() : null;
+    }
+
+    /**
+     * The create call itself, for a case whose acceptance criteria ARE the
+     * create (its status, its headers): the response, unasserted -- the test
+     * asserts it with its AC tags. {@link #createProgramAccount} is the
+     * same call as SETUP, asserted and reduced to the account id.
+     */
+    protected Response createProgramAccountResponse(Map<String, String> row, String bodyTemplate, String guestId,
+                                                    String guestToken, String tag) throws Exception {
+        String body = ManualBody.render(bodyTemplate, row, new java.util.LinkedHashMap<>());
+        RestUtilities.logRequestBody(tag, holder, body);
+        String url = baseUrl() + ApiRoutes.fill(ApiRoutes.GUEST_BUSINESSES, "guestId", guestId);
+        Response res = step("createProgramAccount: POST " + ApiRoutes.GUEST_BUSINESSES,
+                () -> RestUtilities.getResponsePost(body, url, apiHeaders(guestToken)));
+        RestUtilities.logResponseBody(tag, holder, RestUtilities.getResponseAsString(res));
+        return res;
     }
 
     // ---- reading a response ------------------------------------------------------

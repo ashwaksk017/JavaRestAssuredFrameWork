@@ -1,11 +1,16 @@
 package com.hi.api.auth;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -31,7 +36,11 @@ import io.restassured.response.Response;
  * <p>The token URL: {@code api_config.token_end_point} +
  * {@code api_config.token_route} when both are set; else
  * {@code baseUrl() + /realms/applications/token} ({@link ApiRoutes#TOKEN}).
- * Client id and secret: {@code api_config.client_id} /
+ * Seen in the generated tests: some environments answer on one, some on the
+ * other (one test notes the configured one returns 404 on QA). So when the
+ * first answers 404 or 405 -- no such route -- the other is asked, and the
+ * log says which answered. Any other answer is the answer.</p>
+ * <p>Client id and secret: {@code api_config.client_id} /
  * {@code api_config.client_secret}. Nothing here is a literal credential.</p>
  */
 public final class JsonTokens {
@@ -66,15 +75,26 @@ public final class JsonTokens {
             "\"(?:guestId|guestID|hiltonGuestId|hilton-guest-id)\"\\s*:\\s*\"?(\\d+)\"?");
 
     private static final ObjectMapper JSON = new ObjectMapper();
+    private static final Logger LOG = LoggerFactory.getLogger(JsonTokens.class);
 
-    /** The token URL (see the class comment). */
+    /** The token URL asked first (see the class comment). */
     public static String tokenUrl() {
+        return tokenUrls().get(0);
+    }
+
+    /** The token URLs, in the order they are asked: the configured one, then the realms route. */
+    public static List<String> tokenUrls() {
+        List<String> urls = new ArrayList<>();
         String base = Config.get("api_config.token_end_point", "");
         String route = Config.get("api_config.token_route", "");
         if (!Config.isUnset(base) && !Config.isUnset(route)) {
-            return base.endsWith("/") || route.startsWith("/") ? base + route : base + "/" + route;
+            urls.add(base.endsWith("/") || route.startsWith("/") ? base + route : base + "/" + route);
         }
-        return Config.baseUrl() + ApiRoutes.fill(ApiRoutes.TOKEN);
+        String realms = Config.baseUrl() + ApiRoutes.fill(ApiRoutes.TOKEN);
+        if (!urls.contains(realms)) {
+            urls.add(realms);
+        }
+        return urls;
     }
 
     /** Why a token cannot be asked for here, or "" when it can. */
@@ -120,10 +140,26 @@ public final class JsonTokens {
             throw new IllegalStateException("cannot serialise the token body", e);
         }
         Map<String, String> headers = Headers.builder().contentTypeJson().acceptJson().build();
-        Response res = RestUtilities.getResponsePost(body, tokenUrl(), headers);
-        String status = RestUtilities.checkActualResponse(res);
+        List<String> urls = tokenUrls();
+        Response res = null;
+        String status = "";
+        for (int i = 0; i < urls.size(); i++) {
+            res = RestUtilities.getResponsePost(body, urls.get(i), headers);
+            status = RestUtilities.checkActualResponse(res);
+            boolean noSuchRoute = "404".equals(status) || "405".equals(status);
+            if (noSuchRoute && i + 1 < urls.size()) {
+                LOG.warn("token end point {} answered HTTP {} (no such route here); asking {}",
+                        urls.get(i), status, urls.get(i + 1));
+                continue;
+            }
+            if (i > 0) {
+                LOG.info("token from {} (the first token URL had no such route)", urls.get(i));
+            }
+            break;
+        }
         if (!"200".equals(status)) {
-            throw new IllegalStateException("token end point returned HTTP " + status);
+            throw new IllegalStateException("token end point returned HTTP " + status
+                    + " (asked: " + String.join(", ", urls) + ")");
         }
         String token = RestUtilities.safeJsonExtract(res, "access_token");
         if (token == null || token.isBlank()) {

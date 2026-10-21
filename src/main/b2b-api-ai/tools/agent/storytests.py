@@ -30,8 +30,8 @@ _ROW_OR_CONFIG_COL_RX = re.compile(
     r'rowOrConfig(?:Linked)?\(\s*[^,]*,\s*"([A-Za-z0-9_]+)"')
 _SPEND_DETAIL_RX = re.compile(r'spendDetail|/spendDetail', re.I)
 _TOKEN_GUEST_ID_EXTRACT_RX = re.compile(
-    r'TravelCoordinatorAuth|guestIdFromTokenResponse|guestIdFromAccessTokenClaims'
-    r'|auth\.guestId')
+    r'ownerSession\s*\(|guestSession\s*\(|requireGuestId\s*\(|\.guestId\b'
+    r'|TravelCoordinatorAuth|guestIdFromTokenResponse|guestIdFromAccessTokenClaims')
 
 
 def _csv_columns_for_jira_class(root: str, cls: str, java_text: str) -> set:
@@ -81,9 +81,9 @@ def _jira_spend_detail_guest_id_issues(norm: str, text: str) -> list:
         return []
     if _TOKEN_GUEST_ID_EXTRACT_RX.search(text or ""):
         return []
-    return [f"{norm}: GET …/spendDetail uses rowOrConfig(..., \"guest_id\", …) without "
-            "token EXTRACT (TravelCoordinatorAuth / guestIdFromTokenResponse / auth.guestId) — "
-            "see skill R2 and the DATA_INVENTORY Javadoc of an existing story test"]
+    return [f"{norm}: GET …/spendDetail uses rowOrConfig(..., \"guest_id\", …) for the caller's "
+            "guest id: a token EXTRACT, not config -- ownerSession(row, prefix).requireGuestId() "
+            "(skill recipe R2)"]
 
 
 _TEST_ANNOTATION_RX = re.compile(r"@(?:org\.testng\.annotations\.)?Test\b(\s*\(([^()]|\([^()]*\))*\))?")
@@ -172,10 +172,11 @@ def _jira_shape_issues(root: str, norm: str, text: str, cls: str) -> list:
 # has ONCE. Seen in the generated story tests: each wrote them again -- five
 # copies of the token request, three of the guest id from the token.
 _SHARED_HELPERS = (
-    (r"\w*AccessToken|fetch\w*Token|\w*TokenUrl|memberPathAuth|\w+Auth",
+    (r"fetch\w*Token|(?:get|guest\w*|owner\w*|member\w*|application\w*|client\w*|coordinator\w*)AccessToken"
+     r"|\w*TokenUrl|memberPathAuth|\w*(?:Coordinator|Owner|Member|Guest|Persona)Auth",
      "a token: ownerSession(row, prefix) / guestSession(user, password) / clientToken()"),
     (r"guestIdFrom\w*", "the guest id of a token: ownerSession(...).requireGuestId()"),
-    (r"optionalRowOrConfig\w*|rowOrConfig\w+|configValueOrAlternate|truthyRowOrConfig",
+    (r"optionalRowOrConfig\w*|rowOrConfig\w*|configValueOrAlternate|truthyRowOrConfig",
      "a value from the row or the configuration: rowOrConfig / optionalRowOrConfig "
      "(each with a fallbackKey form) / truthyRowOrConfig"),
     (r"apiHeaders|clientCredentialsHeaders|(?:api|auth|bearer|default|build)\w*Headers",
@@ -184,31 +185,93 @@ _SHARED_HELPERS = (
      "a guest: enrollGuest(row, template, CASE) / fillEnrollFields(row)"),
     (r"call|step", "an Allure step around a call: step(name, () -> ...)"),
 )
+# A method declaration: modifiers (any, or none), a return type, a name, "(".
+# Not a statement: "return x(", "new X(", "throw new X(" are not declarations.
 _METHOD_DEF_RX = re.compile(
-    r"^\s*(?:private|protected|public)\s+(?:static\s+)?(?:final\s+)?[\w<>\[\],.? ]+?\s+(\w+)\s*\(",
-    re.M)
+    r"^[ \t]*((?:(?:private|protected|public|static|final|synchronized)\s+)*)"
+    r"(?!return\b|new\b|throw\b|else\b|case\b)[A-Za-z_][\w<>\[\],.? ]*?\s+(\w+)\s*\(", re.M)
 _RAW_TOKEN_RX = re.compile(
     r"client_secret|api_config\.client_|token_end_point|token_route|ApiRoutes\.TOKEN|"
-    r"realms/applications/token|\"access_token\"|getUrlDecoder")
+    r"realms/applications/token|getUrlDecoder")
+# A story about the token end point itself says so, and may call it.
+_TOKEN_UNDER_TEST_RX = re.compile(r"workbench:\s*token end point under test", re.I)
+_COMMENT_RX = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
+
+
+def _strip_comments(text: str) -> str:
+    """The code without its comments: a Javadoc that NAMES the token route
+    (DATA_INVENTORY) is not a test calling it. String literals holding // (a
+    URL) lose their tail, which no check here reads."""
+    return _COMMENT_RX.sub("", text or "")
 
 
 def _shared_helper_issues(norm: str, text: str) -> list:
-    """A story test extends StoryTestBase and writes none of its helpers."""
+    """A story test extends StoryTestBase and writes none of its helpers.
+    Seen in review: a @Test method named after what it tests
+    (rejectsExpiredAccessToken, spendDetail_withoutAuth) is not a helper,
+    nor is a public method of another type (Callable.call)."""
     issues = []
-    if _TEST_ANNOTATION_RX.search(text) and not re.search(r"\bextends\s+(?:[\w.]+\.)?StoryTestBase\b", text):
+    has_test = bool(_TEST_ANNOTATION_RX.search(text))
+    if has_test and not re.search(r"\bextends\s+(?:[\w.]+\.)?StoryTestBase\b", text):
         issues.append(f"{norm}: a story test extends StoryTestBase (com.hi.api.tests), which has the "
                       "token, guest id, headers, row/config and enrolment helpers -- see the skill, "
                       "section 2")
-    for m in _METHOD_DEF_RX.finditer(text):
-        name = m.group(1)
+    code = _strip_comments(text)
+    seen = set()
+    for m in _METHOD_DEF_RX.finditer(code):
+        modifiers, name = m.group(1) or "", m.group(2)
+        if "public" in modifiers or name in seen:
+            continue
+        # A declaration's "(...)" is followed by "{" (or throws ... {), a
+        # call's by ";", "," or ")": read on to the matching ")".
+        depth, i = 0, m.end() - 1
+        while i < len(code):
+            depth += {"(": 1, ")": -1}.get(code[i], 0)
+            if depth == 0:
+                break
+            i += 1
+        if not re.match(r"\s*(?:throws\s+[\w.,\s]+)?\{", code[i + 1:i + 200]):
+            continue
+        seen.add(name)
+        before = code[max(0, code.rfind("}", 0, m.start()), code.rfind(";", 0, m.start())):m.start()]
+        if "@Test" in before or "@org.testng.annotations.Test" in before:
+            continue
         for rx, use in _SHARED_HELPERS:
             if re.fullmatch(rx, name):
                 issues.append(f"{norm}: defines its own {name}(...); StoryTestBase has it -- use {use}")
                 break
-    if _RAW_TOKEN_RX.search(text):
+    if not _TOKEN_UNDER_TEST_RX.search(text) and _RAW_TOKEN_RX.search(code):
         issues.append(f"{norm}: requests or decodes a token itself; use StoryTestBase's "
-                      "ownerSession / guestSession / clientToken (the guest id comes with the token)")
+                      "ownerSession / guestSession / clientToken (the guest id comes with the token). "
+                      "A story about the token end point itself says so in a comment: "
+                      "// workbench: token end point under test")
     return issues
+
+
+def _head_text(root: str, norm: str) -> str:
+    """The file as the last commit has it, or "" when it is new."""
+    import subprocess
+    try:
+        r = subprocess.run(["git", "show", "HEAD:./" + norm], cwd=root, capture_output=True,
+                           timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return r.stdout.decode("utf-8", "replace") if r.returncode == 0 else ""
+
+
+def _new_shared_helper_issues(root: str, norm: str, text: str) -> list:
+    """The shared-helper issues of a touched file. A story test from before
+    StoryTestBase (its committed version does not extend it) is not failed
+    for the helpers it already had -- touching one line of it must not
+    demand a migration -- only for what this change adds; and it is told."""
+    now = _shared_helper_issues(norm, text)
+    base = _head_text(root, norm)
+    if not base or re.search(r"\bextends\s+(?:[\w.]+\.)?StoryTestBase\b", base):
+        return now
+    had = set(_shared_helper_issues(norm, base))
+    added = [i for i in now if i not in had and "a story test extends StoryTestBase" not in i]
+    return [i + " (this test is from before StoryTestBase: what it already had is left; "
+                "migrate it to StoryTestBase when it is next reworked)" for i in added]
 
 
 def jira_parity_issues(root: str, rel_paths: list) -> list:
@@ -216,21 +279,27 @@ def jira_parity_issues(root: str, rel_paths: list) -> list:
     issues = []
     for rel in sorted(set(rel_paths or [])):
         norm = rel.replace("\\", "/")
-        if not norm.startswith(_JIRA_TESTS_DIR) or not norm.endswith("Test.java"):
+        if not norm.startswith(_JIRA_TESTS_DIR) or not norm.endswith(".java"):
             continue
         path = os.path.join(root, norm.replace("/", os.sep))
         text = _read(path, 500_000)
         if not text.strip():
             continue
+        if not norm.endswith("Test.java"):
+            # A helper class beside the tests: where shared helpers get copied to.
+            issues.extend(_new_shared_helper_issues(root, norm, text))
+            continue
         if "DATA_INVENTORY" not in text:
             issues.append(f"{norm}: missing class Javadoc DATA_INVENTORY (skill §2b — HTTP steps, "
                           "CONFIG keys, EXTRACTs)")
-        if "realms/guests/enroll" in text or "/guests/enroll" in text:
-            if "safeJsonExtract" not in text or "guestId" not in text:
-                issues.append(f"{norm}: enroll setup must EXTRACT guestId from the enroll "
-                              "response (safeJsonExtract(..., \"guestId\"))")
+        code = _strip_comments(text)
+        if ("realms/guests/enroll" in code or "/guests/enroll" in code
+                or "ApiRoutes.GUEST_ENROLL" in code) and "enrollGuest(" not in code:
+            if "safeJsonExtract" not in code or "guestId" not in code:
+                issues.append(f"{norm}: enroll setup must EXTRACT guestId from the enroll response "
+                              "-- use StoryTestBase's enrollGuest(row, template, CASE), which does")
         issues.extend(_jira_spend_detail_guest_id_issues(norm, text))
-        issues.extend(_shared_helper_issues(norm, text))
+        issues.extend(_new_shared_helper_issues(root, norm, text))
         cls = os.path.basename(norm)[:-5]
         issues.extend(_jira_shape_issues(root, norm, text, cls))
         csv_cols = _csv_columns_for_jira_class(root, cls, text)
