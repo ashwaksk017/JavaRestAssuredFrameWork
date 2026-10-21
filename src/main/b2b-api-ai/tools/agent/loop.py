@@ -930,13 +930,19 @@ def head(root: str) -> tuple:
 
 
 def head_forbidden(base_commit: str, base_branch: str, commit_now: str, branch_now: str,
-                   followup: bool, *, continuous: bool = False) -> bool:
-    """True when HEAD moved in a way a first run must not cause.
+                   followup: bool, *, continuous: bool = False, call_commit: str = "") -> bool:
+    """True when HEAD moved in a way a run must not cause.
 
     A follow-up or a later repair attempt is measured from the saved tree,
-    not from git: on the same branch, a new commit (develop moved while
-    Cursor ran) does not end the session. Switching branch still does."""
+    not from git: on the same branch, a commit made BEFORE this Cursor call
+    (the person pulled or committed between runs) does not end the session.
+    Seen in review: that rule also let a commit Cursor made itself, in a
+    repair attempt, out of the reviewed diff and into the push. So HEAD
+    may not move DURING the call (`call_commit`, read just before it), in
+    any attempt. Switching branch never may."""
     if branch_now != base_branch:
+        return True
+    if call_commit and commit_now != call_commit:
         return True
     if commit_now == base_commit:
         return False
@@ -1646,10 +1652,22 @@ def _csv_delimiter(header_line: str) -> str:
     return ";" if header_line.count(";") > header_line.count(",") else ","
 
 
+_JOB_ID_RX = re.compile(r"^job-\d{8}-\d{6}$", re.I)
+
+
 def patch_one_manual_csv(path: str, story: str = "", keys_by_case: dict = None,
-                         details: list = None) -> bool:
-    """Add or fill jira_xray_id and jira_issue on a csv/manual data sheet."""
+                         details: list = None, case_ids=None) -> bool:
+    """Add or fill jira_xray_id and jira_issue on a csv/manual data sheet --
+    on THIS job's rows only.
+
+    Seen in review: a case id (TC-001) is in every job, and a row of another
+    story's sheet was given this story and this key. A row is this job's
+    when its test_case_id is one of `case_ids` (default: the cases with a
+    key). Its jira_issue is filled when empty or a job-id placeholder, and
+    never replaced when it names another story -- that row is left, and
+    said. A row without a test_case_id is left as it is."""
     keys_by_case = {str(k): str(v).upper() for k, v in (keys_by_case or {}).items() if v}
+    mine = {str(c).strip() for c in (case_ids if case_ids is not None else keys_by_case) if str(c).strip()}
 
     def note(msg: str) -> None:
         if details is not None:
@@ -1686,15 +1704,18 @@ def patch_one_manual_csv(path: str, story: str = "", keys_by_case: dict = None,
         data_rows.append(row)
     if not data_rows and not changed:
         return False
-    sole_key = next(iter(keys_by_case.values())) if len(keys_by_case) == 1 else ""
     story_up = story.upper() if story else ""
+    any_mine = False
     for row in data_rows:
         tid = str(row.get("test_case_id") or "").strip()
+        if not tid or tid not in mine:
+            continue                       # not this job's row
+        any_mine = True
+        have_issue = str(row.get("jira_issue") or "").strip().upper()
+        if story_up and have_issue and have_issue != story_up and not _JOB_ID_RX.match(have_issue):
+            note(f"{tid}: left as it is -- its jira_issue is {have_issue}, another story's")
+            continue
         want_xray = keys_by_case.get(tid, "")
-        if not want_xray and sole_key and not str(row.get("jira_xray_id") or "").strip():
-            want_xray = sole_key
-            if tid:
-                note(f"{tid}: sole xray key applied (only one key in xray-tests for this patch)")
         if want_xray:
             have = str(row.get("jira_xray_id") or "").strip().upper()
             if have != want_xray.upper():
@@ -1704,11 +1725,15 @@ def patch_one_manual_csv(path: str, story: str = "", keys_by_case: dict = None,
         elif tid and keys_by_case:
             note(f"{tid}: no Xray key in xray-tests for this test_case_id")
         if story_up:
-            have_issue = str(row.get("jira_issue") or "").strip().upper()
             if have_issue != story_up:
                 row["jira_issue"] = story_up
                 changed = True
                 note(f"{tid or '(no test_case_id)'}: jira_issue -> {story_up}")
+    if not any_mine:
+        # Not even the empty columns: a sheet with no row of this job is
+        # not this job's to rewrite.
+        note("no row of this job's cases in it")
+        return False
     if not changed:
         if details is not None and not details:
             note("already correct or no matching rows to update")
@@ -1754,6 +1779,18 @@ def manual_csvs_for_jira_java(root: str, java_rel_paths: list) -> list:
             if name.lower().endswith(".csv"):
                 found.append(f"src/test/resources/csv/manual/{cls}/{name}")
     return sorted(set(found))
+
+
+def job_sheets(root: str, job_dir: str, extra_paths=()) -> list:
+    """The csv/manual sheets of THIS job's change: the ones it created or
+    edited, and the sheets of the story test classes it changed. Never a
+    walk of every sheet for a case id -- case ids repeat in every job."""
+    files = read_review(job_dir).get("files") or {}
+    paths = [str(p).replace("\\", "/") for p in
+             list(files.get("created") or []) + list(files.get("modified") or []) + list(extra_paths or [])]
+    sheets = {p for p in paths if p.startswith("src/test/resources/csv/manual/") and p.lower().endswith(".csv")}
+    sheets.update(manual_csvs_for_jira_java(root, [p for p in paths if p.startswith(_JIRA_TESTS)]))
+    return sorted(sheets)
 
 
 def _manual_csv_rel_paths_with_case_ids(root: str, case_ids) -> list:
@@ -1810,12 +1847,12 @@ def ensure_manual_csv_xray(root: str, job_dir: str, change_paths: list, mocked: 
         if norm.startswith(_JIRA_TESTS):
             java_rels.append(norm)
     from_java = manual_csvs_for_jira_java(root, java_rels)
-    from_cases = _manual_csv_rel_paths_with_case_ids(root, keys.keys()) if keys else []
     to_patch.update(from_java)
-    to_patch.update(from_cases)
+    # Not every sheet holding one of this job's case ids: case ids repeat in
+    # every job, and another story's sheet was rewritten that way.
     emit(f"change_paths={len(change_paths or [])}  java_test_classes={len(java_rels)}  "
-         f"csv_from_java={len(from_java)}  csv_from_case_ids={len(from_cases)}  "
-         f"candidates={len(to_patch)}")
+         f"csv_from_java={len(from_java)}  candidates={len(to_patch)}")
+    mine = set(keys) | set(only or given or ())
     if not to_patch:
         norm_paths = sorted({str(rel).replace("\\", "/") for rel in (change_paths or [])})
         cap = 24
@@ -1832,7 +1869,7 @@ def ensure_manual_csv_xray(root: str, job_dir: str, change_paths: list, mocked: 
             emit(f"SKIP  {norm}  file missing on disk")
             continue
         details = []
-        if patch_one_manual_csv(path, story=story, keys_by_case=keys, details=details):
+        if patch_one_manual_csv(path, story=story, keys_by_case=keys, details=details, case_ids=mine):
             emit(f"PATCHED  {norm}  " + "; ".join(details[:12]))
             touched.append(norm)
         else:
@@ -1848,9 +1885,9 @@ def patch_manual_csv_xray(root: str, job_dir: str, rel_paths: list, mocked: bool
 
 
 def patch_manual_csv_by_case_ids(root: str, job_dir: str, case_ids, mocked: bool = False,
-                                 on_log=None) -> list:
-    """Fill jira_xray_id / jira_issue on existing manual sheets whose rows
-    match designed case ids (e.g. after Ask Cursor changed only the suite)."""
+                                 on_log=None, paths=()) -> list:
+    """Fill jira_xray_id / jira_issue on the rows of these case ids, in the
+    sheets of THIS job's change (job_sheets; `paths` adds this run's)."""
 
     def emit(line: str) -> None:
         csv_xray_log(job_dir, line)
@@ -1870,29 +1907,23 @@ def patch_manual_csv_by_case_ids(root: str, job_dir: str, case_ids, mocked: bool
     if not story and not keys:
         emit("skip: no story and no matching xray-tests keys")
         return []
-    manual = os.path.join(root, "src", "test", "resources", "csv", "manual")
-    if not os.path.isdir(manual):
-        emit("skip: src/test/resources/csv/manual/ not found")
+    sheets = job_sheets(root, job_dir, paths)
+    if not sheets:
+        emit("skip: this job's change holds no csv/manual sheet (another story's sheets are "
+             "never searched for a case id: ids repeat in every job)")
         return []
     touched = []
-    for dirpath, _dirs, files in os.walk(manual):
-        for name in files:
-            if not name.lower().endswith(".csv"):
-                continue
-            path = os.path.join(dirpath, name)
-            text = _read(path, 500_000)
-            if not text or "test_case_id" not in text.split("\n", 1)[0]:
-                continue
-            if not any(re.search(r"(?<![A-Z0-9_-])" + re.escape(cid) + r"(?![0-9])", text)
-                       for cid in case_ids):
-                continue
-            rel = os.path.relpath(path, root).replace(os.sep, "/")
-            details = []
-            if patch_one_manual_csv(path, story=story, keys_by_case=keys, details=details):
-                emit(f"PATCHED  {rel}  " + "; ".join(details[:12]))
-                touched.append(rel)
-            else:
-                emit(f"SKIP  {rel}  " + ("; ".join(details[:12]) if details else "no change"))
+    for rel in sheets:
+        path = os.path.join(root, rel.replace("/", os.sep))
+        if not os.path.isfile(path):
+            emit(f"SKIP  {rel}  file missing on disk")
+            continue
+        details = []
+        if patch_one_manual_csv(path, story=story, keys_by_case=keys, details=details, case_ids=case_ids):
+            emit(f"PATCHED  {rel}  " + "; ".join(details[:12]))
+            touched.append(rel)
+        else:
+            emit(f"SKIP  {rel}  " + ("; ".join(details[:12]) if details else "no change"))
     emit(f"done: {len(touched)} sheet(s) written")
     return touched
 
@@ -3732,6 +3763,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                 clog.write("golden example (form only): " + ", ".join(ex_paths))
         clog.block("prompt", prompt, cap=12000)
         started = time.time()
+        call_commit, _call_branch = head(root)      # HEAD may not move during the call
         try:
             answer = call(prompt)
         except Exception as e:                           # noqa: BLE001
@@ -3758,7 +3790,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             moved, found = checked()
             commit_now, branch_now = head(root)
             if moved and head_forbidden(commit, branch, commit_now, branch_now, bool(followup),
-                                       continuous=continuous):
+                                       continuous=continuous, call_commit=call_commit):
                 # The same rule as after a finished run: with HEAD somewhere
                 # else, "put the files back" would put back the AGENT's
                 # commit. Nothing is reverted; Discard does that from the
@@ -3855,7 +3887,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
 
         commit_now, branch_now = head(root)
         if head_forbidden(commit, branch, commit_now, branch_now, bool(followup),
-                          continuous=continuous):
+                          continuous=continuous, call_commit=call_commit):
             msg = (f"HEAD moved ({branch}@{commit[:8]} -> {branch_now}@"
                    f"{commit_now[:8]}). The agent must not commit or switch "
                    f"branches. Nothing was reverted for this: check `git "
@@ -4025,7 +4057,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             if landed["missing"]:
                 extra = patch_manual_csv_by_case_ids(
                     root, job_dir, landed["missing"].keys(), mocked=mocked,
-                    on_log=lambda line: clog.write("  csv-xray: " + line))
+                    on_log=lambda line: clog.write("  csv-xray: " + line), paths=files)
                 if extra:
                     for p in extra:
                         if p not in files:

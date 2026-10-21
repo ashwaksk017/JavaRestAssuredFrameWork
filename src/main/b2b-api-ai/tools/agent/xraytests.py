@@ -544,6 +544,8 @@ def create(job: str, what: str, story: str, confirm: str, root: str = "", conn=N
         case_ids = [ident.split(":", 1)[1] for ident in kept.get("tests", {})
                     if str(ident).startswith(f"{what}:")]
         try:
+            # Only the sheets of this job's change (job_sheets) -- never another
+            # story's sheet that happens to hold the same case id.
             touched = loop.patch_manual_csv_by_case_ids(
                 root, job_dir, case_ids, mocked=False,
                 on_log=lambda line: _log(job_dir, "csv-xray: " + line))

@@ -13,6 +13,7 @@ from __future__ import annotations
 import os as _os
 _os.environ["WORKBENCH_MOCK"] = "0"      # these tests are about the real paths
 
+import csv
 import importlib.util
 import io
 import logging
@@ -76,6 +77,16 @@ class HeadForbiddenAndUnfinishedRefusal(unittest.TestCase):
         self.assertFalse(loop.head_forbidden("aaa", "develop", "bbb", "develop", True))
         self.assertFalse(loop.head_forbidden("aaa", "develop", "bbb", "develop", False,
                                              continuous=True))
+
+    def test_a_commit_during_the_call_is_never_ignored(self):
+        """Seen in review: in a repair attempt or a follow-up, a commit Cursor
+        made itself left the reviewed diff and went out with the push."""
+        for followup, continuous in ((True, False), (False, True), (False, False)):
+            self.assertTrue(loop.head_forbidden("aaa", "develop", "ccc", "develop", followup,
+                                                continuous=continuous, call_commit="bbb"))
+        # A commit from before the call (the person, between runs): accepted.
+        self.assertFalse(loop.head_forbidden("aaa", "develop", "bbb", "develop", True,
+                                             call_commit="bbb"))
 
     def test_a_branch_switch_is_never_ignored(self):
         self.assertTrue(loop.head_forbidden("aaa", "develop", "bbb", "feature", True))
@@ -858,6 +869,35 @@ class AskingForMore(Repo):
         with io.open(os.path.join(self.root, JIRA, "Mine.java"), encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "class Mine { /* the reviewer's */ }\n", "Discard: theirs again")
 
+    def test_a_follow_up_in_which_the_agent_commits_is_rejected(self):
+        """Seen in review: a commit Cursor made in a follow-up or a repair
+        attempt left the reviewed diff and went out with the push."""
+        self.first_run()
+
+        def agent(_prompt):
+            write(self.root, JIRA + "Sneaky.java", "class Sneaky {}\n")
+            sh(self.root, "add", "-A")
+            sh(self.root, "commit", "-q", "-m", "the agent's own commit")
+            return {"result": "done"}
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertNotEqual(self.ask("one more", agent), 0)
+        self.assertIn("HEAD moved", out.getvalue())
+
+    def test_a_commit_the_person_made_before_the_follow_up_is_accepted(self):
+        self.first_run()
+        write(self.root, "NOTES.md", "the person's own work\n")
+        sh(self.root, "add", "NOTES.md")
+        sh(self.root, "commit", "-q", "-m", "between runs")
+
+        def agent(_prompt):
+            write(self.root, JIRA + "NewTest.java", "class NewTest { int more; }\n")
+            return {"result": "done"}
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.ask("one more", agent)
+        self.assertNotIn("HEAD moved", out.getvalue())
+
     def test_a_file_the_reviewer_made_in_the_roots_is_theirs_and_not_swept_in(self):
         self.first_run()
         write(self.root, JIRA + "Mine.java", "class Mine {}\n")
@@ -1210,6 +1250,8 @@ class PatchManualCsvXray(unittest.TestCase):
         write(self.root, rel,
               "description,test_case_id,execute\n"
               "missing startDate,TC-024,Y\n")
+        write(self.root, ".workbench/job1/review.json",            # the sheet is this job's
+              json.dumps({"state": "pending-review", "files": {"created": [rel], "modified": []}}))
         touched = loop.patch_manual_csv_by_case_ids(
             self.root, self.job, ["TC-024"], mocked=False)
         self.assertEqual(touched, [rel])
@@ -1228,11 +1270,49 @@ class PatchManualCsvXray(unittest.TestCase):
         touched = loop.ensure_manual_csv_xray(
             self.root, self.job, [java], mocked=False)
         self.assertIn("src/test/resources/csv/manual/SpendDetailTest/row_a.csv", touched)
-        self.assertIn("src/test/resources/csv/manual/SpendDetailTest/row_b.csv", touched)
+        self.assertNotIn("src/test/resources/csv/manual/SpendDetailTest/row_b.csv", touched,
+                         "TC-099 is not one of this job's cases: its row is left as it is")
         with io.open(os.path.join(self.root,
                                   "src/test/resources/csv/manual/SpendDetailTest/row_a.csv"),
                      encoding="utf-8") as fh:
             self.assertIn("B2B-99801", fh.read())
+
+    def test_another_storys_sheet_with_the_same_case_id_is_never_touched(self):
+        """Seen in review: TC-001 is in every job, and Create in Xray gave
+        another story's sheet this story and this key, on every row."""
+        theirs = "src/test/resources/csv/manual/OtherStoryTest/other_200.csv"
+        body = ("description,test_case_id,jira_issue,jira_xray_id,execute\n"
+                "theirs,TC-001,B2B-11111,B2B-22222,Y\n"
+                "no id,,,,Y\n")
+        write(self.root, theirs, body)
+        self.assertEqual(loop.patch_manual_csv_by_case_ids(self.root, self.job, ["TC-001"]), [])
+        with io.open(os.path.join(self.root, theirs.replace("/", os.sep)), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), body, "not this job's sheet: not searched, not written")
+
+    def test_in_this_jobs_sheet_only_its_rows_change_and_another_storys_row_is_kept(self):
+        rel = "src/test/resources/csv/manual/MixedTest/mixed_200.csv"
+        write(self.root, rel,
+              "description,test_case_id,jira_issue,jira_xray_id,execute\n"
+              "mine,TC-001,,,Y\n"
+              "placeholder,TC-002,job-20261020-145141,,Y\n"
+              "another story's,TC-024,B2B-11111,B2B-22222,Y\n"
+              "not a case of this job,TC-777,,,Y\n"
+              "no id,,,,Y\n")
+        details = []
+        self.assertTrue(loop.patch_one_manual_csv(
+            os.path.join(self.root, rel.replace("/", os.sep)), story="B2B-99454",
+            keys_by_case={"TC-001": "B2B-99771", "TC-002": "B2B-99772", "TC-024": "B2B-99801"},
+            details=details))
+        with io.open(os.path.join(self.root, rel.replace("/", os.sep)), encoding="utf-8") as fh:
+            rows = {r["description"]: r for r in csv.DictReader(fh)}
+        self.assertEqual((rows["mine"]["jira_issue"], rows["mine"]["jira_xray_id"]), ("B2B-99454", "B2B-99771"))
+        self.assertEqual(rows["placeholder"]["jira_issue"], "B2B-99454", "a job-id placeholder is filled")
+        self.assertEqual((rows["another story's"]["jira_issue"], rows["another story's"]["jira_xray_id"]),
+                         ("B2B-11111", "B2B-22222"), "another story's row is never rewritten")
+        self.assertEqual(rows["not a case of this job"]["jira_issue"], "", "no single-key stamping")
+        self.assertEqual(rows["not a case of this job"]["jira_xray_id"], "")
+        self.assertEqual(rows["no id"]["jira_issue"], "")
+        self.assertTrue(any("another story's" in d for d in details), details)
 
     def test_patch_manual_csv_xray_only_touches_manual_csv_paths(self):
         rel = "src/test/resources/csv/manual/OneTest/one.csv"
