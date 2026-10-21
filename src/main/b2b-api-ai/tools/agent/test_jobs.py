@@ -305,6 +305,15 @@ class LogReading(unittest.TestCase):
         with io.open(jobs.log_path("j", "convert"), "wb") as fh:
             fh.write(data)
 
+    def test_the_end_is_where_one_request_starts_reading(self):
+        """An Ask or a Refine shows only its own part of the Cursor
+        conversation: it starts where the file ends when it is sent."""
+        self._write(b"an earlier ask\n" * 10)
+        end = jobs.read_log("j", "convert", end=True)
+        self.assertEqual((end["offset"], end["text"]), (150, ""))
+        self._write(b"an earlier ask\n" * 10 + b"this ask\n")
+        self.assertEqual(jobs.read_log("j", "convert", end["offset"])["text"], "this ask\n")
+
     def test_an_offset_reads_only_what_is_new(self):
         self._write(b"one\n")
         first = jobs.read_log("j", "convert", 0)

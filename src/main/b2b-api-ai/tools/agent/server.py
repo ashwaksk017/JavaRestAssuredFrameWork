@@ -247,7 +247,8 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/log":
                 return self._json(jobs.read_log(q.get("job", ""),
                                                 q.get("runnable", ""),
-                                                int(q.get("offset") or 0)))
+                                                int(q.get("offset") or 0),
+                                                end=q.get("end") == "1"))
             if u.path == "/api/artifact":
                 out = {"text": jobs.read_artifact(q.get("job", ""), q.get("name", ""))}
                 if q.get("name") == "code-review.json":

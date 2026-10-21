@@ -221,6 +221,13 @@ Expect 201.'></textarea>
   </div>
   <label for="design-notes">Notes for the designer <span class="hint">what to focus on, what to leave out</span></label>
   <textarea id="design-notes" rows="2" spellcheck="false"></textarea>
+  <details class="area-logs" id="design-logs">
+    <summary>Logs <span class="hint">of Design the tests (and Take the story's Xray tests): the command, and its conversation with Cursor</span></summary>
+    <div class="split">
+      <div><h3>Command log</h3><pre id="design-log" class="log"></pre></div>
+      <div><h3>Cursor log</h3><pre id="design-cursor-log" class="log cursor"></pre></div>
+    </div>
+  </details>
 
   <h3>Review the designed cases <span class="hint">tick Approve for the cases that stand, Automate for the ones Cursor should write; a title can be corrected in place. Create in Xray and Automate take approved cases only</span></h3>
   <div id="design-review" class="result"></div>
@@ -239,7 +246,15 @@ Expect 201.'></textarea>
   <div class="row">
     <button id="refine-run" type="button">Refine with Cursor</button>
     <span id="refine-scope" class="hint">the whole list</span>
+    <span id="refine-state" class="state"></span>
   </div>
+  <details class="area-logs" id="refine-logs">
+    <summary>Logs <span class="hint">of the last refinement only</span></summary>
+    <div class="split">
+      <div><h3>Command log</h3><pre id="refine-log" class="log"></pre></div>
+      <div><h3>Cursor log</h3><pre id="refine-cursor-log" class="log cursor"></pre></div>
+    </div>
+  </details>
 
   <h3 id="devcode-part">Check against the developer's change <span class="hint">a make-sure step: the commits on the developer's branch that name the ticket are read, and what they change (endpoints, status codes, validation, new fields) is compared with the cases above</span></h3>
   <div class="form">
@@ -289,9 +304,6 @@ Expect 201.'></textarea>
   </div>
   <div id="xray-update-result" class="result"></div>
   <pre id="xray-update-log" class="log" hidden></pre>
-  <h3>Command log <button type="button" id="design-cursor-go" class="linkish"
-      title="the design's conversation with Cursor, in the Cursor log at the bottom of this tab">Cursor log ↓</button></h3>
-  <pre id="design-log" class="log"></pre>
 
   <h2 class="part" id="automate-part">Automate the cases <span class="hint">Cursor writes REST Assured tests for the approved cases</span></h2>
   <p class="lede">
@@ -304,23 +316,32 @@ Expect 201.'></textarea>
     <button id="agent-stop">Stop</button>
     <span id="auto-state" class="state"></span>
   </div>
+  <details class="area-logs" id="automate-logs">
+    <summary>Logs <span class="hint">of Automate: the command, and Cursor writing the tests (every run of this job)</span></summary>
+    <div class="split">
+      <div><h3>Command log</h3><pre id="auto-log" class="log"></pre></div>
+      <div><h3>Cursor log</h3>
+      <fieldset class="choice" id="cursor-from">
+        <legend>Show</legend>
+        <label><input type="radio" name="cursor-from" value="tests" checked> Writing the tests</label>
+        <label><input type="radio" name="cursor-from" value="csv-xray"> CSV &amp; Xray ids</label>
+      </fieldset><pre id="cursor-log" class="log cursor"></pre></div>
+    </div>
+  </details>
   <label for="agent-ask">Ask Cursor <span class="hint">in your words: what should be different in the change waiting (Cursor works on the same files and it waits for your review again), something new when none is waiting, or a question -- answered in the command log, nothing changed</span></label>
   <textarea id="agent-ask" rows="3" spellcheck="false"
     placeholder="e.g. Use the member's email from the CSV instead of a fixed one, and assert the 403 body carries an error code."></textarea>
   <div class="row">
     <button id="agent-ask-send">Ask Cursor</button>
+    <span id="ask-state" class="state"></span>
   </div>
-  <div class="split">
-    <div><h3>Command log</h3><pre id="auto-log" class="log"></pre></div>
-    <div><h3>Cursor log <span class="hint">what was asked, what it answered, what it changed</span></h3>
-      <fieldset class="choice" id="cursor-from">
-        <legend>Show</legend>
-        <label><input type="radio" name="cursor-from" value="design"> The design</label>
-        <label><input type="radio" name="cursor-from" value="tests" checked> Writing the tests</label>
-        <label><input type="radio" name="cursor-from" value="csv-xray"> CSV &amp; Xray ids</label>
-      </fieldset>
-      <pre id="cursor-log" class="log cursor"></pre></div>
-  </div>
+  <details class="area-logs" id="ask-logs">
+    <summary>Logs <span class="hint">of the last ask only: what was asked, what Cursor answered and changed</span></summary>
+    <div class="split">
+      <div><h3>Command log</h3><pre id="ask-log" class="log"></pre></div>
+      <div><h3>Cursor log</h3><pre id="ask-cursor-log" class="log cursor"></pre></div>
+    </div>
+  </details>
 </section>
 
 <!-- ───────────────────────────── tab 2 ───────────────────────────── -->

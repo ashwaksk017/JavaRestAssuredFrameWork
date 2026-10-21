@@ -873,17 +873,24 @@ def main() -> int:
             check("Stop with nothing running says so, and harms nothing", code == 200 and not st.get("stopped"), str(st))
             tab_new = mocked.dom("new")
             tab_new = tab_new[tab_new.find('id="tab-new"'):tab_new.find('id="tab-convert"')]
-            check("the Automate Test Case tab has ONE Cursor log, showing the design or the tests",
-                  tab_new.count('class="log cursor"') == 1 and 'name="cursor-from"' in tab_new
-                  and 'id="design-cursor-log"' not in tab_new and 'id="design-cursor-go"' in tab_new)
+            # Asked for 2026-10-21: each area's logs under its own button.
+            check("each area of the Automate Test Case tab has its own collapsible logs, under its button",
+                  all(f'id="{a}-logs"' in tab_new for a in ("design", "refine", "automate", "ask"))
+                  and tab_new.count('class="log cursor"') == 4
+                  and tab_new.find('id="design-logs"') < tab_new.find('id="design-review"')
+                  and tab_new.find('id="refine-run"') < tab_new.find('id="refine-logs"')
+                  and tab_new.find('id="auto-selected"') < tab_new.find('id="automate-logs"') < tab_new.find('id="agent-ask"')
+                  and tab_new.find('id="agent-ask-send"') < tab_new.find('id="ask-logs"')
+                  and 'id="design-cursor-go"' not in tab_new)
             check("each field of a step can be removed, and a step as a whole",
                   'class="drop d-do"' in html and 'class="drop d-expect"' in html
                   and ">Remove step</button>" in html, html[html.find('class="steps-edit"'):][:300])
             check("the Migration tab's Cursor log follows its own file, not the Automate tab's",
-                  "runnable: \"migration-cursor\"" in io.open(os.path.join(HERE, "ui", "app.js"), encoding="utf-8").read())
-            check("the Cursor log poll reads only the source the person chose",
-                  "await pollStream(src, reset)" in agent_js
-                  and 'await pollStream("tests", reset)' not in agent_js.split("async function pollCursorLog")[1].split("}")[0])
+                  'migration: "migration-cursor"' in agent_js
+                  and 'migration: { el: "mig-cursor-log", src: "migration" }' in agent_js)
+            check("each Cursor pane reads its own file, from its own place in it",
+                  "runnable=${CURSOR_FILES[p.src]}&offset=${p.offset}" in agent_js
+                  and "runnable=${CURSOR_FILES[p.src]}&end=1" in agent_js)
             check("Ask Cursor is one box for a change, a new request or a question",
                   '>Ask Cursor</button>' in html and 'id="agent-ask-send" disabled' not in tab_new)
             logs_tab = mocked.dom("logs")

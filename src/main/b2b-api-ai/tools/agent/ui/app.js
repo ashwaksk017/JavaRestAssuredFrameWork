@@ -1562,9 +1562,6 @@ $("xray-update-send").onclick = async () => {
   } catch (e) { $("xray-update-send").disabled = false; setState($("xray-update-state"), "bad", e.message); }
 };
 
-// The design's conversation with Cursor is in design-cursor.log, shown in
-// the tab's one Cursor log (at the bottom, "The design").
-$("design-cursor-go").onclick = () => { setCursorSource("design"); goToStep("new", "cursor-log"); };
 
 // Refine with Cursor: the next design run carries this request (the server
 // adds the cases as they are now).
@@ -1573,7 +1570,7 @@ let pendingRefineIds = [];
 let pendingGaps = null;
 $("refine-run").onclick = () => {
   const text = $("refine-ask").value.trim();
-  if (!text) { setState($("design-state"), "bad", "write how the cases should be refined"); return; }
+  if (!text) { setState($("refine-state"), "bad", "write how the cases should be refined"); return; }
   const ids = [...selectedFor(job())].sort();
   if (!confirm((ids.length ? `Cursor changes only ${ids.join(", ")} as you ask; every other case is kept as it is. `
                            : "Cursor revises the whole case list as you ask. ") +
@@ -1586,6 +1583,8 @@ $("refine-run").onclick = () => {
 $("run-design").onclick = async () => {
   if (chosen("story-from") === "xray" && !pendingRefine && !pendingGaps) { xrayImport(); return; }
   const button = $("run-design");
+  // A refinement is its own area: its logs are under Refine.
+  const area = pendingRefine ? "refine" : "design";
   // One at a time: a second click used to wipe the Cursor pane of the run
   // already going, fail with "already running", and stop the pane's timer.
   button.disabled = true;
@@ -1599,8 +1598,7 @@ $("run-design").onclick = async () => {
     const j = job();
     // Where the Cursor log ends NOW, read before the run starts, so the
     // pane shows this run and nothing is lost between start and first poll.
-    setCursorSource("design");
-    watchCursorLog();
+    await startArea(area);
     designRunning = true;
     $("auto-selected").disabled = true;
     await post("/api/design", {
@@ -1623,7 +1621,7 @@ $("run-design").onclick = async () => {
     clearPasted("design-notes", pendingRefine ? "refine-ask" : null);
     if (pendingRefine) { pendingRefine = ""; pendingRefineIds = []; $("refine-ask").value = ""; }
     pendingGaps = null;
-    follow("agent-design", $("design-log"), $("design-state"), () => {
+    follow("agent-design", $(`${area}-log`), $(`${area}-state`), () => {
       designRunning = false;
       stopCursorLog();
       showDesign(j, true);
@@ -1640,7 +1638,7 @@ $("run-design").onclick = async () => {
     designRunning = false;
     showReview("design");
     button.disabled = false;
-    setState($("design-state"), "bad", e.message);
+    setState($(`${area}-state`), "bad", e.message);
   }
 };
 // ---- Cursor suggests the suites of each case -------------------------------
@@ -1928,7 +1926,7 @@ $("clear-design").onclick = async () => {
     $("design-log").textContent = "";
     showDesign(j, true);
     if (typeof showFlow === "function") showFlow();
-    pollCursorLog(false);              // the design's log went with it
+    pollPane("design", true);          // the design's log went with it
   } catch (e) { setState($("design-state"), "bad", e.message); }
 };
 
@@ -2961,81 +2959,85 @@ async function showCodeReview(j, run) {
 }
 
 // Cursor's conversations are files of the job, appended to across runs:
-// cursor.log for the code it writes (Automate, Ask Cursor, the Migration
-// tab), design-cursor.log for the design. Each is read by byte offset on
-// its own timer, so it keeps moving while a long call is in flight.
-//
-// The Automate Test Case tab has ONE Cursor log, showing either file
-// ("Show: The design / Writing the tests"); it turns to whichever a run
-// started from this page is writing, and on load to whichever ran last.
-// The Migration tab's pane always shows cursor.log.
-let cursorTimer = null;
-let cursorSource = "tests";
-const cursorStreams = {
-  tests: { runnable: "cursor", offset: 0 },
-  design: { runnable: "design-cursor", offset: 0 },
-  // The Migration tab's own runs (a converted suite, the converter), in
-  // migration-cursor.log: never the Automate tab's conversation.
-  migration: { runnable: "migration-cursor", offset: 0 },
-  "csv-xray": { runnable: "csv-xray", offset: 0 },
+// cursor.log for the code it writes (Automate, Ask Cursor), design-cursor.log
+// for the design and its refinements, migration-cursor.log for the
+// Migration tab. Each area shows ITS conversation in the Logs block under
+// its own button -- Design under the design, Refine under Refine, Automate
+// under Automate, an Ask under the Ask box -- and opens it when it starts.
+// An area that is ONE request (Refine, an Ask) reads the file from where it
+// ended when that request started: that request only. Each pane keeps its
+// own place in its file, on one timer.
+const CURSOR_FILES = { tests: "cursor", design: "design-cursor", migration: "migration-cursor",
+                       "csv-xray": "csv-xray" };
+const PANES = {
+  design: { el: "design-cursor-log", src: "design", logs: "design-logs" },
+  refine: { el: "refine-cursor-log", src: "design", logs: "refine-logs", onlyNew: true },
+  automate: { el: "cursor-log", src: "tests", logs: "automate-logs" },
+  ask: { el: "ask-cursor-log", src: "tests", logs: "ask-logs", onlyNew: true },
+  migration: { el: "mig-cursor-log", src: "migration" },
 };
-function panesFor(src) {
-  if (src === "migration") return $("mig-cursor-log") ? [$("mig-cursor-log")] : [];
-  return src === cursorSource && $("cursor-log") ? [$("cursor-log")] : [];
-}
-async function pollStream(src, reset) {
-  const s = cursorStreams[src];
-  if (reset) { s.offset = 0; for (const p of panesFor(src)) p.textContent = ""; }
+for (const p of Object.values(PANES)) { p.offset = 0; p.armed = !p.onlyNew; }
+let cursorTimer = null;
+async function pollPane(name, reset) {
+  const p = PANES[name];
+  const box = $(p.el);
+  const j = job();
+  if (!box || !p.armed || !j) return;
+  if (reset && !p.onlyNew) { p.offset = 0; box.textContent = ""; }
   try {
     const chunk = await api(
-      `/api/log?job=${encodeURIComponent(job())}&runnable=${s.runnable}&offset=${s.offset}`);
+      `/api/log?job=${encodeURIComponent(j)}&runnable=${CURSOR_FILES[p.src]}&offset=${p.offset}`);
+    if (j !== job()) return;
     // Gone (Clear the design, Dismiss) or started again: the pane starts again.
-    const gone = !chunk.text && !chunk.offset && s.offset > 0;
-    if (chunk.restarted || gone) { s.offset = 0; for (const p of panesFor(src)) p.textContent = ""; }
-    if (chunk.text) {
-      s.offset = chunk.offset;
-      for (const p of panesFor(src)) { p.textContent += chunk.text; p.scrollTop = p.scrollHeight; }
-    }
+    const gone = !chunk.text && !chunk.offset && p.offset > 0;
+    if (chunk.restarted || gone) { p.offset = 0; box.textContent = ""; }
+    if (chunk.text) { p.offset = chunk.offset; box.textContent += chunk.text; box.scrollTop = box.scrollHeight; }
   } catch { /* no such log for this job yet */ }
 }
-async function pollCursorLog(reset) {
-  const src = cursorStreams[cursorSource] ? cursorSource : "tests";
-  await pollStream(src, reset);
-}
-function setCursorSource(src) {
-  if (!cursorStreams[src]) return;
-  const box = document.querySelector(`input[name="cursor-from"][value="${src}"]`);
-  if (box) box.checked = true;
-  if (src === cursorSource) return;
-  cursorSource = src;
-  // The pane shows the other file now: read it from its beginning. (The
-  // Migration pane keeps its place: only this stream starts again.)
-  $("cursor-log").textContent = "";
-  const s = cursorStreams[src];
-  s.offset = 0;
-  pollStream(src, false);
-}
-document.querySelectorAll('input[name="cursor-from"]').forEach((r) =>
-  r.addEventListener("change", () => { if (r.checked) setCursorSource(r.value); }));
+function pollCursorPanes(reset) { for (const name of Object.keys(PANES)) pollPane(name, reset); }
 function watchCursorLog() {
   clearInterval(cursorTimer);
-  pollCursorLog(true);
-  cursorTimer = setInterval(() => pollCursorLog(false), 1500);
+  pollCursorPanes(false);
+  cursorTimer = setInterval(() => pollCursorPanes(false), 1500);
 }
-// On load, and for another job: the conversation of whatever ran last.
-async function pickCursorSource() {
-  const j = job();
-  if (!j) return;
-  const when = async (r) => {
-    try { return String((await api(`/api/status?job=${encodeURIComponent(j)}&runnable=${r}`)).started || ""); }
-    catch { return ""; }
-  };
-  const [d, ...others] = await Promise.all(["agent-design", "agent-automate", "agent-generate", "agent-followup"].map(when));
-  const lastTests = others.sort().pop() || "";
-  setCursorSource(d && d > lastTests ? "design" : "tests");
+// An area's request starts: its Logs open; a one-request pane starts where
+// its file ends now -- read BEFORE the request is sent, so nothing of it
+// is missed and nothing before it is shown.
+async function startArea(name) {
+  const p = PANES[name];
+  if (!p) return;
+  const d = p.logs && $(p.logs);
+  if (d) d.open = true;
+  if (p.onlyNew) {
+    p.armed = false;
+    if ($(p.el)) $(p.el).textContent = "";
+    try {
+      const end = await api(`/api/log?job=${encodeURIComponent(job())}&runnable=${CURSOR_FILES[p.src]}&end=1`);
+      p.offset = end.offset || 0;
+    } catch { p.offset = 0; }
+    p.armed = true;
+  }
+  watchCursorLog();
 }
-pickCursorSource();
-$("job").addEventListener("change", pickCursorSource);
+// Another job: every pane starts again; a one-request pane waits for its
+// next request.
+function resetPanes() {
+  for (const p of Object.values(PANES)) {
+    p.offset = 0;
+    p.armed = !p.onlyNew;
+    if ($(p.el)) $(p.el).textContent = "";
+  }
+  pollCursorPanes(false);
+}
+// The Automate pane can show the CSV & Xray id record instead.
+document.querySelectorAll('input[name="cursor-from"]').forEach((r) =>
+  r.addEventListener("change", () => {
+    if (!r.checked || !CURSOR_FILES[r.value]) return;
+    PANES.automate.src = r.value;
+    PANES.automate.offset = 0;
+    if ($("cursor-log")) $("cursor-log").textContent = "";
+    pollPane("automate", false);
+  }));
 
 // ---- the repository: where the agent's branch goes ----------------------
 // Read from git each time the tab is opened; the page remembers nothing
@@ -3106,7 +3108,7 @@ let agentRunning = "agent-generate";     // what Stop stops
 
 $("agent-ask-send").onclick = async () => {
   const text = $("agent-ask").value.trim();
-  if (!text) { setState($("auto-state"), "bad", "write what Cursor should change, or ask it something"); return; }
+  if (!text) { setState($("ask-state"), "bad", "write what Cursor should change, or ask it something"); return; }
   const adds = $("agent-ask-send").dataset.waiting === "1";
   if (!confirm(adds
       ? `Cursor will change what it wrote for job "${job()}" as you ask, within the same paths -- or, ` +
@@ -3115,16 +3117,15 @@ $("agent-ask-send").onclick = async () => {
         "csv/manual/ -- or, for a question, answers it. Nothing is committed. Continue?")) return;
   agentRunning = "agent-followup";
   try {
+    await startArea("ask");                // this ask only, from where the conversation ends now
     await post("/api/agent-followup", { job: job(), text, images: pastedFor("agent-ask") });
     $("agent-ask").value = "";
     clearPasted("agent-ask");
-    setCursorSource("tests");
-    watchCursorLog();
-    follow("agent-followup", $("auto-log"), $("auto-state"), () => {
+    follow("agent-followup", $("ask-log"), $("ask-state"), () => {
       refreshReview();
-      pollCursorLog(false);
+      pollPane("ask", false);
     });
-  } catch (e) { setState($("auto-state"), "bad", e.message); }
+  } catch (e) { setState($("ask-state"), "bad", e.message); }
 };
 // A command of the agent: its log and its label are those of the tab it was
 // started from (the Commit and push tab's, unless said).
@@ -3134,14 +3135,12 @@ function runAgent(runnable, options, logEl, stateEl) {
   stateEl = stateEl || $("agent-state");
   return post("/api/start", { job: job(), runnable, options })
     .then(() => {
-      if (["agent-generate", "agent-followup", "agent-automate"].includes(runnable)) {
-        setCursorSource("tests");
-        watchCursorLog();
-      }
+      if (runnable === "agent-automate") startArea("automate");
+      else if (["agent-generate", "agent-followup"].includes(runnable)) watchCursorLog();
     })
     .then(() => follow(runnable, logEl, stateEl, () => {
       refreshReview();
-      pollCursorLog(false);
+      pollCursorPanes(false);
       showReview("design");
       if (typeof showFlow === "function") showFlow();
     }))
@@ -3235,7 +3234,7 @@ $("mig-run").onclick = async () => {
     watchCursorLog();
     follow(runnable, $("mig-log"), $("mig-state"), () => {
       refreshReview();
-      pollStream("migration", false);
+      pollPane("migration", false);
     }, j);
   } catch (e) { setState($("mig-state"), "bad", e.message); }
 };
@@ -3261,7 +3260,7 @@ async function stopAgent(stateEl) {
 }
 $("agent-stop").onclick = () => stopAgent($("auto-state"));
 $("mig-stop").onclick = () => stopAgent($("mig-state"));
-$("agent-refresh").onclick = () => { refreshReview(); pollCursorLog(true); };
+$("agent-refresh").onclick = () => { refreshReview(); pollCursorPanes(true); };
 // What runs from this tab: the code review, Discard, Approve. A review
 // stops at once. Discard and Approve are asked about first: stopped
 // half-way, Discard has put back only some files (run it again), and
@@ -3297,7 +3296,7 @@ $("agent-dismiss").onclick = async () => {
     // The logs went with the outcome: the panes start blank.
     $("agent-log").textContent = "";
     setState($("agent-state"), "", "not run yet for this job");
-    pollCursorLog(true);
+    pollCursorPanes(true);
   } catch (e) { setState($("agent-state"), "bad", e.message); }
   refreshReview();
 };
@@ -3471,7 +3470,7 @@ for (const tab of ["new", "convert"]) {
 }
 refreshReview();
 watchCursorLog();
-$("job").addEventListener("change", () => { refreshReview(); pollCursorLog(true); });
+$("job").addEventListener("change", () => { refreshReview(); resetPanes(); });
 
 // ---- building what is shown -------------------------------------------
 // Everything from Jira or from a test run is somebody else's text. It is

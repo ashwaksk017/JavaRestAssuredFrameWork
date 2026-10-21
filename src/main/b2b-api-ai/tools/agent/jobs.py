@@ -1606,7 +1606,7 @@ def read_status(job: str, runnable: str) -> dict:
         return {"state": "none"}
 
 
-def read_log(job: str, runnable: str, offset: int = 0) -> dict:
+def read_log(job: str, runnable: str, offset: int = 0, end: bool = False) -> dict:
     """Bytes from `offset` on, so the page can poll without re-reading.
 
     A re-run TRUNCATES the log, so a client still holding the previous
@@ -1619,6 +1619,10 @@ def read_log(job: str, runnable: str, offset: int = 0) -> dict:
     if not os.path.isfile(p):
         return {"offset": 0, "text": "", "restarted": False}
     size = os.path.getsize(p)
+    if end:
+        # Where it ends now, nothing read: a pane that shows one request
+        # (an Ask, a Refine) starts there.
+        return {"offset": size, "text": "", "restarted": False}
     start_at = max(0, offset)
     restarted = start_at > size
     if restarted:

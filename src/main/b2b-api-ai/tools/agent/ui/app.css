@@ -477,3 +477,8 @@ button.linkish:hover, button.linkish:focus { text-decoration: underline; }
 .status-PASS { color: var(--ok); font-weight: 600; } .status-FAIL { color: var(--bad); font-weight: 600; }
 .status-SKIP { color: var(--warn); font-weight: 600; }
 label.inline { display: inline-flex; gap: .3rem; align-items: center; margin-right: .8rem; }
+/* An area's logs, under its own button: closed until its action runs. */
+details.area-logs { margin: .6rem 0 1rem; border: 1px solid var(--line); border-radius: 8px;
+                    background: var(--panel); padding: .3rem .8rem; }
+details.area-logs > summary { cursor: pointer; font-weight: 600; padding: .3rem 0; }
+details.area-logs[open] > summary { margin-bottom: .4rem; }
