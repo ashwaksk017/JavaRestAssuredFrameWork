@@ -1040,7 +1040,28 @@ def workflow_gate(job: str, runnable: str, options: dict) -> str:
 def settings_save(changes: dict) -> dict:
     """The Settings tab's save: refused while anything runs."""
     now = running_now()
-    return settings.save(changes, busy=f"{now[0][1]} (job {now[0][0]})" if now else "")
+    out = settings.save(changes, busy=f"{now[0][1]} (job {now[0][0]})" if now else "")
+    if out.get("saved") and any(str(k).startswith("cursor") for k in (changes or {})):
+        # The Cursor check ran only when the server started: a key saved
+        # here left the page saying "not ready" until a restart. Checked
+        # again now, beside the server, as at startup.
+        recheck_cursor()
+    return out
+
+
+def recheck_cursor(root: str = "") -> None:
+    root = root or ROOT
+    try:
+        mark_cursor_checking(root)
+    except OSError:
+        return
+
+    def check():
+        try:
+            run_cursor_startup(root)
+        except Exception:                                # noqa: BLE001
+            pass                                         # the page keeps "being checked" -> retried on restart
+    threading.Thread(target=check, daemon=True, name="cursor-recheck").start()
 
 
 def spec_clear(job: str) -> bool:

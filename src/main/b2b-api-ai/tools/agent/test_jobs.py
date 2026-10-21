@@ -266,6 +266,33 @@ class PathsAreConfined(unittest.TestCase):
             jobs.confine("   ")
 
 
+class SavingCursorSettings(unittest.TestCase):
+    """Seen: a key saved on the Settings tab left the page saying CURSOR NOT
+    READY -- the check ran only when the server started."""
+
+    def setUp(self):
+        self.calls = []
+        saved = (jobs.settings.save, jobs.recheck_cursor, jobs.running_now)
+        self.addCleanup(lambda: (setattr(jobs.settings, "save", saved[0]),
+                                 setattr(jobs, "recheck_cursor", saved[1]),
+                                 setattr(jobs, "running_now", saved[2])))
+        jobs.recheck_cursor = lambda root="": self.calls.append("recheck")
+        jobs.running_now = lambda: []
+
+    def save(self, changes, saved=True):
+        jobs.settings.save = lambda c, busy="": {"saved": saved}
+        return jobs.settings_save(changes)
+
+    def test_a_saved_cursor_setting_checks_cursor_again(self):
+        self.save({"cursor_key": "k"})
+        self.assertEqual(self.calls, ["recheck"])
+
+    def test_other_settings_or_a_refused_save_do_not(self):
+        self.save({"jira_token": "t"})
+        self.save({"cursor_key": "k"}, saved=False)
+        self.assertEqual(self.calls, [])
+
+
 class LogReading(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()

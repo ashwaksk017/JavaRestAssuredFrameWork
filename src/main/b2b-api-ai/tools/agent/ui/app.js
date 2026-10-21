@@ -176,7 +176,8 @@ async function showCursorSetupBanner() {
   const msg = rt.problem || "Cursor is not ready on this machine.";
   bar.replaceChildren(
     el("strong", { text: "CURSOR NOT READY" }),
-    ` — ${msg}${when} Fix in Settings or restart the server after editing cursor_agent.json.`);
+    ` — ${msg}${when} Fix it in Settings (a saved key is checked again at once), or restart the ` +
+    "server after editing cursor_agent.json by hand. A CURSOR_API_KEY environment variable, when set, wins over both.");
   bar.hidden = false;
 }
 showCursorSetupBanner();
