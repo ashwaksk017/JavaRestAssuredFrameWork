@@ -65,7 +65,8 @@ _AUTH_RX = re.compile(r"(?i)((?:authorization|x-api-key|api[_-]?key|password|pas
                       r"(?!<redacted>)[^\"'\s,;}]{6,}")
 
 _LOCK = threading.Lock()
-_STATE = {"path": "", "module": "", "seen": {}, "secrets": None, "secrets_note": ""}
+_STATE = {"path": "", "module": "", "seen": {}, "secrets": None, "secrets_note": "",
+          "job": "", "steps": [], "handled": [], "creating": False}
 
 
 def level() -> str:
@@ -265,6 +266,8 @@ def step(message) -> None:
         return
     _LAST_STEP[0] = text
     note(f"step: {text}")                                # kept, whether or not it fails
+    _STATE.setdefault("steps", []).append(text)
+    del _STATE["steps"][:-MAX_TRAIL]
     for line in (text, text.encode("ascii", "replace").decode("ascii")):
         try:
             print(STEP_MARK + line, flush=True)
@@ -292,6 +295,10 @@ def trace(where: str = "", module: str = "") -> None:
         n = _STATE["seen"][spot] = _STATE["seen"].get(spot, 0) + 1
         head = (f"[{module or _STATE['module']}] HANDLED {etype.__name__}"
                 + (f" while {where}" if where else ""))
+        _STATE.setdefault("handled", []).append(
+            f"{etype.__name__}{' while ' + where if where else ''}"
+            + (f" at {os.path.basename(last.filename)}:{last.lineno}" if last else ""))
+        del _STATE["handled"][:-MAX_TRAIL]
         if n > 5:
             if n in (6, 50, 500):
                 _append(_STATE["path"], [f"{head} -- the same error at the same place, "
@@ -306,6 +313,73 @@ RUN_LOG_REL = os.path.join("target", "b2b-full-run.log")
 FAILURE_RX = re.compile(r"^\s*(FAIL|ERROR|CRASH|VERIFY FAILED|STOPPED|BUILD FAILURE)\b"
                         r"|\[ERROR\]|\bFAIL(ED)?\b")
 MAX_FAILURE_LINES = 200
+MAX_TRAIL = 15
+
+# What making tests says it did: the lines a command already prints for a
+# person -- " ok  35 test case(s) designed", "PENDING REVIEW", a created
+# Xray key ("  TC-001  ABC-901  title") -- written as WORKBENCH STEP lines.
+SUMMARY_RX = re.compile(r"^\s*(ok|DONE|PASSED|PUSHED|PENDING REVIEW|APPROVED|MOCK|WARN|NOTE)\b"
+                        r"|^\s*\.\.\s+(the suite|filled|clean build|the Allure|the changed files"
+                        r"|reopened|the conversation|repair)"
+                        r"|^\s+[A-Za-z]+-\d{2,}\s+([A-Z][A-Z0-9_]+-\d+|HELD)\b")
+MAX_SUMMARY_LINES = 60
+# The commands of making tests and running them. Their START and END, and
+# what they said they did, go to the full run log and to activity.log --
+# kept in .workbench/, because a test run recreates the run log.
+CREATING = frozenset({"intake", "locate", "storycheck", "specsource", "design", "suitesuggest",
+                      "xraytests", "xrayimport", "xrayupdate", "loop", "manualtests", "devcode",
+                      "codereview", "mvnrun", "publish", "xraypublish", "fixbrief",
+                      "failure-history", "patches"})
+# Sub-commands that only read: nothing of them is an activity.
+READING = frozenset({"status", "plan", "list", "setup", "show", "check"})
+ACTIVITY_LOG = "activity.log"
+# The jobs the page checks make (check_ui.py): their failures are on
+# purpose, and 112 of them once filled the real run log.
+_THROWAWAY_RX = re.compile(r"^check-ui", re.I)
+
+
+def _throwaway() -> bool:
+    return bool(_THROWAWAY_RX.match(str(_STATE.get("job") or "")))
+
+
+def activity_log(root: str = "") -> str:
+    return os.path.join(state_dir(root), ACTIVITY_LOG)
+
+
+def _to_run_log(kind: str, source: str, lines, root: str = "") -> None:
+    """WORKBENCH <kind> [source] lines, appended to the full run log."""
+    if level() == "off" or _throwaway():
+        return
+    try:
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        out = []
+        for line in ([lines] if isinstance(lines, str) else list(lines)):
+            for part in str(line).splitlines() or [""]:
+                part = redact(part, root)
+                if len(part) > MAX_LINE:
+                    part = part[:MAX_LINE] + f" ... ({len(part) - MAX_LINE} more characters)"
+                out.append(f"{stamp} WORKBENCH {kind} [{source}] {part}\n")
+        path = run_log(root)
+        if not path:
+            return
+        with _LOCK:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with io.open(path, "a", encoding="utf-8", errors="replace") as fh:
+                fh.writelines(out)
+    except Exception:                                    # noqa: BLE001
+        pass
+
+
+def activity(source: str, lines, root: str = "") -> None:
+    """A step of making tests: in the full run log (WORKBENCH STEP) and in
+    .workbench/activity.log, which a test run does not recreate. Asked for:
+    the run log said only what FAILED while tests were being made."""
+    if level() == "off" or _throwaway():
+        return
+    lines = [lines] if isinstance(lines, str) else list(lines)
+    job = _STATE.get("job") or ""
+    _append(activity_log(root), [f"[{source}]{' job ' + job if job else ''} {l}" for l in lines], root)
+    _to_run_log("STEP", source, lines, root)
 
 
 def run_log(root: str = "") -> str:
@@ -322,26 +396,7 @@ def run_log_failure(source: str, lines, root: str = "") -> None:
     inside a test JVM and starts it again for each run (append="false"),
     so a command's failures are written as it ends -- after any test run
     it started -- and the server's as they happen."""
-    if level() == "off":
-        return
-    try:
-        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        out = []
-        for line in ([lines] if isinstance(lines, str) else list(lines)):
-            for part in str(line).splitlines() or [""]:
-                part = redact(part, root)
-                if len(part) > MAX_LINE:
-                    part = part[:MAX_LINE] + f" ... ({len(part) - MAX_LINE} more characters)"
-                out.append(f"{stamp} WORKBENCH FAIL [{source}] {part}\n")
-        path = run_log(root)
-        if not path:
-            return
-        with _LOCK:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with io.open(path, "a", encoding="utf-8", errors="replace") as fh:
-                fh.writelines(out)
-    except Exception:                                    # noqa: BLE001
-        pass
+    _to_run_log("FAIL", source, lines, root)
 
 
 class _Tee:
@@ -352,6 +407,7 @@ class _Tee:
     def __init__(self, stream, keep: int = 30):
         self._stream, self._keep, self.lines, self._part = stream, keep, [], ""
         self.failures = []
+        self.summary = []
 
     def write(self, text):
         try:
@@ -362,6 +418,8 @@ class _Tee:
                 for line in whole:
                     if len(self.failures) < MAX_FAILURE_LINES and FAILURE_RX.search(line):
                         self.failures.append(line.rstrip())
+                    elif len(self.summary) < MAX_SUMMARY_LINES and SUMMARY_RX.search(line):
+                        self.summary.append(line.rstrip())
         except Exception:                                # noqa: BLE001
             pass
         try:
@@ -390,13 +448,29 @@ def _ended(path: str, module: str, rc, started: float, tee, root: str, argv=()) 
     _append(path, lines, root)
     failed = rc not in (0, None, False)
     said = tee.failures if tee is not None else []
+    if _STATE.get("creating"):
+        activity(module, [f"END {_argv_text(argv)} -- exit {rc!r} after {time.time() - started:.1f}s"]
+                 + ["  " + l for l in (tee.summary if tee is not None else [])], root)
     if failed or said:
         entry = [f"{_argv_text(argv)} -- exit {rc!r} after {time.time() - started:.1f}s"
                  + (f"; the command's record: {os.path.relpath(path, root or ROOT)}" if path else "")]
         entry += ["  " + l for l in said]
         if failed and tee is not None:
             entry += ["  " + l for l in tee.said() if l.rstrip() not in said]
+        entry += _trail()
         run_log_failure(module, entry, root)
+
+
+def _trail() -> list:
+    """What the command was doing before it failed: its steps, and the
+    errors it handled and carried on from (their tracebacks are in the
+    job's diagnostics.log)."""
+    out = []
+    if _STATE.get("steps"):
+        out.append("  steps it took: " + " > ".join(_STATE["steps"][-MAX_TRAIL:]))
+    if _STATE.get("handled"):
+        out.append("  errors it handled first: " + "; ".join(_STATE["handled"][-MAX_TRAIL:]))
+    return out
 
 
 def run(module: str, main, argv=None, root: str = ""):
@@ -406,8 +480,12 @@ def run(module: str, main, argv=None, root: str = ""):
     path = job_log(_job_from(argv), root) or ""
     if path and not os.path.isdir(os.path.dirname(path)):
         path = ""                    # a mistyped job id does not become a job by being logged
-    _STATE.update(path=path, module=module, seen={})
+    _STATE.update(path=path, module=module, seen={}, job=_job_from(argv), steps=[], handled=[],
+                  creating=module in CREATING and not (argv and str(argv[0]) in READING))
+    _LAST_STEP[0] = ""
     started = time.time()
+    if _STATE["creating"]:
+        activity(module, f"START {_argv_text(argv)}", root)
     _append(path, [f"[{module}] START {_argv_text(argv)}  (pid {os.getpid()}, "
                    f"python {sys.version.split()[0]}, {sys.platform})"], root)
     # A Windows console or a pipe often cannot print every character a
@@ -430,6 +508,7 @@ def run(module: str, main, argv=None, root: str = ""):
         _append(path, [f"[{module}] CRASH after {time.time() - started:.1f}s"] + crash, root)
         run_log_failure(module, [f"{_argv_text(argv)} -- CRASH after {time.time() - started:.1f}s"]
                         + ["  " + l for l in (tee.failures if tee is not None else [])]
+                        + _trail()
                         + ["  " + l for l in crash], root)
         raise
     finally:

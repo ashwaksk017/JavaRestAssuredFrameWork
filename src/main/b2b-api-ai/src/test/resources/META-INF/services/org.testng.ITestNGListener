@@ -1,1 +1,2 @@
 com.hi.api.reporting.FailureDigestListener
+com.hi.api.tests.RunLogListener

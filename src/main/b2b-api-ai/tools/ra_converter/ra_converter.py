@@ -19404,9 +19404,14 @@ public class FailureDigestListener implements ITestListener {{
         # TestNG discovers listeners named here however the run is launched
         # -- suite XML, -Dtest=, or an IDE. Without it a `-Dtest=` run
         # silently produces no digest, which is exactly what happened.
-        self._write(
-            "src/test/resources/META-INF/services/org.testng.ITestNGListener",
-            f"{self.package_root}.reporting.FailureDigestListener" + chr(10))
+        svc = "src/test/resources/META-INF/services/org.testng.ITestNGListener"
+        try:
+            with open(_fs_path(os.path.join(self.output_dir, svc)), encoding="utf-8") as fh:
+                existing = fh.read()
+        except OSError:
+            existing = ""
+        self._write(svc, listener_services(
+            existing, f"{self.package_root}.reporting.FailureDigestListener"))
         return rel
 
     def emit_progress_listener(self) -> str:
@@ -19973,6 +19978,22 @@ def phase_model_run_vocabs() -> set:
         sys.path.insert(0, _here)
     import phase_model
     return phase_model.RUN_VOCABS
+
+
+def listener_services(existing: str, digest_class: str) -> str:
+    """META-INF/services/org.testng.ITestNGListener as a convert writes it:
+    the converter's digest listener first, then every other listener the
+    file already names, as it was. The file used to be written with the
+    digest alone, so a listener a person registered (RunLogListener: the
+    run log's failure summary) was dropped by the next convert."""
+    kept = []
+    for line in (existing or "").splitlines():
+        name = line.strip()
+        if not name or name.startswith("#") or name == digest_class \
+                or name.endswith(".reporting.FailureDigestListener") or name in kept:
+            continue
+        kept.append(name)
+    return chr(10).join([digest_class] + kept) + chr(10)
 
 
 def _fs_path(path: str, force: bool = False) -> str:

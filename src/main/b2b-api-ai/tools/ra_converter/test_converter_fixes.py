@@ -2069,6 +2069,22 @@ def test_emitted_digest_listener_is_v4():
             "committed FailureDigestListener.java is behind the converter template"
 
 
+def test_a_convert_keeps_the_listeners_it_does_not_own():
+    """The services file was written with the digest listener alone, so the
+    run log's RunLogListener -- registered by hand -- went at every convert."""
+    digest = "com.hi.api.reporting.FailureDigestListener"
+    out = ra_converter.listener_services(
+        "com.old.root.reporting.FailureDigestListener\ncom.hi.api.tests.RunLogListener\n\n# a note\n", digest)
+    assert out == digest + "\ncom.hi.api.tests.RunLogListener\n"
+    assert ra_converter.listener_services("", digest) == digest + "\n"
+    import io
+    import os
+    svc = os.path.join(os.path.dirname(ra_converter.__file__), "..", "..", "src", "test", "resources",
+                       "META-INF", "services", "org.testng.ITestNGListener")
+    if os.path.exists(svc):
+        assert "com.hi.api.tests.RunLogListener" in io.open(svc, encoding="utf-8").read()
+
+
 def test_merged_template_cells_come_out_in_a_stable_column_order():
     """34 CSVs differed between two converts of the SAME input: identical
     column set and values, different tpl_* column ORDER, because the

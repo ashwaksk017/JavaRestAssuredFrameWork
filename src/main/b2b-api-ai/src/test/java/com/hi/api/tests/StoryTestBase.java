@@ -114,6 +114,8 @@ public abstract class StoryTestBase extends BaseApiTest {
     /** As above, falling back to another story's persona keys ({@code fallbackPrefix}). */
     protected JsonTokens.Session ownerSession(Map<String, String> row, String configPrefix,
                                               String fallbackPrefix) {
+        LOG.info("SETUP persona {}: username and password from the row, else {}.username/.password{}",
+                configPrefix, configPrefix, fallbackPrefix == null ? "" : ", else " + fallbackPrefix);
         String username = rowOrConfig(row, "username", configPrefix + ".username",
                 fallbackPrefix == null ? null : fallbackPrefix + ".username");
         String password = rowOrConfig(row, "password", configPrefix + ".password",
@@ -155,7 +157,30 @@ public abstract class StoryTestBase extends BaseApiTest {
      * path: {@code "createProgramAccount: POST /guests/{guestId}/businesses"}.
      */
     protected static <T> T step(String name, Supplier<T> exchange) {
-        return Allure.step(name, exchange::get);
+        long started = System.currentTimeMillis();
+        try {
+            T out = Allure.step(name, exchange::get);
+            LOG.info("step {} -> {} ({} ms)", name, outcome(out), System.currentTimeMillis() - started);
+            return out;
+        } catch (RuntimeException | Error e) {
+            LOG.warn("step {} FAILED after {} ms: {}", name, System.currentTimeMillis() - started, e.toString());
+            throw e;
+        }
+    }
+
+    /** What a step came to, for the run log: never a token or a body. */
+    private static String outcome(Object out) {
+        if (out instanceof Response) {
+            return "HTTP " + ((Response) out).getStatusCode();
+        }
+        if (out instanceof JsonTokens.Session) {
+            String g = ((JsonTokens.Session) out).guestId;
+            return "token obtained, guest id " + (present(g) ? g : "not in the token");
+        }
+        if (out instanceof String) {
+            return "token obtained";
+        }
+        return out == null ? "nothing" : out.getClass().getSimpleName();
     }
 
     // ---- setup: a guest, a program account ----------------------------------------
@@ -230,6 +255,8 @@ public abstract class StoryTestBase extends BaseApiTest {
         softAssert.assertEquals(status, "200", tag + "/SETUP: POST enroll guest status");
         String guestId = RestUtilities.safeJsonExtract(res, "guestId");
         softAssert.assertTrue(present(guestId), tag + "/SETUP: the enrol response carries a guestId");
+        LOG.info("SETUP {} enrol a guest -> HTTP {}, guestId {}", tag, status, present(guestId) ? guestId.trim()
+                : "MISSING (the response did not carry one; what depends on it will fail)");
         return "200".equals(status) && present(guestId) ? guestId.trim() : null;
     }
 
@@ -250,6 +277,8 @@ public abstract class StoryTestBase extends BaseApiTest {
         softAssert.assertEquals(status, "200", tag + "/SETUP: POST create program account status");
         String accountId = RestUtilities.safeJsonExtract(res, "accountId");
         softAssert.assertTrue(present(accountId), tag + "/SETUP: the create response carries an accountId");
+        LOG.info("SETUP {} create a program account for guest {} -> HTTP {}, accountId {}", tag, guestId, status,
+                present(accountId) ? accountId.trim() : "MISSING (what depends on it will fail)");
         return "200".equals(status) && present(accountId) ? accountId.trim() : null;
     }
 
@@ -267,6 +296,7 @@ public abstract class StoryTestBase extends BaseApiTest {
         Response res = step("createProgramAccount: POST " + ApiRoutes.GUEST_BUSINESSES,
                 () -> RestUtilities.getResponsePost(body, url, apiHeaders(guestToken)));
         RestUtilities.logResponseBody(tag, holder, RestUtilities.getResponseAsString(res));
+        LOG.info("ACT {} create a program account for guest {} -> HTTP {}", tag, guestId, res.getStatusCode());
         return res;
     }
 

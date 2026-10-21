@@ -319,25 +319,25 @@ public class RestUtilities {
     // =====================================================================
 
     public static Response getResponsePost(String body, String url, Map<String, String> headers) {
-        return applyHeaders(baseRequest(), headers).body(body).when().post(url);
+        return recorded("POST", url, body, applyHeaders(baseRequest(), headers).body(body).when().post(url));
     }
 
     public static Response getResponsePatch(String body, String url, Map<String, String> headers) {
-        return applyHeaders(baseRequest(), headers).body(body).when().patch(url);
+        return recorded("PATCH", url, body, applyHeaders(baseRequest(), headers).body(body).when().patch(url));
     }
 
     public static Response getResponsePut(String body, String url, Map<String, String> headers) {
-        return applyHeaders(baseRequest(), headers).body(body).when().put(url);
+        return recorded("PUT", url, body, applyHeaders(baseRequest(), headers).body(body).when().put(url));
     }
 
     /** DELETE without a body -- most common. */
     public static Response getResponseDelete(String url, Map<String, String> headers) {
-        return applyHeaders(baseRequest(), headers).when().delete(url);
+        return recorded("DELETE", url, null, applyHeaders(baseRequest(), headers).when().delete(url));
     }
 
     /** GET (2-arg, P0.4 overload). */
     public static Response getResponseGet(String url, Map<String, String> headers) {
-        return applyHeaders(baseRequest(), headers).when().get(url);
+        return recorded("GET", url, null, applyHeaders(baseRequest(), headers).when().get(url));
     }
 
     /** GET (3-arg, reference-compat). Body attached only if non-empty. */
@@ -346,7 +346,29 @@ public class RestUtilities {
         if (body != null && !body.isEmpty()) {
             req = req.body(body);
         }
-        return req.when().get(url);
+        return recorded("GET", url, body, req.when().get(url));
+    }
+
+    /**
+     * A call made outside a RestStep -- a story test, a token request --
+     * recorded in {@link LastExchange}, so the run log's failure summary
+     * (RunLogListener) can show the request a failed test made. Before,
+     * only RestStep recorded, and a story test's failure said "no calls".
+     * A RestStep in progress (a step name pending) records its own calls,
+     * under its own name. The body is kept REDACTED (a token request's is
+     * the client secret). Never throws.
+     */
+    private static Response recorded(String method, String url, String body, Response res) {
+        try {
+            if (LastExchange.pendingStep() == null) {
+                String path = url == null ? "?" : url.replaceFirst("^[a-zA-Z]+://[^/]+", "").split("\\?", 2)[0];
+                LastExchange.record(method + " " + path, method, url, res,
+                        body == null ? "" : com.hi.api.security.Secrets.redact(body));
+            }
+        } catch (RuntimeException ignored) {
+            // reporting must never fail a test
+        }
+        return res;
     }
 
     // Preserved as a no-op for reference compat.

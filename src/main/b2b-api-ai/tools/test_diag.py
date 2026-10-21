@@ -90,7 +90,7 @@ class TheFullRunLog(Base):
         text = self.run_log()
         self.assertIn("[design] --job j1 --speed fast -- exit 0", text)
         self.assertIn("FAIL the Xray link could not be made", text)
-        self.assertNotIn("ok  done", text)
+        self.assertNotIn("WORKBENCH FAIL [design] ok  done", text, "what went well is a STEP, never a FAIL")
 
     def test_a_command_that_worked_enters_nothing_and_a_crash_is_entered(self):
         self.run_cmd(lambda: 0)
@@ -114,6 +114,51 @@ class TheFullRunLog(Base):
         self.assertIn("[mvnrun] test --suite x.xml -- exit 3", text)
         self.assertIn("[server] POST /api/run -> 500", text)
         self.assertIn("[server] ERROR handling /api/run", text)
+
+    def test_making_tests_says_what_it_did_in_the_run_log_and_the_kept_activity_log(self):
+        """Asked for: the run log said only what FAILED while tests were made."""
+        def designs():
+            print(" ..  asking Cursor (9412 characters)")
+            print(" ok  35 test case(s) designed. Read design.md")
+            print(f"     TC-001  ABC-901  a case {TOKEN}")
+            return 0
+        self.run_cmd(designs, module="design")
+        text = self.run_log()
+        self.assertIn("WORKBENCH STEP [design] START --job j1 --speed fast", text)
+        self.assertIn("WORKBENCH STEP [design] END --job j1 --speed fast -- exit 0", text)
+        self.assertIn("ok  35 test case(s) designed", text)
+        self.assertIn("TC-001  ABC-901", text)
+        self.assertNotIn("asking Cursor", text, "progress is not a step's outcome")
+        self.assertNotIn(TOKEN, text)
+        with io.open(diag.activity_log(self.root), encoding="utf-8") as fh:
+            kept = fh.read()
+        self.assertIn("[design] job j1 END", kept)
+        self.assertIn("ok  35 test case(s) designed", kept)
+
+    def test_reading_and_other_commands_are_not_activities(self):
+        diag.run("xraytests", lambda: 0, ["status", "--job", "j1"], self.root)
+        diag.run("history", lambda: 0, ["--job", "j1"], self.root)
+        self.assertEqual(self.run_log(), "")
+
+    def test_a_failure_says_the_steps_it_took_and_what_it_handled(self):
+        def fails():
+            diag.step("Reading the story")
+            diag.step("Asking Cursor")
+            try:
+                raise TimeoutError("slow")
+            except TimeoutError:
+                diag.trace("asking Cursor")
+            print("FAIL Cursor did not answer")
+            return 1
+        self.run_cmd(fails, module="loop")
+        text = self.run_log()
+        self.assertIn("steps it took: Reading the story > Asking Cursor", text)
+        self.assertIn("errors it handled first: TimeoutError while asking Cursor at test_diag.py:", text)
+
+    def test_the_page_checks_jobs_stay_out_of_the_run_log(self):
+        os.makedirs(os.path.join(self.root, ".workbench", "check-ui-throwaway"))
+        diag.run("loop", lambda: 1, ["--job", "check-ui-throwaway"], self.root)
+        self.assertEqual(self.run_log(), "")
 
     def test_it_can_be_sent_elsewhere_or_switched_off(self):
         other = os.path.join(self.root, "elsewhere.log")

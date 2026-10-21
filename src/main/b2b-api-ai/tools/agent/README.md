@@ -1837,6 +1837,24 @@ being read, and that output is served to the page. The rest is kept here.
   Surefire; `Run the tests` passes `-Dlog.level=debug`. For a manual run:
   `mvn -o test "-DsuiteXmlFile=src/test/resources/testng-jira.xml"
   "-Denv=stg" "-DfailIfNoTests=false" "-Dlog.level=debug"`.
+  What it holds besides the framework's own lines:
+  - `RUN - TEST START` / `TEST END` for every test outside the converted
+    suites (which log their own), with its case id, Xray key, story,
+    environment and time;
+  - a `==== TEST FAILED` block for EVERY failed test: why, each failed
+    assertion, the line, the calls it made, the last request (body
+    redacted) and the answer (`RunLogListener`, registered in
+    META-INF/services -- a convert keeps it there);
+  - a story test's setup: `step <name> -> HTTP 200`, `SETUP ... enrol a
+    guest -> guestId ...`, `ACT ...`;
+  - `WORKBENCH STEP [design|xraytests|loop|...]`: the START and END of each
+    command that makes or runs tests, with what it said it did (cases
+    designed, Xray keys created / found / held, files written, verified,
+    PENDING REVIEW). A test run recreates this file, so the same lines are
+    kept in `.workbench/activity.log`;
+  - `WORKBENCH FAIL`: a failed command, with the steps it took and the
+    errors it handled before it failed. The page checks' throwaway jobs
+    (`check-ui-*`) are kept out.
 
 *Only errors* keeps each line that reports a problem and the lines of its
 traceback.
