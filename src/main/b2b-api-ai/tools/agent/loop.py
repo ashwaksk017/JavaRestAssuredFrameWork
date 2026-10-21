@@ -2707,8 +2707,13 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
 
 # ---- verify ----------------------------------------------------------
 
-def gate_failures(root: str, out_json: str, runner=None) -> dict:
-    """Run the gate; {check name: how to reproduce} for every failing check."""
+def gate_failures(root: str, out_json: str, runner=None, area: str = "converter") -> dict:
+    """Run the gate; {check name: how to reproduce} for every failing check.
+
+    One area of it (verify_all --area): a converter change cannot break the
+    workbench's, Jira's or the autofix loop's checks, and running them
+    twice a job -- before the agent and after -- was most of the wait.
+    The area is the scope's `gate_area` (policy.json); empty runs all."""
     run = runner or (lambda argv: subprocess.run(
         argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **NO_WINDOW))
     try:
@@ -2716,7 +2721,7 @@ def gate_failures(root: str, out_json: str, runner=None) -> dict:
     except OSError:
         pass
     run([sys.executable, "-B", os.path.join("tools", "verify_all.py"),
-         "--json", out_json])
+         "--json", out_json] + (["--area", area] if area else []))
     try:
         with io.open(out_json, encoding="utf-8") as fh:
             checks = json.load(fh).get("checks") or []
@@ -2930,11 +2935,12 @@ def run_verify(root: str, scope: dict, runner=None, gate_before=None,
         if r.returncode != 0:
             return {"ok": False, "steps": steps}
     if scope.get("gate"):
-        diag.step(_after_cursor(attempt, "Running the full gate"))
-        say(" .. verify: the gate (python tools/verify_all.py), compared "
-            "with the run taken before the agent")
+        area = scope.get("gate_area", "converter")
+        diag.step(_after_cursor(attempt, f"Running the gate ({area or 'every'} checks)"))
+        say(f" .. verify: the gate (python tools/verify_all.py"
+            + (f" --area {area}" if area else "") + "), compared with the run taken before the agent")
         try:
-            after = gate_failures(root, gate_json, runner)
+            after = gate_failures(root, gate_json, runner, area=area)
         except RuntimeError as e:
             steps.append({"name": "gate", "rc": 1, "tail": str(e)})
             return {"ok": False, "steps": steps}
@@ -3500,7 +3506,8 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         say(" .. running the gate once BEFORE the agent, to know what "
             "already fails (a minute or two)")
         try:
-            gate_before = gate_failures(root, os.path.join(job_dir, "gate-before.json"))
+            gate_before = gate_failures(root, os.path.join(job_dir, "gate-before.json"),
+                                        area=scope.get("gate_area", "converter"))
         except RuntimeError as e:
             say(f"FAIL {e}")
             return 1
@@ -4721,6 +4728,11 @@ def _stream(root: str, argv: list, timeout: float) -> tuple:
     return proc.returncode if proc.returncode is not None else 124, "\n".join(lines)
 
 
+# A change of new tests can be run while it waits for review (that run
+# gates Approve) and after: approved here, or pushed.
+RUNNABLE_STATES = ("pending-review", "approved-local", "pushed")
+
+
 def cmd_run(job_dir: str, root: str, policy: dict, env: str = "", runner=None) -> int:
     """Run the tests of the change waiting for review, against an
     environment (the policy's run_env, stg), and record what came of it:
@@ -4728,8 +4740,10 @@ def cmd_run(job_dir: str, root: str, policy: dict, env: str = "", runner=None) -
     files' hashes, so that Approve can tell the run was of THIS code. A
     copy of TestNG's results is kept for publishing to Xray."""
     review = read_review(job_dir)
-    if review.get("state") != "pending-review":
-        say(f"FAIL there is no change waiting for review to run (state: {review.get('state')}).")
+    state = review.get("state")
+    if state not in RUNNABLE_STATES:
+        say(f"FAIL this job has no change of tests to run (state: {state}). A change waiting "
+            f"for review, approved or pushed is run.")
         return 1
     if (review.get("scope") or "new-test") != "new-test":
         say("FAIL only a change of new tests is run here.")
@@ -4824,10 +4838,12 @@ def cmd_run(job_dir: str, root: str, policy: dict, env: str = "", runner=None) -
         line = f"{test['status']:<4} {test['class'].rsplit('.', 1)[-1]}.{test['method']}"
         say(("  ok  " if test["status"] == "PASS" else "  ..  ") + line
             + (f" -- {test['message'][:240]}" if test["message"] else ""))
+    reviewing = state == "pending-review"
     if ok:
-        say(f"PASSED on {env}: {why}. Approve & push is open for this change.")
+        say(f"PASSED on {env}: {why}." + (" Approve & push is open for this change." if reviewing else ""))
         return 0
-    say(f"FAIL on {env}: {why}. Approve & push stays closed until a run of this change passes.")
+    say(f"FAIL on {env}: {why}."
+        + (" Approve & push stays closed until a run of this change passes." if reviewing else ""))
     return 1
 
 

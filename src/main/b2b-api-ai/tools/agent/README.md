@@ -866,7 +866,9 @@ as before. A single case is refined by ticking only it.
 ### Run tests
 
 Compile and run from the page. **Compile** is `mvn test-compile`. **Run
-the tests** runs one of: a suite file (every file under `Suites/` and
+the tests** runs one of: **this job's new tests** (the suite the
+workbench wrote for the job open on the page, `Suites/jira/<job>.xml`,
+chosen for you when it exists), a suite file (every file under `Suites/` and
 `src/test/resources/testng*.xml`), a class or method (`-Dtest=`, e.g.
 `GuestProgramAccountTest#create*`), or a TestNG group -- through its
 `Suites/jira/group-<group>.xml`, since surefire ignores `-Dgroups` when a
@@ -987,7 +989,8 @@ again replaces what was chosen before; *Remove* forgets it. Only a
 | Phase specs: On / Off | `--phase-specs` / `--no-phase-specs` |
 | Cursor assist: Off / On | `--no-cursor-assist` / `--cursor-assist`. **On calls the real Cursor**, whatever `mock.json` says |
 | Clean first, Classic mode, Skip self-test | `--clean`, `--classic`, `--skip-self-test` |
-| Verify all afterwards | when the convert finishes cleanly, runs `python tools/verify_all.py` and shows its log under the convert's. Not run after a failed convert, and the page says so |
+| Verify afterwards | when the convert finishes cleanly, runs the checks chosen in **What to verify** and shows their log under the convert's. Not run after a failed convert, and the page says so |
+| What to verify | **Converter checks** (`verify_all.py --area converter`, the default: all a convert can break), **Workbench checks**, or **Everything** (slow). **Verify** runs them now, without a convert |
 
 Not on the page, and left at their defaults: `--package-root`, `--envs`,
 `--config`, `--cursor-config`, `--service-name`, `--diagram-cases`,
@@ -1916,7 +1919,7 @@ Each stage is a link to where it is done, and the server holds the gates
 |---|---|---|
 | Finalize | **Finalize the cases** (under the review): the approved cases -- titles, steps, suites, Automate -- frozen. An edit afterwards reopens it. | For a job with designed cases: Create in Xray, Automate, Ask Cursor, a follow-up, Run the tests and Approve |
 | Regression | **Confirm the regression cases** (Commit and push tab): the automated cases in the `regression` group, for the change as it is now -- a follow-up or another Automate needs it again. Publish adds exactly these to the regression Test Set / Plan. | Run the tests |
-| Run on stg | **Run the tests**, on the environment of the Settings tab: every test passed (a row switched off in its sheet aside; an attempt retried to a pass is not a skip). | Approve & push -- for a run on that environment, of exactly these files |
+| Run on stg | **Run the tests**, on the environment chosen beside it (the Settings tab's by default): every test passed (a row switched off in its sheet aside; an attempt retried to a pass is not a skip). It can be run again after the change is approved or pushed; only a run while it waits for review opens the push. **Compile** beside it compiles the project and lists the errors in the change's own files first. | Approve & push -- for a run on the Settings tab's environment, of exactly these files |
 | Push | **Approve & push** to `feature_<story key>` (`feature_<job>` without one; `feature_<key>_<job>` when the story's branch exists already). | Publish to Xray |
 | Publish | **Publish to Xray**: any run, passed or not -- a failure is a result Xray should hold too (the push still needs a green run; publishing does not). A new Test Execution with the run's results (publishing the same run again as a new one is refused), or, with a key in the box beside the button, the results put into that **existing** Test Execution (its summary, description and plan left as they are; it must be a Test Execution). Once the change is pushed, the confirmed regression cases are added to the regression Test Set / Plan (Settings tab); before that they are not -- publish again after the push. If adding them fails, the execution is still on record. | -- |
 
@@ -2033,7 +2036,7 @@ The API never accepts a command *string*. Every runnable is named in
 | `publish-attach` | attach one result file (by name) to one Jira issue; the key twice; **writes to Jira** |
 | `publish-page` | create one Confluence page from a result; the title twice; **writes to Confluence** |
 | `spec-confluence` | take the API specification attached to a Confluence page into the job directory; a link and a name, no path |
-| `verify-all` | run every check of the gate (`tools/verify_all.py`); takes nothing from the page |
+| `verify-all` | run the checks of the gate (`tools/verify_all.py`); takes only `--area` from the page (verify_all refuses an area it does not know). A converter job's own gate runs `--area converter` (policy `gate_area`) |
 | `agent-design` | Cursor proposes API test cases (plan mode); takes no path, writes the job directory |
 | `agent-setup` | check the Cursor SDK, the key and git |
 | `agent-generate` | Cursor makes the change in the chosen scope; guardrails; verify |

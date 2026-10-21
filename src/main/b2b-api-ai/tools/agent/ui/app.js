@@ -1799,11 +1799,18 @@ async function loadRunTargets() {
   $("run-env").replaceChildren(...runTargets.envs.map((e) => el("option", { value: e, text: e + (e === runTargets.active ? " (active)" : "") })));
   $("run-env").value = envKeep || runTargets.active || (runTargets.envs[0] || "");
 }
-for (const r of document.querySelectorAll('input[name="run-what"]')) {
-  r.onchange = () => {
-    for (const w of ["suite", "test", "group"]) $(`run-what-${w}`).hidden = chosen("run-what") !== w;
-  };
+// The job's own suite, when the job open on the page has one.
+function jobSuite() {
+  const j = job();
+  const want = j ? `Suites/jira/${j}.xml` : "";
+  return want && runTargets && runTargets.suites.some((s) => s.path === want) ? want : "";
 }
+function showRunWhat() {
+  for (const w of ["job", "suite", "test", "group"]) $(`run-what-${w}`).hidden = chosen("run-what") !== w;
+  $("run-job-suite").textContent = jobSuite() || (job() ? `job ${job()} has no suite of new tests yet` : "open a job first");
+}
+let runWhatTouched = false;     // a person chose: the job's tests are no longer preselected
+for (const r of document.querySelectorAll('input[name="run-what"]')) r.onchange = () => { runWhatTouched = true; showRunWhat(); };
 $("run-suites-refresh").onclick = loadRunTargets;
 function runBusy(on) { for (const id of ["mvn-compile", "mvn-test"]) $(id).disabled = on; }
 async function showRunResult(j) {
@@ -1855,6 +1862,7 @@ $("mvn-test").onclick = () => {
   const what = chosen("run-what");
   const options = { "--env": $("run-env").value };
   if ($("run-compile-first").checked) options["--compile-first"] = true;
+  if (what === "job") options["--suite"] = jobSuite();
   if (what === "suite") options["--suite"] = $("run-suite").value;
   if (what === "test") options["--test"] = $("run-test").value.trim();
   if (what === "group") options["--group"] = $("run-group").value.trim();
@@ -1868,6 +1876,11 @@ $("mvn-stop").onclick = async () => {
 };
 onTab.run = async () => {
   if (!runTargets) await loadRunTargets();
+  // A job with new tests: they are what is run, unless something else is chosen.
+  if (jobSuite() && !runWhatTouched) {
+    for (const r of document.querySelectorAll('input[name="run-what"]')) r.checked = r.value === "job";
+  }
+  showRunWhat();
   const j = runJob();
   // A run started earlier (or from another tab) is followed again.
   for (const r of ["mvn-test", "mvn-compile"]) {
@@ -2050,10 +2063,13 @@ loadUploads();
 
 function runVerifyAll(j) {
   $("verify-block").hidden = false;
-  post("/api/start", { job: j, runnable: "verify-all", options: {} })
+  const area = $("verify-area").value;
+  post("/api/start", { job: j, runnable: "verify-all", options: area ? { "--area": area } : {} })
     .then(() => follow("verify-all", $("verify-log"), $("verify-state")))
     .catch((e) => setState($("verify-state"), "bad", e.message));
 }
+
+$("run-verify").onclick = () => runVerifyAll(convertJob());
 
 $("run-convert").onclick = async () => {
   if (uploading) { setState($("convert-state"), "bad", "the files are still being copied"); return; }
@@ -2723,11 +2739,15 @@ async function refreshReview() {
   // is typed in the box when they are clicked.
   $("agent-push").dataset.job = shown;
   $("agent-run").dataset.job = shown;
-  api("/api/settings").then((s) => {
-    const env = (s && s.run && s.run.env) || "stg";
-    $("agent-run").dataset.env = env;
-    $("agent-run").textContent = `Run the tests (${env})`;
-  }).catch(() => {});
+  Promise.all([api("/api/settings").catch(() => null), api("/api/run-targets").catch(() => null)])
+    .then(([s, t]) => {
+      const def = (s && s.run && s.run.env) || "stg";
+      const envs = (t && t.envs && t.envs.length) ? t.envs : [def];
+      const keep = $("agent-run-env").value;
+      $("agent-run-env").replaceChildren(...envs.map((e) => el("option", { value: e, text: e })));
+      $("agent-run-env").value = envs.includes(keep) ? keep : (envs.includes(def) ? def : envs[0]);
+    });
+  $("agent-compile").dataset.job = shown;
   if (typeof showFlow === "function") showFlow();
   $("agent-discard").dataset.job = shown;
   try {
@@ -2813,7 +2833,10 @@ async function refreshReview() {
   // push: only once a run of it passed.
   const newTests = (review.scope || "new-test") === "new-test";
   const ran = review.execution || null;
-  $("agent-run").disabled = !(state === "pending-review" && newTests && !review.mock);
+  const runnable = ["pending-review", "approved-local", "pushed"].includes(state) && newTests && !review.mock;
+  $("agent-run").disabled = !runnable;
+  $("agent-run-env").disabled = !runnable;
+  $("agent-compile").disabled = !(["pending-review", "verify-failed", "approved-local", "pushed"].includes(state));
   // Any run is published, passed or not; the push still needs a green one.
   $("agent-xray").disabled = !ran;
   $("agent-xray").title = ran ? "" : "run the tests first: there is no run to publish";
@@ -3281,9 +3304,37 @@ $("agent-dismiss").onclick = async () => {
 // THIS code passed (the server checks the files' hashes too).
 $("agent-run").onclick = () => {
   if (!sameJobOrRefresh($("agent-run"))) return;
-  const env = $("agent-run").dataset.env || "stg";
+  const env = $("agent-run-env").value || "stg";
   if (!confirm(`Run the tests of job "${job()}" against ${env}? They call the real ${env} APIs.`)) return;
-  runAgent("agent-run-tests", { "--job": job() });
+  runAgent("agent-run-tests", { "--job": job(), "--env": env });
+};
+// Compile, with the errors in this change's own files first: those are the
+// ones to fix here. The same command as the Run tests tab's Compile.
+$("agent-compile").onclick = async () => {
+  if (!sameJobOrRefresh($("agent-compile"))) return;
+  const j = job();
+  const box = $("agent-run-result");
+  box.replaceChildren(banner("warn", "Compiling…"));
+  $("agent-compile").disabled = true;
+  try {
+    await post("/api/start", { job: j, runnable: "mvn-compile", options: { "--job": j } });
+    follow("mvn-compile", $("agent-log"), $("agent-state"), async () => {
+      $("agent-compile").disabled = false;
+      const r = await artifactJson(j, "mvnrun-result.json");
+      const rv = await artifactJson(j, "review.json");
+      const mine = new Set(Object.values((rv && rv.files) || {}).flat().map((p) => String(p).split("/").pop()));
+      const c = (r && r.compile) || null;
+      if (!c) { box.replaceChildren(banner("bad", "The compile left no result; see the log.")); return; }
+      const errs = c.errors || [];
+      const ours = errs.filter((e) => [...mine].some((f) => f && e.includes(f)));
+      const kids = [banner(c.ok ? "ok" : "bad", c.ok ? `Compiled (${Math.round(c.seconds || 0)}s).`
+        : `The compile failed: ${ours.length} error(s) in this change's files, ${errs.length - ours.length} elsewhere.`)];
+      if (ours.length) kids.push(el("pre", { class: "doc", text: ours.slice(0, 60).join("\n") }));
+      if (errs.length > ours.length) kids.push(el("details", {}, el("summary", { text: "Errors in other files" }),
+        el("pre", { class: "doc", text: errs.filter((e) => !ours.includes(e)).slice(0, 60).join("\n") })));
+      box.replaceChildren(...kids);
+    }, j);
+  } catch (e) { $("agent-compile").disabled = false; box.replaceChildren(banner("bad", e.message)); }
 };
 // The last run, to Xray: a new Test Execution, and the regression tests to
 // the regression Test Set / Plan named on the Settings tab.

@@ -215,8 +215,10 @@ class ArgvIsNeverFreeText(unittest.TestCase):
         with self.assertRaises(ValueError):
             jobs.build_argv("convert", {"--input": "target/convert-input/A.xml,../../x.xml"})
 
-    def test_the_gate_can_be_run_and_takes_nothing_from_the_page(self):
-        self.assertEqual(jobs.RUNNABLES["verify-all"]["options"], {})
+    def test_the_gate_can_be_run_and_takes_only_an_area_from_the_page(self):
+        self.assertEqual(jobs.RUNNABLES["verify-all"]["options"], {"--area": "text"})
+        self.assertEqual(jobs.build_argv("verify-all", {"--area": "converter"})[-2:],
+                         ["--area", "converter"])
         self.assertEqual(jobs.build_argv("verify-all", {})[-1],
                          os.path.join("tools", "verify_all.py"))
         with self.assertRaises(ValueError):

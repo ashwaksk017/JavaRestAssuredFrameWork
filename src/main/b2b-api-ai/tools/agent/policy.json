@@ -72,6 +72,7 @@
    ],
    "checks": [],
    "gate": true,
+   "gate_area": "converter",
    "skill": ".cursor/skills/readyapi-restassured-migration/SKILL.md"
   },
   "workbench": {

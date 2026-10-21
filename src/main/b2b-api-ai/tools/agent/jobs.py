@@ -220,8 +220,9 @@ RUNNABLES = {
     # checks is this tree. Offered after a convert.
     "verify-all": {
         "argv": [PY, "-B", os.path.join("tools", "verify_all.py")],
-        "label": "Run every check of the gate",
-        "options": {},
+        "label": "Run the checks of the gate: one area (converter, workbench, ...) or all",
+        # verify_all refuses an area it does not know (exit 2).
+        "options": {"--area": "text"},
     },
     "intake": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "intake.py")],

@@ -386,9 +386,18 @@ Expect 201.'></textarea>
     </div>
     <div class="field flag">
       <input id="convert-verify" type="checkbox">
-      <label for="convert-verify">Verify all afterwards</label>
-      <small>When the convert finishes, runs every check of the gate
-        (<code>tools/verify_all.py</code>) and shows its log below.</small>
+      <label for="convert-verify">Verify afterwards</label>
+      <small>When the convert finishes, runs the checks chosen below
+        (<code>tools/verify_all.py --area</code>) and shows its log below.</small>
+    </div>
+    <div class="field">
+      <label for="verify-area">What to verify</label>
+      <select id="verify-area">
+        <option value="converter" selected>Converter checks</option>
+        <option value="workbench">Workbench checks</option>
+        <option value="">Everything (slow)</option>
+      </select>
+      <small>A convert can only break the converter's checks; the workbench's are its own.</small>
     </div>
   </div>
 
@@ -399,12 +408,13 @@ Expect 201.'></textarea>
     <button id="stop-convert">Stop</button>
     <button id="run-keys">Audit service keys</button>
     <button id="run-token">Audit token chain</button>
+    <button id="run-verify" title="run the checks chosen in What to verify, now">Verify</button>
   </div>
   <div class="row center"><span id="convert-state" class="state"></span></div>
   <h3>Log</h3>
   <pre id="convert-log" class="log"></pre>
   <div id="verify-block" hidden>
-    <h3>Verify all <span id="verify-state" class="state"></span></h3>
+    <h3>Verify <span id="verify-state" class="state"></span></h3>
     <pre id="verify-log" class="log"></pre>
   </div>
 
@@ -489,7 +499,9 @@ Expect 201.'></textarea>
     </div>
     <div class="row">
       <button id="wf-regression" title="confirm which automated cases are regression cases; the tests run only after it">Confirm the regression cases</button>
-      <button id="agent-run" title="run this change's tests against stg; Approve &amp; push opens only when they all pass">Run the tests (stg)</button>
+      <button id="agent-compile" title="compile the project; the errors in this change's files are listed first">Compile</button>
+      <select id="agent-run-env" aria-label="environment to run against"></select>
+      <button id="agent-run" title="run this change's tests; while it waits for review, Approve &amp; push opens only when they all pass">Run the tests</button>
       <button id="agent-push" class="go" disabled>Approve</button>
       <button id="agent-xray" disabled title="the last run's results, passed or not, to Xray; and, once pushed, the regression tests to the regression Test Set or Plan (Settings tab)">Publish to Xray</button>
       <input id="agent-xray-exec" size="12" spellcheck="false" autocomplete="off" aria-label="existing Test Execution key"
@@ -533,10 +545,15 @@ Expect 201.'></textarea>
   </div>
   <div class="form">
     <fieldset class="field choice wide"><legend>What to run</legend>
+      <label><input type="radio" name="run-what" value="job"> This job's new tests</label>
       <label><input type="radio" name="run-what" value="suite" checked> A suite file</label>
       <label><input type="radio" name="run-what" value="test"> A test class or method <span class="hint">-Dtest=</span></label>
       <label><input type="radio" name="run-what" value="group"> A TestNG group <span class="hint">regression, smoke, jira…</span></label>
     </fieldset>
+  </div>
+  <div class="row" id="run-what-job" hidden>
+    <code id="run-job-suite">—</code>
+    <span class="hint">the suite the workbench wrote for the job's tests (Suites/jira/&lt;job&gt;.xml)</span>
   </div>
   <div class="row" id="run-what-suite">
     <select id="run-suite" aria-label="suite file"></select>

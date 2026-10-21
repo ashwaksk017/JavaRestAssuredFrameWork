@@ -2091,6 +2091,18 @@ class Push(Repo):
         write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
         self.assertEqual(self.push(), 0)
 
+    def test_the_tests_of_a_pushed_change_can_be_run_again(self):
+        self.pending()
+        self.assertEqual(self.push(), 0)
+        self.assertEqual(self.state()["state"], "pushed")
+        rc, said = self.run_tests('<?xml version="1.0"?>\n<testng-results><suite name="s"><test name="t">'
+                                  '<class name="com.hi.api.tests.jira.NewTest"><test-method status="PASS" '
+                                  'name="get_200" duration-ms="1"/></class></test></suite></testng-results>\n')
+        self.assertEqual(rc, 0, said)
+        self.assertIn("PASSED on stg", said)
+        self.assertNotIn("Approve & push is open", said, "nothing to approve after a push")
+        self.assertEqual(self.state()["state"], "pushed", "a run does not change the state")
+
     def test_a_green_run_on_another_environment_does_not_open_the_push(self):
         self.policy["require_green_run"] = True
         self.pending()
@@ -2501,7 +2513,7 @@ class ConverterScope(Repo):
         scope = {"compile": [], "checks": [], "gate": True}
         after = {"old-known": "python a.py", "freshly-broken": "python b.py"}
         orig = loop.gate_failures
-        loop.gate_failures = lambda root, out, runner=None: dict(after)
+        loop.gate_failures = lambda root, out, runner=None, **kw: dict(after)
         try:
             same = loop.run_verify(self.root, scope, gate_before=dict(after))
             worse = loop.run_verify(self.root, scope, gate_before={"old-known": ""})
@@ -2511,6 +2523,22 @@ class ConverterScope(Repo):
         self.assertFalse(worse["ok"])
         self.assertIn("NEW failing check: freshly-broken", worse["steps"][-1]["tail"])
         self.assertNotIn("NEW failing check: old-known", worse["steps"][-1]["tail"])
+
+    def test_the_gate_runs_only_the_scopes_area(self):
+        """verify_all whole took most of a converter job's wait; a converter
+        change cannot break the workbench's checks."""
+        seen = []
+
+        def runner(argv):
+            seen.append(list(argv))
+            out = argv[argv.index("--json") + 1]
+            write(os.path.dirname(out), os.path.basename(out), json.dumps({"checks": []}))
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+        loop.gate_failures(self.root, os.path.join(self.root, "g.json"), runner)
+        self.assertEqual(seen[-1][-2:], ["--area", "converter"])
+        loop.gate_failures(self.root, os.path.join(self.root, "g.json"), runner, area="")
+        self.assertNotIn("--area", seen[-1], "empty: every check")
+        self.assertEqual(loop.load_policy()["scopes"]["converter"]["gate_area"], "converter")
 
     def test_an_unknown_scope_is_refused(self):
         self.assertEqual(self.generate(lambda p: {"result": ""}, scope="everything"), 1)
