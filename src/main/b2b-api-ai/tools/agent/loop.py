@@ -4885,6 +4885,35 @@ def cmd_run(job_dir: str, root: str, policy: dict, env: str = "", runner=None) -
         return 1
     files = review.get("files") or {}
     paths = list(files.get("created") or []) + list(files.get("modified") or [])
+
+    def maven(args: list) -> tuple:
+        """(rc, text, how): offline first, online when something is missing."""
+        if runner is not None:
+            rc_, text_ = runner(args)
+            return rc_, text_, "offline"
+        exe_ = shutil.which("mvn")
+        if not exe_:
+            return 127, "mvn is not on PATH.", ""
+        rc_, text_ = _stream(root, [exe_, "-o", "-B", *args], timeout)
+        if rc_ != 0 and any(w in text_.lower() for w in _NEEDS_NETWORK):
+            say(" .. offline was not enough; running online")
+            rc_, text_ = _stream(root, [exe_, "-B", *args], timeout)
+            return rc_, text_, "online"
+        return rc_, text_, "offline"
+
+    # A clean build first (buildsteps.py: what Maven builds and what a run
+    # reports; the workbench's own files in target/ are kept).
+    steps_ = _load("loop_buildsteps", os.path.join(HERE, "buildsteps.py"))
+    removed = steps_.clean_build_outputs(root)
+    say(" .. clean build: removed " + (", ".join(removed) or "nothing (already clean)")
+        + "; compiling (mvn test-compile)")
+    diag.step("A clean build of the project and its tests")
+    rc_c, text_c, _how = maven(["test-compile", "-q"])
+    if rc_c != 0:
+        say("FAIL the clean build does not compile: no test was run.")
+        for line in (compile_errors(text_c)[:20] or text_c.strip().splitlines()[-20:]):
+            say("    " + line[:300])
+        return 1
     results = os.path.join(root, RUN_RESULTS)
     try:
         os.remove(results)                  # never read an earlier run's results as this one's
@@ -4897,17 +4926,11 @@ def cmd_run(job_dir: str, root: str, policy: dict, env: str = "", runner=None) -
     args = ["test", f"-DsuiteXmlFile={suite}", f"-Denv={env}", "-DfailIfNoTests=false", log_flag]
     say(f" .. framework logs go to target/b2b-full-run.log ({log_flag})")
     run_started = time.time()
-    if runner is not None:
-        rc, text = runner(args)
-    else:
-        exe = shutil.which("mvn")
-        if not exe:
-            say("FAIL mvn is not on PATH.")
-            return 1
-        rc, text = _stream(root, [exe, "-o", "-B", *args], timeout)
-        if rc != 0 and any(w in text.lower() for w in _NEEDS_NETWORK):
-            say(" .. offline was not enough; running online")
-            rc, text = _stream(root, [exe, "-B", *args], timeout)
+    rc, text, _how = maven(args)
+    if rc == 127 and runner is None:
+        say("FAIL mvn is not on PATH.")
+        return 1
+    if runner is None:
         note = runlog.after_maven(root, run_started).get("warn")
         if note:
             say(f" .. NOTE {note}")
@@ -4950,8 +4973,10 @@ def cmd_run(job_dir: str, root: str, policy: dict, env: str = "", runner=None) -
     if auto:
         say(" ..  xray.enabled is on: the suite's listener reported these results to Xray itself "
             "(its Test Execution is in the Maven output above)")
+    mvnrun_ = _load("loop_mvnrun", os.path.join(HERE, "mvnrun.py"))
+    allure = mvnrun_.allure_report(root, runner, run=maven)
     record = {"at": _now(), "env": env, "rc": rc, "ok": ok, "why": why, "suite": suite,
-              "reported_by_run": auto,
+              "reported_by_run": auto, "allure": allure,
               "passed": res["passed"], "failed": res["failed"], "skipped": res["skipped"],
               "switched_off": res["switched_off"], "results_file": kept,
               "hashes": {p: _sha(os.path.join(root, p)) for p in paths}}

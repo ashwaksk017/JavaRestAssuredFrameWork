@@ -2169,7 +2169,13 @@ class Push(Repo):
         self.assertNotIn(JIRA + "NewTest.java", files)
 
     def run_tests(self, xml):
+        calls = []
+
         def runner(args):
+            calls.append(args[0])
+            if args[0] != "test":              # the clean build before, the Allure report after
+                return 0, ""
+            self.assertEqual(calls, ["test-compile", "test"], "a clean build first")
             self.assertIn("-Denv=stg", args)
             self.assertIn("-DsuiteXmlFile=" + SUITE, args)
             self.assertIn("-Dlog.level=debug", args)

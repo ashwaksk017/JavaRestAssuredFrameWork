@@ -159,6 +159,12 @@ class Handler(BaseHTTPRequestHandler):
             raise PermissionError(
                 f"cross-origin request from {origin}. This API starts "
                 f"commands; it answers only its own page.")
+        # Another loopback PORT is another page too: the Allure report is
+        # served on one (its attachments are text from the APIs tested).
+        if origin and urlparse(origin).port not in (None, self.server.server_address[1]):
+            raise PermissionError(
+                f"request from {origin}, not from this page's port. This API "
+                f"starts commands; it answers only its own page.")
         ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip()
         if ctype.lower() != ctype_wanted:
             raise PermissionError(
@@ -192,6 +198,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._file("app.js", "text/javascript; charset=utf-8")
             if u.path == "/app.css":
                 return self._file("app.css", "text/css; charset=utf-8")
+            if u.path == "/api/allure":
+                port = REPORT_PORT[0]
+                return self._json({"ready": jobs.buildsteps.report_ready(ROOT), "port": port,
+                                   "url": f"http://127.0.0.1:{port}/" if port else ""})
             if u.path == "/api/runnables":
                 return self._json({k: {"label": v["label"],
                                        "options": v["options"]}
@@ -543,6 +553,53 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, fh.read(), ctype)
 
 
+# The Allure report's port, once it is listening (0: not served).
+REPORT_PORT = [0]
+
+
+class ReportHandler(BaseHTTPRequestHandler):
+    """target/allure-report, read only, GET only, on a port of its own: the
+    report runs scripts and shows the run's requests and responses, so it
+    is another origin than the workbench, whose API starts commands."""
+
+    def log_message(self, fmt, *a):                      # noqa: D401
+        pass
+
+    def do_GET(self):                                    # noqa: N802
+        host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]")
+        got = jobs.buildsteps.report_file(ROOT, urlparse(self.path).path) \
+            if host.lower() in ("127.0.0.1", "localhost", "::1", "") else None
+        if got is None:
+            body = (b"No such file in the Allure report. Run the tests on the workbench "
+                    b"page: the report is built after each run.")
+            self.send_response(404)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        data, ctype = got
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+
+def start_report_server(host: str, port: int) -> None:
+    try:
+        srv = ThreadingHTTPServer((host, port), ReportHandler)
+    except OSError:
+        print(f"  Allure report: port {port} is in use; the report is not served "
+              f"(open target/allure-report with `mvn allure:serve` instead)")
+        return
+    REPORT_PORT[0] = port
+    threading.Thread(target=srv.serve_forever, name="allure-report", daemon=True).start()
+    print(f"  Allure report: http://127.0.0.1:{port}/ (built after each test run)")
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--port", type=int, default=8787)
@@ -605,6 +662,7 @@ def main(argv=None) -> int:
         print("  WARNING: not bound to loopback. This process starts "
               "commands that write to the repository and has NO "
               "authentication. Put it behind something that does.")
+    start_report_server(args.host, args.port + 1)
     print("  Ctrl-C to stop")
     try:
         srv.serve_forever()

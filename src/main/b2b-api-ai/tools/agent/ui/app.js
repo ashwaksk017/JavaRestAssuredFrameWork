@@ -1812,11 +1812,24 @@ let runWhatTouched = false;     // a person chose: the job's tests are no longer
 for (const r of document.querySelectorAll('input[name="run-what"]')) r.onchange = () => { runWhatTouched = true; showRunWhat(); };
 $("run-suites-refresh").onclick = loadRunTargets;
 function runBusy(on) { for (const id of ["mvn-compile", "mvn-test"]) $(id).disabled = on; }
+// The Allure report of the last run: served by the workbench on a port of
+// its own (another origin: the report shows text from the APIs tested).
+async function allureLink(allure) {
+  if (!allure) return null;
+  if (!allure.ok) return banner("warn", `The Allure report was not built (the test result stands): ${allure.why || ""}`);
+  let a = null;
+  try { a = await api("/api/allure"); } catch { a = null; }
+  if (!a || !a.url || !a.ready) return banner("warn", "The Allure report was built but is not served: restart the workbench.");
+  return el("p", {}, el("a", { href: a.url, target: "_blank", rel: "noopener", text: "Open the Allure report" }),
+    el("small", { text: `  (${a.url}, this run only)` }));
+}
 async function showRunResult(j) {
   const r = await artifactJson(j, "mvnrun-result.json");
   const box = $("run-result");
   if (!r) { box.replaceChildren(); return; }
   const kids = [];
+  const report = await allureLink(r.allure);
+  if (report) kids.push(report);
   if (r.compile) kids.push(banner(r.compile.ok ? "ok" : "bad", r.compile.ok
     ? `Compiled (${r.compile.how}, ${Math.round(r.compile.seconds)}s).`
     : `The compile failed: ${(r.compile.errors || []).length} error(s).`));
@@ -2854,6 +2867,7 @@ async function refreshReview() {
     if (ran) runBox.append(banner(ran.ok ? "ok" : "bad",
       `Last run on ${ran.env} at ${ran.at}: ${ran.passed} passed, ${ran.failed} failed, ${ran.skipped} skipped` +
       (ran.switched_off ? `, ${ran.switched_off} switched off in the data sheet` : "") + ` -- ${ran.why}`));
+    if (ran && ran.allure) allureLink(ran.allure).then((n) => { if (n && shown === job()) runBox.append(n); });
   }
   $("agent-review").dataset.job = shown;
   await showCodeReview(shown, review);

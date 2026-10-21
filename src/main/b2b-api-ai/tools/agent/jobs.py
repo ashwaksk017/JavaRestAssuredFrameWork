@@ -58,6 +58,11 @@ def _loop_module():
     return mod
 
 
+_bspec = importlib.util.spec_from_file_location("jobs_buildsteps", os.path.join(HERE, "buildsteps.py"))
+buildsteps = importlib.util.module_from_spec(_bspec)
+_bspec.loader.exec_module(buildsteps)
+
+
 def run_cursor_startup(root: str = "") -> dict:
     """Check Cursor when the workbench server starts; cache for the UI."""
     root = root or ROOT

@@ -55,6 +55,7 @@ def _load(name: str, path: str):
 
 
 loop = _load("mvnrun_loop", os.path.join(HERE, "loop.py"))
+buildsteps = _load("mvnrun_buildsteps", os.path.join(HERE, "buildsteps.py"))
 execution = loop.execution
 diag = loop.diag
 ROOT = loop.ROOT
@@ -288,7 +289,11 @@ def _write(job_dir: str, result: dict) -> None:
     os.replace(tmp, os.path.join(job_dir, RESULT))
 
 
-def compile_(job_dir: str, root: str, runner=None) -> tuple:
+def compile_(job_dir: str, root: str, runner=None, clean: bool = False) -> tuple:
+    if clean:
+        removed = buildsteps.clean_build_outputs(root)
+        say(" ..  clean build: removed " + (", ".join(removed) or "nothing (already clean)")
+            + " -- uploads, the failure digest and Jira fetches in target/ are kept")
     diag.step("Compiling the project and its tests (mvn test-compile)")
     say(" ..  mvn test-compile (offline first)")
     started = time.time()
@@ -298,6 +303,30 @@ def compile_(job_dir: str, root: str, runner=None) -> tuple:
         say("    " + e[:300])
     return rc, {"compile": {"ok": rc == 0, "exit_code": rc, "how": how, "errors": errors[:200],
                             "seconds": round(time.time() - started, 1)}}
+
+
+def allure_report(root: str, runner=None, run=None) -> dict:
+    """`mvn allure:report` after a run, passed or not: target/allure-report,
+    which the workbench serves on its own port. A report that cannot be
+    built is said; the run's verdict stands. `run(args)` -> (rc, text, how)
+    runs Maven (default: run_maven, offline first -- the Allure command
+    line is downloaded once, online, the first time)."""
+    run = run or (lambda args: run_maven(root, args, COMPILE_TIMEOUT, runner))
+    diag.step("Building the Allure report (mvn allure:report)")
+    say(" ..  mvn allure:report")
+    started = time.time()
+    rc, text, how = run(["allure:report", "-q"])
+    ok = rc == 0 and (runner is not None or buildsteps.report_ready(root))
+    seconds = round(time.time() - started, 1)
+    if ok:
+        say(f" ..  the Allure report is ready ({seconds:.0f}s): Open the Allure report")
+        return {"ok": True, "how": how, "seconds": seconds}
+    tail = [ln for ln in (text or "").strip().splitlines() if ln.strip()][-6:]
+    say("WARN the Allure report was not built (the test result stands):")
+    for line in tail:
+        say("    " + line[:300])
+    return {"ok": False, "how": how, "seconds": seconds,
+            "why": " / ".join(tail)[:600] or f"mvn allure:report exited {rc}"}
 
 
 def cmd_compile(job_dir: str, root: str, runner=None) -> int:
@@ -333,7 +362,7 @@ def cmd_test(job_dir: str, root: str, suite: str = "", test: str = "", group: st
     result = {"kind": "mvnrun", "what": "test", "at": _now(), "env": env,
               "suite": suite, "test": test, "group": group.strip()}
     if compile_first:
-        rc, part = compile_(job_dir, root, runner)
+        rc, part = compile_(job_dir, root, runner, clean=True)
         result.update(part)
         if rc != 0:
             result.update({"ok": False, "verdict": "the compile failed: no test was run"})
@@ -386,6 +415,7 @@ def cmd_test(job_dir: str, root: str, suite: str = "", test: str = "", group: st
     result.update({"ok": ok, "verdict": why, "passed": res["passed"], "failed": res["failed"],
                    "skipped": res["skipped"], "switched_off": res["switched_off"],
                    "tests": res["tests"][:2000]})
+    result["allure"] = allure_report(root, runner)
     _write(job_dir, result)
     say(f"{'PASSED' if ok else 'FAILED'}: {why} -- {res['passed']} passed, {res['failed']} failed, "
         f"{res['skipped']} skipped, in {result['seconds']:.0f}s")

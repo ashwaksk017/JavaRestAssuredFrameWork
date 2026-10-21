@@ -591,7 +591,7 @@ Expect 201.'></textarea>
   <div class="row">
     <label class="inline" for="run-env">Environment</label>
     <select id="run-env" aria-label="environment"></select>
-    <label class="inline"><input type="checkbox" id="run-compile-first" checked> compile first</label>
+    <label class="inline" title="delete what Maven built and the last run's reports (target/classes, test-classes, surefire-reports, allure-results...), then mvn test-compile. Uploaded suites, the failure digest and Jira fetches in target/ are kept"><input type="checkbox" id="run-compile-first" checked> clean build first</label>
     <button id="mvn-test" class="go" type="button">Run the tests</button>
     <button id="mvn-stop" type="button">Stop</button>
     <span id="run-state" class="state"></span>

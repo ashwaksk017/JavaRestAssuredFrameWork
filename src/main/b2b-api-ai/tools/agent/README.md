@@ -876,7 +876,19 @@ suite file is set -- against an environment of
 `program_configuration.json`. Maven runs offline first and goes online
 only when an artifact is missing. A `JAVA_HOME` that points at no JDK is
 replaced by a JDK 17 or later found on the machine, and the log says
-which. The result is passed / failed / skipped counts and a table of the
+which. **Clean build first** (on by default; always for the change's
+Run the tests on the Agentic tab) deletes what Maven built and the last
+run's reports -- `target/classes`, `test-classes`, `maven-status`,
+`surefire-reports`, `allure-results`, `allure-report` -- and compiles
+from nothing; not `mvn clean`, which would also delete the uploads in
+`target/convert-input`, the failure digest and the Jira fetches. After
+every run, passed or not, `mvn allure:report` builds `target/allure-report`
+(the first time online, to fetch the Allure command line), and the result
+shows **Open the Allure report**: the workbench serves it on its own port
+(the workbench's + 1, e.g. 8788), another origin, because the report runs
+scripts and shows the APIs' responses; the workbench's API answers only
+its own port. A report that cannot be built is said; the run's verdict
+stands. The result is passed / failed / skipped counts and a table of the
 failures, read from the surefire reports; it is `mvnrun-result.json` in
 the job (`runs` when no job is chosen). One run at a time, and not while
 Cursor is writing a change.

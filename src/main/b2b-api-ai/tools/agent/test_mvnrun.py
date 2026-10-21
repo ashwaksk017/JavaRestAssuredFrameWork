@@ -63,6 +63,7 @@ class Base(unittest.TestCase):
         write(self.root, "src/main/resources/program_configuration.json",
               json.dumps({"stg": {"a": 1}, "qa": {"a": 1}, "note": "x"}))
         self.calls = []
+        self.allure_rc = 0
 
     def tearDown(self):
         shutil.rmtree(self.root, ignore_errors=True)
@@ -73,6 +74,8 @@ class Base(unittest.TestCase):
             if args[0] == "test-compile":
                 return compile_rc, "" if not compile_rc else \
                     "[ERROR] /x/src/test/java/FooTest.java:[3,5] cannot find symbol\n[ERROR] BUILD FAILURE"
+            if args[0] == "allure:report":
+                return self.allure_rc, "[ERROR] allure commandline could not be downloaded" if self.allure_rc else ""
             if results:
                 write(self.root, mr.RESULTS_XML.replace(os.sep, "/"), results)
             return rc, text
@@ -81,6 +84,9 @@ class Base(unittest.TestCase):
     def result(self):
         with io.open(os.path.join(self.job_dir, mr.RESULT), encoding="utf-8") as fh:
             return json.load(fh)
+
+    def mvn_test_call(self):
+        return next(c for c in self.calls if c[0] == "test")
 
     def quiet(self, fn, *a, **kw):
         buf = io.StringIO()
@@ -115,20 +121,20 @@ class Running(Base):
         self.assertEqual(rc, 1, said)
         r = self.result()
         self.assertEqual((r["passed"], r["failed"]), (1, 1))
-        self.assertIn("-DsuiteXmlFile=Suites/jira/group-smoke.xml", self.calls[-1])
-        self.assertIn("-Denv=stg", self.calls[-1])
+        self.assertIn("-DsuiteXmlFile=Suites/jira/group-smoke.xml", self.mvn_test_call())
+        self.assertIn("-Denv=stg", self.mvn_test_call())
         self.assertEqual(next(t for t in r["tests"] if t["status"] == "FAIL")["message"], "expected 200 but was 404")
 
     def test_a_group_runs_its_suite_file(self):
         self.quiet(mr.cmd_test, self.job_dir, self.root, group="jira", env="qa", runner=self.runner())
-        self.assertIn("-DsuiteXmlFile=src/test/resources/testng-jira.xml", self.calls[-1])
+        self.assertIn("-DsuiteXmlFile=src/test/resources/testng-jira.xml", self.mvn_test_call())
         rc, said = self.quiet(mr.cmd_test, self.job_dir, self.root, group="nightly", env="qa", runner=self.runner())
         self.assertEqual(rc, 1)
         self.assertIn("no suite file", said)
 
     def test_a_class_runs_with_dtest(self):
         self.quiet(mr.cmd_test, self.job_dir, self.root, test="FooTest", env="stg", runner=self.runner())
-        self.assertIn("-Dtest=FooTest", self.calls[-1])
+        self.assertIn("-Dtest=FooTest", self.mvn_test_call())
 
     def test_a_failed_compile_runs_no_test(self):
         rc, said = self.quiet(mr.cmd_test, self.job_dir, self.root, test="FooTest", env="stg",
@@ -150,6 +156,43 @@ class Running(Base):
                            test="FooTest", runner=self.runner())
         self.assertEqual(rc, 1)
         self.assertEqual(self.calls, [])
+
+    def test_a_run_is_a_clean_build_then_the_tests_then_the_allure_report(self):
+        for rel in ("target/test-classes/Old.class", "target/allure-results/old-result.json",
+                    "target/convert-input/Suite.xml", "target/failure-digest.txt"):
+            write(self.root, rel, "x")
+        rc, said = self.quiet(mr.cmd_test, self.job_dir, self.root, test="FooTest", env="stg",
+                              compile_first=True, runner=self.runner(rc=0))
+        self.assertEqual([c[0] for c in self.calls], ["test-compile", "test", "allure:report"])
+        for gone in ("target/test-classes", "target/allure-results"):
+            self.assertFalse(os.path.exists(os.path.join(self.root, gone)), gone)
+        for kept in ("target/convert-input/Suite.xml", "target/failure-digest.txt"):
+            self.assertTrue(os.path.isfile(os.path.join(self.root, kept)), kept + " is the workbench's")
+        self.assertTrue(self.result()["allure"]["ok"])
+        self.assertIn("clean build", said)
+
+    def test_a_report_that_cannot_be_built_leaves_the_verdict_alone(self):
+        self.allure_rc = 1
+        rc, said = self.quiet(mr.cmd_test, self.job_dir, self.root, suite="Suites/jira/group-smoke.xml",
+                              env="stg", runner=self.runner())
+        self.assertEqual(rc, 1, "the run's own verdict (one test failed)")
+        r = self.result()
+        self.assertEqual((r["passed"], r["failed"]), (1, 1))
+        self.assertFalse(r["allure"]["ok"])
+        self.assertIn("could not be downloaded", r["allure"]["why"])
+        self.assertIn("the test result stands", said)
+
+    def test_the_report_server_reaches_only_the_reports_files(self):
+        bs = mr.buildsteps
+        write(self.root, "target/allure-report/index.html", "<html>report</html>")
+        write(self.root, "target/allure-report/app.js", "x()")
+        write(self.root, "target/failure-digest.txt", "secret-ish")
+        self.assertEqual(bs.report_file(self.root, "/")[1], "text/html; charset=utf-8")
+        self.assertEqual(bs.report_file(self.root, "/app.js")[1], "text/javascript; charset=utf-8",
+                         "with nosniff, a script served as text/plain does not run")
+        for bad in ("/../failure-digest.txt", "/..\\failure-digest.txt", "/nope.html", "/a\x00b"):
+            self.assertIsNone(bs.report_file(self.root, bad), bad)
+        self.assertTrue(bs.report_ready(self.root))
 
     def test_compile_alone(self):
         rc, said = self.quiet(mr.cmd_compile, self.job_dir, self.root, runner=self.runner())
