@@ -30,13 +30,18 @@ import org.testng.IInvokedMethodListener;
 import org.testng.ISuite;
 import org.testng.ISuiteListener;
 import org.testng.ITestResult;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.hi.api.xray.XrayClient;
 import com.hi.api.xray.XrayResult;
 import com.hi.api.xray.XrayResultsCollector;
+import com.hi.api.xray.XrayRowKeys;
 import com.hi.api.xray.XrayTest;
 
 public class XrayReportListener implements IInvokedMethodListener, ISuiteListener {
+
+    private static final Logger LOG = LoggerFactory.getLogger(XrayReportListener.class);
 
     private static final String XRAY_ID_COLUMN = "jira_xray_id";
 
@@ -56,16 +61,13 @@ public class XrayReportListener implements IInvokedMethodListener, ISuiteListene
      * would look like it synced. A skip that names the offending value is
      * the only outcome from which someone can tell what happened.</p>
      */
-    private static final java.util.regex.Pattern ISSUE_KEY =
-            java.util.regex.Pattern.compile("[A-Z][A-Z0-9_]*-\\d+");
-
     /** Keys already reported as malformed, so the log says each once. */
     private static final java.util.Set<String> WARNED =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     /** True when this value can be an Xray test key. */
     public static boolean looksLikeIssueKey(String key) {
-        return key != null && ISSUE_KEY.matcher(key.trim()).matches();
+        return XrayRowKeys.looksLikeIssueKey(key);
     }
 
     private Instant suiteStartedAt;
@@ -78,37 +80,57 @@ public class XrayReportListener implements IInvokedMethodListener, ISuiteListene
     public void beforeInvocation(IInvokedMethod method, ITestResult testResult) {
         if (!method.isTestMethod()) return;
 
-        // 1. Row column takes precedence -- data-driven tests can carry a
-        //    different jira_xray_id per row, so this must beat method-level
-        //    annotations when both are present.
-        Object[] params = testResult.getParameters();
-        if (params != null) {
-            for (Object p : params) {
-                if (p instanceof Map<?, ?> rowMap) {
-                    Object idObj = rowMap.get(XRAY_ID_COLUMN);
-                    if (idObj != null) {
-                        String id = idObj.toString().trim();
-                        if (!id.isEmpty()) {
-                            XrayResultsCollector.setCurrentKey(id);
-                            return;
-                        }
+        String key = resolveReportingKey(testResult);
+        if (key != null) {
+            XrayResultsCollector.setCurrentKey(key);
+        }
+    }
+
+    /**
+     * Row {@code jira_xray_id} wins over {@link XrayTest} on the method.
+     * Called from {@code beforeInvocation} and again from {@code afterInvocation}
+     * when the row Map was not on {@link ITestResult#getParameters()} yet
+     * (common for data-provider tests under Surefire {@code -Dtest=}).
+     */
+    static String resolveReportingKey(ITestResult testResult) {
+        if (testResult == null) {
+            return null;
+        }
+        String fromRow = keyFromRowParameters(testResult.getParameters());
+        if (fromRow != null) {
+            return fromRow;
+        }
+        java.lang.reflect.Method reflectMethod =
+                testResult.getMethod().getConstructorOrMethod().getMethod();
+        if (reflectMethod == null) {
+            return null;
+        }
+        XrayTest ann = reflectMethod.getAnnotation(XrayTest.class);
+        if (ann != null && ann.value() != null && !ann.value().isBlank()) {
+            return ann.value().trim();
+        }
+        return null;
+    }
+
+    private static String keyFromRowParameters(Object[] params) {
+        if (params == null) {
+            return null;
+        }
+        for (Object p : params) {
+            if (p instanceof Map<?, ?> rowMap) {
+                @SuppressWarnings("unchecked")
+                Map<String, String> row = (Map<String, String>) rowMap;
+                XrayRowKeys.fillFromConfig(row);
+                Object idObj = row.get(XRAY_ID_COLUMN);
+                if (idObj != null) {
+                    String id = idObj.toString().trim();
+                    if (!id.isEmpty()) {
+                        return id;
                     }
                 }
             }
         }
-
-        // 2. Fall back to @XrayTest("PROJ-101") on the test method for
-        //    non-data-driven tests (smoke tests, single-shot integration checks,
-        //    unit-style assertions). Reflected off the constructor-or-method
-        //    handle -- ITestNGMethod doesn't expose annotations directly.
-        java.lang.reflect.Method reflectMethod =
-                testResult.getMethod().getConstructorOrMethod().getMethod();
-        if (reflectMethod != null) {
-            XrayTest ann = reflectMethod.getAnnotation(XrayTest.class);
-            if (ann != null && ann.value() != null && !ann.value().isBlank()) {
-                XrayResultsCollector.setCurrentKey(ann.value().trim());
-            }
-        }
+        return null;
     }
 
     @Override
@@ -119,18 +141,19 @@ public class XrayReportListener implements IInvokedMethodListener, ISuiteListene
             return;
         }
         String key = XrayResultsCollector.getCurrentKey();
+        if (key == null) {
+            key = resolveReportingKey(testResult);
+        }
         if (key == null) return;   // no jira_xray_id in row -> nothing to sync
         if (!looksLikeIssueKey(key)) {
             // Fail closed: publishing this would put a result against a
             // key Xray cannot resolve, and the import would still look
             // like it worked. See ISSUE_KEY above for the measurement.
             if (WARNED.add(key)) {
-                System.out.println("[XrayClient] skipped -- " + XRAY_ID_COLUMN
-                        + "=\"" + key + "\" is not an issue key like ABC-123. "
-                        + "The generated column often holds the ReadyAPI case "
-                        + "name; the ticket is in `jira_issue`. Put the real "
-                        + "Xray TEST key in " + XRAY_ID_COLUMN + ", or use "
-                        + "@XrayTest(\"...\") on the method.");
+                LOG.info("[XrayClient] skipped -- {}=\"{}\" is not an issue key like ABC-123. "
+                        + "The generated column often holds the ReadyAPI case name; the ticket is "
+                        + "in `jira_issue`. Put the real Xray TEST key in {}, or use @XrayTest on "
+                        + "the method.", XRAY_ID_COLUMN, key, XRAY_ID_COLUMN);
             }
             XrayResultsCollector.clearCurrentKey();
             return;

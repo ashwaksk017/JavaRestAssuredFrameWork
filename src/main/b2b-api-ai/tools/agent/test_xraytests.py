@@ -508,6 +508,10 @@ class Mock(Base):
     def test_the_stand_in_creates_on_this_machine_and_its_keys_stay_apart_from_real_ones(self):
         self.put("design.json", json.dumps(dict(DESIGN, mock=True)))
         r = xt.create("j1", "design", "XYZ-7", "XYZ-7", self.root)
+        with io.open(os.path.join(self.job, loop.CSV_XRAY_LOG), encoding="utf-8") as fh:
+            self.assertIn("patch skipped", fh.read())
+        with io.open(os.path.join(self.job, xt.LOG), encoding="utf-8") as fh:
+            self.assertIn("csv-xray: patch skipped", fh.read())
         self.assertTrue(r["ok"] and r["mock"])
         self.assertEqual([c["key"] for c in r["created"]], ["XYZ-9001", "XYZ-9002"])
         self.assertTrue(all(c["linked"] and c["steps"] == 1 for c in r["created"]))

@@ -135,6 +135,19 @@ PULSE_EVERY = 5                              # how often that is looked at
 # line for this long is the end of the run.
 AFTER_USAGE_QUIET = 20
 
+# Tool names that mean the repo may have changed (not read/search/plan-only).
+_WORKSPACE_EDIT_HINTS = ("edit", "write", "replace", "patch", "shell", "terminal",
+                         "execute", "run", "apply", "delete", "create", "str_replace")
+
+
+def _workspace_tool_completed(name: str) -> bool:
+    """True when a finished tool call might have edited the working tree."""
+    n = (name or "").lower()
+    if "plan" in n:
+        return False
+    return any(h in n for h in _WORKSPACE_EDIT_HINTS)
+
+
 # Images pasted with the request (paste.py), for the next run's first
 # message. Taken by that run: they go once, and are kept nowhere.
 _ATTACHED: list = []
@@ -532,6 +545,11 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
     # `ended`: the last thing Cursor sent was a usage line (its turn ended);
     # `closed`: the run was ended for that.
     turn = {"ended": False, "closed": False, "rerun": False}
+    # Agent-mode runs that end on a usage line must have finished at least
+    # one tool call first. Seen live: the model sometimes answered in prose,
+    # sent usage, and had not edited anything yet -- treating that as "done"
+    # after AFTER_USAGE_QUIET seconds stopped the run before any file changed.
+    tools_done = {"any": False}
     # The answers written since the last usage line: the ones a usage line
     # is asked about (a whole JSON may be followed by a sentence of its own).
     mark = {"usage": 0}
@@ -573,7 +591,8 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
             if quiet_seconds and quiet_seconds > 0 and heard["any"] and quiet >= quiet_seconds:
                 quiet_stop.set()
                 return
-            if turn["ended"] and answer_complete is None and quiet >= AFTER_USAGE_QUIET \
+            if turn["ended"] and answer_complete is None and tools_done["any"] \
+                    and quiet >= AFTER_USAGE_QUIET \
                     and not [k for k in timing if k != "_requests"]:
                 turn["closed"] = True
                 quiet_stop.set()
@@ -654,6 +673,10 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
                         flush_said()
                 continue
             flush_said()
+            if (getattr(message, "type", "") or "") == "tool_call" and \
+                    str(getattr(message, "status", "") or "").lower() == "completed" \
+                    and _workspace_tool_completed(str(getattr(message, "name", "") or "")):
+                tools_done["any"] = True
             line = describe(message, timing)
             # Seen live (composer-2.5, plan mode): the answer went into a
             # createPlan tool call, not into the reply. Its `plan` is taken

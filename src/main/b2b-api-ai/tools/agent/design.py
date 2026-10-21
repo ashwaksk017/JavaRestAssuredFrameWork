@@ -106,6 +106,8 @@ import os
 import re
 import sys
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from urllib.parse import unquote, urlparse
 
@@ -1286,20 +1288,42 @@ def shares(counts: list, total: int) -> list:
     return out
 
 
+def _cursor_settings(root: str) -> dict:
+    """tools/cursor_agent.json, else the converter's old one; {} when unreadable."""
+    for rel in (("tools", "cursor_agent.json"), ("tools", "ra_converter", "cursor_agent.json")):
+        path = os.path.join(root, *rel)
+        if os.path.isfile(path):
+            try:
+                with io.open(path, encoding="utf-8-sig") as fh:
+                    data = json.load(fh)
+                return data if isinstance(data, dict) else {}
+            except (OSError, ValueError):
+                return {}
+    return {}
+
+
 def design_model(root: str) -> str:
-    """`designModel` in tools/ra_converter/cursor_agent.json, or "". The
+    """`designModel` in the Cursor settings file, or "". The
     model for the one-answer calls (design, Manual tests, Defects, code
     review). Seen live: with a reasoning model each call thinks 60-100 s
     before it writes; these calls read and write JSON, and a faster model
     is the biggest saving. Unset, they use `model`, as before."""
-    try:
-        with io.open(os.path.join(root, "tools", "ra_converter", "cursor_agent.json"),
-                     encoding="utf-8-sig") as fh:
-            value = json.load(fh).get("designModel")
-    except (OSError, ValueError, AttributeError):
-        return ""
-    value = str(value or "").strip()
+    value = str(_cursor_settings(root).get("designModel") or "").strip()
     return value if re.fullmatch(r"[A-Za-z0-9._:-]{1,80}", value) else ""
+
+
+DESIGN_WORKERS = 3
+REPEATING_FAILURES = ("setup", "startup", "timeout")
+
+
+def design_workers(root: str) -> int:
+    """`designParallel` in cursor_agent.json (1 to 6), else DESIGN_WORKERS:
+    how many parts of a large specification are asked at once."""
+    value = _cursor_settings(root).get("designParallel")
+    try:
+        return max(1, min(6, int(value))) if value is not None else DESIGN_WORKERS
+    except (TypeError, ValueError):
+        return DESIGN_WORKERS
 
 
 def whole_json(text: str, key: str = "") -> bool:
@@ -1393,10 +1417,13 @@ FOCUS_RULE = (
 def design(job: str, service: str = "", swagger: str = "", requirements: str = "",
            notes: str = "", speed: str = "balanced", root: str = "",
            agent=None, mode: str = "plan", fresh: bool = False,
-           whole_spec: bool = False, refine: str = "", current: str = "") -> int:
+           whole_spec: bool = False, refine: str = "", current: str = "",
+           workers: int = 0) -> int:
     """Run the step. `agent(prompt, followup) -> {"result": text}` replaces
-    Cursor in the tests."""
+    Cursor in the tests; with one, the parts are asked one at a time unless
+    `workers` says otherwise."""
     root = root or ROOT
+    workers = workers or (design_workers(root) if agent is None else 1)
     out_dir = loop.intake.job_dir(job, root)
     os.makedirs(out_dir, exist_ok=True)
     previous = previous_design(out_dir)
@@ -1609,6 +1636,9 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         say("MOCK CURSOR: the design below comes from the workbench's stand-in, "
             "two cases per endpoint, to show the flow. Cursor is not called. "
             "(\"cursor\": false in tools/agent/mock.json for a real design.)")
+    if agent is None and not mocked:
+        if loop.cmd_setup(loop.intake.job_dir(job), root):
+            return 1
     if agent is None:
         try:
             _cfg = loop.cursor_config(root)[1]
@@ -1656,6 +1686,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
     deadline = deadline_for("design")
     before = _tree_state(root) if agent is None else None
     removed = {"private": 0, "hosts": 0, "leaked": 0}
+    counted = threading.Lock()
 
     def ask(prompt: str, label: str) -> tuple:
         """One call: (parsed reply, how it was read, model, keep). `keep`
@@ -1665,9 +1696,10 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         # The requirements and the story go out with every part; counting
         # their removals once per part would report six times what is there.
         prompt, n = redact(prompt, private)
-        removed["private"] = max(removed["private"], n)
-        prompt, n = hide_hosts(prompt)
-        removed["hosts"] = max(removed["hosts"], n)
+        prompt, h = hide_hosts(prompt)
+        with counted:
+            removed["private"] = max(removed["private"], n)
+            removed["hosts"] = max(removed["hosts"], h)
         clog.block(f"prompt{' ' + label if label else ''}", prompt)
         first = {}
 
@@ -1719,7 +1751,8 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         # (A kept reply was redacted before it was kept; the private
         # configuration may have gained a value since.)
         reply, n = redact(str(got.get("result") or ""), private)
-        removed["leaked"] += n
+        with counted:
+            removed["leaked"] += n
         if first.get("text") is not None:
             first["text"] = redact(str(first["text"]), private)[0]
         if hit:
@@ -1749,6 +1782,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
     raw, how_read, failed, summaries, questions, model = [], [], [], [], [], ""
     fatal = ""
     is_partial = False
+    work = []
     for n, paths in enumerate(parts, 1):
         if len(parts) == 1:
             label, part_spec, part_listed, share = "", swagger_sent, listed, max_cases
@@ -1794,8 +1828,51 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
             "current": ("\n===== THE CASES AS THEY ARE NOW =====\n" + (sections["current"] or empty) + "\n")
                        if refine.strip() else "",
         })
+        work.append((n, paths, label, share, prompt))
+
+    def attempt(item):
         try:
-            data, how, model, keep = ask(prompt, label)
+            got = ask(item[4], item[2])
+        except RuntimeError as e:
+            return e
+        # Kept as soon as it is read, not at the end: a run stopped during
+        # part 4 has paid for the parts already answered. And only when THIS
+        # reply gave a usable case -- one whose cases are all dropped is not
+        # worth repeating. ...nor one whose cases are all on endpoints the
+        # specification does not have: tab 3 is handed none of those.
+        data, _how, _model, keep = got
+        if keep and any(c.get("endpoint_in_spec") is not False for c in normalise(
+                [c for c in (cases_in(data) or []) if isinstance(c, dict)], known)[0]):
+            with counted:
+                cache_put(out_dir, *keep)
+        return got
+
+    def repeats(got) -> bool:
+        return isinstance(got, RuntimeError) and getattr(got, "kind", "") in REPEATING_FAILURES
+
+    answers = {}
+    pool = min(workers, len(work)) if not loop.cursor_call.attached() else 1
+    if pool > 1:
+        # Part 1 alone: a bad key or a dead network fails once, not `pool` times.
+        answers[work[0][0]] = attempt(work[0])
+        if not repeats(answers[work[0][0]]):
+            say(f" ..  the other {len(work) - 1} part(s) are asked {pool} at a time")
+            with ThreadPoolExecutor(max_workers=pool) as ex:
+                for item, got in zip(work[1:], ex.map(attempt, work[1:])):
+                    answers[item[0]] = got
+            for item in work[1:]:
+                got = answers[item[0]]
+                if isinstance(got, RuntimeError) and not repeats(got):
+                    say(f" ..  {item[2]} failed while asked alongside the others; "
+                        f"asking it once more, alone")
+                    answers[item[0]] = attempt(item)
+
+    for n, paths, label, share, _prompt in work:
+        got = answers[n] if n in answers else attempt((n, paths, label, share, _prompt))
+        try:
+            if isinstance(got, RuntimeError):
+                raise got
+            data, how, model, keep = got
         except RuntimeError as e:
             clog.write(f"FAILED{' ' + label if label else ''}: {e}")
             if len(parts) == 1:
@@ -1808,7 +1885,8 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
             failed.append(f"{label} ({len(paths)} path(s), from `{paths[0]}`) "
                           f"produced nothing: {first_line}")
             say(f"WARN {failed[-1]}")
-            if getattr(e, "kind", "") in ("setup", "startup", "timeout"):
+            if getattr(e, "kind", "") in REPEATING_FAILURES and not any(
+                    w[0] in answers for w in work if w[0] > n):
                 # The next part would meet the same key, the same network,
                 # the same stuck service -- and wait just as long to say so.
                 left = len(parts) - n
@@ -1828,14 +1906,6 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
                                 f"share of the limit is {share}, and the first "
                                 f"{share} were kept")
                 got_cases = got_cases[:share]
-        # Kept now, not at the end: a run stopped during part 4 has paid
-        # for parts 1 to 3. And only when THIS reply gave a usable case --
-        # one whose cases are all dropped is not worth repeating.
-        # ...nor one whose cases are all on endpoints the specification
-        # does not have: tab 3 is handed none of those.
-        if keep and any(c.get("endpoint_in_spec") is not False
-                        for c in normalise(got_cases, known)[0]):
-            cache_put(out_dir, *keep)
         raw += got_cases
         how_read.append(how)
         is_partial = is_partial or how.startswith("partial")

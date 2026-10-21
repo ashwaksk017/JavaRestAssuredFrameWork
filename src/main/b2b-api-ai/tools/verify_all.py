@@ -482,6 +482,23 @@ CHECKS = [
     Check("generated",
           [PY, "tools/check_generated_output.py"],
           "emitted tree is structurally sound"),
+    *[Check(f"agent-{name}", [PY, f"tools/agent/test_{name}.py"], why) for name, why in (
+        ("jobs", "the page's commands: their options, what may run at once, what each writes"),
+        ("suitemap", "each case's TestNG groups and the group suites"),
+        ("intake", "a story, its linked stories and pages, read into one brief"),
+        ("execution", "a run's results read from surefire, row by row"),
+        ("settings", "Settings saves only what it may, and never shows a token"),
+        ("xraypublish", "Publish makes one Test Execution per run"),
+        ("workflow", "the stage strip is read from the job's files"),
+        ("runlog", "the full run log: when it updates, and why it did not"),
+        ("xraytrace", "what the Xray listener did in a run"),
+        ("devcode", "the check against the developer's change: refused addresses, "
+                    "a token never in a URL, the gaps found"),
+        ("suitesuggest", "Cursor's suite suggestion reads only the cases and keeps the groups known"),
+        ("mvnrun", "compile and run from the page: suites, tests, groups, a broken JAVA_HOME"),
+        ("paste", "screenshots pasted for Cursor are read once and deleted"),
+        ("xrayupdate", "a test changed in Xray is never overwritten unless chosen"),
+    )],
     Check("emitted-java",
           [PY, "tools/check_emitted_java.py"],
           "the author-editable Java the emitter carries compiles -- "
@@ -534,6 +551,8 @@ GROUPS = (
     ("AUTOFIX LOOP", "the machinery that lets an agent propose a fix -- what "
                      "it may touch, what it may accept, what it must "
                      "re-verify"),
+    ("WORKBENCH", "the test-case workbench (tools/agent): story to cases to "
+                  "tests, its server and page, and the diagnostics record"),
     ("REPO HYGIENE", "what may be committed. This repository is public"),
     ("JAVA (--full)", "compile the emitted tree and run the framework's own "
                       "tests. Slow, so they need --full"),
@@ -544,6 +563,8 @@ def group_of(check) -> str:
     cmd = " ".join(str(x) for x in check.cmd).replace("\\", "/")
     if check.cmd and str(check.cmd[0]) == "mvn":
         return "JAVA (--full)"
+    if "tools/agent/" in cmd or "tools/test_diag" in cmd:
+        return "WORKBENCH"
     if "tools/autofix/" in cmd:
         return "AUTOFIX LOOP"
     if "tools/jira/" in cmd or "check_skill_api" in cmd:
@@ -553,6 +574,68 @@ def group_of(check) -> str:
     if "tools/ra_converter/test_" in cmd:
         return "CONVERTER"
     return "EMITTED TREE"
+
+
+# --- areas: run only what a change can break ---------------------------
+#
+# The converter and the workbench are separate code (tools/ra_converter,
+# tools/agent) with separate checks. `--area` runs some of them;
+# `--changed` picks the areas from what git says changed. Repo hygiene
+# always runs: what may be committed does not depend on what changed.
+AREA_OF_GROUP = {
+    "CONVERTER": "converter", "EMITTED TREE": "converter", "JIRA / XRAY": "jira",
+    "AUTOFIX LOOP": "autofix", "WORKBENCH": "workbench", "REPO HYGIENE": "hygiene",
+    "JAVA (--full)": "java",
+}
+AREAS = ("converter", "workbench", "jira", "autofix", "java")
+# Checks of every tool or every committed file, whatever the area.
+ALWAYS = {"python-defs", "xml-wellformed", "tracked-csv"}
+_AREA_PATHS = (
+    ("tools/ra_converter/", ("converter",)),
+    ("tools/agent/", ("workbench",)),
+    ("tools/diag.py", ("workbench",)),
+    ("tools/test_diag.py", ("workbench",)),
+    ("tools/jira/", ("jira",)),
+    ("tools/autofix/", ("autofix",)),
+    ("src/test/java/com/hi/api/tests/imported/", ("converter", "java")),
+    ("src/main/java/com/hi/api/support/", ("converter", "java")),
+    ("src/", ("java",)),
+    ("Suites/", ("java",)),
+    ("pom.xml", ("java",)),
+    (".cursor/", ()),
+    ("docs/", ()),
+)
+
+
+def areas_of(paths) -> tuple:
+    """(areas, why): the areas the changed paths belong to. A path no rule
+    places -- verify_all itself, a shared tool -- means every area."""
+    found, why = set(), []
+    for p in paths:
+        p = p.replace("\\", "/")
+        hit = next((a for prefix, a in _AREA_PATHS if p.startswith(prefix)), None)
+        if hit is None:
+            if p.endswith(".md"):
+                continue
+            return set(AREAS), [f"{p} is shared by every area"]
+        if hit and not set(hit) <= found:
+            why.append(f"{p} -> {', '.join(hit)}")
+        found |= set(hit)
+    return found, why
+
+
+def changed_paths(root: str = ROOT) -> list:
+    """What git says changed: the working tree and the index against HEAD,
+    and new files."""
+    out = []
+    for argv in (["git", "diff", "--name-only", "HEAD"],
+                 ["git", "ls-files", "--others", "--exclude-standard"]):
+        try:
+            r = subprocess.run(argv, cwd=root, capture_output=True, text=True)
+            out += [l.strip() for l in (r.stdout or "").splitlines() if l.strip()]
+        except OSError:
+            pass
+    return sorted(set(out))
 
 
 def print_catalogue(checks) -> None:
@@ -584,6 +667,12 @@ def print_catalogue(checks) -> None:
 
 
 def main() -> int:
+    # Redirected to a file, stdout is block-buffered: a 30-minute run would
+    # show nothing until it ends.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):
+        pass
     ap = argparse.ArgumentParser()
     ap.add_argument("--full", action="store_true",
                     help="also compile Java and run the TestNG guard suite")
@@ -613,6 +702,12 @@ def main() -> int:
     ap.add_argument("--impact-expect", metavar="SUITES", default="",
                     help="with --impact: the suites the change is MEANT to "
                          "move. Any other suite that moves fails the run.")
+    ap.add_argument("--area", default="",
+                    help="only these areas' checks, comma-separated: "
+                         + ", ".join(AREAS) + " (repo hygiene always runs)")
+    ap.add_argument("--changed", action="store_true",
+                    help="only the areas of what git says changed (the working tree "
+                         "and new files, against HEAD)")
     args = ap.parse_args()
 
     if (args.json or args.baseline) and _fr is None:
@@ -629,6 +724,26 @@ def main() -> int:
     if args.list_only:
         print_catalogue(CHECKS)
         return 0
+    if args.area or args.changed:
+        wanted = {a.strip().lower() for a in args.area.split(",") if a.strip()}
+        unknown = wanted - set(AREAS)
+        if unknown:
+            print(f"verify_all: unknown area(s) {', '.join(sorted(unknown))}; "
+                  f"the areas are {', '.join(AREAS)}")
+            return 2
+        if args.changed:
+            paths = changed_paths()
+            found, why = areas_of(paths)
+            print(f"verify_all --changed: {len(paths)} changed path(s) -> "
+                  f"{', '.join(sorted(found)) or 'no area'}")
+            for line in why[:12]:
+                print(f"  {line}")
+            wanted |= found
+        if "java" in wanted and not args.full:
+            print("  (java is in the areas: its checks need --full)")
+        selected = [c for c in selected if c.name in ALWAYS
+                    or AREA_OF_GROUP.get(group_of(c)) in wanted | {"hygiene"}]
+        print()
 
     # A --classic tree has no phases, specs or chains, so the checks that
     # read them cannot say anything true about it. Held back by name and

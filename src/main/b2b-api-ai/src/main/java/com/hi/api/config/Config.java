@@ -128,9 +128,10 @@ public final class Config {
         LEGACY_ALIASES.put("salesforce_assertion", "sf_config.assertion");
         LEGACY_ALIASES.put("username",             "sf_config.ui_username");
         LEGACY_ALIASES.put("password",             "sf_config.ui_password");
-        LEGACY_ALIASES.put("xray.baseUrl",         "xray_api_config.api_end_point");
-        LEGACY_ALIASES.put("xray.token",           "xray_api_config.token");
-        LEGACY_ALIASES.put("xray.testExecutionKey","xray_api_config.testExecutionKey");
+        LEGACY_ALIASES.put("xray.baseUrl",          "xray_api_config.api_end_point");
+        LEGACY_ALIASES.put("xray.token",            "xray_api_config.token");
+        LEGACY_ALIASES.put("xray.testExecutionKey", "xray_api_config.testExecutionKey");
+        LEGACY_ALIASES.put("xray.projectKey",       "xray_api_config.projectKey");
         // R6-4 fix: SoapUI Groovy uses UPPERCASE `${#Project#DB_URL}` etc.
         // The converter translates these to `Config.get("DB_URL", "")`, but
         // the framework's actual DB config lives under lowercase `db.url`
@@ -582,9 +583,11 @@ public final class Config {
     // ---------------------------------------------------------------------
 
     public static String get(String key, String fallback) {
-        // 1. -Dkey
-        String sys = System.getProperty(key);
-        if (isNonEmpty(sys)) return sys;
+        // 1. -Dkey (including empty: `-Dxray.token=` must beat JSON)
+        if (System.getProperties().containsKey(key)) {
+            String sys = System.getProperty(key);
+            return sys != null ? sys : fallback;
+        }
 
         // 2. env var (dots -> underscores, uppercased) -- BUT skip
         // lookup for OS-reserved names. See OS_RESERVED_ENV_NAMES
@@ -605,6 +608,16 @@ public final class Config {
         // 3. program_configuration.json (env-scoped, flattened)
         String pc = programConfig.get(key);
         if (isNonEmpty(pc)) return pc;
+
+        // 3a. Xray: application.properties (and the Settings tab, which
+        //     writes the `xray` block in JSON) must beat stale
+        //     xray_api_config.* left from an older layout. Legacy JSON
+        //     otherwise shadows xray.enabled / xray.baseUrl in
+        //     application.properties and publishing looks "broken".
+        if (key.startsWith("xray.")) {
+            String prop = props.getProperty(key);
+            if (isNonEmpty(prop)) return prop;
+        }
 
         // 3b. legacy alias -> nested program_configuration key
         String aliasTarget = LEGACY_ALIASES.get(key);

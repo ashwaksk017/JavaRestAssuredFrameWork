@@ -56,6 +56,10 @@
 //     xray.projectKey        = (SERVER/DC, only when no testExecutionKey --
 //                               Server needs a project to create one in)
 //     xray.testExecutionKey  = (optional -- Xray creates a new execution if absent)
+//     xray.issueTransition.pass / .fail  = (optional, SERVER/DC only) Jira
+//                               workflow transition names on the Test issue
+//                               after import; must be one of
+//                               JiraTestIssueTransitions.ALLOWED
 //
 // Failure semantics: XrayClient NEVER throws. Any HTTP / auth failure is
 // logged to stderr and swallowed -- Xray outages must not fail the local
@@ -68,10 +72,14 @@ import static io.restassured.RestAssured.given;
 
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.hi.api.config.Config;
 
@@ -79,6 +87,8 @@ import io.restassured.http.ContentType;
 import io.restassured.response.Response;
 
 public final class XrayClient {
+
+    private static final Logger LOG = LoggerFactory.getLogger(XrayClient.class);
 
     private static final String DEFAULT_BASE = "https://xray.cloud.getxray.app";
     private static final String AUTH_PATH    = "/api/v2/authenticate";
@@ -124,7 +134,7 @@ public final class XrayClient {
     public XrayClient(Transport transport) {
         this.transport        = transport == null ? restAssuredTransport() : transport;
         this.enabled          = "true".equalsIgnoreCase(Config.get("xray.enabled", "false"));
-        this.baseUrl          = Config.get("xray.baseUrl", DEFAULT_BASE);
+        this.baseUrl          = trimTrailingSlash(Config.get("xray.baseUrl", DEFAULT_BASE));
         this.clientId         = Config.get("xray.clientId", null);
         this.clientSecret     = Config.get("xray.clientSecret", null);
         this.token            = Config.get("xray.token", null);
@@ -259,7 +269,7 @@ public final class XrayClient {
             log("  no testExecutionKey -- Xray will create a new execution"
                     + (flavour == Flavour.SERVER
                        ? (isSet(projectKey) ? " in project " + projectKey.trim()
-                          : " (SERVER/DC needs xray.projectKey for that)")
+                          : " (project from xray.projectKey or inferred from test keys like B2B-99771)")
                        : ""));
         }
 
@@ -285,6 +295,13 @@ public final class XrayClient {
 
         Map<String, Object> body = buildImportBody(results, startedAt, finishedAt);
         String url = baseUrl + importPath;
+        if (flavour == Flavour.SERVER && !isSet(testExecutionKey)
+                && body.get("info") instanceof Map<?, ?> info
+                && !info.containsKey("project")) {
+            log("skipped -- Server / Data Center needs xray.projectKey (or a test key "
+                    + "like B2B-99771 so the project can be inferred) to create a Test Execution");
+            return false;
+        }
         try {
             Map<String, String> headers = new LinkedHashMap<>();
             headers.put("Authorization", "Bearer " + bearer);
@@ -293,6 +310,10 @@ public final class XrayClient {
             log("imported " + results.size() + " result(s) to " + flavour
                     + " " + url + " -> HTTP " + code
                     + (code >= 200 && code < 300 ? " OK" : " body=" + res.body()));
+            if (code >= 200 && code < 300) {
+                JiraTestIssueTransitions.applyAfterImport(
+                        results, flavour, baseUrl, bearer, transport);
+            }
             return code >= 200 && code < 300;
         } catch (RuntimeException importErr) {
             log("import call failed: " + importErr.getMessage());
@@ -356,20 +377,20 @@ public final class XrayClient {
         // Server / DC needs a project to create an execution IN when no
         // testExecutionKey was given; Cloud infers it from the test keys.
         // Only sent when both apply, so a Cloud body is unchanged.
-        if (flavour == Flavour.SERVER
-                && !isSet(testExecutionKey) && isSet(projectKey)) {
-            info.put("project", projectKey.trim());
+        String project = effectiveProjectKey(results);
+        if (flavour == Flavour.SERVER && !isSet(testExecutionKey) && isSet(project)) {
+            info.put("project", project.trim());
         }
         info.put("summary", "api-automation-restassured -- automated run");
-        info.put("startDate",  DateTimeFormatter.ISO_INSTANT.format(startedAt));
-        info.put("finishDate", DateTimeFormatter.ISO_INSTANT.format(finishedAt));
+        info.put("startDate",  formatInstantForImport(startedAt));
+        info.put("finishDate", formatInstantForImport(finishedAt));
         body.put("info", info);
 
         List<Map<String, Object>> tests = new ArrayList<>(results.size());
         for (XrayResult r : results) {
             Map<String, Object> t = new LinkedHashMap<>();
             t.put("testKey", r.testKey());
-            t.put("status", r.status().name());
+            t.put("status", r.status().importToken(flavour));
             if (r.comment() != null && !r.comment().isBlank()) {
                 t.put("comment", truncate(r.comment(), 2000));
             }
@@ -384,7 +405,54 @@ public final class XrayClient {
         return s.substring(0, max) + "...(truncated)";
     }
 
+    /**
+     * Xray Server / DC rejects any fractional-second suffix (nanos, millis, or
+     * {@code .270Z}). Whole-second {@code ...T19:20:40Z} is required there.
+     * Cloud accepts seconds as well.
+     */
+    public static String formatInstantForImport(Instant instant) {
+        if (instant == null) {
+            instant = Instant.EPOCH;
+        }
+        return DateTimeFormatter.ISO_INSTANT.format(instant.truncatedTo(ChronoUnit.SECONDS));
+    }
+
+    /** Project prefix from an issue key ({@code B2B-99771} -> {@code B2B}). */
+    public static String projectFromIssueKey(String issueKey) {
+        if (issueKey == null || issueKey.isBlank()) {
+            return null;
+        }
+        int dash = issueKey.indexOf('-');
+        if (dash <= 0) {
+            return null;
+        }
+        return issueKey.substring(0, dash).trim();
+    }
+
+    private String effectiveProjectKey(List<XrayResult> results) {
+        if (isSet(projectKey)) {
+            return projectKey.trim();
+        }
+        if (results == null) {
+            return null;
+        }
+        for (XrayResult r : results) {
+            String derived = projectFromIssueKey(r.testKey());
+            if (isSet(derived)) {
+                return derived;
+            }
+        }
+        return null;
+    }
+
+    private static String trimTrailingSlash(String url) {
+        if (url == null || url.length() < 2) {
+            return url;
+        }
+        return url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
+    }
+
     private static void log(String msg) {
-        System.out.println("[XrayClient] " + msg);
+        LOG.info("[XrayClient] {}", msg);
     }
 }

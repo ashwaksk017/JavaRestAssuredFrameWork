@@ -447,6 +447,13 @@ and the code review can use a model of their own -- a faster one -- set as
 The Cursor log names the model of each call. Fewer cases (speed "fast")
 also means less to write.
 
+A specification too large for one call is designed in parts. Part 1 is
+asked alone -- a bad key or a dead network then fails once -- and the
+others three at a time (`designParallel` in `cursor_agent.json`, 1 to 6).
+A part that fails while asked alongside the others is asked once more,
+alone. The cases are put together in part order, whatever order the
+answers came in. With images attached the parts go one at a time.
+
 cursor-sdk's bridge re-runs a request when the connection sits idle after
 the answer ("the same request ran again" in the Cursor log). These calls
 therefore end as soon as one whole JSON answer has come ("the answer is
@@ -811,6 +818,72 @@ recovers more kinds of damaged reply.
 python tools/agent/design.py --job <job> --service <name> --swagger-file spec.yaml --requirements-file brd.txt --speed fast
 ```
 
+#### What the cases were made from
+
+Above the review, **Sources** lists every story the job read -- the story
+itself and each linked one, with how it is linked -- and the Confluence
+pages, specifications and pasted text that went into the design, each with
+its size and when it was read. It is read from the job's `intake.json`,
+`brief.md` and `design.json`, so it is the same after a restart.
+
+#### Check against the developer's change
+
+Under the review: a make-sure step. Give the repository (GitLab or GitHub,
+`https://` or `git@`), the developer's branch, the ticket (empty: the
+story key) and, if it is not the default branch, the branch it merges
+into. The workbench fetches the branch into
+`.workbench/devrepos/` (a bare, partial copy: nothing is checked out and
+nothing runs), takes the commits whose message names the ticket (all of the
+branch's own commits when none does), and reads their change: endpoints
+added or changed (Spring and JAX-RS annotations, OpenAPI files), status
+codes, validation annotations, new and removed fields, enum values, error
+codes, request parameters, configuration and the developer's own tests.
+Each is compared with the cases; what no case covers is a **gap**, with a
+severity. Tick **also ask Cursor** to send the change (cut to size, host
+names and private values removed) and the cases to Cursor in plan mode as
+well, for gaps the program's reading cannot see.
+
+When `devcode_config.base_urls` is set in `program_configuration.json`,
+only those hosts are read. git's own credential helper answers for the
+host; `devcode_config.token` there, when set, is sent instead -- as a
+header, never in a URL, and never shown. **Add cases for the chosen gaps** is a refinement of the
+design that keeps every existing case and adds cases for the gaps ticked.
+The result is `devcode.json` / `devcode.md` in the job.
+
+```
+python tools/agent/devcode.py --job <job> --repo <url> --branch <branch> [--ticket ABC-123] [--base develop] [--ask-cursor]
+```
+
+#### Refining one case, some, or all
+
+Every row of the review has a tick in its first column (the header's tick
+selects them all). With cases ticked, **Approve selected**, **Reject
+selected** and **Refine selected** act on those only; a refinement then
+names the ticked cases to Cursor as the ones to change and keeps the rest
+exactly as they are. With none ticked a refinement is of the whole list,
+as before. A single case is refined by ticking only it.
+
+### Run tests
+
+Compile and run from the page. **Compile** is `mvn test-compile`. **Run
+the tests** runs one of: a suite file (every file under `Suites/` and
+`src/test/resources/testng*.xml`), a class or method (`-Dtest=`, e.g.
+`GuestProgramAccountTest#create*`), or a TestNG group -- through its
+`Suites/jira/group-<group>.xml`, since surefire ignores `-Dgroups` when a
+suite file is set -- against an environment of
+`program_configuration.json`. Maven runs offline first and goes online
+only when an artifact is missing. A `JAVA_HOME` that points at no JDK is
+replaced by a JDK 17 or later found on the machine, and the log says
+which. The result is passed / failed / skipped counts and a table of the
+failures, read from the surefire reports; it is `mvnrun-result.json` in
+the job (`runs` when no job is chosen). One run at a time, and not while
+Cursor is writing a change.
+
+```
+python tools/agent/mvnrun.py compile --job runs
+python tools/agent/mvnrun.py test --job runs --suite Suites/jira/group-smoke.xml --env stg --compile-first
+```
+
 ### Manual tests
 
 Manual UI test cases from requirements, written as a **delta** against
@@ -1156,6 +1229,14 @@ python tools/agent/suitemap.py --job <job>      # each case's groups
 The existing `testng-smoke.xml` and `testng.xml` list their classes by
 name, so they do not pick up the story tests; the group suites do.
 
+**Suggest suites with Cursor** (under the review) sends the cases --
+id, type, priority, endpoint and title, nothing else -- and the groups the
+project already has to Cursor, which proposes the groups of each case with
+a reason and a confidence. Each suggestion appears under its case's
+Suites box with **Use**; **Use every suggestion** takes them all. Nothing
+changes until you choose, and the box stays yours to edit. A group no
+suite has yet is marked new. The result is the job's `suite-suggest.json`.
+
 #### What Approve & push publishes
 
 - **Only the job's files, on top of what the remote already has.** The
@@ -1252,7 +1333,7 @@ test from another folder inlined instead; Cursor built from the example,
 read the skill later, found they disagreed and did the work twice. Only
 when the scope has no skill file is **one existing hand-written test**
 shown instead (the smallest that has a `@Test`, or the files
-`pattern_example` names in `policy.json`), with the first lines of a
+`scopes.new-test.pattern_example` in `policy.json`), with the first lines of a
 data sheet under `csv/manual/` -- the committed location; the other
 `csv/` folders are gitignored because their rows carry customer data,
 and are never put in a prompt. The log names what was shown. And a failed compile
@@ -1724,6 +1805,12 @@ being read, and that output is served to the page. The rest is kept here.
   reason, tracebacks of faults in the server, and errors in the page's
   own script (a button that "does nothing" usually left one here).
   What the page asks for over and over while it waits is left out.
+- **Maven test run log** -- `target/b2b-full-run.log`, with a short
+  diagnosis when its timestamp is older than the last Surefire results
+  (or Surefire never ran). Log4j writes it only when TestNG starts inside
+  Surefire; `Run the tests` passes `-Dlog.level=debug`. For a manual run:
+  `mvn -o test "-DsuiteXmlFile=src/test/resources/testng-jira.xml"
+  "-Denv=stg" "-DfailIfNoTests=false" "-Dlog.level=debug"`.
 
 *Only errors* keeps each line that reports a problem and the lines of its
 traceback.
@@ -1823,6 +1910,9 @@ Each stage is a link to where it is done, and the server holds the gates
 | Publish | **Publish to Xray**: any run, passed or not -- a failure is a result Xray should hold too (the push still needs a green run; publishing does not). A new Test Execution with the run's results (publishing the same run again as a new one is refused), or, with a key in the box beside the button, the results put into that **existing** Test Execution (its summary, description and plan left as they are; it must be a Test Execution). Once the change is pushed, the confirmed regression cases are added to the regression Test Set / Plan (Settings tab); before that they are not -- publish again after the push. If adding them fails, the execution is still on record. | -- |
 
 ### Settings
+
+**Theme**: Dark, Light or Blue, from the switch at the top right of every
+tab; remembered by the browser.
 
 **Cursor**: the API key, the model that writes the tests (Automate, Ask
 Cursor; `composer-2.5` by default) and the design model (designs,

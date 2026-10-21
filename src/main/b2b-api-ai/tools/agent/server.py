@@ -28,6 +28,7 @@ import json
 import os
 import socket
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -222,6 +223,11 @@ class Handler(BaseHTTPRequestHandler):
                 mapping = sm.load()
                 return self._json({"cases": sm.for_job(jobs.job_dir(q.get("job", "")), mapping),
                                    "problem": mapping.get("problem", "")})
+            if u.path == "/api/sources":
+                # What the job's cases were designed from: names and sizes.
+                return self._json(jobs.sources(q.get("job", "")))
+            if u.path == "/api/run-targets":
+                return self._json(jobs.run_targets())
             if u.path == "/api/uploads":
                 return self._json({"files": jobs.list_uploads()})
             if u.path == "/api/spec":
@@ -451,10 +457,20 @@ class Handler(BaseHTTPRequestHandler):
         out = jobs.job_dir(job)                 # validates the id
         os.makedirs(out, exist_ok=True)
         options = {"--job": job}
-        if str(body.get("refine") or "").strip():
+        if isinstance(body.get("devgaps"), list):
+            # Add cases for the chosen gaps of the developer-change check:
+            # a refinement written here from devcode.json, not by the page.
+            request = jobs.devgap_request(job, body["devgaps"])
+            body = dict(body, fresh=True, refine=request,
+                        current=jobs.refine_listing(job, request, cap=12000))
+        elif str(body.get("refine") or "").strip():
             # Refine with Cursor: the request (an instruction to Cursor) and
             # the cases as they are, each in its own file; always asked afresh.
-            body = dict(body, fresh=True, current=jobs.refine_listing(job, body["refine"]))
+            # With chosen cases, only those are to change.
+            ids = [str(i) for i in body.get("refine_ids") or [] if str(i).strip()]
+            listing = jobs.refine_listing(job, body["refine"], ids)
+            body = dict(body, fresh=True, current=listing,
+                        refine=jobs.refine_scope(str(body["refine"]).strip(), ids))
         else:
             body = dict(body, refine="", current="")   # an earlier refinement is not asked again
         for field in ("swagger", "requirements", "notes", "refine", "current"):
@@ -560,6 +576,30 @@ def main(argv=None) -> int:
     print(f"b2b agent UI on http://{args.host}:{args.port}")
     print(f"  repository: {ROOT}")
     print(f"  jobs:       .workbench/<job>/")
+    print("  checking Cursor (SDK, key, bridge) in the background; the page is up now")
+
+    def check_cursor():
+        # Up to 90 s on a cold machine (the SDK's first start under
+        # antivirus): the page must not wait for it.
+        try:
+            startup = jobs.run_cursor_startup(ROOT)
+            for line in startup.get("lines") or []:
+                print(f"  {line}")
+            if startup.get("ok"):
+                if startup.get("mock"):
+                    print("  Cursor: MOCK (tools/agent/mock.json)")
+                else:
+                    print(f"  Cursor: ready (model {startup.get('model') or '?'})")
+            else:
+                print("  Cursor: NOT READY — Design and Automate will fail until this is fixed "
+                      "(Settings → Cursor key, or tools/ra_converter/cursor_agent.json).")
+        except Exception as e:                           # noqa: BLE001
+            print(f"  Cursor: startup check failed ({type(e).__name__}: {e})")
+    try:
+        jobs.mark_cursor_checking(ROOT)
+    except OSError:
+        pass
+    threading.Thread(target=check_cursor, name="cursor-startup", daemon=True).start()
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         print("  WARNING: not bound to loopback. This process starts "
               "commands that write to the repository and has NO "

@@ -121,6 +121,19 @@ class CursorSettings(Base):
         self.assertNotIn("designModel", self.cursor_file(), "empty: the main model is used")
 
 
+class WhereTheCursorSettingsLive(Base):
+    def test_the_shared_file_is_used_and_the_converter_s_old_one_still_is_alone(self):
+        self.assertEqual(st.cursor_rel(self.root), "tools/cursor_agent.json")
+        old = os.path.join(self.root, "tools", "ra_converter", "cursor_agent.json")
+        os.makedirs(os.path.dirname(old), exist_ok=True)
+        with io.open(old, "w", encoding="utf-8") as fh:
+            fh.write('{"model": "old-place"}')
+        self.assertEqual(st.cursor_rel(self.root), "tools/ra_converter/cursor_agent.json")
+        with io.open(os.path.join(self.root, "tools", "cursor_agent.json"), "w", encoding="utf-8") as fh:
+            fh.write('{"model": "new-place"}')
+        self.assertEqual(st.cursor_rel(self.root), "tools/cursor_agent.json")
+
+
 class TheCopies(Base):
     def test_a_copy_keeps_no_token_and_an_unchanged_save_writes_nothing(self):
         st.save({"jira_pat": "brand-new-token-9"}, self.root)

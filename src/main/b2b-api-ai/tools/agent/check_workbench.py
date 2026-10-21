@@ -25,7 +25,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 QUICK_TESTS = ("test_jobs.py", "test_casereview.py", "test_suitemap.py", "test_intake.py",
                "test_design.py", "test_mock.py", "test_xraytests.py", "test_xrayimport.py",
                "test_storycheck.py", "test_repo.py", "test_fixbrief.py", "test_execution.py",
-               "test_settings.py", "test_xraypublish.py", "test_workflow.py")
+               "test_settings.py", "test_xraypublish.py", "test_workflow.py", "test_runlog.py",
+               "test_xraytrace.py", "test_devcode.py", "test_suitesuggest.py", "test_mvnrun.py")
 
 
 def _run(argv, timeout=900) -> tuple:

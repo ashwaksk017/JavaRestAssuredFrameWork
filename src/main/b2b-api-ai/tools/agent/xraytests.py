@@ -286,6 +286,12 @@ def _log(job_dir: str, line: str) -> None:
         diag.trace()
 
 
+def _csv_xray_note(job_dir: str, line: str) -> None:
+    """Row-level CSV/Xray audit file plus a mirror on xray-create.log."""
+    loop.csv_xray_log(job_dir, line)
+    _log(job_dir, "csv-xray: " + line)
+
+
 def create(job: str, what: str, story: str, confirm: str, root: str = "", conn=None,
            cfg: dict = None, xray_cfg: dict = None, transport=None, expect: str = "",
            on_attempt=None) -> dict:
@@ -523,6 +529,34 @@ def create(job: str, what: str, story: str, confirm: str, root: str = "", conn=N
                           if mocked else "")
                        + (" The keys are in xray-tests.json; Automate "
                           "puts them in the jira_xray_id column." if made_n or done["kept"] else ""))
+    if mocked:
+        _csv_xray_note(
+            job_dir,
+            "patch skipped: Create in Xray ran in mock mode (csv patch runs only after a real create)",
+        )
+    elif not done.get("ok"):
+        _csv_xray_note(
+            job_dir,
+            "patch skipped: create did not succeed (nothing to patch or create failed); "
+            "see xray-create.log",
+        )
+    else:
+        case_ids = [ident.split(":", 1)[1] for ident in kept.get("tests", {})
+                    if str(ident).startswith(f"{what}:")]
+        try:
+            touched = loop.patch_manual_csv_by_case_ids(
+                root, job_dir, case_ids, mocked=False,
+                on_log=lambda line: _log(job_dir, "csv-xray: " + line))
+            if touched:
+                _log(job_dir, "csv: filled jira_xray_id and jira_issue on "
+                     + ", ".join(touched[:8])
+                     + (" ..." if len(touched) > 8 else ""))
+                _log(job_dir, f"see {loop.CSV_XRAY_LOG} in this job for row-level detail")
+                done["csv_patched"] = touched
+            else:
+                _log(job_dir, f"csv: no manual sheets updated (see {loop.CSV_XRAY_LOG})")
+        except Exception:                                # noqa: BLE001
+            diag.trace()
     _log(job_dir, f"END {done['message']}")
     return done
 

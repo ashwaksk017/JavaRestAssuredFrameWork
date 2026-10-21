@@ -42,5 +42,21 @@ public record XrayResult(
                 default                  -> ABORTED;
             };
         }
+
+        /**
+         * Status word in an import/execution payload. Xray Server / DC
+         * expects {@code PASS}/{@code FAIL}/{@code TODO}; Cloud uses the
+         * enum name ({@code PASSED}, …).
+         */
+        public String importToken(XrayClient.Flavour flavour) {
+            if (flavour == XrayClient.Flavour.SERVER) {
+                return switch (this) {
+                    case PASSED -> "PASS";
+                    case FAILED -> "FAIL";
+                    case SKIPPED, ABORTED -> "TODO";
+                };
+            }
+            return name();
+        }
     }
 }

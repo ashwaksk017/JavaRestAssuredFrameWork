@@ -106,14 +106,17 @@ def config_path_from_args(args: Any = None) -> str:
         explicit = getattr(args, "cursor_config", None)
         if explicit:
             return os.path.abspath(explicit)
-    return os.path.join(converter_dir(), _DEFAULT_REL)
+    # Shared with the workbench: tools/cursor_agent.json, else this folder's.
+    shared = os.path.join(os.path.dirname(converter_dir()), _DEFAULT_REL)
+    old = os.path.join(converter_dir(), _DEFAULT_REL)
+    return old if not os.path.isfile(shared) and os.path.isfile(old) else shared
 
 
 def load_config(args: Any = None) -> CursorAssistConfig:
     path = config_path_from_args(args)
     raw: dict = {}
     if os.path.isfile(path):
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             loaded = json.load(f)
         if isinstance(loaded, dict):
             raw = loaded
@@ -528,6 +531,7 @@ def _sdk_prompt(prompt: str, cfg: CursorAssistConfig) -> dict[str, Any]:
     options = AgentOptions(
         api_key=cfg.api_key,
         model=cfg.model,
+        mode="agent",
         local=LocalAgentOptions(cwd=cfg.cwd),
     )
     try:

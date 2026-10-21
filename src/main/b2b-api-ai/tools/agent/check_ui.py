@@ -133,11 +133,16 @@ class Page:
             return e.code, json.loads(e.read().decode("utf-8", "replace") or "{}")
 
     def dom(self, tab: str, job: str = JOB) -> str:
-        done = subprocess.run(
-            [self.browser, "--headless=new", "--disable-gpu", "--no-first-run",
-             "--disable-extensions", "--virtual-time-budget=9000", "--dump-dom",
-             f"{self.base}/?job={job}#{tab}"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=120)
+        # Its own profile: with the person's Edge open, the shared one is
+        # locked and a headless run waits on it until the timeout.
+        with tempfile.TemporaryDirectory(prefix="check-ui-edge-",
+                                         ignore_cleanup_errors=True) as profile:
+            done = subprocess.run(
+                [self.browser, "--headless=new", "--disable-gpu", "--no-first-run",
+                 "--disable-extensions", f"--user-data-dir={profile}",
+                 "--virtual-time-budget=9000", "--dump-dom",
+                 f"{self.base}/?job={job}#{tab}"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=120)
         return done.stdout.decode("utf-8", "replace")
 
 
@@ -260,6 +265,22 @@ def main() -> int:
               steps_only.count('<li class="done">') == 3 and 'class="now"' not in steps_only
               and re.search(r'class="state ok"[^>]*>finished in \d+:\d\d<', html) is not None,
               steps_only[:400])
+        html = running("running", [
+            "==> Asking Cursor to write the change (this can take several minutes)",
+            "==> Running the check check_workbench.py"])
+        steps_only = html[html.find('class="steps"'):]
+        steps_only = steps_only[:steps_only.find("</ol>")]
+        check("once Cursor has returned, the page says the code is written and the check is not a test yet",
+              "Cursor has finished writing the code change" in steps_only
+              and "Asking Cursor to write the change" not in steps_only
+              and "not ready to test until this passes" in steps_only
+              and 'class="now"' in steps_only, steps_only[:500])
+        html = running("done", [
+            "==> Asking Cursor to write the change (this can take several minutes)",
+            "==> Running the check check_workbench.py",
+            "PENDING REVIEW -- read proposed.diff."])
+        check("a change held for review says it is ready to test",
+              re.search(r'class="state ok"[^>]*>Ready to test\.', html) is not None, html[-400:])
         html = running("failed", said[:2], code=1)
         check("a command that failed says the step it stopped at",
               '<li class="stopped">Fetching a linked Confluence page</li>' in html
@@ -773,6 +794,11 @@ def main() -> int:
             html = mocked.dom("agent")
             check("the Agentic tab shows the repository and offers the base and the branch",
                   'id="repo"' in html and 'id="agent-base"' in html and 'id="agent-branch"' in html)
+            agent_js = io.open(os.path.join(HERE, "ui", "app.js"), encoding="utf-8").read()
+            check("a job named in the address is kept on the Commit and push tab",
+                  "focusUnfinishedWorkbench" in agent_js
+                  and 'location.search).get("job")' in agent_js
+                  and "do not swap the box" in agent_js)
             check("both tabs that produce cases have a Create in Xray block",
                   'id="xray-design-create"' in html and 'id="xray-manual-create"' in html)
 
@@ -855,6 +881,9 @@ def main() -> int:
                   and ">Remove step</button>" in html, html[html.find('class="steps-edit"'):][:300])
             check("the Migration tab's Cursor log follows its own file, not the Automate tab's",
                   "runnable: \"migration-cursor\"" in io.open(os.path.join(HERE, "ui", "app.js"), encoding="utf-8").read())
+            check("the Cursor log poll reads only the source the person chose",
+                  "await pollStream(src, reset)" in agent_js
+                  and 'await pollStream("tests", reset)' not in agent_js.split("async function pollCursorLog")[1].split("}")[0])
             check("Ask Cursor is one box for a change, a new request or a question",
                   '>Ask Cursor</button>' in html and 'id="agent-ask-send" disabled' not in tab_new)
             logs_tab = mocked.dom("logs")
@@ -1033,6 +1062,22 @@ def main() -> int:
             check("a timeout is not called a broken rule, and says when it was",
                   "did not finish in time. No rule was broken" in html
                   and "(as of 2026-10-10T12:00:00Z)" in html and "broke a rule" not in html)
+            with io.open(os.path.join(job_dir, "review.json"), "w", encoding="utf-8") as fh:
+                json.dump({"state": "generating", "scope": "new-test"}, fh)
+            html = mocked.dom("agent")
+            check("a story job that did not finish does not mention the workbench on Ask Cursor",
+                  "change to the workbench did not finish" not in html
+                  and "A run of this job did not finish" in html)
+            with io.open(os.path.join(job_dir, "review.json"), "w", encoding="utf-8") as fh:
+                json.dump({"state": "generating", "scope": "workbench"}, fh)
+            html = mocked.dom("agent")
+            check("a workbench change that did not finish says so on Ask Cursor",
+                  "change to the workbench did not finish" in html)
+            with io.open(os.path.join(job_dir, "review.json"), "w", encoding="utf-8") as fh:
+                json.dump({"state": "rejected", "scope": "new-test", "why": "timeout", "undone": True,
+                           "reason": "Cursor call failed: Cursor did not finish within 2700s",
+                           "updated": "2026-10-10T12:00:00Z"}, fh)
+            html = mocked.dom("agent")
             check("an outcome with nothing in the tree offers Dismiss",
                   'id="agent-dismiss" title=' in html and 'id="agent-dismiss" disabled' not in html)
             with io.open(os.path.join(job_dir, "cursor.log"), "w", encoding="utf-8") as fh:
@@ -1083,7 +1128,7 @@ def main() -> int:
             check("the Manual tests tab lists the file and where it was put",
                   "Booking Rules.md" in html
                   and f".workbench/{JOB}/docs/Booking Rules.md" in html
-                  and html.count('role="tab"') == 10)
+                  and html.count('role="tab"') == 11)
             code, rc = press("manual-inventory", {"--project": "ABC"})
             html = mocked.dom("manual")
             check("mock mode: Read existing tests, with their steps, and says it is sample data",
@@ -1129,7 +1174,7 @@ def main() -> int:
                 check("the Publish tab says what is switched on, and that these are stand-ins",
                       rc == 0 and "Attaching to Jira is ON" in html
                       and "Creating Confluence pages is ON for space(s) QA" in html
-                      and "contacts nobody" in html and html.count('role="tab"') == 10, f"rc={rc}")
+                      and "contacts nobody" in html and html.count('role="tab"') == 11, f"rc={rc}")
                 check("only this job's own results are offered, by name",
                       '<option value="manual-tests.md">' in html
                       and '<option value="manual">Manual test cases</option>' in html
@@ -1202,11 +1247,19 @@ def main() -> int:
                       and "/api/status" not in server_log.split("PAGE ERROR")[-1])
                 code, got = mocked.call(f"/api/diag?job=../../x&which=job")
                 check("the record of a job that cannot exist is not read", code == 400)
+                code, got = mocked.call("/api/diag?which=run")
+                run_log = got.get("text") or ""
+                check("the Maven run log explains when Surefire did not refresh the file",
+                      code == 200 and "b2b-full-run.log" in run_log and "Surefire" in run_log)
+                check("the Maven run log traces why Xray did or did not update",
+                      "XRAY TRACE" in run_log and "xray.enabled" in run_log)
                 html = mocked.dom("logs")
                 check("the Logs tab shows both, as text",
                       "[publish] START" in html and "POST /api/start" in html
                       and "&lt;img src=x onerror=alert(1)&gt;" in html and "<img src=x" not in html
                       and f".workbench/{JOB}/diagnostics.log" in html)
+                check("the Logs tab includes the Maven test run log section",
+                      "Maven test run log" in html and "b2b-full-run.log" in html)
             finally:
                 try:
                     os.remove(conf_store)

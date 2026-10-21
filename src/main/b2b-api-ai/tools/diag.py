@@ -134,6 +134,7 @@ def _config_values(root: str) -> tuple:
     """(values, note). The credential values of the private configuration."""
     out, note = set(), ""
     for rel in (os.path.join("src", "main", "resources", "program_configuration.json"),
+                os.path.join("tools", "cursor_agent.json"),
                 os.path.join("tools", "ra_converter", "cursor_agent.json")):
         path = os.path.join(root, rel)
         if not os.path.isfile(path):
@@ -301,12 +302,56 @@ def trace(where: str = "", module: str = "") -> None:
         pass
 
 
+RUN_LOG_REL = os.path.join("target", "b2b-full-run.log")
+FAILURE_RX = re.compile(r"^\s*(FAIL|ERROR|CRASH|VERIFY FAILED|STOPPED|BUILD FAILURE)\b"
+                        r"|\[ERROR\]|\bFAIL(ED)?\b")
+MAX_FAILURE_LINES = 200
+
+
+def run_log(root: str = "") -> str:
+    """The full run log; WORKBENCH_RUN_LOG names another file, or `off`."""
+    other = os.environ.get("WORKBENCH_RUN_LOG", "").strip()
+    if other.lower() in ("off", "0", "false", "no"):
+        return ""
+    return other or os.path.join(root or ROOT, RUN_LOG_REL)
+
+
+def run_log_failure(source: str, lines, root: str = "") -> None:
+    """A failure in the full run log (target/b2b-full-run.log), whatever
+    failed: a command, a build, the server. Log4j writes that file only
+    inside a test JVM and starts it again for each run (append="false"),
+    so a command's failures are written as it ends -- after any test run
+    it started -- and the server's as they happen."""
+    if level() == "off":
+        return
+    try:
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        out = []
+        for line in ([lines] if isinstance(lines, str) else list(lines)):
+            for part in str(line).splitlines() or [""]:
+                part = redact(part, root)
+                if len(part) > MAX_LINE:
+                    part = part[:MAX_LINE] + f" ... ({len(part) - MAX_LINE} more characters)"
+                out.append(f"{stamp} WORKBENCH FAIL [{source}] {part}\n")
+        path = run_log(root)
+        if not path:
+            return
+        with _LOCK:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with io.open(path, "a", encoding="utf-8", errors="replace") as fh:
+                fh.writelines(out)
+    except Exception:                                    # noqa: BLE001
+        pass
+
+
 class _Tee:
     """Standard output, and a memory of the last lines written to it: what
-    a command said as it failed is the first thing anyone asks for."""
+    a command said as it failed is the first thing anyone asks for. Every
+    line that reports a failure is kept too, for the full run log."""
 
     def __init__(self, stream, keep: int = 30):
         self._stream, self._keep, self.lines, self._part = stream, keep, [], ""
+        self.failures = []
 
     def write(self, text):
         try:
@@ -314,9 +359,21 @@ class _Tee:
             *whole, self._part = self._part.split("\n")
             if whole:
                 self.lines = (self.lines + whole)[-self._keep:]
+                for line in whole:
+                    if len(self.failures) < MAX_FAILURE_LINES and FAILURE_RX.search(line):
+                        self.failures.append(line.rstrip())
         except Exception:                                # noqa: BLE001
             pass
-        return self._stream.write(text)
+        try:
+            return self._stream.write(text)
+        except UnicodeEncodeError:
+            # A Windows console or pipe is often cp1252. Cursor's answer can
+            # hold a character that encoding has no byte for (an arrow).
+            # That must not end the run: the answer is replaced with the
+            # stream's own stand-in and the command carries on.
+            enc = getattr(self._stream, "encoding", None) or "utf-8"
+            safe = str(text).encode(enc, errors="replace").decode(enc, errors="replace")
+            return self._stream.write(safe)
 
     def said(self) -> list:
         return [l for l in self.lines + ([self._part] if self._part else []) if l.strip()]
@@ -325,12 +382,21 @@ class _Tee:
         return getattr(self._stream, name)
 
 
-def _ended(path: str, module: str, rc, started: float, tee, root: str) -> None:
+def _ended(path: str, module: str, rc, started: float, tee, root: str, argv=()) -> None:
     lines = [f"[{module}] END exit {rc!r} after {time.time() - started:.1f}s"]
     if rc not in (0, None) and tee is not None and tee.said():
         lines.append(f"[{module}] the end of what it said:")
         lines += ["    " + l for l in tee.said()]
     _append(path, lines, root)
+    failed = rc not in (0, None, False)
+    said = tee.failures if tee is not None else []
+    if failed or said:
+        entry = [f"{_argv_text(argv)} -- exit {rc!r} after {time.time() - started:.1f}s"
+                 + (f"; the command's record: {os.path.relpath(path, root or ROOT)}" if path else "")]
+        entry += ["  " + l for l in said]
+        if failed and tee is not None:
+            entry += ["  " + l for l in tee.said() if l.rstrip() not in said]
+        run_log_failure(module, entry, root)
 
 
 def run(module: str, main, argv=None, root: str = ""):
@@ -344,22 +410,32 @@ def run(module: str, main, argv=None, root: str = ""):
     started = time.time()
     _append(path, [f"[{module}] START {_argv_text(argv)}  (pid {os.getpid()}, "
                    f"python {sys.version.split()[0]}, {sys.platform})"], root)
+    # A Windows console or a pipe often cannot print every character a
+    # Cursor answer contains. A line that will not print must not cost the run.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, OSError, ValueError):
+            pass
     tee, real = None, sys.stdout
-    if path and level() != "off":
+    if level() != "off":
         tee = sys.stdout = _Tee(real)
     try:
         rc = main()
     except SystemExit as e:
-        _ended(path, module, e.code, started, tee, root)
+        _ended(path, module, e.code, started, tee, root, argv)
         raise
     except BaseException:
-        _append(path, [f"[{module}] CRASH after {time.time() - started:.1f}s"]
-                + traceback.format_exc().splitlines(), root)
+        crash = traceback.format_exc().splitlines()
+        _append(path, [f"[{module}] CRASH after {time.time() - started:.1f}s"] + crash, root)
+        run_log_failure(module, [f"{_argv_text(argv)} -- CRASH after {time.time() - started:.1f}s"]
+                        + ["  " + l for l in (tee.failures if tee is not None else [])]
+                        + ["  " + l for l in crash], root)
         raise
     finally:
         if tee is not None and sys.stdout is tee:
             sys.stdout = real
-    _ended(path, module, rc, started, tee, root)
+    _ended(path, module, rc, started, tee, root, argv)
     return rc
 
 
@@ -380,6 +456,9 @@ def request(method: str, path: str, status: int, seconds: float, root: str = "")
             return
         _append(server_log(root), [f"{method} {path[:300]} -> {status} in {seconds * 1000:.0f} ms"],
                 root)
+        if int(status) >= 500:
+            run_log_failure("server", f"{method} {path[:300]} -> {status} in {seconds * 1000:.0f} ms",
+                            root)
     except Exception:                                    # noqa: BLE001
         pass
 
@@ -387,7 +466,9 @@ def request(method: str, path: str, status: int, seconds: float, root: str = "")
 def server_trace(what: str, root: str = "") -> None:
     """Call inside `except` in the server: the error, with its traceback."""
     try:
-        _append(server_log(root), [f"ERROR {what}"] + traceback.format_exc().splitlines(), root)
+        lines = [f"ERROR {what}"] + traceback.format_exc().splitlines()
+        _append(server_log(root), lines, root)
+        run_log_failure("server", lines, root)
     except Exception:                                    # noqa: BLE001
         pass
 

@@ -59,6 +59,76 @@ class Base(unittest.TestCase):
         return diag.run(module, main, list(argv), self.root)
 
 
+class TheFullRunLog(Base):
+    def run_log(self):
+        try:
+            with io.open(os.path.join(self.root, "target", "b2b-full-run.log"), encoding="utf-8") as fh:
+                return fh.read()
+        except OSError:
+            return ""
+
+    def test_a_failed_command_is_entered_with_what_it_said(self):
+        def fails():
+            print("==> Compiling")
+            print("verify FAIL compile")
+            print(f"The JAVA_HOME environment variable is not defined correctly {TOKEN}")
+            return 1
+        self.run_cmd(fails, module="loop")
+        text = self.run_log()
+        self.assertIn("WORKBENCH FAIL [loop] --job j1 --speed fast -- exit 1", text)
+        self.assertIn("verify FAIL compile", text)
+        self.assertIn("JAVA_HOME environment variable", text)
+        self.assertNotIn(TOKEN, text)
+
+    def test_a_failure_said_by_a_command_that_ended_well_is_entered_too(self):
+        def warns():
+            print("WARN part 2 of 3 produced nothing")
+            print("FAIL the Xray link could not be made")
+            print("ok  done")
+            return 0
+        self.run_cmd(warns, module="design")
+        text = self.run_log()
+        self.assertIn("[design] --job j1 --speed fast -- exit 0", text)
+        self.assertIn("FAIL the Xray link could not be made", text)
+        self.assertNotIn("ok  done", text)
+
+    def test_a_command_that_worked_enters_nothing_and_a_crash_is_entered(self):
+        self.run_cmd(lambda: 0)
+        self.assertEqual(self.run_log(), "")
+
+        def crashes():
+            raise ValueError("boom")
+        with self.assertRaises(ValueError):
+            self.run_cmd(crashes, module="jobs")
+        self.assertIn("WORKBENCH FAIL [jobs] --job j1 --speed fast -- CRASH", self.run_log())
+        self.assertIn("ValueError: boom", self.run_log())
+
+    def test_a_command_without_a_job_is_entered_and_the_server_s_errors_are(self):
+        diag.run("mvnrun", lambda: 3, ["test", "--suite", "x.xml"], self.root)
+        diag.request("POST", "/api/run", 500, 0.2, self.root)
+        try:
+            raise KeyError("missing")
+        except KeyError:
+            diag.server_trace("handling /api/run", self.root)
+        text = self.run_log()
+        self.assertIn("[mvnrun] test --suite x.xml -- exit 3", text)
+        self.assertIn("[server] POST /api/run -> 500", text)
+        self.assertIn("[server] ERROR handling /api/run", text)
+
+    def test_it_can_be_sent_elsewhere_or_switched_off(self):
+        other = os.path.join(self.root, "elsewhere.log")
+        os.environ["WORKBENCH_RUN_LOG"] = other
+        self.addCleanup(os.environ.pop, "WORKBENCH_RUN_LOG", None)
+        self.run_cmd(lambda: 1)
+        with io.open(other, encoding="utf-8") as fh:
+            self.assertIn("WORKBENCH FAIL [demo]", fh.read())
+        os.environ["WORKBENCH_RUN_LOG"] = "off"
+        os.remove(other)
+        self.run_cmd(lambda: 1)
+        self.assertFalse(os.path.exists(other))
+        self.assertEqual(self.run_log(), "")
+
+
 class ACommand(Base):
     def test_its_start_and_its_end_are_on_record(self):
         self.assertEqual(self.run_cmd(lambda: 0), 0)
@@ -99,6 +169,30 @@ class ACommand(Base):
         self.assertIn("Traceback (most recent call last)", text)
         self.assertIn("the key that is missing", text)
         self.assertIn("test_diag.py", text)
+
+    def test_a_character_the_console_cannot_encode_does_not_end_the_command(self):
+        class Narrow(io.TextIOBase):
+            encoding = "cp1252"
+
+            def write(self, text):
+                text.encode("cp1252")
+                return len(text)
+
+            def flush(self):
+                return None
+
+        sys.stdout = Narrow()
+        self.addCleanup(setattr, sys, "stdout", sys.__stdout__)
+
+        def main():
+            print("B2B-99771 \u2192 PASS")
+            return 0
+
+        self.assertEqual(self.run_cmd(main), 0)
+        text = self.log()
+        self.assertIn("[demo] END exit 0", text)
+        self.assertNotIn("CRASH", text)
+        self.assertNotIn("UnicodeEncodeError", text)
 
     def test_what_escapes_it_is_recorded_and_still_escapes(self):
         def boom():

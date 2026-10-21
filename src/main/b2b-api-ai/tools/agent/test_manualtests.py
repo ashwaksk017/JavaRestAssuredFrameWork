@@ -366,7 +366,7 @@ class WhatIsWritten(Base):
         md = self.read(mt.REPORT)
         for live in ("@all", "www.evil", "<img src=x>", " <img", "[x](", "evil.example)", "#12"):
             self.assertNotIn(live, md, live)
-        self.assertIn("\<img src=x\>", md, "escaped, so it is words and not markup")
+        self.assertIn(r"\<img src=x\>", md, "escaped, so it is words and not markup")
         self.assertIn("### MT-001 — ", md)
         self.assertIn("| 1 | ", md)
         rows = self.read(mt.NEW_CSV).splitlines()

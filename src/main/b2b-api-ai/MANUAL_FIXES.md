@@ -376,8 +376,8 @@ Fill `xray_api_config` in `program_configuration.json` first. Omit
 `mvn` on Windows mangles non-ASCII in a redirected log. Use the wrapper,
 or the log you read back will differ from what the run printed:
 
-```powershell
-tools\mvn-utf8.ps1 test "-DsuiteXmlFile=Suites/<Suite>_Regression.xml" > full-run.log
+```
+python tools/mvn_utf8.py --log full-run.log test "-DsuiteXmlFile=Suites/<Suite>_Regression.xml"
 ```
 
 ### Per-project converter settings

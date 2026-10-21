@@ -30,6 +30,8 @@
 <suite name="jira-stories" verbose="1">
     <listeners>
         <listener class-name="io.qameta.allure.testng.AllureTestNg"/>
+        <listener class-name="com.hi.api.reporting.XrayReportListener"/>
+        <listener class-name="com.hi.api.reporting.TestMetadataListener"/>
     </listeners>
 
     <test name="jira-stories">

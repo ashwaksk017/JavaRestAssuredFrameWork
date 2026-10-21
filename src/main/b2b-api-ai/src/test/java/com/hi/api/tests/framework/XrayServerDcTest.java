@@ -199,6 +199,38 @@ public class XrayServerDcTest {
     }
 
     @Test(groups = {"guards"})
+    public void serverDcImportDatesUseWholeSeconds() {
+        Instant noisy = Instant.parse("2026-10-19T19:20:40.270Z");
+        Assert.assertEquals(XrayClient.formatInstantForImport(noisy),
+                "2026-10-19T19:20:40Z");
+        set("xray.enabled", "true");
+        set("xray.baseUrl", "https://jira.yourorg.com");
+        set("xray.token", "pat");
+        Recorder rec = new Recorder();
+        new XrayClient(rec).importResults(oneResult(), noisy, noisy);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> info = (Map<String, Object>) bodyOf(rec, 0).get("info");
+        Assert.assertEquals(info.get("startDate"), "2026-10-19T19:20:40Z");
+        Assert.assertEquals(info.get("finishDate"), "2026-10-19T19:20:40Z");
+    }
+
+    @Test(groups = {"guards"})
+    public void serverDcInfersProjectFromTheTestKeyWhenProjectKeyIsUnset() {
+        set("xray.enabled", "true");
+        set("xray.baseUrl", "https://jira.yourorg.com");
+        set("xray.token", "pat");
+        Recorder rec = new Recorder();
+        new XrayClient(rec).importResults(
+                List.of(new XrayResult("B2B-99771", XrayResult.Status.PASSED, null, 1L)),
+                Instant.now(), Instant.now());
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> info = (Map<String, Object>) bodyOf(rec, 0).get("info");
+        Assert.assertEquals(info.get("project"), "B2B");
+        Assert.assertEquals(XrayClient.projectFromIssueKey("B2B-99771"), "B2B");
+    }
+
+    @Test(groups = {"guards"})
     public void anExecutionKeyMakesTheProjectRedundant() {
         set("xray.enabled", "true");
         set("xray.baseUrl", "https://jira.yourorg.com");
@@ -217,7 +249,7 @@ public class XrayServerDcTest {
     }
 
     @Test(groups = {"guards"})
-    public void theBodyShapeIsTheSameForBothFlavours() {
+    public void serverImportUsesPassFailTodoStatusWords() {
         set("xray.enabled", "true");
         set("xray.baseUrl", "https://jira.yourorg.com");
         set("xray.token", "pat");
@@ -231,6 +263,22 @@ public class XrayServerDcTest {
                 (List<Map<String, Object>>) body.get("tests");
         Assert.assertEquals(tests.size(), 1);
         Assert.assertEquals(tests.get(0).get("testKey"), "PROJ-101");
+        Assert.assertEquals(tests.get(0).get("status"), "PASS");
+    }
+
+    @Test(groups = {"guards"})
+    public void cloudImportUsesPassedFailedSkippedWords() {
+        set("xray.enabled", "true");
+        set("xray.baseUrl", "https://xray.cloud.getxray.app");
+        set("xray.clientId", "id");
+        set("xray.clientSecret", "secret");
+        Recorder rec = new Recorder();
+        rec.reply = "\"jwt\"";
+        new XrayClient(rec).importResults(oneResult(), Instant.now(), Instant.now());
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> tests =
+                (List<Map<String, Object>>) bodyOf(rec, 1).get("tests");
         Assert.assertEquals(tests.get(0).get("status"), "PASSED");
     }
 
@@ -239,6 +287,7 @@ public class XrayServerDcTest {
     public void serverDcWithNoPatIsSkippedWithAReasonThatNamesTheProduct() {
         set("xray.enabled", "true");
         set("xray.baseUrl", "https://jira.yourorg.com");
+        set("xray.token", "");
         Recorder rec = new Recorder();
         XrayClient c = new XrayClient(rec);
 
@@ -255,6 +304,8 @@ public class XrayServerDcTest {
         set("xray.enabled", "true");
         set("xray.baseUrl", "https://xray.cloud.getxray.app");
         set("xray.token", "pat-abc");
+        set("xray.clientId", "");
+        set("xray.clientSecret", "");
         Recorder rec = new Recorder();
         XrayClient c = new XrayClient(rec);
 
@@ -265,11 +316,12 @@ public class XrayServerDcTest {
 
     @Test(groups = {"guards"})
     public void theKillSwitchStillWinsOverEverything() {
+        set("xray.enabled", "false");
         set("xray.baseUrl", "https://jira.yourorg.com");
         set("xray.token", "pat");
         Recorder rec = new Recorder();
         Assert.assertFalse(new XrayClient(rec).isEnabled(),
-                "xray.enabled defaults to false and must stay the master switch");
+                "xray.enabled=false must stay the master switch over credentials");
         Assert.assertTrue(rec.urls.isEmpty());
     }
 

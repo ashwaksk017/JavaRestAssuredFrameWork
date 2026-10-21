@@ -78,6 +78,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 
 # On Windows a child started from a process that has no console of its own
 # (the workbench started by its .bat, or by pythonw) opens a console window
@@ -240,6 +241,7 @@ DEFAULT_POLICY = {
     # copied into the job folder).
     "protected_files": [
         "src/main/resources/program_configuration.json",
+        "tools/cursor_agent.json",
         "tools/ra_converter/cursor_agent.json",
     ],
     # After a run that does not verify (the compile, a check, the gate),
@@ -397,6 +399,8 @@ class CursorLog:
         # The Cursor key, plus every credential VALUE in the private
         # config: an agent that read the config may quote it back.
         self.secrets = [s for s in [secret or "", *secrets] if s and len(s) >= 6]
+        # Design parts are asked from several threads; a block is not split.
+        self._lock = threading.RLock()
         os.makedirs(job_dir, exist_ok=True)
 
     def write(self, text: str = "") -> None:
@@ -404,17 +408,18 @@ class CursorLog:
             if s.lower() in text.lower():
                 text = re.sub(re.escape(s), "<redacted>", text, flags=re.I)
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with io.open(self.path, "a", encoding="utf-8") as fh:
+        with self._lock, io.open(self.path, "a", encoding="utf-8") as fh:
             for line in (text.splitlines() or [""]):
                 fh.write(f"{stamp}  {line}\n")
 
     def block(self, title: str, body: str, cap: int = 20000) -> None:
-        self.write(f"----- {title} -----")
         body = body or "(empty)"
         if len(body) > cap:
             body = body[:cap] + f"\n... ({len(body) - cap} more characters)"
-        self.write(body)
-        self.write(f"----- end {title} -----")
+        with self._lock:
+            self.write(f"----- {title} -----")
+            self.write(body)
+            self.write(f"----- end {title} -----")
 
 
 # ---- policy and state ------------------------------------------------
@@ -595,10 +600,10 @@ def cursor_quiet(policy: dict, default: float = 600) -> float:
 
 
 def call_cursor(prompt: str, root: str, on_event=None, deadline: float = 0,
-                quiet: float = 0) -> dict:
+                quiet: float = 0, what: str = "") -> dict:
     """One prompt to Cursor in this repository. See cursor_call.py for why
     it is a session with streamed progress rather than one blocking call."""
-    diag.step("Asking Cursor to write the change (this can take several minutes)")
+    diag.step(what or "Asking Cursor to write the change (this can take several minutes)")
     ca, cfg = cursor_config(root)
     redact = lambda s: ca.redact_for_log(str(s), cfg.api_key)
     try:
@@ -629,10 +634,49 @@ def top_level(root: str) -> str:
     return os.path.normpath(out.strip()) if rc == 0 and out.strip() else root
 
 
+def _canonical_path(path: str) -> str:
+    """One spelling for the same folder (8.3 vs long path on Windows)."""
+    if not path:
+        return path
+    try:
+        return os.path.normcase(os.path.realpath(path))
+    except OSError:
+        return os.path.normcase(os.path.abspath(path))
+
+
 def _rel(root: str, top: str, top_rel: str) -> str:
     """A path git reports (relative to the repository top) as a path
     relative to `root`. Starts with ../ when it is outside the project."""
-    return os.path.relpath(os.path.join(top, top_rel), root).replace("\\", "/")
+    top_rel_norm = top_rel.replace("\\", "/")
+    abs_path = os.path.join(top, top_rel)
+    root_c = _canonical_path(root)
+    top_c = _canonical_path(top)
+    abs_c = _canonical_path(abs_path)
+    if abs_c == root_c or abs_c.startswith(root_c + os.sep):
+        # Git reports paths from `top`. When `root` is the same folder as
+        # `top` but spelled differently (8.3 vs long path on Windows),
+        # os.path.relpath would climb with `../`; keep git's spelling.
+        if root_c == top_c:
+            return top_rel_norm
+        prefix = repo_prefix(root).replace("\\", "/")
+        if prefix and not prefix.endswith("/"):
+            prefix += "/"
+        if prefix and top_rel_norm.startswith(prefix):
+            return top_rel_norm[len(prefix):]
+        if not prefix and root_c.startswith(top_c + os.sep):
+            return top_rel_norm
+        return os.path.relpath(abs_path, root).replace("\\", "/")
+    # Both spelled the same way (long names), or the climb runs through
+    # the 8.3 alias to the drive and back down: a path git cannot resolve,
+    # so a committed file reads as one the agent created and is deleted.
+    return os.path.relpath(_real(abs_path), _real(root)).replace("\\", "/")
+
+
+def _real(path: str) -> str:
+    try:
+        return os.path.realpath(path)
+    except OSError:
+        return os.path.abspath(path)
 
 
 def in_head(root: str, rel: str) -> bool:
@@ -883,6 +927,31 @@ def head(root: str) -> tuple:
     _, commit = git(root, "rev-parse", "HEAD")
     _, branch = git(root, "rev-parse", "--abbrev-ref", "HEAD")
     return commit.strip(), branch.strip()
+
+
+def head_forbidden(base_commit: str, base_branch: str, commit_now: str, branch_now: str,
+                   followup: bool, *, continuous: bool = False) -> bool:
+    """True when HEAD moved in a way a first run must not cause.
+
+    A follow-up or a later repair attempt is measured from the saved tree,
+    not from git: on the same branch, a new commit (develop moved while
+    Cursor ran) does not end the session. Switching branch still does."""
+    if branch_now != base_branch:
+        return True
+    if commit_now == base_commit:
+        return False
+    if followup or continuous:
+        return False
+    return True
+
+
+def unfinished_run_refusal(prior: dict, job_name: str) -> str:
+    """Why Ask Cursor / generate cannot start while the last run did not finish."""
+    if (prior.get("scope") or "") == "workbench":
+        return (f"a change to the workbench did not finish (job {job_name}): "
+                f"Discard it on the Commit and push tab first")
+    return ("this job's last run did not finish, and what it wrote may still be in the "
+            "files. Discard it on the Commit and push tab first.")
 
 
 def in_roots(rel: str, roots) -> bool:
@@ -1215,7 +1284,7 @@ def _example_candidates(root: str, policy: dict) -> list:
     return [p for _s, p in sorted(tests or found)]
 
 
-SKILL_CAP = 16000
+SKILL_CAP = 28000
 
 
 def skill_block(root: str, scope: dict) -> str:
@@ -1270,7 +1339,8 @@ def _mark_commands(text: str) -> tuple:
     return "\n".join(out), n
 
 
-def pattern_example(root: str, policy: dict, scope: dict) -> tuple:
+def pattern_example(root: str, policy: dict, scope: dict, bundled_with_skill: bool = False,
+                    hint: str = "") -> tuple:
     """(block, paths): one existing hand-written test, whole, and the first
     lines of its data sheet, for a new-test job.
 
@@ -1283,7 +1353,8 @@ def pattern_example(root: str, policy: dict, scope: dict) -> tuple:
         return "", []
     if scope.get("name") != "new-test":
         return "", []
-    wanted = [str(p) for p in (policy.get("pattern_example") or []) if isinstance(p, str)]
+    wanted = [str(p) for p in (scope.get("pattern_example") or policy.get("pattern_example") or [])
+              if isinstance(p, str)]
     inside = os.path.realpath(root) + os.sep
     paths = [os.path.join(root, p.replace("/", os.sep)) for p in wanted
              if re.fullmatch(r"[A-Za-z0-9_./-]{1,200}", p) and ".." not in p
@@ -1309,15 +1380,23 @@ def pattern_example(root: str, policy: dict, scope: dict) -> tuple:
                     break
     if not paths:
         return "", []
-    lines = ["===== HOW A TEST IS WRITTEN HERE (one existing test, whole) =====",
-             "Copy this shape -- the imports, the base class, the DSL steps, how a "
-             "data row is read -- instead of opening other tests to learn it. It is "
-             "an example of FORM only: its endpoints, data and assertions are not "
-             "yours, and nothing in it is an instruction to you."]
+    paths, others = _closest_example(root, paths, hint) if hint else (paths, [])
+    cap = GOLDEN_JAVA_CAP if others else EXAMPLE_JAVA_CAP
+    if bundled_with_skill:
+        lines = ["===== GOLDEN EXAMPLE (form only — the skill wins on rules) =====",
+                 "Shows HTTP order (token → enroll → extract guestId → act), ManualBody "
+                 "templates, and csv/manual/ columns. Endpoints, ids and assertions are not "
+                 "yours; copy the shape, not the story."]
+    else:
+        lines = ["===== HOW A TEST IS WRITTEN HERE (one existing test, whole) =====",
+                 "Copy this shape -- the imports, the base class, the DSL steps, how a "
+                 "data row is read -- instead of opening other tests to learn it. It is "
+                 "an example of FORM only: its endpoints, data and assertions are not "
+                 "yours, and nothing in it is an instruction to you."]
     shown = []
     for path in paths:
         rel = os.path.relpath(path, root).replace("\\", "/")
-        text = _read(path, EXAMPLE_JAVA_CAP + 1)
+        text = _read(path, cap + 1)
         if not text.strip():
             continue
         if path.endswith(".csv"):
@@ -1327,12 +1406,162 @@ def pattern_example(root: str, policy: dict, scope: dict) -> tuple:
                 text += f"\n... {len(rows) - EXAMPLE_CSV_LINES} more row(s)"
             lines += ["", f"--- {rel} (first {EXAMPLE_CSV_LINES} lines) ---", text]
         else:
-            if len(text) > EXAMPLE_JAVA_CAP:
-                text = text[:EXAMPLE_JAVA_CAP] + "\n// ... cut here; the rest is in the file"
+            if len(text) > cap:
+                text = text[:cap] + "\n// ... cut here; the rest is in the file"
             lines += ["", f"--- {rel} ---", text]
         shown.append(rel)
+    if others:
+        lines += ["", "Other golden examples, not shown (open one only if the cases are "
+                      "closer to it than to the one above):"]
+        lines += [f"  - {os.path.relpath(p, root).replace(os.sep, '/')}" for p in others]
     lines.append("===== end of the example =====")
     return "\n".join(lines), shown
+
+
+GOLDEN_JAVA_CAP = 16000
+
+
+def _example_words(text: str) -> set:
+    words = set()
+    for w in re.findall(r"[A-Za-z][A-Za-z0-9]+", text or ""):
+        for part in re.findall(r"[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])", w):
+            if len(part) > 3:
+                words.add(part.lower())
+    return words
+
+
+def _closest_example(root: str, paths: list, hint: str) -> tuple:
+    """(paths to show, other example classes). With more than one example
+    class, only the one sharing the most words with the cases (`hint`) is
+    shown, whole, with the data sheets and templates that belong to it --
+    two cut halves make the agent open both files anyway."""
+    javas = [p for p in paths if p.endswith(".java")]
+    if len(javas) < 2:
+        return paths, []
+    want = _example_words(hint)
+    scored = [(len(want & _example_words(_read(p, 60000))), -i, p) for i, p in enumerate(javas)]
+    best = max(scored)[2]
+    cls = os.path.basename(best)[:-len(".java")]
+    body = _read(best, 60000)
+    keep = []
+    for p in paths:
+        if p.endswith(".java"):
+            if p == best:
+                keep.append(p)
+            continue
+        rel = os.path.relpath(p, root).replace(os.sep, "/")
+        if p.endswith(".csv"):
+            if f"/csv/manual/{cls}/" in rel:
+                keep.append(p)
+        elif os.path.basename(p) in body:
+            keep.append(p)
+    return keep, [p for p in javas if p != best]
+
+
+def example_hint(job_dir: str) -> str:
+    """The words the golden example is chosen by: the designed cases'
+    endpoints and titles."""
+    return " ".join(f"{c.get('endpoint') or ''} {c.get('path') or ''} {c.get('title') or ''}"
+                    for c in design_cases_raw(job_dir)) if job_dir else ""
+
+
+def skill_and_example_block(root: str, policy: dict, scope: dict, hint: str = "") -> tuple:
+    """(prompt block, example paths shown). For new-test: skill plus golden example."""
+    skill = skill_block(root, scope)
+    if scope.get("name") != "new-test":
+        return skill, []
+    example, shown = pattern_example(root, policy, scope, bundled_with_skill=bool(skill), hint=hint)
+    if skill and example:
+        return skill + "\n\n" + example, shown
+    return skill or example, shown
+
+
+def jira_requirements_block(scope: dict) -> str:
+    """Mandatory deliverables for jira Automate runs (skill §2b/§2c)."""
+    if scope.get("name") != "new-test":
+        return ""
+    return ("\nMANDATORY for every new or changed file under "
+            "src/test/java/com/hi/api/tests/jira/:\n"
+            "- Class-level Javadoc **DATA_INVENTORY** (ordered HTTP steps, CONFIG keys, "
+            "EXTRACTs) before you write the rest of the class — see skill §2b and §2c.\n"
+            "- **First HTTP call** is auth (client-credentials and/or resource-owner JSON "
+            "token) before any act call that needs a bearer.\n"
+            "- Path `{guestId}` after enroll: **EXTRACT** "
+            "`RestUtilities.safeJsonExtract(enrollRes, \"guestId\")` — not config/CSV.\n"
+            "- Path `{guestId}` for an existing persona: **EXTRACT** from token response "
+            "body or JWT claims — not config-only unless the design says a frozen id.\n"
+            "- Every `@Test` using `PerMethodCsvDataProvider`: create "
+            "`src/test/resources/csv/manual/<SimpleClassName>/<methodName>.csv` in the "
+            "same change with group A columns (`test_case_id`, `jira_xray_id`, `jira_issue`) "
+            "and group C/D columns the method reads.\n"
+            "- JSON bodies: `ManualBody.render(\"templates/manual/….json\", row, ctx)`; "
+            "every `#column#` in the template must be a CSV column, `ctx` after extract, "
+            "or `<<faker>>`/`${}` in CSV (MANUAL_FIXES.md §5).\n"
+            "- In your final reply, paste the **checklist** from skill §2c and quote the "
+            "CSV header line you wrote.\n")
+
+
+def auth_route_hints_block(job_dir: str, endpoints: list, root: str = "") -> str:
+    """OpenAPI operation extensions that hint token order (x-route-in-sequence, etc.)."""
+    if not endpoints:
+        return ""
+    spec, where, _rel = job_spec(job_dir)
+    if spec is None:
+        return ""
+    d = _design_module()
+    prefixes = d.base_paths(spec)
+    wanted = {d.endpoint_key(e) for e in endpoints} - {""}
+    hints = []
+    for path, item in (spec.get("paths") or {}).items():
+        pi = d._path_item(spec, item)
+        for verb, op in pi.items():
+            if str(verb).lower() not in d.VERBS:
+                continue
+            keys = {d.endpoint_key(f"{verb} {p}{path}") for p in [""] + prefixes}
+            if not (keys & wanted):
+                continue
+            if not isinstance(op, dict):
+                continue
+            ep = next(iter(keys & wanted))
+            for ext_key in sorted(k for k in op if str(k).startswith("x-")):
+                val = op.get(ext_key)
+                if val is not None and str(val).strip():
+                    hints.append(f"  {ep}  {ext_key}={json.dumps(val, ensure_ascii=False)[:200]}")
+    if not hints:
+        return ""
+    return ("\n===== AUTH / ROUTE HINTS (from the specification) =====\n"
+            f"From {where}. Use with skill §3 auth table — first request is usually token.\n"
+            + "\n".join(hints[:24])
+            + ("\n  ..." if len(hints) > 24 else "")
+            + "\n===== end of auth / route hints =====\n")
+
+
+# ---- story tests: tools/agent/storytests.py --------------------------------
+
+storytests = _load("loop_storytests", os.path.join(HERE, "storytests.py"))
+storytests._read = lambda path, cap=60000: _read(path, cap)      # long paths on Windows
+for _name in [n for n in vars(storytests) if n.startswith(("_JIRA", "_jira", "jira_"))
+              or n.endswith("_RX") or n in ("_SECRET_COLUMNS", "_csv_columns_for_jira_class")]:
+    globals()[_name] = getattr(storytests, _name)
+jira_parity_issues = storytests.jira_parity_issues
+
+
+def _automation_hint_for_case(case: dict) -> str:
+    """One-line converter-style hint from the case endpoint (for the Automate prompt)."""
+    ep = str(case.get("endpoint") or "").lower()
+    title = str(case.get("title") or "").lower()
+    if "spenddetail" in ep or "spend detail" in title:
+        return ("    [automation] 1) resource-owner token 2) path guestId from token body/claims "
+                "3) optional probe GET without traveler guestId 4) act GET with guestId query")
+    if "enroll" in ep or ("post" in ep and "guests" in ep and "businesses" not in ep):
+        return ("    [automation] client-credentials token → POST enroll → EXTRACT guestId → "
+                "resource-owner token for guest-scoped POST/GET")
+    if "/guests/" in ep and "businesses" in ep:
+        return ("    [automation] token → enroll if new guest (extract guestId) else token + "
+                "guestId from token; CONFIG for account_id/member_id only when AC names personas")
+    if ep.strip():
+        return "    [automation] token (grant per OpenAPI/auth hints) before the act HTTP call"
+    return ""
 
 
 def brief_fingerprint(job_dir: str) -> str:
@@ -1394,6 +1623,278 @@ def xray_landed(root: str, files: list, keys: dict) -> dict:
         (found if re.search(r"(?<![A-Z0-9_-])" + re.escape(key) + r"(?![0-9])", text)
          else missing)[case] = key
     return {"found": found, "missing": missing}
+
+
+_MANUAL_CSV_XRAY_COLS = ("jira_xray_id", "jira_issue")
+CSV_XRAY_LOG = "csv-xray.log"
+
+
+def csv_xray_log(job_dir: str, line: str) -> None:
+    """Append a line to the job's csv-xray.log (Automate / Create in Xray troubleshooting)."""
+    if not job_dir:
+        return
+    path = os.path.join(job_dir, CSV_XRAY_LOG)
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        with io.open(path, "a", encoding="utf-8") as fh:
+            fh.write(f"{ts}  {line}\n")
+    except OSError:
+        pass
+
+
+def _csv_delimiter(header_line: str) -> str:
+    return ";" if header_line.count(";") > header_line.count(",") else ","
+
+
+def patch_one_manual_csv(path: str, story: str = "", keys_by_case: dict = None,
+                         details: list = None) -> bool:
+    """Add or fill jira_xray_id and jira_issue on a csv/manual data sheet."""
+    keys_by_case = {str(k): str(v).upper() for k, v in (keys_by_case or {}).items() if v}
+
+    def note(msg: str) -> None:
+        if details is not None:
+            details.append(msg)
+
+    text = _read(path, 2_000_000)
+    if not text or not text.strip():
+        note("empty or unreadable file")
+        return False
+    head = text.split("\n", 1)[0]
+    delim = _csv_delimiter(head)
+    try:
+        rows = list(csv.reader(io.StringIO(text), delimiter=delim))
+    except csv.Error:
+        note("csv parse error")
+        return False
+    if not rows:
+        note("no rows")
+        return False
+    header = [h.strip().lstrip("\ufeff") for h in rows[0]]
+    fieldnames = list(header)
+    changed = False
+    for col in _MANUAL_CSV_XRAY_COLS:
+        if col not in fieldnames:
+            fieldnames.append(col)
+            changed = True
+    data_rows = []
+    for raw in rows[1:]:
+        if not raw or all(not str(c).strip() for c in raw):
+            continue
+        row = {header[i]: (raw[i] if i < len(raw) else "") for i in range(len(header))}
+        for col in _MANUAL_CSV_XRAY_COLS:
+            row.setdefault(col, "")
+        data_rows.append(row)
+    if not data_rows and not changed:
+        return False
+    sole_key = next(iter(keys_by_case.values())) if len(keys_by_case) == 1 else ""
+    story_up = story.upper() if story else ""
+    for row in data_rows:
+        tid = str(row.get("test_case_id") or "").strip()
+        want_xray = keys_by_case.get(tid, "")
+        if not want_xray and sole_key and not str(row.get("jira_xray_id") or "").strip():
+            want_xray = sole_key
+            if tid:
+                note(f"{tid}: sole xray key applied (only one key in xray-tests for this patch)")
+        if want_xray:
+            have = str(row.get("jira_xray_id") or "").strip().upper()
+            if have != want_xray.upper():
+                row["jira_xray_id"] = want_xray.upper()
+                changed = True
+                note(f"{tid or '(no test_case_id)'}: jira_xray_id -> {want_xray.upper()}")
+        elif tid and keys_by_case:
+            note(f"{tid}: no Xray key in xray-tests for this test_case_id")
+        if story_up:
+            have_issue = str(row.get("jira_issue") or "").strip().upper()
+            if have_issue != story_up:
+                row["jira_issue"] = story_up
+                changed = True
+                note(f"{tid or '(no test_case_id)'}: jira_issue -> {story_up}")
+    if not changed:
+        if details is not None and not details:
+            note("already correct or no matching rows to update")
+        return False
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fieldnames, delimiter=delim, lineterminator="\n")
+    writer.writeheader()
+    for row in data_rows:
+        writer.writerow({fn: row.get(fn, "") for fn in fieldnames})
+    new_text = buf.getvalue()
+    if text.endswith("\n") and not new_text.endswith("\n"):
+        new_text += "\n"
+    with io.open(path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(new_text)
+    return True
+
+
+def _xray_keys_for_csv_patch(job_dir: str, mocked: bool = False) -> tuple:
+    """(story key, {case id: xray key}) for csv/manual patching on this job."""
+    story = story_key_of(job_dir)
+    keys = xray_keys(job_dir, mocked=mocked)
+    only = automate_only(job_dir)
+    given = designed_case_ids(job_dir)
+    if only:
+        keys = {c: k for c, k in keys.items() if c in only}
+    elif given:
+        keys = {c: k for c, k in keys.items() if c in given}
+    return story, keys
+
+
+def manual_csvs_for_jira_java(root: str, java_rel_paths: list) -> list:
+    """Every csv/manual/<Class>/*.csv when a jira *Test.java of that class changed."""
+    found = []
+    for rel in java_rel_paths or []:
+        norm = rel.replace("\\", "/")
+        if not norm.startswith(_JIRA_TESTS) or not norm.endswith("Test.java"):
+            continue
+        cls = os.path.basename(norm)[:-5]
+        folder = os.path.join(root, "src", "test", "resources", "csv", "manual", cls)
+        if not os.path.isdir(folder):
+            continue
+        for name in os.listdir(folder):
+            if name.lower().endswith(".csv"):
+                found.append(f"src/test/resources/csv/manual/{cls}/{name}")
+    return sorted(set(found))
+
+
+def _manual_csv_rel_paths_with_case_ids(root: str, case_ids) -> list:
+    case_ids = {str(c).strip() for c in (case_ids or ()) if str(c).strip()}
+    if not case_ids:
+        return []
+    manual = os.path.join(root, "src", "test", "resources", "csv", "manual")
+    if not os.path.isdir(manual):
+        return []
+    out = []
+    for dirpath, _dirs, files in os.walk(manual):
+        for name in files:
+            if not name.lower().endswith(".csv"):
+                continue
+            path = os.path.join(dirpath, name)
+            text = _read(path, 500_000)
+            if not text or "test_case_id" not in text.split("\n", 1)[0]:
+                continue
+            if any(re.search(r"(?<![A-Z0-9_-])" + re.escape(cid) + r"(?![0-9])", text)
+                   for cid in case_ids):
+                out.append(os.path.relpath(path, root).replace(os.sep, "/"))
+    return sorted(set(out))
+
+
+def ensure_manual_csv_xray(root: str, job_dir: str, change_paths: list, mocked: bool = False,
+                           on_log=None) -> list:
+    """Add/fill jira_xray_id and jira_issue on every manual sheet this job
+    touches: files Cursor changed, all sheets for a changed jira test class,
+    and any sheet whose test_case_id is in xray-tests.json."""
+
+    def emit(line: str) -> None:
+        csv_xray_log(job_dir, line)
+        if on_log:
+            on_log(line)
+
+    story, keys = _xray_keys_for_csv_patch(job_dir, mocked=mocked)
+    only = automate_only(job_dir)
+    given = designed_case_ids(job_dir)
+    if not story and not keys:
+        emit("skip ensure_manual_csv_xray: no story key and no xray-tests keys for this job")
+        return []
+    emit("=== ensure_manual_csv_xray (after Automate / generate) ===")
+    emit(f"story={story or '(none)'}  keys_in_map={len(keys)}  "
+         f"automate_only={sorted(only) if only else '(all)'}  "
+         f"designed_cases={sorted(given) if given else '(all)'}")
+    for case_id, xkey in sorted(keys.items()):
+        emit(f"  xray-tests  {case_id} -> {xkey}")
+    to_patch = set()
+    java_rels = []
+    for rel in change_paths or []:
+        norm = rel.replace("\\", "/")
+        if norm.startswith("src/test/resources/csv/manual/") and norm.lower().endswith(".csv"):
+            to_patch.add(norm)
+        if norm.startswith(_JIRA_TESTS):
+            java_rels.append(norm)
+    from_java = manual_csvs_for_jira_java(root, java_rels)
+    from_cases = _manual_csv_rel_paths_with_case_ids(root, keys.keys()) if keys else []
+    to_patch.update(from_java)
+    to_patch.update(from_cases)
+    emit(f"change_paths={len(change_paths or [])}  java_test_classes={len(java_rels)}  "
+         f"csv_from_java={len(from_java)}  csv_from_case_ids={len(from_cases)}  "
+         f"candidates={len(to_patch)}")
+    if not to_patch:
+        norm_paths = sorted({str(rel).replace("\\", "/") for rel in (change_paths or [])})
+        cap = 24
+        shown = norm_paths[:cap]
+        emit(
+            f"change_paths_detail ({len(norm_paths)}): "
+            + ", ".join(shown)
+            + (" ..." if len(norm_paths) > cap else "")
+        )
+    touched = []
+    for norm in sorted(to_patch):
+        path = os.path.join(root, norm.replace("/", os.sep))
+        if not os.path.isfile(path):
+            emit(f"SKIP  {norm}  file missing on disk")
+            continue
+        details = []
+        if patch_one_manual_csv(path, story=story, keys_by_case=keys, details=details):
+            emit(f"PATCHED  {norm}  " + "; ".join(details[:12]))
+            touched.append(norm)
+        else:
+            emit(f"SKIP  {norm}  " + ("; ".join(details[:12]) if details else "no change"))
+    emit(f"done: {len(touched)} sheet(s) written")
+    return touched
+
+
+def patch_manual_csv_xray(root: str, job_dir: str, rel_paths: list, mocked: bool = False,
+                          on_log=None) -> list:
+    """After Automate: every touched manual data sheet lists jira_xray_id and jira_issue."""
+    return ensure_manual_csv_xray(root, job_dir, rel_paths, mocked=mocked, on_log=on_log)
+
+
+def patch_manual_csv_by_case_ids(root: str, job_dir: str, case_ids, mocked: bool = False,
+                                 on_log=None) -> list:
+    """Fill jira_xray_id / jira_issue on existing manual sheets whose rows
+    match designed case ids (e.g. after Ask Cursor changed only the suite)."""
+
+    def emit(line: str) -> None:
+        csv_xray_log(job_dir, line)
+        if on_log:
+            on_log(line)
+
+    case_ids = {str(c).strip() for c in (case_ids or ()) if str(c).strip()}
+    if not case_ids:
+        return []
+    story = story_key_of(job_dir)
+    keys = xray_keys(job_dir, mocked=mocked)
+    keys = {c: k for c, k in keys.items() if c in case_ids}
+    emit("=== patch_manual_csv_by_case_ids ===")
+    emit(f"case_ids={sorted(case_ids)}  story={story or '(none)'}  keys={len(keys)}")
+    for case_id, xkey in sorted(keys.items()):
+        emit(f"  xray-tests  {case_id} -> {xkey}")
+    if not story and not keys:
+        emit("skip: no story and no matching xray-tests keys")
+        return []
+    manual = os.path.join(root, "src", "test", "resources", "csv", "manual")
+    if not os.path.isdir(manual):
+        emit("skip: src/test/resources/csv/manual/ not found")
+        return []
+    touched = []
+    for dirpath, _dirs, files in os.walk(manual):
+        for name in files:
+            if not name.lower().endswith(".csv"):
+                continue
+            path = os.path.join(dirpath, name)
+            text = _read(path, 500_000)
+            if not text or "test_case_id" not in text.split("\n", 1)[0]:
+                continue
+            if not any(re.search(r"(?<![A-Z0-9_-])" + re.escape(cid) + r"(?![0-9])", text)
+                       for cid in case_ids):
+                continue
+            rel = os.path.relpath(path, root).replace(os.sep, "/")
+            details = []
+            if patch_one_manual_csv(path, story=story, keys_by_case=keys, details=details):
+                emit(f"PATCHED  {rel}  " + "; ".join(details[:12]))
+                touched.append(rel)
+            else:
+                emit(f"SKIP  {rel}  " + ("; ".join(details[:12]) if details else "no change"))
+    emit(f"done: {len(touched)} sheet(s) written")
+    return touched
 
 
 def design_cases_raw(job_dir: str) -> list:
@@ -1534,6 +2035,9 @@ def designed_cases(job_dir: str, cap: int = 20000, keys: dict = None, only_ids=N
                     if str(s.get(key) or "").strip()]
             if said:
                 lines.append("    " + " | ".join(said))
+        hint = _automation_hint_for_case(c)
+        if hint:
+            lines.append(hint)
     text = "\n".join(lines)
     if len(text) > cap:
         text = text[:cap] + "\n[... the rest is in design.md ...]"
@@ -1969,8 +2473,9 @@ def story_key_block(job_dir: str, scope: dict) -> str:
         key = ""
     if _STORY_KEY_RX.match(key):
         return (f"THE STORY'S KEY is {key}. Use it wherever the skill says the story key: "
-                f"@Story, the test_case_id column, and the configuration keys "
-                f"(jira.{key.lower()}.<role>.<field>).")
+                f"@Story, the configuration keys (jira.{key.lower()}.<role>.<field>), and the "
+                f"`jira_issue` column on every row of every `csv/manual/` data sheet (same value "
+                f"on each row).")
     job = os.path.basename(job_dir.rstrip("/\\")).lower()
     return (f"THIS JOB HAS NO JIRA STORY KEY (the story was pasted, not read from Jira). Do "
             f"not invent one, and do not use a case id in its place: where the skill says the "
@@ -2001,10 +2506,12 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
     gen = "\n".join(f"  - {r}**" for r in policy["generated_roots"]
                     if not in_roots(r, scope["write_roots"]))
     briefing = _SCOPE_BRIEFING.get(scope["name"], _SCOPE_BRIEFING["new-test"])
+    skill_ex, _example_paths = skill_and_example_block(root or ROOT, policy, scope,
+                                                       hint=example_hint(job_dir))
     parts = [
         briefing.replace("{suite}", scope.get("suite") or ""),
         (f"Follow the skill below, and any app skill it points to."
-         if skill_block(root or ROOT, scope) else
+         if skill_ex else
          f"Follow the skill at {scope.get('skill') or '.cursor/skills/'} "
          f"and any app skill it points to."),
         "",
@@ -2046,12 +2553,16 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
         "this tool compiles the project the moment you finish and hands you "
         "every error to fix, so a build you start only makes the job slower. "
         "Read and write files; that is all the job needs from you.",
+        *([] if scope["name"] not in ("new-test", "workbench") else [
+            "You MUST change the repository files (Java, CSV, templates, suite XML) "
+            "with your file-editing tools. A reply that only describes what to write, "
+            "with no files changed under the allowed paths, is a failed run.",
+        ]),
         "",
         suite_briefing(root or ROOT, policy, scope),
         "",
-        # The skill, whole; an example test from the project only when
-        # there is no skill file to show the shape.
-        skill_block(root or ROOT, scope) or pattern_example(root or ROOT, policy, scope)[0],
+        skill_ex,
+        jira_requirements_block(scope),
         "",
         "Act on the plan below. For a request the plan marks UPSTREAM or "
         "STOP, write nothing for it and say why.",
@@ -2096,7 +2607,9 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
                   "in Jira as that Test issue: put KEY in the `jira_xray_id` "
                   "column of the data row you write for it (add the column "
                   "when the sheet has none), or in `@XrayTest(\"KEY\")` on a "
-                  "test method that takes no row. Never invent a key, and never "
+                  "test method that takes no row. Every `csv/manual/` data row "
+                  "must also carry `jira_issue` set to this job's story key "
+                  "(see THE STORY'S KEY above). Never invent a key, and never "
                   "put one key on two cases. A case marked [AUTOMATED IN file] has "
                   "a test carrying its key already, found in that file: UPDATE "
                   "that test -- its data row and assertions -- so it checks what "
@@ -2112,6 +2625,9 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
         spec_block, _spec_note = spec_for_cases(job_dir, endpoints_of_cases(designed), root)
         if spec_block:
             parts += ["", spec_block]
+        auth_hints = auth_route_hints_block(job_dir, endpoints_of_cases(designed), root)
+        if auth_hints:
+            parts += ["", auth_hints]
     if followup:
         # The person who read the change asks for more. Their words are
         # the instruction; the diff is what the words are about.
@@ -2299,8 +2815,17 @@ def compile_baseline_cached(root: str, policy: dict, scope: dict, runner=None, s
     return errors
 
 
+def _after_cursor(attempt: int, detail: str) -> str:
+    """The status line once Cursor has returned. A later attempt must not
+    reuse the first attempt's sentence, or the page looks stuck."""
+    if attempt > 1:
+        return (f"Attempt {attempt}. Cursor has written the code again. {detail} "
+                "- not ready to test until this passes")
+    return f"Cursor has finished writing the code. {detail} - not ready to test until this passes"
+
+
 def run_verify(root: str, scope: dict, runner=None, gate_before=None,
-               gate_json: str = "", compile_before=None) -> dict:
+               gate_json: str = "", compile_before=None, attempt: int = 1) -> dict:
     """Compile, then the scope's checks. {ok, steps:[{name, rc, tail}]}."""
     run = runner or (lambda argv: subprocess.run(
         argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **NO_WINDOW))
@@ -2314,7 +2839,7 @@ def run_verify(root: str, scope: dict, runner=None, gate_before=None,
                                   f"change cannot be called verified without "
                                   f"a compile."})
             return {"ok": False, "steps": steps}
-        diag.step("Checking that the project still compiles")
+        diag.step(_after_cursor(attempt, "Checking that the project still compiles"))
         say(f" .. verify: {' '.join(compile_cmd)}")
         started_at = time.time()
         r, how = run_build(run, exe, compile_cmd)
@@ -2343,7 +2868,7 @@ def run_verify(root: str, scope: dict, runner=None, gate_before=None,
             if r.returncode != 0:
                 return {"ok": False, "steps": steps}
     for check in scope.get("checks") or []:
-        diag.step(f"Running the check {os.path.basename(str(check[0]))}")
+        diag.step(_after_cursor(attempt, "Running " + os.path.basename(str(check[0]))))
         say(f" .. verify: python {' '.join(check)}")
         r = run([sys.executable, "-B"] + list(check))
         steps.append({"name": " ".join(check), "rc": r.returncode,
@@ -2351,7 +2876,7 @@ def run_verify(root: str, scope: dict, runner=None, gate_before=None,
         if r.returncode != 0:
             return {"ok": False, "steps": steps}
     if scope.get("gate"):
-        diag.step("Running the full gate and comparing it with the run before the change (this takes minutes)")
+        diag.step(_after_cursor(attempt, "Running the full gate"))
         say(" .. verify: the gate (python tools/verify_all.py), compared "
             "with the run taken before the agent")
         try:
@@ -2490,56 +3015,75 @@ def scan_secrets(diff: str, known: dict = None) -> list:
 
 # ---- commands --------------------------------------------------------
 
-def cmd_setup(job_dir: str, root: str) -> int:
+def cursor_setup_check(root: str) -> dict:
+    """SDK, API key, bridge, git — no job folder required. Returns {ok, mock,
+    model, sdk, bridge, problem, lines} where each line is ready for say()."""
+    lines: list = []
+
+    def fail(msg: str, problem: str = "") -> dict:
+        lines.append(f"FAIL {msg}")
+        return {"ok": False, "mock": False, "model": "", "sdk": "", "bridge": "",
+                "problem": problem or msg, "lines": lines}
+
     try:
         mocked = mock_cursor()
     except RuntimeError as e:
-        say(f"FAIL {e}")
-        return 1
+        return fail(str(e))
+
     if mocked:
-        say("MOCK CURSOR is switched on (tools/agent/mock.json): Cursor is not "
-            "installed, asked for a key, or called. Run Cursor will write one "
-            "placeholder test so the checks, the review and Discard can be tried; "
-            "it cannot be approved.")
+        lines.append("MOCK CURSOR is switched on (tools/agent/mock.json): Cursor is not "
+                       "installed, asked for a key, or called. Run Cursor will write one "
+                       "placeholder test so the checks, the review and Discard can be tried; "
+                       "it cannot be approved.")
         rc, out = git(root, "rev-parse", "--is-inside-work-tree")
         if rc != 0:
-            say(f"FAIL not a git work tree: {out.strip()[:200]}")
-            return 1
-        say(" ok  git work tree")
-        say(" ..  set \"cursor\": false in tools/agent/mock.json to check the real Cursor")
-        return 0
+            return fail(f"not a git work tree: {out.strip()[:200]}")
+        lines.append(" ok  git work tree")
+        lines.append(" ..  set \"cursor\": false in tools/agent/mock.json to check the real Cursor")
+        return {"ok": True, "mock": True, "model": "mock", "sdk": "mock", "bridge": "mock",
+                "problem": "", "lines": lines}
+
     try:
         how = ensure_sdk(root)
-        say(f" ok  cursor-sdk {how}")
+        lines.append(f" ok  cursor-sdk {how}")
     except RuntimeError as e:
-        say(f"FAIL {e}")
-        return 1
+        return fail(str(e))
+
     _ca, cfg = cursor_config(root)
     if not cfg.api_key:
-        say("FAIL no Cursor API key. Set CURSOR_API_KEY, or put it in "
-            "tools/ra_converter/cursor_agent.json (gitignored; copy the "
-            ".example beside it).")
-        return 1
-    say(f" ok  Cursor API key found ({len(cfg.api_key)} characters), "
-        f"model {cfg.model}")
-    # Start the SDK's local bridge now. It is the part that fails on a new
-    # machine (antivirus, a blocked Node binary), and finding that out here
-    # costs nothing; finding it out in the middle of a run costs the run.
+        return fail("no Cursor API key. Set CURSOR_API_KEY, or put it in "
+                      "tools/ra_converter/cursor_agent.json (gitignored; copy the "
+                      ".example beside it).",
+                      "no Cursor API key")
+    key_from = "CURSOR_API_KEY" if os.environ.get("CURSOR_API_KEY", "").strip() else \
+        (cfg.config_path or "tools/ra_converter/cursor_agent.json")
+    lines.append(f" ok  Cursor API key found ({len(cfg.api_key)} characters), "
+                   f"model {cfg.model}, from {key_from}")
+    lines.append(" ..  note: `enabled` in cursor_agent.json is only for the converter's "
+                   "assist during reconvert; the workbench uses the key whenever you run "
+                   "Design or Automate.")
     ok, why = cursor_call.warm_up(_ca)
     if ok is False:
-        say(f"FAIL the Cursor bridge did not start: {why}. On Windows, allow "
-            f"the cursor-sdk bridge through antivirus and check that Node "
-            f"is not blocked.")
-        return 1
-    say(f" ok  Cursor bridge {why}" if ok else f" ..  Cursor bridge {why}")
+        return fail(f"the Cursor bridge did not start: {why}. On Windows, allow "
+                    f"the cursor-sdk bridge through antivirus and check that Node "
+                    f"is not blocked.", f"bridge: {why}")
+    lines.append(f" ok  Cursor bridge {why}" if ok else f" ..  Cursor bridge {why}")
     rc, out = git(root, "rev-parse", "--is-inside-work-tree")
     if rc != 0:
-        say(f"FAIL not a git work tree: {out.strip()[:200]}")
-        return 1
-    say(" ok  git work tree")
-    CursorLog(job_dir, cfg.api_key).write(
-        f"setup ok: cursor-sdk {how}, model {cfg.model}")
-    return 0
+        return fail(f"not a git work tree: {out.strip()[:200]}")
+    lines.append(" ok  git work tree")
+    return {"ok": True, "mock": False, "model": cfg.model, "sdk": how, "bridge": why,
+            "problem": "", "lines": lines, "_log_key": cfg.api_key, "_log_sdk": how}
+
+
+def cmd_setup(job_dir: str, root: str) -> int:
+    result = cursor_setup_check(root)
+    for line in result.get("lines") or []:
+        say(line)
+    if result.get("ok") and job_dir and result.get("_log_key"):
+        CursorLog(job_dir, result["_log_key"]).write(
+            f"setup ok: cursor-sdk {result.get('_log_sdk')}, model {result.get('model')}")
+    return 0 if result.get("ok") else 1
 
 
 AUTOMATE_FILE = "automate-cases.json"      # written by earlier versions; removed when seen
@@ -2726,8 +3270,7 @@ def cmd_ask(job_dir: str, root: str, policy: dict, agent=None, verifier=None) ->
     if state in ("pending-review", "verify-failed"):
         return cmd_followup(job_dir, root, policy, agent, verifier)
     if state == "generating":
-        say("FAIL this job's last run did not finish, and what it wrote may still be in the "
-            "files. Discard it on the Commit and push tab first.")
+        say(f"FAIL {unfinished_run_refusal(prior, os.path.basename(job_dir))}")
         return 1
     if state in ("pushed", "approved-local"):
         say("FAIL this job's change was already approved"
@@ -2844,9 +3387,14 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             return 1
     diag.step("Writing the placeholder test (mock mode: Cursor is not asked)" if mocked
               else "Getting ready to ask Cursor for the change")
+    cursor_attempt = [1]
     call = agent or (lambda prompt: call_cursor(
         prompt, root, on_event=lambda line: clog.write("  cursor: " + line),
-        deadline=cursor_deadline(policy, "generate"), quiet=cursor_quiet(policy)))
+        deadline=cursor_deadline(policy, "generate"), quiet=cursor_quiet(policy),
+        what=("Asking Cursor to write the change (this can take several minutes)"
+              if cursor_attempt[0] == 1 else
+              "Cursor is writing the code again (attempt "
+              f"{cursor_attempt[0]}). The last check did not pass")))
     design_text, design_note = designed_cases(job_dir)
     if design_note and scope_name != "converter":
         say(f" ..  {design_note}")
@@ -2906,7 +3454,8 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             + (", ".join(sorted(gate_before)) or "none"))
     verify = verifier or (lambda: run_verify(
         root, scope, gate_before=gate_before, compile_before=compile_before,
-        gate_json=os.path.join(job_dir, "gate-after.json")))
+        gate_json=os.path.join(job_dir, "gate-after.json"),
+        attempt=cursor_attempt[0]))
 
     commit, branch = head(root)
     before = dirty_paths(root)
@@ -3158,6 +3707,8 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
     attempts, until_fixed = repair_attempts(policy)
     repair, last_failure = "", None
     for attempt in range(1, attempts + 1):
+        cursor_attempt[0] = attempt
+        continuous = attempt > 1
         say(f" .. calling Cursor (attempt {attempt}"
             + (f", until it verifies or {attempts} attempts" if until_fixed else f" of {attempts}")
             + f") -- the conversation is in {cursor_log_name(scope['name'])}")
@@ -3173,12 +3724,12 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             # where Cursor was told to look is the part a person asks about.
             clog.block("what Cursor was told about where things are",
                        project_map(root, policy, scope))
-            if skill_block(root, scope):
+            _sk, ex_paths = skill_and_example_block(root, policy, scope,
+                                                    hint=example_hint(job_dir))
+            if _sk and scope.get("skill"):
                 clog.write(f"the skill is in the prompt, whole: {scope.get('skill')}")
-            else:
-                shown = pattern_example(root, policy, scope)[1]
-                if shown:
-                    clog.write("shown as the example of how a test is written: " + ", ".join(shown))
+            if ex_paths:
+                clog.write("golden example (form only): " + ", ".join(ex_paths))
         clog.block("prompt", prompt, cap=12000)
         started = time.time()
         try:
@@ -3205,7 +3756,9 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             at_failure = tree_now()
             # BEFORE the tree is read: an un-hidden file is one undo() can see.
             moved, found = checked()
-            if moved:
+            commit_now, branch_now = head(root)
+            if moved and head_forbidden(commit, branch, commit_now, branch_now, bool(followup),
+                                       continuous=continuous):
                 # The same rule as after a finished run: with HEAD somewhere
                 # else, "put the files back" would put back the AGENT's
                 # commit. Nothing is reverted; Discard does that from the
@@ -3301,7 +3854,8 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             clog.write(f"suites: {line}")
 
         commit_now, branch_now = head(root)
-        if (commit_now, branch_now) != (commit, branch):
+        if head_forbidden(commit, branch, commit_now, branch_now, bool(followup),
+                          continuous=continuous):
             msg = (f"HEAD moved ({branch}@{commit[:8]} -> {branch_now}@"
                    f"{commit_now[:8]}). The agent must not commit or switch "
                    f"branches. Nothing was reverted for this: check `git "
@@ -3309,6 +3863,10 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             say(f"FAIL {msg}")
             review = dict(review, needs_discard=True)
             return reject(msg, restore=False)
+        if branch_now == branch and commit_now != commit:
+            commit = commit_now
+            review = dict(review, base_commit=commit_now, base_branch=branch_now)
+            write_review(job_dir, review)
 
         tampered = [p for p, was in protected.items()
                     if _bytes(os.path.join(root, p)) != was]
@@ -3391,16 +3949,60 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                 clog.write("ANSWERED without changing a file")
                 reject("Cursor answered and changed no file", restore=False, why="answered")
                 return 0                    # an answer is what was asked for
-            say(f"FAIL the agent changed no file. Its answer is in "
+            if attempt < attempts:
+                repair = (
+                    "YOUR PREVIOUS ATTEMPT CHANGED NO FILE under the allowed paths. "
+                    "Use your file-editing tools now and create or modify the Java tests, "
+                    "csv/manual data sheets, templates, and suite XML the plan requires. "
+                    "Do not reply with only a description of what you would write."
+                    + (f"\n\nYour last reply began with:\n{said[:4000]}" if said else ""))
+                say(f"FAIL the agent changed no file; asking Cursor again (attempt "
+                    f"{attempt + 1} of {attempts})")
+                clog.write("NO FILES CHANGED -- another attempt with a repair prompt")
+                continue
+            say(f"FAIL the agent changed no file after {attempts} attempt(s). Its answer is in "
                 f"{cursor_log_name(scope['name'])} -- it usually says why.")
             return reject("the agent changed no file", restore=False)
 
         say(f" ok  {len(changes['created'])} created, "
             f"{len(changes['modified'])} modified, all inside the allowed paths")
         generated = sorted(gen["created"] + gen["modified"])
+        if scope_name == "new-test":
+            csv_on_log = lambda line: clog.write("  csv-xray: " + line)
+            csv_patched = ensure_manual_csv_xray(
+                root, job_dir, changes["created"] + changes["modified"], mocked=mocked,
+                on_log=csv_on_log)
+            job_name = os.path.basename(job_dir)
+            say(f" ..  CSV/Xray id patch log: .workbench/{job_name}/{CSV_XRAY_LOG}")
+            if csv_patched:
+                say(f" ..  filled jira_xray_id and jira_issue on {len(csv_patched)} data sheet(s): "
+                    + ", ".join(csv_patched[:8])
+                    + (" ..." if len(csv_patched) > 8 else ""))
+                for p in csv_patched:
+                    clog.write(f"  csv xray ids   {p}")
+                    if p not in changes["created"] and p not in changes["modified"]:
+                        changes["modified"].append(p)
         result = verify()
         for step in result["steps"]:
             clog.write(f"verify {'ok  ' if step['rc'] == 0 else 'FAIL'} {step['name']}")
+        if scope_name == "new-test" and result["ok"]:
+            parity_issues = jira_parity_issues(
+                root, changes["created"] + changes["modified"])
+            if parity_issues:
+                gap = "\n".join(f"  - {i}" for i in parity_issues[:20])
+                say(f"FAIL jira test parity ({len(parity_issues)} issue(s)) — "
+                    "see skill §2b/§2c and the golden example in the prompt")
+                clog.write("jira-test-parity FAIL:\n" + gap)
+                if result["ok"]:
+                    result = {"ok": False, "steps": list(result["steps"]) + [{
+                        "name": "jira-test-parity",
+                        "rc": 1,
+                        "tail": (
+                            "Touched jira tests must match converter-style clarity "
+                            "(DATA_INVENTORY, enroll→guestId extract, csv/manual/ "
+                            "sheets, templates on disk):\n\n" + gap
+                        ),
+                    }]}
         _write_diff(root, job_dir, changes, generated, gen_backup)
         files = changes["created"] + changes["modified"]
         review = dict(review, files={k: changes[k] for k in ("created", "modified")},
@@ -3420,13 +4022,61 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                 f"Cursor to add the keys once they exist.")
         if handed:
             landed = xray_landed(root, files, handed)
+            if landed["missing"]:
+                extra = patch_manual_csv_by_case_ids(
+                    root, job_dir, landed["missing"].keys(), mocked=mocked,
+                    on_log=lambda line: clog.write("  csv-xray: " + line))
+                if extra:
+                    for p in extra:
+                        if p not in files:
+                            files.append(p)
+                        if p not in changes["modified"] and p not in changes["created"]:
+                            changes["modified"].append(p)
+                    say(f" ..  filled jira_xray_id and jira_issue on {len(extra)} existing data "
+                        f"sheet(s): " + ", ".join(extra[:8]))
+                    for p in extra:
+                        clog.write(f"  csv xray ids (existing)   {p}")
+                    landed = xray_landed(root, files, handed)
             review["xray"] = landed
             if landed["missing"]:
                 gaps = ", ".join(f"{c} ({k})" for c, k in sorted(landed["missing"].items())[:12])
-                say(f"WARN {len(landed['missing'])} of {len(handed)} Xray key(s) handed to the "
-                    f"agent are in none of the files it wrote: {gaps}. Those rows carry no "
-                    f"jira_xray_id, so their results will not reach Xray.")
+                say(f"FAIL {len(landed['missing'])} Xray key(s) are in none of the files of this "
+                    f"change: {gaps}. Each needs a Java test and a csv/manual/ row with "
+                    f"jira_xray_id and jira_issue, or @XrayTest on the method.")
                 clog.write(f"xray keys not in the written files: {gaps}")
+
+                def fail_csv_log(line: str) -> None:
+                    csv_xray_log(job_dir, line)
+                    clog.write("  csv-xray: " + line)
+
+                fail_csv_log("=== xray-keys-in-files FAIL ===")
+                fail_csv_log(f"missing: {gaps}")
+                fail_csv_log(
+                    "files this run changed: "
+                    + ", ".join(changes["created"] + changes["modified"]),
+                )
+                for case_id, xkey in sorted(landed["missing"].items()):
+                    fail_csv_log(
+                        f"hint  {case_id} ({xkey}): need a csv/manual/ row with "
+                        f"test_case_id={case_id}, jira_xray_id={xkey}, "
+                        f"jira_issue={story_key_of(job_dir) or '(story)'}",
+                    )
+                if result["ok"]:
+                    result = {"ok": False, "steps": [{
+                        "name": "xray-keys-in-files",
+                        "rc": 1,
+                        "tail": (
+                            "Handed Xray Test keys must appear in what Cursor wrote: put each key "
+                            "in the jira_xray_id column of its csv/manual/ data row (and jira_issue "
+                            "for the story), or in @XrayTest on the test method.\n\n"
+                            f"Still missing: {gaps}\n\n"
+                            "This run only changed: "
+                            + ", ".join(changes["created"] + changes["modified"][:8])
+                            + (" ..." if len(changes["created"] + changes["modified"]) > 8 else "")
+                            + ". Writing only a Suites/jira/*.xml job suite file does not add "
+                            "jira_xray_id to a test row."
+                        ),
+                    }]}
             else:
                 say(f" ok  all {len(handed)} Xray key(s) are in the written files")
         if result["ok"]:
@@ -3514,6 +4164,24 @@ def _put_bytes(path: str, data) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with io.open(path, "wb") as fh:
         fh.write(data)
+
+
+def paths_left_uncommitted(before: dict, after: dict) -> list:
+    """Dirty paths whose bytes are not the snapshot taken before a run.
+
+    A path that was dirty then and is absent from `after` was committed
+    (or reverted to HEAD). It is no longer this run's to discard: Discard
+    would put the pre-commit copy back over that commit. A path still
+    dirty with the same bytes was already dirty before the run and was
+    not changed by it.
+    """
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return []
+    left = []
+    for rel, sig in sorted(after.items()):
+        if rel not in before or before.get(rel) != sig:
+            left.append(rel)
+    return left
 
 
 def undo_from_pre_state(root: str, job_dir: str, policy: dict) -> list:
@@ -4026,7 +4694,11 @@ def cmd_run(job_dir: str, root: str, policy: dict, env: str = "", runner=None) -
         pass
     diag.step(f"Running the job's tests against {env}")
     say(f" .. running {suite} against {env} (mvn test -Denv={env}); this can take minutes")
-    args = ["test", f"-DsuiteXmlFile={suite}", f"-Denv={env}", "-DfailIfNoTests=false"]
+    runlog = _load("loop_runlog", os.path.join(HERE, "runlog.py"))
+    log_flag = runlog.log_level_flag(wb)
+    args = ["test", f"-DsuiteXmlFile={suite}", f"-Denv={env}", "-DfailIfNoTests=false", log_flag]
+    say(f" .. framework logs go to target/b2b-full-run.log ({log_flag})")
+    run_started = time.time()
     if runner is not None:
         rc, text = runner(args)
     else:
@@ -4038,6 +4710,9 @@ def cmd_run(job_dir: str, root: str, policy: dict, env: str = "", runner=None) -
         if rc != 0 and any(w in text.lower() for w in _NEEDS_NETWORK):
             say(" .. offline was not enough; running online")
             rc, text = _stream(root, [exe, "-B", *args], timeout)
+        note = runlog.after_maven(root, run_started).get("warn")
+        if note:
+            say(f" .. NOTE {note}")
     try:
         res = execution.read(results)
     except ValueError as e:
@@ -4059,7 +4734,21 @@ def cmd_run(job_dir: str, root: str, policy: dict, env: str = "", runner=None) -
                     .get("xray", {}).get("enabled")) \
             and "XrayReportListener" in _read(os.path.join(root, suite.replace("/", os.sep)), 400_000)
     except Exception:                                    # noqa: BLE001
+        diag.trace()
         auto = False
+    try:
+        xt = _load("loop_xraytrace", os.path.join(HERE, "xraytrace.py"))
+        suite_path = suite.replace("/", os.sep)
+        xt.save_maven_trace(root, text)
+        xt.append_diagnostics_to_run_log(root, suite_path, text)
+        xt.say_trace(root, suite_path, text, say, diag.step)
+        client = xt.trace(root, suite_path, text).get("xray_client") or []
+        if client and all("skipped" in ln.lower() for ln in client):
+            auto = False
+        elif client and any("imported" in ln.lower() and "http 2" in ln.lower() for ln in client):
+            auto = True
+    except Exception:                                    # noqa: BLE001
+        diag.trace()
     if auto:
         say(" ..  xray.enabled is on: the suite's listener reported these results to Xray itself "
             "(its Test Execution is in the Maven output above)")
@@ -4138,6 +4827,26 @@ def _commit_body(job_dir: str, files: dict) -> str:
             "approved at review.\n\n" + listed).strip()
 
 
+def fix_java_home() -> str:
+    """A JAVA_HOME that points at no JDK is replaced, for this process and
+    the builds it starts, by one found on the machine (mvnrun.java_env):
+    mvnw refuses to start without it, and every verify would fail on it."""
+    try:
+        spec = importlib.util.spec_from_file_location("loop_mvnrun", os.path.join(HERE, "mvnrun.py"))
+        mvnrun = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mvnrun)
+        env, note = mvnrun.java_env()
+    except Exception as e:                               # noqa: BLE001
+        diag.trace()
+        return f"JAVA_HOME could not be checked: {e}"
+    if env.get("JAVA_HOME") != os.environ.get("JAVA_HOME"):
+        os.environ["JAVA_HOME"] = env["JAVA_HOME"]
+        os.environ["PATH"] = env["PATH"]
+    if note:
+        say(f" .. {note}")
+    return note
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("command",
@@ -4158,6 +4867,7 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     job_dir = intake.job_dir(args.job)
     os.makedirs(job_dir, exist_ok=True)
+    fix_java_home()
     # Images pasted with the request: read now, their files deleted now.
     cursor_call.attach(paste.take(job_dir))
     policy = load_policy()

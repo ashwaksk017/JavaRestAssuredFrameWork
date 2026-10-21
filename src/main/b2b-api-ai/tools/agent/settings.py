@@ -36,15 +36,25 @@ _KEY_RX = re.compile(r"^[A-Z][A-Z0-9_]{0,19}-[0-9]{1,9}$")
 
 
 WORKBENCH_FILE = os.path.join(".workbench", "workbench-settings.json")
-# Cursor's key and models: the converter's own file (gitignored), where
-# loop.cursor_config and design.design_model read them. CURSOR_API_KEY, when
-# set, wins over the file's key.
-CURSOR_REL = "tools/ra_converter/cursor_agent.json"
+# Cursor's key and models (gitignored), shared by the workbench and the
+# converter: tools/cursor_agent.json, or the converter's old place when only
+# that one exists. CURSOR_API_KEY, when set, wins over the file's key.
+CURSOR_REL = "tools/cursor_agent.json"
+CURSOR_OLD_REL = "tools/ra_converter/cursor_agent.json"
 _MODEL_RX = re.compile(r"^[A-Za-z0-9._:-]{1,80}$")
 
 
+def cursor_rel(root: str = "") -> str:
+    """The Cursor settings file in use, relative to the project."""
+    root = root or ROOT
+    if not os.path.isfile(os.path.join(root, *CURSOR_REL.split("/"))) and \
+            os.path.isfile(os.path.join(root, *CURSOR_OLD_REL.split("/"))):
+        return CURSOR_OLD_REL
+    return CURSOR_REL
+
+
 def _cursor_path(root: str = "") -> str:
-    return os.path.join(root or ROOT, *CURSOR_REL.split("/"))
+    return os.path.join(root or ROOT, *cursor_rel(root).split("/"))
 
 
 def _cursor_read(root: str = "") -> dict:
@@ -134,6 +144,23 @@ def _token_state(value) -> str:
     return f"set, {len(v)} characters" if v else "not set"
 
 
+def _cursor_runtime(root: str = "") -> dict:
+    """Last Cursor startup check (workbench server start), not the key itself."""
+    path = os.path.join(root or ROOT, ".workbench", "cursor-setup.json")
+    try:
+        with io.open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            raise ValueError("not an object")
+        return {"ok": data.get("ok"), "mock": bool(data.get("mock")),
+                "checking": bool(data.get("checking")),
+                "at": str(data.get("at") or ""), "model": str(data.get("model") or ""),
+                "problem": str(data.get("problem") or "")}
+    except (OSError, ValueError):
+        return {"ok": None, "mock": False, "at": "", "model": "",
+                "problem": "not checked yet — restart the workbench server"}
+
+
 def status(root: str = "") -> dict:
     cur = _cursor_read(root)
     """What is set, for the page -- never a token's value."""
@@ -168,7 +195,8 @@ def status(root: str = "") -> dict:
         "cursor": {"key": _token_state(cur.get("apiKey") or cur.get("api_key")),
                    "key_from_env": bool((os.environ.get("CURSOR_API_KEY") or "").strip()),
                    "model": str(cur.get("model") or ""), "design_model": str(cur.get("designModel") or ""),
-                   "file": CURSOR_REL},
+                   "file": cursor_rel(root)},
+        "cursor_runtime": _cursor_runtime(root),
         "xray": {"base_url": str(xray.get("baseUrl") or ""), "token": _token_state(xray.get("token")),
                  "project_key": str(xray.get("projectKey") or ""),
                  "regression_key": str(xray.get("regressionKey") or ""),

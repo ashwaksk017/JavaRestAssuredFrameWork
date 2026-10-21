@@ -178,6 +178,167 @@ com.hi.api.schema.SchemaValidator.validate(res, "x-schema.json");
 
 ---
 
+## 2b. Data inventory (what the converter shows implicitly)
+
+Converted ReadyAPI tests carry a **data map** in three places: CSV column
+groups, `ctx` keys populated by extracts and `CtxFields`, and template
+`#placeholders#`. Nothing in the repo prints “guest id missing” or
+“username missing” until runtime — the converter **declares** every
+binding up front in the emitted CSV and Java. A jira story test has no
+recording, so **you** must produce the same clarity before writing code.
+
+Do this on paper (or in the class Javadoc — see below) for every designed
+case. Skipping it is how tests hide missing `program_configuration.json`
+keys until someone runs them.
+
+### Step 1 — Ordered HTTP steps
+
+List every call the `@Test` will make, in execution order. Label each:
+
+| Label | Meaning |
+|---|---|
+| **setup** | Creates data or auth; not asserted by the AC |
+| **act** | The behaviour the AC describes |
+| **probe** | Read-only call to discover a value when config is intentionally blank |
+
+Example (member spendDetail + traveler filter):
+
+1. setup — resource-owner token (JSON POST to token route)
+2. probe — GET spendDetail **without** `guestId` query (only when traveler A’s id is not in config)
+3. act — GET spendDetail **with** `guestId=<traveler A>`
+
+The **first request** is almost always **auth** (client-credentials or
+resource-owner, per OpenAPI `x-route-in-sequence`). After that: any
+**enroll / create** the AC needs, then **probes**, then the **act** call.
+Never start with the act call if it needs a bearer token you have not
+fetched yet.
+
+### Step 2 — Tag every input field
+
+For each path segment, query param, header, and body field, assign exactly
+one **source kind** (same taxonomy the converter’s `phase_emit.Ref` uses):
+
+| Kind | ReadyAPI analogue | Hand-written jira pattern |
+|---|---|---|
+| **CONFIG** | `#Project#…`, frozen Properties → `program_configuration.json` | `rowOrConfig(row, col, "jira.b2b-xxxx.role.field")` — column blank in git |
+| **ROW** | per-case CSV override, non-secret variant | Same helper; **fill column locally** only for debugging — committed row stays blank for customer ids |
+| **EXTRACT** | PropertyTransfer / `safeJsonExtract` → `ctx` | Local variable from `RestUtilities.safeJsonGet` / `safeJsonExtract` on a **prior** response in the same `@Test` |
+| **TOKEN** | token step + claim | `access_token` from token response; path `guestId` from claim or token body when rule is `guestIdInClaimMustMatchGuestIdInPath` |
+| **TEMPLATE** | JSON template `#Properties_email#`, `<<faker>>` | `ManualBody.render("templates/manual/….json", row, ctx)` — never `mapJsonValues` directly |
+| **GENERATED** | DataGenInput / `CtxFields.generateStandard` | `FakeData.*` once in setup (e.g. enroll guest) |
+| **LITERAL** | fixed assertion or enum in XML | Inline only for values the **AC quotes** (status code, enum) |
+
+Rules:
+
+- **Customer ids, emails, confirmation numbers** → CONFIG or EXTRACT, never
+  literals in Java or committed CSV (section 4b).
+- If the AC names “traveler A” but not their id → CONFIG key
+  `jira.<story>.traveler_a.guest_id`, else **probe** then EXTRACT (as in
+  the example above). Say which you chose in `open_questions`.
+- Reuse another story’s persona only when the plan says so: read linked
+  keys with the same `rowOrConfig` column but alternate config prefix
+  (primary `jira.b2b-99454.…`, fallback `jira.b2b-99458.…`). Document both
+  prefixes in the inventory.
+
+### Step 3 — CSV layout (mirror converter groups)
+
+Put columns in this order so reviewers see the same shape as generated
+sheets (`tools/ra_converter/ra_converter.py` group A→D):
+
+```
+A  description, test_case_id, execute, jira_xray_id, jira_issue
+C  … every CONFIG/ROW field the method reads (guest_id, account_id, username, …)
+D  expected_http_status, … other expected/assertion switches
+```
+
+- **Group A** — traceability; `execute` blank means run (see MANUAL_FIXES.md).
+- **Group C** — request inputs only; names match `rowOrConfig` columns and
+  config key **field** segment (`traveler_guest_id` →
+  `jira.b2b-xxxx.traveler_a.guest_id`).
+- **Group D** — what the row asserts (`expected_http_status`, flags like
+  `require_at_least_one_spend_item`). Do not put secrets or ids here.
+
+One `@Test` per behaviour; extra rows only for true data variants.
+
+### Step 4 — Class Javadoc `DATA_INVENTORY`
+
+At the top of each jira test class, add a short block listing:
+
+- HTTP steps (setup / probe / act) in order
+- Each CONFIG key (full dotted path) the class reads
+- Each EXTRACT (response step + JSON path)
+- Linked config prefixes, if any
+
+Runners and reviewers use this like the converter’s CSV header: they can
+see **what to set** without reading 400 lines of Java.
+
+### Step 5 — Report and skips
+
+Section 8 **must** repeat every CONFIG key from the inventory.  
+`rowOrConfig` already skips with the key name — do not swallow that into
+custom helpers that say only “missing guest id”.
+
+### Step 6 — Template ↔ CSV contract (MANUAL_FIXES.md §5)
+
+For each `templates/manual/*.json` file:
+
+| Placeholder in JSON | Must come from |
+|---|---|
+| `#enroll_username#`, `#owner_company_email#` | CSV column (underscore name) or Java `row.put` before render |
+| `<<firstname>>`, `<<email>>`, `${username}` | CSV cell with that token — resolved by `ManualBody.render` |
+| `#guestId#` / ids from a prior call | **`ctx` after EXTRACT** — never a committed CSV cell |
+
+Delimiter rule: `#…#` → JSON **string**; `@…@` → number; `%…%` → boolean.
+
+---
+
+## 2c. Converter parity (mandatory checklist)
+
+Before writing Java, complete this checklist (paste it in your final reply):
+
+```
+[ ] HTTP_PLAN numbered (setup / probe / act) — step 1 is token unless documented otherwise
+[ ] Each path {guestId} has a source kind (EXTRACT / TOKEN / CONFIG) named in DATA_INVENTORY
+[ ] Enroll in the flow → guestId from safeJsonExtract(enrollRes, "guestId"), not config
+[ ] Existing persona on /guests/{guestId}/… → guestId from token body or JWT claims when possible
+[ ] templates/manual/*.json listed; every #placeholder# mapped to CSV, ctx, or <<faker>>
+[ ] csv/manual/<Class>/<method>.csv header quoted in reply (group A + C + D columns)
+[ ] DATA_INVENTORY Javadoc on the test class
+```
+
+The workbench **fails verify** with `jira-test-parity` when a touched jira test
+violates DATA_INVENTORY, enroll→guestId extract, spendDetail path guestId without
+token EXTRACT, `#placeholder#` in templates without a matching csv column,
+missing csv/manual/ sheets, or missing template files.
+
+### Recipe R1 — Create program account (enroll → extract → create → read)
+
+Order: client-credentials token → `POST /realms/guests/enroll` → **extract
+`guestId`** → resource-owner token (enroll username/password) →
+`POST /guests/{guestId}/businesses` → `GET …/{accountId}`.
+
+Templates (committed golden copies): `templates/manual/examples/enroll_guest.json`,
+`templates/manual/examples/create_program_account.json`. See `GuestProgramAccountTest`
+in the workbench golden example prompt.
+
+### Recipe R2 — Member spendDetail + traveler filter
+
+Order: resource-owner token → **guestId from token** → optional probe GET
+(without traveler query) → act GET with `guestId=<traveler A>` query → assert
+each item’s `traveler.guestId`.
+
+See the DATA_INVENTORY Javadoc of an existing story test under tests/jira/.
+
+### Anti-patterns (do not emit)
+
+- Act HTTP call before any token when the call uses `Authorization: Bearer`.
+- `rowOrConfig(..., "guest_id", …)` for a guest you just enrolled in the same `@Test`.
+- Only `Suites/jira/*.xml` changed — no Java, csv/manual/, or templates.
+- `RestUtilities.mapJsonValues` without `ManualBody.render`.
+- Committed CSV cells filled with real guest/account/member ids.
+
+---
+
 ## 3. Four things that will bite you
 
 **Do not call `softAssert.assertAll()`.** `BaseApiTest` does it in an
@@ -196,6 +357,45 @@ cannot be waived.
 
 **No `Thread.sleep`.** If the story needs an eventual outcome, poll with a
 bounded deadline and assert the condition, not the wait.
+
+**Stay in `tests/jira/` for a new-test job.** The workbench may allow writing
+anywhere, but a jira story test belongs under
+`src/test/java/com/hi/api/tests/jira/` plus its templates/schemas. Do not
+edit `tests/manual/`, `tests/legacy/`, or other suites unless the packet
+names an UPDATE there — unrelated edits break `test-compile` for the whole
+project.
+
+**Do not call methods on `ImportedRestClient` unless they exist on the
+committed interface.** Generated suite clients implement extra methods, but
+jira tests compile on a bare clone without those clients. Use
+`RestUtilities` + `Headers` + `baseUrl()` (or `ApiRoutes.fill(...)`) like
+the skeleton in section 2.
+
+### Auth and setup the AC does not spell out
+
+Read the OpenAPI `x-route-in-sequence` (or an existing jira test on the same
+path) before choosing a token:
+
+| Route rule | Token |
+|---|---|
+| Corporate / client-credentials flows | `AuthHelper.primeClientCredentialsToken(ctx)` |
+| `guestIdInClaimMustMatchGuestIdInPath` | Resource-owner JSON to `baseUrl() + ApiRoutes.fill(ApiRoutes.TOKEN)` with `client_id`, `client_secret`, `username`, `password` from Config — **not** `AuthHelper` (form-encoded client_credentials only) |
+
+When the designed case needs a **guest id** but the AC only asserts
+create/read on `/guests/{guestId}/businesses`, create the guest in the same
+`@Test` as setup (not a separate case): `POST /realms/guests/enroll` with
+client-credentials bearer, body from `templates/manual/<job>_enroll_guest.json`
+via `ManualBody.render`, fresh credentials from `FakeData.signupDataMap()`.
+Assert only what the approved case lists; treat enroll as plumbing.
+
+When there is **no Jira story key**, use the workbench job id everywhere the
+skill says story key: `@Story("job-…")`, config keys
+`jira.job-….<role>.<field>`, template prefixes `job-….json`. Omit
+`@XrayTest` unless the case carries `[Xray KEY]`.
+
+Multi-step flows (POST then GET with values from the first response) belong
+in **one** `@Test` when the designed case describes one behaviour; name
+Allure steps after the verb and path (`createProgramAccount: POST …`).
 
 ---
 
@@ -225,6 +425,11 @@ anywhere else under `csv/` survives on one machine and is lost on a fresh
 clone.
 
 Give every row a readable `description` and `test_case_id`.
+
+When the workbench handed Xray Test keys for designed cases, each row
+that maps to a case must carry **`jira_xray_id`** (that Test issue key).
+Every row must also carry **`jira_issue`** (the Jira story key). These are
+not customer data — commit them so Publish to Xray can match results.
 
 ---
 

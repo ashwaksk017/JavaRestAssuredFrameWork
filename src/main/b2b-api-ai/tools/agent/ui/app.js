@@ -31,6 +31,21 @@ function jobIntoAddress() {
   $("job").addEventListener("change", jobIntoAddress);
 })();
 
+// ---- theme ------------------------------------------------------------
+// Dark, light or blue: one attribute on <html>, kept in this browser. Set
+// before the page paints by the script in index.html's head.
+(function themes() {
+  const buttons = document.querySelectorAll("[data-theme-pick]");
+  const pick = (t) => {
+    if (!["dark", "light", "blue"].includes(t)) t = "dark";
+    document.documentElement.dataset.theme = t;
+    try { localStorage.setItem("wb-theme", t); } catch { /* private window */ }
+    buttons.forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.themePick === t)));
+  };
+  buttons.forEach((b) => { b.onclick = () => pick(b.dataset.themePick); });
+  pick(document.documentElement.dataset.theme || "dark");
+})();
+
 // ---- saying what the page is doing --------------------------------------
 // Nothing the page waits for is silent. A request that takes longer than a
 // blink is named in the strip at the top ("Storing the file..."), and the
@@ -142,6 +157,31 @@ async function showMockBanner() {
 }
 setInterval(showMockBanner, 5000);
 
+async function showCursorSetupBanner() {
+  const bar = $("cursor-setup-banner");
+  if (!bar) return;
+  let rt;
+  try {
+    const st = await api("/api/settings");
+    rt = st.cursor_runtime || {};
+  } catch (e) {
+    bar.hidden = true;
+    return;
+  }
+  if (rt.ok === true || rt.mock || rt.checking) {
+    bar.hidden = true;
+    return;
+  }
+  const when = rt.at ? ` (checked ${rt.at.replace("T", " ").replace("Z", " UTC")})` : "";
+  const msg = rt.problem || "Cursor is not ready on this machine.";
+  bar.replaceChildren(
+    el("strong", { text: "CURSOR NOT READY" }),
+    ` — ${msg}${when} Fix in Settings or restart the server after editing cursor_agent.json.`);
+  bar.hidden = false;
+}
+showCursorSetupBanner();
+setInterval(showCursorSetupBanner, 15000);
+
 // ---- tabs ------------------------------------------------------------
 // The tab is also in the address (#jira, #failures), so a tab can be
 // linked to and a refresh stays where it was.
@@ -177,6 +217,22 @@ function stepsAbove(logEl) {
   return s;
 }
 const STEP_MARK = "==> ";
+
+// A check that starts after Cursor has returned used to be named only by
+// the script. Say what that means: the code is already written, and it is
+// not ready to test until the check passes. Older logs still have the
+// short line, so the page says the same thing for those.
+function shownStep(text) {
+  const check = /^Running the check (.+)$/.exec(text);
+  if (check)
+    return "Cursor has finished writing the code. Running " + check[1]
+      + " - not ready to test until this passes";
+  if (text.startsWith("Checking that the project still compiles"))
+    return "Cursor has finished writing the code. Checking that the project still compiles - not ready to test until this passes";
+  if (text.startsWith("Running the full gate"))
+    return "Cursor has finished writing the code. Running the full gate - not ready to test until this passes";
+  return text;
+}
 
 // One poller per (job, runnable). It appends only what is new, so a long
 // convert does not re-render its whole log every second.
@@ -217,6 +273,8 @@ function follow(runnable, logEl, stateEl, onDone, forJob) {
     return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
   };
   let doing = "";                   // the last step said; until one is, what the command is for
+  let askRound = 0;
+  let checkRound = 0;
   const what = () => doing || LABELS[runnable] || "Working";
   let unfinished = "";              // a line the last chunk stopped in the middle of
   const stepsEl = stepsAbove(logEl);
@@ -238,10 +296,36 @@ function follow(runnable, logEl, stateEl, onDone, forJob) {
     }
   };
   const say = (text) => {
+    text = shownStep(text);
+    // The same sentence is used every time Cursor is asked and every time
+    // the check starts again. Number the later ones, or the status line
+    // stays word for word as it was and a new Cursor answer looks ignored.
+    if (text.startsWith("Asking Cursor to write the change")
+        || text.startsWith("Cursor is writing the code")) {
+      askRound += 1;
+      text = askRound === 1
+        ? "Cursor is writing the code"
+        : "Cursor is writing the code again (attempt " + askRound + "). The last check did not pass";
+    } else if (text.indexOf("not ready to test until this passes") >= 0) {
+      checkRound += 1;
+      if (checkRound > 1 && !text.startsWith("Attempt "))
+        text = "Attempt " + checkRound + ". " + text.replace(
+          "Cursor has finished writing the code.",
+          "Cursor has written the code again.");
+    }
     if (!text || text === doing) return;
     doing = text;
+    paint();
     if (!owns()) return;
-    for (const li of stepsEl.children) li.className = "done";
+    for (const li of stepsEl.children) {
+      li.className = "done";
+      // That sentence is only true while the call is open. Once a later
+      // step starts, Cursor has returned and the line must not still say
+      // it is writing.
+      if (String(li.textContent).startsWith("Asking Cursor to write the change")
+          || String(li.textContent).startsWith("Cursor is writing the code"))
+        li.textContent = "Cursor has finished writing the code change";
+    }
     const li = document.createElement("li");
     li.className = "now";
     li.textContent = text;          // text, whatever it holds
@@ -267,7 +351,10 @@ function follow(runnable, logEl, stateEl, onDone, forJob) {
       await read();
       settle(st.state === "done" || st.state === "none");
       if (ownsLabel()) {
-        if (st.state === "done") setState(stateEl, "ok", `finished in ${clock()}`);
+        if (st.state === "done") setState(stateEl, "ok",
+          /PENDING REVIEW/.test(logEl.textContent)
+            ? `Ready to test. Cursor has finished and the checks passed (${clock()}).`
+            : `finished in ${clock()}`);
         else if (st.state === "none") setState(stateEl, "", "not run yet for this job");
         else {
           // The reason, when the command said one: a label that only names
@@ -403,9 +490,54 @@ $("run-intake").onclick = async () => {
       links: (story ? [story] : []).concat(links),
     });
     follow("intake", $("new-log"), $("new-state"),
-           () => showArtifact("brief.md", $("brief")));
+           () => { showArtifact("brief.md", $("brief")); showSources(); });
   } catch (e) { setState($("new-state"), "bad", e.message); }
 };
+
+// Everything the cases are designed from, named: the story, each story
+// read around it and why, the pages, what could not be read, the
+// specification, what was pasted, and the last developer-change check.
+async function showSources(j) {
+  j = j || job();
+  const box = $("sources");
+  if (!box) return;
+  if (!j) { box.replaceChildren(); return; }
+  let s = null;
+  try { s = await api(`/api/sources?job=${encodeURIComponent(j)}`); } catch { s = null; }
+  if (j !== job()) return;
+  if (!s || (!s.read && !s.spec.name && !Object.keys(s.design_boxes || {}).length)) { box.replaceChildren(); return; }
+  const chip = (cls, label, detail, title) => el("span", { class: `src ${cls}`, title: title || detail || "" },
+    el("code", { text: label }), detail ? el("small", { text: detail }) : null);
+  const group = (name, chips) => chips.length ? el("div", { class: "group" }, el("small", { text: name }), ...chips) : null;
+  const k = (n) => n >= 1000 ? `${Math.round(n / 100) / 10}k chars` : `${n} chars`;
+  const st = s.story || {};
+  const kids = [heading("Sources used for this job's cases", s.at ? `read ${s.at.replace("T", " ").replace("Z", " UTC")}` : undefined)];
+  if (st.key) {
+    kids.push(group("Story", [chip(st.cut ? "cut" : "ok", st.key,
+      `${st.summary || ""} — ${[st.type, st.status].filter(Boolean).join(", ")}; ${k(st.chars)}` +
+      `${st.cut ? `, ${st.cut} cut` : ""}; acceptance criteria ${st.acceptance_criteria ? "found" : "NOT found"}` +
+      `${st.comments ? `; ${st.comments} comment(s)` : ""}`)]));
+    kids.push(group("Parents", (st.parents || []).map((p) =>
+      chip((st.unread_parents || []).includes(p) ? "bad" : "ok", p, (st.unread_parents || []).includes(p) ? "not read" : "read"))));
+  }
+  kids.push(group("Read around it", (s.around || []).map((a) => chip(a.ok ? (a.cut ? "cut" : "ok") : "bad", a.key,
+    a.ok ? `${a.how}: ${a.summary || ""}${a.cut ? ` (${a.cut} chars cut)` : ""}` : `${a.how}: NOT read — ${a.reason}`))));
+  kids.push(group("Linked, not read", (st.linked_not_read || []).map((p) => chip("bad", p, "over the limit of stories read"))));
+  kids.push(group("Confluence pages", (s.pages || []).map((p) => chip(p.cut ? "cut" : "ok",
+    p.pasted ? "pasted" : (p.link.length > 60 ? p.link.slice(0, 57) + "…" : p.link),
+    `${k(p.chars)}${p.cut ? `, ${p.cut} cut` : ""}${p.from_story ? ` — linked from ${p.from_story}` : ""}`, p.link))));
+  kids.push(group("Could not be read", (s.failed || []).map((f) => chip("bad", f.link.length > 60 ? f.link.slice(0, 57) + "…" : f.link, f.reason, f.link))));
+  if (s.spec && s.spec.name) kids.push(group("Specification", [chip("ok", s.spec.name, s.spec.operations ? `${s.spec.operations} endpoint(s)` : "")]));
+  const boxes = Object.entries(s.design_boxes || {});
+  kids.push(group("Pasted for the design", boxes.map(([n, b]) => chip("ok", n, `${size(b)}`))));
+  if (s.requests) kids.push(group("Requests found", [chip("ok", String(s.requests), "API call(s) read out of the story and pages")]));
+  if (s.design && s.design.cases) kids.push(group("Design", [chip("ok", `${s.design.cases} case(s)`, s.design.model ? `model ${s.design.model}` : "")]));
+  if (s.devcode && s.devcode.repo) kids.push(group("Developer change", [chip(s.devcode.gaps ? "cut" : "ok",
+    `${s.devcode.repo} @ ${s.devcode.branch}`, `${s.devcode.ticket || "no ticket"}: ${s.devcode.commits} commit(s), ${s.devcode.gaps} gap(s)`)]));
+  box.replaceChildren(...kids.filter(Boolean));
+}
+showSources();
+$("job").addEventListener("change", () => showSources());
 
 // Several stories: one job each, named by its key, all read at once. The
 // Confluence links given go with every one; what was pasted goes with
@@ -506,7 +638,7 @@ $("story-check").onclick = async () => {
             await post("/api/intake", { job: j, again: true });
             $("stories").replaceChildren();
             follow("intake", $("new-log"), $("new-state"),
-                   () => { again.disabled = false; showArtifact("brief.md", $("brief")); });
+                   () => { again.disabled = false; showArtifact("brief.md", $("brief")); showSources(); });
           } catch (e) { again.disabled = false; setState($("new-state"), "bad", e.message); }
         };
         kids.push(el("div", { class: "row" }, [again]));
@@ -534,9 +666,13 @@ $("story-check").onclick = async () => {
 
 $("run-locate").onclick = async () => {
   try {
-    await post("/api/start",
-               { job: job(), runnable: "locate", options: { "--job": job() } });
+    const options = { "--job": job() };
+    // The verdict is made against a snapshot of what was converted; after
+    // a convert that snapshot is out of date until it is rebuilt.
+    if ($("locate-rebuild").checked) options["--rebuild-index"] = true;
+    await post("/api/start", { job: job(), runnable: "locate", options });
     follow("locate", $("new-log"), $("new-state"), async (st) => {
+      $("locate-rebuild").checked = false;
       await showArtifact("plan.md", $("plan"));
       // locate exits 1 when a request STOPS -- upstream, or needs a
       // human. That is the stage working, not failing, and painting it
@@ -727,6 +863,22 @@ async function decide(j, what, ids, fields, stateEl) {
   }
 }
 
+// The design cases ticked in the Select column, for this job: Refine with
+// Cursor changes only these, and the bulk buttons act on them.
+const selectedCases = { job: "", ids: new Set() };
+function selectedFor(j) {
+  if (selectedCases.job !== j) { selectedCases.job = j; selectedCases.ids = new Set(); }
+  return selectedCases.ids;
+}
+function showRefineScope() {
+  const ids = [...selectedFor(job())].sort();
+  if ($("refine-scope")) $("refine-scope").textContent = ids.length
+    ? `only ${ids.length === 1 ? "this case" : `these ${ids.length} cases`}: ${ids.join(", ")} (the rest are kept as they are)`
+    : "the whole list";
+}
+// Cursor's suite suggestion for the job's cases (suite-suggest.json), by id.
+let suiteSuggest = { job: "", byId: {} };
+
 function reviewTable(j, what, cases, entries, after, done, change, suites) {
   const box = el("div", { class: "review" });
   const st = el("span", { class: "state" });
@@ -735,19 +887,57 @@ function reviewTable(j, what, cases, entries, after, done, change, suites) {
     ? entryOf(c).state : "proposed";
   const counts = { approved: 0, rejected: 0, proposed: 0 };
   for (const c of cases) counts[stateOf(c)] += 1;
+  const design = what === "design";
+  const selected = design ? selectedFor(j) : new Set();
+  for (const id of [...selected]) if (!cases.some((c) => c.id === id)) selected.delete(id);
   const bulk = (fields) => async () => {
     if (await decide(j, what, cases.map((c) => c.id), fields, st)) after();
+  };
+  const onSelected = (fields) => async () => {
+    const ids = [...selected];
+    if (!ids.length) { setState(st, "bad", "tick cases in the Select column first"); return; }
+    if (await decide(j, what, ids, fields, st)) after();
+  };
+  const selCount = el("small", { text: "" });
+  const drawSel = () => {
+    selCount.textContent = selected.size ? `${selected.size} selected` : "";
+    for (const b of box.querySelectorAll("button[data-sel]")) b.disabled = !selected.size;
+    showRefineScope();
+  };
+  const selAll = el("input", { type: "checkbox", title: "select every case", "aria-label": "select every case" });
+  selAll.checked = design && cases.length > 0 && cases.every((c) => selected.has(c.id));
+  selAll.onchange = () => {
+    for (const c of cases) { if (selAll.checked) selected.add(c.id); else selected.delete(c.id); }
+    for (const cb of box.querySelectorAll("input[data-select]")) {
+      cb.checked = selAll.checked;
+      cb.closest("tr").classList.toggle("selected", selAll.checked);
+    }
+    drawSel();
   };
   box.append(el("div", { class: "row" },
     el("button", { type: "button", on: { click: bulk({ state: "approved" }) } }, "Approve all"),
     el("button", { type: "button", on: { click: bulk({ state: "rejected" }) } }, "Reject all"),
+    design ? el("button", { type: "button", "data-sel": "1", title: "approve the ticked cases",
+                            on: { click: onSelected({ state: "approved" }) } }, "Approve selected") : null,
+    design ? el("button", { type: "button", "data-sel": "1", title: "reject the ticked cases",
+                            on: { click: onSelected({ state: "rejected" }) } }, "Reject selected") : null,
+    design ? el("button", { type: "button", "data-sel": "1", title: "refine only the ticked cases with Cursor",
+                            on: { click: () => goToStep("new", "refine-ask") } }, "Refine selected…") : null,
     el("small", { text: `${counts.approved} approved, ${counts.rejected} rejected, ${counts.proposed} not yet decided` }),
-    st));
-  const headers = what === "design" ? ["Approve", "Automate", "Case", "Title", "Endpoint", "Suites", "Steps", "Note", "Write it"]
-                                    : ["Approve", "Case", "Title", "Steps", "Note"];
-  box.append(table(headers, cases.map((c) => {
+    selCount, st));
+  const headers = design ? ["Select", "Approve", "Automate", "Case", "Title", "Endpoint", "Suites", "Steps", "Note", "Write it"]
+                         : ["Approve", "Case", "Title", "Steps", "Note"];
+  const drawn = table(headers, cases.map((c) => {
     const e = entryOf(c);
     const state = stateOf(c);
+    const pickBox = el("input", { type: "checkbox", "data-select": c.id, "aria-label": `select ${c.id}` });
+    pickBox.checked = selected.has(c.id);
+    pickBox.onchange = () => {
+      if (pickBox.checked) selected.add(c.id); else selected.delete(c.id);
+      pickBox.closest("tr").classList.toggle("selected", pickBox.checked);
+      selAll.checked = cases.every((x) => selected.has(x.id));
+      drawSel();
+    };
     const approve = el("input", { type: "checkbox" });
     approve.checked = state === "approved";
     approve.onchange = async () => {
@@ -771,7 +961,7 @@ function reviewTable(j, what, cases, entries, after, done, change, suites) {
       el("small", { class: `flag ${state === "rejected" ? "differs" : ""}`, text: state }),
       e.title && e.title !== c.title ? el("small", { text: "title changed" }) : null,
       e.steps ? el("small", { text: "steps changed" }) : null);
-    const row = [approve];
+    const row = design ? [pickBox, approve] : [approve];
     if (what === "design") row.push(automate);
     row.push(cell, el("div", {}, title));
     if (what === "design") row.push(el("code", { class: "endpoint" },
@@ -789,7 +979,17 @@ function reviewTable(j, what, cases, entries, after, done, change, suites) {
         const v = groups.value.replace(/\s*\n\s*/g, ",").trim();
         if (await decide(j, what, [c.id], { groups: v }, st)) after();
       };
-      row.push(el("div", {}, groups, el("small", { text: s.chosen ? "set by hand" : "from the rules" })));
+      const sug = suiteSuggest.job === j ? suiteSuggest.byId[c.id] : null;
+      const same = sug && [...sug.groups].sort().join(",") === [...(s.groups || [])].sort().join(",");
+      const hint = sug && !same ? el("div", { class: "suggest" },
+        el("span", {}, el("b", { text: "Cursor: " }), sug.groups.filter((g) => g !== "jira").join(", ") || "jira only",
+           el("small", { text: ` (${sug.confidence})` })),
+        sug.why ? el("small", { text: sug.why }) : null,
+        el("button", { type: "button", title: "put this suggestion in the Suites box (recorded as set by hand)",
+                       on: { click: async () => { if (await decide(j, what, [c.id], { groups: sug.groups.join(",") }, st)) after(); } } },
+           "Use")) : null;
+      row.push(el("div", {}, groups, el("small", { text: s.chosen ? "set by hand" : "from the rules" }),
+        sug && same ? el("small", { text: "Cursor agrees" }) : null, hint));
     }
     row.push(steps, el("div", {}, note));
     if (what === "design") {
@@ -807,7 +1007,16 @@ function reviewTable(j, what, cases, entries, after, done, change, suites) {
         ran ? el("small", { class: `flag ${ran.written && ran.state === "pending-review" ? "" : "differs"}`, text: ran.said || ran.state }) : null));
     }
     return row;
-  })));
+  }));
+  if (design) {
+    const th = drawn.querySelector("thead th");
+    if (th) th.replaceChildren(selAll);
+    drawn.querySelectorAll("input[data-select]").forEach((cb) => {
+      if (cb.checked) cb.closest("tr").classList.add("selected");
+    });
+  }
+  box.append(drawn);
+  drawSel();
   return box;
 }
 
@@ -947,13 +1156,22 @@ async function showReview(what) {
     }
     return;
   }
-  const [result, review, done, agentReview, suites] = await Promise.all([
+  const [result, review, done, agentReview, suites, sug] = await Promise.all([
     artifactJson(j, what === "design" ? "design.json" : "manual-result.json"),
     artifactJson(j, "case-review.json"),
     what === "design" ? artifactJson(j, "automated-cases.json") : Promise.resolve(null),
     what === "design" ? artifactJson(j, "review.json") : Promise.resolve(null),
-    what === "design" ? api(`/api/suite-groups?job=${encodeURIComponent(j)}`).catch(() => null) : Promise.resolve(null)]);
+    what === "design" ? api(`/api/suite-groups?job=${encodeURIComponent(j)}`).catch(() => null) : Promise.resolve(null),
+    what === "design" ? artifactJson(j, "suite-suggest.json") : Promise.resolve(null)]);
   if (j !== job()) return;
+  if (what === "design") {
+    const byId = {};
+    for (const s of (sug && sug.suggestions) || []) byId[s.id] = s;
+    suiteSuggest = { job: j, byId };
+    const differ = Object.keys(byId).filter((id) => byId[id].same === false);
+    $("suite-suggest-all").disabled = !differ.length;
+    $("suite-suggest-all").dataset.ids = differ.join(",");
+  }
   const cases = (result && (what === "design" ? result.test_cases : result.new_cases)) || [];
   const entries = (review && review[what]) || {};
   if (!cases.length) {
@@ -1018,9 +1236,10 @@ async function showFlow() {
                : wf.finalized ? wf.finalized_why
                : "not finalized: approve the cases that stand, then Finalize -- Create in Xray and Automate wait for it");
     // Run the tests waits for the regression confirmation (the server too).
-    if (!wf.regression_confirmed && !$("agent-run").disabled) {
-      $("agent-run").disabled = true;
-      $("agent-run").title = wf.regression_why;
+    const runBtn = $("agent-run");
+    if (!wf.regression_confirmed && runBtn && !runBtn.disabled) {
+      runBtn.disabled = true;
+      runBtn.title = wf.regression_why;
     }
     const box = $("wf-regression-result");
     if (box) {
@@ -1312,16 +1531,22 @@ $("design-cursor-go").onclick = () => { setCursorSource("design"); goToStep("new
 // Refine with Cursor: the next design run carries this request (the server
 // adds the cases as they are now).
 let pendingRefine = "";
+let pendingRefineIds = [];
+let pendingGaps = null;
 $("refine-run").onclick = () => {
   const text = $("refine-ask").value.trim();
   if (!text) { setState($("design-state"), "bad", "write how the cases should be refined"); return; }
-  if (!confirm("Cursor revises the case list as you ask. Cases it leaves alone keep your decisions; " +
-               "a changed case is reviewed again, and finalized cases reopen. Continue?")) return;
+  const ids = [...selectedFor(job())].sort();
+  if (!confirm((ids.length ? `Cursor changes only ${ids.join(", ")} as you ask; every other case is kept as it is. `
+                           : "Cursor revises the whole case list as you ask. ") +
+               "Cases it leaves alone keep your decisions; a changed case is reviewed again, and finalized " +
+               "cases reopen. Continue?")) return;
   pendingRefine = text;
+  pendingRefineIds = ids;
   $("run-design").onclick();
 };
 $("run-design").onclick = async () => {
-  if (chosen("story-from") === "xray" && !pendingRefine) { xrayImport(); return; }
+  if (chosen("story-from") === "xray" && !pendingRefine && !pendingGaps) { xrayImport(); return; }
   const button = $("run-design");
   // One at a time: a second click used to wipe the Cursor pane of the run
   // already going, fail with "already running", and stop the pane's timer.
@@ -1353,20 +1578,26 @@ $("run-design").onclick = async () => {
       requirements: requirementsGiven(),
       notes: $("design-notes").value,
       refine: pendingRefine || undefined,
+      refine_ids: pendingRefine && pendingRefineIds.length ? pendingRefineIds : undefined,
+      devgaps: pendingGaps || undefined,
       images: pastedFor("design-notes", pendingRefine ? "refine-ask" : null),
     });
     clearPasted("design-notes", pendingRefine ? "refine-ask" : null);
-    if (pendingRefine) { pendingRefine = ""; $("refine-ask").value = ""; }
+    if (pendingRefine) { pendingRefine = ""; pendingRefineIds = []; $("refine-ask").value = ""; }
+    pendingGaps = null;
     follow("agent-design", $("design-log"), $("design-state"), () => {
       designRunning = false;
       stopCursorLog();
       showDesign(j, true);
+      showSources(j);
       // One run. Left ticked, every later click would pay again in silence.
       $("design-fresh").checked = false;
       button.disabled = false;
     });
   } catch (e) {
     pendingRefine = "";
+    pendingRefineIds = [];
+    pendingGaps = null;
     stopCursorLog();
     designRunning = false;
     showReview("design");
@@ -1374,6 +1605,242 @@ $("run-design").onclick = async () => {
     setState($("design-state"), "bad", e.message);
   }
 };
+// ---- Cursor suggests the suites of each case -------------------------------
+// Nothing is decided by the suggestion: each case shows it beside its
+// Suites box, with Use; "Use every suggestion" takes all that differ.
+$("suite-suggest").onclick = async () => {
+  const j = job();
+  if (!j) { setState($("suite-suggest-state"), "bad", "name the job first"); return; }
+  const ids = [...selectedFor(j)].sort();
+  $("suite-suggest").disabled = true;
+  try {
+    const options = { "--job": j };
+    if (ids.length) options["--ids"] = ids.join(",");
+    await post("/api/start", { job: j, runnable: "suite-suggest", options });
+    follow("suite-suggest", document.createElement("pre"), $("suite-suggest-state"), async (st) => {
+      $("suite-suggest").disabled = false;
+      const r = await artifactJson(j, "suite-suggest.json");
+      if (r && st.state === "done") {
+        const differ = (r.suggestions || []).filter((s) => !s.same).length;
+        setState($("suite-suggest-state"), "ok", `${(r.suggestions || []).length} case(s): ${differ} differ from what ` +
+          `the rules say${r.mock ? " (mock Cursor)" : ""} — see each case's Suites box`);
+      }
+      if (j === job()) showReview("design");
+    }, j);
+  } catch (e) { $("suite-suggest").disabled = false; setState($("suite-suggest-state"), "bad", e.message); }
+};
+$("suite-suggest-all").onclick = async () => {
+  const j = job();
+  const ids = ($("suite-suggest-all").dataset.ids || "").split(",").filter(Boolean);
+  if (!ids.length || suiteSuggest.job !== j) return;
+  if (!confirm(`Put Cursor's suites into ${ids.length} case(s)? Each is then recorded as set by hand ` +
+               "(empty a Suites box to go back to the rules).")) return;
+  let ok = 0;
+  for (const id of ids) {
+    const s = suiteSuggest.byId[id];
+    if (s && await decide(j, "design", [id], { groups: s.groups.join(",") }, $("suite-suggest-state"))) ok += 1;
+  }
+  setState($("suite-suggest-state"), ok === ids.length ? "ok" : "warn", `${ok} of ${ids.length} case(s) took Cursor's suites`);
+  showReview("design");
+};
+
+// ---- the designed cases against the developer's change ---------------------
+const DEVCODE_KEY = "wb-devcode";
+(function devcodeRemembered() {
+  // The repository and branch, for the next job of the same service; never a token.
+  try {
+    const was = JSON.parse(localStorage.getItem(DEVCODE_KEY) || "{}");
+    if (was.repo && !$("devcode-repo").value) $("devcode-repo").value = was.repo;
+    if (was.base && !$("devcode-base").value) $("devcode-base").value = was.base;
+  } catch { /* nothing kept */ }
+})();
+const GAP_KIND = { endpoint: "endpoint", status: "status", validation: "validation", param: "parameter",
+                   field: "field", "removed-field": "removed field", enum: "enum", "error-code": "error code",
+                   cursor: "Cursor" };
+async function showDevcode(j) {
+  j = j || job();
+  const box = $("devcode-result");
+  const r = await artifactJson(j, "devcode.json");
+  if (j !== job()) return;
+  $("devcode-add").disabled = true;
+  if (!r) { box.replaceChildren(); return; }
+  const gaps = r.gaps || [];
+  const high = gaps.filter((g) => g.severity === "high").length;
+  const kids = [banner(gaps.length ? (high ? "bad" : "warn") : "ok",
+    `${gaps.length} gap(s)${high ? ` (${high} high)` : ""}, ${(r.covered || []).length} thing(s) covered — ` +
+    `${(r.commits || []).length} commit(s) on ${r.branch}${r.commit_mode === "ticket" ? ` naming ${r.ticket}` : ""}, ` +
+    `${(r.files || []).length} file(s), ${r.cases_checked} case(s) checked${r.mock ? " (Cursor's part is a mock)" : ""}.`)];
+  for (const n of r.notes || []) kids.push(banner("warn", n));
+  if (r.cursor && r.cursor.asked && r.cursor.summary) kids.push(el("p", { class: "hint", text: `Cursor: ${r.cursor.summary}` }));
+  if (gaps.length) {
+    const all = el("input", { type: "checkbox", "aria-label": "choose every gap" });
+    const rows = gaps.map((g) => {
+      const cb = el("input", { type: "checkbox", "data-gap": g.id, "aria-label": `choose ${g.id}` });
+      cb.checked = g.severity !== "low";
+      cb.onchange = () => { $("devcode-add").disabled = !box.querySelector("input[data-gap]:checked"); };
+      return [cb, el("code", { text: g.id }),
+        el("span", { class: `gap-kind ${g.source === "cursor" ? "cursor" : ""}`, text: GAP_KIND[g.kind] || g.kind }),
+        el("span", { class: `state ${g.severity === "high" ? "bad" : g.severity === "medium" ? "warn" : ""}`, text: g.severity }),
+        el("div", {}, el("strong", { text: g.title }), el("br"), el("small", { text: g.detail || "" })),
+        el("small", { text: (g.evidence || []).slice(0, 3).join(", ") })];
+    });
+    const t = table(["", "Gap", "Kind", "Severity", "What", "Evidence"], rows);
+    t.classList.add("gap-list");
+    const th = t.querySelector("thead th");
+    if (th) th.replaceChildren(all);
+    all.onchange = () => {
+      t.querySelectorAll("input[data-gap]").forEach((cb) => { cb.checked = all.checked; });
+      $("devcode-add").disabled = !all.checked;
+    };
+    kids.push(heading("Gaps: behaviour of the change no case tests", gaps.length), t);
+    $("devcode-add").disabled = !gaps.some((g) => g.severity !== "low");
+  }
+  if ((r.covered || []).length) {
+    kids.push(el("details", {}, el("summary", { text: `Covered (${r.covered.length})` }),
+      table(["What the change does", "Cases"], r.covered.map((c) => [c.what, c.by.join(", ")]))));
+  }
+  if ((r.commits || []).length) {
+    kids.push(el("details", {}, el("summary", { text: `Commits read (${r.commits.length})` }),
+      table(["Commit", "Date", "Author", "Subject"], r.commits.map((c) => [el("code", { text: c.short }), c.date.slice(0, 10), c.author, c.subject]))));
+  }
+  box.replaceChildren(...kids);
+}
+$("devcode-run").onclick = async () => {
+  const j = job();
+  const repo = $("devcode-repo").value.trim();
+  const branch = $("devcode-branch").value.trim();
+  if (!j || !repo || !branch) { setState($("devcode-state"), "bad", !j ? "name the job first" : "give the repository and the branch"); return; }
+  const options = { "--job": j, "--repo": repo, "--branch": branch };
+  if ($("devcode-ticket").value.trim()) options["--ticket"] = $("devcode-ticket").value.trim();
+  if ($("devcode-base").value.trim()) options["--base"] = $("devcode-base").value.trim();
+  if ($("devcode-cursor").checked) options["--ask-cursor"] = true;
+  try { localStorage.setItem(DEVCODE_KEY, JSON.stringify({ repo, base: $("devcode-base").value.trim() })); } catch { /* ok */ }
+  $("devcode-run").disabled = true;
+  $("devcode-log").hidden = false;
+  $("devcode-result").replaceChildren();
+  try {
+    await post("/api/start", { job: j, runnable: "devcode-check", options });
+    follow("devcode-check", $("devcode-log"), $("devcode-state"), async () => {
+      $("devcode-run").disabled = false;
+      await showDevcode(j);
+      showSources(j);
+    }, j);
+  } catch (e) { $("devcode-run").disabled = false; setState($("devcode-state"), "bad", e.message); }
+};
+$("devcode-stop").onclick = () => post("/api/stop", { job: job(), runnable: "devcode-check" }).catch(() => {});
+$("devcode-add").onclick = () => {
+  const ids = [...document.querySelectorAll("#devcode-result input[data-gap]:checked")].map((c) => c.dataset.gap);
+  if (!ids.length) { setState($("devcode-state"), "bad", "choose at least one gap"); return; }
+  if (!confirm(`Cursor adds cases for ${ids.length} gap(s): ${ids.join(", ")}. Every existing case is kept as it is; ` +
+               "the new ones come in as proposed, for review. Continue?")) return;
+  pendingGaps = ids;
+  goToStep("new", "design-review");
+  $("run-design").onclick();
+};
+showDevcode();
+$("job").addEventListener("change", () => showDevcode());
+
+// ---- the Run tests tab -------------------------------------------------------
+// Compile, or run a suite / class / group, against an environment. The
+// commands are the server's (mvn-compile, mvn-test); the page names what.
+// Kept in a job of its own unless a job is open, so a run never touches a
+// story's workflow files.
+const runJob = () => job() || "runs";
+let runTargets = null;
+async function loadRunTargets() {
+  try { runTargets = await api("/api/run-targets"); } catch (e) { setState($("run-state"), "bad", e.message); return; }
+  const keep = $("run-suite").value;
+  const LABEL = { group: "Story suites by group", jira: "Story suites", project: "Project suites",
+                  job: "One job's tests", converted: "Converted ReadyAPI suites" };
+  const groups = {};
+  for (const s of runTargets.suites) (groups[s.kind] = groups[s.kind] || []).push(s);
+  $("run-suite").replaceChildren(...Object.entries(groups).map(([k, list]) =>
+    el("optgroup", { label: LABEL[k] || k }, ...list.map((s) => el("option", { value: s.path, text: s.path })))));
+  if (keep) $("run-suite").value = keep;
+  $("run-groups").replaceChildren(...runTargets.groups.map((g) => el("option", { value: g })));
+  const envKeep = $("run-env").value;
+  $("run-env").replaceChildren(...runTargets.envs.map((e) => el("option", { value: e, text: e + (e === runTargets.active ? " (active)" : "") })));
+  $("run-env").value = envKeep || runTargets.active || (runTargets.envs[0] || "");
+}
+for (const r of document.querySelectorAll('input[name="run-what"]')) {
+  r.onchange = () => {
+    for (const w of ["suite", "test", "group"]) $(`run-what-${w}`).hidden = chosen("run-what") !== w;
+  };
+}
+$("run-suites-refresh").onclick = loadRunTargets;
+function runBusy(on) { for (const id of ["mvn-compile", "mvn-test"]) $(id).disabled = on; }
+async function showRunResult(j) {
+  const r = await artifactJson(j, "mvnrun-result.json");
+  const box = $("run-result");
+  if (!r) { box.replaceChildren(); return; }
+  const kids = [];
+  if (r.compile) kids.push(banner(r.compile.ok ? "ok" : "bad", r.compile.ok
+    ? `Compiled (${r.compile.how}, ${Math.round(r.compile.seconds)}s).`
+    : `The compile failed: ${(r.compile.errors || []).length} error(s).`));
+  if (r.compile && (r.compile.errors || []).length)
+    kids.push(el("pre", { class: "doc", text: r.compile.errors.slice(0, 60).join("\n") }));
+  if (r.what === "test") {
+    const what = r.suite || (r.test ? `-Dtest=${r.test}` : `group ${r.group}`);
+    if (r.tests) {
+      const tile = (cls, n, label) => el("div", { class: `tile ${cls}` }, el("b", { text: String(n) }), el("small", { text: label }));
+      kids.push(el("div", { class: "run-summary" },
+        tile(r.ok ? "ok" : "bad", r.ok ? "PASSED" : "FAILED", `${what} on ${r.env}`),
+        tile("ok", r.passed, "passed"), tile(r.failed ? "bad" : "", r.failed, "failed"),
+        tile(r.skipped ? "warn" : "", r.skipped, "skipped"),
+        tile("", `${Math.round(r.seconds || 0)}s`, `Maven ${r.how || ""}`)));
+      const order = { FAIL: 0, SKIP: 1, PASS: 2 };
+      const tests = [...r.tests].sort((a, b) => (order[a.status] ?? 3) - (order[b.status] ?? 3));
+      kids.push(table(["Status", "Test", "Groups", "Time", "Message"], tests.map((t) => [
+        el("span", { class: `status-${t.status}`, text: t.status + (t.config ? " (setup)" : "") }),
+        el("div", {}, el("code", { text: `${t.class.split(".").pop()}.${t.method}` }),
+           t.params ? el("small", { text: t.params.slice(0, 160) }) : null),
+        (t.groups || []).join(", "), `${(t.ms / 1000).toFixed(1)}s`,
+        el("small", { text: (t.message || "").slice(0, 400) })])));
+    } else {
+      kids.push(banner("bad", r.verdict || "no test results"));
+      if ((r.errors || []).length) kids.push(el("pre", { class: "doc", text: r.errors.slice(0, 60).join("\n") }));
+      else if ((r.tail || []).length) kids.push(el("pre", { class: "doc", text: r.tail.join("\n") }));
+    }
+  }
+  box.replaceChildren(...kids);
+}
+async function startRun(runnable, options) {
+  const j = runJob();
+  runBusy(true);
+  $("run-result").replaceChildren();
+  try {
+    await post("/api/start", { job: j, runnable, options: Object.assign({ "--job": j }, options) });
+    follow(runnable, $("run-log"), $("run-state"), async () => { runBusy(false); await showRunResult(j); }, j);
+  } catch (e) { runBusy(false); setState($("run-state"), "bad", e.message); }
+}
+$("mvn-compile").onclick = () => startRun("mvn-compile", {});
+$("mvn-test").onclick = () => {
+  const what = chosen("run-what");
+  const options = { "--env": $("run-env").value };
+  if ($("run-compile-first").checked) options["--compile-first"] = true;
+  if (what === "suite") options["--suite"] = $("run-suite").value;
+  if (what === "test") options["--test"] = $("run-test").value.trim();
+  if (what === "group") options["--group"] = $("run-group").value.trim();
+  const named = options["--suite"] || options["--test"] || options["--group"];
+  if (!named) { setState($("run-state"), "bad", `name the ${what} to run`); return; }
+  startRun("mvn-test", options);
+};
+$("mvn-stop").onclick = async () => {
+  const j = runJob();
+  for (const r of ["mvn-test", "mvn-compile"]) await post("/api/stop", { job: j, runnable: r }).catch(() => {});
+};
+onTab.run = async () => {
+  if (!runTargets) await loadRunTargets();
+  const j = runJob();
+  // A run started earlier (or from another tab) is followed again.
+  for (const r of ["mvn-test", "mvn-compile"]) {
+    let st = null;
+    try { st = await api(`/api/status?job=${encodeURIComponent(j)}&runnable=${r}`); } catch { st = null; }
+    if (st && st.state === "running") { runBusy(true); follow(r, $("run-log"), $("run-state"), async () => { runBusy(false); await showRunResult(j); }, j); return; }
+  }
+  showRunResult(j);
+};
+
 // A design made earlier is still this job's design after a refresh.
 showDesign();
 showSpec();
@@ -2041,11 +2508,16 @@ async function showLogs() {
   }
   try { server = (await api(`/api/diag?which=server`)).text || ""; }
   catch (e) { server = `(${e.message})`; }
+  let run = "";
+  try { run = (await api("/api/diag?which=run")).text || ""; }
+  catch (e) { run = `(${e.message})`; }
   if (j !== job()) return;
   for (const [id, text] of [["logs-job", mine], ["logs-server", server]]) {
     $(id).textContent = filter(text);
     $(id).scrollTop = $(id).scrollHeight;
   }
+  $("logs-run").textContent = run || "—";
+  $("logs-run").scrollTop = $("logs-run").scrollHeight;
   setState($("logs-state"), "", `read at ${new Date().toLocaleTimeString()}`);
 }
 $("logs-refresh").onclick = showLogs;
@@ -2204,6 +2676,7 @@ const REVIEW_TEXT = {
                     "of the suite.",
   "push-failed": "Committed locally, but the push failed. Approve again to retry.",
   "discarded": "Discarded.",
+  "committed-outside": "Committed outside the workbench.",
 };
 
 async function refreshReview() {
@@ -2291,7 +2764,9 @@ async function refreshReview() {
   // button says why instead of only being grey.
   const askBlocked = review.mock && ["pending-review", "verify-failed"].includes(state)
     ? "The change waiting here was made by the stand-in (mock Cursor): Discard it first."
-    : state === "generating" ? "A run of this job did not finish: Discard it on the Commit and push tab first."
+    : state === "generating" ? ((review.scope || "") === "workbench"
+      ? `A change to the workbench did not finish (job ${shown}): Discard it on the Commit and push tab first.`
+      : "A run of this job did not finish: Discard it on the Commit and push tab first.")
     : ["pushed", "approved-local"].includes(state) ? "This job's change was already approved: ask in a new job."
     : state === "push-failed" ? "The push failed: push again on the Commit and push tab first." : "";
   $("agent-ask-send").disabled = Boolean(askBlocked);
@@ -2372,7 +2847,7 @@ async function showCodeReview(j, run) {
     "stand-in for Cursor (tools/agent/mock.json). This is not a review."));
   // Said before anything it found.
   const waitingNow = run.state === "pending-review" || run.state === "verify-failed";
-  if (!waitingNow && !otherRun) {
+  if (!waitingNow) {
     kids.push(banner("warn", `This review is of a change that is no longer waiting ` +
       `(the job is ${String(run.state || "none").toUpperCase()}).`));
   }
@@ -2441,6 +2916,7 @@ const cursorStreams = {
   // The Migration tab's own runs (a converted suite, the converter), in
   // migration-cursor.log: never the Automate tab's conversation.
   migration: { runnable: "migration-cursor", offset: 0 },
+  "csv-xray": { runnable: "csv-xray", offset: 0 },
 };
 function panesFor(src) {
   if (src === "migration") return $("mig-cursor-log") ? [$("mig-cursor-log")] : [];
@@ -2462,9 +2938,8 @@ async function pollStream(src, reset) {
   } catch { /* no such log for this job yet */ }
 }
 async function pollCursorLog(reset) {
-  await pollStream("tests", reset);
-  await pollStream("design", reset);
-  await pollStream("migration", reset);
+  const src = cursorStreams[cursorSource] ? cursorSource : "tests";
+  await pollStream(src, reset);
 }
 function setCursorSource(src) {
   if (!cursorStreams[src]) return;
@@ -2699,7 +3174,7 @@ $("mig-run").onclick = async () => {
     watchCursorLog();
     follow(runnable, $("mig-log"), $("mig-state"), () => {
       refreshReview();
-      pollCursorLog(false);
+      pollStream("migration", false);
     }, j);
   } catch (e) { setState($("mig-state"), "bad", e.message); }
 };
@@ -2865,11 +3340,43 @@ $("agent-push").onclick = () => {
   if (pushes) { options["--base"] = base; if ($("agent-branch").value.trim()) options["--branch"] = branch; }
   runAgent("agent-approve", options);
 };
-onTab.agent = () => { showRepo(); };
+onTab.agent = () => { showRepo(); focusUnfinishedWorkbench(); };
+// The Logs tab's Ask Cursor refuses while a workbench run stopped with
+// edits still uncommitted, and tells the person to Discard on THIS tab.
+// This tab shows the job in the box. When that job has nothing to
+// discard, open the unfinished workbench job so Discard is enabled.
+// A run whose edits were committed is no longer unfinished: the server
+// read git status and recorded it, and this leaves the job box alone.
+async function focusUnfinishedWorkbench() {
+  // This tab's own refresh. The shared click listener does not also
+  // refresh it: that read can finish after the job box has moved and
+  // paint the previous job's buttons.
+  const finish = () => { refreshReview(); watchCursorLog(); };
+  // ?job= in the address opened this page on purpose (a link, a check):
+  // do not swap the box to another job's unfinished workbench run.
+  const urlJob = new URLSearchParams(location.search).get("job") || "";
+  if (/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(urlJob)) { finish(); return; }
+  let unfinished = "";
+  try {
+    const r = await api("/api/workbench-job");
+    unfinished = r.unfinished || "";
+  } catch { finish(); return; }
+  if (!unfinished || unfinished === job()) { finish(); return; }
+  const review = await artifactJson(job(), "review.json");
+  const state = (review && review.state) || "none";
+  const canDiscard = !!(review && (review.needs_discard ||
+    state === "pending-review" || state === "verify-failed" || state === "generating"));
+  if (canDiscard) { finish(); return; }
+  $("job").value = unfinished;
+  setState($("agent-state"), "warn",
+    `job ${unfinished} still has uncommitted changes from a workbench run that did not finish. Discard puts them back.`);
+  $("job").dispatchEvent(new Event("change"));
+  watchCursorLog();
+}
 // The review state drives buttons on three tabs (Ask Cursor to change it,
 // the Migration tab's Ask Cursor, Commit and push): read it when any of
 // them is opened, and once at load.
-for (const tab of ["agent", "new", "convert"]) {
+for (const tab of ["new", "convert"]) {
   const b = document.querySelector(`.tabs button[data-tab="${tab}"]`);
   if (b) b.addEventListener("click", () => { refreshReview(); watchCursorLog(); });
 }
@@ -3433,6 +3940,7 @@ showMockBanner();
 let wbJob = "";
 let wbTimer = null;
 let wbOffset = 0;
+let wbLive = false;
 function wbWatch(j) {
   clearInterval(wbTimer);
   wbOffset = 0;
@@ -3452,12 +3960,48 @@ function wbWatch(j) {
   read();
   wbTimer = setInterval(read, 1500);
 }
+// A refresh drops the poller that writes the status line. The Cursor log
+// keeps moving on its own, so attach the command log again while the run
+// is still going.
+async function wbFollowLive(j) {
+  if (!j || wbLive) return;
+  for (const runnable of ["agent-generate", "agent-followup"]) {
+    let st;
+    try {
+      st = await api(`/api/status?job=${encodeURIComponent(j)}&runnable=${runnable}`);
+    } catch { continue; }
+    if (!st || st.state !== "running") continue;
+    wbLive = true;
+    $("wb-run").disabled = true;
+    follow(runnable, $("wb-log"), $("wb-state"), () => {
+      wbLive = false;
+      $("wb-run").disabled = false;
+      wbRefresh();
+    }, j);
+    return;
+  }
+}
 async function wbRefresh() {
   try {
     const r = await api("/api/workbench-job");
-    wbJob = r.new ? (r.latest || "") : r.job;
-    $("wb-job").textContent = wbJob ? `job ${wbJob}` + (r.new ? "" : ` -- ${r.state.replace("-", " ")}`) : "";
-    wbWatch(wbJob);
+    // A run that stopped with edits still in git status is the job Discard
+    // acts on. Review it opens that job. Once the server has read a clean
+    // status, `unfinished` is empty and the logs follow the latest job.
+    wbJob = r.unfinished || (r.new ? (r.latest || "") : r.job);
+    const label = r.unfinished ? r.unfinished : wbJob;
+    $("wb-job").textContent = label
+      ? `job ${label}` + (r.unfinished ? " -- did not finish" : (r.new ? "" : ` -- ${r.state.replace("-", " ")}`))
+      : "";
+    wbWatch(r.unfinished ? r.unfinished : wbJob);
+    await wbFollowLive(r.unfinished ? r.unfinished : wbJob);
+    if (wbLive) return;
+    const stuck = ($("wb-state").textContent || "").indexOf("did not finish") >= 0;
+    if (r.unfinished) {
+      setState($("wb-state"), "bad",
+        `a change to the workbench did not finish (job ${r.unfinished}): Discard it on the Commit and push tab first`);
+    } else if (stuck) {
+      setState($("wb-state"), "", "");
+    }
   } catch { /* the server is older than this page */ }
 }
 $("wb-run").onclick = async () => {
@@ -3473,7 +4017,12 @@ $("wb-run").onclick = async () => {
     $("wb-job").textContent = `job ${wbJob}`;
     $("wb-ask").value = "";
     wbWatch(wbJob);
-    follow(r.runnable, $("wb-log"), $("wb-state"), () => { $("wb-run").disabled = false; wbRefresh(); }, wbJob);
+    wbLive = true;
+    follow(r.runnable, $("wb-log"), $("wb-state"), () => {
+      wbLive = false;
+      $("wb-run").disabled = false;
+      wbRefresh();
+    }, wbJob);
   } catch (e) { $("wb-run").disabled = false; setState($("wb-state"), "bad", e.message); }
 };
 $("wb-stop").onclick = async () => {

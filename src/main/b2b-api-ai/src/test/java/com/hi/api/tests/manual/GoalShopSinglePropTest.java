@@ -12,6 +12,8 @@ import org.testng.annotations.Test;
 import com.hi.api.config.Config;
 import com.hi.api.data.PerMethodCsvDataProvider;
 import com.hi.api.dsl.ManualCleanup;
+import com.hi.api.rest.utilities.Headers;
+import com.hi.api.rest.utilities.RestUtilities;
 import com.hi.api.support.ImportedRestClient;
 import com.hi.api.support.ImportedScenario;
 import com.hi.api.tests.BaseApiTest;
@@ -207,6 +209,11 @@ public class GoalShopSinglePropTest extends BaseApiTest {
         return token;
     }
 
+    /** Same service resolution as {@code GoalShopSinglePropLegacyStyleTest}. */
+    private String shopBase() {
+        return Config.get("services.hospitality_internal_all_v2", Config.baseUrl());
+    }
+
     /** Query string from the same `qry_GET_Shop_*` columns the converted test reads. */
     private Map<String, String> shopQuery(Map<String, String> row) {
         Map<String, String> q = new LinkedHashMap<>();
@@ -221,6 +228,24 @@ public class GoalShopSinglePropTest extends BaseApiTest {
             }
         }
         return q;
+    }
+
+    private String toQueryString(Map<String, String> q) {
+        if (q.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder("?");
+        for (Map.Entry<String, String> e : q.entrySet()) {
+            if (sb.length() > 1) {
+                sb.append('&');
+            }
+            sb.append(java.net.URLEncoder.encode(e.getKey(),
+                            java.nio.charset.StandardCharsets.UTF_8))
+              .append('=')
+              .append(java.net.URLEncoder.encode(e.getValue(),
+                            java.nio.charset.StandardCharsets.UTF_8));
+        }
+        return sb.toString();
     }
 
     @Test(dataProvider = "rows",
@@ -247,8 +272,15 @@ public class GoalShopSinglePropTest extends BaseApiTest {
         String token = bearer();
         Map<String, String> query = shopQuery(resolved);
 
-        Response res = Allure.step("GET_Shop", () ->
-                client.goalShopSingleProp(token, propCode, query));
+        String url = shopBase() + "/props/" + propCode + "/groups" + toQueryString(query);
+        Response res = Allure.step("GET_Shop", () -> RestUtilities.getResponseGet(
+                url,
+                Headers.builder()
+                        .contentTypeJson()
+                        .acceptJson()
+                        .bearer(token)
+                        .correlationId()
+                        .build()));
 
         softAssert.assertEquals(res.getStatusCode(), 200, "GET_Shop status");
         if (res.getStatusCode() == 200) {

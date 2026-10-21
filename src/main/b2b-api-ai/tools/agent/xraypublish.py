@@ -149,11 +149,14 @@ def run(job: str, root: str = "", transport=None, conf: dict = None, mocked: boo
     execution = str(execution or "").strip().upper()
     if execution and not _KEY_RX.match(execution):
         raise Refused(f"{execution!r} is not a Jira issue key (like ABC-123)")
+    diag.step("Reading the job's last run")
     try:
         with io.open(os.path.join(job_dir, "execution.json"), encoding="utf-8") as fh:
             ran = json.load(fh)
     except (OSError, ValueError):
         raise Refused("this job has no run to publish: Run the tests first (Commit and push tab)")
+    diag.step(f"Run on {ran.get('env')} at {ran.get('at')}: "
+              f"{ran.get('passed')} passed, {ran.get('failed')} failed")
     try:
         with io.open(os.path.join(job_dir, "xray-publish.json"), encoding="utf-8") as fh:
             before = json.load(fh)
@@ -181,7 +184,9 @@ def run(job: str, root: str = "", transport=None, conf: dict = None, mocked: boo
             raise Refused("Xray is not set up: " + ", ".join(missing) + " missing (Settings tab)")
         if "atlassian.net" in conf["base"] or "getxray.app" in conf["base"]:
             raise Refused("Xray Cloud is not published to from here: Server / Data Center only")
+    diag.step("Matching each test to an Xray key (jira_xray_id column or @XrayTest)")
     by_key, unkeyed = keyed(root, ran.get("tests") or [])
+    diag.step(f"{len(by_key)} test key(s) to publish, {len(unkeyed)} without a key")
     if not by_key:
         raise Refused("none of the run's tests carries an Xray key (a jira_xray_id column, or "
                       "@XrayTest): there is nothing to publish to. A test gets its case's key "

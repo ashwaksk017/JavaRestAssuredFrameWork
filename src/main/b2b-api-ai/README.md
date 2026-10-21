@@ -657,11 +657,11 @@ to set on the Maven command line. One thing is outside Maven's reach: a
 **Windows PowerShell 5.1** `>` redirect re-decodes the JVM's bytes with the
 console code page (cp1252 / cp437 by default), so `mvn test > full-run.log`
 from a plain PowerShell window turns 鴕火 into `é´•ç«`. `cmd.exe` passes
-the bytes through untouched. From PowerShell use the wrapper, which sets the
-console to UTF-8 for that one invocation and forwards every argument:
+the bytes through untouched. Use the wrapper, which writes the log itself
+(so no shell re-decodes it) and forwards every other argument to mvn:
 
-```powershell
-tools\mvn-utf8.ps1 test "-DsuiteXmlFile=Suites/Programaccountregression_Regression.xml" > full-run.log
+```
+python tools/mvn_utf8.py --log full-run.log test "-DsuiteXmlFile=Suites/Programaccountregression_Regression.xml"
 ```
 
 If a `?` still shows up in a payload after that, it was a `?` in the datasheet.

@@ -44,6 +44,53 @@ _spec.loader.exec_module(intake)
 
 ROOT = intake.ROOT
 PY = sys.executable
+CURSOR_SETUP_REL = os.path.join(".workbench", "cursor-setup.json")
+
+
+def _loop_module():
+    name = "jobs_loop"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, "loop.py"))
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def run_cursor_startup(root: str = "") -> dict:
+    """Check Cursor when the workbench server starts; cache for the UI."""
+    root = root or ROOT
+    loop = _loop_module()
+    result = dict(loop.cursor_setup_check(root))
+    result.pop("_log_key", None)
+    result.pop("_log_sdk", None)
+    result["at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    path = os.path.join(root, CURSOR_SETUP_REL.replace("/", os.sep))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with io.open(path, "w", encoding="utf-8") as fh:
+        json.dump({k: v for k, v in result.items() if k != "lines"}, fh, indent=2)
+    return result
+
+
+def mark_cursor_checking(root: str = "") -> None:
+    """The startup check has begun (it runs beside the server): the page
+    says nothing alarming until it has an answer."""
+    path = os.path.join(root or ROOT, CURSOR_SETUP_REL.replace("/", os.sep))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with io.open(path, "w", encoding="utf-8") as fh:
+        json.dump({"ok": None, "checking": True, "problem": "being checked (the server has just started)",
+                   "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}, fh, indent=2)
+
+
+def read_cursor_startup(root: str = "") -> dict:
+    path = os.path.join(root or ROOT, CURSOR_SETUP_REL.replace("/", os.sep))
+    try:
+        with io.open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {"ok": None, "problem": "not checked yet — restart the workbench server"}
 
 # Every command the UI may start, by name. The value is the argv prefix;
 # the caller may only append arguments the runnable declares.
@@ -286,6 +333,37 @@ RUNNABLES = {
         "options": {"--job": "text", "--service": "text", "--speed": "text",
                     "--mode": "text", "--fresh": "flag", "--whole-spec": "flag"},
     },
+    # The designed cases against the developer's change: a repository
+    # address, a branch and a ticket, each checked by devcode.py (https or
+    # ssh only, no password in the address, the hosts of
+    # devcode_config.base_urls when set). Mirrors into .workbench/devrepos;
+    # writes devcode.json / devcode.md. Never checks out, never pushes.
+    "devcode-check": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "devcode.py")],
+        "label": "Check the cases against the developer's change (repository, branch, ticket)",
+        "options": {"--job": "text", "--repo": "text", "--branch": "text", "--ticket": "text",
+                    "--base": "text", "--ask-cursor": "flag"},
+    },
+    # Cursor suggests the suites (TestNG groups) of each case; nothing is
+    # decided until a person takes a suggestion on the review table.
+    "suite-suggest": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "suitesuggest.py")],
+        "label": "Cursor suggests which suites each case belongs in",
+        "options": {"--job": "text", "--ids": "text"},
+    },
+    # The Run tests tab. What is run is a suite file under Suites/, a test
+    # class, or a group with a suite file -- each checked by mvnrun.py.
+    "mvn-compile": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "mvnrun.py"), "compile"],
+        "label": "Compile the project and its tests",
+        "options": {"--job": "text"},
+    },
+    "mvn-test": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "mvnrun.py"), "test"],
+        "label": "Run a suite, a test class or a group against an environment",
+        "options": {"--job": "text", "--suite": "text", "--test": "text", "--group": "text",
+                    "--env": "text", "--compile-first": "flag"},
+    },
     # Tab 3. Fixed sub-commands of one script; the page chooses which,
     # names the job, and for `generate` picks a scope the script itself
     # validates. `agent-approve` is the only runnable that can reach the
@@ -361,7 +439,7 @@ RUNNABLES = {
 # suite; an agent run during a convert would "put back" half-written
 # files.
 EXCLUSIVE = {"convert", "agent-generate", "agent-followup", "agent-automate", "agent-run-tests", "agent-approve", "agent-discard",
-             "agent-reapply", "verify-all"}
+             "agent-reapply", "verify-all", "mvn-compile", "mvn-test"}
 
 # The only options that may be given more than once.
 REPEATABLE = {"--link"}
@@ -394,11 +472,19 @@ diag = _diag()
 
 
 def read_diag(job: str, which: str = "job", lines: int = 400) -> str:
-    """The end of a job's diagnostics, or of the server's log, for the page."""
+    """The end of a job's diagnostics, the server log, or the Maven run log."""
     if which == "server":
         return diag.tail(diag.server_log(ROOT), lines)
+    if which == "run":
+        if "jobs_runlog" not in sys.modules:
+            spec = importlib.util.spec_from_file_location(
+                "jobs_runlog", os.path.join(HERE, "runlog.py"))
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules["jobs_runlog"] = mod
+            spec.loader.exec_module(mod)
+        return sys.modules["jobs_runlog"].text_for_page(ROOT, lines)
     if which != "job":
-        raise ValueError("which is `job` or `server`")
+        raise ValueError("which is `job`, `server`, or `run`")
     return diag.tail(os.path.join(job_dir(job), diag.JOB_LOG), lines)
 
 
@@ -696,6 +782,88 @@ def spec_state(job: str) -> dict:
     return _specsource().current(out, ROOT)
 
 
+def sources(job: str) -> dict:
+    """Everything the cases of a job were designed from, for the page to
+    list: the story, every story read around it (parents, links,
+    sub-tasks) and why, the Confluence pages, the links that could not be
+    read, the specification, what was pasted into the design boxes, and
+    the last check against the developer's change. Names and sizes only;
+    no story text."""
+    out = job_dir(job)
+    data = _read_json(os.path.join(out, "intake.json"))
+    story = data.get("story") if isinstance(data.get("story"), dict) else {}
+
+    def one(value, cap=300):
+        return " ".join(str(value if value is not None else "").split())[:cap]
+    around = []
+    for a in data.get("around") or []:
+        if isinstance(a, dict):
+            around.append({"key": one(a.get("key"), 40), "how": one(a.get("how"), 80),
+                           "ok": bool(a.get("ok")), "reason": one(a.get("reason"), 200),
+                           "summary": one(a.get("summary")), "type": one(a.get("type"), 40),
+                           "status": one(a.get("status"), 40),
+                           "chars": len(str(a.get("text") or "")), "cut": int(a.get("cut") or 0)})
+    pages = []
+    for p in data.get("pages") or []:
+        if isinstance(p, dict):
+            pages.append({"link": one(p.get("link"), 300), "chars": len(str(p.get("text") or "")),
+                          "cut": int(p.get("cut") or 0), "from_story": one(p.get("from_story"), 40),
+                          "pasted": bool(p.get("pasted"))})
+    failed = [{"link": one(l.get("link"), 300), "kind": one(l.get("kind"), 40),
+               "reason": one(l.get("reason"), 300)}
+              for l in data.get("links") or [] if isinstance(l, dict) and not l.get("ok")]
+    boxes = {}
+    for field in ("swagger", "requirements", "notes", "refine"):
+        p = os.path.join(out, f"design-{field}.txt")
+        if os.path.isfile(p):
+            boxes[field] = os.path.getsize(p)
+    try:
+        spec = spec_state(job)
+    except Exception:                                    # noqa: BLE001
+        spec = {}
+    dev = _read_json(os.path.join(out, "devcode.json"))
+    design = _read_json(os.path.join(out, "design.json"))
+    return {
+        "read": bool(data), "at": one(data.get("at"), 30),
+        "story": ({"key": one(story.get("key"), 40), "summary": one(story.get("summary")),
+                   "type": one(story.get("type"), 40), "status": one(story.get("status"), 40),
+                   "parents": [one(p, 40) for p in story.get("parents") or []][:10],
+                   "unread_parents": [one(p, 40) for p in story.get("unread_parents") or []][:10],
+                   "linked_not_read": [one(p, 60) for p in story.get("linked_not_read") or []][:20],
+                   "comments": int(story.get("comments") or 0),
+                   "attachments": [one((a or {}).get("name"), 120) for a in story.get("attachments") or []
+                                   if isinstance(a, dict)][:20],
+                   "acceptance_criteria": bool((story.get("acceptance_criteria") or {}).get("present")),
+                   "chars": int(story.get("chars") or 0),
+                   "cut": int(data.get("story_text_cut") or 0)} if story else {}),
+        "around": around, "pages": pages, "failed": failed,
+        "requests": len(data.get("requests") or []), "pasted_chars": int(data.get("pasted_chars") or 0),
+        "spec": {"name": one(spec.get("name") or spec.get("file") or "", 160),
+                 "operations": spec.get("operations") or spec.get("endpoints") or 0} if spec else {},
+        "design_boxes": boxes,
+        "design": {"cases": len(design.get("test_cases") or []), "at": one(design.get("at"), 30),
+                   "model": one(design.get("model"), 60)} if design else {},
+        "devcode": ({"repo": one(dev.get("repo"), 200), "branch": one(dev.get("branch"), 120),
+                     "ticket": one(dev.get("ticket"), 40), "commits": len(dev.get("commits") or []),
+                     "gaps": len(dev.get("gaps") or []), "at": one(dev.get("at"), 30)} if dev else {}),
+    }
+
+
+def run_targets() -> dict:
+    """What the Run tests tab can run: suite files, groups, environments."""
+    mvnrun = _tool("mvnrun")
+    envs = mvnrun.list_envs(ROOT)
+    return {"suites": mvnrun.list_suites(ROOT), "groups": mvnrun.list_groups(ROOT),
+            "envs": envs["envs"], "active": envs["active"]}
+
+
+def devgap_request(job: str, ids) -> str:
+    """The refinement that adds cases for the chosen gaps of the last
+    check against the developer's change."""
+    ids = [str(i) for i in (ids or []) if re.fullmatch(r"G-[0-9]{3,4}", str(i))]
+    return _tool("devcode").refine_request(job_dir(job), ids)
+
+
 def _repo():
     spec = importlib.util.spec_from_file_location("jobs_repo", os.path.join(HERE, "repo.py"))
     mod = importlib.util.module_from_spec(spec)
@@ -782,27 +950,44 @@ def workflow_act(job: str, action: str) -> dict:
 REFINE_CAP = 60000                  # design.SECTION_LIMITS["current"]
 
 
-def refine_listing(job: str, request: str) -> str:
+def refine_scope(request: str, ids) -> str:
+    """The request as the design is given it: with chosen cases, an order
+    to change THOSE only (each is marked [REFINE] in the listing)."""
+    ids = [str(i) for i in ids or []]
+    if not ids:
+        return request
+    return (f"Change ONLY the cases marked [REFINE] ({', '.join(ids)}); return every other case "
+            f"exactly as it is, same id, title and steps. New cases may be added only if the "
+            f"request asks for them.\n\n{request}")
+
+
+def refine_listing(job: str, request: str, ids=None, cap: int = 4000) -> str:
     """The cases as they are now -- with the person's corrections and
     decisions -- for a design asked to REFINE them (`request` is checked
     here; the design puts it among its instructions). Cursor revises this
     list instead of starting over; the design's usual matching then keeps
-    each unchanged case's id and decision."""
+    each unchanged case's id and decision. `ids`: the cases the request is
+    about (one, or a selection); none means the whole list."""
     request = str(request or "").strip()
     if not request:
         raise ValueError("write how the cases should be refined")
-    if len(request) > 4000:
-        raise ValueError("keep the request under 4,000 characters")
+    if len(request) > cap:
+        raise ValueError(f"keep the request under {cap:,} characters")
     out = job_dir(job)
     design = _read_json(os.path.join(out, "design.json"))
     cases = [c for c in design.get("test_cases") or [] if isinstance(c, dict) and c.get("id")]
     if not cases:
         raise ValueError("there are no cases to refine yet: Design the tests first")
+    chosen = {str(i) for i in ids or []}
+    unknown = sorted(chosen - {str(c["id"]) for c in cases})
+    if unknown:
+        raise ValueError(f"{unknown[0]} is not a case of this job now; reload the page")
     entries = casereview.read(out)["design"]
     lines = []
     for c in casereview.apply(cases, entries):
         state = c["review"]["state"].upper()
-        lines.append(f"{c['id']} [{state}] [{c.get('type', '')}, {c.get('priority', '')}] "
+        mark = " [REFINE]" if str(c["id"]) in chosen else ""
+        lines.append(f"{c['id']}{mark} [{state}] [{c.get('type', '')}, {c.get('priority', '')}] "
                      f"{c.get('endpoint', '')} -- {c.get('title', '')}")
         for s in c.get("steps") or []:
             if isinstance(s, dict):
@@ -892,6 +1077,9 @@ RESULT_FILES = {"jira-": "jira-result.json", "failures-": "failures-result.json"
                 "story-check": "story-check.json",
                 "fix-brief": "fix-brief.json",
                 "xray-import": "xray-import.json",
+                "devcode-check": "devcode.json",
+                "suite-suggest": "suite-suggest.json",
+                "mvn-": "mvnrun-result.json",
                 # Not xray-publish: its record is what stops the same run
                 # becoming a second Test Execution, and a refused publish
                 # must not erase the last good one.
@@ -902,7 +1090,8 @@ def clear_result(job: str, runnable: str) -> None:
     for prefix, name in RESULT_FILES.items():
         if runnable.startswith(prefix):
             # The report goes with the result it is the report of.
-            for each in (name, "code-review.md") if name == "code-review.json" else (name,):
+            reports = {"code-review.json": "code-review.md", "devcode.json": "devcode.md"}
+            for each in (name, reports[name]) if name in reports else (name,):
                 try:
                     os.remove(os.path.join(job_dir(job), each))
                 except OSError:
@@ -917,7 +1106,8 @@ def job_dir(job: str) -> str:
 EXTRA_LOGS = {"cursor",       # cursor.log: the conversation with Cursor
               "design-cursor",  # design-cursor.log: the design step's
               "migration-cursor",  # migration-cursor.log: the Migration tab's runs
-              "workbench-cursor"}  # workbench-cursor.log: a change to the workbench itself
+              "workbench-cursor",  # workbench-cursor.log: a change to the workbench itself
+              "csv-xray"}  # csv-xray.log: jira_xray_id / jira_issue auto-patch audit
 
 
 def _known(runnable: str) -> str:
@@ -1094,11 +1284,113 @@ WORKBENCH_RUNNABLES = ("agent-generate", "agent-followup", "agent-approve", "age
 # runs -- nor does anything start while it runs: every other command reads
 # or is started by the very files it changes.
 WORKBENCH_PREFIX = "workbench-"
-_WAITING = ("pending-review", "verify-failed", "generating")
+_WAITING = ("pending-review", "verify-failed")
 
 
 def is_workbench_job(job) -> bool:
     return str(job or "").startswith(WORKBENCH_PREFIX)
+
+
+_LOOP = None
+
+
+def _agent_loop():
+    """loop.py, loaded once. Ask Cursor reads git status from it."""
+    global _LOOP
+    if _LOOP is None:
+        spec = importlib.util.spec_from_file_location(
+            "jobs_loop", os.path.join(HERE, "loop.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _LOOP = mod
+    return _LOOP
+
+
+def _job_alive(job_name: str) -> bool:
+    """True when this server still has a process running for the job."""
+    with _LOCK:
+        return any(j == job_name and p.poll() is None for (j, _r), p in _RUNNING.items())
+
+
+def _git_left(job_name: str):
+    """Paths a generating run still has uncommitted, or None when git
+    status cannot be read.
+
+    [] means a later commit (or a revert) took the run's edits out of
+    `git status`: nothing of it is left to discard.
+    """
+    before = _read_json(os.path.join(job_dir(job_name), "pre-state.json")).get("before")
+    before = before if isinstance(before, dict) else None
+    try:
+        after = _agent_loop().dirty_paths(ROOT)
+    except Exception:
+        return None
+    if before is None:
+        # No snapshot to compare. A clean status has nothing to put back.
+        return [] if not after else None
+    return _agent_loop().paths_left_uncommitted(before, after)
+
+
+def _settle_committed(name: str, review: dict) -> None:
+    """The run stopped in `generating`, and git status no longer has its
+    edits. Record that, so Ask Cursor is not held and Discard is not
+    offered — Discard would restore the copies from before the commit."""
+    now = _now()
+    settled = dict(review)
+    settled.update({
+        "state": "committed-outside",
+        "needs_discard": False,
+        "reason": ("git status has nothing of this run left uncommitted, "
+                   "so there is nothing to discard."),
+        "updated": now,
+    })
+    _write(os.path.join(job_dir(name), "review.json"), settled)
+    if _job_alive(name):
+        return
+    for runnable in ("agent-generate", "agent-followup"):
+        st = read_status(name, runnable)
+        if st.get("state") != "running":
+            continue
+        done = dict(st)
+        done.update({
+            "state": "failed", "exit_code": -1, "finished": now,
+            "error": ("the run is no longer running; its changes were "
+                      "committed outside the workbench"),
+        })
+        _write(status_path(name, runnable), done)
+
+
+def workbench_unfinished() -> str:
+    """A workbench job whose Cursor run stopped before finishing and whose
+    edits are still uncommitted, or "".
+
+    The review file can still say `generating` after the person committed
+    those edits from the command line. That is read from git status, not
+    from the review file alone: a clean status (or dirt that matches the
+    snapshot taken before the run) is recorded as committed outside the
+    workbench, and Ask Cursor starts.
+    """
+    base = os.path.join(ROOT, ".workbench")
+    try:
+        names = sorted((d for d in os.listdir(base)
+                        if is_workbench_job(d) and os.path.isdir(os.path.join(base, d))), reverse=True)
+    except OSError:
+        return ""
+    for name in names:
+        review = _read_json(os.path.join(base, name, "review.json"))
+        if review.get("state") != "generating":
+            continue
+        if (review.get("scope") or "workbench") != "workbench":
+            continue
+        # Still writing: git status is not the verdict yet.
+        if _job_alive(name):
+            return name
+        left = _git_left(name)
+        if left == []:
+            _settle_committed(name, review)
+            continue
+        return name
+    return ""
 
 
 def running_now() -> list:
@@ -1117,12 +1409,15 @@ def workbench_job() -> dict:
                         if is_workbench_job(d) and os.path.isdir(os.path.join(base, d))), reverse=True)
     except OSError:
         names = []
+    unfinished = workbench_unfinished()
     for name in names:
         state = str(_read_json(os.path.join(base, name, "review.json")).get("state") or "none")
         if state in _WAITING:
-            return {"job": name, "state": state, "latest": names[0]}
+            return {"job": name, "state": state, "latest": names[0],
+                    "unfinished": unfinished}
     new = WORKBENCH_PREFIX + datetime.now().strftime("%Y%m%d-%H%M%S")
-    return {"job": new, "state": "none", "new": True, "latest": names[0] if names else ""}
+    return {"job": new, "state": "none", "new": True, "latest": names[0] if names else "",
+            "unfinished": unfinished}
 
 
 def workbench_ask(text: str, images=None) -> dict:
@@ -1139,12 +1434,13 @@ def workbench_ask(text: str, images=None) -> dict:
         j, r = busy_now[0]
         raise ValueError(f"{r} is running (job {j}): the workbench is changed only while nothing "
                          f"else runs. Wait for it, or Stop it.")
+    unfinished = workbench_unfinished()
+    if unfinished:
+        raise ValueError(f"a change to the workbench did not finish (job {unfinished}): Discard it on the "
+                         f"Commit and push tab first")
     cur = workbench_job()
     job = cur["job"]
     out = job_dir(job)
-    if cur["state"] == "generating":
-        raise ValueError(f"a change to the workbench did not finish (job {job}): Discard it on the "
-                         f"Commit and push tab first")
     os.makedirs(out, exist_ok=True)
     paste.save(out, images)
     try:
@@ -1255,10 +1551,12 @@ def dismiss_review(job: str) -> dict:
         full = os.path.join(out, name)
         if not os.path.isfile(full):
             continue
-        agent_file = (name in ("cursor.log", "migration-cursor.log", "workbench-cursor.log")
+        agent_file = (name in ("cursor.log", "migration-cursor.log", "workbench-cursor.log",
+                               "csv-xray.log")
                       or any(name in (f"{r}.log", f"{r}.status.json") for r in AGENT_RUNNABLES)
                       or name.startswith(("agent-prompt-", "agent-answer-"))
-                      or name in ("proposed.diff", "agent-followup.txt"))
+                      or name in ("proposed.diff", "agent-followup.txt",
+                                  "code-review.json", "code-review.md"))
         if agent_file:
             os.replace(full, os.path.join(archive, name))
             moved.append(name)
@@ -1498,7 +1796,8 @@ def read_artifact(job: str, name: str) -> str:
                "xray-tests.json", "xray-result.json", "xray-status.json", "case-review.json",
                "story-check.json", "fix-brief.json", "xray-import.json",
                "xray-update-plan.json", "xray-update.json",
-               "publish-status.json", "publish.log"}
+               "publish-status.json", "publish.log",
+               "devcode.json", "devcode.md", "suite-suggest.json", "mvnrun-result.json"}
     if name not in allowed:
         raise ValueError(f"{name!r} is not a readable artifact. "
                          f"Known: {', '.join(sorted(allowed))}")

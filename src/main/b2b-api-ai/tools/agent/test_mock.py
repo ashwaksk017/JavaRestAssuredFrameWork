@@ -422,6 +422,23 @@ class TheAgentLoopAgainstTheStandIn(Mocked):
                                    agent=None, verifier=self.ok)
         return rc, out.getvalue()
 
+    def test_rel_keeps_paths_under_the_project_without_dot_dot(self):
+        rel = mock.SAMPLE_TEST
+        self.assertEqual(loop._rel(self.repo, self.repo, rel), rel)
+
+    def test_dirty_paths_stay_inside_the_project_when_git_and_temp_disagree_on_spelling(self):
+        """Windows: git rev-parse --show-toplevel often returns the long path
+        while tempfile.mkdtemp gave the repo a short 8.3 path. Paths must
+        still be relative to the project, not climb with `../`."""
+        path = os.path.join(self.repo, mock.SAMPLE_TEST.replace("/", os.sep))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with io.open(path, "w", encoding="utf-8") as fh:
+            fh.write("// touch\n")
+        paths = loop.dirty_paths(self.repo)
+        for rel in paths:
+            self.assertFalse(rel.startswith("../"), rel)
+        self.assertIn(mock.SAMPLE_TEST, paths, "git's path spelling is kept, not normcase lower-case")
+
     def test_a_placeholder_is_written_held_for_review_and_can_only_be_discarded(self):
         rc, out = self.generate()
         self.assertEqual(rc, 0, out)

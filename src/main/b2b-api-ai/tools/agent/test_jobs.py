@@ -13,8 +13,10 @@ _os.environ["WORKBENCH_MOCK"] = "0"      # these tests are about the real paths
 
 import importlib.util
 import io
+import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -501,6 +503,95 @@ class ChangingTheWorkbench(unittest.TestCase):
         r = jobs.workbench_ask("Also wrap the label.")
         self.assertEqual((r["job"], r["runnable"]), (job, "agent-followup"))
 
+    def test_an_unfinished_workbench_run_is_refused_only_when_changing_the_workbench(self):
+        stuck = "workbench-20261016-151909"
+        os.makedirs(jobs.job_dir(stuck))
+        with io.open(os.path.join(jobs.job_dir(stuck), "review.json"), "w", encoding="utf-8") as fh:
+            fh.write('{"state": "generating", "scope": "workbench"}')
+        # No snapshot and no git repo here: the status cannot be read, so
+        # the run stays unfinished. A commit that clears it is the next test.
+        with self.assertRaises(ValueError) as got:
+            jobs.workbench_ask("Fix the button.")
+        self.assertIn("a change to the workbench did not finish", str(got.exception))
+        self.assertIn(stuck, str(got.exception))
+        cur = jobs.workbench_job()
+        self.assertNotEqual(cur.get("state"), "generating",
+                            "a stuck run does not bind the workbench session")
+        self.assertEqual(cur.get("unfinished"), stuck)
+
+    def _git(self, *args):
+        r = subprocess.run(["git", *args], cwd=self.root, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT)
+        self.assertEqual(r.returncode, 0, r.stdout.decode("utf-8", "replace"))
+        return r.stdout.decode("utf-8", "replace")
+
+    def test_a_commit_from_the_command_line_clears_a_generating_workbench_run(self):
+        # The run's review still says generating. git status is what Ask
+        # Cursor reads: uncommitted edits keep the refusal; a commit of
+        # those edits clears it, and Discard is not left on offer.
+        self._git("init", "-q", "-b", "main")
+        self._git("config", "user.email", "t@example.com")
+        self._git("config", "user.name", "t")
+        readme = os.path.join(self.root, "README.md")
+        with io.open(readme, "w", encoding="utf-8") as fh:
+            fh.write("before\n")
+        self._git("add", "README.md")
+        self._git("commit", "-q", "-m", "base")
+        stuck = "workbench-20261019-111620"
+        os.makedirs(jobs.job_dir(stuck))
+        with io.open(os.path.join(jobs.job_dir(stuck), "review.json"), "w", encoding="utf-8") as fh:
+            fh.write('{"state": "generating", "scope": "workbench", "base_commit": "x"}')
+        with io.open(os.path.join(jobs.job_dir(stuck), "pre-state.json"), "w", encoding="utf-8") as fh:
+            fh.write('{"before": {}}')
+        with io.open(os.path.join(jobs.job_dir(stuck), "agent-generate.status.json"), "w",
+                     encoding="utf-8") as fh:
+            fh.write('{"state": "running", "runnable": "agent-generate"}')
+        with io.open(readme, "w", encoding="utf-8") as fh:
+            fh.write("the run wrote this\n")
+        with self.assertRaises(ValueError) as got:
+            jobs.workbench_ask("While it is still uncommitted.")
+        self.assertIn(stuck, str(got.exception))
+        with io.open(os.path.join(jobs.job_dir(stuck), "review.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["state"], "generating")
+        self._git("add", "README.md")
+        self._git("commit", "-q", "-m", "committed from the command line")
+        r = jobs.workbench_ask("Show a clear-logs button.")
+        self.assertTrue(r["job"].startswith("workbench-"))
+        self.assertNotEqual(r["job"], stuck)
+        with io.open(os.path.join(jobs.job_dir(stuck), "review.json"), encoding="utf-8") as fh:
+            review = json.load(fh)
+        self.assertEqual(review["state"], "committed-outside")
+        self.assertFalse(review.get("needs_discard"))
+        self.assertIn("git status", review["reason"])
+        with io.open(os.path.join(jobs.job_dir(stuck), "agent-generate.status.json"),
+                     encoding="utf-8") as fh:
+            status = json.load(fh)
+        self.assertEqual(status["state"], "failed", "a dead run must not stay running")
+        self.assertEqual(jobs.workbench_job().get("unfinished"), "")
+
+    def test_uncommitted_edits_still_block_and_a_live_run_is_not_settled(self):
+        stuck = "workbench-20261019-111620"
+        os.makedirs(jobs.job_dir(stuck))
+        with io.open(os.path.join(jobs.job_dir(stuck), "review.json"), "w", encoding="utf-8") as fh:
+            fh.write('{"state": "generating", "scope": "workbench"}')
+        self.addCleanup(setattr, jobs, "_git_left", jobs._git_left)
+        jobs._git_left = lambda _job: ["tools/agent/ui/app.js"]
+        with self.assertRaises(ValueError) as got:
+            jobs.workbench_ask("Again.")
+        self.assertIn(stuck, str(got.exception))
+        with io.open(os.path.join(jobs.job_dir(stuck), "review.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["state"], "generating")
+
+        class Alive:
+            def poll(self):
+                return None
+        jobs._RUNNING[(stuck, "agent-generate")] = Alive()
+        jobs._git_left = lambda _job: []
+        self.assertEqual(jobs.workbench_unfinished(), stuck)
+        with io.open(os.path.join(jobs.job_dir(stuck), "review.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["state"], "generating",
+                             "a run that is still going is not called committed")
+
     def test_nothing_else_may_run_and_nothing_starts_while_it_runs(self):
         class Alive:
             def poll(self):
@@ -576,6 +667,71 @@ class ClearingADesign(unittest.TestCase):
         self.assertEqual(jobs.clear_design("j1"), {"cleared": False, "moved": []})
 
 
+class RefiningAndSources(unittest.TestCase):
+    """Refine one case, some, or the whole list; and the page is told what
+    the cases were designed from."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="jobs_refine_")
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        for owner in (jobs, jobs.intake):
+            self.addCleanup(setattr, owner, "ROOT", owner.ROOT)
+            owner.ROOT = self.root
+        self.job = jobs.job_dir("j1")
+        os.makedirs(self.job)
+        with io.open(os.path.join(self.job, "design.json"), "w", encoding="utf-8") as fh:
+            json.dump({"test_cases": [{"id": f"TC-00{n}", "title": f"t{n}", "endpoint": "GET /a",
+                                       "steps": [{"action": "a", "expected": "200"}]} for n in (1, 2, 3)]}, fh)
+
+    def test_chosen_cases_are_marked_and_the_request_says_only_those(self):
+        listing = jobs.refine_listing("j1", "split it", ["TC-002"])
+        self.assertIn("TC-002 [REFINE]", listing)
+        self.assertNotIn("TC-001 [REFINE]", listing)
+        self.assertIn("ONLY the cases marked [REFINE] (TC-002)", jobs.refine_scope("split it", ["TC-002"]))
+        self.assertEqual(jobs.refine_scope("split it", []), "split it")
+        self.assertNotIn("[REFINE]", jobs.refine_listing("j1", "all of them"))
+
+    def test_a_case_that_is_not_there_is_refused(self):
+        with self.assertRaises(ValueError):
+            jobs.refine_listing("j1", "x", ["TC-009"])
+
+    def test_the_request_cap_is_the_callers(self):
+        with self.assertRaises(ValueError):
+            jobs.refine_listing("j1", "x" * 4001)
+        self.assertIn("TC-001", jobs.refine_listing("j1", "x" * 8000, cap=12000))
+
+    def test_sources_name_the_stories_and_pages_without_their_text(self):
+        with io.open(os.path.join(self.job, "intake.json"), "w", encoding="utf-8") as fh:
+            json.dump({"at": "2026-10-20T10:00:00Z", "story": {"key": "ABC-1", "summary": "s", "parents": ["ABC-0"],
+                                                              "acceptance_criteria": {"present": True}, "chars": 900},
+                       "story_text": "SECRET STORY TEXT",
+                       "around": [{"key": "ABC-2", "how": "is blocked by", "ok": True, "text": "x" * 50},
+                                  {"key": "ABC-3", "how": "relates to", "ok": False, "reason": "403"}],
+                       "pages": [{"link": "https://wiki/x", "text": "y" * 10, "cut": 0}],
+                       "links": [{"link": "nope", "ok": False, "reason": "not a link"}]}, fh)
+        s = jobs.sources("j1")
+        self.assertEqual(s["story"]["key"], "ABC-1")
+        self.assertTrue(s["story"]["acceptance_criteria"])
+        self.assertEqual([(a["key"], a["ok"], a["chars"]) for a in s["around"]],
+                         [("ABC-2", True, 50), ("ABC-3", False, 0)])
+        self.assertEqual(s["pages"][0]["chars"], 10)
+        self.assertEqual(s["failed"][0]["reason"], "not a link")
+        self.assertEqual(s["design"]["cases"], 3)
+        self.assertNotIn("SECRET STORY TEXT", json.dumps(s))
+
+    def test_new_results_are_readable_and_cleared_before_a_run(self):
+        for name in ("devcode.json", "devcode.md", "suite-suggest.json", "mvnrun-result.json"):
+            with io.open(os.path.join(self.job, name), "w", encoding="utf-8") as fh:
+                fh.write("{}")
+            self.assertEqual(jobs.read_artifact("j1", name), "{}")
+        jobs.clear_result("j1", "devcode-check")
+        self.assertFalse(os.path.exists(os.path.join(self.job, "devcode.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.job, "devcode.md")))
+        jobs.clear_result("j1", "mvn-test")
+        self.assertFalse(os.path.exists(os.path.join(self.job, "mvnrun-result.json")))
+        self.assertIn("mvn-test", jobs.EXCLUSIVE)
+
+
 class PuttingAnOutcomeAway(unittest.TestCase):
     """The agent loop's last outcome can be dismissed from the page when it
     left nothing in the working tree."""
@@ -604,14 +760,16 @@ class PuttingAnOutcomeAway(unittest.TestCase):
     def test_a_rejection_that_was_undone_is_put_away_and_kept(self):
         import json
         self.review(state="rejected", why="timeout", reason="did not finish", undone=True)
-        for name in ("cursor.log", "agent-generate.log", "agent-generate.status.json", "agent-prompt-1.txt",
-                     "agent-answer-1.md", "proposed.diff", "intake.json", "design.json", "brief.md"):
+        for name in ("cursor.log", "csv-xray.log", "agent-generate.log", "agent-generate.status.json",
+                     "agent-prompt-1.txt", "agent-answer-1.md", "proposed.diff", "code-review.json",
+                     "code-review.md", "intake.json", "design.json", "brief.md"):
             with io.open(os.path.join(self.job, name), "w", encoding="utf-8") as fh:
                 fh.write("x")
         got = jobs.dismiss_review("j1")
         self.assertEqual((got["dismissed"], got["was"]), (True, "rejected"))
         self.assertEqual(got["moved"], ["agent-answer-1.md", "agent-generate.log", "agent-generate.status.json",
-                                        "agent-prompt-1.txt", "cursor.log", "proposed.diff"])
+                                        "agent-prompt-1.txt", "code-review.json", "code-review.md", "csv-xray.log",
+                                        "cursor.log", "proposed.diff"])
         archive = os.path.join(self.job, got["archive"])
         self.assertTrue(os.path.isfile(os.path.join(archive, "cursor.log")))
         self.assertTrue(os.path.isfile(os.path.join(archive, "review.json")), "the outcome itself, too")

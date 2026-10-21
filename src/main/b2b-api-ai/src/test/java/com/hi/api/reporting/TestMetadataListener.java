@@ -7,6 +7,7 @@ import org.testng.IInvokedMethodListener;
 import org.testng.ITestResult;
 
 import com.hi.api.meta.TestMetadata;
+import com.hi.api.xray.XrayRowKeys;
 
 import io.qameta.allure.Allure;
 
@@ -22,6 +23,9 @@ public class TestMetadataListener implements IInvokedMethodListener {
             return;
         }
         Map<String, String> row = rowParam(testResult);
+        if (row != null) {
+            XrayRowKeys.fillFromConfig(row);
+        }
         String methodName = testResult.getMethod() == null
                 ? "" : testResult.getMethod().getMethodName();
         String className = testResult.getTestClass() == null

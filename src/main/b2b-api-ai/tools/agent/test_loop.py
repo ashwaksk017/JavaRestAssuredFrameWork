@@ -49,11 +49,60 @@ def sh(root, *args):
     return r.stdout.decode().strip()
 
 
-def write(root, rel, text):
+STUB_INVENTORY = "/** DATA_INVENTORY: none (a stand-in test) */\n"
+
+
+def write(root, rel, text, raw=False):
+    """A story test stand-in gets the class Javadoc the parity check
+    demands (`raw` leaves it out, for the tests of that check)."""
+    if (not raw and rel.replace("\\", "/").startswith(JIRA) and rel.endswith("Test.java")
+            and "class " in text and "DATA_INVENTORY" not in text):
+        text = STUB_INVENTORY + text
     p = os.path.join(root, rel)
     os.makedirs(os.path.dirname(p), exist_ok=True)
     with io.open(p, "w", encoding="utf-8") as fh:
         fh.write(text)
+
+
+def read_stub(path):
+    """A file `write` made, as the test wrote it (without STUB_INVENTORY)."""
+    with io.open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    return text[len(STUB_INVENTORY):] if text.startswith(STUB_INVENTORY) else text
+
+
+class HeadForbiddenAndUnfinishedRefusal(unittest.TestCase):
+    def test_a_follow_up_or_repair_on_the_same_branch_ignores_a_new_commit(self):
+        self.assertFalse(loop.head_forbidden("aaa", "develop", "bbb", "develop", True))
+        self.assertFalse(loop.head_forbidden("aaa", "develop", "bbb", "develop", False,
+                                             continuous=True))
+
+    def test_a_branch_switch_is_never_ignored(self):
+        self.assertTrue(loop.head_forbidden("aaa", "develop", "bbb", "feature", True))
+        self.assertTrue(loop.head_forbidden("aaa", "develop", "bbb", "feature", False,
+                                            continuous=True))
+
+    def test_a_commit_takes_a_run_out_of_what_is_still_uncommitted(self):
+        before = {"tools/agent/ui/app.js": "aaa", "tools/agent/loop.py": "bbb"}
+        # The run edited app.js and it is still dirty. loop.py was already
+        # dirty and the run left those bytes.
+        still = loop.paths_left_uncommitted(before, {
+            "tools/agent/ui/app.js": "ccc", "tools/agent/loop.py": "bbb"})
+        self.assertEqual(still, ["tools/agent/ui/app.js"])
+        # Committed: git status no longer names them. A later edit of a
+        # file the snapshot never had is someone else's uncommitted work.
+        committed = loop.paths_left_uncommitted(before, {})
+        self.assertEqual(committed, [])
+        later = loop.paths_left_uncommitted(before, {"README.md": "ddd"})
+        self.assertEqual(later, ["README.md"])
+
+    def test_unfinished_run_refusal_names_workbench_only_for_workbench_jobs(self):
+        wb = loop.unfinished_run_refusal({"scope": "workbench"}, "job1")
+        story = loop.unfinished_run_refusal({"scope": "new-test"}, "job1")
+        self.assertIn("change to the workbench did not finish", wb)
+        self.assertIn("job job1", wb)
+        self.assertNotIn("change to the workbench", story)
+        self.assertIn("this job's last run", story)
 
 
 class Repo(unittest.TestCase):
@@ -822,6 +871,20 @@ class AskingForMore(Repo):
         self.assertTrue(os.path.isfile(os.path.join(self.root, JIRA, "Mine.java")))
         self.assertEqual(self.state()["state"], "pending-review")
 
+    def test_a_follow_up_continues_when_the_branch_commit_moved(self):
+        """develop can move while Cursor runs; a follow-up is measured from
+        files, not from the commit hash at the start."""
+        self.first_run()
+        sh(self.root, "commit", "-q", "--allow-empty", "-m", "develop moved")
+
+        def agent(_p):
+            write(self.root, JIRA + "NewTest.java", "class NewTest { void a() {} void b() {} }\n")
+            return {"result": "ok"}
+        self.assertEqual(self.ask("also add b", agent), 0)
+        self.assertEqual(self.state()["state"], "pending-review")
+        with io.open(os.path.join(self.root, JIRA, "NewTest.java"), encoding="utf-8") as fh:
+            self.assertIn("void b()", fh.read())
+
     def test_a_follow_up_whose_cursor_call_fails_undoes_itself_and_not_the_reviewed_change(self):
         self.first_run()
 
@@ -832,8 +895,8 @@ class AskingForMore(Repo):
         with redirect_stdout(out):
             rc = self.ask("more", agent)
         self.assertNotEqual(rc, 0)
-        with io.open(os.path.join(self.root, JIRA, "NewTest.java"), encoding="utf-8") as fh:
-            self.assertEqual(fh.read(), "class NewTest { void a() {} }\n")
+        self.assertEqual(read_stub(os.path.join(self.root, JIRA, "NewTest.java")),
+                         "class NewTest { void a() {} }\n")
         self.assertTrue(os.path.isfile(os.path.join(self.root, JIRA, "NewTestData.java")))
         st = self.state()
         self.assertEqual(st["state"], "pending-review")
@@ -842,6 +905,19 @@ class AskingForMore(Repo):
         self.assertEqual(sorted(st["files"]["created"]), sorted([JIRA + "NewTest.java", JIRA + "NewTestData.java", SUITE]))
         self.assertTrue(os.path.isfile(os.path.join(self.job, "proposed.diff")))
         self.assertIn("the follow-up was undone", out.getvalue())
+
+    def test_a_follow_up_timeout_does_not_fail_because_develop_moved(self):
+        self.first_run()
+        sh(self.root, "commit", "-q", "--allow-empty", "-m", "develop moved")
+
+        def agent(_p):
+            write(self.root, JIRA + "NewTest.java", "class NewTest { half }\n")
+            raise loop.CursorFailed("Cursor did not finish within 2700s", "timeout", True)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertNotEqual(self.ask("more", agent), 0)
+        self.assertNotIn("HEAD moved", out.getvalue())
+        self.assertEqual(self.state()["state"], "pending-review")
 
     def test_a_follow_up_that_writes_outside_the_paths_is_rejected_like_a_run(self):
         self.first_run()
@@ -992,6 +1068,213 @@ class AutomatedByKey(Repo):
         self.assertIn("com.hi.api.reporting.XrayReportListener", loop.suitemap.suite_xml("smoke"))
 
 
+class JiraParity(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="jirapar_")
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+
+    def test_jira_parity_flags_missing_data_inventory(self):
+        rel = "src/test/java/com/hi/api/tests/jira/SampleTest.java"
+        write(self.root, rel, "package com.hi.api.tests.jira;\npublic class SampleTest {}\n", raw=True)
+        issues = loop.jira_parity_issues(self.root, [rel])
+        self.assertTrue(any("DATA_INVENTORY" in i for i in issues))
+
+    def test_jira_parity_accepts_inventory_and_csv(self):
+        cls = "src/test/java/com/hi/api/tests/jira/GoodTest.java"
+        write(self.root, cls,
+              "/** DATA_INVENTORY */\n"
+              "public class GoodTest {\n"
+              "  public void happy(Map<String, String> row) {}\n}\n")
+        write(self.root,
+              "src/test/resources/csv/manual/GoodTest/happy.csv",
+              "description,test_case_id,jira_issue\nx,TC-1,B2B-1\n")
+        # no PerMethodCsvDataProvider → csv not required
+        self.assertEqual(loop.jira_parity_issues(self.root, [cls]), [])
+
+    def test_jira_parity_flags_spend_detail_without_token_guest_id(self):
+        rel = "src/test/java/com/hi/api/tests/jira/SpendOnlyTest.java"
+        write(self.root, rel,
+              "/** DATA_INVENTORY */\n"
+              "class SpendOnlyTest {\n"
+              "  void go(java.util.Map<String,String> row) {\n"
+              "    rowOrConfig(row, \"guest_id\", \"jira.b2b-1.g\");\n"
+              "    memberSpendDetailUrl();\n"
+              "  }\n"
+              "  String memberSpendDetailUrl() { return \"/spendDetail\"; }\n"
+              "}\n")
+        issues = loop.jira_parity_issues(self.root, [rel])
+        self.assertTrue(any("spendDetail" in i and "token EXTRACT" in i for i in issues))
+
+    def test_jira_parity_template_hash_placeholder_needs_csv_column(self):
+        rel = "src/test/java/com/hi/api/tests/jira/TplTest.java"
+        write(self.root, "src/test/resources/templates/manual/examples/tpl_audit.json",
+              "{\"x\": \"#missing_col#\"}\n")
+        write(self.root, rel,
+              "/** DATA_INVENTORY */\n"
+              "import com.hi.api.data.ManualBody;\n"
+              "class TplTest {\n"
+              "  void b() { ManualBody.render(\"templates/manual/examples/tpl_audit.json\", row, ctx); }\n"
+              "}\n")
+        issues = loop.jira_parity_issues(self.root, [rel])
+        self.assertTrue(any("missing_col" in i for i in issues))
+
+    def test_jira_parity_template_path_stops_at_the_file_name(self):
+        rel = "src/test/java/com/hi/api/tests/jira/DocTest.java"
+        write(self.root, "src/test/resources/templates/manual/examples/a.json", "{}\n")
+        write(self.root, "src/test/resources/templates/manual/examples/b.json", "{}\n")
+        write(self.root, rel,
+              "/** DATA_INVENTORY {@code templates/manual/examples/a.json},\n"
+              " * {@code templates/manual/examples/b.json} */\n"
+              "class DocTest { void b() { ManualBody.render(\"templates/manual/examples/a.json\", row, ctx); } }\n")
+        self.assertEqual(loop.jira_parity_issues(self.root, [rel]), [])
+
+    def test_jira_parity_shape_checks(self):
+        rel = "src/test/java/com/hi/api/tests/jira/ShapeTest.java"
+        write(self.root, "src/test/resources/templates/manual/examples/old.json", "{\"a\": \"@Name@\"}\n")
+        write(self.root, "src/test/resources/csv/manual/ShapeTest/go.csv",
+              "description,test_case_id,jira_issue,jira_xray_id,password,email\n"
+              "x,TC-1,B2B-1,B2B-2,Hunter2-2024!,real.person@corp-mail.com\n")
+        write(self.root, rel,
+              "/** DATA_INVENTORY */\n"
+              "class ShapeTest {\n"
+              "  @Test(groups = {\"regression\"})\n"
+              "  public void go(Map<String, String> row) {\n"
+              "    String u = rowOrConfig(row, \"username\", \"api_config.username\");\n"
+              "    String b = RestUtilities.mapJsonValues(t, row);\n"
+              "    ManualBody.render(\"templates/manual/examples/old.json\", row, ctx);\n"
+              "    SoftAssert s = new SoftAssert();\n"
+              "    softAssert.assertAll();\n"
+              "  }\n}\n")
+        issues = "\n".join(loop.jira_parity_issues(self.root, [rel]))
+        for expected in ('groups = {"jira"', "softAssert.assertAll()", "new SoftAssert()", "mapJsonValues",
+                         "api_config.username", "@Name@", "an email address in a committed data sheet",
+                         "column `password` holds a value"):
+            self.assertIn(expected, issues)
+        self.assertNotIn("Hunter2", issues)
+        self.assertNotIn("real.person", issues)
+
+    def test_jira_parity_shape_checks_accept_the_house_style(self):
+        rel = "src/test/java/com/hi/api/tests/jira/HouseTest.java"
+        write(self.root, "src/test/resources/csv/manual/HouseTest/go.csv",
+              "description,test_case_id,jira_issue,jira_xray_id,password,email,token\n"
+              "x,TC-1,B2B-1,B2B-2,,someone@example.com,\n"
+              "no access,TC-2,B2B-1,B2B-2,,,invalid-token-for-401\n")
+        write(self.root, rel,
+              "/** DATA_INVENTORY */\n"
+              "class HouseTest {\n"
+              "  @org.testng.annotations.Test(groups = {\"jira\", \"regression\"}, retryAnalyzer = RetryAnalyzer.class,\n"
+              "        dataProvider = \"x\")\n"
+              "  public void go(Map<String, String> row) {\n"
+              "    String u = rowOrConfig(row, \"username\", \"jira.b2b-1.owner.username\");\n"
+              "    softAssert.assertEquals(1, 1);\n"
+              "  }\n}\n")
+        self.assertEqual(loop.jira_parity_issues(self.root, [rel]), [])
+
+
+class PatchManualCsvXray(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="csvxray_")
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        self.job = os.path.join(self.root, ".workbench", "job1")
+        os.makedirs(self.job)
+        write(self.root, ".workbench/job1/intake.json",
+              json.dumps({"story": {"key": "B2B-99454"}}))
+        write(self.root, ".workbench/job1/xray-tests.json", json.dumps({
+            "tests": {
+                "design:TC-001": {"key": "B2B-99771"},
+                "design:TC-002": {"key": "B2B-99772"},
+                "design:TC-024": {"key": "B2B-99801"},
+            }}))
+        write(self.root, ".workbench/job1/intake.json",
+              json.dumps({"story": {"key": "B2B-99454"}}))
+
+    def test_patch_adds_jira_xray_id_and_jira_issue_by_test_case_id(self):
+        rel = "src/test/resources/csv/manual/GuestTest/createGuest_200.csv"
+        write(self.root, rel,
+              "description,test_case_id,execute\n"
+              "happy path,TC-001,Y\n"
+              "other,TC-002,Y\n")
+        self.assertTrue(loop.patch_one_manual_csv(
+            os.path.join(self.root, rel.replace("/", os.sep)),
+            story="B2B-99454",
+            keys_by_case={"TC-001": "B2B-99771", "TC-002": "B2B-99772"}))
+        with io.open(os.path.join(self.root, rel.replace("/", os.sep)), encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn("jira_xray_id", text.splitlines()[0])
+        self.assertIn("jira_issue", text.splitlines()[0])
+        self.assertIn("B2B-99771", text)
+        self.assertIn("B2B-99454", text)
+
+    def test_patch_by_case_id_finds_an_existing_sheet(self):
+        rel = "src/test/resources/csv/manual/SpendTest/missingDate_400.csv"
+        write(self.root, rel,
+              "description,test_case_id,execute\n"
+              "missing startDate,TC-024,Y\n")
+        touched = loop.patch_manual_csv_by_case_ids(
+            self.root, self.job, ["TC-024"], mocked=False)
+        self.assertEqual(touched, [rel])
+        with io.open(os.path.join(self.root, rel.replace("/", os.sep)), encoding="utf-8") as fh:
+            body = fh.read()
+        self.assertIn("B2B-99801", body)
+        self.assertIn("B2B-99454", body)
+
+    def test_ensure_patches_all_csvs_under_a_changed_jira_test_class(self):
+        java = "src/test/java/com/hi/api/tests/jira/SpendDetailTest.java"
+        write(self.root, java, "class SpendDetailTest {}\n")
+        write(self.root, "src/test/resources/csv/manual/SpendDetailTest/row_a.csv",
+              "description,test_case_id,execute\na,TC-024,Y\n")
+        write(self.root, "src/test/resources/csv/manual/SpendDetailTest/row_b.csv",
+              "description,test_case_id,execute\nb,TC-099,Y\n")
+        touched = loop.ensure_manual_csv_xray(
+            self.root, self.job, [java], mocked=False)
+        self.assertIn("src/test/resources/csv/manual/SpendDetailTest/row_a.csv", touched)
+        self.assertIn("src/test/resources/csv/manual/SpendDetailTest/row_b.csv", touched)
+        with io.open(os.path.join(self.root,
+                                  "src/test/resources/csv/manual/SpendDetailTest/row_a.csv"),
+                     encoding="utf-8") as fh:
+            self.assertIn("B2B-99801", fh.read())
+
+    def test_patch_manual_csv_xray_only_touches_manual_csv_paths(self):
+        rel = "src/test/resources/csv/manual/OneTest/one.csv"
+        write(self.root, rel, "description,test_case_id,execute\nrow,TC-001,Y\n")
+        other = "src/test/resources/csv/amex/ignored.csv"
+        write(self.root, other, "a,b\n1,2\n")
+        touched = loop.patch_manual_csv_xray(self.root, self.job, [rel, other])
+        self.assertEqual(touched, [rel])
+        with io.open(os.path.join(self.root, rel.replace("/", os.sep)), encoding="utf-8") as fh:
+            self.assertIn("B2B-99771", fh.read())
+
+    def test_ensure_writes_csv_xray_log_with_patch_and_skip_lines(self):
+        rel = "src/test/resources/csv/manual/OneTest/one.csv"
+        write(self.root, rel, "description,test_case_id,execute\nrow,TC-001,Y\n")
+        loop.ensure_manual_csv_xray(self.root, self.job, [rel], mocked=False)
+        log_path = os.path.join(self.job, loop.CSV_XRAY_LOG)
+        self.assertTrue(os.path.isfile(log_path))
+        with io.open(log_path, encoding="utf-8") as fh:
+            log = fh.read()
+        self.assertIn("ensure_manual_csv_xray", log)
+        self.assertIn("TC-001 -> B2B-99771", log)
+        self.assertIn("PATCHED", log)
+
+    def test_ensure_logs_change_paths_when_no_csv_candidates(self):
+        suite = "Suites/jira/job-20261019-test.xml"
+        write(self.root, suite, "<suite/>")
+        loop.ensure_manual_csv_xray(self.root, self.job, [suite], mocked=False)
+        with io.open(os.path.join(self.job, loop.CSV_XRAY_LOG), encoding="utf-8") as fh:
+            log = fh.read()
+        self.assertIn("candidates=0", log)
+        self.assertIn("change_paths_detail", log)
+        self.assertIn(suite, log)
+
+    def test_patch_manual_csv_xray_forwards_on_log(self):
+        rel = "src/test/resources/csv/manual/OneTest/one.csv"
+        write(self.root, rel, "description,test_case_id,execute\nrow,TC-001,Y\n")
+        mirrored = []
+        loop.patch_manual_csv_xray(self.root, self.job, [rel], on_log=mirrored.append)
+        self.assertTrue(any("ensure_manual_csv_xray" in line for line in mirrored))
+        self.assertTrue(any("PATCHED" in line for line in mirrored))
+
+
 class Preconditions(Repo):
     def test_no_plan_no_run(self):
         os.remove(os.path.join(self.job, "plan.md"))
@@ -1127,6 +1410,30 @@ class VerifyAndRepair(Repo):
         self.assertEqual(self.generate(agent, lambda: results.pop(0)), 0)
         self.assertEqual(len(prompts), 5)
         self.assertIn("error 3", prompts[4])
+        self.assertEqual(self.state()["state"], "pending-review")
+
+    def test_a_repair_attempt_continues_when_the_branch_commit_moved(self):
+        """After verify fails once, develop may move before the repair run."""
+        n = [0]
+        results = [{"ok": False, "steps": [{"name": "compile", "rc": 1, "tail": "err"}]}, OK()]
+        prompts = []
+
+        def bad():
+            n[0] += 1
+            if n[0] == 1:
+                sh(self.root, "commit", "-q", "--allow-empty", "-m", "develop moved")
+            return results.pop(0)
+
+        def agent(prompt):
+            prompts.append(prompt)
+            write(self.root, JIRA + "NewTest.java",
+                  "class NewTest { /* v%d */ }\n" % len(prompts))
+            return {"result": ""}
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(self.generate(agent, bad), 0)
+        self.assertNotIn("HEAD moved", out.getvalue())
+        self.assertEqual(len(prompts), 2)
         self.assertEqual(self.state()["state"], "pending-review")
 
     def test_the_cap_on_attempts_holds_even_while_the_errors_keep_changing(self):
@@ -1526,6 +1833,7 @@ class Push(Repo):
         def runner(args):
             self.assertIn("-Denv=stg", args)
             self.assertIn("-DsuiteXmlFile=" + SUITE, args)
+            self.assertIn("-Dlog.level=debug", args)
             write(self.root, "target/surefire-reports/testng-results.xml", xml)
             return 0, "Tests run: 1"
         out = io.StringIO()
@@ -1596,8 +1904,8 @@ class Push(Repo):
             self.assertEqual(loop.cmd_generate(self.job, self.root, self.policy, "new-test", "",
                                                agent=agent, verifier=OK), 0)
             loop.cmd_discard(self.job, self.root, self.policy)
-        with io.open(os.path.join(self.root, JIRA, "ExistingTest.java"), encoding="utf-8") as fh:
-            self.assertEqual(fh.read(), "class ExistingTest { /* mine, uncommitted */ }\n")
+        self.assertEqual(read_stub(os.path.join(self.root, JIRA, "ExistingTest.java")),
+                         "class ExistingTest { /* mine, uncommitted */ }\n")
 
     def test_a_change_waiting_for_review_is_named_when_the_next_job_runs(self):
         """Seen live: job 2's Automate refused for job 1's test, still
@@ -2532,6 +2840,38 @@ class TheRealCursorPath(unittest.TestCase):
         self.assertEqual(cfg.cwd, loop.ROOT)
         self.assertTrue(cfg.model)
 
+    def test_cursor_setup_check_matches_cmd_setup_verdict(self):
+        had = "cursor_sdk" in sys.modules
+        sys.modules.setdefault("cursor_sdk", types.ModuleType("cursor_sdk"))
+        warm = loop.cursor_call.warm_up
+        loop.cursor_call.warm_up = lambda ca: (True, "started")
+        self.addCleanup(setattr, loop.cursor_call, "warm_up", warm)
+        old = os.environ.pop("CURSOR_API_KEY", None)
+        orig = loop.cursor_config
+
+        def no_key(root):
+            ca, cfg = orig(root)
+            cfg.api_key = ""
+            return ca, cfg
+
+        loop.cursor_config = no_key
+        try:
+            r = loop.cursor_setup_check(loop.ROOT)
+            self.assertFalse(r["ok"])
+            self.assertTrue(any("FAIL" in ln for ln in r["lines"]))
+            loop.cursor_config = orig
+            os.environ["CURSOR_API_KEY"] = "key_for_this_test"
+            r2 = loop.cursor_setup_check(loop.ROOT)
+            self.assertTrue(r2["ok"])
+            self.assertFalse(r2["mock"])
+        finally:
+            loop.cursor_config = orig
+            os.environ.pop("CURSOR_API_KEY", None)
+            if old is not None:
+                os.environ["CURSOR_API_KEY"] = old
+            if not had:
+                sys.modules.pop("cursor_sdk", None)
+
     def test_setup_runs_to_a_verdict_instead_of_a_traceback(self):
         """With the SDK import faked and no key, setup must end in its own
         FAIL line (exit 1), not an exception."""
@@ -2918,6 +3258,48 @@ class CallingCursor(unittest.TestCase):
         self.assertEqual(out["status"], "quiet")
         self.assertEqual(out["result"], "Files created: XTest.java.")
         self.assertTrue(any("its usage line" in s for s in seen), seen)
+
+    def test_create_plan_does_not_count_as_editing_the_repo(self):
+        """createPlan alone must not trigger the post-usage early finish."""
+        NS = types.SimpleNamespace
+        answer = '{"test_cases": []}'
+
+        msgs = [NS(type="tool_call", name="createPlan", status="completed", call_id="p1",
+                   args={"plan": answer}),
+                NS(type="usage", usage=NS(input_tokens=5, output_tokens=5, total_tokens=10))]
+        self.use(FakeSdk(messages=msgs))
+        for name, value in (("QUIET_FOR", 5), ("PULSE_EVERY", 0.02), ("AFTER_USAGE_QUIET", 0.3)):
+            self.addCleanup(setattr, loop.cursor_call, name, getattr(loop.cursor_call, name))
+            setattr(loop.cursor_call, name, value)
+        seen = []
+        out = loop.cursor_call.run("p", self.ca, self.cfg, on_event=seen.append,
+                                   deadline_seconds=20, quiet_seconds=600)
+        self.assertNotEqual(out.get("status"), "quiet")
+        self.assertFalse(any("its usage line" in s for s in seen), seen)
+
+    def test_usage_without_any_tool_does_not_end_the_run_early(self):
+        """Seen live: the model replied in prose, sent usage, and had not
+        edited any file yet -- ending then left Automate with no changes."""
+        NS = types.SimpleNamespace
+
+        def prose_only():
+            yield NS(type="assistant", message=NS(content=[NS(type="text", text="I will add the test.")]))
+            yield NS(type="usage", usage=NS(input_tokens=4, output_tokens=2, total_tokens=6))
+            time.sleep(30)
+        self.use(FakeSdk(messages=prose_only()))
+        for name, value in (("QUIET_FOR", 5), ("PULSE_EVERY", 0.02), ("AFTER_USAGE_QUIET", 0.3)):
+            self.addCleanup(setattr, loop.cursor_call, name, getattr(loop.cursor_call, name))
+            setattr(loop.cursor_call, name, value)
+        seen = []
+        t0 = time.monotonic()
+        out = loop.cursor_call.run("p", self.ca, self.cfg, on_event=seen.append,
+                                   deadline_seconds=2, quiet_seconds=600)
+        elapsed = time.monotonic() - t0
+        self.assertGreaterEqual(elapsed, 0.35,
+                                "must not end on AFTER_USAGE when no tool completed")
+        self.assertNotEqual(out.get("status"), "quiet",
+                            "quiet from AFTER_USAGE without a completed tool is wrong")
+        self.assertFalse(any("its usage line" in s for s in seen), seen)
 
     def test_the_heartbeat_does_not_reset_the_silence(self):
         NS = types.SimpleNamespace
@@ -3310,7 +3692,7 @@ class WhereThingsAre(Repo):
         self.assertEqual(loop.pattern_example(tempfile.mkdtemp(), loop.DEFAULT_POLICY,
                                               {"name": "new-test"}), ("", []))
 
-    def test_with_a_skill_file_the_skill_is_in_the_prompt_and_the_example_is_not(self):
+    def test_with_a_skill_file_the_skill_and_golden_example_are_both_in_the_prompt(self):
         self.lay_out()
         write(self.root, ".cursor/skills/jira-to-restassured/SKILL.md",
               "# Jira to REST Assured\n\nPut @XrayTest on the method. baseUrl() comes from BaseApiTest.\n\n"
@@ -3340,7 +3722,8 @@ class WhereThingsAre(Repo):
         self.assertIn("  - AGENTS.md", p)
         self.assertIn("they do not apply to this job", p)
         self.assertLess(p.index("NEVER touch:"), p.index("  - tools/**"))
-        self.assertNotIn("HOW A TEST IS WRITTEN HERE", p, "no second, disagreeing shape")
+        self.assertIn("GOLDEN EXAMPLE", p)
+        self.assertIn("MANDATORY for every new or changed file", p)
         self.assertNotIn("Follow the skill at", p)
         self.assertIn("the skill is in the prompt, whole: .cursor/skills/jira-to-restassured/SKILL.md",
                       self.cursor_log())
@@ -3389,10 +3772,50 @@ class WhereThingsAre(Repo):
             write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
             return {"result": ""}
         self.generate(agent)
-        self.assertIn("HOW A TEST IS WRITTEN HERE", seen["p"])
-        self.assertLess(seen["p"].index("HOW A TEST IS WRITTEN"), seen["p"].index("Act on the plan"))
-        self.assertIn("shown as the example of how a test is written: "
-                      "src/test/java/com/hi/api/tests/manual/OneTest.java", self.cursor_log())
+        self.assertTrue(
+            "GOLDEN EXAMPLE" in seen["p"] or "HOW A TEST IS WRITTEN HERE" in seen["p"],
+            "prompt should include the golden example block",
+        )
+        self.assertLess(
+            seen["p"].index("GOLDEN EXAMPLE" if "GOLDEN EXAMPLE" in seen["p"] else "HOW A TEST IS WRITTEN"),
+            seen["p"].index("Act on the plan"),
+        )
+        self.assertIn("golden example (form only):", self.cursor_log())
+
+    def test_the_example_closest_to_the_cases_is_shown_whole(self):
+        self.lay_out()
+        write(self.root, JIRA + "EnrollTest.java",
+              "class EnrollTest { // enroll guest program account\n" + "  int x = 1;\n" * 600
+              + "  String t = \"enroll.json\";\n}\n")
+        write(self.root, JIRA + "SpendDetailTest.java",
+              "class SpendDetailTest { // spend detail traveler filter\n" + "  int y = 2;\n" * 600 + "}\n")
+        write(self.root, "src/test/resources/csv/manual/EnrollTest/a.csv", "h\n1\n")
+        write(self.root, "src/test/resources/csv/manual/SpendDetailTest/b.csv", "h\n2\n")
+        write(self.root, "src/test/resources/templates/manual/examples/enroll.json", "{}\n")
+        scope = dict(loop.DEFAULT_POLICY["scopes"]["new-test"], name="new-test", pattern_example=[
+            JIRA + "EnrollTest.java", "src/test/resources/csv/manual/EnrollTest/a.csv",
+            "src/test/resources/templates/manual/examples/enroll.json",
+            JIRA + "SpendDetailTest.java", "src/test/resources/csv/manual/SpendDetailTest/b.csv"])
+        block, shown = loop.pattern_example(self.root, loop.DEFAULT_POLICY, scope, True,
+                                            hint="GET /members/{id}/spendDetail traveler filter")
+        self.assertEqual(shown, [JIRA + "SpendDetailTest.java",
+                                 "src/test/resources/csv/manual/SpendDetailTest/b.csv"])
+        self.assertNotIn("// ... cut here", block)
+        self.assertIn("  - " + JIRA + "EnrollTest.java", block)
+        _b, shown = loop.pattern_example(self.root, loop.DEFAULT_POLICY, scope, True,
+                                         hint="POST /guests enroll")
+        self.assertEqual(shown[0], JIRA + "EnrollTest.java")
+        self.assertIn("src/test/resources/templates/manual/examples/enroll.json", shown)
+
+    def test_pattern_example_uses_scope_pattern_list(self):
+        self.lay_out()
+        write(self.root, "src/test/java/com/hi/api/tests/jira/FromPolicyTest.java",
+              "/** DATA_INVENTORY */\nclass FromPolicyTest {}\n")
+        scope = dict(loop.DEFAULT_POLICY["scopes"]["new-test"], name="new-test")
+        scope["pattern_example"] = ["src/test/java/com/hi/api/tests/jira/FromPolicyTest.java"]
+        block, shown = loop.pattern_example(self.root, loop.DEFAULT_POLICY, scope)
+        self.assertEqual(shown, ["src/test/java/com/hi/api/tests/jira/FromPolicyTest.java"])
+        self.assertIn("FromPolicyTest", block)
 
     def test_an_empty_project_is_described_not_refused(self):
         text = loop.project_map(tempfile.mkdtemp(), loop.DEFAULT_POLICY, {"name": "new-test"})

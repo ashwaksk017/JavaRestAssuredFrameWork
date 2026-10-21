@@ -607,8 +607,52 @@ def _manual_reply(prompt: str) -> str:
     return json.dumps({"new_cases": cases, "updates": updates})
 
 
+def _devcode_reply(prompt: str) -> str:
+    """One gap per file the diff touches that no case line names. Not a review."""
+    diff = prompt.split("===== DEVELOPER CHANGE =====", 1)[-1].split("===== THE CASES =====", 1)
+    cases = (diff[1] if len(diff) > 1 else "").lower()
+    files = re.findall(r"^\+\+\+ b/(.+)$", diff[0], re.M)
+    gaps = []
+    for path in dict.fromkeys(files):
+        stem = os.path.splitext(os.path.basename(path))[0]
+        if stem.lower() in cases or "/test/" in path.replace("\\", "/"):
+            continue
+        gaps.append({"title": f"[MOCK] the change to {stem} has no case",
+                     "why": "MOCK: the file name is not in any case (name match, not a judgement)",
+                     "evidence": path, "endpoint": "", "severity": "low",
+                     "suggested_case": {"title": f"[MOCK] {stem} behaves as the change says",
+                                        "type": "positive",
+                                        "steps": [{"action": "Call the endpoint the change is in",
+                                                   "data": "", "expected": "status 200"}]}})
+    return json.dumps({"gaps": gaps[:5], "summary": "MOCK: a file-name match, not a coverage review."})
+
+
+def _suites_reply(prompt: str) -> str:
+    """smoke for the first high-priority positive case of each endpoint,
+    regression for every case. A rule, not a judgement."""
+    body = prompt.split("===== CASES =====", 1)[-1]
+    out, smoke_for = [], set()
+    for line in body.splitlines():
+        m = re.match(r"^(TC-[0-9]{3,4}) \[([a-z]*)/([a-z]*)\] (\S+ \S+)", line.strip())
+        if not m:
+            continue
+        cid, kind, prio, endpoint = m.groups()
+        groups = ["regression"]
+        if kind == "positive" and prio == "high" and endpoint not in smoke_for:
+            smoke_for.add(endpoint)
+            groups.insert(0, "smoke")
+        out.append({"id": cid, "groups": groups, "confidence": "medium",
+                    "why": "MOCK: " + ("the first high-priority positive case of its endpoint"
+                                       if "smoke" in groups else "every case runs in regression")})
+    return json.dumps({"suggestions": out})
+
+
 def cursor(prompt: str, followup=None) -> dict:
     """The mock Cursor for the steps that ask a question and take JSON back."""
+    if "===== DEVELOPER CHANGE =====" in prompt:
+        return {"result": _devcode_reply(prompt), "model": "mock", "status": "finished"}
+    if "===== SUITE ASSIGNMENT =====" in prompt:
+        return {"result": _suites_reply(prompt), "model": "mock", "status": "finished"}
     if "===== MANUAL TEST DESIGN =====" in prompt:
         return {"result": _manual_reply(prompt), "model": "mock", "status": "finished"}
     if "===== CHANGE UNDER REVIEW =====" in prompt and _REVIEW_FILE_RX.search(prompt):
@@ -626,10 +670,12 @@ SAMPLE_BODY = """package com.hi.api.tests.jira;
  * so that the checks, the review and Discard can be tried without Cursor.
  * It tests nothing and is never pushed: Approve refuses a mock run.
  * Discard removes it.
+ *
+ * DATA_INVENTORY: no HTTP steps, no CONFIG keys, no EXTRACTs.
  */
 public class MockAgentSampleTest {
 
-    @org.testng.annotations.Test(enabled = false, description = "mock agent sample")
+    @org.testng.annotations.Test(groups = {"jira"}, enabled = false, description = "mock agent sample")
     public void mockAgentWroteThis() {
         // nothing: see the class comment
     }

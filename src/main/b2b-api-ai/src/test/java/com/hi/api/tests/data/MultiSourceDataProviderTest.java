@@ -24,6 +24,7 @@ import com.hi.api.tests.datasource.ProbeCsv;
 import com.hi.api.tests.datasource.ProbeExcel;
 import com.hi.api.tests.datasource.ProbeJson;
 import com.hi.api.tests.datasource.ProbePref;
+import com.hi.api.tests.datasource.ProbeManual;
 
 import io.qameta.allure.Description;
 import io.qameta.allure.Epic;
@@ -129,6 +130,23 @@ public class MultiSourceDataProviderTest {
         } catch (IllegalArgumentException expected) {
             Assert.assertTrue(expected.getMessage().contains("Unsupported"));
         }
+    }
+
+    @Test(groups = {"unit"})
+    @Story("Jira hand-written tests use csv/manual")
+    @Description("A hand-written test loads its row from csv/manual with jira_xray_id.")
+    public void handWritten_manualCsv() throws Exception {
+        Method m = ProbeManual.class.getMethod("fromManual", Map.class);
+        Assert.assertEquals(PerMethodCsvDataProvider.resolveResourcePath(m),
+                "csv/manual/ProbeManual/fromManual.csv");
+        Object[][] data = PerMethodCsvDataProvider.rows(m);
+        Assert.assertEquals(data.length, 1);
+        @SuppressWarnings("unchecked")
+        Map<String, String> row = (Map<String, String>) data[0][0];
+        Assert.assertTrue(row.containsKey("jira_xray_id"), row.keySet().toString());
+        Assert.assertEquals(row.get("jira_xray_id"), "B2B-99771");
+        Assert.assertEquals(row.get("jira_issue"), "B2B-99454");
+        Assert.assertEquals(row.get("test_case_id"), "TC-001");
     }
 
     @Test(groups = {"unit"})

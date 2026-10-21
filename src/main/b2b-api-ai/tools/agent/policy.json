@@ -28,7 +28,13 @@
      "tools/check_no_duplicate_methods.py"
     ]
    ],
-   "skill": ".cursor/skills/jira-to-restassured/SKILL.md"
+   "skill": ".cursor/skills/jira-to-restassured/SKILL.md",
+   "pattern_example": [
+    "src/test/java/com/hi/api/tests/jira/GuestProgramAccountTest.java",
+    "src/test/resources/csv/manual/GuestProgramAccountTest/createGuestProgramAccount_createAndReadBack_200.csv",
+    "src/test/resources/templates/manual/examples/enroll_guest.json",
+    "src/test/resources/templates/manual/examples/create_program_account.json"
+   ]
   },
   "converted": {
    "label": "Converted Java of one suite (stays on this machine)",

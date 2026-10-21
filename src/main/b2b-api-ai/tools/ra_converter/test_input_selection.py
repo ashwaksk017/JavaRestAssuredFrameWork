@@ -41,6 +41,11 @@ import ra_converter as rc  # noqa: E402
 INPUT_DIR = os.path.join(HERE, "input")
 
 
+def _has_input_xmls() -> bool:
+    return os.path.isdir(INPUT_DIR) and any(
+        n.lower().endswith(".xml") for n in os.listdir(INPUT_DIR))
+
+
 def _names(paths):
     return [os.path.basename(p) for p in paths]
 
@@ -125,15 +130,15 @@ class SeveralSuites(unittest.TestCase):
 
 class TheWholeTree(unittest.TestCase):
     def test_a_directory_still_converts_everything(self):
-        if not os.path.isdir(INPUT_DIR):
-            self.skipTest("no input/ directory")
+        if not _has_input_xmls():
+            self.skipTest("no suite XML in input/")
         got = select(INPUT_DIR)
         on_disk = [n for n in os.listdir(INPUT_DIR) if n.lower().endswith(".xml")]
         self.assertEqual(len(got), len(on_disk))
 
     def test_a_directory_prints_no_subset_note(self):
-        if not os.path.isdir(INPUT_DIR):
-            self.skipTest("no input/ directory")
+        if not _has_input_xmls():
+            self.skipTest("no suite XML in input/")
         select(INPUT_DIR)
         self.assertNotIn("were NOT converted", select.last_output,
                          "the authoritative run is not a subset of anything")
@@ -404,8 +409,8 @@ class EveryDiscoveryBranchRecordsItsScope(unittest.TestCase):
         """Resolved against the conventional drop folder, so the scope is
         that folder -- and a bare name is one suite out of many, which is
         exactly the case that must come out partial."""
-        if not os.path.isdir(INPUT_DIR):
-            self.skipTest("no input/ directory")
+        if not _has_input_xmls():
+            self.skipTest("no suite XML in input/")
         name = rc._default_suite_name(rc._xmls_in_dir(INPUT_DIR)[0])
         got = self._parent_after(name)
         self.assertEqual(os.path.normcase(got or ""),
