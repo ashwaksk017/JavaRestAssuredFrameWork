@@ -25,6 +25,12 @@ IT WRITES TO JIRA, so the same rules as publish.py:
   the keys it got, and the next run creates only what has none.
 * A case that already has a key is not created again. A case whose text
   changed since is said, not updated (nothing here edits an issue).
+* Nor is a case the story ALREADY HAS a test for -- written by a person,
+  or by another job -- found among the tests linked to the story: the
+  same title, or the same steps. That test's key is kept for the case,
+  so the data sheet and the results go to it. A case whose title only
+  looks like a linked test's is held, not created and not taken: a
+  person says which (`--adopt TC-003=ABC-12`, `--create-anyway TC-004`).
 * Text from a model goes out as text: summary and steps, no markup of
   the workbench's own, and nothing from the private configuration.
 
@@ -100,6 +106,8 @@ MAX_CASES = 200
 DEFAULT_TYPE = "Test"
 DEFAULT_LINK = "Tests"
 DEFAULT_STEP_CALL = "PUT /rest/raven/1.0/api/test/{key}/step"
+MAX_LINKED = 40                      # linked tests compared with the cases
+LOOKALIKE = 0.75                     # title words in common, of all: held for a person
 _KEY_RX = re.compile(r"^[A-Z][A-Z0-9_]+-[0-9]+$")
 _STEP_CALL_RX = re.compile(r"^(PUT|POST)\s+(/[A-Za-z0-9_./{}-]*\{key\}[A-Za-z0-9_./-]*)$")
 
@@ -292,9 +300,200 @@ def _csv_xray_note(job_dir: str, line: str) -> None:
     _log(job_dir, "csv-xray: " + line)
 
 
+# ---- the tests the story already has --------------------------------------------
+
+def linked_tests(issue: dict, link_type: str, test_type: str, other_way: list = None) -> list:
+    """[{key, summary, status}] of the issues linked to the story by the
+    test link type, in Jira's order -- every one; the caller caps them.
+    The name of the link type, or its wording ("is tested by" / "tests"),
+    decides; an issue whose type is named and is not the test type is
+    left out.
+
+    The direction counts. Read from the story, a test that tests it sits
+    on the link's INWARD side (the story "is tested by" it). An issue on
+    the outward side is one the story itself "tests": not taken, and --
+    when `other_way` is given -- added to it as {key, why}, so a link
+    made the wrong way round is named, not lost."""
+    fields = issue.get("fields") if isinstance(issue.get("fields"), dict) else {}
+    out, seen = [], set()
+    for link in fields.get("issuelinks") or []:
+        if not isinstance(link, dict):
+            continue
+        kind = link.get("type") if isinstance(link.get("type"), dict) else {}
+        words = {str(kind.get(k) or "").strip().lower() for k in ("name", "inward", "outward")}
+        if link_type.lower() not in words and not ({"is tested by", "tests"} & words):
+            continue
+        inward = isinstance(link.get("inwardIssue"), dict)
+        other = link.get("inwardIssue") if inward else link.get("outwardIssue")
+        if not isinstance(other, dict):
+            continue
+        key = str(other.get("key") or "").upper()
+        if not _KEY_RX.match(key) or key in seen:
+            continue
+        f = other.get("fields") if isinstance(other.get("fields"), dict) else {}
+        itype = f.get("issuetype") if isinstance(f.get("issuetype"), dict) else {}
+        if itype.get("name") and str(itype["name"]).lower() != test_type.lower():
+            continue
+        if not inward:
+            if other_way is not None:
+                seen.add(key)
+                phrase = _one(kind.get("outward"), 40) or "tests"
+                other_way.append({"key": key, "why": f"it is linked the other way round (the story "
+                                                     f"\"{phrase}\" it); link the test to the story "
+                                                     f"in Jira to take it"})
+            continue
+        status = f.get("status") if isinstance(f.get("status"), dict) else {}
+        seen.add(key)
+        out.append({"key": key, "summary": _one(f.get("summary"), 300),
+                    "status": _one(status.get("name"), 60)})
+    return out
+
+
+_STOP = frozenset("a an the and or of to for in on with is are be by as at it its this that".split())
+
+
+def _norm(text) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", str(text or "").lower()))
+
+
+def alike(a: str, b: str) -> float:
+    """Words two titles share, of all their words (short and common ones aside)."""
+    x = {w for w in _norm(a).split() if len(w) > 1 and w not in _STOP}
+    y = {w for w in _norm(b).split() if len(w) > 1 and w not in _STOP}
+    return len(x & y) / len(x | y) if x and y else 0.0
+
+
+def _same_steps(ours: list, theirs: list) -> bool:
+    def shape(steps):
+        return [(_norm(s.get("action")), _norm(s.get("expected"))) for s in steps or []
+                if isinstance(s, dict)]
+    return bool(ours) and bool(theirs) and shape(ours) == shape(theirs)
+
+
+def match_linked(cases: list, linked: list, steps_of) -> tuple:
+    """Which cases are a test the story already has:
+    ({case id: (test, "title" | "steps")}, {case id: (test, score)}).
+
+    The same: the same title (case, spacing and punctuation aside), or the
+    same steps (each action and expected result, in order). A test is the
+    same as one case at most. Alike: a title sharing most of its words
+    with a linked test's -- not taken on a guess, held for a person.
+    `steps_of(key)` reads a test's steps (None when they could not be
+    read); it is asked only when no title decided."""
+    same, near, taken = {}, {}, set()
+    for case in cases:
+        title = _norm(case["title"])
+        for t in linked:
+            if title and t["key"] not in taken and title == _norm(t["summary"]):
+                same[case["id"]] = (t, "title")
+                taken.add(t["key"])
+                break
+    for case in cases:
+        if case["id"] in same or not case["steps"]:
+            continue
+        for t in linked:
+            if t["key"] not in taken and _same_steps(case["steps"], steps_of(t["key"])):
+                same[case["id"]] = (t, "steps")
+                taken.add(t["key"])
+                break
+    for case in cases:
+        if case["id"] in same:
+            continue
+        scored = [(alike(case["title"], t["summary"]), t) for t in linked if t["key"] not in taken]
+        score, t = max(scored, key=lambda p: p[0], default=(0.0, None))
+        if t is not None and score >= LOOKALIKE:
+            near[case["id"]] = (t, round(score, 2))
+    return same, near
+
+
+def _not_what_the_story_has(job_dir: str, what: str, story: str, todo: list, fields: dict,
+                            opts: dict, conn: dict, transport, mocked: bool, kept: dict,
+                            done: dict, adopt: dict = None, create_anyway=()) -> list:
+    """The cases still to create, once those the story already has a test
+    for have that test's key (done["found"]) and the look-alikes are held
+    for a person (done["held"]). Seen: Design the tests wrote cases for a
+    story whose tests a person had written, and Create in Xray made a
+    second set beside them."""
+    adopt = {str(c): str(k).upper() for c, k in (adopt or {}).items()}
+    anyway = {str(c) for c in (create_anyway or ())}
+    ours = {str(e.get("key") or "").upper() for e in kept["tests"].values() if isinstance(e, dict)}
+    linked = [t for t in linked_tests({"fields": fields}, opts["link_type"], opts["issue_type"])
+              if t["key"] not in ours][:MAX_LINKED]
+    by_key = {t["key"]: t for t in linked}
+    ids = {c["id"] for c in todo}
+    for cid, key in adopt.items():
+        if cid in ids and key not in by_key:
+            raise Refused(f"{key} is not a test linked to {story} that no case of this job has "
+                          f"already; {cid} was not given it. Nothing was created.")
+    _log(job_dir, f"LINKED {story} has {len(linked)} test(s) linked that no case of this job holds"
+                  + (": " + ", ".join(t["key"] for t in linked[:12]) if linked else ""))
+    if not linked:
+        return todo
+    mt = _load("agent_manualtests", os.path.join(HERE, "manualtests.py"))
+    cache = {}
+
+    def steps_of(key: str):
+        if key not in cache:
+            try:
+                cache[key] = mt.steps_of(conn, key, transport)
+            except Exception:                            # noqa: BLE001
+                diag.trace()                             # unread: matched by title only
+                cache[key] = None
+        return cache[key]
+
+    def take(case: dict, t: dict, how: str) -> None:
+        steps = steps_of(t["key"])
+        stamp = ""
+        if not mocked:
+            try:
+                got = search._call(conn, "GET", f"/issue/{t['key']}?fields=updated", None, transport)
+                stamp = str(((got or {}).get("fields") or {}).get("updated") or "") if isinstance(got, dict) else ""
+            except Exception:                            # noqa: BLE001
+                diag.trace()
+        ident = f"{what}:{case['id']}"
+        entry = {"key": t["key"], "title": case["title"], "fingerprint": fingerprint(case),
+                 "story": story, "mock": mocked, "at": _now(), "found": how, "synced_updated": stamp}
+        if steps is not None:
+            # As Xray has it: Update in Xray then offers this case's steps
+            # as the change, and sends them only when a person chooses to.
+            entry["base"] = {"title": t["summary"], "preconditions": "", "steps": steps}
+        kept["tests"][ident] = entry
+        write_keys(job_dir, kept)
+        why = {"title": "the same title", "steps": "the same steps",
+               "chosen": "you said it is that test"}[how]
+        _log(job_dir, f"FOUND {ident} -> {t['key']} ({why}); not created")
+        done["found"].append({"id": case["id"], "key": t["key"], "title": case["title"],
+                              "xray_title": t["summary"], "how": how,
+                              "note": f"{story} already has it as {t['key']} ({why}): not created; "
+                                      f"its key is kept for the data sheet and the results"})
+
+    same, near = match_linked([c for c in todo if c["id"] not in anyway and c["id"] not in adopt],
+                              linked, steps_of)
+    left = []
+    for case in todo:
+        cid = case["id"]
+        if cid in anyway:
+            _log(job_dir, f"NEW {what}:{cid}: created although it looked like a linked test (you said so)")
+            left.append(case)
+        elif cid in adopt:
+            take(case, by_key[adopt[cid]], "chosen")
+        elif cid in same:
+            take(case, *same[cid])
+        elif cid in near:
+            t, score = near[cid]
+            _log(job_dir, f"HELD {what}:{cid}: looks like {t['key']} ({score:.0%} of title words)")
+            done["held"].append({"id": cid, "title": case["title"], "key": t["key"],
+                                 "xray_title": t["summary"], "score": score,
+                                 "note": f"looks like {t['key']}, already linked to {story}: not "
+                                         f"created. Say whether it is that test or a new one."})
+        else:
+            left.append(case)
+    return left
+
+
 def create(job: str, what: str, story: str, confirm: str, root: str = "", conn=None,
            cfg: dict = None, xray_cfg: dict = None, transport=None, expect: str = "",
-           on_attempt=None) -> dict:
+           on_attempt=None, adopt: dict = None, create_anyway=()) -> dict:
     root = root or ROOT
     job_dir = loop.intake.job_dir(job, root)
     story = (story or "").strip().upper()
@@ -348,8 +547,8 @@ def create(job: str, what: str, story: str, confirm: str, root: str = "", conn=N
                       + "; ".join(found[:4]))
 
     # The story, as Jira has it: it exists, and which project it is in.
-    issue = search._call(conn, "GET", f"/issue/{story}?fields=summary,project,issuetype", None,
-                         transport)
+    issue = search._call(conn, "GET", f"/issue/{story}?fields=summary,project,issuetype,issuelinks",
+                         None, transport)
     if not isinstance(issue, dict) or str(issue.get("key") or "").upper() != story:
         raise Refused(f"Jira did not answer with {story} when asked for it; nothing was created")
     fields = issue.get("fields") if isinstance(issue.get("fields"), dict) else {}
@@ -365,7 +564,7 @@ def create(job: str, what: str, story: str, confirm: str, root: str = "", conn=N
     kept = read_keys(job_dir)
     done = {"kind": "xray-create", "what": what, "story": story, "project": project,
             "mock": mocked, "created": [], "kept": [], "changed": [], "failed": [],
-            "ok": None, "at": _now()}
+            "found": [], "held": [], "ok": None, "at": _now()}
     # ...and what this job already has, checked against Jira: a test that
     # was deleted there is created again, and said.
     # The same case under another id -- a regeneration numbered the cases
@@ -432,6 +631,9 @@ def create(job: str, what: str, story: str, confirm: str, root: str = "", conn=N
                 continue
             _log(job_dir, f"GONE {key} ({ident}) is no longer in Jira; it will be created again")
         todo.append(case)
+    if todo:
+        todo = _not_what_the_story_has(job_dir, what, story, todo, fields, opts, conn, transport,
+                                       mocked, kept, done, adopt, create_anyway)
 
     verb, path_tpl = opts["step_call"].split(None, 1)
     raven = dict(conn, api="")
@@ -511,7 +713,8 @@ def create(job: str, what: str, story: str, confirm: str, root: str = "", conn=N
                 diag.trace()                             # a time not known: never a failed create
         done["created"].append(row)
     made_n = len(done["created"])
-    done["ok"] = not done["failed"] if (made_n or done["kept"] or done["changed"]) else False
+    done["ok"] = (not done["failed"] if (made_n or done["kept"] or done["changed"] or done["found"]
+                                         or done["held"]) else False)
     if done["failed"]:
         done["ok"] = False
     bits = [f"{made_n} test(s) created in {project} for {story}"]
@@ -519,6 +722,12 @@ def create(job: str, what: str, story: str, confirm: str, root: str = "", conn=N
         bits.append(f"{len(done['kept'])} already there and unchanged")
     if done["changed"]:
         bits.append(f"{len(done['changed'])} already there but changed since (not updated)")
+    if done["found"]:
+        bits.append(f"{len(done['found'])} already linked to {story} in Jira, so not created: "
+                    f"their keys are kept for the cases")
+    if done["held"]:
+        bits.append(f"{len(done['held'])} look like a test {story} already has and were NOT "
+                    f"created: say for each whether it is that test or a new one")
     if done["failed"]:
         bits.append(f"stopped at {done['failed'][0]['id']}: {done['failed'][0]['message']}")
     short = [r for r in done["created"] if r["steps"] < r["steps_of"] or not r["linked"]]
@@ -528,7 +737,8 @@ def create(job: str, what: str, story: str, confirm: str, root: str = "", conn=N
                        + (" MOCK: a file on this machine was changed; no Jira was contacted."
                           if mocked else "")
                        + (" The keys are in xray-tests.json; Automate "
-                          "puts them in the jira_xray_id column." if made_n or done["kept"] else ""))
+                          "puts them in the jira_xray_id column."
+                          if made_n or done["kept"] or done["found"] else ""))
     if mocked:
         _csv_xray_note(
             job_dir,
@@ -626,6 +836,10 @@ def main(argv=None, **replace) -> int:
     p.add_argument("--story", required=True)
     p.add_argument("--confirm", "--confirm-story", dest="confirm", required=True)
     p.add_argument("--expect", default="")
+    p.add_argument("--adopt", default="",
+                   help="CASE=KEY,...: the case IS that test the story already has")
+    p.add_argument("--create-anyway", default="",
+                   help="CASE,...: create these although they look like a linked test")
     a = ap.parse_args(argv)
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -659,8 +873,9 @@ def main(argv=None, **replace) -> int:
             say(json.dumps({k: r[k] for k in ("create_tests", "flavour", "mock_jira", "story",
                                               "cases", "keys", "problem")}, indent=2))
             return 0
+        adopt, anyway = choices(a.adopt, a.create_anyway)
         r = create(a.job, a.what, a.story, a.confirm, expect=a.expect, on_attempt=on_attempt,
-                   **replace)
+                   adopt=adopt, create_anyway=anyway, **replace)
     except (Refused, search.Refused) as e:
         say(f"REFUSED {e}")
         tell({"kind": "error", "refused": True, "message": str(e), "at": _now()})
@@ -688,7 +903,32 @@ def main(argv=None, **replace) -> int:
             + (f"  -- {row['note']}" if row.get("note") else ""))
     for row in r["changed"]:
         say(f"  {row['id']:>8}  {row['key']}  -- {row['note']}")
+    for row in r.get("found") or []:
+        say(f"  {row['id']:>8}  {row['key']}  -- {row['note']}")
+    for row in r.get("held") or []:
+        say(f"  {row['id']:>8}  HELD  -- {row['note']}")
     return 0 if r["ok"] else 1
+
+
+_CASE_RX = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,39}$")
+
+
+def choices(adopt: str, anyway: str) -> tuple:
+    """--adopt "TC-003=ABC-12,..." and --create-anyway "TC-004,..." read."""
+    taken, new = {}, []
+    for part in [p.strip() for p in (adopt or "").split(",") if p.strip()]:
+        cid, _, key = part.partition("=")
+        cid, key = cid.strip(), key.strip().upper()
+        if not _CASE_RX.match(cid) or not _KEY_RX.match(key):
+            raise Refused(f"--adopt takes CASE=KEY pairs, like TC-003=ABC-12; not {part[:60]!r}")
+        taken[cid] = key
+    for cid in [p.strip() for p in (anyway or "").split(",") if p.strip()]:
+        if not _CASE_RX.match(cid):
+            raise Refused(f"--create-anyway takes case ids, like TC-004; not {cid[:60]!r}")
+        if cid in taken:
+            raise Refused(f"{cid} is given both as a test the story has and as a new one")
+        new.append(cid)
+    return taken, new
 
 
 if __name__ == "__main__":

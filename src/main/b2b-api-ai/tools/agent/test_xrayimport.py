@@ -121,6 +121,25 @@ class Importing(Base):
         self.assertTrue(entry["imported"])
 
 
+class TheKeysReachTheDataSheet(Base):
+    def test_an_imported_tests_key_is_filled_in_the_rows_of_its_case(self):
+        """An existing Xray test with no automation: once its case is
+        automated, the data sheet's row carries the test's key -- the run
+        reports to the test that was already there."""
+        self.run_it()
+        rel = "src/test/resources/csv/manual/SpendTest/spend.csv"
+        path = os.path.join(self.root, *rel.split("/"))
+        os.makedirs(os.path.dirname(path))
+        with io.open(path, "w", encoding="utf-8", newline="") as fh:
+            fh.write("description,test_case_id,execute\nhappy,TC-001,Y\ncreate,TC-002,Y\n")
+        touched = xi.loop.ensure_manual_csv_xray(self.root, self.job, [rel], mocked=False)
+        self.assertEqual(touched, [rel])
+        with io.open(path, encoding="utf-8") as fh:
+            rows = list(__import__("csv").DictReader(fh))
+        self.assertEqual([(r["test_case_id"], r["jira_xray_id"], r["jira_issue"]) for r in rows],
+                         [("TC-001", "ABC-11", "ABC-1"), ("TC-002", "ABC-16", "ABC-1")])
+
+
 class TheLinksTaken(Base):
     def test_over_the_cap_the_rest_are_named(self):
         self.jira.links = [link(f"ABC-{100 + n}", f"test {n}") for n in range(xi.MAX_TESTS + 2)]

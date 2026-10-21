@@ -211,7 +211,10 @@ RUNNABLES = {
         "argv": [PY, "-B", os.path.join("tools", "agent", "xraytests.py"), "create"],
         "label": "Create the cases as Xray Test issues in Jira, linked to the story",
         "options": {"--job": "text", "--what": "text", "--story": "text",
-                    "--confirm-story": "text", "--expect": "text"},
+                    "--confirm-story": "text", "--expect": "text",
+                    # A person's word on a case that looks like a test the
+                    # story already has: it is that test, or a new one.
+                    "--adopt": "text", "--create-anyway": "text"},
     },
     # The whole gate, as `python tools/verify_all.py`. No options: what it
     # checks is this tree. Offered after a convert.

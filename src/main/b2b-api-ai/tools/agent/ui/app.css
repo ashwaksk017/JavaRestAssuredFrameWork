@@ -1,64 +1,66 @@
 /* Three themes, one set of names. Every colour below is a variable; a theme
    is only a different set of values (html[data-theme], chosen in the header
    and kept in localStorage). Dark is the default. */
+/* Restrained on purpose: neutral greys, one muted steel-blue accent, and
+   status colours that are clear without shouting. */
 :root, html[data-theme="dark"] {
-  --bg: #11131a; --panel: #181b24; --panel-2: #1e2230; --sunk: #0d0f16; --field: #0f1220;
-  --line: #272b38; --line-strong: #3a4157; --ink: #e6e8ef; --ink-soft: #cdd3e1;
-  --dim: #99a0b3; --hint: #6f768a;
-  --accent: #6ea8fe; --accent-hover: #8bbcff; --on-accent: #0b1020; --on-accent-dim: #1d2b4d;
-  --accent-soft: rgba(110, 168, 254, .14);
-  --link: #9db4ff; --btn: #232838; --btn-hover: #2b3146;
-  --chip: #2c3550; --chip-ink: #c9d4f0;
-  --ok: #5ad19b; --bad: #ff8585; --warn: #ffc46b; --on-warn: #1a1300;
-  --ok-soft: #1f4a37; --ok-soft-ink: #b9f0d6; --bad-soft: #5a2a2a; --bad-soft-ink: #ffd0d0;
-  --danger-line: #5a3030; --danger-bg: #2a1718; --danger-ink: #ffd7d7;
-  --mock-bg: #5a3d00; --mock-ink: #ffe6ad; --mock-line: #8a6200; --mock-strong: #fff3d1;
-  --broken-bg: #5a1f1f; --broken-ink: #ffd0d0; --broken-line: #8a3030;
-  --badge-pending: #f0b429; --badge-pending-ink: #1a1300; --badge-ok: #2f9e5b; --badge-ok-ink: #04180c;
-  --badge-bad: #c94c4c; --badge-bad-ink: #1c0505;
-  --cursor-line: #6c8cff; --code-bg: rgba(255, 255, 255, .06); --scrim: rgba(0, 0, 0, .25);
-  --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 6px 20px rgba(0, 0, 0, .22);
-  --brand-a: #6ea8fe; --brand-b: #a78bfa;
+  --bg: #14161a; --panel: #1b1e23; --panel-2: #22262c; --sunk: #101215; --field: #16191d;
+  --line: #2a2e35; --line-strong: #3a3f48; --ink: #e4e6ea; --ink-soft: #c9cdd4;
+  --dim: #959ba5; --hint: #6e747e;
+  --accent: #5b93d1; --accent-hover: #74a5db; --on-accent: #0d1620; --on-accent-dim: #1e3550;
+  --accent-soft: rgba(91, 147, 209, .12);
+  --link: #8db4e2; --btn: #262a31; --btn-hover: #2e333b;
+  --chip: #2a3340; --chip-ink: #c7d3e2;
+  --ok: #4cae84; --bad: #e07070; --warn: #d9a441; --on-warn: #1a1300;
+  --ok-soft: #1c3a2e; --ok-soft-ink: #b8e3cf; --bad-soft: #43242a; --bad-soft-ink: #f2c9cc;
+  --danger-line: #5a3236; --danger-bg: #26181a; --danger-ink: #f2cfd1;
+  --mock-bg: #4a3a14; --mock-ink: #f0dfb0; --mock-line: #7a6224; --mock-strong: #fbf0d2;
+  --broken-bg: #4a2226; --broken-ink: #f2cfd1; --broken-line: #7a3a40;
+  --badge-pending: #d9a441; --badge-pending-ink: #1a1300; --badge-ok: #3e9a70; --badge-ok-ink: #06170f;
+  --badge-bad: #c25a5a; --badge-bad-ink: #1c0606;
+  --cursor-line: #5b93d1; --code-bg: rgba(255, 255, 255, .05); --scrim: rgba(0, 0, 0, .25);
+  --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 4px 14px rgba(0, 0, 0, .18);
+  --brand-a: #5b93d1; --brand-b: #3f6fa8;
   color-scheme: dark;
 }
 html[data-theme="light"] {
-  --bg: #f4f6fb; --panel: #ffffff; --panel-2: #eef2f8; --sunk: #f8fafc; --field: #ffffff;
-  --line: #dce2ec; --line-strong: #c2cbd9; --ink: #1b2333; --ink-soft: #2a3446;
-  --dim: #566174; --hint: #7a8496;
-  --accent: #2563eb; --accent-hover: #1d4fd8; --on-accent: #ffffff; --on-accent-dim: #dbe6ff;
-  --accent-soft: rgba(37, 99, 235, .10);
-  --link: #1d4ed8; --btn: #eef2f7; --btn-hover: #e1e7f0;
-  --chip: #e5ebf5; --chip-ink: #2c3a55;
-  --ok: #15803d; --bad: #c62828; --warn: #b45309; --on-warn: #ffffff;
-  --ok-soft: #dcf5e7; --ok-soft-ink: #14532d; --bad-soft: #fde2e2; --bad-soft-ink: #7f1d1d;
-  --danger-line: #f2b8b8; --danger-bg: #fff1f1; --danger-ink: #7f1d1d;
-  --mock-bg: #fff4d6; --mock-ink: #6b4a00; --mock-line: #f0cf7a; --mock-strong: #4a3300;
-  --broken-bg: #fde2e2; --broken-ink: #7f1d1d; --broken-line: #f2b8b8;
-  --badge-pending: #f5b70a; --badge-pending-ink: #2a1d00; --badge-ok: #1f9d55; --badge-ok-ink: #ffffff;
-  --badge-bad: #d64545; --badge-bad-ink: #ffffff;
-  --cursor-line: #4f6bed; --code-bg: rgba(15, 23, 42, .06); --scrim: rgba(15, 23, 42, .08);
-  --shadow: 0 1px 2px rgba(15, 23, 42, .06), 0 6px 18px rgba(15, 23, 42, .07);
-  --brand-a: #2563eb; --brand-b: #7c3aed;
+  --bg: #f5f6f8; --panel: #ffffff; --panel-2: #f0f2f5; --sunk: #fafbfc; --field: #ffffff;
+  --line: #dfe3e8; --line-strong: #c5ccd6; --ink: #1f2933; --ink-soft: #323f4b;
+  --dim: #5f6b7a; --hint: #7b8794;
+  --accent: #1f5fa8; --accent-hover: #184c87; --on-accent: #ffffff; --on-accent-dim: #d6e3f3;
+  --accent-soft: rgba(31, 95, 168, .08);
+  --link: #1f5fa8; --btn: #eef1f4; --btn-hover: #e2e7ec;
+  --chip: #e6ebf1; --chip-ink: #2b3b52;
+  --ok: #1e7a4f; --bad: #b42318; --warn: #a15c07; --on-warn: #ffffff;
+  --ok-soft: #e3f2ea; --ok-soft-ink: #135c3a; --bad-soft: #fbe7e5; --bad-soft-ink: #7a1a12;
+  --danger-line: #efc2bd; --danger-bg: #fdf3f2; --danger-ink: #7a1a12;
+  --mock-bg: #fdf5e1; --mock-ink: #6a4b00; --mock-line: #e8d08f; --mock-strong: #4a3400;
+  --broken-bg: #fbe7e5; --broken-ink: #7a1a12; --broken-line: #efc2bd;
+  --badge-pending: #d4a017; --badge-pending-ink: #2a1d00; --badge-ok: #1e7a4f; --badge-ok-ink: #ffffff;
+  --badge-bad: #b42318; --badge-bad-ink: #ffffff;
+  --cursor-line: #1f5fa8; --code-bg: rgba(16, 24, 40, .05); --scrim: rgba(16, 24, 40, .06);
+  --shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 2px 8px rgba(16, 24, 40, .05);
+  --brand-a: #1f5fa8; --brand-b: #173f6e;
   color-scheme: light;
 }
 html[data-theme="blue"] {
-  --bg: #0a1830; --panel: #0f2546; --panel-2: #15325e; --sunk: #071226; --field: #0b1d3a;
-  --line: #1e3c6c; --line-strong: #2b5493; --ink: #e8f0ff; --ink-soft: #cfe0ff;
-  --dim: #9fb6dc; --hint: #7690bb;
-  --accent: #4cc2ff; --accent-hover: #7fd4ff; --on-accent: #04182d; --on-accent-dim: #0d3556;
-  --accent-soft: rgba(76, 194, 255, .14);
-  --link: #8fd3ff; --btn: #17305a; --btn-hover: #1d3c70;
-  --chip: #1d3c70; --chip-ink: #d6e6ff;
-  --ok: #4fd1a5; --bad: #ff8a8a; --warn: #ffd166; --on-warn: #1f1600;
-  --ok-soft: #12443a; --ok-soft-ink: #bff3e2; --bad-soft: #4a2333; --bad-soft-ink: #ffd6de;
-  --danger-line: #6a2f45; --danger-bg: #2a1426; --danger-ink: #ffd7e1;
-  --mock-bg: #4f3a00; --mock-ink: #ffe9b0; --mock-line: #8a6a00; --mock-strong: #fff4d4;
-  --broken-bg: #4a1f2c; --broken-ink: #ffd6de; --broken-line: #7a3044;
-  --badge-pending: #ffc23d; --badge-pending-ink: #1f1600; --badge-ok: #27b37e; --badge-ok-ink: #021a10;
-  --badge-bad: #e05a6c; --badge-bad-ink: #1c0508;
-  --cursor-line: #4cc2ff; --code-bg: rgba(255, 255, 255, .07); --scrim: rgba(0, 0, 0, .25);
-  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(2, 10, 30, .35);
-  --brand-a: #4cc2ff; --brand-b: #5b8cff;
+  --bg: #0f1b2d; --panel: #14233a; --panel-2: #1a2c47; --sunk: #0b1524; --field: #112035;
+  --line: #22344f; --line-strong: #2f4669; --ink: #e3e9f2; --ink-soft: #c8d3e3;
+  --dim: #93a3ba; --hint: #6e7f98;
+  --accent: #6f9fd8; --accent-hover: #89b2e2; --on-accent: #0b1626; --on-accent-dim: #1c3352;
+  --accent-soft: rgba(111, 159, 216, .13);
+  --link: #9dbde6; --btn: #1c2e4a; --btn-hover: #233858;
+  --chip: #233858; --chip-ink: #d0dcec;
+  --ok: #52b48a; --bad: #e27b7b; --warn: #dcae4f; --on-warn: #1a1300;
+  --ok-soft: #173b33; --ok-soft-ink: #bfe6d4; --bad-soft: #3f2330; --bad-soft-ink: #f3cdd3;
+  --danger-line: #5c3044; --danger-bg: #241726; --danger-ink: #f3d1d8;
+  --mock-bg: #4a3a14; --mock-ink: #f0dfb0; --mock-line: #7a6224; --mock-strong: #fbf0d2;
+  --broken-bg: #432230; --broken-ink: #f3cdd3; --broken-line: #6e3446;
+  --badge-pending: #dcae4f; --badge-pending-ink: #1a1300; --badge-ok: #3f9c74; --badge-ok-ink: #04170e;
+  --badge-bad: #c45c66; --badge-bad-ink: #1c0508;
+  --cursor-line: #6f9fd8; --code-bg: rgba(255, 255, 255, .06); --scrim: rgba(0, 0, 0, .25);
+  --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 4px 16px rgba(4, 12, 28, .3);
+  --brand-a: #6f9fd8; --brand-b: #4a74a8;
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -474,3 +476,4 @@ button.linkish:hover, button.linkish:focus { text-decoration: underline; }
 #tab-run .row input[type=text].grow { flex: 1 1 22rem; }
 .status-PASS { color: var(--ok); font-weight: 600; } .status-FAIL { color: var(--bad); font-weight: 600; }
 .status-SKIP { color: var(--warn); font-weight: 600; }
+label.inline { display: inline-flex; gap: .3rem; align-items: center; margin-right: .8rem; }

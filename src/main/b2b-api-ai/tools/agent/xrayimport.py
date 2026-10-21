@@ -112,51 +112,9 @@ def story_of(job_dir: str) -> str:
         return ""
 
 
-def linked_tests(issue: dict, link_type: str, test_type: str, other_way: list = None) -> list:
-    """[{key, summary, status}] of the issues linked to the story by the
-    test link type, in Jira's order -- every one; the caller caps them.
-    The name of the link type, or its wording ("is tested by" / "tests"),
-    decides; an issue whose type is named and is not the test type is
-    left out.
-
-    The direction counts. Read from the story, a test that tests it sits
-    on the link's INWARD side (the story "is tested by" it). An issue on
-    the outward side is one the story itself "tests": not taken, and --
-    when `other_way` is given -- added to it as {key, why}, so a link
-    made the wrong way round is named, not lost."""
-    fields = issue.get("fields") if isinstance(issue.get("fields"), dict) else {}
-    out, seen = [], set()
-    for link in fields.get("issuelinks") or []:
-        if not isinstance(link, dict):
-            continue
-        kind = link.get("type") if isinstance(link.get("type"), dict) else {}
-        words = {str(kind.get(k) or "").strip().lower() for k in ("name", "inward", "outward")}
-        if link_type.lower() not in words and not ({"is tested by", "tests"} & words):
-            continue
-        inward = isinstance(link.get("inwardIssue"), dict)
-        other = link.get("inwardIssue") if inward else link.get("outwardIssue")
-        if not isinstance(other, dict):
-            continue
-        key = str(other.get("key") or "").upper()
-        if not _KEY_RX.match(key) or key in seen:
-            continue
-        f = other.get("fields") if isinstance(other.get("fields"), dict) else {}
-        itype = f.get("issuetype") if isinstance(f.get("issuetype"), dict) else {}
-        if itype.get("name") and str(itype["name"]).lower() != test_type.lower():
-            continue
-        if not inward:
-            if other_way is not None:
-                seen.add(key)
-                phrase = _one(kind.get("outward"), 40) or "tests"
-                other_way.append({"key": key, "why": f"it is linked the other way round (the story "
-                                                     f"\"{phrase}\" it); link the test to the story "
-                                                     f"in Jira to take it"})
-            continue
-        status = f.get("status") if isinstance(f.get("status"), dict) else {}
-        seen.add(key)
-        out.append({"key": key, "summary": _one(f.get("summary"), 300),
-                    "status": _one(status.get("name"), 60)})
-    return out
+# One reading of a story's linked tests, shared with Create in Xray (which
+# uses it not to create a test the story already has).
+linked_tests = xt.linked_tests
 
 
 def design_md(design: dict) -> str:

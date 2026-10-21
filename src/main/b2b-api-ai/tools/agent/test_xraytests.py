@@ -69,12 +69,16 @@ class Jira:
         self.gone = set(gone)
         self.calls, self.created, self.steps, self.links = [], [], {}, []
         self.n = 900
+        self.linked = {}                 # key -> (summary, [(action, data, expected)])
 
     def transport(self, method, url, token, timeout, body=None):
         assert token == CONN["token"]
         assert url.startswith(CONN["base"]), url
         self.calls.append((method, url, body))
         path = url.split(CONN["base"], 1)[1]
+        if method == "GET" and "/rest/raven/2.0/api/test/" in path:
+            key = path.split("/test/")[1].split("/")[0]
+            return [{"step": a, "data": d, "result": e} for a, d, e in self.linked[key][1]]
         if "/rest/raven/" in path:
             if self.refuse_steps:
                 raise search.JiraError(404, "no such api")
@@ -98,8 +102,13 @@ class Jira:
             if key in self.gone:
                 raise search.JiraError(404, "Issue Does Not Exist")
             if key == self.story:
+                tested = {"name": "Tests", "inward": "is tested by", "outward": "tests"}
                 return {"key": key, "fields": {"summary": "The story", "project": {"key": self.project},
-                                               "issuetype": {"name": "Story"}}}
+                                               "issuetype": {"name": "Story"},
+                                               "issuelinks": [
+                                                   {"type": tested, "inwardIssue": {"key": k, "fields": {
+                                                       "summary": s, "issuetype": {"name": "Test"}}}}
+                                                   for k, (s, _st) in self.linked.items()]}}
             return {"key": key, "fields": {"summary": "a test"}}
         raise AssertionError(f"unexpected {method} {path}")
 
@@ -590,11 +599,86 @@ class TheAgentLoop(Base):
         self.assertEqual(got["missing"], {"TC-002": "ABC-902"})
 
 
+class WhatTheStoryHas(Base):
+    """Seen: Design the tests wrote cases for a story whose tests a person
+    had written, and Create in Xray made a second set beside them."""
+
+    def made(self):
+        return [b["fields"]["summary"] for _k, b in self.jira.created]
+
+    def test_a_case_with_the_title_of_a_linked_test_takes_its_key_and_is_not_created(self):
+        self.jira.linked["ABC-50"] = ("create a RATE returns 201.", [("POST it", "", "201")])
+        r = self.create()
+        self.assertEqual([(f["id"], f["key"], f["how"]) for f in r["found"]], [("TC-001", "ABC-50", "title")])
+        self.assertEqual(len(self.jira.created), 1, "only TC-002 is new")
+        self.assertNotIn("Create a rate returns 201", self.made())
+        entry = xt.read_keys(self.job)["tests"]["design:TC-001"]
+        self.assertEqual((entry["key"], entry["found"]), ("ABC-50", "title"))
+        self.assertEqual(entry["base"]["steps"], [{"action": "POST it", "data": "", "expected": "201"}],
+                         "the base is Xray's: Update in Xray offers our steps as the change")
+        self.assertEqual(xt.keys_for(self.job, "design", False)["TC-001"], "ABC-50",
+                         "the key the Agentic step and the data sheet get")
+        self.assertIn("already linked to ABC-12", r["message"])
+
+    def test_the_same_steps_under_another_title_is_the_same_test(self):
+        self.jira.linked["ABC-51"] = ("Rates: happy path", [("POST a valid rate", "x",
+                                                             "201 and the body carries rateId")])
+        r = self.create()
+        self.assertEqual([(f["id"], f["how"]) for f in r["found"]], [("TC-001", "steps")])
+
+    def test_a_look_alike_is_held_neither_created_nor_taken(self):
+        self.jira.linked["ABC-52"] = ("Create a rate returns 201 Created", [("other", "", "other")])
+        r = self.create()
+        self.assertEqual([(h["id"], h["key"]) for h in r["held"]], [("TC-001", "ABC-52")])
+        self.assertNotIn("TC-001", xt.keys_for(self.job, "design", False))
+        self.assertNotIn("Create a rate returns 201", self.made())
+        self.assertTrue(r["ok"])
+        self.assertIn("NOT created", r["message"])
+
+    def test_a_person_says_which_and_the_next_run_does_it(self):
+        self.jira.linked["ABC-52"] = ("Create a rate returns 201 Created", [("other", "", "other")])
+        self.create()
+        r = self.create(adopt={"TC-001": "ABC-52"})
+        self.assertEqual([(f["id"], f["key"], f["how"]) for f in r["found"]], [("TC-001", "ABC-52", "chosen")])
+        self.assertEqual(r["held"], [])
+
+    def test_create_anyway_makes_a_new_test(self):
+        self.jira.linked["ABC-52"] = ("Create a rate returns 201 Created", [("other", "", "other")])
+        r = self.create(create_anyway=["TC-001"])
+        self.assertIn("Create a rate returns 201", self.made())
+        self.assertEqual(r["held"], [])
+
+    def test_a_key_the_story_does_not_have_is_refused_before_anything_is_created(self):
+        self.jira.linked["ABC-52"] = ("something else entirely", [("x", "", "y")])
+        with self.assertRaises(xt.Refused):
+            self.create(adopt={"TC-001": "ABC-99"})
+        self.assertEqual(self.jira.created, [])
+
+    def test_a_linked_test_this_job_already_holds_is_not_given_to_another_case(self):
+        self.jira.linked["ABC-50"] = ("Create a rate returns 201", [("POST it", "", "201")])
+        self.create()
+        self.jira.linked["ABC-50"] = ("A rate for an unknown group is refused now really", [])
+        r = self.create()
+        self.assertEqual(r["found"], [], "ABC-50 is TC-001's: not TC-002's too")
+
+    def test_nothing_linked_creates_as_before(self):
+        r = self.create()
+        self.assertEqual((len(self.jira.created), r["found"], r["held"]), (2, [], []))
+
+    def test_the_choices_are_read_and_a_bad_one_is_refused(self):
+        self.assertEqual(xt.choices("TC-003=abc-12, TC-005=ABC-13", "TC-004"),
+                         ({"TC-003": "ABC-12", "TC-005": "ABC-13"}, ["TC-004"]))
+        for bad in (("TC-003", ""), ("TC-003=nokey", ""), ("", "-x"), ("TC-1=ABC-1", "TC-1")):
+            with self.assertRaises(xt.Refused):
+                xt.choices(*bad)
+
+
 class Declared(unittest.TestCase):
     def test_the_two_commands_are_runnables_with_fixed_options(self):
         jobs = _load("xray_jobs_under_test", os.path.join(HERE, "jobs.py"))
         self.assertEqual(set(jobs.RUNNABLES["xray-create"]["options"]),
-                         {"--job", "--what", "--story", "--confirm-story", "--expect"})
+                         {"--job", "--what", "--story", "--confirm-story", "--expect",
+                          "--adopt", "--create-anyway"})
         self.assertEqual(jobs.RESULT_FILES["xray-create"], "xray-result.json")
         self.assertNotIn("xray-status", jobs.RESULT_FILES)
 

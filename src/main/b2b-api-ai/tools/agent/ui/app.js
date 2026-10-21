@@ -1398,7 +1398,41 @@ function askXray(what, j) {
 }
 
 function wireXray(what) {
-  $(`xray-${what}-create`).onclick = () => {
+  $(`xray-${what}-create`).onclick = () => startXrayCreate(what, {});
+}
+
+// A person's word on the cases that looked like a test the story already
+// has: "it is that test" (--adopt) or "it is a new one" (--create-anyway).
+function xrayHeldChoices(what, held) {
+  const picks = held.map((h) => {
+    const name = `xray-${what}-held-${h.id}`;
+    const opt = (value, text, checked) => el("label", { class: "inline" },
+      el("input", Object.assign({ type: "radio", name, value }, checked ? { checked: "checked" } : {})),
+      el("span", { text }));
+    return { h, name, row: [el("code", { text: h.id }),
+      el("div", {}, el("span", { text: h.title || "" }),
+         el("small", { text: `looks like ${h.key}: ${h.xray_title || ""}` })),
+      el("div", {}, opt("adopt", `it is ${h.key}`), opt("new", "a new test"), opt("later", "decide later", true))] };
+  });
+  const go = el("button", { type: "button", text: "Go on with these choices" });
+  go.onclick = () => {
+    const adopt = [], anyway = [];
+    for (const p of picks) {
+      const v = (document.querySelector(`input[name="${p.name}"]:checked`) || {}).value;
+      if (v === "adopt") adopt.push(`${p.h.id}=${p.h.key}`);
+      else if (v === "new") anyway.push(p.h.id);
+    }
+    if (!adopt.length && !anyway.length) { setState($(`xray-${what}-state`), "bad", "nothing was chosen"); return; }
+    const extra = {};
+    if (adopt.length) extra["--adopt"] = adopt.join(",");
+    if (anyway.length) extra["--create-anyway"] = anyway.join(",");
+    startXrayCreate(what, extra);
+  };
+  return [banner("warn", `${held.length} case(s) look like a test the story already has and were not created. Say which:`),
+          table(["Case", "Looks like", "It is"], picks.map((p) => p.row)), go];
+}
+
+function startXrayCreate(what, extra) {
     const j = job();
     const st = xrayStatus[what];
     if (!st || st.job !== j) { setState($(`xray-${what}-state`), "bad", "the status is not for this job; it is being read again"); refreshXray(what, true); return; }
@@ -1416,9 +1450,9 @@ function wireXray(what) {
     if (!again.trim()) { setState($(`xray-${what}-state`), "bad", "nothing was typed, so nothing was written"); return; }
     $(`xray-${what}-create`).disabled = true;
     $(`xray-${what}-log`).hidden = false;
-    post("/api/start", { job: j, runnable: "xray-create", options: {
+    post("/api/start", { job: j, runnable: "xray-create", options: Object.assign({
       "--job": j, "--what": what, "--story": story, "--confirm-story": again.trim(),
-      "--expect": st.mock_jira ? "mock" : "real" } })
+      "--expect": st.mock_jira ? "mock" : "real" }, extra || {}) })
       .then(() => follow("xray-create", $(`xray-${what}-log`), $(`xray-${what}-state`), async () => {
         let r = null;
         try {
@@ -1438,12 +1472,15 @@ function wireXray(what) {
                c.note ? el("small", { class: "flag differs", text: c.note }) : null)]);
           if (rows.length) kids.push(table(["Case", "Jira test", "Created"], rows));
           for (const c of r.changed || []) kids.push(banner("warn", `${c.id} → ${c.key}: ${c.note}`));
+          const found = (r.found || []).map((c) => [el("code", { text: c.id }), el("code", { text: c.key }),
+            el("div", {}, el("span", { text: c.xray_title || c.title || "" }), el("small", { text: c.note || "" }))]);
+          if (found.length) kids.push(table(["Case", "Jira test", "Already there, not created"], found));
+          if ((r.held || []).length) kids.push(...xrayHeldChoices(what, r.held));
         }
         box.replaceChildren(...kids);
         if (j === job()) refreshXray(what, true);
       }, j))
       .catch((e) => { setState($(`xray-${what}-state`), "bad", e.message); refreshXray(what, true); });
-  };
 }
 wireXray("design");
 wireXray("manual");

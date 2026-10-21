@@ -444,7 +444,9 @@ def jira_transport(method: str, url: str, token: str, timeout: int, body=None, r
             # A story with two Xray tests linked to it, and one other link.
             # Their steps are the mock's three steps (the raven answer above).
             tested = {"name": "Tests", "inward": "is tested by", "outward": "tests"}
-            return {"key": key, "fields": {"summary": f"[MOCK] story {key}", "issuelinks": [
+            return {"key": key, "fields": {"summary": f"[MOCK] story {key}",
+                                           "project": {"key": project},
+                                           "issuetype": {"name": "Story"}, "issuelinks": [
                 {"type": tested, "inwardIssue": {"key": f"{project}-201", "fields": {
                     "summary": "[MOCK] A booking can be made and confirmed",
                     "issuetype": {"name": "Test"}, "status": {"name": "Open"}}}},

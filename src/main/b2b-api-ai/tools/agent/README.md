@@ -1688,6 +1688,17 @@ The same rules as Publish:
   that already has one: the case is found by its text and the key moves
   with it (the result says so). A result that gives one id to two cases
   is refused before anything is sent.
+- **A test the story already has is not created again.** Before
+  creating, the tests linked to the story are compared with the cases:
+  the same title (case, spacing and punctuation aside) or the same
+  steps means the same test -- its key is kept for the case, so the
+  data sheet and the results go to it ("already there, not created").
+  A case whose title only looks like a linked test's (most of its words
+  in common) is **held**: neither created nor given the key. The result
+  lists each one with *it is ABC-12* / *a new test* / *decide later*,
+  and **Go on with these choices** runs Create in Xray again with them
+  (`--adopt TC-003=ABC-12`, `--create-anyway TC-004`). A test this job
+  already holds is never given to a second case.
 - **Said beforehand**: the block tells you when the switch is off, when
   Jira here is a stand-in, and when the result was made by a stand-in
   and will not be sent to the real Jira.
