@@ -168,6 +168,49 @@ def _jira_shape_issues(root: str, norm: str, text: str, cls: str) -> list:
     return issues
 
 
+# Helpers StoryTestBase (src/test/java/com/hi/api/tests/StoryTestBase.java)
+# has ONCE. Seen in the generated story tests: each wrote them again -- five
+# copies of the token request, three of the guest id from the token.
+_SHARED_HELPERS = (
+    (r"\w*AccessToken|fetch\w*Token|\w*TokenUrl|memberPathAuth|\w+Auth",
+     "a token: ownerSession(row, prefix) / guestSession(user, password) / clientToken()"),
+    (r"guestIdFrom\w*", "the guest id of a token: ownerSession(...).requireGuestId()"),
+    (r"optionalRowOrConfig\w*|rowOrConfig\w+|configValueOrAlternate|truthyRowOrConfig",
+     "a value from the row or the configuration: rowOrConfig / optionalRowOrConfig "
+     "(each with a fallbackKey form) / truthyRowOrConfig"),
+    (r"apiHeaders|clientCredentialsHeaders|(?:api|auth|bearer|default|build)\w*Headers",
+     "API headers: apiHeaders(token)"),
+    (r"fillEnrollFields|enroll(?:Guest|Owner|Member|NewGuest)?|allowedDomain\w*",
+     "a guest: enrollGuest(row, template, CASE) / fillEnrollFields(row)"),
+    (r"call|step", "an Allure step around a call: step(name, () -> ...)"),
+)
+_METHOD_DEF_RX = re.compile(
+    r"^\s*(?:private|protected|public)\s+(?:static\s+)?(?:final\s+)?[\w<>\[\],.? ]+?\s+(\w+)\s*\(",
+    re.M)
+_RAW_TOKEN_RX = re.compile(
+    r"client_secret|api_config\.client_|token_end_point|token_route|ApiRoutes\.TOKEN|"
+    r"realms/applications/token|\"access_token\"|getUrlDecoder")
+
+
+def _shared_helper_issues(norm: str, text: str) -> list:
+    """A story test extends StoryTestBase and writes none of its helpers."""
+    issues = []
+    if _TEST_ANNOTATION_RX.search(text) and not re.search(r"\bextends\s+(?:[\w.]+\.)?StoryTestBase\b", text):
+        issues.append(f"{norm}: a story test extends StoryTestBase (com.hi.api.tests), which has the "
+                      "token, guest id, headers, row/config and enrolment helpers -- see the skill, "
+                      "section 2")
+    for m in _METHOD_DEF_RX.finditer(text):
+        name = m.group(1)
+        for rx, use in _SHARED_HELPERS:
+            if re.fullmatch(rx, name):
+                issues.append(f"{norm}: defines its own {name}(...); StoryTestBase has it -- use {use}")
+                break
+    if _RAW_TOKEN_RX.search(text):
+        issues.append(f"{norm}: requests or decodes a token itself; use StoryTestBase's "
+                      "ownerSession / guestSession / clientToken (the guest id comes with the token)")
+    return issues
+
+
 def jira_parity_issues(root: str, rel_paths: list) -> list:
     """Converter-parity checks on touched jira tests (DATA_INVENTORY, enroll extract, CSV)."""
     issues = []
@@ -187,6 +230,7 @@ def jira_parity_issues(root: str, rel_paths: list) -> list:
                 issues.append(f"{norm}: enroll setup must EXTRACT guestId from the enroll "
                               "response (safeJsonExtract(..., \"guestId\"))")
         issues.extend(_jira_spend_detail_guest_id_issues(norm, text))
+        issues.extend(_shared_helper_issues(norm, text))
         cls = os.path.basename(norm)[:-5]
         issues.extend(_jira_shape_issues(root, norm, text, cls))
         csv_cols = _csv_columns_for_jira_class(root, cls, text)

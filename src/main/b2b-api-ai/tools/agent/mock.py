@@ -665,6 +665,8 @@ def cursor(prompt: str, followup=None) -> dict:
 SAMPLE_TEST = "src/test/java/com/hi/api/tests/jira/MockAgentSampleTest.java"
 SAMPLE_BODY = """package com.hi.api.tests.jira;
 
+import com.hi.api.tests.StoryTestBase;
+
 /**
  * MOCK. Written by the workbench's stand-in for Cursor (tools/agent/mock.py)
  * so that the checks, the review and Discard can be tried without Cursor.
@@ -673,7 +675,7 @@ SAMPLE_BODY = """package com.hi.api.tests.jira;
  *
  * DATA_INVENTORY: no HTTP steps, no CONFIG keys, no EXTRACTs.
  */
-public class MockAgentSampleTest {
+public class MockAgentSampleTest extends StoryTestBase {
 
     @org.testng.annotations.Test(groups = {"jira"}, enabled = false, description = "mock agent sample")
     public void mockAgentWroteThis() {

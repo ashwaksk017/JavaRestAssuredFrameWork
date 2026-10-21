@@ -81,80 +81,67 @@ overwrites them. Never touch `.../rest/manual/` or `.../tests/manual/`.
 
 ---
 
-## 2. The skeleton
+## 2. The skeleton: extend `StoryTestBase`
 
-Every helper below exists. Use these and nothing invented.
+A story test **extends `com.hi.api.tests.StoryTestBase`** (itself a
+`BaseApiTest`), and writes only its own calls and assertions. The shape is
+`src/test/java/com/hi/api/tests/examples/StoryTestExample.java` -- read it; it is the
+example in your prompt.
+
+### Shared helpers -- use these, never write your own
+
+These exist ONCE, in `StoryTestBase` and `com.hi.api.auth.JsonTokens`. A
+story test that defines its own token, guest-id, header, enrolment or
+config helper **fails the workbench's checks** (`story-test-shared-helpers`):
+
+| Need | Call |
+|---|---|
+| A persona's token and its guest id (`guestIdInClaimMustMatchGuestIdInPath` routes) | `JsonTokens.Session s = ownerSession(row, "jira.<story>.<role>")` -> `s.accessToken`, `s.requireGuestId()` |
+| The same, with another story's persona keys as fallback | `ownerSession(row, "jira.<story>.<role>", "jira.<other-story>.<role>")` |
+| A token for a guest the test enrolled | `guestSession(username, password)` |
+| The application's own token (client credentials) | `clientToken()` |
+| API headers with the bearer | `apiHeaders(token)` (the environment's `headers/<env>.json`) |
+| A value from the row, else the configuration | `rowOrConfig(row, column, key)` (skips when unset); `rowOrConfig(row, column, key, fallbackKey)`; `optionalRowOrConfig(row, column, key[, fallbackKey])` (null, no skip); `truthyRowOrConfig(row, column, key)` |
+| Setup: a new guest | `String guestId = enrollGuest(row, "templates/manual/<job>_enroll_guest.json", CASE)` -- null when it failed (stop; its `CASE/SETUP` assertions say why) |
+| Setup: a program account for that guest | `String accountId = createProgramAccount(row, template, guestId, guestToken, CASE)` |
+| Blank enrolment columns filled (ALLOWED_DOMAINS-aware) | `fillEnrollFields(row)` (enrollGuest calls it) |
+| A named Allure step around a call | `step("verbName: VERB /path", () -> RestUtilities.getResponseGet(url, headers))` |
+| A list in a response, never null | `listAt(res, "items.id")` |
+
+Also already there, for calls and assertions: `RestUtilities.getResponseGet/Post/Put/Patch/Delete`,
+`checkActualResponse`, `safeJsonExtract`, `safeJsonGet`; `ManualBody.render(template, row, ctx)`;
+`ApiRoutes.fill(ApiRoutes.GUEST_BUSINESSES, "guestId", guestId)`; `baseUrl()`; and the fluent
+flows in `CreateTestCase.md` (`CustomerOnboarding`, `MasterClass.onboarding(row)`).
 
 ```java
-package com.hi.api.tests.jira;
+public class AccountActivationTest extends StoryTestBase {
 
-import java.util.HashMap;
-import java.util.Map;
+    private static final String CASE = "TC-001";
 
-import org.testng.annotations.Test;
-
-import com.hi.api.rest.utilities.AuthHelper;
-import com.hi.api.rest.utilities.Headers;
-import com.hi.api.rest.utilities.RestUtilities;
-import com.hi.api.retry.RetryAnalyzer;
-import com.hi.api.tests.BaseApiTest;
-import com.hi.api.xray.XrayTest;
-
-import io.qameta.allure.Description;
-import io.qameta.allure.Epic;
-import io.qameta.allure.Feature;
-import io.qameta.allure.Story;
-import io.restassured.response.Response;
-
-@Epic("API Automation")
-@Feature("Program Accounts")          // the story's area
-public class AccountActivationTest extends BaseApiTest {
-
-    @Test(groups = {"jira"}, retryAnalyzer = RetryAnalyzer.class)
-    @XrayTest("B2B-1234")             // the Xray key from the packet
+    @Test(groups = {"jira"}, retryAnalyzer = RetryAnalyzer.class,
+          dataProvider = "rows", dataProviderClass = PerMethodCsvDataProvider.class)
+    @XrayTest("B2B-1234")             // only when the case carries [Xray KEY]
     @Story("B2B-1234 activate a pending account")
-    @Description("AC: POST /businesses/{accountId}/activate on a pending "
-               + "account returns 204 and the account reads ACTIVE.")
-    public void activatePendingAccount_204() {
-        String testCaseId = "B2B-1234";
-
-        // Every value the request needs, named. A path param is a
-        // declared local, never an undeclared identifier -- and never a
-        // literal buried in the URL where nobody can see it. A customer's
-        // id is never a literal at all: see section 4b.
-        String accountId = rowOrConfig(null, "account_id", "jira.b2b-1234.account_id");
-
-        // Auth: writes ctx["accessToken"]; re-used if already present.
-        Map<String, String> ctx = new HashMap<>();
-        AuthHelper.primeClientCredentialsToken(ctx);
-
-        Map<String, String> headers = Headers.fromJson("headers/qa.json");
-        headers.put("Authorization", "Bearer " + ctx.get("accessToken"));
-
-        String body = "{\"status\":\"ACTIVE\"}";
-        Response res = RestUtilities.getResponsePost(
-                body, baseUrl() + "/businesses/" + accountId + "/activate", headers);
-        // An inline literal is right for a one-field body. For anything
-        // bigger, or any field that varies per row, put the body in
-        // src/test/resources/templates/manual/<step>.json and render it:
-        //
-        //   String body = ManualBody.render(
-        //           "templates/manual/activate.json", row, ctx);
-        //
-        // Do NOT call RestUtilities.mapJsonValues directly: a <<faker>>
-        // token in the body goes to the server verbatim and a missing
-        // column renders the string "null". ManualBody does what the
-        // generated engine does and throws instead. See MANUAL_FIXES.md
-        // section 5.
-
-        RestUtilities.logResponseBody(testCaseId, holder,
-                RestUtilities.getResponseAsString(res));
-
+    @Description("TC-001 covers AC-1. AC-1: POST /businesses/{accountId}/activate on a pending "
+               + "account returns 204.")
+    public void activatePendingAccount_204(Map<String, String> row) {
+        String accountId = rowOrConfig(row, "account_id", "jira.b2b-1234.account_id");
+        String token = clientToken();
+        Response res = step("activateAccount: POST " + ApiRoutes.BUSINESS_ACTIVATE,
+                () -> RestUtilities.getResponsePost("{\"status\":\"ACTIVE\"}",
+                        baseUrl() + ApiRoutes.fill(ApiRoutes.BUSINESS_ACTIVATE, "accountId", accountId),
+                        apiHeaders(token)));
+        RestUtilities.logResponseBody(CASE, holder, RestUtilities.getResponseAsString(res));
         softAssert.assertEquals(RestUtilities.checkActualResponse(res), "204",
-                "POST activate status");
+                "TC-001/AC-1: POST activate returns 204");
     }
 }
 ```
+
+A body bigger than one field, or one that varies per row, goes in
+`src/test/resources/templates/manual/<job>_<step>.json` and is rendered with
+`ManualBody.render(template, row, ctx)` -- never `RestUtilities.mapJsonValues`
+(a `<<faker>>` token would go to the server verbatim; see MANUAL_FIXES.md section 5).
 
 ### The verb helpers
 
@@ -313,21 +300,24 @@ missing csv/manual/ sheets, or missing template files.
 
 ### Recipe R1 — Create program account (enroll → extract → create → read)
 
-Order: client-credentials token → `POST /realms/guests/enroll` → **extract
-`guestId`** → resource-owner token (enroll username/password) →
-`POST /guests/{guestId}/businesses` → `GET …/{accountId}`.
+```java
+String guestId = enrollGuest(row, "templates/manual/<job>_enroll_guest.json", CASE);
+if (guestId == null) return;                       // SETUP assertions say why
+JsonTokens.Session guest = guestSession(row.get("enroll_username"), row.get("enroll_password"));
+String accountId = createProgramAccount(row, "templates/manual/<job>_create_program_account.json",
+        guestId, guest.accessToken, CASE);         // or the act itself, asserted with the AC tag
+```
 
-Templates (committed golden copies): `templates/manual/examples/enroll_guest.json`,
-`templates/manual/examples/create_program_account.json`. See `GuestProgramAccountTest`
-in the workbench golden example prompt.
+The order (client-credentials token → enrol → guestId from the enrol
+response → the guest's own token → create → read) is inside these helpers.
 
 ### Recipe R2 — Member spendDetail + traveler filter
 
-Order: resource-owner token → **guestId from token** → optional probe GET
-(without traveler query) → act GET with `guestId=<traveler A>` query → assert
-each item’s `traveler.guestId`.
-
-See the DATA_INVENTORY Javadoc of an existing story test under tests/jira/.
+`ownerSession(row, "jira.<story>.<role>")` gives the token AND the caller's
+guest id (`requireGuestId()`) -- never a configured guest id for the
+caller. Then an optional probe GET (without the traveler query), the act GET
+with the traveler's guest id as query, and the AC's checks on each item --
+after asserting the list is not empty.
 
 ### Anti-patterns (do not emit)
 
@@ -335,6 +325,9 @@ See the DATA_INVENTORY Javadoc of an existing story test under tests/jira/.
 - `rowOrConfig(..., "guest_id", …)` for a guest you just enrolled in the same `@Test`.
 - Only `Suites/jira/*.xml` changed — no Java, csv/manual/, or templates.
 - `RestUtilities.mapJsonValues` without `ManualBody.render`.
+- A token request, a guest-id-from-token reader, a headers builder, a
+  `rowOrConfig` variant or an enrol block written in the test: they are in
+  `StoryTestBase` (section 2).
 - Committed CSV cells filled with real guest/account/member ids.
 
 ---
@@ -368,8 +361,8 @@ project.
 **Do not call methods on `ImportedRestClient` unless they exist on the
 committed interface.** Generated suite clients implement extra methods, but
 jira tests compile on a bare clone without those clients. Use
-`RestUtilities` + `Headers` + `baseUrl()` (or `ApiRoutes.fill(...)`) like
-the skeleton in section 2.
+`StoryTestBase`'s helpers + `RestUtilities` + `baseUrl()` and
+`ApiRoutes.fill(...)`, like the skeleton in section 2.
 
 ### Auth and setup the AC does not spell out
 
@@ -378,15 +371,14 @@ path) before choosing a token:
 
 | Route rule | Token |
 |---|---|
-| Corporate / client-credentials flows | `AuthHelper.primeClientCredentialsToken(ctx)` |
-| `guestIdInClaimMustMatchGuestIdInPath` | Resource-owner JSON to `baseUrl() + ApiRoutes.fill(ApiRoutes.TOKEN)` with `client_id`, `client_secret`, `username`, `password` from Config — **not** `AuthHelper` (form-encoded client_credentials only) |
+| Corporate / client-credentials flows | `clientToken()` |
+| `guestIdInClaimMustMatchGuestIdInPath` | `ownerSession(row, "jira.<story>.<role>")` (an existing persona) or `guestSession(username, password)` (a guest the test enrolled) -- the guest id comes with the token |
 
 When the designed case needs a **guest id** but the AC only asserts
 create/read on `/guests/{guestId}/businesses`, create the guest in the same
-`@Test` as setup (not a separate case): `POST /realms/guests/enroll` with
-client-credentials bearer, body from `templates/manual/<job>_enroll_guest.json`
-via `ManualBody.render`, fresh credentials from `FakeData.signupDataMap()`.
-Assert only what the approved case lists; treat enroll as plumbing.
+`@Test` as setup (not a separate case): `enrollGuest(row,
+"templates/manual/<job>_enroll_guest.json", CASE)`. Assert only what the
+approved case lists; enrolment is plumbing, asserted as `CASE/SETUP`.
 
 When there is **no Jira story key**, use the workbench job id everywhere the
 skill says story key: `@Story("job-…")`, config keys

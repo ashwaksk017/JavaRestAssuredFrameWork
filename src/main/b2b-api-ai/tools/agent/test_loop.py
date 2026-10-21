@@ -652,7 +652,7 @@ class TheReviewDecidesWhatIsWritten(Repo):
         def agent(prompt):
             seen["p"] = prompt
             write(self.root, JIRA + "NewTest.java",
-                  'class NewTest { @Test(groups = {"jira", "regression", "smoke"}) void a() {} }\n')
+                  'class NewTest extends StoryTestBase { @Test(groups = {"jira", "regression", "smoke"}) void a() {} }\n')
             return {"result": "ok"}
         out = io.StringIO()
         with redirect_stdout(out):
@@ -1201,7 +1201,7 @@ class JiraParity(unittest.TestCase):
               "no access,TC-2,B2B-1,B2B-2,,,invalid-token-for-401\n")
         write(self.root, rel,
               "/** DATA_INVENTORY */\n"
-              "class HouseTest {\n"
+              "class HouseTest extends StoryTestBase {\n"
               "  @org.testng.annotations.Test(groups = {\"jira\", \"regression\"}, retryAnalyzer = RetryAnalyzer.class,\n"
               "        dataProvider = \"x\")\n"
               "  public void go(Map<String, String> row) {\n"
@@ -1353,6 +1353,46 @@ class PatchManualCsvXray(unittest.TestCase):
         loop.patch_manual_csv_xray(self.root, self.job, [rel], on_log=mirrored.append)
         self.assertTrue(any("ensure_manual_csv_xray" in line for line in mirrored))
         self.assertTrue(any("PATCHED" in line for line in mirrored))
+
+
+class SharedHelperGate(unittest.TestCase):
+    """A story test extends StoryTestBase and writes none of its helpers.
+    Seen: five generated tests, the same token / guest-id / header code in each."""
+
+    def issues(self, text):
+        return loop.storytests._shared_helper_issues("T.java", text)
+
+    def test_a_test_that_writes_its_own_token_and_headers_fails(self):
+        text = ('public class T extends BaseApiTest {\n'
+                '  @Test(groups = {"jira"}) public void a() {}\n'
+                '  private String fetchAccessToken(Map<String, String> p) { '
+                'p.put("client_secret", Config.get("api_config.client_secret", "")); return ""; }\n'
+                '  private static Map<String, String> apiHeaders(String t) { return null; }\n'
+                '  private static String guestIdFromTokenResponse(Response r, String t) { return null; }\n'
+                '}\n')
+        said = " | ".join(self.issues(text))
+        for word in ("extends StoryTestBase", "fetchAccessToken", "apiHeaders",
+                     "guestIdFromTokenResponse", "requests or decodes a token itself"):
+            self.assertIn(word, said)
+
+    def test_a_test_on_storytestbase_with_its_own_assertion_helpers_passes(self):
+        text = ('public class T extends StoryTestBase {\n'
+                '  @Test(groups = {"jira"}) public void a(Map<String, String> row) {\n'
+                '    JsonTokens.Session s = ownerSession(row, "jira.abc-1.owner"); }\n'
+                '  private void assertResponseHeaders(Response r) {}\n'
+                '  private boolean enrollmentStatusIsActive(Response r) { return true; }\n'
+                '}\n')
+        self.assertEqual(self.issues(text), [], "story assertions of its own are fine")
+
+    def test_the_reference_example_passes_its_own_gate(self):
+        path = os.path.join(loop.ROOT, "src", "test", "java", "com", "hi", "api", "tests", "examples",
+                            "StoryTestExample.java")
+        with io.open(path, encoding="utf-8") as fh:
+            self.assertEqual(self.issues(fh.read()), [])
+
+    def test_the_policy_shows_cursor_the_example_not_a_story_test(self):
+        ex = loop.load_policy()["scopes"]["new-test"]["pattern_example"]
+        self.assertEqual(ex, ["src/test/java/com/hi/api/tests/examples/StoryTestExample.java"])
 
 
 class Preconditions(Repo):
