@@ -1880,7 +1880,7 @@ book it is held to; an edit there is put back and the run rejected.
   review: read those parts closely.
 - Before review the change must pass `python tools/agent/check_workbench.py`:
   every Python file compiles, `ui/app.js` parses, the workbench's quick tests
-  and the page checks pass. (`test_loop.py`, seven minutes, is not run: run
+  and the page checks pass. (`test_loop.py`, about two minutes, is not run: run
   it yourself before approving a change to `loop.py` or `cursor_call.py`.)
 - **Review it** opens the change on the Commit and push tab. After Approve &
   push, Stop and Start the workbench to run the changed server; refresh the

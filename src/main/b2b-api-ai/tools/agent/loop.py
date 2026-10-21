@@ -629,9 +629,42 @@ def git(root: str, *args: str, env: dict = None) -> tuple:
     return r.returncode, r.stdout.decode("utf-8", errors="replace")
 
 
+# Asked of git once a folder: a run asked it ~8 times a check, and each
+# git process costs ~45 ms on Windows. A cached answer is used only while
+# the repository it names is still there (its .git), so a folder that
+# became, or stopped being, a repository is asked again.
+_TOP_LEVEL: dict = {}
+_GIT_DIR: dict = {}
+
+
+def _still_a_repo(top: str) -> bool:
+    return os.path.exists(os.path.join(top, ".git"))
+
+
 def top_level(root: str) -> str:
+    key = os.path.abspath(root)
+    hit = _TOP_LEVEL.get(key)
+    if hit and _still_a_repo(hit):
+        return hit
     rc, out = git(root, "rev-parse", "--show-toplevel")
-    return os.path.normpath(out.strip()) if rc == 0 and out.strip() else root
+    if rc == 0 and out.strip():
+        top = os.path.normpath(out.strip())
+        _TOP_LEVEL[key] = top
+        return top
+    _TOP_LEVEL.pop(key, None)
+    return root
+
+
+def git_dir(root: str) -> tuple:
+    """(rc, absolute .git directory) -- `git rev-parse --absolute-git-dir`, cached as top_level is."""
+    key = os.path.abspath(root)
+    hit = _GIT_DIR.get(key)
+    if hit and os.path.isdir(hit):
+        return 0, hit
+    rc, out = git(root, "rev-parse", "--absolute-git-dir")
+    if rc == 0 and out.strip():
+        _GIT_DIR[key] = out.strip()
+    return rc, out.strip()
 
 
 def _canonical_path(path: str) -> str:
@@ -890,8 +923,7 @@ def remove_new_ignored(root: str, entries, ignored_before, since: float = 0) -> 
 def git_internals(root: str) -> dict:
     """Bytes of the files inside .git that change what a commit or a push
     DOES: config (remote URL, hooksPath), hooks, the local exclude list."""
-    rc, out = git(root, "rev-parse", "--absolute-git-dir")
-    gdir = out.strip()
+    rc, gdir = git_dir(root)
     snap = {}
     if rc != 0 or not gdir:
         return snap
@@ -924,6 +956,12 @@ def restore_git_internals(before: dict) -> list:
 
 
 def head(root: str) -> tuple:
+    # One process for both (it was two, on every check of a run). A repository
+    # with no commit yet fails it: then each is asked as before.
+    rc, out = git(root, "rev-parse", "HEAD", "--abbrev-ref", "HEAD")
+    lines = out.strip().splitlines()
+    if rc == 0 and len(lines) == 2:
+        return lines[0].strip(), lines[1].strip()
     _, commit = git(root, "rev-parse", "HEAD")
     _, branch = git(root, "rev-parse", "--abbrev-ref", "HEAD")
     return commit.strip(), branch.strip()

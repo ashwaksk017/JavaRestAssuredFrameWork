@@ -316,6 +316,10 @@ CHECKS = [
           "earlier work on a story is found by its exact key -- ABC-1 is "
           "not ABC-12 -- on any branch, shown as evidence beside the plan "
           "and never as a decision"),
+    Check("agent-partest",
+          [PY, "tools/agent/test_partest.py"],
+          "the parallel test runner the slow workbench test files use: every "
+          "test handed out is run and counted, and one failure fails the run"),
     Check("agent-design",
           [PY, "tools/agent/test_design.py"],
           "the API test design step: the endpoint list comes from the "

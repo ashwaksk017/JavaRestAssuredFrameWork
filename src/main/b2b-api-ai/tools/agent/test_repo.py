@@ -163,4 +163,5 @@ class Checkout(WithARepo):
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=1)
+    import partest
+    partest.main(__file__)

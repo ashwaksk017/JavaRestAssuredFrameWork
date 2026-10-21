@@ -116,26 +116,45 @@ class HeadForbiddenAndUnfinishedRefusal(unittest.TestCase):
         self.assertIn("this job's last run", story)
 
 
+_TEMPLATE = []
+
+
+def _template() -> str:
+    """The base repository every Repo test starts from, built once a
+    process and copied: building it was 6 git processes a test."""
+    if not _TEMPLATE:
+        root = tempfile.mkdtemp(prefix="looptemplate_")
+        _build_base(root)
+        _TEMPLATE.append(root)
+        import atexit
+        atexit.register(shutil.rmtree, root, True)
+    return _TEMPLATE[0]
+
+
+def _build_base(root):
+    sh(root, "init", "-q", "-b", "main")
+    sh(root, "config", "user.email", "t@example.com")
+    sh(root, "config", "user.name", "t")
+    sh(root, "config", "core.autocrlf", "false")
+    write(root, ".gitignore", "target/\n.workbench/\n" + GEN + "\n" + IMPORTED + "\n"
+          + CSV + "*\n!" + CSV + "manual/\n")
+    write(root, "README.md", "hello\n")
+    write(root, JIRA + "ExistingTest.java", "class ExistingTest {}\n")
+    write(root, "src/main/java/Framework.java", "class Framework {}\n")
+    write(root, GEN + "goal/Hooks.java", "class Hooks {}\n")   # ignored
+    write(root, GEN + "amex/Hooks.java", "class Hooks { int amex; }\n")
+    write(root, IMPORTED + "amex/AmexTest.java", "class AmexTest {}\n")
+    write(root, CSV + "amex/a.csv", "h\n1\n")
+    write(root, "tools/ra_converter/ra_converter.py", "X = 1\n")
+    sh(root, "add", "-A")
+    sh(root, "commit", "-q", "-m", "base")
+
+
 class Repo(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="looptest_")
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
-        sh(self.root, "init", "-q", "-b", "main")
-        sh(self.root, "config", "user.email", "t@example.com")
-        sh(self.root, "config", "user.name", "t")
-        sh(self.root, "config", "core.autocrlf", "false")
-        write(self.root, ".gitignore", "target/\n.workbench/\n" + GEN + "\n" + IMPORTED + "\n"
-              + CSV + "*\n!" + CSV + "manual/\n")
-        write(self.root, "README.md", "hello\n")
-        write(self.root, JIRA + "ExistingTest.java", "class ExistingTest {}\n")
-        write(self.root, "src/main/java/Framework.java", "class Framework {}\n")
-        write(self.root, GEN + "goal/Hooks.java", "class Hooks {}\n")   # ignored
-        write(self.root, GEN + "amex/Hooks.java", "class Hooks { int amex; }\n")
-        write(self.root, IMPORTED + "amex/AmexTest.java", "class AmexTest {}\n")
-        write(self.root, CSV + "amex/a.csv", "h\n1\n")
-        write(self.root, "tools/ra_converter/ra_converter.py", "X = 1\n")
-        sh(self.root, "add", "-A")
-        sh(self.root, "commit", "-q", "-m", "base")
+        shutil.copytree(_template(), self.root, dirs_exist_ok=True)
         self.job = os.path.join(self.root, ".workbench", "job1")
         os.makedirs(self.job)
         write(self.root, ".workbench/job1/plan.md", "# plan\ncreate POST /x\n")
@@ -4100,4 +4119,5 @@ class WhereThingsAre(Repo):
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=1)
+    import partest
+    partest.main(__file__)

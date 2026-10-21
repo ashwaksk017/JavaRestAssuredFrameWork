@@ -10,7 +10,8 @@ reviews it (the "workbench" scope of tools/agent/policy.json).
 4. The page checks (check_ui.py: a headless browser against the real
    server) pass, when a browser is found -- a few minutes.
 
-test_loop.py (seven minutes) is not run here; the review says so.
+test_loop.py (about two minutes, in parallel processes -- partest.py) is
+not run here; the review says so.
 Exit 0 when everything that could run passed.
 """
 from __future__ import annotations
@@ -26,7 +27,8 @@ QUICK_TESTS = ("test_jobs.py", "test_casereview.py", "test_suitemap.py", "test_i
                "test_design.py", "test_mock.py", "test_xraytests.py", "test_xrayimport.py",
                "test_storycheck.py", "test_repo.py", "test_fixbrief.py", "test_execution.py",
                "test_settings.py", "test_xraypublish.py", "test_workflow.py", "test_runlog.py",
-               "test_xraytrace.py", "test_devcode.py", "test_suitesuggest.py", "test_mvnrun.py")
+               "test_xraytrace.py", "test_devcode.py", "test_suitesuggest.py", "test_mvnrun.py",
+               "test_partest.py")
 
 
 def _run(argv, timeout=900) -> tuple:
@@ -88,7 +90,7 @@ def main(argv=None) -> int:
             if rc:
                 failed.append("the page checks")
 
-    print("test_loop.py was not run here (seven minutes): run it before approving a change "
+    print("test_loop.py was not run here (about two minutes): run it before approving a change "
           "to loop.py or cursor_call.py")
     if failed:
         print("FAILED: " + ", ".join(failed))
