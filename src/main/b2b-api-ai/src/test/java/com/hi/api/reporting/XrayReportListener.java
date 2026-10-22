@@ -72,6 +72,62 @@ public class XrayReportListener implements IInvokedMethodListener, ISuiteListene
 
     private Instant suiteStartedAt;
 
+    /**
+     * Which test methods ({@code Class#method}) used each Xray key in this
+     * suite. One Xray test is one test method: a key two methods carry is
+     * reported for neither.
+     *
+     * <p>Seen live: story B2B-99454's TC-001 key B2B-99802 was written into
+     * the TC-001 rows of two OTHER tests' sheets. The real test skipped, an
+     * unrelated one passed, and Xray recorded B2B-99802 as passed. Filled in
+     * {@code beforeInvocation} as well as after: a skipped test that will be
+     * retried records no result, but it still owns the key.</p>
+     */
+    private static final Map<String, java.util.Set<String>> OWNERS =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static void noteOwner(String key, ITestResult testResult) {
+        if (key == null || testResult == null || testResult.getMethod() == null) return;
+        String owner = testResult.getMethod().getRealClass().getName() + "#"
+                + testResult.getMethod().getMethodName();
+        OWNERS.computeIfAbsent(key.trim().toUpperCase(java.util.Locale.ROOT),
+                k -> java.util.concurrent.ConcurrentHashMap.newKeySet()).add(owner);
+    }
+
+    /**
+     * The results to publish: every one whose key is not used by two or
+     * more different test methods. Each key left out is said once, with
+     * the methods that share it.
+     */
+    public static List<XrayResult> withoutSharedKeys(List<XrayResult> results,
+                                                     Map<String, ? extends java.util.Collection<String>> owners,
+                                                     java.util.function.Consumer<String> say) {
+        // Key (upper case) -> the distinct methods that used it.
+        Map<String, java.util.Set<String>> byKey = new java.util.TreeMap<>();
+        for (Map.Entry<String, ? extends java.util.Collection<String>> e : owners.entrySet()) {
+            if (e.getKey() == null || e.getValue() == null) continue;
+            byKey.computeIfAbsent(e.getKey().trim().toUpperCase(java.util.Locale.ROOT),
+                    k -> new java.util.TreeSet<>()).addAll(e.getValue());
+        }
+        java.util.Set<String> shared = new java.util.TreeSet<>();
+        for (Map.Entry<String, java.util.Set<String>> e : byKey.entrySet()) {
+            if (e.getValue().size() > 1) {
+                shared.add(e.getKey());
+                say.accept("[XrayClient] NOT reported: " + e.getKey() + " is the jira_xray_id of "
+                        + e.getValue().size() + " different tests (" + String.join(", ", e.getValue())
+                        + "). One Xray test is one test method -- fix the rows' jira_xray_id; "
+                        + "nothing was sent for this key.");
+            }
+        }
+        if (shared.isEmpty() || results == null) return results;
+        List<XrayResult> kept = new java.util.ArrayList<>();
+        for (XrayResult r : results) {
+            String k = r.testKey() == null ? "" : r.testKey().trim().toUpperCase(java.util.Locale.ROOT);
+            if (!shared.contains(k)) kept.add(r);
+        }
+        return kept;
+    }
+
     // =========================================================================
     // Per-invocation hooks
     // =========================================================================
@@ -83,6 +139,7 @@ public class XrayReportListener implements IInvokedMethodListener, ISuiteListene
         String key = resolveReportingKey(testResult);
         if (key != null) {
             XrayResultsCollector.setCurrentKey(key);
+            noteOwner(key, testResult);
         }
     }
 
@@ -159,6 +216,7 @@ public class XrayReportListener implements IInvokedMethodListener, ISuiteListene
             return;
         }
 
+        noteOwner(key, testResult);
         XrayResult.Status status = XrayResult.Status.fromTestNg(testResult.getStatus());
         String comment = null;
         if (testResult.getThrowable() != null) {
@@ -183,7 +241,9 @@ public class XrayReportListener implements IInvokedMethodListener, ISuiteListene
     @Override
     public void onFinish(ISuite suite) {
         Instant finishedAt = Instant.now();
-        List<XrayResult> results = XrayResultsCollector.drain();
+        List<XrayResult> results = withoutSharedKeys(XrayResultsCollector.drain(),
+                new java.util.HashMap<>(OWNERS), LOG::warn);
+        OWNERS.clear();
         // XrayClient handles the disabled / missing-creds case internally
         // and logs a friendly message either way.
         new XrayClient().importResults(results,
