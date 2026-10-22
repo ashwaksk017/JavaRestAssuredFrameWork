@@ -2646,6 +2646,31 @@ class ConverterScope(Repo):
         self.assertIn("NEW failing check: freshly-broken", worse["steps"][-1]["tail"])
         self.assertNotIn("NEW failing check: old-known", worse["steps"][-1]["tail"])
 
+    def test_a_fix_after_a_convert_must_make_its_files_compile(self):
+        """convertfix.py: the suite's broken files are not "already broken
+        before" -- left in the baseline, a change that fixed nothing passed."""
+        amex = IMPORTED + "amex/AmexTest.java"
+        other = "src/test/java/com/hi/api/tests/manual/Other.java"
+        seen = {}
+        saved = (loop.compile_baseline_cached, loop.run_verify)
+        self.addCleanup(lambda: (setattr(loop, "compile_baseline_cached", saved[0]),
+                                 setattr(loop, "run_verify", saved[1])))
+        loop.compile_baseline_cached = lambda *a, **kw: {amex, other}
+
+        def verify(*a, **kw):
+            seen["before"] = kw.get("compile_before")
+            return OK()
+        loop.run_verify = verify
+
+        def agent(_prompt):
+            write(self.root, amex, "class AmexTest { int fixed; }\n")
+            return {"result": ""}
+        write(self.root, ".workbench/job1/plan.md", "# make amex compile\n")
+        with redirect_stdout(io.StringIO()):
+            loop.cmd_generate(self.job, self.root, self.policy, "converted", "amex",
+                              agent=agent, must_fix=[amex])
+        self.assertEqual(seen["before"], {other}, "only the files it was not asked to fix may stay broken")
+
     def test_the_gate_runs_only_the_scopes_area(self):
         """verify_all whole took most of a converter job's wait; a converter
         change cannot break the workbench's checks."""
@@ -2764,6 +2789,23 @@ class AnUnfinishedRun(Repo):
             self.assertEqual(fh.read(), "class Hooks { int amex; }\n")
 
 
+class CursorLogMirror(unittest.TestCase):
+    def test_a_fix_runs_conversation_is_also_where_the_person_is_looking(self):
+        d = tempfile.mkdtemp(prefix="mirror_")
+        self.addCleanup(shutil.rmtree, d, True)
+        mirror = os.path.join(d, "conv1", "migration-cursor.log")
+        os.makedirs(os.path.dirname(mirror))
+        os.environ["WORKBENCH_CURSOR_LOG_MIRROR"] = mirror
+        self.addCleanup(os.environ.pop, "WORKBENCH_CURSOR_LOG_MIRROR", None)
+        log = loop.CursorLog(os.path.join(d, "conv1-fix-amex"), secret="sk-secret-1",
+                             name="migration-cursor.log")
+        log.write("asked: make amex compile with sk-secret-1")
+        with io.open(mirror, encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn("[conv1-fix-amex] asked: make amex compile", text)
+        self.assertNotIn("sk-secret-1", text)
+
+
 class ATreeThatAlreadyFails(unittest.TestCase):
     """Verify must judge the agent's change, not the state of the tree."""
 
@@ -2806,8 +2848,49 @@ class ATreeThatAlreadyFails(unittest.TestCase):
     def test_a_new_failing_file_does(self):
         got = self.verify({"src/test/java/com/hi/api/tests/manual/GoalShop.java"})
         self.assertFalse(got["ok"])
-        self.assertIn("NEW files with errors: src/test/java/com/hi/api/tests/jira/NewTest.java",
-                      got["steps"][0]["tail"])
+        self.assertIn("files of this change, or newly failing, with errors: "
+                      "src/test/java/com/hi/api/tests/jira/NewTest.java", got["steps"][0]["tail"])
+
+    def clean_verify(self, before, changed):
+        """A scope that writes tests: a clean build, in a scratch root (never
+        this repository's target/)."""
+        root = tempfile.mkdtemp(prefix="cleanverify_")
+        self.addCleanup(shutil.rmtree, root, True)
+        for rel in ("target/classes/A.class", "target/test-classes/B.class",
+                    "target/convert-input/Suite.xml", "src/test/java/com/hi/api/tests/jira/NewTest.java",
+                    "src/test/java/com/hi/api/tests/manual/GoalShop.java"):
+            write(root, rel, "x")
+        seen = []
+
+        def runner(argv):
+            seen.append(os.path.isdir(os.path.join(root, "target", "classes")))
+            return types.SimpleNamespace(returncode=1, stdout=self.OUT)
+        scope = {"compile": [sys.executable], "checks": [], "clean_build": True}
+        with redirect_stdout(io.StringIO()):
+            got = loop.run_verify(root, scope, runner=runner, compile_before=before, changed=changed)
+        return got, seen, root
+
+    def test_a_change_of_tests_is_compiled_from_nothing(self):
+        both = loop.compile_error_files(self.OUT)
+        got, seen, root = self.clean_verify(both, [])
+        self.assertEqual(seen, [False], "what Maven built was deleted before the compile")
+        self.assertTrue(os.path.isfile(os.path.join(root, "target", "convert-input", "Suite.xml")),
+                        "the workbench's own files in target/ are kept")
+        self.assertTrue(got["ok"], "nothing of this change fails: the old errors are not its")
+
+    def test_a_file_of_the_change_must_compile_even_when_it_was_broken_before(self):
+        """Asked for: a change reaches review only when ITS files compile."""
+        both = loop.compile_error_files(self.OUT)
+        got, _seen, _root = self.clean_verify(both, ["src/test/java/com/hi/api/tests/jira/NewTest.java"])
+        self.assertFalse(got["ok"])
+        self.assertIn("NewTest.java", got["steps"][-1]["tail"].split("with errors:")[1].split("\n")[0])
+        self.assertNotIn("GoalShop", got["steps"][-1]["tail"].split("with errors:")[1].split("\n")[0])
+
+    def test_the_scopes_that_write_tests_build_clean(self):
+        scopes = loop.load_policy()["scopes"]
+        self.assertTrue(scopes["new-test"].get("clean_build"))
+        self.assertTrue(scopes["converted"].get("clean_build"))
+        self.assertFalse(scopes["workbench"].get("clean_build"))
 
     def test_a_tree_that_compiled_before_gets_no_allowance(self):
         self.assertFalse(self.verify(None)["ok"])

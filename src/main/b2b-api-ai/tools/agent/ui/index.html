@@ -430,10 +430,17 @@ Expect 201.'></textarea>
     <button id="run-keys">Audit service keys</button>
     <button id="run-token">Audit token chain</button>
     <button id="run-verify" title="run the checks chosen in What to verify, now">Verify</button>
+    <button id="run-convert-fix" title="compile what the convert wrote; with Cursor assist on, Cursor makes each suite that does not compile compile -- held for review only once it does">Check it compiles</button>
   </div>
   <div class="row center"><span id="convert-state" class="state"></span></div>
   <h3>Log</h3>
   <pre id="convert-log" class="log"></pre>
+  <div id="convert-fix-block" hidden>
+    <h3>Does it compile? <span id="convert-fix-state" class="state"></span>
+      <span class="hint">after every convert; with Cursor assist on, Cursor fixes each suite that does not -- its conversation is in the Cursor log below</span></h3>
+    <pre id="convert-fix-log" class="log"></pre>
+    <div id="convert-fix-result" class="result"></div>
+  </div>
   <div id="verify-block" hidden>
     <h3>Verify <span id="verify-state" class="state"></span></h3>
     <pre id="verify-log" class="log"></pre>

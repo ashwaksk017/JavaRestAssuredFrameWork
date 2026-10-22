@@ -408,9 +408,21 @@ class CursorLog:
             if s.lower() in text.lower():
                 text = re.sub(re.escape(s), "<redacted>", text, flags=re.I)
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        lines = text.splitlines() or [""]
         with self._lock, io.open(self.path, "a", encoding="utf-8") as fh:
-            for line in (text.splitlines() or [""]):
+            for line in lines:
                 fh.write(f"{stamp}  {line}\n")
+        # Also where the person is looking: the Convert tab shows the convert
+        # job's Cursor log, and a fix after a convert runs in a job of its own.
+        mirror = os.environ.get("WORKBENCH_CURSOR_LOG_MIRROR", "")
+        if mirror and os.path.abspath(mirror) != os.path.abspath(self.path):
+            job = os.path.basename(os.path.dirname(self.path))
+            try:
+                with self._lock, io.open(mirror, "a", encoding="utf-8") as fh:
+                    for line in lines:
+                        fh.write(f"{stamp}  [{job}] {line}\n")
+            except OSError:
+                pass
 
     def block(self, title: str, body: str, cap: int = 20000) -> None:
         body = body or "(empty)"
@@ -2958,8 +2970,17 @@ def fast_compile_cmd(cmd: list):
 
 
 def run_verify(root: str, scope: dict, runner=None, gate_before=None,
-               gate_json: str = "", compile_before=None, attempt: int = 1) -> dict:
-    """Compile, then the scope's checks. {ok, steps:[{name, rc, tail}]}."""
+               gate_json: str = "", compile_before=None, attempt: int = 1,
+               changed=None) -> dict:
+    """Compile, then the scope's checks. {ok, steps:[{name, rc, tail}]}.
+
+    `changed`: the files this change touched (relative paths). A scope with
+    `clean_build` (the ones that write tests) is compiled from nothing --
+    what Maven built is deleted first (buildsteps.py) -- and any of these
+    files with an error fails it, even one that was already broken before:
+    asked for, a change of tests reaches review only when its own files
+    compile in a clean build. Errors in files it never touched are still
+    "already broken" when the tree did not compile before."""
     run = runner or (lambda argv: subprocess.run(
         argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **NO_WINDOW))
     steps = []
@@ -2976,7 +2997,10 @@ def run_verify(root: str, scope: dict, runner=None, gate_before=None,
             compile_before is None and scope.get("fast_compile", True)
             and os.path.isdir(os.path.join(root, "target", "classes"))) else None
         changed_java = []
-        if fast:
+        if changed is not None:
+            changed_java = [p for p in changed
+                            if str(p).endswith(".java") and os.path.isfile(os.path.join(root, p))]
+        elif fast:
             try:
                 changed_java = [p for p in dirty_paths(root)
                                 if p.endswith(".java") and os.path.isfile(os.path.join(root, p))]
@@ -3005,6 +3029,10 @@ def run_verify(root: str, scope: dict, runner=None, gate_before=None,
                     os.utime(os.path.join(root, p), (later, later))
                 except OSError:
                     pass
+        if scope.get("clean_build"):
+            removed = _load("loop_buildsteps", os.path.join(HERE, "buildsteps.py")).clean_build_outputs(root)
+            say(" .. verify: a clean build -- removed " + (", ".join(removed) or "nothing (already clean)")
+                + "; everything is compiled from nothing before this change can be reviewed")
         diag.step(_after_cursor(attempt, "Checking that the project still compiles"))
         say(f" .. verify: {' '.join(compile_cmd)}")
         started_at = time.time()
@@ -3014,13 +3042,14 @@ def run_verify(root: str, scope: dict, runner=None, gate_before=None,
             # The tree did not compile before either. Fail only for a file
             # that compiled then and does not now.
             now = compile_error_files(r.stdout)
-            new = sorted(now - set(compile_before))
+            mine = {str(p).replace("\\", "/") for p in (changed_java if scope.get("clean_build") else ())}
+            new = sorted((now - set(compile_before)) | (now & mine))
             note = ("the tree did not compile BEFORE the change either ("
                     + (", ".join(sorted(compile_before)[:5]) or "errors without a file name")
                     + "). ")
             if new or not now:
                 steps.append({"name": "compile", "rc": r.returncode,
-                              "tail": note + "NEW files with errors: "
+                              "tail": note + "files of this change, or newly failing, with errors: "
                                       + (", ".join(new) or "(could not be read from the output)")
                                       + "\n" + compile_report(r.stdout),
                               "errors": compile_errors(r.stdout)})
@@ -3488,7 +3517,8 @@ def cmd_followup(job_dir: str, root: str, policy: dict, agent=None, verifier=Non
 
 
 def cmd_generate(job_dir: str, root: str, policy: dict, scope_name: str = "new-test",
-                 suite: str = "", agent=None, verifier=None, followup: str = "") -> int:
+                 suite: str = "", agent=None, verifier=None, followup: str = "",
+                 must_fix=()) -> int:
     """Cursor writes; the files are checked; the result is held for review."""
     prior = read_review(job_dir)
     if followup and prior.get("state") in ("pending-review", "verify-failed"):
@@ -3513,14 +3543,15 @@ def cmd_generate(job_dir: str, root: str, policy: dict, scope_name: str = "new-t
     try:
         with RepoLock(root, f"generate, job {os.path.basename(job_dir)}"):
             return _generate(job_dir, root, policy, scope_name, suite,
-                             agent, verifier)
+                             agent, verifier, must_fix=must_fix)
     except RuntimeError as e:
         say(f"FAIL {e}")
         return 1
 
 
 def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
-              suite: str, agent, verifier, followup: str = "", prior: dict = None) -> int:
+              suite: str, agent, verifier, followup: str = "", prior: dict = None,
+              must_fix=()) -> int:
     if not _read(os.path.join(job_dir, "plan.md")).strip():
         say("FAIL no plan.md for this job. Use the Automate Test Case tab (read it, then locate) "
             "first: the plan is what the agent is asked to act on.")
@@ -3624,6 +3655,15 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             say(f" .. the tree does not compile before the change "
                 f"({len(compile_before)} file(s) with errors); only a NEW "
                 f"failing file will fail this job")
+        # A run whose job IS to make files compile (convertfix.py): those
+        # are not "already broken before". Left in the baseline, a change
+        # that fixed nothing would pass and be held for review.
+        mine = {str(f).replace("\\", "/") for f in (must_fix or ())}
+        if mine and compile_before is not None:
+            still = set(compile_before) - mine
+            say(f" .. {len(set(compile_before) & mine)} of them are this run's to fix: the change "
+                f"is held for review only once they compile")
+            compile_before = still or None
     gate_before = {}
     if verifier is None and scope.get("gate"):
         say(" .. running the gate once BEFORE the agent, to know what "
@@ -3639,7 +3679,10 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
     verify = verifier or (lambda: run_verify(
         root, scope, gate_before=gate_before, compile_before=compile_before,
         gate_json=os.path.join(job_dir, "gate-after.json"),
-        attempt=cursor_attempt[0]))
+        attempt=cursor_attempt[0],
+        # What this change touched: every path whose content is not what it
+        # was before the agent (`before` is read just below, before the call).
+        changed=[p for p, h in dirty_paths(root).items() if before.get(p, "<absent>") != h]))
 
     commit, branch = head(root)
     before = dirty_paths(root)
@@ -5114,7 +5157,7 @@ def main(argv=None) -> int:
     if args.command == "followup":
         return cmd_ask(job_dir, ROOT, policy)
     if args.command == "generate":
-        return cmd_generate(job_dir, ROOT, policy, args.scope, args.suite)
+        return cmd_generate(job_dir, ROOT, policy, args.scope, args.suite)  # convertfix passes must_fix
     if args.command == "automate":
         return cmd_automate(job_dir, ROOT, policy, args.cases.split(","))
     if args.command == "run":

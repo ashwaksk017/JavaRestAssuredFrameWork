@@ -2083,6 +2083,35 @@ function runVerifyAll(j) {
 
 $("run-verify").onclick = () => runVerifyAll(convertJob());
 
+// After a convert: compile; Cursor fixes each suite that does not compile
+// (tools/agent/convertfix.py). Its Cursor conversation is in the tab's Cursor log.
+function runConvertFix(j, withCursor, then) {
+  $("convert-fix-block").hidden = false;
+  $("convert-fix-result").replaceChildren();
+  if (typeof startArea === "function") watchCursorLog();
+  post("/api/start", { job: j, runnable: "convert-fix",
+                       options: withCursor ? { "--job": j } : { "--job": j, "--no-cursor": true } })
+    .then(() => follow("convert-fix", $("convert-fix-log"), $("convert-fix-state"), async () => {
+      const r = await artifactJson(j, "convert-fix.json");
+      const kids = [];
+      if (r && r.compiles) kids.push(banner("ok", "It compiles: ready to review and run."));
+      else if (r) {
+        for (const [suite, s] of Object.entries(r.suites || {})) {
+          kids.push(banner(s.state === "pending-review" ? "ok" : "bad",
+            s.state === "pending-review"
+              ? `${suite} compiles now: Cursor's fix is waiting for review (job ${s.job}, Commit and push tab).`
+              : `${suite} does not compile (${s.state})${s.job ? ` -- job ${s.job} holds what Cursor tried` : ""}.`));
+        }
+        if ((r.shared || []).length) kids.push(banner("warn",
+          `Errors in shared framework files, not a suite's to fix: ${r.shared.slice(0, 6).join(", ")}`));
+      }
+      $("convert-fix-result").replaceChildren(...kids);
+      if (then) then();
+    }, j))
+    .catch((e) => { setState($("convert-fix-state"), "bad", e.message); if (then) then(); });
+}
+$("run-convert-fix").onclick = () => runConvertFix(convertJob(), chosen("cv-cursor") === "on");
+
 $("run-convert").onclick = async () => {
   if (uploading) { setState($("convert-state"), "bad", "the files are still being copied"); return; }
   const o = convertOptions();
@@ -2099,8 +2128,13 @@ $("run-convert").onclick = async () => {
   try {
     await post("/api/start", { job: j, runnable: "convert", options: o });
     follow("convert", $("convert-log"), $("convert-state"), (st) => {
+      // Nobody is handed a convert that does not compile: checked, and with
+      // Cursor assist on, fixed -- then verified, when that was ticked.
+      if (st.state === "done") {
+        runConvertFix(j, chosen("cv-cursor") === "on", () => { if (verifyAfter) runVerifyAll(j); });
+        return;
+      }
       if (!verifyAfter) return;
-      if (st.state === "done") { runVerifyAll(j); return; }
       // Checking a tree a failed convert left half-written says nothing
       // about either. Said, so the tick is not taken for a run.
       $("verify-block").hidden = false;
@@ -2115,7 +2149,7 @@ $("run-convert").onclick = async () => {
 $("stop-convert").onclick = async () => {
   try {
     let stopped = false;
-    for (const runnable of ["convert", "verify-all", "audit-service-keys", "audit-token-chain"]) {
+    for (const runnable of ["convert", "convert-fix", "verify-all", "audit-service-keys", "audit-token-chain"]) {
       const r = await post("/api/stop", { job: convertJob(), runnable });
       if (r && r.stopped) stopped = true;
     }

@@ -329,7 +329,7 @@ MAX_SUMMARY_LINES = 60
 CREATING = frozenset({"intake", "locate", "storycheck", "specsource", "design", "suitesuggest",
                       "xraytests", "xrayimport", "xrayupdate", "loop", "manualtests", "devcode",
                       "codereview", "mvnrun", "publish", "xraypublish", "fixbrief",
-                      "failure-history", "patches"})
+                      "failure-history", "patches", "convertfix"})
 # Sub-commands that only read: nothing of them is an activity.
 READING = frozenset({"status", "plan", "list", "setup", "show", "check"})
 ACTIVITY_LOG = "activity.log"

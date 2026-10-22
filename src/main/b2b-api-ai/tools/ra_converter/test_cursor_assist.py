@@ -155,6 +155,74 @@ class CursorAssistTest(unittest.TestCase):
             self.assertIsNone(cursor_assist.flush(args_off, call_agent=fake))
             self.assertEqual(order, ["agent"])
 
+    def cursor_log_file(self, td):
+        path = os.path.join(td, "migration-cursor.log")
+        os.environ["WORKBENCH_CURSOR_LOG"] = path
+        self.addCleanup(os.environ.pop, "WORKBENCH_CURSOR_LOG", None)
+        return path
+
+    def read(self, path):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return fh.read()
+        except OSError:
+            return ""
+
+    def test_the_convert_tab_cursor_log_says_what_cursor_was_asked_and_answered(self):
+        """Seen: Cursor turned on for a convert, and its Cursor log showed nothing."""
+        led = FakeLedger()
+        led.preflight.append(("HIGH", "untranslated-cross-tc-ref", "Reject", "${#[other#token]}"))
+        cursor_assist.enqueue("prog", led)
+        with tempfile.TemporaryDirectory() as td:
+            log = self.cursor_log_file(td)
+            path = os.path.join(td, "cursor_agent.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"enabled": True, "apiKey": "secret-key-123"}, f)
+            args = SimpleNamespace(cursor_config=path, cursor_assist=False,
+                                   no_cursor_assist=False, output=td)
+            cursor_assist.flush(args, call_agent=lambda p, c: {
+                "status": "finished", "id": "run-9",
+                "result": "Patched groovy_translator.py; key secret-key-123"})
+            text = self.read(log)
+            self.assertIn("[convert] asking Cursor about 1 conversion gap(s) in prog", text)
+            self.assertIn("Cursor answered (finished, run run-9)", text)
+            self.assertIn("Patched groovy_translator.py", text)
+            self.assertNotIn("secret-key-123", text)
+
+    def test_when_cursor_is_not_asked_the_cursor_log_says_why(self):
+        with tempfile.TemporaryDirectory() as td:
+            log = self.cursor_log_file(td)
+            path = os.path.join(td, "cursor_agent.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"enabled": True, "apiKey": "k-123456"}, f)
+            args = SimpleNamespace(cursor_config=path, cursor_assist=False,
+                                   no_cursor_assist=False, output=td)
+            self.assertIsNone(cursor_assist.flush(args, call_agent=lambda p, c: {}))
+            self.assertIn("Cursor was not asked about the converter", self.read(log))
+
+    def test_the_call_streams_through_the_workbench_caller(self):
+        seen = {}
+
+        class FakeCall:
+            @staticmethod
+            def run(prompt, ca, cfg, on_event=None, deadline_seconds=0, quiet_seconds=0, **kw):
+                seen.update(prompt=prompt, ca=ca, deadline=deadline_seconds, quiet=quiet_seconds)
+                on_event("tool edit_file src/x.java")
+                return {"status": "quiet", "result": "done", "id": "r1"}
+        import sys
+        saved = sys.modules.get("ra_cursor_call")
+        sys.modules["ra_cursor_call"] = FakeCall
+        self.addCleanup(lambda: sys.modules.__setitem__("ra_cursor_call", saved) if saved
+                        else sys.modules.pop("ra_cursor_call", None))
+        with tempfile.TemporaryDirectory() as td:
+            log = self.cursor_log_file(td)
+            cfg = cursor_assist.CursorAssistConfig(enabled=True, api_key="k", cwd=td)
+            out = cursor_assist._streamed_prompt("fix it", cfg)
+            self.assertEqual(out, {"status": "quiet", "result": "done", "id": "r1"})
+            self.assertIs(seen["ca"], cursor_assist)
+            self.assertGreater(seen["deadline"], 0, "a time limit: it could hang before")
+            self.assertIn("tool edit_file src/x.java", self.read(log), "each event as it happens")
+
     def test_flush_no_key_still_writes_conversion_report(self):
         led = FakeLedger()
         led.preflight.append(("HIGH", "jdbc-mutation-skip", "c4", "sql.execute"))

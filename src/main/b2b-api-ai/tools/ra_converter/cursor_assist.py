@@ -554,6 +554,65 @@ def _sdk_prompt(prompt: str, cfg: CursorAssistConfig) -> dict[str, Any]:
     return {"status": str(status), "result": str(text), "id": str(run_id)}
 
 
+def cursor_log(line: str, api_key: str = "") -> None:
+    """A line of the convert's conversation with Cursor: on the convert's
+    output, and in the Cursor log the Convert tab shows (the workbench sets
+    WORKBENCH_CURSOR_LOG). Before, the call was one blocking request and
+    nothing reached that pane: a person who turned Cursor on saw nothing."""
+    text = redact_for_log(str(line), api_key)
+    print(f"[ra_converter] cursor: {text}", flush=True)
+    path = os.environ.get("WORKBENCH_CURSOR_LOG", "")
+    if not path:
+        return
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(path, "a", encoding="utf-8") as fh:
+            for part in text.splitlines() or [""]:
+                fh.write(f"{stamp}  [convert] {part}\n")
+    except OSError:
+        pass
+
+
+def _cursor_call_module():
+    """tools/agent/cursor_call.py -- the workbench's call: streamed events,
+    a time limit, the bridge's re-runs ended. None when it is not there."""
+    path = os.path.join(os.path.dirname(converter_dir()), "agent", "cursor_call.py")
+    if not os.path.isfile(path):
+        return None
+    try:
+        import importlib.util
+        if "ra_cursor_call" in sys.modules:
+            return sys.modules["ra_cursor_call"]
+        spec = importlib.util.spec_from_file_location("ra_cursor_call", path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["ra_cursor_call"] = mod
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:                                    # noqa: BLE001
+        sys.modules.pop("ra_cursor_call", None)
+        return None
+
+
+ASSIST_DEADLINE = 45 * 60          # seconds the whole call may take
+ASSIST_QUIET = 600                 # silence after it has spoken that ends it as finished
+
+
+def _streamed_prompt(prompt: str, cfg: CursorAssistConfig) -> dict[str, Any]:
+    """The assist's call: through cursor_call when it is there, every event
+    in the Cursor log as it happens; else the blocking call, as before."""
+    cc = _cursor_call_module()
+    if cc is None:
+        cursor_log("the streamed call is not available here: one blocking call, said when it ends",
+                   cfg.api_key)
+        return _sdk_prompt(prompt, cfg)
+    out = cc.run(prompt, sys.modules[__name__], cfg,
+                 on_event=lambda line: cursor_log(line, cfg.api_key),
+                 deadline_seconds=ASSIST_DEADLINE, quiet_seconds=ASSIST_QUIET)
+    return {"status": str(out.get("status") or ""), "result": str(out.get("result") or ""),
+            "id": str(out.get("id") or "")}
+
+
 def _git(cwd: str, *git_args: str) -> str:
     try:
         r = subprocess.run(
@@ -642,6 +701,10 @@ def flush(
     if not gaps:
         print("[ra_converter] cursor assist: enabled, no confusion signals "
               "(FULL coverage is not reviewed)")
+        cursor_log("Cursor assist is on, and the convert found nothing it was unsure of "
+                   "(no TODO, stub or partial step, no serious preflight finding): Cursor was "
+                   "not asked about the converter. Whether the result compiles is checked next.",
+                   cfg.api_key)
         return None
 
     report_body = build_conversion_report(gaps, suites)
@@ -654,6 +717,8 @@ def flush(
         print("[ra_converter] cursor assist: enabled but no API key "
               "(set CURSOR_API_KEY or apiKey in cursor_agent.json) -- "
               "fix skipped, report kept")
+        cursor_log(f"Cursor assist is on but there is no Cursor key (Settings tab): Cursor was not "
+                   f"asked. {len(gaps)} gap(s) are in {report_path}.")
         write_text(after_path, "# After-fix report\n\nFix skipped: no API key.\n")
         return write_index(
             out, suites=suites, gap_n=len(gaps), model=cfg.model,
@@ -667,12 +732,16 @@ def flush(
         report_path=report_path, memory_text=memory)
     print(f"[ra_converter] cursor assist: calling Cursor agent to fix "
           f"(model={cfg.model}, cwd={cfg.cwd})")
-    fn = call_agent or _sdk_prompt
+    cursor_log(f"asking Cursor about {len(gaps)} conversion gap(s) in {', '.join(suites)} "
+               f"(model {cfg.model}; prompt {len(prompt)} characters; the gaps: {report_path})",
+               cfg.api_key)
+    fn = call_agent or _streamed_prompt
     try:
         result = fn(prompt, cfg)
     except Exception as e:
         msg = redact_for_log(str(e), cfg.api_key)
         print(f"[ra_converter] cursor assist failed: {msg}", file=sys.stderr)
+        cursor_log(f"FAILED: {msg}", cfg.api_key)
         write_text(after_path, f"# After-fix report\n\nFix failed:\n\n{msg}\n")
         return write_index(
             out, suites=suites, gap_n=len(gaps), model=cfg.model,
@@ -696,6 +765,10 @@ def flush(
         f"Restore narrowed smoke XMLs after `--clean`.\n"
     )
     write_text(after_path, after_body)
+    cursor_log(f"Cursor answered ({result.get('status')}, run {result.get('id')}). What it changed "
+               f"in the converter: {changed.strip()[:400] or 'nothing'}. The whole answer: {after_path}",
+               cfg.api_key)
+    cursor_log("----- Cursor's answer -----\n" + text[:6000], cfg.api_key)
     try:
         append_memory_run(
             suites, len(gaps),

@@ -1003,6 +1003,8 @@ again replaces what was chosen before; *Remove* forgets it. Only a
 | Clean first, Classic mode, Skip self-test | `--clean`, `--classic`, `--skip-self-test` |
 | Verify afterwards | when the convert finishes cleanly, runs the checks chosen in **What to verify** and shows their log under the convert's. Not run after a failed convert, and the page says so |
 | What to verify | **Converter checks** (`verify_all.py --area converter`, the default: all a convert can break), **Workbench checks**, or **Everything** (slow). **Verify** runs them now, without a convert |
+| Does it compile? | After every convert (and **Check it compiles**): `mvn test-compile`. With **Cursor assist** on, each converted suite whose own files do not compile is handed to Cursor in a job of its own, `<job>-fix-<suite>` (the "converted suite" scope): Cursor fixes, the tree is compiled, Cursor is asked again while the errors change, and the change waits for review on the Commit and push tab ONLY once that suite's files compile; otherwise it ends `verify-failed`. Errors in shared framework files are said and left to a person. Cursor assist off: checked and said, nothing fixed (`tools/agent/convertfix.py`) |
+| Cursor log | The tab's Cursor log shows the convert's own Cursor call as it happens -- what it was asked, each tool it used, what it answered, or why it was NOT asked (nothing the convert was unsure of; no key) -- and the conversation of every fix after it |
 
 Not on the page, and left at their defaults: `--package-root`, `--envs`,
 `--config`, `--cursor-config`, `--service-name`, `--diagram-cases`,
@@ -1203,6 +1205,14 @@ failing output exactly as it was -- Cursor going round in circles -- after
 which no further attempt is made. The log says which, and the Agentic
 tab's state says `verify-failed` with the number of attempts. Set
 `repair_attempts` to a number for that many repairs instead.
+
+A change of tests (new tests, a converted suite: `clean_build` in
+policy.json) reaches review only after a **clean build**: what Maven built
+is deleted first and the project is compiled from nothing, and any file
+the change touched with an error fails it -- even a file that was already
+broken before. Errors in files it never touched are still "already
+broken" when the tree did not compile before. A repair attempt first
+compiles only the changed files, so a failing attempt is quick.
 
 #### The suite of a job's tests
 

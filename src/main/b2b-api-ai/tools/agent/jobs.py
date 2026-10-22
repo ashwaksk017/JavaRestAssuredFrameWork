@@ -221,6 +221,13 @@ RUNNABLES = {
                     # story already has: it is that test, or a new one.
                     "--adopt": "text", "--create-anyway": "text"},
     },
+    # After a convert: does it compile? If not, Cursor makes each suite
+    # compile, in a job of its own, held for review only once it does.
+    "convert-fix": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "convertfix.py")],
+        "label": "Check that the convert compiles; Cursor fixes each suite that does not",
+        "options": {"--job": "text", "--no-cursor": "flag"},
+    },
     # The whole gate, as `python tools/verify_all.py`. No options: what it
     # checks is this tree. Offered after a convert.
     "verify-all": {
@@ -447,7 +454,7 @@ RUNNABLES = {
 # convert during an agent run would look like the agent rewriting every
 # suite; an agent run during a convert would "put back" half-written
 # files.
-EXCLUSIVE = {"convert", "agent-generate", "agent-followup", "agent-automate", "agent-run-tests", "agent-approve", "agent-discard",
+EXCLUSIVE = {"convert", "convert-fix", "agent-generate", "agent-followup", "agent-automate", "agent-run-tests", "agent-approve", "agent-discard",
              "agent-reapply", "verify-all", "mvn-compile", "mvn-test"}
 
 # The only options that may be given more than once.
@@ -1709,8 +1716,13 @@ def start(job: str, runnable: str, options: dict) -> dict:
 
     logf = io.open(log_path(job, runnable), "wb")
     try:
+        env = None
+        if runnable in ("convert", "convert-fix"):
+            # The converter's Cursor conversation -- and the fixes after it --
+            # in the file the Convert tab's Cursor log shows.
+            env = dict(os.environ, WORKBENCH_CURSOR_LOG=log_path(job, "migration-cursor"))
         proc = subprocess.Popen(argv, cwd=ROOT, stdout=logf,
-                                stderr=subprocess.STDOUT, **NO_WINDOW)
+                                stderr=subprocess.STDOUT, env=env, **NO_WINDOW)
     except Exception as e:
         # Without this the status file says "running" for a process that
         # never existed, and the page polls it forever.
@@ -1831,7 +1843,9 @@ def read_artifact(job: str, name: str) -> str:
                "story-check.json", "fix-brief.json", "xray-import.json",
                "xray-update-plan.json", "xray-update.json",
                "publish-status.json", "publish.log",
-               "devcode.json", "devcode.md", "suite-suggest.json", "mvnrun-result.json"}
+               "devcode.json", "devcode.md", "suite-suggest.json", "mvnrun-result.json",
+               # Read by the page; were missing, so it was refused and showed nothing.
+               "xray-publish.json", "convert-fix.json"}
     if name not in allowed:
         raise ValueError(f"{name!r} is not a readable artifact. "
                          f"Known: {', '.join(sorted(allowed))}")

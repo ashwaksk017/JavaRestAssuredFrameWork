@@ -13,6 +13,7 @@
  "scopes": {
   "new-test": {
    "label": "A new hand-written test (anywhere in the repository)",
+   "clean_build": true,
    "write_roots": [
     "**"
    ],
@@ -35,6 +36,7 @@
   },
   "converted": {
    "label": "Converted Java of one suite (stays on this machine)",
+   "clean_build": true,
    "needs_suite": true,
    "write_roots": [
     "src/main/java/com/hi/api/support/{suite}/",

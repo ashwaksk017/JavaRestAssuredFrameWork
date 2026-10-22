@@ -316,6 +316,10 @@ CHECKS = [
           "earlier work on a story is found by its exact key -- ABC-1 is "
           "not ABC-12 -- on any branch, shown as evidence beside the plan "
           "and never as a decision"),
+    Check("agent-convertfix",
+          [PY, "tools/agent/test_convertfix.py"],
+          "after a convert: it is compiled, and each suite that does not compile is "
+          "fixed by Cursor in a job of its own, held for review only once it compiles"),
     Check("agent-partest",
           [PY, "tools/agent/test_partest.py"],
           "the parallel test runner the slow workbench test files use: every "
