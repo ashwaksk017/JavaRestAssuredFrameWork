@@ -306,6 +306,12 @@ CHECKS = [
           "takes a finding's line number from the diff and not from the "
           "model, sets aside what quotes no line of the change, and says "
           "which files were not read"),
+    Check("agent-storykeys",
+          [PY, "tools/agent/test_storykeys.py"],
+          "a job with no Xray keys is told of, and can take, the keys an earlier "
+          "job of the same story holds -- the same title or the same steps is the "
+          "same test, a look-alike waits for a person -- and Create in Xray "
+          "matches those tests too instead of creating a second set"),
     Check("agent-ask",
           [PY, "tools/agent/test_ask.py"],
           "a question to Cursor goes to the read-only path, not the code-writing "

@@ -855,6 +855,13 @@ async function showDesign(j, fresh) {
     $(id).href = `/api/download?job=${encodeURIComponent(j)}&name=${name}`;
   }
   if (j === job()) { refreshXray("design", fresh); showReview("design"); }
+  // The last look in the story's earlier jobs, if it was for this job.
+  showStoryKeys(null);
+  setState($("story-keys-state"), "", "");
+  api(`/api/artifact?job=${encodeURIComponent(j)}&name=story-keys.json`).then((a) => {
+    const r = JSON.parse((a && a.text) || "null");
+    if (j === job() && r && r.job === j) showStoryKeys(r);
+  }).catch(() => { /* none yet */ });
 }
 
 // ---- the Review step: which proposed cases stand ---------------------------
@@ -1341,6 +1348,69 @@ function showXrayKeys(what, st) {
   }
   box.replaceChildren(...kids);
 }
+
+// ---- Xray keys from the story's earlier jobs (storykeys.py) ----
+// Seen live: a second job of a story was automated with no key while an
+// earlier job held them. Look: what matches; Take: into this job's keys.
+function showStoryKeys(r) {
+  const box = $("story-keys-result");
+  const kids = [];
+  $("story-keys-take").disabled = true;
+  if (!r) { box.replaceChildren(); return; }
+  if (r.kind === "error" || !r.kind) { box.replaceChildren(); return; }
+  if (!(r.jobs || []).length) {
+    kids.push(banner("ok", `No earlier job of ${r.story} holds Xray keys: Create in Xray makes them.`));
+    box.replaceChildren(...kids);
+    return;
+  }
+  kids.push(banner("warn", `Earlier job(s) of ${r.story} hold Xray keys: ` +
+    r.jobs.map((x) => `${x.job} (${x.keys})`).join(", ") +
+    `. This job: ${r.have} case(s) with a key, ${r.todo} without.`));
+  for (const t of r.taken || [])
+    kids.push(banner("ok", `${t.id} → ${t.key} taken from ${t.from_job} (${t.how}).`));
+  const same = (r.same || []).filter((s) => !(r.taken || []).some((t) => t.id === s.id));
+  if (same.length) {
+    kids.push(heading("The same test", same.length));
+    kids.push(table(["Case", "Xray test", "How", "From job"], same.map((s) => [
+      el("code", { text: s.id }), el("code", { text: s.key }),
+      el("span", { text: s.how === "title" ? "same title" : "same steps" }), el("code", { text: s.from_job })])));
+    $("story-keys-take").disabled = false;
+  }
+  if ((r.held || []).length) {
+    kids.push(heading("Looks alike: you say", r.held.length));
+    kids.push(table(["Case", "Ours", "Xray test", ""], r.held.map((h) => [
+      el("code", { text: h.id }), el("span", { text: h.title }),
+      el("div", {}, el("code", { text: h.key }), el("small", { text: ` ${h.xray_title} (job ${h.from_job})` })),
+      el("button", { text: "It is that test", on: { click: () => takeStoryKeys(`${h.id}=${h.key}`) } })])));
+  }
+  box.replaceChildren(...kids);
+}
+
+function runStoryKeys(runnable, options) {
+  const j = job();
+  if (!j) { setState($("story-keys-state"), "bad", "name a job first"); return; }
+  $("story-keys-log").hidden = false;
+  $("story-keys-take").disabled = true;
+  post("/api/start", { job: j, runnable, options: Object.assign({ "--job": j }, options || {}) })
+    .then(() => follow(runnable, $("story-keys-log"), $("story-keys-state"), async () => {
+      let r = null;
+      try {
+        const a = await api(`/api/artifact?job=${encodeURIComponent(j)}&name=story-keys.json`);
+        r = JSON.parse(a.text || "null");
+      } catch { r = null; }
+      if (j !== job()) return;
+      showStoryKeys(r);
+      if (runnable === "story-keys-take") refreshXray("design", true);
+    }, j))
+    .catch((e) => setState($("story-keys-state"), "bad", e.message));
+}
+function takeStoryKeys(adopt) {
+  if (!confirm("The matching Xray keys are written into this job's xray-tests.json, so Automate puts them " +
+               "in the rows. Nothing is sent to Jira. Continue?")) return;
+  runStoryKeys("story-keys-take", adopt ? { "--adopt": adopt } : {});
+}
+$("story-keys-check").onclick = () => runStoryKeys("story-keys");
+$("story-keys-take").onclick = () => takeStoryKeys("");
 
 // What a status says, drawn: the keys, the banners, the button.
 function settleXray(what, st) {

@@ -296,6 +296,15 @@ Expect 201.'></textarea>
   <div id="xray-design-result" class="result"></div>
   <pre id="xray-design-log" class="log" hidden></pre>
 
+  <h3>Keys from this story's earlier jobs <span class="hint">another job of the same story may already have created these cases' Xray tests: the same title or the same steps is the same test, and its key is taken into this job -- nothing is sent to Jira. A title that only looks alike waits for you</span></h3>
+  <div class="row">
+    <button id="story-keys-check">Look in earlier jobs</button>
+    <button id="story-keys-take" disabled>Take the matching keys</button>
+    <span id="story-keys-state" class="state"></span>
+  </div>
+  <div id="story-keys-result" class="result"></div>
+  <pre id="story-keys-log" class="log" hidden></pre>
+
   <h3>Update in Xray <span class="hint">the cases' steps to the Xray tests they have: compared first (ours, Xray now, last synced); a test changed in Xray is never overwritten unless you choose it</span></h3>
   <div class="row">
     <button id="xray-update-preview" type="button">Update in Xray: preview</button>

@@ -217,6 +217,18 @@ RUNNABLES = {
         "label": "Send the chosen cases' steps to Xray, or take Xray's into the cases",
         "options": {"--job": "text", "--choices": "text"},
     },
+    # The Xray keys a story's earlier jobs hold, for a job that has none
+    # (storykeys.py): what matches, then taking it. Nothing goes to Jira.
+    "story-keys": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "storykeys.py"), "check"],
+        "label": "Look for Xray keys in this story's earlier jobs",
+        "options": {"--job": "text"},
+    },
+    "story-keys-take": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "storykeys.py"), "take"],
+        "label": "Take the matching Xray keys from this story's earlier jobs (nothing is sent to Jira)",
+        "options": {"--job": "text", "--adopt": "text"},
+    },
     "xray-create": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "xraytests.py"), "create"],
         "label": "Create the cases as Xray Test issues in Jira, linked to the story",
@@ -1120,6 +1132,7 @@ RESULT_FILES = {"jira-": "jira-result.json", "failures-": "failures-result.json"
                 "publish-attach": "publish-result.json",
                 "publish-page": "publish-result.json",
                 "xray-create": "xray-result.json",
+                "story-keys": "story-keys.json",
                 # A new preview clears the last outcome too; sending keeps
                 # the preview it was chosen from.
                 "xray-update-plan": "xray-update-plan.json",
@@ -1858,7 +1871,7 @@ def read_artifact(job: str, name: str) -> str:
                "publish-status.json", "publish.log",
                "devcode.json", "devcode.md", "suite-suggest.json", "mvnrun-result.json",
                # Read by the page; were missing, so it was refused and showed nothing.
-               "xray-publish.json", "convert-fix.json"}
+               "xray-publish.json", "convert-fix.json", "story-keys.json"}
     if name not in allowed:
         raise ValueError(f"{name!r} is not a readable artifact. "
                          f"Known: {', '.join(sorted(allowed))}")

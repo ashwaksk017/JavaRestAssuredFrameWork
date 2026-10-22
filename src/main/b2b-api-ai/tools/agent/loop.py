@@ -139,6 +139,7 @@ execution = _load("loop_execution", os.path.join(HERE, "execution.py"))
 patches = _load("loop_patches", os.path.join(HERE, "patches.py"))
 cursor_call = _load("loop_cursor_call", os.path.join(HERE, "cursor_call.py"))
 paste = _load("loop_paste", os.path.join(HERE, "paste.py"))
+storykeys = _load("loop_storykeys", os.path.join(HERE, "storykeys.py"))
 mock = _load("loop_mock", os.path.join(HERE, "mock.py"))
 
 
@@ -3471,6 +3472,16 @@ def cmd_automate(job_dir: str, root: str, policy: dict, ids, agent=None, verifie
         with io.open(plan_path, "w", encoding="utf-8") as fh:
             fh.write(AUTOMATE_PLAN)
         say(" .. no plan.md (\"Is it automated?\" was not run): the approved cases are the plan")
+    # Seen live: a second job of a story was automated with no Xray key while
+    # an earlier job of the story held them -- and nothing said so.
+    try:
+        mocked = mock_cursor()
+        note = storykeys.warning(job_dir, ids, xray_keys(job_dir, mocked=mocked), mocked)
+    except Exception:                                    # noqa: BLE001
+        diag.trace()
+        note = ""
+    if note:
+        say(f"WARN {note}")
     _AUTOMATE_ONLY = set(ids)
     try:
         if adding:

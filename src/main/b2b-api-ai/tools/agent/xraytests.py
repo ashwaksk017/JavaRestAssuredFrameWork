@@ -93,6 +93,8 @@ casereview = _load("agent_casereview", os.path.join(HERE, "casereview.py"))
 loop = publish.loop
 search = publish.search
 Refused = publish.Refused
+# Plain files only (it imports nothing of ours): the keys a story's other jobs hold.
+storykeys = _load("agent_storykeys", os.path.join(HERE, "storykeys.py"))
 ROOT = loop.ROOT
 
 KEYS = "xray-tests.json"             # the keys Jira gave, kept for the job
@@ -426,12 +428,23 @@ def _not_what_the_story_has(job_dir: str, what: str, story: str, todo: list, fie
     ours = {str(e.get("key") or "").upper() for e in kept["tests"].values() if isinstance(e, dict)}
     linked = [t for t in linked_tests({"fields": fields}, opts["link_type"], opts["issue_type"])
               if t["key"] not in ours]                 # every one: no cap
+    # Tests an EARLIER job of this story created, that Jira does not list as
+    # linked (a link that did not land, or a story read before it did):
+    # matched the same way, so a second job does not make a second set.
+    from_jobs = storykeys.candidates(job_dir, story, mocked,
+                                     exclude=ours | {t["key"] for t in linked})
+    if from_jobs:
+        _log(job_dir, f"EARLIER JOBS of {story} hold {len(from_jobs)} test(s) not listed as linked: "
+                      + ", ".join(f"{t['key']} ({t['job']})" for t in from_jobs[:12]))
+        linked = linked + from_jobs
+    local_steps = {t["key"]: t["steps"] for t in from_jobs if t.get("steps") is not None}
     by_key = {t["key"]: t for t in linked}
     ids = {c["id"] for c in todo}
     for cid, key in adopt.items():
         if cid in ids and key not in by_key:
-            raise Refused(f"{key} is not a test linked to {story} that no case of this job has "
-                          f"already; {cid} was not given it. Nothing was created.")
+            raise Refused(f"{key} is not a test linked to {story} (or made by an earlier job of it) "
+                          f"that no case of this job has already; {cid} was not given it. Nothing "
+                          f"was created.")
     _log(job_dir, f"LINKED {story} has {len(linked)} test(s) linked that no case of this job holds"
                   + (": " + ", ".join(t["key"] for t in linked[:12]) if linked else ""))
     if not linked:
@@ -440,6 +453,8 @@ def _not_what_the_story_has(job_dir: str, what: str, story: str, todo: list, fie
     cache = {}
 
     def steps_of(key: str):
+        if key in local_steps:
+            return local_steps[key]                # as the earlier job designed them
         if key not in cache:
             try:
                 cache[key] = mt.steps_of(conn, key, transport)
@@ -460,6 +475,8 @@ def _not_what_the_story_has(job_dir: str, what: str, story: str, todo: list, fie
         ident = f"{what}:{case['id']}"
         entry = {"key": t["key"], "title": case["title"], "fingerprint": fingerprint(case),
                  "story": story, "mock": mocked, "at": _now(), "found": how, "synced_updated": stamp}
+        if t.get("job"):
+            entry["from_job"] = t["job"]
         if steps is not None:
             # As Xray has it: Update in Xray then offers this case's steps
             # as the change, and sends them only when a person chooses to.
