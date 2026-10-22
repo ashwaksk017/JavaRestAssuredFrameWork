@@ -331,6 +331,12 @@ button.waiting { opacity: .6; cursor: progress; }
 .steps li.now::before { content: "\25B8"; }
 .steps li.stopped { color: var(--bad); }
 .steps li.stopped::before { content: "\2717"; }
+/* A command's steps and its log in one box: the frame is the box, the log
+   inside it keeps its own scroll but no second border. */
+.logframe { background: var(--sunk); border: 1px solid var(--line); border-radius: 8px; padding: .3rem 0 0; }
+.logframe > .steps { margin: .3rem .8rem .2rem; padding-bottom: .4rem; border-bottom: 1px dashed var(--line); }
+.logframe > .steps:empty { display: none; }
+.logframe > pre.log { border: 0; border-radius: 0 0 8px 8px; background: transparent; }
 
 /* The repository as it is, at the top of the Agentic tab. */
 .repo { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; margin: 0 0 .8rem;

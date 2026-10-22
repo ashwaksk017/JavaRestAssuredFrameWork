@@ -211,8 +211,17 @@ api("/api/runnables").then((r) => {
   for (const [name, v] of Object.entries(r || {})) LABELS[name] = v.label || "";
 }).catch(() => { /* the label is then "Working" */ });
 
-// The list of steps a command has said, kept just above its log pane.
+// The list of steps a command has said, at the top of its log pane: the
+// steps and the log share one box (.logframe), so "Checking the Cursor
+// setup" is read with the rest of the command's output, not above it.
 function stepsAbove(logEl) {
+  let frame = logEl.parentElement;
+  if (!frame || !frame.classList.contains("logframe")) {
+    frame = document.createElement("div");
+    frame.className = "logframe";
+    logEl.before(frame);
+    frame.append(logEl);
+  }
   let s = logEl.previousElementSibling;
   if (!s || !s.classList || !s.classList.contains("steps")) {
     s = document.createElement("ol");
