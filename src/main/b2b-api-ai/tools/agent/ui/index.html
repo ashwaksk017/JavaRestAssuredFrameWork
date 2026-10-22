@@ -508,6 +508,7 @@ Expect 201.'></textarea>
     <span id="repo-where">reading the repository…</span>
     <select id="repo-branches" aria-label="branches"></select>
     <button id="repo-switch" type="button" disabled>Switch to it</button>
+    <button id="repo-fetch" type="button" title="git fetch --prune origin: branches pushed from elsewhere show up; no file changes">Fetch branches</button>
     <span id="repo-state" class="state"></span>
   </div>
 
@@ -574,33 +575,39 @@ Expect 201.'></textarea>
     <span class="hint">mvn test-compile: the main and test code, nothing run</span>
   </div>
   <div class="form">
-    <fieldset class="field choice wide"><legend>What to run</legend>
+    <fieldset class="field choice wide run-choices"><legend>What to run</legend>
       <label><input type="radio" name="run-what" value="job"> This job's new tests</label>
       <label><input type="radio" name="run-what" value="suite" checked> A suite file</label>
       <label><input type="radio" name="run-what" value="test"> A test class or method <span class="hint">-Dtest=</span></label>
       <label><input type="radio" name="run-what" value="group"> A TestNG group <span class="hint">regression, smoke, jira…</span></label>
     </fieldset>
   </div>
-  <div class="row" id="run-what-job" hidden>
+  <div class="row run-line" id="run-what-job" hidden>
+    <span class="run-label">Tests</span>
     <code id="run-job-suite">—</code>
     <span class="hint">the suite the workbench wrote for the job's tests (Suites/jira/&lt;job&gt;.xml)</span>
   </div>
-  <div class="row" id="run-what-suite">
+  <div class="row run-line" id="run-what-suite">
+    <span class="run-label">Suite file</span>
     <select id="run-suite" aria-label="suite file"></select>
     <button id="run-suites-refresh" type="button" title="read the suite files again">↻</button>
   </div>
-  <div class="row" id="run-what-test" hidden>
+  <div class="row run-line" id="run-what-test" hidden>
+    <span class="run-label">Class or method</span>
     <input id="run-test" type="text" spellcheck="false" class="grow" placeholder="GuestProgramAccountTest   or   GuestProgramAccountTest#createGuestProgramAccount*">
   </div>
-  <div class="row" id="run-what-group" hidden>
+  <div class="row run-line" id="run-what-group" hidden>
+    <span class="run-label">Group</span>
     <input id="run-group" type="text" spellcheck="false" placeholder="regression" list="run-groups">
     <datalist id="run-groups"></datalist>
     <span class="hint">runs Suites/jira/group-&lt;name&gt;.xml</span>
   </div>
-  <div class="row">
-    <label class="inline" for="run-env">Environment</label>
+  <div class="row run-line">
+    <label class="run-label" for="run-env">Environment</label>
     <select id="run-env" aria-label="environment"></select>
     <label class="inline" title="delete what Maven built and the last run's reports (target/classes, test-classes, surefire-reports, allure-results...), then mvn test-compile. Uploaded suites, the failure digest and Jira fetches in target/ are kept"><input type="checkbox" id="run-compile-first" checked> clean build first</label>
+  </div>
+  <div class="row actions">
     <button id="mvn-test" class="go" type="button">Run the tests</button>
     <button id="mvn-stop" type="button">Stop</button>
     <span id="run-state" class="state"></span>

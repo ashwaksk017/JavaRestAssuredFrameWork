@@ -148,8 +148,12 @@ def start(open_page: bool = True, wait: float = 20.0) -> int:
               "cwd": ROOT, "close_fds": True}
     if os.name == "nt":
         # No console window of its own, and not ended when this one closes.
+        # A console of its own that is never shown -- not DETACHED_PROCESS,
+        # which Windows lets win over CREATE_NO_WINDOW: a server with NO
+        # console gave every console program it started (the Cursor bridge
+        # through cmd.exe, git, mvn.cmd) a new, blank window that stayed open.
+        # The children share this hidden one instead.
         kwargs["creationflags"] = (subprocess.CREATE_NEW_PROCESS_GROUP
-                                   | getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
                                    | getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
     else:
         kwargs["start_new_session"] = True

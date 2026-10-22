@@ -133,9 +133,17 @@ def _one(value, cap: int = 200) -> str:
 
 # ---- what is switched on ------------------------------------------------------
 
+def create_tests_on(publish_block: dict) -> bool:
+    """On unless jira_config.publish.create_tests is false (or "false", "no", "off", 0)."""
+    v = (publish_block or {}).get("create_tests", True)
+    return not (v is False or v == 0 or str(v).strip().lower() in ("false", "no", "off", "0"))
+
+
 def switch(cfg: dict = None, mocked: bool = False) -> dict:
     """{on, projects, issue_type, link_type, step_call} from
-    jira_config.publish. A stand-in connection has it on."""
+    jira_config.publish. A stand-in connection has it on. Creating tests is
+    ON unless `create_tests` says it is off (asked for: it was off unless
+    set to true); `projects` still limits where."""
     out = {"on": False, "projects": [], "issue_type": DEFAULT_TYPE, "link_type": DEFAULT_LINK,
            "step_call": DEFAULT_STEP_CALL}
     if mocked:
@@ -144,7 +152,7 @@ def switch(cfg: dict = None, mocked: bool = False) -> dict:
     if cfg is None:
         cfg, _ = search.projectconfig.section("jira_config")
     p = publish._switch_block(cfg, "jira_config")
-    out["on"] = p.get("create_tests") is True
+    out["on"] = create_tests_on(p)
     if "projects" in p:
         listed = p["projects"]
         if (not isinstance(listed, list) or not listed
@@ -513,8 +521,9 @@ def create(job: str, what: str, story: str, confirm: str, root: str = "", conn=N
                       "manual-new-cases.csv with Xray's importer for now.")
     opts = switch(cfg, mocked)
     if not opts["on"]:
-        raise Refused("creating tests in Jira is switched off. To allow it, set "
-                      "jira_config.publish.create_tests to true in program_configuration.json.")
+        raise Refused("creating tests in Jira is switched off (jira_config.publish.create_tests "
+                      "is false in program_configuration.json). Tick it on the Settings tab, or "
+                      "remove the setting: it is on by default.")
     if not mocked:
         publish.https_only(conn["base"], "Jira")
     result = publish.result_for(job_dir, what)
@@ -791,7 +800,8 @@ def status(job: str, root: str = "") -> dict:
     except (Refused, search.Refused, RuntimeError) as e:
         diag.trace()
         problem = str(e)
-        opts = switch({}, False)                         # a broken setting is OFF
+        # A setting that cannot be read is OFF -- not the default, which is on.
+        opts = dict(switch({}, False), on=False)
     story = ""
     told = publish._json(os.path.join(job_dir, "intake.json"))
     if isinstance(told.get("story"), dict):

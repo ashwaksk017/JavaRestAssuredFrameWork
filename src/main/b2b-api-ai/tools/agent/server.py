@@ -339,6 +339,8 @@ class Handler(BaseHTTPRequestHandler):
                     body.get("job", ""), str(body["name"]))})
             if u.path == "/api/manual":
                 return self._json(self._pasted(body, lambda: self._manual(body)))
+            if u.path == "/api/repo-fetch":
+                return self._json(jobs.repo.fetch(ROOT))
             if u.path == "/api/repo-checkout":
                 # Switches the working tree: clean tree, no job running, the
                 # branch named twice. Refusals come back as one line.

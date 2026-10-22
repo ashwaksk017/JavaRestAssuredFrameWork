@@ -179,7 +179,8 @@ def status(root: str = "") -> dict:
     local_map = os.path.join(root, ".workbench", "suite-map.json") if root else sm.LOCAL_MAP
     mapping = sm.load(local_map if os.path.isfile(local_map) else sm.MAP_FILE)
     return {
-        "xray_create": {"on": publish.get("create_tests") is True,
+        "xray_create": {"on": publish.get("create_tests", True) is not False
+                        and str(publish.get("create_tests", True)).strip().lower() not in ("false", "no", "off", "0"),
                         "projects": [str(p) for p in publish.get("projects") or []],
                         "issue_type": str(publish.get("test_issue_type") or "Test"),
                         "link_type": str(publish.get("test_link_type") or "Tests")},

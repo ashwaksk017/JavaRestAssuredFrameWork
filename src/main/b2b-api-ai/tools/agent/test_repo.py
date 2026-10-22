@@ -80,6 +80,33 @@ class Info(WithARepo):
         sh(self.root, "commit", "-q", "-m", "more")
         self.assertEqual((repo.info(self.root)["ahead"], repo.info(self.root)["clean"]), (1, True))
 
+    def test_the_remotes_default_pointer_is_not_a_branch(self):
+        """git shortens origin/HEAD to "origin": it was offered as a branch."""
+        sh(self.root, "remote", "set-head", "origin", "main")
+        got = repo.info(self.root)["remote_branches"]
+        self.assertNotIn("origin", got)
+        self.assertNotIn("HEAD", got)
+        self.assertIn("feature/one", got)
+
+    def test_a_fetch_brings_a_branch_pushed_from_elsewhere(self):
+        other = os.path.join(self.base, "other")
+        sh(self.base, "clone", "-q", self.remote, other)
+        sh(other, "config", "user.email", "t@example.com")
+        sh(other, "config", "user.name", "t")
+        sh(other, "checkout", "-q", "-b", "agent/job-9")
+        sh(other, "commit", "-q", "--allow-empty", "-m", "from the other machine")
+        sh(other, "push", "-q", "origin", "agent/job-9")
+        sh(self.root, "remote", "set-url", "origin", self.remote)
+        self.assertNotIn("agent/job-9", repo.info(self.root)["remote_branches"])
+        self.assertTrue(repo.fetch(self.root)["ok"])
+        self.assertIn("agent/job-9", repo.info(self.root)["remote_branches"])
+
+    def test_a_fetch_that_cannot_reach_the_remote_says_so(self):
+        got = repo.fetch(self.root, timeout=30)          # the fixture's remote is a made-up address
+        self.assertFalse(got["ok"])
+        self.assertIn("git fetch", got["message"])
+        self.assertNotIn("tok-SECRET", got["message"])
+
     def test_not_a_repository_is_said_not_raised(self):
         plain = tempfile.mkdtemp(prefix="repo-plain-")
         self.addCleanup(shutil.rmtree, plain, True)

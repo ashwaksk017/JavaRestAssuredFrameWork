@@ -428,7 +428,7 @@ ones added, surplus ones removed; the summary follows the case's title, and
 a test the workbench created gets its description rewritten too (one taken
 from the story keeps its own). "Take" changes the case -- as a review
 correction, so Finalize must be pressed again -- and nothing in Jira.
-Sending needs `jira_config.publish.create_tests` (Settings: Create in Xray).
+Sending is refused only when `jira_config.publish.create_tests` is `false` (Settings: Create in Xray).
 Xray Server / Data Center only; the step calls are Xray Server's REST API
 and have not been run against a live Xray.
 
@@ -1694,7 +1694,7 @@ Xray test.
 
 The same rules as Publish:
 
-- **Off** unless `jira_config.publish.create_tests` is `true`;
+- **On** unless `jira_config.publish.create_tests` is `false` (Settings: Create in Xray);
   `projects`, when set, is where it may create.
 - **The story key is typed twice**, and tests go in the story's project
   as Jira has it. The page says beforehand how many would be created.

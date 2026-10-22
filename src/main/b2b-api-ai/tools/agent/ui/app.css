@@ -483,15 +483,8 @@ details.area-logs > summary { cursor: pointer; font-weight: 600; padding: .3rem 
 details.area-logs[open] > summary { margin-bottom: .4rem; }
 
 /* ---- Layout (2026-10-21): alignment and rhythm ------------------------------ */
-/* The tabs: one compact row on a wide screen. What each is for is its
-   tooltip -- shown under the name, it was cut to "compile, run a suite, see r...". */
-/* Each tab as wide as its name, sharing what is left: a long name stays on one line. */
-.tabs { display: flex; flex-wrap: wrap; gap: .4rem; padding: .6rem 1.6rem; }
-.tabs button { flex: 1 1 auto; }
-.tabs button .name { white-space: nowrap; }
-.tabs button { padding: .6rem .5rem; }
-.tabs button .name { font-size: .88rem; }
-.tabs button .what { display: none; }
+/* The tabs keep their earlier size, with what each is for under the name
+   (a compact row was tried and liked less). */
 /* A heading's explanation reads as a sentence, not in capitals. */
 h3 .hint { text-transform: none; letter-spacing: 0; font-size: .82rem; margin-left: .35rem; }
 /* In a row of buttons, a picker or a box takes its own width instead of a
@@ -512,5 +505,26 @@ button.go:disabled { background: var(--accent); border-style: solid; opacity: .4
 .row.actions { padding-top: .2rem; }
 #settings-form > fieldset.wide.full { grid-column: 1 / -1; }
 #agent-xray-exec { flex: 0 1 17rem; }
+/* Finalize the cases: the step that opens Create in Xray and Automate, as
+   wide as the boxes below it; what it says goes underneath. */
+#wf-finalize { flex: 1 1 100%; padding: .85rem 1rem; font-size: 1rem; font-weight: 600; }
+#wf-finalize:not(:disabled) { background: var(--accent); color: var(--on-accent); border-color: transparent; }
+#wf-finalize:not(:disabled):hover { background: var(--accent-hover); }
 .row.sm-rule { flex-wrap: nowrap; }
 .row.sm-rule input[type=text] { flex: 1 1 10rem; min-width: 0; }
+/* Every row of buttons is centred on the page (asked for, 2026-10-21). */
+.row:has(> button) { justify-content: center; }
+.row.sm-rule { justify-content: flex-start; }
+.repo { justify-content: center; }
+#repo-where { flex-basis: 100%; }
+/* Run tests: the choices on one line; each setting a line with its label in
+   one column, so the boxes start at the same place; the buttons centred below. */
+#tab-run .run-choices { flex-direction: row; flex-wrap: wrap; align-items: center; gap: .3rem 1.6rem; }
+#tab-run .run-choices legend { margin-bottom: .2rem; }
+#tab-run .run-choices label { display: inline-flex; margin: .2rem 0; }
+.row.run-line { justify-content: flex-start; margin: .7rem 0; }
+.run-label { flex: 0 0 10rem; margin: 0; text-align: right; padding-right: .8rem;
+             font-size: .85rem; color: var(--dim); }
+#tab-run .row.run-line select, #tab-run .row.run-line input[type=text] { flex: 0 1 32rem; }
+#tab-run .row.run-line input[type=text].grow { flex: 1 1 32rem; }
+#tab-run .row.actions { margin-top: 1.2rem; }

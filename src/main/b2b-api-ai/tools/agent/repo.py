@@ -133,13 +133,17 @@ def info(root: str = "", remote: str = "origin") -> dict:
     if rc == 0:
         out["local_branches"] = [b.strip() for b in locals_.splitlines()
                                  if _BRANCH_RX.match(b.strip())][:MAX_BRANCHES]
-    rc, remotes = git(root, "for-each-ref", "--format=%(refname:short)", f"refs/remotes/{remote}/")
+    # The full name: git shortens refs/remotes/origin/HEAD (a pointer to the
+    # default branch) to "origin", which was listed as a branch called origin.
+    rc, remotes = git(root, "for-each-ref", "--format=%(refname)", f"refs/remotes/{remote}/")
     if rc == 0:
         names = []
+        prefix = f"refs/remotes/{remote}/"
         for b in remotes.splitlines():
             b = b.strip()
-            if b.startswith(remote + "/"):
-                b = b[len(remote) + 1:]
+            if not b.startswith(prefix):
+                continue
+            b = b[len(prefix):]
             if b != "HEAD" and _BRANCH_RX.match(b):
                 names.append(b)
         out["remote_branches"] = names[:MAX_BRANCHES]
@@ -151,6 +155,25 @@ def info(root: str = "", remote: str = "origin") -> dict:
             behind, ahead = (counts.split() + ["0", "0"])[:2]
             out["behind"], out["ahead"] = int(behind), int(ahead)
     return out
+
+
+def fetch(root: str = "", remote: str = "origin", timeout: float = 90) -> dict:
+    """`git fetch --prune <remote>`: the remote's branches as they are now.
+    The list read only what this clone last fetched, so a branch pushed
+    from another machine was never offered. Changes no file of the tree."""
+    import subprocess
+    root = root or ROOT
+    try:
+        r = subprocess.run(["git", "fetch", "--prune", remote], cwd=root, capture_output=True,
+                           timeout=timeout, env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "message": f"git fetch did not answer in {timeout:.0f}s"}
+    except OSError as e:
+        return {"ok": False, "message": f"git could not be run ({e})"}
+    said = (r.stderr or b"").decode("utf-8", "replace").strip().splitlines()
+    if r.returncode != 0:
+        return {"ok": False, "message": "git fetch failed: " + (said[-1] if said else f"exit {r.returncode}")[:300]}
+    return {"ok": True, "message": f"fetched {remote}"}
 
 
 def checkout(root: str, branch: str, confirm: str, remote: str = "origin", lock=None) -> dict:

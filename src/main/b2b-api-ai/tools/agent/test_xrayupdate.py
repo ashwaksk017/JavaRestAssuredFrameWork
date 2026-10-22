@@ -188,9 +188,9 @@ class Applying(Base):
         with self.assertRaises(xu.Refused):
             self.apply({"TC-002": "send"})                    # no preview yet
         self.plan()
-        with self.assertRaises(xu.Refused):
+        with self.assertRaises(xu.Refused):                   # switched off on purpose
             xu.apply("j1", {"TC-002": "send"}, self.root, conn=dict(CONN), transport=self.xray,
-                     cfg={"publish": {}}, xray_cfg={})
+                     cfg={"publish": {"create_tests": False}}, xray_cfg={})
         r = xu.apply("j1", {"TC-003": "take"}, self.root, conn=dict(CONN), transport=self.xray,
                      cfg={"publish": {}}, xray_cfg={})
         self.assertEqual(len(r["taken"]), 1, "taking changes the case, not Jira: no switch needed")

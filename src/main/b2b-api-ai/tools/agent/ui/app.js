@@ -3143,6 +3143,16 @@ async function showRepo() {
   }
 }
 $("agent-branch").addEventListener("input", () => { $("agent-branch").dataset.auto = "0"; });
+$("repo-fetch").onclick = async () => {
+  $("repo-fetch").disabled = true;
+  setState($("repo-state"), "run", "fetching the branches from origin…");
+  try {
+    const r = await post("/api/repo-fetch", {});
+    setState($("repo-state"), r.ok ? "ok" : "bad", r.message || "");
+  } catch (e) { setState($("repo-state"), "bad", e.message); }
+  $("repo-fetch").disabled = false;
+  showRepo();
+};
 $("repo-switch").onclick = async () => {
   const branch = $("repo-branches").value;
   if (!branch) return;

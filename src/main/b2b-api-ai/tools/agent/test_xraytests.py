@@ -150,13 +150,16 @@ class Base(unittest.TestCase):
 
 
 class Refusals(Base):
-    def test_off_unless_switched_on(self):
-        for cfg in ({}, {"publish": {}}, {"publish": {"create_tests": "true"}},
-                    {"publish": {"create_tests": 1}}):
+    def test_on_unless_switched_off(self):
+        """Asked for: creating tests was off unless set to true."""
+        for cfg in ({"publish": {"create_tests": False}}, {"publish": {"create_tests": "false"}},
+                    {"publish": {"create_tests": "no"}}, {"publish": {"create_tests": 0}}):
             with self.assertRaises(xt.Refused) as got:
                 self.create(cfg=cfg)
             self.assertIn("switched off", str(got.exception))
         self.assertEqual(self.jira.calls, [])
+        for cfg in ({}, {"publish": {}}, {"publish": {"create_tests": True}}):
+            self.assertTrue(xt.switch(cfg)["on"], cfg)
 
     def test_the_story_key_twice_the_same(self):
         with self.assertRaises(xt.Refused):
