@@ -1460,10 +1460,12 @@ def pattern_example(root: str, policy: dict, scope: dict, bundled_with_skill: bo
     cap = GOLDEN_JAVA_CAP if others else EXAMPLE_JAVA_CAP
     if bundled_with_skill:
         lines = ["===== GOLDEN EXAMPLE (form only — the skill wins on rules) =====",
-                 "Shows HTTP order (token → enroll → guestId → act) through StoryTestBase's "
-                 "helpers (ownerSession, enrollGuest, createProgramAccount, step), ManualBody "
-                 "templates, and csv/manual/ columns. Endpoints, ids and assertions are not "
-                 "yours; copy the shape, not the story."]
+                 "Shows how a B2B test makes its people (service token -> enrollActor -> "
+                 "createAccountFor -> addMember -> setMemberRole -> act), every id from a "
+                 "response, through StoryTestBase's helpers, the committed templates/manual/b2b_* "
+                 "bodies, and csv/manual/ columns. Endpoints, ids and assertions are not "
+                 "yours; copy the shape, not the story. B2B_FLOWS.md (next to the skill) has "
+                 "the other chains."]
     else:
         lines = ["===== HOW A TEST IS WRITTEN HERE (one existing test, whole) =====",
                  "Copy this shape -- the imports, the base class, the DSL steps, how a "
@@ -1561,12 +1563,12 @@ def jira_requirements_block(scope: dict) -> str:
             "src/test/java/com/hi/api/tests/jira/:\n"
             "- Class-level Javadoc **DATA_INVENTORY** (ordered HTTP steps, CONFIG keys, "
             "EXTRACTs) before you write the rest of the class — see skill §2b and §2c.\n"
-            "- **First HTTP call** is auth (client-credentials and/or resource-owner JSON "
-            "token) before any act call that needs a bearer.\n"
-            "- Path `{guestId}` after enroll: **EXTRACT** "
-            "`RestUtilities.safeJsonExtract(enrollRes, \"guestId\")` — not config/CSV.\n"
-            "- Path `{guestId}` for an existing persona: **EXTRACT** from token response "
-            "body or JWT claims — not config-only unless the design says a frozen id.\n"
+            "- **First HTTP call** is the token: `serviceToken()` (the converted suites' "
+            "project login) before any call that needs a bearer.\n"
+            "- **Every person is created by the test** (skill §2, B2B_FLOWS.md): "
+            "`enrollActor` -> `createAccountFor` -> `addMember` -> `setMemberRole`; every "
+            "guest/account/member id is an EXTRACT from those responses -- never config, "
+            "never a CSV cell, never `ownerSession` or a `jira.<story>.<role>.username` key.\n"
             "- Every `@Test` using `PerMethodCsvDataProvider`: create "
             "`src/test/resources/csv/manual/<SimpleClassName>/<methodName>.csv` in the "
             "same change with group A columns (`test_case_id`, `jira_xray_id`, `jira_issue`) "
@@ -1628,14 +1630,16 @@ def _automation_hint_for_case(case: dict) -> str:
     ep = str(case.get("endpoint") or "").lower()
     title = str(case.get("title") or "").lower()
     if "spenddetail" in ep or "spend detail" in title:
-        return ("    [automation] 1) resource-owner token 2) path guestId from token body/claims "
-                "3) optional probe GET without traveler guestId 4) act GET with guestId query")
+        return ("    [automation] serviceToken -> owner: enrollActor + createAccountFor + activate -> "
+                "travelers: enrollActor + addMember -> their reservation -> act GET spendDetail "
+                "(B2B_FLOWS.md section 3)")
     if "enroll" in ep or ("post" in ep and "guests" in ep and "businesses" not in ep):
-        return ("    [automation] client-credentials token → POST enroll → EXTRACT guestId → "
-                "resource-owner token for guest-scoped POST/GET")
+        return ("    [automation] enrollActor (generated credentials) -> EXTRACT guestId from the "
+                "enrol response")
     if "/guests/" in ep and "businesses" in ep:
-        return ("    [automation] token → enroll if new guest (extract guestId) else token + "
-                "guestId from token; CONFIG for account_id/member_id only when AC names personas")
+        return ("    [automation] serviceToken -> create every person the case names (enrollActor, "
+                "createAccountFor, addMember, setMemberRole) -> act with their ids in the path; "
+                "no person from configuration")
     if ep.strip():
         return "    [automation] token (grant per OpenAPI/auth hints) before the act HTTP call"
     return ""
@@ -2661,7 +2665,8 @@ def story_key_block(job_dir: str, scope: dict) -> str:
         key = ""
     if _STORY_KEY_RX.match(key):
         return (f"THE STORY'S KEY is {key}. Use it wherever the skill says the story key: "
-                f"@Story, the configuration keys (jira.{key.lower()}.<role>.<field>), and the "
+                f"@Story, the configuration keys of values that are not a person "
+                f"(jira.{key.lower()}.<object>.<field>), and the "
                 f"`jira_issue` column of every `csv/manual/` data row you write or change for "
                 f"THIS job's cases. A row of another test or another story -- even in a sheet "
                 f"of a class you edit -- keeps the `jira_issue` and `jira_xray_id` it has: do "
@@ -2670,7 +2675,7 @@ def story_key_block(job_dir: str, scope: dict) -> str:
     return (f"THIS JOB HAS NO JIRA STORY KEY (the story was pasted, not read from Jira). Do "
             f"not invent one, and do not use a case id in its place: where the skill says the "
             f"story key, use the job id `{job}` -- @Story(\"{job} ...\"), and configuration keys "
-            f"jira.{job}.<role>.<field>. Leave @XrayTest out unless a case below carries an "
+            f"jira.{job}.<object>.<field>. Leave @XrayTest out unless a case below carries an "
             f"[Xray KEY].")
 
 
@@ -2793,7 +2798,10 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
                   "assertion to write. Skip one you cannot automate here "
                   "and say which and why. Test data is described, not "
                   "given: take real values from Config or a CSV column, "
-                  "never invent one. A case marked [Xray KEY] already exists "
+                  "never invent one -- except PEOPLE and their ids: the test "
+                  "creates them (enrollActor, createAccountFor, addMember, "
+                  "setMemberRole -- B2B_FLOWS.md) and takes every id from a "
+                  "response. A case marked [Xray KEY] already exists "
                   "in Jira as that Test issue: put KEY in the `jira_xray_id` "
                   "column of the data row you write for it (add the column "
                   "when the sheet has none), or in `@XrayTest(\"KEY\")` on a "

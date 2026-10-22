@@ -41,6 +41,14 @@ public final class ApiRoutes {
             "/guests/{guestId}/businesses/{accountId}/members/{memberId}/confirmValidation";
     public static final String MEMBER_REMOVE =
             "/businesses/{accountId}/members/{memberId}/remove";
+    // Members, as the converted B2B suites build them (h4bbookonbehalf
+    // StaysTCStayTestPhases: add -> list -> activate -> PUT role).
+    /** POST: a guest joins an account (path guest = the NEW member); GET: the members (206). */
+    public static final String GUEST_BUSINESS_MEMBERS = "/guests/{guestId}/businesses/{accountId}/members";
+    /** PUT as the owner (path guest = the owner): status, email, role of one member. */
+    public static final String GUEST_BUSINESS_MEMBER =
+            "/guests/{guestId}/businesses/{accountId}/members/{memberId}";
+    public static final String BUSINESS_MEMBER_ACTIVATE = "/businesses/{accountId}/members/{memberId}/activate";
 
     private ApiRoutes() {}
 

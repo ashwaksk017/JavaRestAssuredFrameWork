@@ -1,0 +1,23 @@
+{
+  "username": "#enroll_username#",
+  "password": "#enroll_password#",
+  "enrollSourceCode": "#enroll_source_code#",
+  "preferredLanguage": "EN",
+  "propCode": "#enroll_prop_code#",
+  "privacyRequested": false,
+  "address": {
+    "addressLine1": "123 Main St",
+    "addressType": "business",
+    "city": "Memphis",
+    "country": "US",
+    "state": "TN",
+    "postalCode": "38103"
+  },
+  "name": {
+    "firstName": "<<firstname>>",
+    "lastName": "<<lastname>>"
+  },
+  "email": {
+    "emailAddress": "#owner_company_email#"
+  }
+}

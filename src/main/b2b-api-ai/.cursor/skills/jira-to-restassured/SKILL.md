@@ -88,6 +88,14 @@ A story test **extends `com.hi.api.tests.StoryTestBase`** (itself a
 `src/test/java/com/hi/api/tests/examples/StoryTestExample.java` -- read it; it is the
 example in your prompt.
 
+**A B2B story (program accounts, members, travel coordinators, dashboards,
+spend, stays): read `.cursor/skills/jira-to-restassured/B2B_FLOWS.md` first.**
+The test creates the people it needs -- enrols them, creates the account,
+adds members, gives roles -- and takes every id from a response, with the
+service token, exactly as the converted B2B suites do. It never logs in as
+a person someone set up by hand and never reads a person's username,
+password or ids from configuration.
+
 ### Shared helpers -- use these, never write your own
 
 These exist ONCE, in `StoryTestBase` and `com.hi.api.auth.JsonTokens`. A
@@ -96,16 +104,17 @@ config helper **fails the workbench's checks** (`story-test-shared-helpers`):
 
 | Need | Call |
 |---|---|
-| A persona's token and its guest id (`guestIdInClaimMustMatchGuestIdInPath` routes) | `JsonTokens.Session s = ownerSession(row, "jira.<story>.<role>")` -> `s.accessToken`, `s.requireGuestId()` |
-| The same, with another story's persona keys as fallback | `ownerSession(row, "jira.<story>.<role>", "jira.<other-story>.<role>")` |
-| A token for a guest the test enrolled | `guestSession(username, password)` |
+| The token every B2B call carries (the converted suites' project login) | `String svc = serviceToken();` -- once per test |
+| A new person: enrolled, logged in, ids from the response | `Actor a = enrollActor(row, "templates/manual/b2b_enroll_guest.json", CASE)` -> `a.guestId`, `a.email`; null on failure |
+| A program account for an actor, and the owner's member id | `String[] acc = createAccountFor(owner, "templates/manual/b2b_create_program_account.json", svc, CASE)` -> `acc[0]` accountId, `acc[1]` memberId |
+| Validate the owner / activate the account | `confirmOwnerValidation(owner, acc[0], acc[1], svc, CASE)` (database: `requireDb(...)` first); `activateAccount(acc[0], svc, CASE)` |
+| A member, and a role | `addMember(member, accountId, "employee", inviteKey(accountId, svc, CASE), svc, CASE)`; `activateMember(accountId, member.memberId, svc, CASE)`; `setMemberRole(owner, accountId, member, "travelCoordinator", svc, CASE)` |
+| A step the database must do | `requireDb("what for")` first (skips naming the keys), then `com.hi.api.db.Db` with `?` parameters |
+| A token for a guest the test enrolled (only when the AC is about that guest's own login) | `actor.accessToken()` |
 | The application's own token (client credentials) | `clientToken()` |
-| API headers with the bearer | `apiHeaders(token)` (the environment's `headers/<env>.json`) |
+| API headers with the bearer | `apiHeaders(token)` (JSON content type, a correlation id, and `headers/<env>.json` when the environment has one) |
 | A value from the row, else the configuration | `rowOrConfig(row, column, key)` (skips when unset); `rowOrConfig(row, column, key, fallbackKey)`; `optionalRowOrConfig(row, column, key[, fallbackKey])` (null, no skip); `truthyRowOrConfig(row, column, key)` |
-| Setup: a new guest | `String guestId = enrollGuest(row, "templates/manual/<job>_enroll_guest.json", CASE)` -- null when it failed (stop; its `CASE/SETUP` assertions say why) |
-| Setup: a program account for that guest | `String accountId = createProgramAccount(row, template, guestId, guestToken, CASE)` |
-| Act: the create itself (its AC is the create) | `Response res = createProgramAccountResponse(row, template, guestId, guestToken, CASE)` -- unasserted, you assert it with AC tags |
-| Blank enrolment columns filled (ALLOWED_DOMAINS-aware) | `fillEnrollFields(row)` (enrollGuest calls it) |
+| Act: the create itself (its AC is the create) | `Response res = createProgramAccountResponse(owner.row, template, owner.guestId, svc, CASE)` -- unasserted, you assert it with AC tags |
 | A named Allure step around a call | `step("verbName: VERB /path", () -> RestUtilities.getResponseGet(url, headers))` |
 | A list in a response, never null | `listAt(res, "items.id")` |
 
@@ -125,16 +134,22 @@ public class AccountActivationTest extends StoryTestBase {
     @Story("B2B-1234 activate a pending account")
     @Description("TC-001 covers AC-1. AC-1: POST /businesses/{accountId}/activate on a pending "
                + "account returns 204.")
-    public void activatePendingAccount_204(Map<String, String> row) {
-        String accountId = rowOrConfig(row, "account_id", "jira.b2b-1234.account_id");
-        String token = clientToken();
-        Response res = step("activateAccount: POST " + ApiRoutes.BUSINESS_ACTIVATE,
-                () -> RestUtilities.getResponsePost("{\"status\":\"ACTIVE\"}",
-                        baseUrl() + ApiRoutes.fill(ApiRoutes.BUSINESS_ACTIVATE, "accountId", accountId),
-                        apiHeaders(token)));
+    public void readNewAccount_200(Map<String, String> row) throws Exception {
+        String svc = serviceToken();
+        Actor owner = enrollActor(row, "templates/manual/b2b_enroll_guest.json", CASE);
+        String[] acc = owner == null ? null
+                : createAccountFor(owner, "templates/manual/b2b_create_program_account.json", svc, CASE);
+        if (acc == null) {
+            return;                                    // the SETUP assertions say why
+        }
+        String accountId = acc[0];
+        Response res = step("readProgramAccount: GET " + ApiRoutes.BUSINESS,
+                () -> RestUtilities.getResponseGet(
+                        baseUrl() + ApiRoutes.fill(ApiRoutes.BUSINESS, "accountId", accountId),
+                        apiHeaders(svc)));
         RestUtilities.logResponseBody(CASE, holder, RestUtilities.getResponseAsString(res));
-        softAssert.assertEquals(RestUtilities.checkActualResponse(res), "204",
-                "TC-001/AC-1: POST activate returns 204");
+        softAssert.assertEquals(RestUtilities.checkActualResponse(res), "200",
+                "TC-001/AC-1: GET the new account returns 200");
     }
 }
 ```
@@ -189,15 +204,17 @@ List every call the `@Test` will make, in execution order. Label each:
 | **act** | The behaviour the AC describes |
 | **probe** | Read-only call to discover a value when config is intentionally blank |
 
-Example (member spendDetail + traveler filter):
+Example (member spendDetail + traveler filter, B2B_FLOWS.md):
 
-1. setup — resource-owner token (JSON POST to token route)
-2. probe — GET spendDetail **without** `guestId` query (only when traveler A’s id is not in config)
-3. act — GET spendDetail **with** `guestId=<traveler A>`
+1. setup — `serviceToken()`
+2. setup — enrol the owner, create and activate the account; enrol the
+   travelers, add them as members (ids from each response)
+3. setup — a reservation for traveler A (`confNumber`)
+4. act — GET spendDetail **with** `guestId=<traveler A's guestId>`
 
-The **first request** is almost always **auth** (client-credentials or
-resource-owner, per OpenAPI `x-route-in-sequence`). After that: any
-**enroll / create** the AC needs, then **probes**, then the **act** call.
+The **first request** is the **service token**. After that: the
+**enrolments / creates** that make the people and data the AC is about,
+then the **act** call.
 Never start with the act call if it needs a bearer token you have not
 fetched yet.
 
@@ -208,10 +225,10 @@ one **source kind** (same taxonomy the converter’s `phase_emit.Ref` uses):
 
 | Kind | ReadyAPI analogue | Hand-written jira pattern |
 |---|---|---|
-| **CONFIG** | `#Project#…`, frozen Properties → `program_configuration.json` | `rowOrConfig(row, col, "jira.b2b-xxxx.role.field")` — column blank in git |
+| **CONFIG** | `#Project#…`, frozen Properties → `program_configuration.json` | `rowOrConfig(row, col, "jira.b2b-xxxx.<object>.<field>")` — column blank in git; never a person (B2B_FLOWS.md) |
 | **ROW** | per-case CSV override, non-secret variant | Same helper; **fill column locally** only for debugging — committed row stays blank for customer ids |
 | **EXTRACT** | PropertyTransfer / `safeJsonExtract` → `ctx` | Local variable from `RestUtilities.safeJsonGet` / `safeJsonExtract` on a **prior** response in the same `@Test` |
-| **TOKEN** | token step + claim | `access_token` from token response; path `guestId` from claim or token body when rule is `guestIdInClaimMustMatchGuestIdInPath` |
+| **TOKEN** | token step | `serviceToken()` -- the acting guest is the guest id in the path, an EXTRACT from that guest's enrolment |
 | **TEMPLATE** | JSON template `#Properties_email#`, `<<faker>>` | `ManualBody.render("templates/manual/….json", row, ctx)` — never `mapJsonValues` directly |
 | **GENERATED** | DataGenInput / `CtxFields.generateStandard` | `FakeData.*` once in setup (e.g. enroll guest) |
 | **LITERAL** | fixed assertion or enum in XML | Inline only for values the **AC quotes** (status code, enum) |
@@ -220,13 +237,12 @@ Rules:
 
 - **Customer ids, emails, confirmation numbers** → CONFIG or EXTRACT, never
   literals in Java or committed CSV (section 4b).
-- If the AC names “traveler A” but not their id → CONFIG key
-  `jira.<story>.traveler_a.guest_id`, else **probe** then EXTRACT (as in
-  the example above). Say which you chose in `open_questions`.
-- Reuse another story’s persona only when the plan says so: read linked
-  keys with the same `rowOrConfig` column but alternate config prefix
-  (primary `jira.b2b-99454.…`, fallback `jira.b2b-99458.…`). Document both
-  prefixes in the inventory.
+- A **person** the AC names (owner, traveler A, travel coordinator, admin)
+  is **created** by the test (`enrollActor`, `addMember`, `setMemberRole`)
+  and every id of theirs is an **EXTRACT** -- never CONFIG. Their username
+  and password are **GENERATED**. B2B_FLOWS.md has the chains.
+- CONFIG is only for a value that cannot be created and is not a person (a
+  fixed property code, a partner id). Never another story's keys.
 
 ### Step 3 — CSV layout (mirror converter groups)
 
@@ -235,18 +251,22 @@ sheets (`tools/ra_converter/ra_converter.py` group A→D):
 
 ```
 A  description, test_case_id, execute, jira_xray_id, jira_issue
-C  … every CONFIG/ROW field the method reads (guest_id, account_id, username, …)
+C  … every CONFIG/ROW field the method reads, and the columns a helper fills
+   (enroll_username, enroll_password, owner_company_email, account_email_domain
+   -- left BLANK)
 D  expected_http_status, … other expected/assertion switches
 ```
 
 - **Group A** — traceability; `execute` blank means run (see MANUAL_FIXES.md).
 - **Group C** — request inputs only; names match `rowOrConfig` columns and
-  config key **field** segment (`traveler_guest_id` →
-  `jira.b2b-xxxx.traveler_a.guest_id`).
+  config key **field** segment (`prop_code` →
+  `jira.b2b-xxxx.property.prop_code`).
 - **Group D** — what the row asserts (`expected_http_status`, flags like
   `require_at_least_one_spend_item`). Do not put secrets or ids here.
 
-One `@Test` per behaviour; extra rows only for true data variants.
+One `@Test` per behaviour; extra rows only for true data variants. Every
+row has exactly as many cells as the header -- a row with an extra or a
+missing cell fails the workbench's checks.
 
 ### Step 4 — Class Javadoc `DATA_INVENTORY`
 
@@ -287,8 +307,10 @@ Before writing Java, complete this checklist (paste it in your final reply):
 ```
 [ ] HTTP_PLAN numbered (setup / probe / act) — step 1 is token unless documented otherwise
 [ ] Each path {guestId} has a source kind (EXTRACT / TOKEN / CONFIG) named in DATA_INVENTORY
-[ ] Enroll in the flow → guestId = enrollGuest(row, template, CASE) (StoryTestBase), not config
-[ ] Existing persona on /guests/{guestId}/… → ownerSession(...).requireGuestId() (token body or JWT claims)
+[ ] Every person is created: enrollActor / createAccountFor / addMember / setMemberRole (B2B_FLOWS.md)
+[ ] No person read from config: no jira.<story>.<role>.username/.password/guest_id/member_id/account_id
+[ ] serviceToken() once; requireDb(...) before the first enrolment when a step needs the database
+[ ] The enrol body sends #enroll_username#, #enroll_password#, #owner_company_email# (no fixed password)
 [ ] templates/manual/*.json listed; every #placeholder# mapped to CSV, ctx, or <<faker>>
 [ ] csv/manual/<Class>/<method>.csv header quoted in reply (group A + C + D columns)
 [ ] DATA_INVENTORY Javadoc on the test class
@@ -301,27 +323,20 @@ missing csv/manual/ sheets, or missing template files.
 
 ### Recipe R1 — Create program account (enroll → extract → create → read)
 
-```java
-String guestId = enrollGuest(row, "templates/manual/<job>_enroll_guest.json", CASE);
-if (guestId == null) return;                       // SETUP assertions say why
-JsonTokens.Session guest = guestSession(row.get("enroll_username"), row.get("enroll_password"));
-String accountId = createProgramAccount(row, "templates/manual/<job>_create_program_account.json",
-        guestId, guest.accessToken, CASE);         // SETUP: asserted, reduced to the id
-// When the create IS the act (its AC is the create's status/body):
-// Response res = createProgramAccountResponse(row, template, guestId, guest.accessToken, CASE);
-// then assert res with "TC-00n/AC-n: " tags.
-```
+As the section 2 example: `serviceToken()` -> `enrollActor` -> `createAccountFor`.
+When the create IS the act, use `createProgramAccountResponse(owner.row, template,
+owner.guestId, svc, CASE)` and assert it with `TC-00n/AC-n:` tags.
 
-The order (client-credentials token → enrol → guestId from the enrol
-response → the guest's own token → create → read) is inside these helpers.
+### Recipe R2 — Travel coordinator / member calls (and spendDetail)
 
-### Recipe R2 — Member spendDetail + traveler filter
-
-`ownerSession(row, "jira.<story>.<role>")` gives the token AND the caller's
-guest id (`requireGuestId()`) -- never a configured guest id for the
-caller. Then an optional probe GET (without the traveler query), the act GET
-with the traveler's guest id as query, and the AC's checks on each item --
-after asserting the list is not empty.
+The coordinator is a guest the test makes one: owner chain -> `enrollActor`
+-> `addMember(..., "employee", ...)` -> `activateMember` ->
+`setMemberRole(owner, accountId, member, "travelCoordinator", svc, CASE)`.
+Then act with the coordinator's `guestId` (and `memberId`) in the path and
+the service token -- `StoryTestExample` is exactly this. For spendDetail,
+create the traveler(s) the same way and their reservation first
+(B2B_FLOWS.md section 3), then GET with the traveler's guest id as query,
+and the AC's checks on each item -- after asserting the list is not empty.
 
 ### Anti-patterns (do not emit)
 
@@ -333,6 +348,11 @@ after asserting the list is not empty.
   `rowOrConfig` variant or an enrol block written in the test: they are in
   `StoryTestBase` (section 2).
 - Committed CSV cells filled with real guest/account/member ids.
+- A person logged in from configuration (`ownerSession(row, "jira.<story>.<role>")`,
+  `rowOrConfig(..., "jira.<story>.<role>.username")`) or another story's keys:
+  create the person (B2B_FLOWS.md).
+- A fixed password, username or email in an enrol body: use
+  `#enroll_password#`, `#enroll_username#`, `#owner_company_email#`.
 
 ---
 
@@ -373,20 +393,20 @@ jira tests compile on a bare clone without those clients. Use
 Read the OpenAPI `x-route-in-sequence` (or an existing jira test on the same
 path) before choosing a token:
 
-| Route rule | Token |
+| Call | Token |
 |---|---|
-| Corporate / client-credentials flows | `clientToken()` |
-| `guestIdInClaimMustMatchGuestIdInPath` | `ownerSession(row, "jira.<story>.<role>")` (an existing persona) or `guestSession(username, password)` (a guest the test enrolled) -- the guest id comes with the token |
+| Every B2B setup and act call (as the converted suites) | `serviceToken()` -- the acting guest is the guest id in the path |
+| An AC about what a guest may do with **their own** login | that actor's `accessToken()` (a guest the test enrolled) |
+| Corporate / client-credentials-only flows | `clientToken()` |
 
-When the designed case needs a **guest id** but the AC only asserts
-create/read on `/guests/{guestId}/businesses`, create the guest in the same
-`@Test` as setup (not a separate case): `enrollGuest(row,
-"templates/manual/<job>_enroll_guest.json", CASE)`. Assert only what the
+When the designed case needs a **guest id**, create the guest in the same
+`@Test` as setup (not a separate case): `enrollActor(row,
+"templates/manual/b2b_enroll_guest.json", CASE)`. Assert only what the
 approved case lists; enrolment is plumbing, asserted as `CASE/SETUP`.
 
 When there is **no Jira story key**, use the workbench job id everywhere the
 skill says story key: `@Story("job-…")`, config keys
-`jira.job-….<role>.<field>`, template prefixes `job-….json`. Omit
+`jira.job-….<object>.<field>`, template prefixes `job-….json`. Omit
 `@XrayTest` unless the case carries `[Xray KEY]`.
 
 Multi-step flows (POST then GET with values from the first response) belong
@@ -443,10 +463,14 @@ It lives in `program_configuration.json` on the machine that runs the
 test, and the test reads it with **one helper**, from `BaseApiTest`:
 
 ```java
-String guestId   = rowOrConfig(row, "guest_id",   "jira.b2b-1234.travel_coordinator.guest_id");
-String accountId = rowOrConfig(row, "account_id", "jira.b2b-1234.travel_coordinator.account_id");
-String memberId  = rowOrConfig(row, "member_id",  "jira.b2b-1234.travel_coordinator.member_id");
+String propCode  = rowOrConfig(row, "prop_code",  "jira.b2b-1234.property.prop_code");
+String partnerId = rowOrConfig(row, "partner_id", "jira.b2b-1234.partner.partner_id");
 ```
+
+**A person is never configuration.** Guest, member and account ids of the
+people the story is about, and their usernames and passwords, come from
+the test creating them (B2B_FLOWS.md) -- the workbench's checks fail a
+test that reads them from configuration.
 
 `rowOrConfig(row, column, configKey)` takes the row's column when it is
 filled, else the configuration key, else **skips** the test with a message
@@ -456,10 +480,9 @@ Do not write a helper of your own for this.
 **The configuration key scheme is fixed:**
 
 ```
-jira.<story key, lower case>.<role or object, snake_case>.<field, snake_case>
-jira.b2b-1234.travel_coordinator.guest_id
-jira.b2b-1234.travel_coordinator.username          (a credential: same scheme)
-jira.b2b-1234.other_member.confirmation_number
+jira.<story key, lower case>.<object, snake_case>.<field, snake_case>
+jira.b2b-1234.property.prop_code
+jira.b2b-1234.partner.partner_id
 ```
 
 The story key names the keys, so two stories never collide and a key can

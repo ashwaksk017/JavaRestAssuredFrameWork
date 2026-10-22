@@ -1,0 +1,22 @@
+{
+  "contactInfo": {
+    "name": "<<company>>",
+    "address": {
+      "addressLine1": "123 Main St",
+      "city": "Memphis",
+      "state": "TN",
+      "country": "US",
+      "postalCode": "38103"
+    },
+    "phone": {
+      "phoneNumber": "<<phone>>",
+      "phoneCountry": "1"
+    },
+    "websiteDomain": "#account_email_domain#",
+    "ownerEmailAddress": "#owner_company_email#"
+  },
+  "selfManaged": true,
+  "emailDomains": [
+    "#account_email_domain#"
+  ]
+}

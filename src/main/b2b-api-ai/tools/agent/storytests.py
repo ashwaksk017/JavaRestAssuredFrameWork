@@ -29,6 +29,25 @@ _TEMPLATE_HASH_RX = re.compile(r'#([A-Za-z0-9_]+)#')
 _ROW_OR_CONFIG_COL_RX = re.compile(
     r'rowOrConfig(?:Linked)?\(\s*[^,]*,\s*"([A-Za-z0-9_]+)"')
 _SPEND_DETAIL_RX = re.compile(r'spendDetail|/spendDetail', re.I)
+# The columns StoryTestBase.fillEnrollFields generates for each guest a test enrols.
+GENERATED_ENROLL_COLUMNS = ("enroll_username", "enroll_password", "owner_company_email",
+                            "account_email_domain", "enroll_source_code", "enroll_prop_code")
+_ACTOR_CALL_RX = re.compile(r'\b(?:enrollActor|enrollGuest|fillEnrollFields|createAccountFor)\s*\(')
+# A person read from configuration: a login, or a person's own id. Seen live:
+# a story test skipped with "no value for 'username': set jira.<story>.
+# travel_coordinator.username" -- a key nobody had set. The converted B2B
+# suites never do it: they enrol every person (B2B_FLOWS.md).
+# Any string literal ENDING in a person's field, in a file that names a jira.*
+# key: a whole key ("jira.x.owner.username") and one built by concatenation
+# ("jira." + JOB + ".owner.username") alike -- seen in a committed test.
+_PERSON_FIELDS = r"(username|password|guest_id|member_id|account_id)"
+_PERSON_KEY_RX = re.compile(r'"[^"\n]*\.' + _PERSON_FIELDS + r'"')
+# rowOrConfig(row, "<a person's field>", ...) -- the column names one too.
+_PERSON_COLUMN_RX = re.compile(
+    r'\b(?:optional|truthy)?[rR]owOrConfig\w*\(\s*[^,]*,\s*"' + _PERSON_FIELDS + r'"')
+_PERSON_LOGIN_RX = re.compile(r'\b(?:ownerSession|personaSession)\s*\(')
+# A credential or identity written into a request body as a fixed value.
+_BODY_FIXED_RX = re.compile(r'"(password|username)"\s*:\s*"([^"]*)"')
 _TOKEN_GUEST_ID_EXTRACT_RX = re.compile(
     r'ownerSession\s*\(|guestSession\s*\(|requireGuestId\s*\(|\.guestId\b'
     r'|TravelCoordinatorAuth|guestIdFromTokenResponse|guestIdFromAccessTokenClaims')
@@ -38,6 +57,9 @@ def _csv_columns_for_jira_class(root: str, cls: str, java_text: str) -> set:
     """Union of CSV header columns for row-driven @Test methods on this class."""
     cols = set(_ROW_OR_CONFIG_COL_RX.findall(java_text or ""))
     cols.update({"description", "test_case_id", "execute", "jira_xray_id", "jira_issue"})
+    if _ACTOR_CALL_RX.search(java_text or ""):
+        # enrollActor / enrollGuest fill these per guest (StoryTestBase.fillEnrollFields).
+        cols.update(GENERATED_ENROLL_COLUMNS)
     if "PerMethodCsvDataProvider" not in (java_text or ""):
         return cols
     for m in re.finditer(
@@ -82,8 +104,65 @@ def _jira_spend_detail_guest_id_issues(norm: str, text: str) -> list:
     if _TOKEN_GUEST_ID_EXTRACT_RX.search(text or ""):
         return []
     return [f"{norm}: GET …/spendDetail uses rowOrConfig(..., \"guest_id\", …) for the caller's "
-            "guest id: a token EXTRACT, not config -- ownerSession(row, prefix).requireGuestId() "
-            "(skill recipe R2)"]
+            "guest id: create the person and take the id from the response -- enrollActor(...).guestId "
+            "(skill recipe R2, B2B_FLOWS.md)"]
+
+
+def _jira_person_issues(norm: str, code: str) -> list:
+    """A person logged in or identified from configuration (see _PERSON_KEY_RX)."""
+    issues = []
+    if _PERSON_LOGIN_RX.search(code):
+        issues.append(f"{norm}: logs in as a person set up in configuration (ownerSession): create the "
+                      "person instead -- enrollActor / addMember / setMemberRole, ids from the "
+                      "responses (skill section 2, B2B_FLOWS.md)")
+    keys = sorted({m.group(0).strip('"') for m in _PERSON_KEY_RX.finditer(code)}) \
+        if '"jira.' in code else []
+    keys += sorted({f"column {m.group(1)}" for m in _PERSON_COLUMN_RX.finditer(code)})
+    if keys:
+        issues.append(f"{norm}: reads a person from configuration ({', '.join(keys[:4])}): nobody sets "
+                      "these keys, so the test skips -- create the person (enrollActor, addMember, "
+                      "setMemberRole) and take its ids from the responses (B2B_FLOWS.md)")
+    return issues
+
+
+def _template_fixed_value_issues(root: str, norm: str, text: str) -> list:
+    """A request body with a fixed password or username: an enrolment must
+    send the generated #enroll_password# / #enroll_username#, which
+    enrollActor then logs in with (a converted body has a fixed password)."""
+    issues = []
+    for tpl in sorted(set(_MANUAL_BODY_TEMPLATE_RX.findall(text or ""))):
+        body = _read(os.path.join(root, "src", "test", "resources", tpl.replace("/", os.sep)), 200_000)
+        for field, value in _BODY_FIXED_RX.findall(body):
+            v = value.strip()
+            if v and not (v.startswith(("#", "${", "<<")) and v.endswith(("#", "}", ">>"))) \
+                    and not _FAKE_SECRET_RX.match(v):
+                issues.append(f"{tpl}: \"{field}\" is a fixed value -- use \"#enroll_{field}#\" "
+                              "(generated per guest by enrollActor, which logs in with it)")
+    return issues
+
+
+def _csv_cell_count_issues(rel: str, sheet: str) -> list:
+    """Every row has as many cells as the header (quotes respected). Seen
+    live: a row of 14 cells under a header of 13 -- the data provider
+    dropped the extra cell and warned, and nothing failed."""
+    import csv as _csv
+    reader = _csv.reader(io.StringIO(sheet.lstrip("\ufeff")), delimiter=",")
+    width, bad = None, []
+    try:
+        for cells in reader:
+            if not any(c.strip() for c in cells):
+                continue
+            if width is None:
+                width = len(cells)
+            elif len(cells) > width:          # a short row is padded; a long one loses cells
+                bad.append((reader.line_num, len(cells)))
+    except _csv.Error:
+        return [f"{rel}: the sheet cannot be read as CSV"]
+    if not bad:
+        return []
+    return [f"{rel}: line {bad[0][0]} has {bad[0][1]} cells, the header {width}"
+            + (f" (and {len(bad) - 1} more line(s))" if len(bad) > 1 else "")
+            + " -- the data provider drops the extra cells; one cell per header column"]
 
 
 _TEST_ANNOTATION_RX = re.compile(r"@(?:org\.testng\.annotations\.)?Test\b(\s*\(([^()]|\([^()]*\))*\))?")
@@ -122,7 +201,7 @@ def _jira_shape_issues(root: str, norm: str, text: str, cls: str) -> list:
                       "and a missing #column# is sent as \"null\"; use ManualBody.render(template, row, ctx)")
     for key in _CONFIG_LITERAL_RX.findall(text):
         if not key.startswith("jira."):
-            issues.append(f"{norm}: config key \"{key}\" is not jira.<story>.<role>.<field>; a story's "
+            issues.append(f"{norm}: config key \"{key}\" is not jira.<story>.<object>.<field>; a story's "
                           "values live under jira.* in program_configuration.json")
     for email in sorted(set(_EMAIL_RX.findall(text))):
         if not _SAFE_EMAIL_RX.search(email):
@@ -145,6 +224,7 @@ def _jira_shape_issues(root: str, norm: str, text: str, cls: str) -> list:
             rows = [r for r in sheet.splitlines() if r.strip()]
             if not rows:
                 continue
+            issues.extend(_csv_cell_count_issues(rel, sheet))
             delim = ";" if rows[0].count(";") > rows[0].count(",") else ","
             head = [h.strip().lower() for h in rows[0].split(delim)]
             for email in sorted(set(_EMAIL_RX.findall(sheet))):
@@ -174,15 +254,19 @@ def _jira_shape_issues(root: str, norm: str, text: str, cls: str) -> list:
 _SHARED_HELPERS = (
     (r"fetch\w*Token|(?:get|guest\w*|owner\w*|member\w*|application\w*|client\w*|coordinator\w*)AccessToken"
      r"|\w*TokenUrl|memberPathAuth|\w*(?:Coordinator|Owner|Member|Guest|Persona)Auth",
-     "a token: ownerSession(row, prefix) / guestSession(user, password) / clientToken()"),
-    (r"guestIdFrom\w*", "the guest id of a token: ownerSession(...).requireGuestId()"),
+     "a token: serviceToken() / clientToken() / an enrolled actor's accessToken"),
+    (r"guestIdFrom\w*", "a guest id: enrollActor(...).guestId, from the enrol response"),
+    (r"serviceToken\w*|enrollActor|createAccountFor|ownerMemberId|inviteKey|addMember|activateMember"
+     r"|activateAccount|setMemberRole|confirmOwnerValidation|requireDb",
+     "the people a test needs: enrollActor / createAccountFor / addMember / activateMember / "
+     "setMemberRole / confirmOwnerValidation (B2B_FLOWS.md)"),
     (r"optionalRowOrConfig\w*|rowOrConfig\w*|configValueOrAlternate|truthyRowOrConfig",
      "a value from the row or the configuration: rowOrConfig / optionalRowOrConfig "
      "(each with a fallbackKey form) / truthyRowOrConfig"),
     (r"apiHeaders|clientCredentialsHeaders|(?:api|auth|bearer|default|build)\w*Headers",
      "API headers: apiHeaders(token)"),
     (r"fillEnrollFields|enroll(?:Guest|Owner|Member|NewGuest)?|allowedDomain\w*",
-     "a guest: enrollGuest(row, template, CASE) / fillEnrollFields(row)"),
+     "a guest: enrollActor(row, template, CASE)"),
     (r"call|step", "an Allure step around a call: step(name, () -> ...)"),
 )
 # A method declaration: modifiers (any, or none), a return type, a name, "(".
@@ -242,7 +326,7 @@ def _shared_helper_issues(norm: str, text: str) -> list:
                 break
     if not _TOKEN_UNDER_TEST_RX.search(text) and _RAW_TOKEN_RX.search(code):
         issues.append(f"{norm}: requests or decodes a token itself; use StoryTestBase's "
-                      "ownerSession / guestSession / clientToken (the guest id comes with the token). "
+                      "serviceToken() / clientToken(), or an enrolled actor's accessToken. "
                       "A story about the token end point itself says so in a comment: "
                       "// workbench: token end point under test")
     return issues
@@ -274,6 +358,18 @@ def _new_shared_helper_issues(root: str, norm: str, text: str) -> list:
                 "migrate it to StoryTestBase when it is next reworked)" for i in added]
 
 
+def _new_person_issues(root: str, norm: str, code: str) -> list:
+    """The person issues of a touched test that this change adds: a test
+    from before (its committed version already read a person from
+    configuration) is not failed for touching one line of it."""
+    now = _jira_person_issues(norm, code)
+    base = _head_text(root, norm)
+    if not base:
+        return now
+    had = set(_jira_person_issues(norm, _strip_comments(base)))
+    return [i for i in now if i not in had]
+
+
 def jira_parity_issues(root: str, rel_paths: list) -> list:
     """Converter-parity checks on touched jira tests (DATA_INVENTORY, enroll extract, CSV)."""
     issues = []
@@ -297,8 +393,10 @@ def jira_parity_issues(root: str, rel_paths: list) -> list:
                 or "ApiRoutes.GUEST_ENROLL" in code) and "enrollGuest(" not in code:
             if "safeJsonExtract" not in code or "guestId" not in code:
                 issues.append(f"{norm}: enroll setup must EXTRACT guestId from the enroll response "
-                              "-- use StoryTestBase's enrollGuest(row, template, CASE), which does")
+                              "-- use StoryTestBase's enrollActor(row, template, CASE), which does")
         issues.extend(_jira_spend_detail_guest_id_issues(norm, text))
+        issues.extend(_new_person_issues(root, norm, code))
+        issues.extend(_template_fixed_value_issues(root, norm, text))
         issues.extend(_new_shared_helper_issues(root, norm, text))
         cls = os.path.basename(norm)[:-5]
         issues.extend(_jira_shape_issues(root, norm, text, cls))

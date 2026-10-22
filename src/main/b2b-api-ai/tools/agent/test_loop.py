@@ -693,11 +693,11 @@ class TheReviewDecidesWhatIsWritten(Repo):
         with redirect_stdout(io.StringIO()):
             self.assertEqual(self.generate(self.agent_that_writes(seen)), 0)
         self.assertIn("THIS JOB HAS NO JIRA STORY KEY", seen["p"])
-        self.assertIn("jira.job1.<role>.<field>", seen["p"])
+        self.assertIn("jira.job1.<object>.<field>", seen["p"])
         self.assertEqual(loop.cmd_discard(self.job, self.root, self.policy), 0)
         write(self.root, ".workbench/job1/intake.json", json.dumps({"story": {"key": "ABC-77"}}))
         self.assertIn("THE STORY'S KEY is ABC-77", loop.story_key_block(self.job, {"name": "new-test"}))
-        self.assertIn("jira.abc-77.<role>.<field>", loop.story_key_block(self.job, {"name": "new-test"}))
+        self.assertIn("jira.abc-77.<object>.<field>", loop.story_key_block(self.job, {"name": "new-test"}))
         self.assertEqual(loop.story_key_block(self.job, {"name": "converter"}), "")
 
     def test_ask_with_no_change_waiting_starts_one(self):
@@ -1132,6 +1132,103 @@ class JiraParity(unittest.TestCase):
         self.root = tempfile.mkdtemp(prefix="jirapar_")
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
 
+    # Seen live: a story test skipped with "no value for 'username': set
+    # jira.<story>.travel_coordinator.username" -- the skill taught logging in
+    # as a person nobody had set up. The converted B2B suites create them.
+    PERSONA = ('/** DATA_INVENTORY */\n'
+               'public class TcTest extends StoryTestBase {\n'
+               '  @Test(groups = {"jira"}) public void go(Map<String, String> row) {\n'
+               '    String u = rowOrConfig(row, "username", "jira.b2b-1.travel_coordinator.username");\n'
+               '    JsonTokens.Session s = ownerSession(row, "jira.b2b-1.travel_coordinator"); }\n}\n')
+
+    def test_a_person_read_from_configuration_fails_and_says_create_it(self):
+        rel = "src/test/java/com/hi/api/tests/jira/TcTest.java"
+        write(self.root, rel, self.PERSONA, raw=True)
+        said = " | ".join(loop.jira_parity_issues(self.root, [rel]))
+        self.assertIn("jira.b2b-1.travel_coordinator.username", said)
+        self.assertIn("ownerSession", said)
+        self.assertIn("enrollActor", said)
+
+    def test_a_test_that_already_read_a_person_is_not_failed_for_it_when_touched(self):
+        rel = "src/test/java/com/hi/api/tests/jira/TcTest.java"
+        write(self.root, rel, self.PERSONA, raw=True)
+        for args in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"],
+                     ["add", "-A"], ["commit", "-q", "-m", "old"]):
+            loop.git(self.root, *args)
+        write(self.root, rel, self.PERSONA.replace("public void go", "public void goAgain"), raw=True)
+        said = " | ".join(loop.jira_parity_issues(self.root, [rel]))
+        self.assertNotIn("from configuration", said)
+
+    def test_a_fixed_password_in_a_body_fails(self):
+        rel = "src/test/java/com/hi/api/tests/jira/EnrolTest.java"
+        write(self.root, rel, '/** DATA_INVENTORY */\npublic class EnrolTest extends StoryTestBase {\n'
+                              '  String t = "templates/manual/j_enroll.json"; }\n', raw=True)
+        write(self.root, "src/test/resources/templates/manual/j_enroll.json",
+              '{"username": "#enroll_username#", "password": "Fixed#123"}')
+        said = " | ".join(loop.jira_parity_issues(self.root, [rel]))
+        self.assertIn('"password" is a fixed value', said)
+        self.assertNotIn('"username" is a fixed value', said)
+
+    def test_a_csv_row_with_a_cell_too_many_fails(self):
+        rel = "src/test/java/com/hi/api/tests/jira/RowTest.java"
+        write(self.root, rel, '/** DATA_INVENTORY */\npublic class RowTest extends StoryTestBase {}\n', raw=True)
+        write(self.root, "src/test/resources/csv/manual/RowTest/go.csv",
+              'description,test_case_id,jira_issue\n"a, quoted",TC-1,B2B-1\nb,TC-2,B2B-1,extra\n')
+        said = " | ".join(loop.jira_parity_issues(self.root, [rel]))
+        self.assertIn("line 3 has 4 cells, the header 3", said)
+        self.assertNotIn("line 2 ", said, "a quoted comma is one cell")
+
+    def test_a_short_csv_row_is_fine_the_provider_pads_it(self):
+        rel = "src/test/java/com/hi/api/tests/jira/ShortTest.java"
+        write(self.root, rel, '/** DATA_INVENTORY */\npublic class ShortTest extends StoryTestBase {}\n', raw=True)
+        write(self.root, "src/test/resources/csv/manual/ShortTest/go.csv",
+              '\ufeffdescription,test_case_id,jira_issue,prop_code\r\nb,TC-2,B2B-1\r\n')
+        self.assertFalse([i for i in loop.jira_parity_issues(self.root, [rel]) if "cells" in i])
+
+    def test_a_person_key_built_by_concatenation_fails(self):
+        # As the committed H4bMemberStaysTest does it.
+        rel = "src/test/java/com/hi/api/tests/jira/ConcatTest.java"
+        write(self.root, rel, '/** DATA_INVENTORY */\npublic class ConcatTest extends StoryTestBase {\n'
+                              '  static final String JOB = "job-1";\n'
+                              '  @Test(groups = {"jira"}) public void go(Map<String, String> row) {\n'
+                              '    String u = Config.get("jira." + JOB + ".travel-coordinator.username");\n'
+                              '    String a = rowOrConfig(row, "account_id", "jira." + JOB + ".acct"); }\n}\n', raw=True)
+        said = " | ".join(loop.jira_parity_issues(self.root, [rel]))
+        self.assertIn(".travel-coordinator.username", said)
+        self.assertIn("column account_id", said)
+
+    def test_a_deliberately_wrong_password_in_a_negative_body_is_not_a_credential(self):
+        rel = "src/test/java/com/hi/api/tests/jira/NegTest.java"
+        write(self.root, rel, '/** DATA_INVENTORY */\npublic class NegTest extends StoryTestBase {\n'
+                              '  String t = "templates/manual/j_bad_login.json"; }\n', raw=True)
+        write(self.root, "src/test/resources/templates/manual/j_bad_login.json",
+              '{"username": "#enroll_username#", "password": "invalid-password"}')
+        self.assertFalse([i for i in loop.jira_parity_issues(self.root, [rel]) if "fixed value" in i])
+
+    def test_its_own_copy_of_an_actor_helper_fails(self):
+        rel = "src/test/java/com/hi/api/tests/jira/CopyTest.java"
+        write(self.root, rel, '/** DATA_INVENTORY */\npublic class CopyTest extends StoryTestBase {\n'
+                              '  @Test(groups = {"jira"}) public void go() {}\n'
+                              '  private String addMember(String g) { return g; }\n}\n', raw=True)
+        said = " | ".join(loop.jira_parity_issues(self.root, [rel]))
+        self.assertIn("defines its own addMember", said)
+
+    def test_the_generated_enrolment_columns_are_known_to_the_template_check(self):
+        rel = "src/test/java/com/hi/api/tests/jira/ActorTest.java"
+        write(self.root, rel, '/** DATA_INVENTORY */\npublic class ActorTest extends StoryTestBase {\n'
+                              '  void go(Map<String, String> row) throws Exception {\n'
+                              '    enrollActor(row, "templates/manual/j_enroll.json", "TC-1");\n'
+                              '    ManualBody.render("templates/manual/j_enroll.json", row, null); } }\n', raw=True)
+        write(self.root, "src/test/resources/templates/manual/j_enroll.json",
+              '{"username": "#enroll_username#", "password": "#enroll_password#", '
+              '"email": "#owner_company_email#", "d": "#account_email_domain#"}')
+        self.assertEqual([i for i in loop.jira_parity_issues(self.root, [rel]) if "#" in i], [])
+
+    def test_the_committed_b2b_bodies_pass_the_fixed_value_check(self):
+        for name in ("b2b_enroll_guest.json", "b2b_create_program_account.json"):
+            text = 'String t = "templates/manual/%s";' % name
+            self.assertEqual(loop.storytests._template_fixed_value_issues(loop.ROOT, "X.java", text), [], name)
+
     def test_jira_parity_flags_missing_data_inventory(self):
         rel = "src/test/java/com/hi/api/tests/jira/SampleTest.java"
         write(self.root, rel, "package com.hi.api.tests.jira;\npublic class SampleTest {}\n", raw=True)
@@ -1162,7 +1259,7 @@ class JiraParity(unittest.TestCase):
               "  String memberSpendDetailUrl() { return \"/spendDetail\"; }\n"
               "}\n")
         issues = loop.jira_parity_issues(self.root, [rel])
-        self.assertTrue(any("spendDetail" in i and "token EXTRACT" in i for i in issues))
+        self.assertTrue(any("spendDetail" in i and "enrollActor" in i for i in issues))
 
     def test_jira_parity_template_hash_placeholder_needs_csv_column(self):
         rel = "src/test/java/com/hi/api/tests/jira/TplTest.java"
@@ -1215,16 +1312,16 @@ class JiraParity(unittest.TestCase):
     def test_jira_parity_shape_checks_accept_the_house_style(self):
         rel = "src/test/java/com/hi/api/tests/jira/HouseTest.java"
         write(self.root, "src/test/resources/csv/manual/HouseTest/go.csv",
-              "description,test_case_id,jira_issue,jira_xray_id,password,email,token\n"
-              "x,TC-1,B2B-1,B2B-2,,someone@example.com,\n"
-              "no access,TC-2,B2B-1,B2B-2,,,invalid-token-for-401\n")
+              "description,test_case_id,jira_issue,jira_xray_id,password,email,token,prop_code\n"
+              "x,TC-1,B2B-1,B2B-2,,someone@example.com,,\n"
+              "no access,TC-2,B2B-1,B2B-2,,,invalid-token-for-401,\n")
         write(self.root, rel,
               "/** DATA_INVENTORY */\n"
               "class HouseTest extends StoryTestBase {\n"
               "  @org.testng.annotations.Test(groups = {\"jira\", \"regression\"}, retryAnalyzer = RetryAnalyzer.class,\n"
               "        dataProvider = \"x\")\n"
               "  public void go(Map<String, String> row) {\n"
-              "    String u = rowOrConfig(row, \"username\", \"jira.b2b-1.owner.username\");\n"
+              "    String p = rowOrConfig(row, \"prop_code\", \"jira.b2b-1.property.prop_code\");\n"
               "    softAssert.assertEquals(1, 1);\n"
               "  }\n}\n")
         self.assertEqual(loop.jira_parity_issues(self.root, [rel]), [])
@@ -1517,7 +1614,7 @@ class SharedHelperGate(unittest.TestCase):
     def test_a_test_on_storytestbase_with_its_own_assertion_helpers_passes(self):
         text = ('public class T extends StoryTestBase {\n'
                 '  @Test(groups = {"jira"}) public void a(Map<String, String> row) {\n'
-                '    JsonTokens.Session s = ownerSession(row, "jira.abc-1.owner"); }\n'
+                '    Actor a = enrollActor(row, "templates/manual/b2b_enroll_guest.json", "TC-001"); }\n'
                 '  private void assertResponseHeaders(Response r) {}\n'
                 '  private boolean enrollmentStatusIsActive(Response r) { return true; }\n'
                 '}\n')
