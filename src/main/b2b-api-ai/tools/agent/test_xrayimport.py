@@ -41,6 +41,7 @@ def link(key, summary, kind="Test", ltype=LINK, side="inwardIssue"):
 class Jira:
     def __init__(self, links, steps):
         self.links, self.steps, self.calls = links, steps, []
+        self.kind = "Story"                     # the issue type of the key given
 
     def __call__(self, method, url, token, timeout, body=None):
         self.calls.append((method, url))
@@ -51,7 +52,9 @@ class Jira:
             return [{"index": n, "step": {"raw": a}, "data": {"raw": d}, "result": {"raw": e}}
                     for n, (a, d, e) in enumerate(self.steps[key], 1)]
         if "/issue/ABC-1?fields=summary,issuelinks" in url:
-            return {"key": "ABC-1", "fields": {"summary": "the story", "issuelinks": self.links}}
+            return {"key": "ABC-1", "fields": {"summary": "the story", "issuelinks": self.links,
+                                               "issuetype": {"name": self.kind},
+                                               "status": {"name": "Open"}}}
         raise AssertionError(f"unexpected {method} {url}")
 
 
@@ -226,6 +229,42 @@ class WhatIsRefused(Base):
         r = xi.run("j1", self.root, conn=dict(CONN), transport=self.jira,
                    cfg={"publish": {"test_link_type": "Verifies"}})
         self.assertEqual(r["keys"], ["ABC-21"])
+
+
+class AKeyThatIsATest(Base):
+    """Seen live: a job read from a Test issue's key was refused with "has
+    no issue linked as a test" -- a Test is not tested by anything, it IS
+    the test."""
+
+    def test_its_own_steps_are_the_one_case(self):
+        self.jira.kind = "Test"
+        self.jira.links = []
+        self.jira.steps["ABC-1"] = [("GET /members/{memberId}/stays", "a member", "200")]
+        r = self.run_it()
+        self.assertEqual((r["ok"], r["count"], r["keys"]), (True, 1, ["ABC-1"]))
+        d = json.loads(self.read("design.json"))
+        self.assertEqual((d["test_cases"][0]["xray_key"], d["test_cases"][0]["title"]), ("ABC-1", "the story"))
+        self.assertIn("Xray test ABC-1 itself", d["summary"])
+        self.assertEqual(xi.xt.keys_for(self.job, "design", False), {"TC-001": "ABC-1"})
+
+    def test_a_test_with_no_steps_is_refused_and_says_so(self):
+        self.jira.kind = "Test"
+        self.jira.links = []
+        self.jira.steps["ABC-1"] = []
+        with self.assertRaises(xi.Refused) as got:
+            self.run_it()
+        self.assertIn("is a Test, but it has no steps", str(got.exception))
+
+    def test_a_story_still_takes_its_linked_tests(self):
+        self.assertEqual(self.run_it()["keys"], ["ABC-11", "ABC-16"])
+
+    def test_the_test_type_name_follows_the_configuration(self):
+        self.jira.kind = "Xray Test"
+        self.jira.links = []
+        self.jira.steps["ABC-1"] = [("GET /x", "", "200")]
+        r = xi.run("j1", self.root, conn=dict(CONN), transport=self.jira,
+                   cfg={"publish": {"test_issue_type": "Xray Test"}})
+        self.assertEqual(r["keys"], ["ABC-1"])
 
 
 class TheStandIn(unittest.TestCase):

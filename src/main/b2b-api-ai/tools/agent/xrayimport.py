@@ -116,6 +116,19 @@ def story_of(job_dir: str) -> str:
 linked_tests = xt.linked_tests
 
 
+def test_itself(issue, key: str, test_type: str):
+    """{key, summary, status} when the issue given as the story is itself of
+    the test issue type (jira_config.publish.test_issue_type, "Test" by
+    default); else None."""
+    fields = issue.get("fields") if isinstance(issue, dict) and isinstance(issue.get("fields"), dict) else {}
+    itype = fields.get("issuetype") if isinstance(fields.get("issuetype"), dict) else {}
+    if not itype.get("name") or str(itype["name"]).strip().lower() != str(test_type or "").strip().lower():
+        return None
+    status = fields.get("status") if isinstance(fields.get("status"), dict) else {}
+    return {"key": key, "summary": _one(fields.get("summary"), 300) or key,
+            "status": _one(status.get("name"), 60)}
+
+
 def design_md(design: dict) -> str:
     L = [f"# Cases from the Xray tests of {design['service']}", "",
          design["summary"], ""]
@@ -152,10 +165,19 @@ def run(job: str, root: str = "", story: str = "", conn=None, transport=None, cf
     except (xt.Refused, search.Refused):
         opts = {"link_type": xt.DEFAULT_LINK, "issue_type": xt.DEFAULT_TYPE}
     diag.step(f"Asking Jira for the tests linked to {story} ({opts['link_type']})")
-    issue = search._call(conn, "GET", f"/issue/{story}?fields=summary,issuelinks", None, transport)
+    issue = search._call(conn, "GET", f"/issue/{story}?fields=summary,issuelinks,issuetype,status",
+                         None, transport)
     other_way = []
-    tests = linked_tests(issue if isinstance(issue, dict) else {}, opts["link_type"], opts["issue_type"],
-                         other_way)
+    itself = test_itself(issue, story, opts["issue_type"])
+    if itself:
+        # The key given is a Test issue, not a story: it has no tests linked
+        # to it ("is tested by"), it IS one. Seen live: a job read from a
+        # Test's key was refused with "has no issue linked as a test".
+        diag.step(f"{story} is itself a {opts['issue_type']}: its own steps are the case")
+        tests = [itself]
+    else:
+        tests = linked_tests(issue if isinstance(issue, dict) else {}, opts["link_type"],
+                             opts["issue_type"], other_way)
     if not tests and other_way:
         raise Refused(f"every test linked to {story} is linked the other way round: "
                       + ", ".join(o["key"] for o in other_way[:8])
@@ -212,14 +234,19 @@ def run(job: str, root: str = "", story: str = "", conn=None, transport=None, cf
             # Only ever True: a test from Xray is automated even when its
             # endpoint is not in the specification -- that is said, below.
             cases[-1]["endpoint_in_spec"] = True
+    if not cases and itself:
+        raise Refused(f"{story} is a {opts['issue_type']}, but it has no steps to automate: "
+                      + "; ".join(f"{n['why']}" for n in not_used[:2]))
     if not cases:
         raise Refused(f"none of the {len(tests)} test(s) linked to {story} has steps to automate: "
                       + "; ".join(f"{n['key']} ({n['why']})" for n in not_used[:8]))
     number_cases(job_dir, cases)
     design = {"kind": "design", "source": "xray", "mock": mocked, "at": _now(), "job": job,
               "service": story, "brief": loop.brief_fingerprint(job_dir),
-              "summary": (f"{len(cases)} case(s) taken from the Xray tests linked to {story}, as "
-                          f"written in Xray" + (f"; {len(not_used)} not used" if not_used else "") + "."),
+              "summary": ((f"1 case taken from the Xray test {story} itself, as written in Xray"
+                           if itself else
+                           f"{len(cases)} case(s) taken from the Xray tests linked to {story}, as "
+                           f"written in Xray") + (f"; {len(not_used)} not used" if not_used else "") + "."),
               "test_cases": cases, "open_questions": [],
               "warnings": ([f"{len(off_spec)} test(s) name an endpoint the specification does not have: "
                             + "; ".join(off_spec[:8])] if off_spec else []),
