@@ -22,6 +22,7 @@ import contextlib
 import io
 import json
 import os
+import sys
 import threading
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -41,7 +42,15 @@ PROJECT_FILES = {
 }
 
 
-_LOCAL = threading.local()
+# ONE per process, shared by every copy of this module: the workbench loads
+# it under several names (intake's agent_projectconfig, search's and
+# settings' plain `projectconfig`, ...). A per-copy thread-local made a
+# using("goal") block seen by intake and NOT by the Jira client -- the GOAL
+# Check on the Settings tab checked B2B's token.
+_LOCAL = getattr(sys, "_workbench_project_local", None)
+if _LOCAL is None:
+    _LOCAL = threading.local()
+    sys._workbench_project_local = _LOCAL
 
 
 def active_project() -> str:

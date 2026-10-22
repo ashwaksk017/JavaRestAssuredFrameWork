@@ -37,6 +37,12 @@ public abstract class GoalStoryTestBase extends StoryTestBase {
 
     private static final Logger LOG = LoggerFactory.getLogger(GoalStoryTestBase.class);
 
+    /** GOAL's configuration (-Dconfig.project=goal); under B2B's, these tests skip. */
+    @Override
+    protected String testProject() {
+        return "goal";
+    }
+
     /** The service nearly every converted GOAL call goes to. */
     protected static final String GOAL_SERVICE = "hospitality_internal_all_v2";
 
@@ -150,9 +156,25 @@ public abstract class GoalStoryTestBase extends StoryTestBase {
         String key = LocalDate.now() + "|" + props + "|" + offsets + "|" + min + "|" + peak;
         Object[] kept = FOUND.get(key);
         if (kept != null && System.currentTimeMillis() - (Long) kept[1] < FOUND_TTL_MS) {
-            Availability av = (Availability) kept[0];
-            LOG.info("SETUP {} availability (found earlier this run): {} {}", tag, av.propCode, av.arrivalDate);
-            return av;
+            // The property and dates are reused; the quote is NOT: a groupId
+            // an earlier test created a group with, an expiry that has run,
+            // an inventory the earlier group took. Shop once more for those.
+            Availability was = (Availability) kept[0];
+            Response res = shopAt(was.propCode, was.arrivalDate, was.departureDate, peak, token);
+            List<Object> inv = listAt(res, "roomRates.inventory");
+            List<Object> codes = listAt(res, "roomRates.roomTypeCode");
+            for (int i = 0; i < Math.min(6, inv.size()); i++) {
+                int v = intOr(String.valueOf(inv.get(i)), -1);
+                String code = i < codes.size() ? String.valueOf(codes.get(i)) : "";
+                if (v > min && code.equals(was.roomTypeCode)) {
+                    LOG.info("SETUP {} availability (property found earlier this run, quote fresh): {} {}",
+                            tag, was.propCode, was.arrivalDate);
+                    return new Availability(was.propCode, was.arrivalDate, was.departureDate,
+                            RestUtilities.safeJsonExtract(res, "groupId"), code,
+                            RestUtilities.safeJsonExtract(res, "cacheExpiryTime"), v);
+                }
+            }
+            FOUND.remove(key);                              // no longer qualifies: search again
         }
         List<String> tried = new ArrayList<>();
         for (String p : props) {                           // property first, as the converted search

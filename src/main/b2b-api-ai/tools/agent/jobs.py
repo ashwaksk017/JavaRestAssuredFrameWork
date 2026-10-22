@@ -492,6 +492,14 @@ EXCLUSIVE = {"convert", "convert-fix", "agent-generate", "agent-followup", "agen
              # Writes a committed file and reads _audit/: never beside a run or a convert.
              "flow-catalog"}
 
+def suite_project(suite_rel: str) -> str:
+    """The project of a converted suite file (Suites/<Suite>_*.xml): GOAL when
+    its name starts with one of GOAL's suites (flowcatalog.GOAL_SUITES), else B2B."""
+    name = os.path.basename(str(suite_rel or "")).lower().replace("-", "").replace(" ", "")
+    goal = _tool("flowcatalog").GOAL_SUITES
+    return "goal" if any(name.startswith(g) for g in goal) else "b2b"
+
+
 # Commands that are not a story's step: no project is passed to them.
 NO_PROJECT_RUNNABLES = {"convert", "convert-fix", "verify-all", "flow-catalog"}
 
@@ -1229,6 +1237,9 @@ MIGRATION_SCOPES = ("converted", "converter")
 
 
 PROJECT_LABELS = {"b2b": "B2B", "goal": "GOAL"}
+# What a job that has done something holds (a story read, a design, a change).
+JOB_WORK_FILES = ("intake.json", "brief.md", "plan.md", "design.json", "review.json",
+                  "xray-tests.json", "execution.json")
 
 
 def project_info(job: str) -> dict:
@@ -1242,6 +1253,10 @@ def project_info(job: str) -> dict:
             # Chosen for this job (project.json), or only the default: a new
             # job takes the project the page has selected.
             "chosen": os.path.isfile(os.path.join(out, intake.PROJECT_FILE)),
+            # Nothing done in it yet: only such a job takes the page's
+            # project. A job made before projects has no project.json either,
+            # and IS B2B -- opening it must not turn it into GOAL.
+            "new": not any(os.path.exists(os.path.join(out, n)) for n in JOB_WORK_FILES),
             "projects": [{"name": p, "label": PROJECT_LABELS.get(p, p.upper()),
                           "config": rel, "config_exists": os.path.isfile(pc.config_path(ROOT, p)),
                           "run_env": loop.run_env_for(ROOT, policy, p)}
@@ -1811,6 +1826,11 @@ def start(job: str, runnable: str, options: dict) -> dict:
         # run's -Dconfig.project. Always set: a value left in the server's
         # own environment must not decide another job's project.
         env = dict(os.environ, WORKBENCH_PROJECT=intake.job_project(job_dir(job)))
+        suite = str((options or {}).get("--suite") or "").replace("\\", "/")
+        if runnable == "mvn-test" and suite.startswith("Suites/") and not suite.startswith("Suites/jira/"):
+            # A converted suite's file names its suite: GOAL's suites run with
+            # GOAL's configuration, B2B's with B2B's -- whichever job is open.
+            env["WORKBENCH_PROJECT"] = suite_project(suite)
         if runnable in NO_PROJECT_RUNNABLES:
             # Not a story's step: the converter, the gate (its tests build
             # their own configuration), the catalog. The open job's project

@@ -4403,7 +4403,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             clog.write(f"verify {'ok  ' if step['rc'] == 0 else 'FAIL'} {step['name']}")
         if scope_name == "new-test" and result["ok"]:
             parity_issues = jira_parity_issues(
-                root, changes["created"] + changes["modified"])
+                root, changes["created"] + changes["modified"], intake.projectconfig.active_project())
             if parity_issues:
                 gap = "\n".join(f"  - {i}" for i in parity_issues[:20])
                 say(f"FAIL jira test parity ({len(parity_issues)} issue(s)) — "

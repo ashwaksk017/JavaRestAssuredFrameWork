@@ -393,8 +393,25 @@ def _new_person_issues(root: str, norm: str, code: str) -> list:
     return [i for i in now if i not in had]
 
 
-def jira_parity_issues(root: str, rel_paths: list) -> list:
-    """Converter-parity checks on touched jira tests (DATA_INVENTORY, enroll extract, CSV)."""
+def _project_base_issues(norm: str, code: str, project: str) -> list:
+    """A GOAL job's test extends GoalStoryTestBase; a B2B job's does not --
+    each skips under the other project's configuration, so the wrong base
+    is a test that never runs."""
+    if not project or not _EXTENDS_BASE_RX.search(code):
+        return []
+    goal = bool(_GOAL_TEST_RX.search(code))
+    if project == "goal" and not goal:
+        return [f"{norm}: this is a GOAL job: the test extends GoalStoryTestBase (GOAL_FLOWS.md), "
+                "not StoryTestBase -- a B2B test skips under GOAL's configuration"]
+    if project != "goal" and goal:
+        return [f"{norm}: this is a {project.upper()} job: the test extends StoryTestBase, not "
+                "GoalStoryTestBase -- a GOAL test skips under this project's configuration"]
+    return []
+
+
+def jira_parity_issues(root: str, rel_paths: list, project: str = "") -> list:
+    """Converter-parity checks on touched jira tests (DATA_INVENTORY, enroll extract, CSV).
+    `project`: the job's (b2b, goal) -- its tests' base class must be that project's."""
     issues = []
     for rel in sorted(set(rel_paths or [])):
         norm = rel.replace("\\", "/")
@@ -420,6 +437,7 @@ def jira_parity_issues(root: str, rel_paths: list) -> list:
         issues.extend(_jira_spend_detail_guest_id_issues(norm, text))
         issues.extend(_new_person_issues(root, norm, code))
         issues.extend(_goal_issues(norm, code))
+        issues.extend(_project_base_issues(norm, code, project))
         issues.extend(_template_fixed_value_issues(root, norm, text))
         issues.extend(_new_shared_helper_issues(root, norm, text))
         cls = os.path.basename(norm)[:-5]

@@ -64,6 +64,12 @@ def story_of(job_dir: str) -> str:
     return key if _KEY_RX.match(key) else ""
 
 
+def _project_of(job_dir: str) -> str:
+    """A job's project (project.json), b2b when it has none -- as intake.job_project."""
+    p = _json(os.path.join(job_dir, "project.json")).get("project")
+    return str(p or "b2b").strip().lower()
+
+
 def _steps(case: dict) -> list:
     return [{"action": str(s.get("action") or ""), "data": str(s.get("data") or ""),
              "expected": str(s.get("expected") or "")}
@@ -89,8 +95,8 @@ def earlier(job_dir: str, story: str = "", mocked: bool = False) -> list:
         other = os.path.join(base, name)
         if os.path.abspath(other) == here or not os.path.isdir(other):
             continue
-        if story_of(other) != story:
-            continue
+        if story_of(other) != story or _project_of(other) != _project_of(here):
+            continue                                       # another story, or the other project's Jira
         kept = _json(os.path.join(other, KEYS)).get("tests")
         if not isinstance(kept, dict):
             continue

@@ -74,6 +74,19 @@ class WhichFile(Base):
         self.assertNotIn("WORKBENCH_PROJECT", os.environ)
         self.assertEqual(PC.active_project(), "b2b")
 
+    def test_every_copy_of_the_module_sees_a_using_block(self):
+        # Seen in review: intake's copy and the Jira client's copy each had
+        # their own thread-local; the GOAL Check checked B2B's token.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "projects_second_copy", os.path.join(os.path.dirname(HERE), "jira", "projectconfig.py"))
+        other = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(other)
+        with PC.using("goal"):
+            self.assertEqual(other.active_project(), "goal")
+            self.assertEqual(jobs.intake.jira_search.projectconfig.active_project(), "goal")
+        self.assertEqual(other.active_project(), "b2b")
+
     def test_using_is_this_threads_only(self):
         # The server answers on several threads: one request's project must
         # not become another's.
@@ -117,6 +130,15 @@ class AJobsProject(Base):
 
     def test_a_job_made_before_projects_is_b2b(self):
         self.assertEqual(intake.job_project(self.dir), "b2b")
+
+    def test_only_a_new_job_takes_the_pages_project(self):
+        # Seen in review: opening an old B2B job (no project.json) while GOAL
+        # was selected turned it into a GOAL job.
+        os.makedirs(self.dir, exist_ok=True)
+        self.assertTrue(jobs.project_info("job-1")["new"])
+        write_json(os.path.join(self.dir, "intake.json"), {"story": {"key": "ABC-1"}})
+        info = jobs.project_info("job-1")
+        self.assertEqual((info["chosen"], info["new"]), (False, False), "an old job: stays B2B")
 
     def test_a_job_keeps_its_project(self):
         intake.set_job_project(self.dir, "GOAL")
@@ -210,7 +232,14 @@ class Running(Base):
         why = mvnrun.project_preflight(self.root, "goal", "stg")
         self.assertIn("services.hospitality_internal_all_v2", why)
         write_json(self.goal, {"stg": {"services": {"hospitality_internal_all_v2": "https://goal.example.test"}}})
+        self.assertIn("services.hospitality_partner_v2", mvnrun.project_preflight(self.root, "goal", "stg"),
+                      "where the token is minted must be set too")
+        write_json(self.goal, {"stg": {"services": {"hospitality_internal_all_v2": "https://goal.example.test",
+                                                    "hospitality_partner_v2": "https://partner.example.test"}}})
         self.assertEqual(mvnrun.project_preflight(self.root, "goal", "stg"), "")
+        write_json(self.goal, {"stg": {"goal": {"token_service": "own_token"},
+                                       "services": {"hospitality_internal_all_v2": "https://goal.example.test"}}})
+        self.assertIn("services.own_token", mvnrun.project_preflight(self.root, "goal", "stg"))
 
     def test_goal_without_its_file_or_block_is_refused_and_b2b_is_never_checked(self):
         self.assertIn("absent", mvnrun.project_preflight(self.root, "goal", "stg"))
@@ -288,6 +317,35 @@ class WhatCursorIsShown(Base):
         self.assertIn("B2B_FLOWS.md -----", text)
         self.assertNotIn("GOAL_FLOWS.md -----", text)
         self.assertEqual(shown, ["src/test/java/com/hi/api/tests/examples/StoryTestExample.java"])
+
+
+class ProjectsDoNotMix(Base):
+    def test_a_test_whose_base_is_the_other_projects_fails_the_check(self):
+        st = loop.storytests
+        goal_test = "/** DATA_INVENTORY */ class G extends GoalStoryTestBase {}"
+        b2b_test = "/** DATA_INVENTORY */ class B extends StoryTestBase {}"
+        self.assertIn("GoalStoryTestBase", " ".join(st._project_base_issues("B.java", b2b_test, "goal")))
+        self.assertIn("StoryTestBase", " ".join(st._project_base_issues("G.java", goal_test, "b2b")))
+        self.assertEqual(st._project_base_issues("G.java", goal_test, "goal"), [])
+        self.assertEqual(st._project_base_issues("B.java", b2b_test, "b2b"), [])
+
+    def test_a_converted_suite_runs_with_its_own_projects_configuration(self):
+        self.assertEqual(jobs.suite_project("Suites/Group360CreateSTAGE_Regression.xml"), "goal")
+        self.assertEqual(jobs.suite_project("Suites/smokePROD_Smoke.xml"), "goal")
+        self.assertEqual(jobs.suite_project("Suites/Eadkafkaevents_Regression.xml"), "b2b")
+
+    def test_earlier_job_keys_come_only_from_the_same_project(self):
+        storykeys = loop.storykeys
+        base = os.path.join(self.root, ".workbench")
+        for name, project in (("j-b2b", "b2b"), ("j-goal", "goal"), ("j-here", "goal")):
+            write_json(os.path.join(base, name, "intake.json"), {"story": {"key": "ABC-1"}})
+            write_json(os.path.join(base, name, "project.json"), {"project": project})
+        for name in ("j-b2b", "j-goal"):
+            write_json(os.path.join(base, name, "xray-tests.json"),
+                       {"tests": {"design:TC-001": {"key": "ABC-9" if name == "j-b2b" else "ABC-8",
+                                                   "title": "t", "mock": False}}})
+        jobs_seen = [j["job"] for j in storykeys.earlier(os.path.join(base, "j-here"))]
+        self.assertEqual(jobs_seen, ["j-goal"], "B2B's job is another Jira")
 
 
 class GoalChecks(unittest.TestCase):

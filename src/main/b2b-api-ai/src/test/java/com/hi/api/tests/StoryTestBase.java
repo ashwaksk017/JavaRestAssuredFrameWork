@@ -40,6 +40,34 @@ public abstract class StoryTestBase extends BaseApiTest {
 
     private static final Logger LOG = LoggerFactory.getLogger(StoryTestBase.class);
 
+    // ---- the project a test belongs to ----------------------------------------------
+
+    /**
+     * The project whose configuration this test is written for (b2b;
+     * GoalStoryTestBase answers goal). A story test lives in tests/jira with
+     * the other project's, and a group suite selects by group across the
+     * package -- so a B2B run reaches GOAL tests and the other way round.
+     */
+    protected String testProject() {
+        return "b2b";
+    }
+
+    /**
+     * Skip, saying why, when this run loaded another project's
+     * configuration ({@code -Dconfig.project}): a GOAL test under B2B's
+     * file reaches B2B's gateway (and its Xray), and the other way round.
+     */
+    @org.testng.annotations.BeforeMethod(alwaysRun = true)
+    public void skipUnderAnotherProjectsConfiguration() {
+        String running = Config.projectName();
+        if (!testProject().equals(running)) {
+            throw new SkipException("a " + testProject().toUpperCase(java.util.Locale.ROOT)
+                    + " test, and this run loaded the " + running.toUpperCase(java.util.Locale.ROOT)
+                    + " configuration: run it with -Dconfig.project=" + testProject()
+                    + " (the workbench does, for a job of that project)");
+        }
+    }
+
     // ---- values from the row, else the configuration ---------------------------
 
     /**

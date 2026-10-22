@@ -42,10 +42,6 @@ GOAL_SUITES = frozenset({
     "groupsdatastage", "inventorystage", "mfrstage", "partialgoalregression",
     "pepmeetingdetailsstage", "roomblocksstage", "roomratesstage", "roomingliststage",
     "smokeprod", "topicapistage"})
-# Not \b: a key is often glued to the rest of a name ("B2B-8920_LTA_..."),
-# and is written with an underscore too ("B2B_1044_POST_...").
-# An upper-case project prefix: a status code after a word ("byTA_200") is not a key.
-_KEY_RX = re.compile(r"(?<![A-Za-z0-9])[A-Z][A-Z0-9]{1,9}[-_]\d+")
 _HOST_RX = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://[^/]+")
 TOKEN_PATH = "/realms/applications/token"
 PER_ENDPOINT = 3           # chains shown for one endpoint
@@ -54,10 +50,6 @@ BLOCK_CAP = 6000           # characters of the prompt block
 
 def project_of(suite: str) -> str:
     return "goal" if suite.lower() in GOAL_SUITES else "b2b"
-
-
-def _scrub(name: str) -> str:
-    return _KEY_RX.sub("KEY", str(name or "")).strip()
 
 
 def _call(method: str, endpoint: str) -> str:
@@ -113,9 +105,9 @@ def write(root: str = "") -> dict:
     cats = build(root)
     folder = os.path.join(root, OUT_DIR)
     os.makedirs(folder, exist_ok=True)
-    for name in os.listdir(folder):                 # a project with no chain any more
-        if name.endswith(".json") and name[:-5] not in cats:
-            os.remove(os.path.join(folder, name))
+    # A project with no suite in this _audit/ keeps its file: a subset or a
+    # clean convert has only some suites, and must not empty the other
+    # project's committed catalog. Removing one is a person's decision.
     for project, cat in cats.items():
         with io.open(os.path.join(folder, f"{project}.json"), "w", encoding="utf-8", newline="\n") as fh:
             json.dump({"kind": "flow-catalog", "project": project,

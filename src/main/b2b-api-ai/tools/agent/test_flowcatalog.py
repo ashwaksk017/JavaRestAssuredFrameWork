@@ -58,13 +58,14 @@ class Building(Base):
             "p,B2B-1_x,a,REST,GET,/a,FULL,\n", "p,B2B-2_x,b,REST,GET,/b,FULL,\n"])
         self.assertEqual(fc.write(self.root), {"b2b": 2})
 
-    def test_a_project_with_no_chain_left_loses_its_file(self):
+    def test_a_partial_audit_leaves_the_other_projects_catalog(self):
+        # A subset convert holds only some suites: GOAL's file must survive it.
         self.suite("roomingliststage", ["p,c,a,REST,GET,/a,FULL,\n"])
         fc.write(self.root)
         shutil.rmtree(os.path.join(self.root, fc.AUDIT, "roomingliststage"))
         self.suite("programaccountguest", ["p,c,a,REST,GET,/a,FULL,\n"])
         fc.write(self.root)
-        self.assertFalse(os.path.exists(os.path.join(self.root, fc.OUT_DIR, "goal.json")))
+        self.assertTrue(os.path.exists(os.path.join(self.root, fc.OUT_DIR, "goal.json")))
 
 
 class Nearest(Base):

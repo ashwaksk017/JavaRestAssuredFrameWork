@@ -100,7 +100,15 @@
         "offsets": "32,52,62,66",
         "min_inventory": "9"
       },
-      "operator_location": ""
+      "operator_location": "",
+      "token_service": "hospitality_partner_v2"
+    },
+    "username": "",
+    "password": "",
+    "domains": {
+      "fromDb": {
+        "enabled": "false"
+      }
     }
   }
 }

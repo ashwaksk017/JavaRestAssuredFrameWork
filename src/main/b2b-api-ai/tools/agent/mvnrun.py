@@ -78,6 +78,12 @@ def project_preflight(root: str, project: str, env: str) -> str:
         return f"{rel} cannot be read (it must be valid JSON)"
     if not isinstance(block, dict):
         return f"{rel} has no `{env}` block (choose the {project} run environment on the Settings tab)"
+    if project == "goal":
+        # And where its token is minted (GoalStoryTestBase.goalToken): a
+        # service that is not set falls back to another and every call 401s.
+        token_service = ((block.get("goal") or {}) if isinstance(block.get("goal"), dict) else {}) \
+            .get("token_service") or "hospitality_partner_v2"
+        need = tuple(need) + (f"services.{token_service}",)
     missing = []
     for key in need:
         node = block
@@ -424,7 +430,8 @@ def cmd_test(job_dir: str, root: str, suite: str = "", test: str = "", group: st
         if group and not GROUP_RX.match(group.strip()):
             raise ValueError("a group name is letters, digits, - and _")
         envs = list_envs(root)
-        env = (env or envs["active"] or "stg").strip()
+        env = (env or loop.run_env_for(root, loop.load_policy(), projectconfig.active_project())
+               or envs["active"] or "stg").strip()
         if not ENV_RX.match(env):
             raise ValueError(f"{env!r} is not an environment name")
     except ValueError as e:

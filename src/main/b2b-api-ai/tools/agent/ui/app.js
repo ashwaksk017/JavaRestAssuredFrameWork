@@ -496,6 +496,9 @@ $("run-intake").onclick = async () => {
     }
     if (stories.length > 1) { await readStories(stories, links); return; }
     $("stories").replaceChildren();
+    // A new job takes the page's project BEFORE its story is read: the story
+    // is read with that project's Jira.
+    await showProject();
     // The Jira token is checked by Read it itself, before the story is
     // asked for: an expired token says so instead of "no such story".
     await post("/api/intake", {
@@ -563,9 +566,10 @@ async function showProject() {
   try {
     let r = await api(`/api/project?job=${encodeURIComponent(j)}`);
     if (j !== job()) return;
-    // A job with no project chosen yet takes the one selected on the page
-    // (picked before the job was named); it is not flipped back to B2B.
-    if (!r.chosen && r.project !== pageProject()) {
+    // A NEW job with no project chosen yet takes the one selected on the page
+    // (picked before the job was named). An older job without one is B2B --
+    // it was made before projects -- and stays so.
+    if (!r.chosen && r.new && r.project !== pageProject()) {
       r = await post("/api/project", { job: j, project: pageProject() });
       if (j !== job()) return;
     }
