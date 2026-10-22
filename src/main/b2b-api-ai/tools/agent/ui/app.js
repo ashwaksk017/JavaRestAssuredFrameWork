@@ -187,6 +187,11 @@ setInterval(showCursorSetupBanner, 15000);
 // The tab is also in the address (#jira, #failures), so a tab can be
 // linked to and a refresh stays where it was.
 const onTab = {};                 // tab name -> what to do when it is opened
+// What a tab is for, on hover: the line under its name is not shown any more.
+document.querySelectorAll(".tabs button").forEach((b) => {
+  const what = b.querySelector(".what");
+  if (what && !b.title) b.title = what.textContent.trim();
+});
 document.querySelectorAll(".tabs button").forEach((b) => {
   b.onclick = () => {
     document.querySelectorAll(".tabs button").forEach((x) =>

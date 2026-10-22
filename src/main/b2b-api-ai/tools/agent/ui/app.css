@@ -216,7 +216,7 @@ a.dl { color: var(--link); font-size: .85rem; }
 h3 a.dl { text-transform: none; letter-spacing: 0; font-weight: 400; margin-left: .6rem; }
 input[type=file] { margin: .3rem 0 .2rem; color: var(--dim); font-size: .8rem; }
 
-label.inline { display: inline-flex; gap: .35rem; align-items: center; margin: 0; font-weight: 400; }
+label.inline { display: inline-flex; gap: .35rem; align-items: center; margin: 0 .8rem 0 0; font-weight: 400; }
 .result { margin: 1rem 0; }
 .result:empty { display: none; }
 .result h4 { margin: 1.2rem 0 .4rem; font-size: .95rem; }
@@ -476,9 +476,41 @@ button.linkish:hover, button.linkish:focus { text-decoration: underline; }
 #tab-run .row input[type=text].grow { flex: 1 1 22rem; }
 .status-PASS { color: var(--ok); font-weight: 600; } .status-FAIL { color: var(--bad); font-weight: 600; }
 .status-SKIP { color: var(--warn); font-weight: 600; }
-label.inline { display: inline-flex; gap: .3rem; align-items: center; margin-right: .8rem; }
 /* An area's logs, under its own button: closed until its action runs. */
 details.area-logs { margin: .6rem 0 1rem; border: 1px solid var(--line); border-radius: 8px;
                     background: var(--panel); padding: .3rem .8rem; }
 details.area-logs > summary { cursor: pointer; font-weight: 600; padding: .3rem 0; }
 details.area-logs[open] > summary { margin-bottom: .4rem; }
+
+/* ---- Layout (2026-10-21): alignment and rhythm ------------------------------ */
+/* The tabs: one compact row on a wide screen. What each is for is its
+   tooltip -- shown under the name, it was cut to "compile, run a suite, see r...". */
+/* Each tab as wide as its name, sharing what is left: a long name stays on one line. */
+.tabs { display: flex; flex-wrap: wrap; gap: .4rem; padding: .6rem 1.6rem; }
+.tabs button { flex: 1 1 auto; }
+.tabs button .name { white-space: nowrap; }
+.tabs button { padding: .6rem .5rem; }
+.tabs button .name { font-size: .88rem; }
+.tabs button .what { display: none; }
+/* A heading's explanation reads as a sentence, not in capitals. */
+h3 .hint { text-transform: none; letter-spacing: 0; font-size: .82rem; margin-left: .35rem; }
+/* In a row of buttons, a picker or a box takes its own width instead of a
+   line of its own: the Commit and push row was broken in two by one. */
+.row select, .repo select { width: auto; flex: 0 1 18rem; min-width: 9rem; }
+.row input[type=text], .row input[type=password] { width: auto; flex: 0 1 15rem; }
+.row input[type=text].grow { flex: 1 1 22rem; }
+.row .state { margin-left: .25rem; }
+/* Disabled: plainly off, still readable. */
+button:disabled { opacity: .6; background: transparent; border-style: dashed; }
+button.go:disabled { background: var(--accent); border-style: solid; opacity: .45; }
+/* Settings: its sections side by side on a wide screen, not one long column. */
+#settings-form { grid-template-columns: repeat(auto-fit, minmax(30rem, 1fr)); align-items: start;
+                 gap: 1rem 1.2rem; }
+#settings-form > fieldset.wide { grid-column: auto; margin: 0; }
+#settings-form > .row, #settings-form > .result { grid-column: 1 / -1; }
+/* The button rows of a form sit with the form's left edge. */
+.row.actions { padding-top: .2rem; }
+#settings-form > fieldset.wide.full { grid-column: 1 / -1; }
+#agent-xray-exec { flex: 0 1 17rem; }
+.row.sm-rule { flex-wrap: nowrap; }
+.row.sm-rule input[type=text] { flex: 1 1 10rem; min-width: 0; }
