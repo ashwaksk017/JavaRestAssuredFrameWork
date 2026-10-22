@@ -86,6 +86,7 @@ import threading
 NO_WINDOW = ({"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
              if os.name == "nt" else {})
 import time
+from collections import Counter
 from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1724,8 +1725,64 @@ def _csv_delimiter(header_line: str) -> str:
 _JOB_ID_RX = re.compile(r"^job-\d{8}-\d{6}$", re.I)
 
 
+_NOT_GIVEN = object()
+
+
+def _row_form(row: dict) -> frozenset:
+    """A data row compared by its filled cells: a column added since, still
+    empty, does not make an old row a different one."""
+    return frozenset((str(k).strip().lstrip("﻿"), str(v).strip())
+                     for k, v in row.items() if k is not None and str(v or "").strip())
+
+
+def _sheet_rows(text: str) -> list:
+    """The data rows of a csv sheet as dicts; [] when it cannot be read."""
+    if not text or not text.strip():
+        return []
+    delim = _csv_delimiter(text.split("\n", 1)[0])
+    try:
+        rows = list(csv.reader(io.StringIO(text), delimiter=delim))
+    except csv.Error:
+        return []
+    if not rows:
+        return []
+    header = [h.strip().lstrip("﻿") for h in rows[0]]
+    return [{header[i]: (raw[i] if i < len(raw) else "") for i in range(len(header))}
+            for raw in rows[1:] if raw and any(str(c).strip() for c in raw)]
+
+
+def sheet_before(root: str, job_dir: str, rel: str):
+    """The sheet `rel` as it was before this job's FIRST run: its text, or
+    None when it did not exist then (every row in it is the job's).
+
+    From the job's own copy when the file was uncommitted work at the time
+    (pre/), else from the last commit. Seen live: a run of story B2B-99454
+    gave its case TC-001's Xray key and story to TC-001 rows of two OTHER
+    tests' sheets -- tests it had edited -- because a row was claimed by
+    its case id alone, and every story numbers its cases from TC-001."""
+    rel = rel.replace("\\", "/")
+    before = {}
+    try:
+        with io.open(os.path.join(job_dir, "pre-state.json"), encoding="utf-8") as fh:
+            before = json.load(fh).get("before") or {}
+    except (OSError, ValueError, AttributeError):
+        before = {}
+    if rel in before:
+        if before[rel] is None:
+            return None                    # gone at the time: a new file now
+        saved = _lp(os.path.join(job_dir, "pre", _bk(rel)))
+        try:
+            with io.open(saved, encoding="utf-8", errors="replace") as fh:
+                return fh.read()
+        except OSError:
+            pass                           # no copy: fall back to the commit
+    rc, out = git(root, "show", "HEAD:./" + rel)
+    return out if rc == 0 else None
+
+
 def patch_one_manual_csv(path: str, story: str = "", keys_by_case: dict = None,
-                         details: list = None, case_ids=None, job_id: str = "") -> bool:
+                         details: list = None, case_ids=None, job_id: str = "",
+                         original=_NOT_GIVEN) -> bool:
     """Add or fill jira_xray_id and jira_issue on a csv/manual data sheet --
     on THIS job's rows only.
 
@@ -1739,7 +1796,13 @@ def patch_one_manual_csv(path: str, story: str = "", keys_by_case: dict = None,
     The placeholder is THIS job's id (`job_id`); another job's id is that
     job's row. With no case ids known at all (no Xray keys, no designed
     cases), a row is this job's only when its jira_issue is empty, this
-    job's id, or this story -- never by case id alone."""
+    job's id, or this story -- never by case id alone.
+
+    `original`: the sheet before the job (sheet_before; None = it did not
+    exist). Given, a row that is there unchanged is NOT this job's,
+    whatever its case id -- the job neither added nor edited it -- and an
+    Xray key the sheet already held is never replaced. Not given (older
+    callers, tests): rows are told apart as above only."""
     keys_by_case = {str(k): str(v).upper() for k, v in (keys_by_case or {}).items() if v}
     mine = {str(c).strip() for c in (case_ids if case_ids is not None else keys_by_case) if str(c).strip()}
 
@@ -1785,11 +1848,29 @@ def patch_one_manual_csv(path: str, story: str = "", keys_by_case: dict = None,
         # This job's id; without one, any job id (older callers).
         return issue == job_up if job_up else bool(_JOB_ID_RX.match(issue))
 
+    # Rows the sheet had before the job, by their filled cells (a multiset:
+    # two equal rows before, two may be left now); and the Xray keys in it.
+    untouched = Counter()
+    old_keys = set()
+    if original is not _NOT_GIVEN and original is not None:
+        for old in _sheet_rows(original):
+            untouched[_row_form(old)] += 1
+            k = str(old.get("jira_xray_id") or "").strip().upper()
+            if k:
+                old_keys.add(k)
+
     any_mine = False
     for row in data_rows:
         tid = str(row.get("test_case_id") or "").strip()
         have_issue = str(row.get("jira_issue") or "").strip().upper()
         if not tid:
+            continue
+        form = _row_form(row)
+        if untouched[form] > 0:
+            untouched[form] -= 1
+            if tid in mine:
+                note(f"{tid}: left as it is -- the row was in this sheet before this job, "
+                     f"and the job did not change it")
             continue
         if mine:
             if tid not in mine:
@@ -1804,7 +1885,11 @@ def patch_one_manual_csv(path: str, story: str = "", keys_by_case: dict = None,
         want_xray = keys_by_case.get(tid, "")
         if want_xray:
             have = str(row.get("jira_xray_id") or "").strip().upper()
-            if have != want_xray.upper():
+            if have and have != want_xray.upper() and have in old_keys:
+                # The key was in the sheet before the job: another test's.
+                note(f"{tid}: jira_xray_id left as {have} -- it was in this sheet before this "
+                     f"job; {want_xray.upper()} is not written over it")
+            elif have != want_xray.upper():
                 row["jira_xray_id"] = want_xray.upper()
                 changed = True
                 note(f"{tid or '(no test_case_id)'}: jira_xray_id -> {want_xray.upper()}")
@@ -1881,28 +1966,6 @@ def job_sheets(root: str, job_dir: str, extra_paths=()) -> list:
     return sorted(sheets)
 
 
-def _manual_csv_rel_paths_with_case_ids(root: str, case_ids) -> list:
-    case_ids = {str(c).strip() for c in (case_ids or ()) if str(c).strip()}
-    if not case_ids:
-        return []
-    manual = os.path.join(root, "src", "test", "resources", "csv", "manual")
-    if not os.path.isdir(manual):
-        return []
-    out = []
-    for dirpath, _dirs, files in os.walk(manual):
-        for name in files:
-            if not name.lower().endswith(".csv"):
-                continue
-            path = os.path.join(dirpath, name)
-            text = _read(path, 500_000)
-            if not text or "test_case_id" not in text.split("\n", 1)[0]:
-                continue
-            if any(re.search(r"(?<![A-Z0-9_-])" + re.escape(cid) + r"(?![0-9])", text)
-                   for cid in case_ids):
-                out.append(os.path.relpath(path, root).replace(os.sep, "/"))
-    return sorted(set(out))
-
-
 def ensure_manual_csv_xray(root: str, job_dir: str, change_paths: list, mocked: bool = False,
                            on_log=None) -> list:
     """Add/fill jira_xray_id and jira_issue on every manual sheet this job
@@ -1958,7 +2021,8 @@ def ensure_manual_csv_xray(root: str, job_dir: str, change_paths: list, mocked: 
             continue
         details = []
         if patch_one_manual_csv(path, story=story, keys_by_case=keys, details=details, case_ids=mine,
-                                job_id=os.path.basename(job_dir)):
+                                job_id=os.path.basename(job_dir),
+                                original=sheet_before(root, job_dir, norm)):
             emit(f"PATCHED  {norm}  " + "; ".join(details[:12]))
             touched.append(norm)
         else:
@@ -2009,7 +2073,8 @@ def patch_manual_csv_by_case_ids(root: str, job_dir: str, case_ids, mocked: bool
             continue
         details = []
         if patch_one_manual_csv(path, story=story, keys_by_case=keys, details=details, case_ids=case_ids,
-                                job_id=os.path.basename(job_dir)):
+                                job_id=os.path.basename(job_dir),
+                                original=sheet_before(root, job_dir, rel)):
             emit(f"PATCHED  {rel}  " + "; ".join(details[:12]))
             touched.append(rel)
         else:
@@ -2596,8 +2661,10 @@ def story_key_block(job_dir: str, scope: dict) -> str:
     if _STORY_KEY_RX.match(key):
         return (f"THE STORY'S KEY is {key}. Use it wherever the skill says the story key: "
                 f"@Story, the configuration keys (jira.{key.lower()}.<role>.<field>), and the "
-                f"`jira_issue` column on every row of every `csv/manual/` data sheet (same value "
-                f"on each row).")
+                f"`jira_issue` column of every `csv/manual/` data row you write or change for "
+                f"THIS job's cases. A row of another test or another story -- even in a sheet "
+                f"of a class you edit -- keeps the `jira_issue` and `jira_xray_id` it has: do "
+                f"not fill or change them.")
     job = os.path.basename(job_dir.rstrip("/\\")).lower()
     return (f"THIS JOB HAS NO JIRA STORY KEY (the story was pasted, not read from Jira). Do "
             f"not invent one, and do not use a case id in its place: where the skill says the "
@@ -2730,8 +2797,10 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
                   "column of the data row you write for it (add the column "
                   "when the sheet has none), or in `@XrayTest(\"KEY\")` on a "
                   "test method that takes no row. Every `csv/manual/` data row "
-                  "must also carry `jira_issue` set to this job's story key "
-                  "(see THE STORY'S KEY above). Never invent a key, and never "
+                  "you write or change for these cases must also carry `jira_issue` "
+                  "set to this job's story key (see THE STORY'S KEY above); a row "
+                  "of any other test or story keeps its `jira_issue` and "
+                  "`jira_xray_id` as they are. Never invent a key, and never "
                   "put one key on two cases. A case marked [AUTOMATED IN file] has "
                   "a test carrying its key already, found in that file: UPDATE "
                   "that test -- its data row and assertions -- so it checks what "

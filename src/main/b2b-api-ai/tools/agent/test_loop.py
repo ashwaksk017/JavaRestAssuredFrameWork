@@ -1230,6 +1230,82 @@ class JiraParity(unittest.TestCase):
         self.assertEqual(loop.jira_parity_issues(self.root, [rel]), [])
 
 
+class PatchKeepsRowsTheJobDidNotWrite(unittest.TestCase):
+    """Seen live: a run of story B2B-99454 gave its TC-001's Xray key and
+    story to the TC-001 rows of two OTHER tests' sheets (tests its change
+    had edited), and Xray recorded one of their passes as B2B-99802's."""
+    OTHER = "src/test/resources/csv/manual/GuestProgramAccountTest/create_200.csv"
+    JAVA = "src/test/java/com/hi/api/tests/jira/GuestProgramAccountTest.java"
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="csvkeep_")
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        self.job = os.path.join(self.root, ".workbench", "job1")
+        os.makedirs(self.job)
+        write(self.root, ".workbench/job1/intake.json", json.dumps({"story": {"key": "B2B-99454"}}))
+        write(self.root, ".workbench/job1/xray-tests.json",
+              json.dumps({"tests": {"design:TC-001": {"key": "B2B-99802"}}}))
+        write(self.root, ".gitignore", ".workbench/\n")
+        write(self.root, self.OTHER, "description,test_case_id,execute\nprogram account,TC-001,Y\n")
+        write(self.root, self.JAVA, "class GuestProgramAccountTest {}\n")
+        for args in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"],
+                     ["add", "-A"], ["commit", "-q", "-m", "base"]):
+            rc, out = loop.git(self.root, *args)
+            self.assertEqual(rc, 0, out)
+
+    def rows(self, rel):
+        with io.open(os.path.join(self.root, rel.replace("/", os.sep)), encoding="utf-8") as fh:
+            return list(csv.DictReader(fh))
+
+    def test_an_edited_class_does_not_make_its_old_rows_this_jobs(self):
+        write(self.root, self.JAVA, "class GuestProgramAccountTest { /* edited */ }\n")
+        touched = loop.ensure_manual_csv_xray(self.root, self.job, [self.JAVA], mocked=False)
+        self.assertEqual(touched, [])
+        self.assertEqual(self.rows(self.OTHER), [{"description": "program account",
+                                                  "test_case_id": "TC-001", "execute": "Y"}])
+        self.assertIn("was in this sheet before this job",
+                      loop._read(os.path.join(self.job, loop.CSV_XRAY_LOG)))
+
+    def test_a_row_the_job_added_to_an_old_sheet_is_filled_and_the_old_row_is_not(self):
+        write(self.root, self.OTHER, "description,test_case_id,execute\nprogram account,TC-001,Y\n"
+                                     "traveler filter,TC-001,Y\n")
+        touched = loop.ensure_manual_csv_xray(self.root, self.job, [self.OTHER], mocked=False)
+        self.assertEqual(touched, [self.OTHER])
+        old, new = self.rows(self.OTHER)
+        self.assertEqual((old["jira_xray_id"], old["jira_issue"]), ("", ""))
+        self.assertEqual((new["jira_xray_id"], new["jira_issue"]), ("B2B-99802", "B2B-99454"))
+
+    def test_a_key_the_sheet_already_held_is_not_written_over(self):
+        write(self.root, self.OTHER, "description,test_case_id,execute,jira_xray_id\n"
+                                     "program account,TC-001,Y,B2B-55555\n")
+        loop.git(self.root, "commit", "-qam", "keyed")
+        # The job edits that row (its description), so the row is "changed".
+        write(self.root, self.OTHER, "description,test_case_id,execute,jira_xray_id\n"
+                                     "program account v2,TC-001,Y,B2B-55555\n")
+        loop.ensure_manual_csv_xray(self.root, self.job, [self.OTHER], mocked=False)
+        self.assertEqual(self.rows(self.OTHER)[0]["jira_xray_id"], "B2B-55555")
+
+    def test_an_uncommitted_sheet_is_compared_with_the_jobs_copy_of_it(self):
+        # Uncommitted at the first run: pre/ holds it, pre-state.json says so.
+        before = "description,test_case_id,execute\nprogram account,TC-001,Y\nmine too,TC-002,Y\n"
+        write(self.root, ".workbench/job1/pre/" + self.OTHER, before)
+        write(self.root, ".workbench/job1/pre-state.json",
+              json.dumps({"before": {self.OTHER: "hash"}, "generated": {}, "roots": []}))
+        write(self.root, self.OTHER, before)
+        self.assertEqual(loop.ensure_manual_csv_xray(self.root, self.job, [self.OTHER]), [])
+
+    def test_a_sheet_the_job_created_is_all_the_jobs(self):
+        rel = "src/test/resources/csv/manual/B2b99454Test/filter_200.csv"
+        write(self.root, rel, "description,test_case_id,execute\ntraveler filter,TC-001,Y\n")
+        self.assertEqual(loop.ensure_manual_csv_xray(self.root, self.job, [rel]), [rel])
+        self.assertEqual(self.rows(rel)[0]["jira_xray_id"], "B2B-99802")
+
+    def test_the_prompt_asks_for_the_story_key_only_on_the_jobs_own_rows(self):
+        block = loop.story_key_block(self.job, {"name": "new-test"})
+        self.assertNotIn("every row of every", block)
+        self.assertIn("keeps the `jira_issue` and `jira_xray_id` it has", block)
+
+
 class PatchManualCsvXray(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="csvxray_")

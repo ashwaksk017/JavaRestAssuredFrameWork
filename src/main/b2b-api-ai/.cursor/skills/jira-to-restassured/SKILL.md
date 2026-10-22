@@ -424,8 +424,13 @@ Give every row a readable `description` and `test_case_id`.
 
 When the workbench handed Xray Test keys for designed cases, each row
 that maps to a case must carry **`jira_xray_id`** (that Test issue key).
-Every row must also carry **`jira_issue`** (the Jira story key). These are
-not customer data — commit them so Publish to Xray can match results.
+Every row you write or change for the story's cases must also carry
+**`jira_issue`** (the Jira story key). These are not customer data —
+commit them so Publish to Xray can match results. A row that belongs to
+another test or another story — even in a sheet of a class you edit —
+keeps its `jira_issue` and `jira_xray_id` exactly as they are: case ids
+(TC-001, ...) repeat in every story, so a matching id does not make a row
+yours.
 
 ---
 
