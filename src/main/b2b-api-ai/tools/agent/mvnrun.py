@@ -204,11 +204,49 @@ def jdk_candidates() -> list:
     return sorted(set(out))
 
 
-def java_env(env: dict = None, candidates=None) -> tuple:
+def saved_java_home() -> str:
+    """JAVA_HOME as Windows has it saved (user, else system): what a console
+    opened now would see. A process started earlier -- the workbench, the
+    console or IDE that started it -- keeps the environment it was born
+    with, so a JAVA_HOME set since then is not in os.environ. "" elsewhere."""
+    if os.name != "nt":
+        return ""
+    try:
+        import winreg
+    except ImportError:
+        return ""
+    for hive, key in ((winreg.HKEY_CURRENT_USER, "Environment"),
+                      (winreg.HKEY_LOCAL_MACHINE,
+                       r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")):
+        try:
+            with winreg.OpenKey(hive, key) as k:
+                value, _kind = winreg.QueryValueEx(k, "JAVA_HOME")
+        except OSError:
+            continue
+        value = winreg.ExpandEnvironmentStrings(str(value or "")).strip().strip('"')
+        if value:
+            return value
+    return ""
+
+
+def java_env(env: dict = None, candidates=None, saved=None) -> tuple:
     """(environment for Maven, note or ""). JAVA_HOME is kept when it
-    holds a java; otherwise the oldest JDK >= 17 found is used."""
-    env = dict(os.environ if env is None else env)
+    holds a java; when this process has none, the one saved in Windows is
+    used (saved_java_home); otherwise the oldest JDK >= 17 found is used.
+    `saved`: where the saved value comes from -- the registry for this
+    process's own environment, nothing for an environment passed in."""
+    own = env is None
+    env = dict(os.environ if own else env)
     home = env.get("JAVA_HOME", "").strip().strip('"')
+    if not home:
+        stored = (saved or (saved_java_home if own else (lambda: "")))()
+        if stored:
+            # Checked below like any JAVA_HOME; the PATH gets its bin too,
+            # as a console opened now would have it.
+            home = stored
+            env["JAVA_HOME"] = stored
+            if _java_exe(stored):
+                env["PATH"] = os.path.join(stored, "bin") + os.pathsep + env.get("PATH", "")
     if home and _java_exe(home):
         v = java_version(home)
         if v and v < MIN_JAVA:

@@ -230,6 +230,28 @@ class Java(unittest.TestCase):
         self.assertTrue(env["PATH"].startswith(os.path.join(j21, "bin")))
         self.assertIn("using Java 21", note)
 
+    def test_a_java_home_saved_in_windows_is_used_when_the_process_has_none(self):
+        # Started before JAVA_HOME was set: the process has none, Windows has it.
+        home = self.jdk("jdk-17", "17.0.9")
+        env, note = mr.java_env({"PATH": "p"}, candidates=[], saved=lambda: home)
+        self.assertEqual((env["JAVA_HOME"], note), (home, ""))
+        self.assertTrue(env["PATH"].startswith(os.path.join(home, "bin")))
+
+    def test_the_process_own_java_home_wins_over_the_saved_one(self):
+        mine, saved = self.jdk("jdk-21", "21.0.2"), self.jdk("jdk-17", "17.0.9")
+        env, _note = mr.java_env({"JAVA_HOME": mine, "PATH": ""}, candidates=[], saved=lambda: saved)
+        self.assertEqual(env["JAVA_HOME"], mine)
+
+    def test_a_broken_saved_java_home_is_named_not_called_unset(self):
+        gone = os.path.join(self.tmp, "nowhere")
+        _env, note = mr.java_env({"PATH": ""}, candidates=[], saved=lambda: gone)
+        self.assertIn(gone, note)
+        self.assertNotIn("not set", note)
+
+    def test_a_passed_environment_never_reads_the_registry(self):
+        _env, note = mr.java_env({"PATH": ""}, candidates=[])
+        self.assertIn("JAVA_HOME is not set", note)
+
     def test_no_usable_jdk_is_said(self):
         env, note = mr.java_env({"JAVA_HOME": "", "PATH": ""}, candidates=[self.jdk("jdk1.8", "1.8.0")])
         self.assertIn("no JDK 17+", note)
