@@ -267,7 +267,6 @@ BRIEF_STORY_HEAD = "## The story"
 BRIEF_PAGES_HEAD = "## Confluence pages"
 BRIEF_REQUESTS_HEAD = "## Requests read"
 MAX_ATTACHMENT_TEXT = 200_000     # of one textual attachment, read for requests
-MAX_LINKED = 8                    # linked stories and sub-tasks read for context
 MAX_PAGE_CHARS = 40000            # of one Confluence page, in the brief
 MAX_PAGES_TOTAL = 90000           # of all of them together
 MAX_PAGE_BLOCK = 1500             # a code block longer than this is named, not shown
@@ -310,8 +309,11 @@ def _page_for_brief(body: str, budget: int) -> tuple:
     text = _PAGE_FENCE_RX.sub(named, body or "").strip()
     cap = max(0, min(MAX_PAGE_CHARS, budget))
     return text[:cap], max(0, len(text) - cap)
-MAX_AROUND_EACH = 1500            # of one parent's or linked story's text, in the brief
-MAX_AROUND_TOTAL = 12000          # of all of them together
+# Every linked story and sub-task is read, and each story around this one
+# -- parents, linked -- is in the brief whole. Asked for (2026-10-21): it was
+# the first 8 linked stories, 1500 characters each, 12000 in all. The brief
+# is part of what Cursor is sent, so a story with many long neighbours makes
+# a longer prompt.
 _KEY_IN_LINK_RX = re.compile(r"\b([A-Za-z][A-Za-z0-9_]+-[0-9]+)\b")
 
 
@@ -384,16 +386,15 @@ def _links_of(issue: dict) -> list:
     return keep
 
 
-def _around(issue: dict, how: str, budget: int) -> dict:
-    """One story near this job's story, as the brief will show it."""
+def _around(issue: dict, how: str) -> dict:
+    """One story near this job's story, as the brief will show it: whole."""
     f = issue.get("fields") or {}
     text = conf_fetch.redact(_about(issue))
-    cap = max(0, min(MAX_AROUND_EACH, budget))
     return {"key": _one_line(issue.get("key"), 40), "how": how, "ok": True,
             "type": _one_line(_named(f.get("issuetype")), 40),
             "status": _one_line(_named(f.get("status")), 40),
             "summary": _one_line(conf_fetch.redact(jira_fetch._text_of(f.get("summary"))), 300),
-            "text": text[:cap], "cut": max(0, len(text) - cap)}
+            "text": text, "cut": 0}
 
 
 _TOKEN_REFUSED_RX = re.compile(r"\b(401|403)\b|unauthori[sz]ed|forbidden|anonymous", re.I)
@@ -537,17 +538,15 @@ def gather_jira(link: str, sources: str, slot: str, connect=None, transport=None
     own_fields = read[0].get("fields") or {}
 
     # ---- what is around the story ---------------------------------------
-    around, budget = [], MAX_AROUND_TOTAL
+    around = []
     for depth, issue in enumerate(read[1:], 1):
-        entry = _around(issue, "parent" if depth == 1 else "parent of the parent", budget)
-        budget -= len(entry["text"])
-        around.append(entry)
+        around.append(_around(issue, "parent" if depth == 1 else "parent of the parent"))
     linked = [(k, how) for k, how in _links_of(read[0])
               if k not in {str(i.get("key") or "").upper() for i in chain}]
     if linked:
-        diag.step(f"Reading {min(len(linked), MAX_LINKED)} linked stor"
-                  f"{'y' if min(len(linked), MAX_LINKED) == 1 else 'ies'} for the bigger picture")
-    for other, how in linked[:MAX_LINKED]:
+        diag.step(f"Reading {len(linked)} linked stor{'y' if len(linked) == 1 else 'ies'} "
+                  f"for the bigger picture")
+    for other, how in linked:
         try:
             issue = jira_fetch.fetch_issue(other, conn["base"], conn["token"], conn["api"],
                                            conn["timeout"], transport)
@@ -565,10 +564,8 @@ def gather_jira(link: str, sources: str, slot: str, connect=None, transport=None
                            "reason": "Jira's answer was not an issue"})
             continue
         issue["key"] = other                             # the key that was ASKED for
-        entry = _around(issue, how, budget)
-        budget -= len(entry["text"])
-        around.append(entry)
-    not_read = [k for k, _how in linked[MAX_LINKED:]]
+        around.append(_around(issue, how))
+    not_read = []                                        # every linked story is read
 
     # Requests are looked for in the story and its parents (a contract kept
     # on the epic is the commonest place one lives) -- not in linked stories.
@@ -739,10 +736,6 @@ def build(job: str, text: str = "", links=None, root: str = "",
                 if not a.get("ok"):
                     notes.append(f"{story['key']}: {a['how']} {a['key']} could not be "
                                  f"read ({a.get('reason')})")
-            if story["linked_not_read"]:
-                notes.append(f"{story['key']}: {len(story['linked_not_read'])} more linked "
-                             f"stor(ies) were not read (the first {MAX_LINKED} are): "
-                             f"{', '.join(story['linked_not_read'])}")
             for name, body in extra_texts:
                 found += _requests_from(body, f"jira {story['key']} attachment "
                                               f"{_one_line(name, 80)}")

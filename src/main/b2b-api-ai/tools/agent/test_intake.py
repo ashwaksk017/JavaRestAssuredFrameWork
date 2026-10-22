@@ -601,16 +601,17 @@ class Story(Base):
         self.assertIn("one story at a time", " ".join(r["notes"]))
         self.assertFalse(r["links"][1]["ok"])
 
-    def test_only_so_many_linked_stories_are_read_and_the_rest_are_named(self):
+    def test_every_linked_story_is_read(self):
+        """Asked for: it was the first 8, and the rest were only named."""
         many = [{"type": {"outward": "relates to"}, "outwardIssue": {"key": f"ABC-{n}"}}
-                for n in range(100, 100 + intake.MAX_LINKED + 5)]
+                for n in range(100, 125)]
         self.issues["ABC-1"]["fields"]["issuelinks"] = many
         self.issues["ABC-1"]["fields"]["subtasks"] = []
         r = self.read()
         linked = [a for a in r["around"] if a["how"] != "parent"]
-        self.assertEqual(len(linked), intake.MAX_LINKED)
-        self.assertEqual(len(r["story"]["linked_not_read"]), 5)
-        self.assertIn("5 more linked", " ".join(r["notes"]))
+        self.assertEqual(len(linked), 25)
+        self.assertEqual(r["story"]["linked_not_read"], [])
+        self.assertNotIn("more linked", " ".join(r["notes"]))
 
     def test_a_linked_story_is_not_followed_further(self):
         self.issues["ABC-2"]["fields"]["issuelinks"] = [
@@ -619,13 +620,12 @@ class Story(Base):
         self.read()
         self.assertFalse(any("ABC-50" in u or "ABC-60" in u for u in self.asked))
 
-    def test_the_text_around_the_story_is_bounded(self):
+    def test_the_text_around_the_story_is_whole(self):
         self.issues["ABC-2"]["fields"]["description"] = "x" * 50000
         r = self.read()
         two = [a for a in r["around"] if a["key"] == "ABC-2"][0]
-        self.assertEqual(len(two["text"]), intake.MAX_AROUND_EACH)
-        self.assertEqual(two["cut"], 50000 - intake.MAX_AROUND_EACH)
-        self.assertLess(len(self.brief("j")), 30000)
+        self.assertEqual(two["text"].count("x"), 50000)
+        self.assertEqual(two["cut"], 0)
 
     def test_the_token_is_written_nowhere(self):
         self.issues["ABC-1"]["fields"]["description"] += f"\nAuthorization: Bearer {TOKEN}\n"

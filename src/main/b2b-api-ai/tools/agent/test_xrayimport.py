@@ -141,15 +141,14 @@ class TheKeysReachTheDataSheet(Base):
 
 
 class TheLinksTaken(Base):
-    def test_over_the_cap_the_rest_are_named(self):
-        self.jira.links = [link(f"ABC-{100 + n}", f"test {n}") for n in range(xi.MAX_TESTS + 2)]
-        for n in range(xi.MAX_TESTS + 2):
+    def test_every_linked_test_is_taken(self):
+        """Asked for: it was the first 40, and the rest were only named."""
+        self.jira.links = [link(f"ABC-{100 + n}", f"test {n}") for n in range(55)]
+        for n in range(55):
             self.jira.steps[f"ABC-{100 + n}"] = [("GET /y", "", "200")]
         r = self.run_it()
-        self.assertEqual(r["count"], xi.MAX_TESTS)
-        over = [n for n in r["not_used"] if "not read" in n["why"]]
-        self.assertEqual([n["key"] for n in over], [f"ABC-{100 + xi.MAX_TESTS}", f"ABC-{101 + xi.MAX_TESTS}"])
-        self.assertIn(f"ABC-{100 + xi.MAX_TESTS}: over the first", self.read("design.md"))
+        self.assertEqual(r["count"], 55)
+        self.assertFalse([n for n in r["not_used"] if "not read" in n["why"]])
 
     def test_only_reversed_links_is_refused_with_the_reason(self):
         self.jira.links = [link("ABC-15", "the other way", side="outwardIssue")]

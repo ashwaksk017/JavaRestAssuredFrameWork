@@ -59,7 +59,6 @@ publish = xt.publish
 
 ROOT = loop.intake.ROOT
 RESULT = "xray-import.json"
-MAX_TESTS = 40
 MAX_STEPS = 40
 MAX_TEXT = 2000
 _KEY_RX = re.compile(r"^[A-Z][A-Z0-9_]{0,19}-[0-9]{1,9}$")
@@ -157,8 +156,6 @@ def run(job: str, root: str = "", story: str = "", conn=None, transport=None, cf
     other_way = []
     tests = linked_tests(issue if isinstance(issue, dict) else {}, opts["link_type"], opts["issue_type"],
                          other_way)
-    beyond = tests[MAX_TESTS:]
-    tests = tests[:MAX_TESTS]
     if not tests and other_way:
         raise Refused(f"every test linked to {story} is linked the other way round: "
                       + ", ".join(o["key"] for o in other_way[:8])
@@ -171,9 +168,6 @@ def run(job: str, root: str = "", story: str = "", conn=None, transport=None, cf
     hide = lambda s: _redact(s, private)
     cases, not_used = [], list(other_way)
     stamps = {}                                 # key -> Jira's `updated` of the version taken
-    # Over the cap: named, one line each, so nobody thinks the story has
-    # only the tests that were taken.
-    not_used += [{"key": b["key"], "why": f"over the first {MAX_TESTS} linked tests; not read"} for b in beyond]
     known = spec_keys(job_dir)
     off_spec = []
     for t in tests:

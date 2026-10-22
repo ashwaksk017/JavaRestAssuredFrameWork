@@ -106,7 +106,6 @@ MAX_CASES = 200
 DEFAULT_TYPE = "Test"
 DEFAULT_LINK = "Tests"
 DEFAULT_STEP_CALL = "PUT /rest/raven/1.0/api/test/{key}/step"
-MAX_LINKED = 40                      # linked tests compared with the cases
 LOOKALIKE = 0.75                     # title words in common, of all: held for a person
 _KEY_RX = re.compile(r"^[A-Z][A-Z0-9_]+-[0-9]+$")
 _STEP_CALL_RX = re.compile(r"^(PUT|POST)\s+(/[A-Za-z0-9_./{}-]*\{key\}[A-Za-z0-9_./-]*)$")
@@ -418,7 +417,7 @@ def _not_what_the_story_has(job_dir: str, what: str, story: str, todo: list, fie
     anyway = {str(c) for c in (create_anyway or ())}
     ours = {str(e.get("key") or "").upper() for e in kept["tests"].values() if isinstance(e, dict)}
     linked = [t for t in linked_tests({"fields": fields}, opts["link_type"], opts["issue_type"])
-              if t["key"] not in ours][:MAX_LINKED]
+              if t["key"] not in ours]                 # every one: no cap
     by_key = {t["key"]: t for t in linked}
     ids = {c["id"] for c in todo}
     for cid, key in adopt.items():
