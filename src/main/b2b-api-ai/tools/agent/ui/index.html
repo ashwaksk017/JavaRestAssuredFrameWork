@@ -328,9 +328,14 @@ Expect 201.'></textarea>
       </fieldset><pre id="cursor-log" class="log cursor"></pre></div>
     </div>
   </details>
-  <label for="agent-ask">Ask Cursor <span class="hint">in your words: what should be different in the change waiting (Cursor works on the same files and it waits for your review again), something new when none is waiting, or a question -- answered in the command log, nothing changed</span></label>
+  <label for="agent-ask">Ask Cursor <span class="hint">in your words: a question about this job -- answered in the command log, nothing changed -- or a change: what should be different in the change waiting (Cursor works on the same files and it waits for your review again), or something new when none is waiting</span></label>
   <textarea id="agent-ask" rows="3" spellcheck="false"
-    placeholder="e.g. Use the member's email from the CSV instead of a fixed one, and assert the 403 body carries an error code."></textarea>
+    placeholder="e.g. Which suite file runs this job's tests?  or  Use the member's email from the CSV instead of a fixed one."></textarea>
+  <fieldset class="choice" id="ask-kind">
+    <legend>This is</legend>
+    <label><input type="radio" name="ask-kind" value="question"> A question <span class="hint">Cursor reads and answers; no file and no state is changed</span></label>
+    <label><input type="radio" name="ask-kind" value="change" checked> A change <span class="hint">Cursor writes code, then it is checked and waits for your review</span></label>
+  </fieldset>
   <div class="row">
     <button id="agent-ask-send">Ask Cursor</button>
     <span id="ask-state" class="state"></span>

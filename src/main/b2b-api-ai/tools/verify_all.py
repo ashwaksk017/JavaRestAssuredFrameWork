@@ -306,6 +306,12 @@ CHECKS = [
           "takes a finding's line number from the diff and not from the "
           "model, sets aside what quotes no line of the change, and says "
           "which files were not read"),
+    Check("agent-ask",
+          [PY, "tools/agent/test_ask.py"],
+          "a question to Cursor goes to the read-only path, not the code-writing "
+          "run: it is asked in plan mode with the job's facts, the job's state "
+          "and files are left as they are, and the page and the server tell a "
+          "question from a change with the same words"),
     Check("agent-defects",
           [PY, "tools/agent/test_defects.py"],
           "defect triage suggests only from the team's own list, accounts for "

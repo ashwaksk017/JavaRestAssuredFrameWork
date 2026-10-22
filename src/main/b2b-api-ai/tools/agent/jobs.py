@@ -58,6 +58,11 @@ def _loop_module():
     return mod
 
 
+# Question or change, for an "Ask Cursor" message that does not say (ask.py).
+_aspec = importlib.util.spec_from_file_location("jobs_ask", os.path.join(HERE, "ask.py"))
+ask = importlib.util.module_from_spec(_aspec)
+_aspec.loader.exec_module(ask)
+
 _bspec = importlib.util.spec_from_file_location("jobs_buildsteps", os.path.join(HERE, "buildsteps.py"))
 buildsteps = importlib.util.module_from_spec(_bspec)
 _bspec.loader.exec_module(buildsteps)
@@ -418,6 +423,14 @@ RUNNABLES = {
     "agent-followup": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "loop.py"), "followup"],
         "label": "Cursor changes what it wrote, as the reviewer asks; then it is verified",
+        "options": {"--job": "text"},
+    },
+    # A question about the job: Cursor answers in plan mode in the project
+    # folder; no file, no review state is changed (ask.py). Not EXCLUSIVE:
+    # it reads, so it may be asked while the job's change waits or runs.
+    "agent-question": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "ask.py")],
+        "label": "Cursor answers a question about this job (it reads; nothing is changed)",
         "options": {"--job": "text"},
     },
     # Reads the job's proposed.diff and asks Cursor about it, in plan mode
@@ -1315,7 +1328,7 @@ def migration_ask(job: str, scope: str, suite: str, text: str) -> dict:
 
 # ---- a change to the workbench itself (the "workbench" scope) ----------------
 WORKBENCH_RUNNABLES = ("agent-generate", "agent-followup", "agent-approve", "agent-discard",
-                       "agent-review")
+                       "agent-review", "agent-question")
 # Cursor changing tools/agent: the page, its server, their tests. Its own
 # jobs (workbench-<time>), one change at a time, and only while NOTHING else
 # runs -- nor does anything start while it runs: every other command reads

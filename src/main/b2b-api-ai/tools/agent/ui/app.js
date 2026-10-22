@@ -2886,8 +2886,9 @@ async function refreshReview() {
       : "A run of this job did not finish: Discard it on the Commit and push tab first.")
     : ["pushed", "approved-local"].includes(state) ? "This job's change was already approved: ask in a new job."
     : state === "push-failed" ? "The push failed: push again on the Commit and push tab first." : "";
-  $("agent-ask-send").disabled = Boolean(askBlocked);
-  $("agent-ask-send").title = askBlocked;
+  // Only a change is blocked: a question reads, in any state (ask.py).
+  $("agent-ask-send").dataset.blocked = askBlocked;
+  askButton();
   $("agent-ask-send").dataset.waiting = ["pending-review", "verify-failed"].includes(state) ? "1" : "";
   // Run the tests: for a change of new tests waiting for review. Approve &
   // push: only once a run of it passed.
@@ -3178,20 +3179,85 @@ $("repo-switch").onclick = async () => {
 
 let agentRunning = "agent-generate";     // what Stop stops
 
+// Question or change: the wording preselects it (the same rules as
+// kind_of in tools/agent/ask.py, which the server uses when the page does
+// not say); once the person picks one, typing no longer changes it.
+const ASK_POLITE = /^(?:(?:hi|hey|ok|okay|so|and|also|now|then)\b[\s,]*|cursor\b[\s,:]*|(?:please|pls|kindly)\b[\s,]*|(?:can|could|would|will) you\b\s*|i (?:want|need|would like) you to\b\s*|i(?:'d| would) like you to\b\s*)+/;
+const ASK_QUESTION = ["what", "which", "where", "why", "how", "when", "who", "whose", "whom",
+  "is", "are", "was", "were", "does", "do", "did", "has", "have", "had", "can i", "could i",
+  "should i", "should we", "can we", "will it", "would it", "list", "show", "explain", "tell",
+  "describe", "summarize", "summarise", "give me", "find", "look", "check whether", "check if",
+  "is there", "are there"];
+const ASK_CHANGE = ["add", "change", "fix", "update", "remove", "delete", "rename", "write",
+  "create", "make", "use", "replace", "move", "refactor", "implement", "assert", "split", "merge",
+  "drop", "set", "put", "include", "exclude", "generate", "automate", "undo", "revert", "rewrite",
+  "edit", "insert", "append", "modify", "correct", "convert", "extend", "skip", "mark", "tag",
+  "keep", "don't", "do not", "stop", "start"];
+const askStarts = (s, words) => words.some((w) =>
+  s === w || s.startsWith(w + " ") || s.startsWith(w + ",") || s.startsWith(w + "'"));
+function kindOf(text) {
+  text = String(text || "").trim();
+  if (!text) return "change";
+  const kinds = text.split(/[.!?;\n]+|,\s*(?:and|then)\s+/).map((part) => {
+    const s = part.trim().toLowerCase().replace(ASK_POLITE, "").trim();
+    if (!s) return "";
+    if (askStarts(s, ASK_CHANGE)) return "change";
+    return askStarts(s, ASK_QUESTION) ? "question" : "";
+  });
+  if (kinds.includes("change")) return "change";
+  return kinds.includes("question") || text.endsWith("?") ? "question" : "change";
+}
+const askKind = () => (document.querySelector('input[name="ask-kind"]:checked') || {}).value || "change";
+function askButton() {
+  const b = $("agent-ask-send");
+  const blocked = askKind() === "change" ? (b.dataset.blocked || "") : "";
+  b.disabled = Boolean(blocked);
+  b.title = blocked;
+}
+$("agent-ask").addEventListener("input", () => {
+  const box = $("ask-kind");
+  if (!$("agent-ask").value.trim()) delete box.dataset.chosen;
+  if (box.dataset.chosen) return;
+  const r = document.querySelector(`input[name="ask-kind"][value="${kindOf($("agent-ask").value)}"]`);
+  if (r) r.checked = true;
+  askButton();
+});
+for (const r of document.querySelectorAll('input[name="ask-kind"]')) {
+  r.addEventListener("change", () => { $("ask-kind").dataset.chosen = "1"; askButton(); });
+}
+
 $("agent-ask-send").onclick = async () => {
   const text = $("agent-ask").value.trim();
   if (!text) { setState($("ask-state"), "bad", "write what Cursor should change, or ask it something"); return; }
+  const kind = askKind();
+  if (kind === "question") {
+    // Nothing is changed, so nothing to confirm.
+    agentRunning = "agent-question";
+    try {
+      await startArea("ask");
+      const r = await post("/api/agent-followup", { job: job(), text, kind, images: pastedFor("agent-ask") });
+      $("agent-ask").value = "";
+      delete $("ask-kind").dataset.chosen;
+      clearPasted("agent-ask");
+      $("ask-logs").open = true;           // the answer is in the command log
+      follow((r && r.runnable) || "agent-question", $("ask-log"), $("ask-state"), () => {
+        pollPane("ask", false);
+      });
+    } catch (e) { setState($("ask-state"), "bad", e.message); }
+    return;
+  }
   const adds = $("agent-ask-send").dataset.waiting === "1";
   if (!confirm(adds
-      ? `Cursor will change what it wrote for job "${job()}" as you ask, within the same paths -- or, ` +
-        "for a question, answer it. Nothing is committed. Continue?"
+      ? `Cursor will change what it wrote for job "${job()}" as you ask, within the same paths. ` +
+        "Nothing is committed. Continue?"
       : `No change is waiting for job "${job()}": Cursor starts one as you ask, in tests/jira/ and ` +
-        "csv/manual/ -- or, for a question, answers it. Nothing is committed. Continue?")) return;
+        "csv/manual/. Nothing is committed. Continue?")) return;
   agentRunning = "agent-followup";
   try {
     await startArea("ask");                // this ask only, from where the conversation ends now
-    await post("/api/agent-followup", { job: job(), text, images: pastedFor("agent-ask") });
+    await post("/api/agent-followup", { job: job(), text, kind, images: pastedFor("agent-ask") });
     $("agent-ask").value = "";
+    delete $("ask-kind").dataset.chosen;
     clearPasted("agent-ask");
     follow("agent-followup", $("ask-log"), $("ask-state"), () => {
       refreshReview();
@@ -3319,7 +3385,7 @@ api("/api/converted-suites").then((r) => {
 // server, not remembered: after a reload, or with the job box changed
 // since, what this page started last is not what is running.
 async function stopAgent(stateEl) {
-  const others = ["agent-generate", "agent-automate", "agent-review", "agent-followup", "agent-patches",
+  const others = ["agent-generate", "agent-automate", "agent-review", "agent-followup", "agent-question", "agent-patches",
                   "agent-reapply", "fix-brief"].filter((r) => r !== agentRunning);
   try {
     let stopped = false;

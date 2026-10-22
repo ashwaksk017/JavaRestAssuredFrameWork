@@ -387,10 +387,19 @@ class Handler(BaseHTTPRequestHandler):
                 if len(text) > 20000:
                     raise ValueError("that is more than 20,000 characters; keep the ask short")
                 os.makedirs(out, exist_ok=True)
-                with io.open(os.path.join(out, "agent-followup.txt"), "w", encoding="utf-8") as fh:
+                # A question is answered (ask.py): Cursor reads, nothing is
+                # changed. The page says which it is; a caller that does
+                # not gets the wording's guess (ask.kind_of).
+                kind = body.get("kind")
+                if kind not in ("question", "change"):
+                    kind = jobs.ask.kind_of(text)
+                runnable = "agent-question" if kind == "question" else "agent-followup"
+                name = jobs.ask.QUESTION_FILE if kind == "question" else "agent-followup.txt"
+                with io.open(os.path.join(out, name), "w", encoding="utf-8") as fh:
                     fh.write(text)
-                return self._json(self._pasted(body, lambda: jobs.start(
-                    body.get("job", ""), "agent-followup", {"--job": body.get("job", "")})))
+                started = self._pasted(body, lambda: jobs.start(
+                    body.get("job", ""), runnable, {"--job": body.get("job", "")}))
+                return self._json(dict(started, runnable=runnable, kind=kind))
             if u.path == "/api/case-review":
                 # A person's decision on proposed cases: validated field by
                 # field in casereview.py, written only under the job.
