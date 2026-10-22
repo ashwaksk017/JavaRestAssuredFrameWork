@@ -549,18 +549,14 @@ def review(job: str, agent=None, root: str = "") -> dict:
     if not diff.strip():
         raise Refused("proposed.diff is empty: the run changed nothing that can be read.")
 
-    cfg_path = os.path.join(root, "src", "main", "resources", "program_configuration.json")
-    private = loop.config_secrets(cfg_path)
-    if os.path.isfile(cfg_path):
-        try:
-            with io.open(cfg_path, encoding="utf-8-sig") as fh:
-                json.load(fh)
-        except (OSError, ValueError):
-            # config_secrets answers "nothing private" for a file it
-            # cannot read. Sending the change on that basis is a guess.
-            raise Refused("program_configuration.json cannot be read, so nothing private "
-                          "could be taken out of the change before sending it. Fix the "
-                          "file (it must be valid JSON) and review again.") from None
+    try:
+        private = loop.private_config(root, strict=True)
+    except ValueError as e:
+        # config_secrets answers "nothing private" for a file it cannot
+        # read. Sending the change on that basis is a guess.
+        raise Refused(f"{e} cannot be read, so nothing private could be taken out of the "
+                      "change before sending it. Fix the file (it must be valid JSON) and "
+                      "review again.") from None
     # Redacted BEFORE it is cut into files: a quoted line is looked up in
     # the text the model was shown, not in the one it was not.
     shown, _ = design.redact(diff, private)

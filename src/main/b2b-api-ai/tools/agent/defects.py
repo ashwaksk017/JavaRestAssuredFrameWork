@@ -699,8 +699,7 @@ def cmd_suggest(job: str, keys: list = None, agent=None, root: str = "") -> dict
     wanted = [d for d in state["defects"] if not keys or d["key"] in set(keys)]
     if not wanted:
         raise Refused("none of those keys is among the loaded defects")
-    private = loop.config_secrets(os.path.join(
-        root, "src", "main", "resources", "program_configuration.json"))
+    private = loop.private_config(root)
     secret = ""
     by = "cursor"
     if agent is None:

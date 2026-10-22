@@ -18,13 +18,79 @@ what was found without showing what it is.
 """
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import os
+import threading
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CONFIG_REL = "src/main/resources/program_configuration.json"
 PROPS_REL = "src/main/resources/application.properties"
+
+# One configuration file a project, same layout (env blocks), each with its
+# own api / services / database AND jira / xray / confluence settings. The
+# workbench names a job's project in WORKBENCH_PROJECT for every command it
+# starts for that job; a test run passes -Dconfig.project=<project> to Java
+# (Config.java), which loads the same file. No project, or b2b: the file
+# every existing run has always used.
+DEFAULT_PROJECT = "b2b"
+PROJECT_FILES = {
+    "b2b": CONFIG_REL,
+    "goal": "src/main/resources/program_configuration.goal.json",
+}
+
+
+_LOCAL = threading.local()
+
+
+def active_project() -> str:
+    """The project of the code running now: a `using(...)` block of this
+    thread, else the command's WORKBENCH_PROJECT, else b2b. An unknown name
+    is an error, not B2B: a GOAL job reading B2B's Jira or gateway would
+    look like it worked."""
+    p = (getattr(_LOCAL, "project", "") or os.environ.get("WORKBENCH_PROJECT") or "").strip().lower()
+    if not p:
+        return DEFAULT_PROJECT
+    if p not in PROJECT_FILES:
+        raise ValueError(f"WORKBENCH_PROJECT={p!r} is not a project ({', '.join(sorted(PROJECT_FILES))})")
+    return p
+
+
+@contextlib.contextmanager
+def using(project: str):
+    """Read `project`'s configuration in THIS THREAD for the block's
+    duration (a check the server runs itself, not a job's command, which
+    gets WORKBENCH_PROJECT from jobs.start). Per thread, not the process's
+    environment: the server answers requests on several threads at once."""
+    p = str(project or DEFAULT_PROJECT).strip().lower()
+    if p not in PROJECT_FILES:
+        raise ValueError(f"{project!r} is not a project ({', '.join(sorted(PROJECT_FILES))})")
+    before = getattr(_LOCAL, "project", "")
+    _LOCAL.project = p
+    try:
+        yield p
+    finally:
+        _LOCAL.project = before
+
+
+def config_rel(project: str = None) -> str:
+    """The configuration file of a project (default: the active one), relative to the project folder."""
+    project = (project or active_project()).lower()
+    if project not in PROJECT_FILES:
+        raise ValueError(f"{project!r} is not a project ({', '.join(sorted(PROJECT_FILES))})")
+    return PROJECT_FILES[project]
+
+
+def config_path(root: str = None, project: str = None) -> str:
+    """The configuration file of a project (default: the active one), absolute."""
+    return os.path.join(root or ROOT, *config_rel(project).split("/"))
+
+
+def all_config_paths(root: str = None) -> list:
+    """Every project's configuration file -- for what must cover them all:
+    hiding their values from logs and prompts, putting them back after a run."""
+    return [os.path.join(root or ROOT, *rel.split("/")) for rel in PROJECT_FILES.values()]
 
 SECRET_HINTS = ("pat", "token", "secret", "password", "assertion", "key",
                 # A client id is half a client-credentials pair, and it
@@ -53,20 +119,21 @@ def active_env() -> tuple[str, str]:
 def load() -> tuple[dict, str]:
     """(the active env's block, a note about where it came from)."""
     env, src = active_env()
-    p = os.path.join(ROOT, CONFIG_REL.replace("/", os.sep))
+    rel = config_rel()
+    p = os.path.join(ROOT, rel.replace("/", os.sep))
     if not os.path.isfile(p):
-        return {}, (f"{CONFIG_REL} is absent -- copy "
+        return {}, (f"{rel} is absent -- copy "
                     f"program_configuration.example.json and fill it in "
-                    f"(env `{env}`, chosen by {src})")
+                    f"(project {active_project()}, env `{env}`, chosen by {src})")
     try:
-        with io.open(p, encoding="utf-8") as fh:
+        with io.open(p, encoding="utf-8-sig") as fh:
             doc = json.load(fh)
     except (OSError, ValueError) as e:
-        return {}, f"{CONFIG_REL} could not be read: {e}"
+        return {}, f"{rel} could not be read: {e}"
     block = doc.get(env)
     if not isinstance(block, dict):
         have = ", ".join(k for k in doc if not k.startswith("_")) or "(none)"
-        return {}, (f"no `{env}` block in {CONFIG_REL} (env chosen by {src}); "
+        return {}, (f"no `{env}` block in {rel} (env chosen by {src}); "
                     f"blocks present: {have}")
     return block, f"env `{env}` (by {src})"
 

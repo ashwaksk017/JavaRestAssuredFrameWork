@@ -245,6 +245,14 @@ RUNNABLES = {
         "label": "Check that the convert compiles; Cursor fixes each suite that does not",
         "options": {"--job": "text", "--no-cursor": "flag"},
     },
+    # The converted cases' ordered calls, by project (flowcatalog.py): what
+    # the Automate prompt shows as the flows nearest each case. Rebuilt after
+    # a convert; the result is committed.
+    "flow-catalog": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "flowcatalog.py"), "build"],
+        "label": "Rebuild the flow catalog from the converted suites (what Cursor reuses for new cases)",
+        "options": {},
+    },
     # The whole gate, as `python tools/verify_all.py`. No options: what it
     # checks is this tree. Offered after a convert.
     "verify-all": {
@@ -480,7 +488,12 @@ RUNNABLES = {
 # suite; an agent run during a convert would "put back" half-written
 # files.
 EXCLUSIVE = {"convert", "convert-fix", "agent-generate", "agent-followup", "agent-automate", "agent-run-tests", "agent-approve", "agent-discard",
-             "agent-reapply", "verify-all", "mvn-compile", "mvn-test"}
+             "agent-reapply", "verify-all", "mvn-compile", "mvn-test",
+             # Writes a committed file and reads _audit/: never beside a run or a convert.
+             "flow-catalog"}
+
+# Commands that are not a story's step: no project is passed to them.
+NO_PROJECT_RUNNABLES = {"convert", "convert-fix", "verify-all", "flow-catalog"}
 
 # The only options that may be given more than once.
 REPEATABLE = {"--link"}
@@ -890,12 +903,18 @@ def sources(job: str) -> dict:
     }
 
 
-def run_targets() -> dict:
-    """What the Run tests tab can run: suite files, groups, environments."""
+def run_targets(job: str = "") -> dict:
+    """What the Run tests tab can run: suite files, groups, and the
+    environments of the open job's project -- a GOAL job's run reads
+    GOAL's file, so B2B's blocks are not its choices -- with that project's
+    run environment as the default."""
     mvnrun = _tool("mvnrun")
-    envs = mvnrun.list_envs(ROOT)
+    project = intake.job_project(job_dir(job)) if job else intake.projectconfig.DEFAULT_PROJECT
+    envs = mvnrun.list_envs(ROOT, project)
+    loop = _loop_module()
     return {"suites": mvnrun.list_suites(ROOT), "groups": mvnrun.list_groups(ROOT),
-            "envs": envs["envs"], "active": envs["active"]}
+            "envs": envs["envs"], "active": loop.run_env_for(ROOT, loop.load_policy(), project),
+            "project": project}
 
 
 def devgap_request(job: str, ids) -> str:
@@ -1074,10 +1093,12 @@ def workflow_gate(job: str, runnable: str, options: dict) -> str:
     return ""
 
 
-def settings_save(changes: dict) -> dict:
-    """The Settings tab's save: refused while anything runs."""
+def settings_save(changes: dict, project: str = "") -> dict:
+    """The Settings tab's save, into the project's configuration file:
+    refused while anything runs."""
     now = running_now()
-    out = settings.save(changes, busy=f"{now[0][1]} (job {now[0][0]})" if now else "")
+    out = settings.save(changes, busy=f"{now[0][1]} (job {now[0][0]})" if now else "",
+                        project=project)
     if out.get("saved") and any(str(k).startswith("cursor") for k in (changes or {})):
         # The Cursor check ran only when the server started: a key saved
         # here left the page saying "not ready" until a restart. Checked
@@ -1205,6 +1226,49 @@ DESIGN_FILES = ("design.json", "design.md", "test-cases.csv", "xray.csv",
 
 
 MIGRATION_SCOPES = ("converted", "converter")
+
+
+PROJECT_LABELS = {"b2b": "B2B", "goal": "GOAL"}
+
+
+def project_info(job: str) -> dict:
+    """The job's project and the projects there are, each with its
+    configuration file (whether it is on this machine) and run environment."""
+    out = job_dir(job)
+    pc = intake.projectconfig
+    loop = _loop_module()
+    policy = loop.load_policy()
+    return {"project": intake.job_project(out),
+            # Chosen for this job (project.json), or only the default: a new
+            # job takes the project the page has selected.
+            "chosen": os.path.isfile(os.path.join(out, intake.PROJECT_FILE)),
+            "projects": [{"name": p, "label": PROJECT_LABELS.get(p, p.upper()),
+                          "config": rel, "config_exists": os.path.isfile(pc.config_path(ROOT, p)),
+                          "run_env": loop.run_env_for(ROOT, policy, p)}
+                         for p, rel in pc.PROJECT_FILES.items()]}
+
+
+def set_project(job: str, project: str) -> dict:
+    """Choose the job's project. Refused while a command of the job runs,
+    and while a change made for another project waits: its tests were
+    written for that project's flows and configuration."""
+    out = job_dir(job)
+    running = busy(job, tuple(RUNNABLES))
+    if running:
+        raise ValueError(f"{running} is running for this job: change the project when it has finished")
+    now = intake.job_project(out)
+    wanted = str(project or "").strip().lower()
+    review = _read_json(os.path.join(out, "review.json"))
+    if wanted != now and review.get("state") in ("pending-review", "verify-failed", "generating",
+                                                  "approved-local", "push-failed"):
+        raise ValueError(f"a change made for {PROJECT_LABELS.get(now, now)} is held by this job: "
+                         "finish it (push, or Discard) first, or start a new job for the other project")
+    intake.set_job_project(out, wanted)
+    info = project_info(job)
+    if wanted != now and any(os.path.isfile(os.path.join(out, n)) for n in ("intake.json", "design.json")):
+        info["note"] = ("this job's story and design were read with the other project's settings "
+                        "(its Jira): read the story again, and design again")
+    return info
 
 
 def busy(job: str, runnables=JOB_WRITERS) -> str:
@@ -1742,11 +1806,20 @@ def start(job: str, runnable: str, options: dict) -> dict:
 
     logf = io.open(log_path(job, runnable), "wb")
     try:
-        env = None
+        # Every command of a job reads ITS project's configuration
+        # (tools/jira/projectconfig.py) -- Jira, Xray, the services, the
+        # run's -Dconfig.project. Always set: a value left in the server's
+        # own environment must not decide another job's project.
+        env = dict(os.environ, WORKBENCH_PROJECT=intake.job_project(job_dir(job)))
+        if runnable in NO_PROJECT_RUNNABLES:
+            # Not a story's step: the converter, the gate (its tests build
+            # their own configuration), the catalog. The open job's project
+            # is not theirs.
+            env.pop("WORKBENCH_PROJECT", None)
         if runnable in ("convert", "convert-fix"):
             # The converter's Cursor conversation -- and the fixes after it --
             # in the file the Convert tab's Cursor log shows.
-            env = dict(os.environ, WORKBENCH_CURSOR_LOG=log_path(job, "migration-cursor"))
+            env["WORKBENCH_CURSOR_LOG"] = log_path(job, "migration-cursor")
         proc = subprocess.Popen(argv, cwd=ROOT, stdout=logf,
                                 stderr=subprocess.STDOUT, env=env, **NO_WINDOW)
     except Exception as e:

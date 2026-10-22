@@ -306,6 +306,17 @@ CHECKS = [
           "takes a finding's line number from the diff and not from the "
           "model, sets aside what quotes no line of the change, and says "
           "which files were not read"),
+    Check("agent-flowcatalog",
+          [PY, "tools/agent/test_flowcatalog.py"],
+          "the flow catalog holds each converted case's ordered calls by project, "
+          "finds the nearest flows for an endpoint (also one nothing calls yet), "
+          "and the committed catalog carries no ticket key, host, SQL or email"),
+    Check("agent-projects",
+          [PY, "tools/agent/test_projects.py"],
+          "each project (B2B, GOAL) reads its own configuration file -- Jira, "
+          "Xray, services, run environment -- every command of a job carries the "
+          "job's project, a GOAL run refuses a block without GOAL's service, and "
+          "every project's secrets are kept out of prompts and logs"),
     Check("agent-storykeys",
           [PY, "tools/agent/test_storykeys.py"],
           "a job with no Xray keys is told of, and can take, the keys an earlier "

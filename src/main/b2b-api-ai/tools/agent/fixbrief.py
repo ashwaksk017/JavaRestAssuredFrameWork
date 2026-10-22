@@ -92,8 +92,7 @@ def _text(path: str, cap: int = 2_000_000) -> str:
 def _redactor(root: str):
     """Everything quoted from a run goes through this: the configured
     secrets and hosts, then the general redaction."""
-    private = loop.config_secrets(os.path.join(root, "src", "main", "resources",
-                                               "program_configuration.json"))
+    private = loop.private_config(root)
     values = sorted((v for v in private if isinstance(v, str) and len(v) >= 4), key=len, reverse=True)
 
     def host(m) -> str:

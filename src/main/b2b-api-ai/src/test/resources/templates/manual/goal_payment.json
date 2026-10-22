@@ -1,0 +1,17 @@
+{
+  "startDate": "#arrivalDate#",
+  "endDate": "#departureDate#",
+  "groupName": "<<company>>",
+  "meetingFacilitiesRequired": false,
+  "roomBlockRequired": true,
+  "paymentCard": { "cardNumber": "4444111144441111", "cardCode": "VI", "cardExpireDate": "1131" },
+  "cardHolderName": { "firstName": "<<firstname>>", "lastName": "<<lastname>>" },
+  "groupBookingContact": {
+    "firstName": "<<firstname>>",
+    "lastName": "<<lastname>>",
+    "address": { "addressLine1": "123 Main St", "city": "Memphis", "postalCode": "38103", "state": "TN",
+                 "country": "US" },
+    "phone": { "phoneNumber": "<<phone>>", "phoneType": "mobile", "phoneCountry": "001" },
+    "email": { "emailAddress": "group.contact@example.com", "emailType": "business" }
+  }
+}

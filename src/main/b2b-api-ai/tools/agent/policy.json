@@ -93,6 +93,7 @@
  },
  "protected_files": [
   "src/main/resources/program_configuration.json",
+  "src/main/resources/program_configuration.goal.json",
   "tools/ra_converter/cursor_agent.json"
  ],
  "repair_attempts": "until-fixed",
@@ -119,5 +120,27 @@
   "master"
  ],
  "require_green_run": true,
- "run_env": "stg"
+ "run_env": "stg",
+ "projects": {
+  "b2b": {
+   "label": "B2B",
+   "flows": ".cursor/skills/jira-to-restassured/B2B_FLOWS.md",
+   "pattern_example": [
+    "src/test/java/com/hi/api/tests/examples/StoryTestExample.java"
+   ],
+   "app_skill": ".cursor/skills/app-b2b/SKILL.md",
+   "base_class": "StoryTestBase",
+   "run_env": "stg"
+  },
+  "goal": {
+   "label": "GOAL",
+   "flows": ".cursor/skills/jira-to-restassured/GOAL_FLOWS.md",
+   "pattern_example": [
+    "src/test/java/com/hi/api/tests/examples/GoalStoryTestExample.java"
+   ],
+   "app_skill": ".cursor/skills/app-goal/SKILL.md",
+   "base_class": "GoalStoryTestBase",
+   "run_env": "stg"
+  }
+ }
 }

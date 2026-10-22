@@ -55,6 +55,38 @@ def _load(name: str, path: str):
 
 
 loop = _load("mvnrun_loop", os.path.join(HERE, "loop.py"))
+projectconfig = loop.intake.projectconfig
+
+# What a project's environment block must have for its tests to reach the
+# right service. Seen: GOAL ran green under a `stg` block that carries GOAL's
+# services.*; a block without them sends GOAL calls to the B2B gateway.
+PROJECT_NEEDS = {"goal": ("services.hospitality_internal_all_v2",)}
+
+
+def project_preflight(root: str, project: str, env: str) -> str:
+    """Why `project`'s tests cannot run on `env`, or ""."""
+    need = PROJECT_NEEDS.get(project) or ()
+    if not need:
+        return ""
+    rel = projectconfig.config_rel(project)
+    try:
+        with io.open(projectconfig.config_path(root, project), encoding="utf-8-sig") as fh:
+            block = json.load(fh).get(env)
+    except OSError:
+        return f"{rel} is absent: the {project} project's configuration file is needed for its tests"
+    except ValueError:
+        return f"{rel} cannot be read (it must be valid JSON)"
+    if not isinstance(block, dict):
+        return f"{rel} has no `{env}` block (choose the {project} run environment on the Settings tab)"
+    missing = []
+    for key in need:
+        node = block
+        for part in key.split("."):
+            node = node.get(part) if isinstance(node, dict) else None
+        if not (isinstance(node, str) and node.strip()):
+            missing.append(key)
+    return (f"`{env}` in {rel} has no {', '.join(missing)}: {project} calls would go to another "
+            f"service. Set it, or choose another environment for {project}") if missing else ""
 buildsteps = _load("mvnrun_buildsteps", os.path.join(HERE, "buildsteps.py"))
 execution = loop.execution
 diag = loop.diag
@@ -102,13 +134,14 @@ def list_suites(root: str = "") -> list:
     return out
 
 
-def list_envs(root: str = "") -> dict:
-    """{"envs": [...], "active": str}: the blocks of program_configuration.json."""
+def list_envs(root: str = "", project: str = "") -> dict:
+    """{"envs": [...], "active": str}: the environment blocks of the
+    project's configuration file (default: the active project's)."""
     root = root or ROOT
     envs = []
     try:
-        with io.open(os.path.join(root, "src", "main", "resources", "program_configuration.json"),
-                     encoding="utf-8-sig") as fh:
+        pc = _load("mvnrun_projectconfig", os.path.join(os.path.dirname(HERE), "jira", "projectconfig.py"))
+        with io.open(pc.config_path(root, project or None), encoding="utf-8-sig") as fh:
             doc = json.load(fh)
         envs = [k for k, v in doc.items() if isinstance(v, dict) and ENV_RX.match(k)]
     except (OSError, ValueError, AttributeError):
@@ -397,7 +430,12 @@ def cmd_test(job_dir: str, root: str, suite: str = "", test: str = "", group: st
     except ValueError as e:
         say(f"FAIL {e}")
         return 1
-    result = {"kind": "mvnrun", "what": "test", "at": _now(), "env": env,
+    project = projectconfig.active_project()
+    why = project_preflight(root, project, env)
+    if why:
+        say(f"FAIL {why}")
+        return 1
+    result = {"kind": "mvnrun", "what": "test", "at": _now(), "env": env, "project": project,
               "suite": suite, "test": test, "group": group.strip()}
     if compile_first:
         rc, part = compile_(job_dir, root, runner, clean=True)
@@ -408,6 +446,9 @@ def cmd_test(job_dir: str, root: str, suite: str = "", test: str = "", group: st
             say("FAIL the compile failed: no test was run")
             return 1
     args = ["test", f"-Denv={env}", "-DfailIfNoTests=false", "-Dsurefire.failIfNoSpecifiedTests=false"]
+    # Always named, B2B too: a CONFIG_PROJECT left in the machine's environment
+    # must not move a B2B run to another file (Config.java reads it otherwise).
+    args.append(f"-Dconfig.project={project}")
     if suite:
         args.append(f"-DsuiteXmlFile={suite}")
         what = suite

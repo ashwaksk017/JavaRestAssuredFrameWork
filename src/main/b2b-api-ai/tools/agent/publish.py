@@ -272,15 +272,11 @@ def expected(expect: str, mocked: bool, what: str) -> None:
 
 def private_values(root: str) -> dict:
     """The values that must not leave. Refuses when they cannot be known."""
-    path = os.path.join(root, "src", "main", "resources", "program_configuration.json")
-    if os.path.isfile(path):
-        try:
-            with io.open(path, encoding="utf-8-sig") as fh:
-                json.load(fh)
-        except (OSError, ValueError):
-            raise Refused("program_configuration.json cannot be read, so what is about to "
-                          "be sent cannot be checked for private values. Fix the file.") from None
-    return loop.config_secrets(path)
+    try:
+        return loop.private_config(root, strict=True)
+    except ValueError as e:
+        raise Refused(f"{e} cannot be read, so what is about to be sent cannot be checked "
+                      "for private values. Fix the file.") from None
 
 
 def _unescaped(text: str) -> str:

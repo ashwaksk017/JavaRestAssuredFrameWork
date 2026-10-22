@@ -121,6 +121,23 @@ public final class JsonTokens {
         return request(payload);
     }
 
+    /**
+     * The same JSON token request, sent to ONE given token URL -- a service's
+     * own ({@code Config.serviceBase(key, ...) + ApiRoutes.TOKEN}), as the
+     * converted GOAL suites mint theirs. {@code username} / {@code password}
+     * are sent when not blank (the project credential of the block).
+     */
+    public static Session at(String tokenUrl, String username, String password) {
+        Map<String, String> payload = base();
+        if (username != null && !username.isBlank()) {
+            payload.put("username", username);
+        }
+        if (password != null && !password.isBlank()) {
+            payload.put("password", password);
+        }
+        return request(payload, java.util.Collections.singletonList(tokenUrl));
+    }
+
     private static Map<String, String> base() {
         String why = missingConfig();
         if (!why.isEmpty()) {
@@ -133,6 +150,10 @@ public final class JsonTokens {
     }
 
     private static Session request(Map<String, String> payload) {
+        return request(payload, tokenUrls());
+    }
+
+    private static Session request(Map<String, String> payload, List<String> urls) {
         String body;
         try {
             body = JSON.writeValueAsString(payload);
@@ -140,7 +161,6 @@ public final class JsonTokens {
             throw new IllegalStateException("cannot serialise the token body", e);
         }
         Map<String, String> headers = Headers.builder().contentTypeJson().acceptJson().build();
-        List<String> urls = tokenUrls();
         Response res = null;
         String status = "";
         for (int i = 0; i < urls.size(); i++) {

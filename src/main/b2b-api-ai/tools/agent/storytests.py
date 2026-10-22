@@ -108,6 +108,26 @@ def _jira_spend_detail_guest_id_issues(norm: str, text: str) -> list:
             "(skill recipe R2, B2B_FLOWS.md)"]
 
 
+# StoryTestBase, or a project's base built on it (GoalStoryTestBase).
+_EXTENDS_BASE_RX = re.compile(r"\bextends\s+(?:[\w.]+\.)?(?:Goal)?StoryTestBase\b")
+_GOAL_TEST_RX = re.compile(r"\bextends\s+(?:[\w.]+\.)?GoalStoryTestBase\b")
+_DATE_LITERAL_RX = re.compile(r'"(20\d\d-[01]\d-[0-3]\d)"')
+
+
+def _goal_issues(norm: str, code: str) -> list:
+    """A GOAL test finds its property and dates (findAvailability): a date
+    written into the source is a frozen one -- seen in the converted CSVs,
+    last-run dates that later fail when the date has passed."""
+    if not _GOAL_TEST_RX.search(code):
+        return []
+    dates = sorted(set(_DATE_LITERAL_RX.findall(code)))
+    if not dates:
+        return []
+    return [f"{norm}: a fixed date in a GOAL test ({', '.join(dates[:3])}): dates come from "
+            "findAvailability (av.arrivalDate / av.departureDate) or from LocalDate.now() "
+            "(GOAL_FLOWS.md section 4)"]
+
+
 def _jira_person_issues(norm: str, code: str) -> list:
     """A person logged in or identified from configuration (see _PERSON_KEY_RX)."""
     issues = []
@@ -256,6 +276,9 @@ _SHARED_HELPERS = (
      r"|\w*TokenUrl|memberPathAuth|\w*(?:Coordinator|Owner|Member|Guest|Persona)Auth",
      "a token: serviceToken() / clientToken() / an enrolled actor's accessToken"),
     (r"guestIdFrom\w*", "a guest id: enrollActor(...).guestId, from the enrol response"),
+    (r"goalToken\w*|goalBase|findAvailability|createGroup\w*|payGroup|confirmGroup",
+     "GOAL's steps: goalToken / findAvailability / createGroup / payGroup / confirmGroup "
+     "(GoalStoryTestBase, GOAL_FLOWS.md)"),
     (r"serviceToken\w*|enrollActor|createAccountFor|ownerMemberId|inviteKey|addMember|activateMember"
      r"|activateAccount|setMemberRole|confirmOwnerValidation|requireDb",
      "the people a test needs: enrollActor / createAccountFor / addMember / activateMember / "
@@ -296,7 +319,7 @@ def _shared_helper_issues(norm: str, text: str) -> list:
     nor is a public method of another type (Callable.call)."""
     issues = []
     has_test = bool(_TEST_ANNOTATION_RX.search(text))
-    if has_test and not re.search(r"\bextends\s+(?:[\w.]+\.)?StoryTestBase\b", text):
+    if has_test and not _EXTENDS_BASE_RX.search(text):
         issues.append(f"{norm}: a story test extends StoryTestBase (com.hi.api.tests), which has the "
                       "token, guest id, headers, row/config and enrolment helpers -- see the skill, "
                       "section 2")
@@ -350,7 +373,7 @@ def _new_shared_helper_issues(root: str, norm: str, text: str) -> list:
     demand a migration -- only for what this change adds; and it is told."""
     now = _shared_helper_issues(norm, text)
     base = _head_text(root, norm)
-    if not base or re.search(r"\bextends\s+(?:[\w.]+\.)?StoryTestBase\b", base):
+    if not base or _EXTENDS_BASE_RX.search(base):
         return now
     had = set(_shared_helper_issues(norm, base))
     added = [i for i in now if i not in had and "a story test extends StoryTestBase" not in i]
@@ -396,6 +419,7 @@ def jira_parity_issues(root: str, rel_paths: list) -> list:
                               "-- use StoryTestBase's enrollActor(row, template, CASE), which does")
         issues.extend(_jira_spend_detail_guest_id_issues(norm, text))
         issues.extend(_new_person_issues(root, norm, code))
+        issues.extend(_goal_issues(norm, code))
         issues.extend(_template_fixed_value_issues(root, norm, text))
         issues.extend(_new_shared_helper_issues(root, norm, text))
         cls = os.path.basename(norm)[:-5]

@@ -101,10 +101,21 @@ def workbench_settings(root: str = "") -> dict:
         return {}
 
 
-def environments(root: str = "") -> list:
-    """The environment blocks of program_configuration.json."""
+def _rel(project: str = "") -> str:
+    """The project's configuration file (tools/jira/projectconfig.py),
+    relative. No project named: the ACTIVE one -- inside a GOAL job's
+    command (xraypublish, xraytrace, a run) that is GOAL's file, not B2B's."""
+    return _projectconfig().config_rel(project or None)
+
+
+def _project(project: str = "") -> str:
+    return (project or _projectconfig().active_project()).lower()
+
+
+def environments(root: str = "", project: str = "") -> list:
+    """The environment blocks of the project's configuration file."""
     try:
-        doc = _read(root)
+        doc = _read(root, project)
     except (OSError, ValueError):
         return []
     return sorted(k for k, v in doc.items() if isinstance(v, dict) and not k.startswith("_")
@@ -117,19 +128,28 @@ def _projectconfig():
     return projectconfig
 
 
-def _path(root: str = "") -> str:
-    return os.path.join(root or ROOT, *CONFIG_REL.split("/"))
+def _path(root: str = "", project: str = "") -> str:
+    return os.path.join(root or ROOT, *_rel(project).split("/"))
 
 
-def _read(root: str = "") -> dict:
-    p = _path(root)
+def _read(root: str = "", project: str = "") -> dict:
+    p = _path(root, project)
     if not os.path.isfile(p):
         return {}
     with io.open(p, encoding="utf-8-sig") as fh:
         doc = json.load(fh)
     if not isinstance(doc, dict):
-        raise ValueError(f"{CONFIG_REL} is not a JSON object")
+        raise ValueError(f"{_rel(project)} is not a JSON object")
     return doc
+
+
+def run_env_of(wb: dict, project: str = "") -> str:
+    """The run environment chosen on this tab for a project (B2B keeps the
+    `run_env` it always had; another project has its own)."""
+    project = _project(project)
+    if project == "b2b":
+        return str(wb.get("run_env") or "stg")
+    return str(((wb.get("projects") or {}).get(project) or {}).get("run_env") or "stg")
 
 
 def _env(root: str = "") -> tuple:
@@ -161,14 +181,18 @@ def _cursor_runtime(root: str = "") -> dict:
                 "problem": "not checked yet — restart the workbench server"}
 
 
-def status(root: str = "") -> dict:
+def status(root: str = "", project: str = "") -> dict:
+    """What is set, for the page -- never a token's value. `project`: whose
+    configuration file (b2b: program_configuration.json)."""
+    project = _project(project)
+    rel = _rel(project)
     cur = _cursor_read(root)
-    """What is set, for the page -- never a token's value."""
     env, source = _env(root)
     try:
-        doc = _read(root)
+        doc = _read(root, project)
     except (OSError, ValueError) as e:
-        return {"env": env, "env_from": source, "problem": f"{CONFIG_REL} cannot be read: {e}"}
+        return {"env": env, "env_from": source, "project": project, "file": rel,
+                "problem": f"{rel} cannot be read: {e}"}
     block = doc.get(env) if isinstance(doc.get(env), dict) else {}
     jira = block.get("jira_config") if isinstance(block.get("jira_config"), dict) else {}
     conf = block.get("confluence_config") if isinstance(block.get("confluence_config"), dict) else {}
@@ -184,11 +208,12 @@ def status(root: str = "") -> dict:
                         "projects": [str(p) for p in publish.get("projects") or []],
                         "issue_type": str(publish.get("test_issue_type") or "Test"),
                         "link_type": str(publish.get("test_link_type") or "Tests")},
-        "run": {"env": str(wb.get("run_env") or "stg"), "envs": environments(root),
+        "project": project,
+        "run": {"env": run_env_of(wb, project), "envs": environments(root, project),
                 "timeout_min": int(wb.get("run_timeout_min") or 45)},
         "suite_map": {"always": mapping.get("always") or [], "rules": mapping.get("rules") or [],
                       "local": os.path.isfile(local_map), "problem": mapping.get("problem", "")},
-        "env": env, "env_from": source, "file": CONFIG_REL, "exists": os.path.isfile(_path(root)),
+        "env": env, "env_from": source, "file": rel, "exists": os.path.isfile(_path(root, project)),
         "jira": {"base_urls": [str(u) for u in jira.get("base_urls") or []],
                  "pat": _token_state(jira.get("pat"))},
         "confluence": {"base_urls": [str(u) for u in conf.get("base_urls") or []],
@@ -227,7 +252,7 @@ def _token(value, what: str) -> str:
     return v
 
 
-def save(changes: dict, root: str = "", busy=None) -> dict:
+def save(changes: dict, root: str = "", busy=None, project: str = "") -> dict:
     """Write what the page sent into the active environment's block. Fields
     missing from `changes` stay as they are; a token sent empty stays as it
     is; `<what>_clear: true` removes that token. Refused while `busy`
@@ -237,8 +262,10 @@ def save(changes: dict, root: str = "", busy=None) -> dict:
         raise ValueError(f"{busy} is running: save the settings when nothing is running")
     if not isinstance(changes, dict):
         raise ValueError("send the settings as an object")
+    project = _project(project)
+    CONFIG_REL = _rel(project)                           # this save's file, in every message below
     env, _source = _env(root)
-    doc = _read(root)
+    doc = _read(root, project)
     block = doc.setdefault(env, {})
     if not isinstance(block, dict):
         raise ValueError(f"`{env}` in {CONFIG_REL} is not an object")
@@ -361,9 +388,12 @@ def save(changes: dict, root: str = "", busy=None) -> dict:
     wb_changed = False
     if "run_env" in changes:
         v = str(changes.get("run_env") or "").strip()
-        if v not in environments(root):
+        if v not in environments(root, project):
             raise ValueError(f"{v!r} is not an environment of {CONFIG_REL}")
-        wb["run_env"] = v
+        if project == "b2b":
+            wb["run_env"] = v
+        else:
+            wb.setdefault("projects", {}).setdefault(project, {})["run_env"] = v
         wb_changed = True
         said.append(f"tests run against {v}")
     if "run_timeout_min" in changes:
@@ -401,11 +431,11 @@ def save(changes: dict, root: str = "", busy=None) -> dict:
         map_change = {"about": "This machine's suite mapping, set on the Settings tab.",
                       "always": always, "rules": rules}
         said.append("suite mapping")
-    unchanged = json.dumps(doc, sort_keys=True) == json.dumps(_read(root), sort_keys=True)
+    unchanged = json.dumps(doc, sort_keys=True) == json.dumps(_read(root, project), sort_keys=True)
     if not said or (unchanged and not wb_changed and map_change is None and not cur_changed):
-        return {"saved": False, "said": "nothing to change", "status": status(root)}
+        return {"saved": False, "said": "nothing to change", "status": status(root, project)}
     if not unchanged:
-        _write(doc, root)
+        _write(doc, root, project)
     if cur_changed:
         cur.setdefault("enabled", False)        # the converter's own assist stays as it was
         _cursor_write(cur, root)
@@ -423,7 +453,7 @@ def save(changes: dict, root: str = "", busy=None) -> dict:
         os.makedirs(os.path.dirname(local_map), exist_ok=True)
         with io.open(local_map, "w", encoding="utf-8") as fh:
             json.dump(map_change, fh, indent=1)
-    return {"saved": True, "said": ", ".join(said), "env": env, "status": status(root)}
+    return {"saved": True, "said": ", ".join(said), "env": env, "status": status(root, project)}
 
 
 _SECRET_KEYS = ("pat", "token", "password", "secret", "clientsecret", "apikey", "api_key")
@@ -440,8 +470,11 @@ def _without_tokens(node):
     return node
 
 
-def _write(doc: dict, root: str = "") -> None:
-    p = _path(root)
+def _write(doc: dict, root: str = "", project: str = "") -> None:
+    p = _path(root, project)
+    # Backups of each project's file apart: program_configuration-<stamp>,
+    # program_configuration.goal-<stamp>.
+    prefix = os.path.basename(p)[:-len(".json")] + "-"
     os.makedirs(os.path.dirname(p), exist_ok=True)
     keep = os.path.join(root or ROOT, BACKUPS)
     if os.path.isfile(p):
@@ -455,13 +488,13 @@ def _write(doc: dict, root: str = "") -> None:
         # replaced the first.
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
         n = 1                                   # numbered, so the names sort in order
-        name = f"program_configuration-{stamp}-{n:02d}.json"
+        name = f"{prefix}{stamp}-{n:02d}.json"
         while os.path.exists(os.path.join(keep, name)):
             n += 1
-            name = f"program_configuration-{stamp}-{n:02d}.json"
+            name = f"{prefix}{stamp}-{n:02d}.json"
         with io.open(os.path.join(keep, name), "w", encoding="utf-8") as fh:
             json.dump(_without_tokens(before), fh, indent=2)
-        old = sorted(n for n in os.listdir(keep) if n.startswith("program_configuration-"))
+        old = sorted(n for n in os.listdir(keep) if n.startswith(prefix))
         for name in old:
             full = os.path.join(keep, name)
             try:

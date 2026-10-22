@@ -206,6 +206,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({k: {"label": v["label"],
                                        "options": v["options"]}
                                    for k, v in jobs.RUNNABLES.items()})
+            if u.path == "/api/project":
+                return self._json(jobs.project_info(q.get("job", "")))
             if u.path == "/api/converted-suites":
                 return self._json({"suites": jobs.converted_suites()})
             if u.path == "/api/repo":
@@ -226,7 +228,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(jobs.workflow_status(q.get("job", "")))
             if u.path == "/api/settings":
                 # What is set -- never a token's value.
-                return self._json(jobs.settings.status())
+                return self._json(jobs.settings.status(project=q.get("project", "")))
             if u.path == "/api/suite-groups":
                 # Which suites each designed case's test runs in.
                 sm = jobs.casereview._suitemap()
@@ -237,7 +239,7 @@ class Handler(BaseHTTPRequestHandler):
                 # What the job's cases were designed from: names and sizes.
                 return self._json(jobs.sources(q.get("job", "")))
             if u.path == "/api/run-targets":
-                return self._json(jobs.run_targets())
+                return self._json(jobs.run_targets(q.get("job", "")))
             if u.path == "/api/uploads":
                 return self._json({"files": jobs.list_uploads()})
             if u.path == "/api/spec":
@@ -366,17 +368,23 @@ class Handler(BaseHTTPRequestHandler):
                     body.get("job", ""), body.get("scope", ""), body.get("suite", ""),
                     body.get("text", ""))))
             if u.path == "/api/settings":
-                return self._json(jobs.settings_save(body.get("changes") or {}))
+                return self._json(jobs.settings_save(body.get("changes") or {}, body.get("project", "")))
             if u.path == "/api/workflow":
                 return self._json(jobs.workflow_act(body.get("job", ""), str(body.get("action") or "")))
             if u.path == "/api/settings-check":
                 # Asks Jira who the saved token belongs to; the answer, never the token.
-                conn = jobs.intake.jira_search.connect()
-                return self._json({"jira": jobs.intake.token_verdict(conn) or "it could not be asked"})
+                with jobs.intake.projectconfig.using(body.get("project") or "b2b"):
+                    conn = jobs.intake.jira_search.connect()
+                    verdict = jobs.intake.token_verdict(conn)
+                return self._json({"jira": verdict or "it could not be asked"})
             if u.path == "/api/workbench-ask":
                 # A change to the workbench itself: its own job, and only
                 # while nothing else runs (jobs.workbench_ask).
                 return self._json(jobs.workbench_ask(body.get("text"), body.get("images")))
+            if u.path == "/api/project":
+                # Which project's flows, golden test, configuration and run
+                # environment this job's commands use (jobs.set_project).
+                return self._json(jobs.set_project(body.get("job", ""), body.get("project", "")))
             if u.path == "/api/agent-followup":
                 # What the reviewer asks Cursor to change, kept with the job
                 # under a fixed name; the command reads it from there.

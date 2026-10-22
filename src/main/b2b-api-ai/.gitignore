@@ -65,6 +65,9 @@ src/main/resources/config/prod.json
 # (with placeholder values) IS committed so contributors see the shape.
 src/main/resources/program_configuration.json
 program_configuration.json
+# One file a project (tools/jira/projectconfig.py PROJECT_FILES): GOAL's.
+src/main/resources/program_configuration.goal.json
+program_configuration.goal.json
 
 # ra_converter output derived from customer SoapUI project XMLs.
 # The input XML is gitignored (tools/ra_converter/.gitignore), and the

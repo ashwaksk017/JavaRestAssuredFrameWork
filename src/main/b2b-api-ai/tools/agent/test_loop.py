@@ -355,6 +355,7 @@ class InsideThePaths(Repo):
                 self.assertTrue(loop.in_roots(rel, scopes[name]["write_roots"]), f"{name}: {rel}")
         self.assertEqual(loop.load_policy()["protected_files"],
                          ["src/main/resources/program_configuration.json",
+                          "src/main/resources/program_configuration.goal.json",
                           "tools/ra_converter/cursor_agent.json"], "the credentials stay put back")
         # The rule itself, for a scope with limits:
         roots = ["src/", "!src/main/java/com/hi/api/support/", "!src/main/java/com/hi/api/rest/clients/", "!src/test/java/com/hi/api/tests/imported/", "!src/test/java/com/hi/api/tests/classic/", "!src/main/resources/templates/", "!src/test/resources/csv/", "src/test/resources/csv/manual/", "Suites/jira/"]

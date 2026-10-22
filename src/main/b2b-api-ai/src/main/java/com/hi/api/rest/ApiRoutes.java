@@ -49,6 +49,12 @@ public final class ApiRoutes {
     public static final String GUEST_BUSINESS_MEMBER =
             "/guests/{guestId}/businesses/{accountId}/members/{memberId}";
     public static final String BUSINESS_MEMBER_ACTIVATE = "/businesses/{accountId}/members/{memberId}/activate";
+    // GOAL groups, as the converted GOAL suites call them (GOAL_FLOWS.md).
+    /** GET: the shop quote of one property (arrivalDate, departureDate[, peakRooms]); POST: create the group. */
+    public static final String PROP_GROUPS = "/props/{propCode}/groups";
+    public static final String PROP_GROUP_PAYMENT = "/props/{propCode}/groups/{groupId}/payment";
+    public static final String PROP_GROUP_CONFIRM = "/props/{propCode}/groups/{groupId}/confirm";
+    public static final String PROP_ROOMING_LIST = "/props/{propCode}/roomingList";
 
     private ApiRoutes() {}
 

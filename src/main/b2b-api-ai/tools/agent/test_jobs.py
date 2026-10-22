@@ -280,7 +280,7 @@ class SavingCursorSettings(unittest.TestCase):
         jobs.running_now = lambda: []
 
     def save(self, changes, saved=True):
-        jobs.settings.save = lambda c, busy="": {"saved": saved}
+        jobs.settings.save = lambda c, busy="", project="": {"saved": saved}
         return jobs.settings_save(changes)
 
     def test_a_saved_cursor_setting_checks_cursor_again(self):

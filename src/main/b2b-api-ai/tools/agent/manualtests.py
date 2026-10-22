@@ -823,16 +823,12 @@ def generate(job: str, app: str = "", speed: str = "balanced", agent=None,
     if speed not in SPEEDS:
         raise Refused(f"unknown speed {speed!r}. Known: {', '.join(SPEEDS)}")
     max_cases = SPEEDS[speed]
-    cfg_path = os.path.join(root, "src", "main", "resources", "program_configuration.json")
-    private = loop.config_secrets(cfg_path)
-    if os.path.isfile(cfg_path):
-        try:
-            with io.open(cfg_path, encoding="utf-8-sig") as fh:
-                json.load(fh)
-        except (OSError, ValueError):
-            raise Refused("program_configuration.json cannot be read, so nothing private "
-                          "could be taken out of the documents before sending them. Fix "
-                          "the file (it must be valid JSON) and try again.") from None
+    try:
+        private = loop.private_config(root, strict=True)
+    except ValueError as e:
+        raise Refused(f"{e} cannot be read, so nothing private could be taken out of the "
+                      "documents before sending them. Fix the file (it must be valid JSON) "
+                      "and try again.") from None
 
     # ---- what is sent ----
     documents, parts, budget, warnings, dropped = [], [], DOCS_CHARS, [], []

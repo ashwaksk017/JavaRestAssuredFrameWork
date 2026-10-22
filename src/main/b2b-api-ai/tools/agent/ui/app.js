@@ -554,6 +554,46 @@ async function showSources(j) {
 showSources();
 $("job").addEventListener("change", () => showSources());
 
+// ---- the job's project (B2B / GOAL): its flows, golden test, configuration file ----
+const pageProject = () =>
+  (document.querySelector('input[name="project-pick"]:checked') || {}).value || "b2b";
+async function showProject() {
+  const j = job();
+  if (!j) return;
+  try {
+    let r = await api(`/api/project?job=${encodeURIComponent(j)}`);
+    if (j !== job()) return;
+    // A job with no project chosen yet takes the one selected on the page
+    // (picked before the job was named); it is not flipped back to B2B.
+    if (!r.chosen && r.project !== pageProject()) {
+      r = await post("/api/project", { job: j, project: pageProject() });
+      if (j !== job()) return;
+    }
+    const radio = document.querySelector(`input[name="project-pick"][value="${r.project}"]`);
+    if (radio) radio.checked = true;
+    const p = (r.projects || []).find((x) => x.name === r.project) || {};
+    setState($("project-state"), p.config_exists ? "" : "warn", p.config_exists
+      ? `${p.config} -- tests run on ${p.run_env}`
+      : `${p.config} is not on this machine: this project's tests cannot run here until it is`);
+  } catch (e) { setState($("project-state"), "bad", e.message); }
+}
+for (const r of document.querySelectorAll('input[name="project-pick"]')) {
+  r.addEventListener("change", async () => {
+    const j = job();
+    if (!j) { setState($("project-state"), "bad", "name a job first"); return; }
+    let note = "";
+    try {
+      note = ((await post("/api/project", { job: j, project: r.value })) || {}).note || "";
+    } catch (e) {
+      setState($("project-state"), "bad", e.message);
+    }
+    await showProject();               // what the server holds, whatever happened
+    if (note) setState($("project-state"), "warn", note);
+  });
+}
+$("job").addEventListener("change", showProject);
+showProject();
+
 // Several stories: one job each, named by its key, all read at once. The
 // Confluence links given go with every one; what was pasted goes with
 // none -- a paste is about one story, and which one cannot be told.
@@ -591,6 +631,8 @@ async function readStories(stories, links) {
   draw();
   await Promise.all(stories.map(async (s) => {
     try {
+      // The job's project first: the story is read with that project's Jira.
+      await post("/api/project", { job: s.key, project: pageProject() });
       await post("/api/intake", { job: s.key, text: "", pages: "", links: [s.given].concat(links) });
     } catch (e) {
       rows.set(s.key, { state: `not started: ${e.message}`, cls: "bad" });
@@ -1868,7 +1910,10 @@ $("job").addEventListener("change", () => showDevcode());
 const runJob = () => job() || "runs";
 let runTargets = null;
 async function loadRunTargets() {
-  try { runTargets = await api("/api/run-targets"); } catch (e) { setState($("run-state"), "bad", e.message); return; }
+  try { runTargets = await api(`/api/run-targets?job=${encodeURIComponent(job() || "")}`); }
+  catch (e) { setState($("run-state"), "bad", e.message); return; }
+  if (runTargets.project) setState($("run-state"), "", `project ${String(runTargets.project).toUpperCase()}: `
+    + `its configuration file and environments`);
   const keep = $("run-suite").value;
   const LABEL = { group: "Story suites by group", jira: "Story suites", project: "Project suites",
                   job: "One job's tests", converted: "Converted ReadyAPI suites" };
@@ -2166,6 +2211,13 @@ function runVerifyAll(j) {
 }
 
 $("run-verify").onclick = () => runVerifyAll(convertJob());
+$("run-flow-catalog").onclick = () => {
+  const j = convertJob();
+  $("verify-block").hidden = false;
+  post("/api/start", { job: j, runnable: "flow-catalog", options: {} })
+    .then(() => follow("flow-catalog", $("verify-log"), $("verify-state")))
+    .catch((e) => setState($("verify-state"), "bad", e.message));
+};
 
 // After a convert: compile; Cursor fixes each suite that does not compile
 // (tools/agent/convertfix.py). Its Cursor conversation is in the tab's Cursor log.
@@ -2710,9 +2762,14 @@ onTab.logs = showLogs;
 // ---- Settings: the Jira, Confluence and Xray connection ---------------------
 // The server says what is set; it never sends a token back. A token box left
 // empty keeps the token; the boxes are emptied after every save.
+const settingsProject = () =>
+  (document.querySelector('input[name="settings-project"]:checked') || {}).value || "b2b";
+for (const r of document.querySelectorAll('input[name="settings-project"]')) {
+  r.addEventListener("change", () => showSettings());
+}
 async function showSettings() {
   let s;
-  try { s = await api("/api/settings"); }
+  try { s = await api(`/api/settings?project=${encodeURIComponent(settingsProject())}`); }
   catch (e) { setState($("settings-state"), "bad", e.message); return; }
   const box = $("settings-env");
   box.replaceChildren();
@@ -2771,7 +2828,7 @@ function smRule(r) {
 $("set-sm-add").onclick = () => smRule(null);
 $("set-sm-reset").onclick = async () => {
   try {
-    const r = await post("/api/settings", { changes: { suite_map_reset: true } });
+    const r = await post("/api/settings", { changes: { suite_map_reset: true }, project: settingsProject() });
     setState($("settings-state"), "ok", `saved: ${r.said}`);
   } catch (e) { setState($("settings-state"), "bad", e.message); }
   showSettings();
@@ -2810,7 +2867,7 @@ $("settings-save").onclick = async () => {
   };
   if ($("set-run-env").value) changes.run_env = $("set-run-env").value;
   try {
-    const r = await post("/api/settings", { changes });
+    const r = await post("/api/settings", { changes, project: settingsProject() });
     setState($("settings-state"), r.saved ? "ok" : "", r.saved ? `saved: ${r.said}` : r.said);
   } catch (e) { setState($("settings-state"), "bad", e.message); }
   // The token boxes are emptied either way: nothing typed stays on the page.
@@ -2819,7 +2876,7 @@ $("settings-save").onclick = async () => {
 };
 $("settings-check").onclick = async () => {
   try {
-    const r = await post("/api/settings-check", {});
+    const r = await post("/api/settings-check", { project: settingsProject() });
     setState($("settings-state"), String(r.jira).startsWith("the token is accepted") ? "ok" : "bad", `Jira: ${r.jira}`);
   } catch (e) { setState($("settings-state"), "bad", e.message); }
 };

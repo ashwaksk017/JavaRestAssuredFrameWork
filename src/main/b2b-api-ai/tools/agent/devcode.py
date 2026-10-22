@@ -840,8 +840,7 @@ Reply with ONE JSON object and nothing else, no code fence:
 
 def ask_cursor(job_dir: str, root: str, ticket: str, diff: str, cases: list, agent=None) -> dict:
     """{"gaps": [...], "summary": str, "model": str} or {"error": str}."""
-    cfg_path = os.path.join(root, "src", "main", "resources", "program_configuration.json")
-    private = loop.config_secrets(cfg_path)
+    private = loop.private_config(root)
     shown, _ = design.redact(diff[:CURSOR_DIFF], private)
     shown, _ = design.hide_hosts(shown)
     shown = shown.replace("=====", "= = =")

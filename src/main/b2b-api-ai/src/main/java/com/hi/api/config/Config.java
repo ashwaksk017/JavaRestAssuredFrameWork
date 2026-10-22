@@ -168,7 +168,7 @@ public final class Config {
     private static void logStartupDiagnostics(String envName) {
         System.out.println("[Config] ============================================================");
         System.out.println("[Config] Active env: " + envName + "  (source: " + detectEnvSource() + ")");
-        System.out.println("[Config] program_configuration.json: "
+        System.out.println("[Config] Project: " + projectName() + "  ->  " + programConfigurationResource() + ": "
                 + (programConfig.isEmpty()
                         ? "NOT LOADED (file missing OR active env block missing)"
                         : "loaded (" + programConfig.size() + " keys under `" + envName + "` block)"));
@@ -774,6 +774,42 @@ public final class Config {
     }
 
     /**
+     * The project whose configuration this run reads: {@code -Dconfig.project}
+     * (the workbench passes it for a GOAL job), else {@code CONFIG_PROJECT},
+     * else {@code b2b}. Lower case.
+     */
+    public static String projectName() {
+        String p = System.getProperty("config.project");
+        if (!isNonEmpty(p)) {
+            p = System.getenv("CONFIG_PROJECT");
+        }
+        if (!isNonEmpty(p)) {
+            return "b2b";
+        }
+        String name = p.trim().toLowerCase(java.util.Locale.ROOT);
+        // A plain name only: it becomes part of a resource name.
+        if (!name.matches("[a-z0-9_-]{1,32}")) {
+            System.out.println("[Config-JSON] *** WARNING *** config.project `" + p
+                    + "` is not a project name: NOTHING is loaded");
+            return "invalid";
+        }
+        return name;
+    }
+
+    /**
+     * One configuration file a project, same layout:
+     * {@code program_configuration.json} for B2B (every run before projects),
+     * {@code program_configuration.<project>.json} for another
+     * (tools/jira/projectconfig.py PROJECT_FILES lists the same files). A
+     * project whose file is absent loads NOTHING -- never B2B's values,
+     * which would send a GOAL run to the B2B gateway looking configured.
+     */
+    static String programConfigurationResource() {
+        String p = projectName();
+        return "b2b".equals(p) ? "program_configuration.json" : "program_configuration." + p + ".json";
+    }
+
+    /**
      * Load the nested-per-env JSON at classpath:/program_configuration.json,
      * pick the block matching {@code envName}, and flatten its keys into
      * {@link #programConfig} (dot-joined). Also derives synthetic
@@ -790,7 +826,8 @@ public final class Config {
         // prints to STDOUT with a `[Config-JSON]` prefix so you can grep for
         // exactly what happened. Costs one classpath walk per JVM start;
         // negligible for a test run.
-        String resource = "program_configuration.json";
+        String resource = programConfigurationResource();
+        System.out.println("[Config-JSON] project = " + projectName() + " -> " + resource);
         ClassLoader cl = Config.class.getClassLoader();
         System.out.println("[Config-JSON] classloader = " + cl);
         // Enumerate every URL the classloader knows for this resource. If
@@ -808,8 +845,13 @@ public final class Config {
                 System.out.println("[Config-JSON]   NO occurrences of `"
                         + resource + "` on the classpath.");
                 System.out.println("[Config-JSON]   Expected at "
-                        + "target/classes/program_configuration.json after "
+                        + "target/classes/" + resource + " after "
                         + "`mvn clean` copies from src/main/resources/.");
+                if (!"b2b".equals(projectName())) {
+                    System.out.println("[Config-JSON] *** WARNING *** project `" + projectName()
+                            + "` has no " + resource + ": NOTHING is loaded (B2B's file is not used "
+                            + "in its place). Put the project's file in src/main/resources/.");
+                }
                 return;
             }
         } catch (IOException e) {

@@ -88,6 +88,11 @@ A story test **extends `com.hi.api.tests.StoryTestBase`** (itself a
 `src/test/java/com/hi/api/tests/examples/StoryTestExample.java` -- read it; it is the
 example in your prompt.
 
+**A GOAL story (groups, room blocks, payment, confirm, rooming lists, rate
+plans, inventory): extend `GoalStoryTestBase` and follow
+`.cursor/skills/jira-to-restassured/GOAL_FLOWS.md` -- no people; a property
+and dates found by `findAvailability`; the rest of this section is B2B's.**
+
 **A B2B story (program accounts, members, travel coordinators, dashboards,
 spend, stays): read `.cursor/skills/jira-to-restassured/B2B_FLOWS.md` first.**
 The test creates the people it needs -- enrols them, creates the account,

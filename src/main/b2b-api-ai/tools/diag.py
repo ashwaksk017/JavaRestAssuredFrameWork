@@ -135,6 +135,7 @@ def _config_values(root: str) -> tuple:
     """(values, note). The credential values of the private configuration."""
     out, note = set(), ""
     for rel in (os.path.join("src", "main", "resources", "program_configuration.json"),
+                os.path.join("src", "main", "resources", "program_configuration.goal.json"),
                 os.path.join("tools", "cursor_agent.json"),
                 os.path.join("tools", "ra_converter", "cursor_agent.json")):
         path = os.path.join(root, rel)

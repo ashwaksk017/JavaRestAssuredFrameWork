@@ -170,6 +170,33 @@ def job_dir(job: str, root: str = "") -> str:
     return os.path.join(root or ROOT, ".workbench", safe_job(job))
 
 
+PROJECT_FILE = "project.json"
+
+
+def job_project(job_dir_path: str) -> str:
+    """The project a job is for (b2b, goal, ...): its project.json, else
+    b2b -- every job made before projects is a B2B job."""
+    try:
+        with io.open(os.path.join(job_dir_path, PROJECT_FILE), encoding="utf-8") as fh:
+            p = str(json.load(fh).get("project") or "").strip().lower()
+    except (OSError, ValueError, AttributeError):
+        p = ""
+    return p if p in projectconfig.PROJECT_FILES else projectconfig.DEFAULT_PROJECT
+
+
+def set_job_project(job_dir_path: str, project: str) -> str:
+    """Record the job's project; an unknown one is a ValueError."""
+    p = str(project or "").strip().lower()
+    if p not in projectconfig.PROJECT_FILES:
+        raise ValueError(f"{project!r} is not a project ({', '.join(sorted(projectconfig.PROJECT_FILES))})")
+    os.makedirs(job_dir_path, exist_ok=True)
+    tmp = os.path.join(job_dir_path, PROJECT_FILE + ".tmp")
+    with io.open(tmp, "w", encoding="utf-8") as fh:
+        json.dump({"project": p}, fh)
+    os.replace(tmp, os.path.join(job_dir_path, PROJECT_FILE))
+    return p
+
+
 _BRACE_ESCAPE_RX = re.compile(r"\\([{}\[\]])")
 # Everything Jira's wiki markup escapes with a backslash to show it as
 # itself. A backslash before a line break (a curl command carried over a

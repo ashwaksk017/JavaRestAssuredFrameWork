@@ -177,8 +177,7 @@ def run(job: str, ids=None, root: str = "", agent=None) -> int:
     groups = known_groups(root, mapping)
     suites = "\n".join(f"- {g}: {MEANINGS.get(g, '(no description)')}" for g in groups)
     prompt = PROMPT.format(suites=suites, cases=listing(cases))
-    cfg_path = os.path.join(root, "src", "main", "resources", "program_configuration.json")
-    private = loop.config_secrets(cfg_path)
+    private = loop.private_config(root)
     prompt = design.redact(prompt, private)[0]
     prompt = design.hide_hosts(prompt)[0]
     secret = ""

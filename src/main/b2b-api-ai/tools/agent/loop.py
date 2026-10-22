@@ -243,6 +243,7 @@ DEFAULT_POLICY = {
     # copied into the job folder).
     "protected_files": [
         "src/main/resources/program_configuration.json",
+        "src/main/resources/program_configuration.goal.json",
         "tools/cursor_agent.json",
         "tools/ra_converter/cursor_agent.json",
     ],
@@ -1544,15 +1545,55 @@ def example_hint(job_dir: str) -> str:
                     for c in design_cases_raw(job_dir)) if job_dir else ""
 
 
+FLOWS_CAP = 12000
+
+
+def project_material(policy: dict, project: str = "") -> dict:
+    """The job's project's material (policy.json `projects`): its flow guide,
+    golden example, app skill and base class. Inside a job's command the
+    project is the job's (WORKBENCH_PROJECT, set by jobs.start)."""
+    project = project or intake.projectconfig.active_project()
+    entry = dict((policy.get("projects") or {}).get(project) or {})
+    entry["name"] = project
+    entry.setdefault("label", project.upper())
+    return entry
+
+
+def project_block(root: str, policy: dict) -> str:
+    """Which project this job is, and its flow guide whole (capped): only
+    that project's -- the other project's flows are a different world (B2B
+    creates people; GOAL finds availability and carries a groupId)."""
+    p = project_material(policy)
+    lines = [f"===== THIS JOB IS A {p['label']} JOB =====",
+             f"Write {p['label']} tests: extend {p.get('base_class') or 'StoryTestBase'}, follow "
+             f"{p['label']}'s flow guide below, and the golden example of {p['label']}. The other "
+             f"project's guide and helpers do not apply here."]
+    if p.get("app_skill"):
+        lines.append(f"Environment notes for {p['label']} (read when a call answers 401, or a "
+                     f"service address is in doubt): {p['app_skill']}")
+    rel = str(p.get("flows") or "").strip()
+    path = os.path.join(root, rel.replace("/", os.sep)) if rel and ".." not in rel else ""
+    text = _read(path, FLOWS_CAP + 1) if path and os.path.isfile(path) else ""
+    if text.strip():
+        if len(text) > FLOWS_CAP:
+            text = text[:FLOWS_CAP] + "\n... cut here; the rest is in the file"
+        text, _n = _mark_commands(text)
+        lines += ["", f"----- {rel} -----", text.rstrip(), f"----- end of {rel} -----"]
+    return "\n".join(lines)
+
+
 def skill_and_example_block(root: str, policy: dict, scope: dict, hint: str = "") -> tuple:
-    """(prompt block, example paths shown). For new-test: skill plus golden example."""
+    """(prompt block, example paths shown). For new-test: the job's project
+    (its flow guide), the skill, and that project's golden example."""
     skill = skill_block(root, scope)
     if scope.get("name") != "new-test":
         return skill, []
+    p = project_material(policy)
+    if p.get("pattern_example"):
+        scope = dict(scope, pattern_example=p["pattern_example"])
     example, shown = pattern_example(root, policy, scope, bundled_with_skill=bool(skill), hint=hint)
-    if skill and example:
-        return skill + "\n\n" + example, shown
-    return skill or example, shown
+    project = project_block(root, policy)
+    return "\n\n".join(b for b in (project, skill, example) if b), shown
 
 
 def jira_requirements_block(scope: dict) -> str:
@@ -2331,8 +2372,7 @@ def spec_for_cases(job_dir: str, endpoints: list, root: str = "") -> tuple:
                     + ", ".join(missing[:5]) + "); none was sent")
     sub = _no_hosts(d.sub_spec(spec, paths))
     text, notes = d.spec_text(sub, SPEC_SLICE_CAP)
-    for value in sorted(config_secrets(os.path.join(
-            root or ROOT, "src", "main", "resources", "program_configuration.json")), key=len, reverse=True):
+    for value in sorted(private_config(root or ROOT), key=len, reverse=True):
         if len(value) >= 4:
             text = text.replace(value, "<a value from the configuration>")
     if len(text) > SPEC_SLICE_CAP:
@@ -2430,8 +2470,8 @@ def project_map(root: str, policy: dict, scope: dict) -> str:
         "  Request bodies   src/main/resources/templates/<suite>/  GENERATED; "
         "src/test/resources/templates/manual/ for hand-written",
         "  Settings         read through Config at run time. "
-        "src/main/resources/program_configuration.json holds credentials: do not open it, "
-        "and copy nothing from it",
+        "src/main/resources/program_configuration*.json (one a project) hold credentials: "
+        "do not open them, and copy nothing from them",
         "  How a test is laid out: " + (", ".join(docs) if docs else "CreateTestCase.md"),
         "",
         "  GENERATED means the converter writes it and the next convert overwrites it.",
@@ -2740,7 +2780,7 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
         "Do not delete any file. Do not run git commit, git push, git "
         "checkout or git reset -- this tool commits, after a person has "
         "reviewed your work. Do not put a hostname, token, password or "
-        "any value from src/main/resources/program_configuration.json in "
+        "any value from src/main/resources/program_configuration*.json in "
         "a file: read it through Config at run time. The repository is "
         "public.",
         "",
@@ -2825,6 +2865,17 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
         spec_block, _spec_note = spec_for_cases(job_dir, endpoints_of_cases(designed), root)
         if spec_block:
             parts += ["", spec_block]
+        # The converted flows nearest each case's endpoint, of the job's
+        # project: what to reuse, and in what order -- also for an endpoint
+        # nothing calls yet (the nearest path).
+        try:
+            flows = _load("loop_flowcatalog", os.path.join(HERE, "flowcatalog.py")).block(
+                root, intake.projectconfig.active_project(), endpoints_of_cases(designed))
+        except Exception:                                # noqa: BLE001
+            diag.trace()
+            flows = ""
+        if flows:
+            parts += ["", flows]
         auth_hints = auth_route_hints_block(job_dir, endpoints_of_cases(designed), root)
         if auth_hints:
             parts += ["", auth_hints]
@@ -3223,6 +3274,50 @@ def _looks_like_a_secret(value: str) -> bool:
         return False                      # a route: `tokenPath = "/oauth2/v1/token"`
     return len(value) >= 24 or (any(c.isdigit() for c in value)
                                 and any(c.isalpha() for c in value))
+
+
+def run_env_for(root: str, policy: dict, project: str = "") -> str:
+    """The environment block a project's tests run on: the Settings tab's
+    choice for that project, else (B2B only) the Settings tab's run_env as
+    before projects, else the policy's projects.<p>.run_env, else (B2B) the
+    policy's run_env, else stg."""
+    project = project or intake.projectconfig.active_project()
+    wb = _load("loop_settings", os.path.join(HERE, "settings.py")).workbench_settings(root)
+    mine = ((wb.get("projects") or {}).get(project) or {}).get("run_env")
+    if mine:
+        return str(mine)
+    if project == intake.projectconfig.DEFAULT_PROJECT and wb.get("run_env"):
+        return str(wb["run_env"])
+    pol = ((policy.get("projects") or {}).get(project) or {}).get("run_env")
+    if pol:
+        return str(pol)
+    return str((policy.get("run_env") if project == intake.projectconfig.DEFAULT_PROJECT else "") or "stg")
+
+
+def config_files(root: str = "") -> list:
+    """Every project's configuration file (tools/jira/projectconfig.py):
+    program_configuration.json (B2B), program_configuration.goal.json, ..."""
+    return intake.projectconfig.all_config_paths(root or ROOT)
+
+
+def private_config(root: str = "", strict: bool = False) -> dict:
+    """{value: why} of EVERY project's configuration file -- a GOAL value
+    must not reach a prompt or a log because the job is B2B's, nor the
+    other way round. `strict`: a file that exists but cannot be read is a
+    ValueError naming it (a caller about to send text out refuses on it:
+    "nothing private" read from a broken file is a guess)."""
+    out = {}
+    for path in config_files(root):
+        if not os.path.isfile(path):
+            continue
+        if strict:
+            try:
+                with io.open(path, encoding="utf-8-sig") as fh:
+                    json.load(fh)
+            except (OSError, ValueError):
+                raise ValueError(os.path.basename(path)) from None
+        out.update(config_secrets(path))
+    return out
 
 
 def config_secrets(config_path: str) -> dict:
@@ -3727,8 +3822,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             say(f"FAIL the design of this job cannot be used: {why} Running without it would "
                 f"write a test for every request of the plan, reviewed or not. {next_step}")
             return 1
-    private = config_secrets(os.path.join(
-        root, "src", "main", "resources", "program_configuration.json"))
+    private = private_config(root)
     clog = CursorLog(job_dir, secret, [v for v, why in private.items()
                                        if why.startswith("value of")],
                      name=cursor_log_name(scope["name"]))
@@ -4744,8 +4838,7 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
         if now_hashes != (ran.get("hashes") or {}):
             say("FAIL the files changed since the tests last ran: run them again.")
             return 1
-        wanted_env = (_load("loop_settings", os.path.join(HERE, "settings.py")).workbench_settings(root)
-                      .get("run_env") or policy.get("run_env") or "stg")
+        wanted_env = run_env_for(root, policy, intake.job_project(job_dir))
         if ran.get("env") != wanted_env:
             say(f"FAIL the last run was on {ran.get('env')}, and the tests run on {wanted_env} "
                 f"(Settings tab): run them on {wanted_env}.")
@@ -4908,8 +5001,7 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
     # branch, plus its message. Nothing points at the commit yet.
     _, pushed_diff = git(root, "diff", upstream, sha)
     message = "".join("+" + l + "\n" for l in (subject + "\n" + body).splitlines())
-    known = config_secrets(config_path or os.path.join(
-        root, "src", "main", "resources", "program_configuration.json"))
+    known = config_secrets(config_path) if config_path else private_config(root)
     findings, seen = [], set()
     for item in scan_secrets(pushed_diff + "\n" + message, known):
         if item not in seen:
@@ -5004,7 +5096,7 @@ def cmd_run(job_dir: str, root: str, policy: dict, env: str = "", runner=None) -
         say("FAIL only a change of new tests is run here.")
         return 1
     wb = _load("loop_settings", os.path.join(HERE, "settings.py")).workbench_settings(root)
-    env = (env or wb.get("run_env") or policy.get("run_env") or "stg").strip()
+    env = (env or run_env_for(root, policy, intake.job_project(job_dir))).strip()
     timeout = 60 * int(wb.get("run_timeout_min") or RUN_TIMEOUT // 60)
     if not _ENV_RX.match(env):
         say(f"FAIL {env!r} is not an environment name.")
@@ -5050,11 +5142,17 @@ def cmd_run(job_dir: str, root: str, policy: dict, env: str = "", runner=None) -
         os.remove(results)                  # never read an earlier run's results as this one's
     except OSError:
         pass
+    project = intake.job_project(job_dir)
+    why = _load("loop_mvnrun", os.path.join(HERE, "mvnrun.py")).project_preflight(root, project, env)
+    if why:
+        say(f"FAIL {why}")
+        return 1
     diag.step(f"Running the job's tests against {env}")
-    say(f" .. running {suite} against {env} (mvn test -Denv={env}); this can take minutes")
+    say(f" .. running {suite} against {env} (mvn test -Denv={env}, project {project}); this can take minutes")
     runlog = _load("loop_runlog", os.path.join(HERE, "runlog.py"))
     log_flag = runlog.log_level_flag(wb)
     args = ["test", f"-DsuiteXmlFile={suite}", f"-Denv={env}", "-DfailIfNoTests=false", log_flag]
+    args.append(f"-Dconfig.project={project}")         # always: Config.java loads that project's file
     say(f" .. framework logs go to target/b2b-full-run.log ({log_flag})")
     run_started = time.time()
     rc, text, _how = maven(args)

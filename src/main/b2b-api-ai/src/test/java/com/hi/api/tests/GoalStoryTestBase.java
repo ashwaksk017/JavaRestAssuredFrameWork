@@ -1,0 +1,310 @@
+package com.hi.api.tests;
+
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.testng.SkipException;
+
+import com.hi.api.auth.JsonTokens;
+import com.hi.api.config.Config;
+import com.hi.api.data.ManualBody;
+import com.hi.api.rest.ApiRoutes;
+import com.hi.api.rest.utilities.RestUtilities;
+
+import io.restassured.response.Response;
+
+/**
+ * The base class of a GOAL story test. GOAL is not B2B: there are no people
+ * to create. A GOAL test FINDS a property and dates with availability (a
+ * probe, never a fixed property or a frozen date), takes the server-made
+ * {@code groupId} from the shop answer, and carries it through the group
+ * chain -- as the converted GOAL suites do (AvailabilitySearch, the
+ * group360create / roominglist chains). See
+ * .cursor/skills/jira-to-restassured/GOAL_FLOWS.md.
+ *
+ * <p>Run with the GOAL project's configuration
+ * ({@code -Dconfig.project=goal}: program_configuration.goal.json), whose
+ * environment block has GOAL's {@code services.*}.</p>
+ */
+public abstract class GoalStoryTestBase extends StoryTestBase {
+
+    private static final Logger LOG = LoggerFactory.getLogger(GoalStoryTestBase.class);
+
+    /** The service nearly every converted GOAL call goes to. */
+    protected static final String GOAL_SERVICE = "hospitality_internal_all_v2";
+
+    /** A property and dates the search proved have inventory, and the shop quote's ids. */
+    protected static final class Availability {
+        public final String propCode;
+        public final String arrivalDate;
+        public final String departureDate;
+        public final String groupId;
+        public final String roomTypeCode;
+        public final String cacheExpiryTime;
+        public final int inventory;
+
+        Availability(String propCode, String arrivalDate, String departureDate, String groupId,
+                     String roomTypeCode, String cacheExpiryTime, int inventory) {
+            this.propCode = propCode;
+            this.arrivalDate = arrivalDate;
+            this.departureDate = departureDate;
+            this.groupId = groupId;
+            this.roomTypeCode = roomTypeCode;
+            this.cacheExpiryTime = cacheExpiryTime;
+            this.inventory = inventory;
+        }
+
+        /** The values a GOAL body's placeholders take: #propCode#, #groupId#, ... */
+        public Map<String, String> asColumns() {
+            Map<String, String> m = new LinkedHashMap<>();
+            m.put("propCode", propCode);
+            m.put("arrivalDate", arrivalDate);
+            m.put("departureDate", departureDate);
+            m.put("groupId", groupId);
+            m.put("roomTypeCode", roomTypeCode);
+            return m;
+        }
+    }
+
+    /** The search's answer, kept for the run (as the converted search caches its winner). */
+    private static final Map<String, Object[]> FOUND = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final long FOUND_TTL_MS = 30 * 60 * 1000L;
+
+    private String goalTokenValue;
+    private long goalTokenAt;
+    private static final long TOKEN_REUSE_MS = 4 * 60 * 1000L;
+
+    // ---- where and with what ------------------------------------------------------------
+
+    /** GOAL's service base ({@code services.hospitality_internal_all_v2}, else the base URL). */
+    protected String goalBase() {
+        return Config.serviceBase(GOAL_SERVICE, "", baseUrl());
+    }
+
+    /**
+     * The token every GOAL call carries: the converted tokenRequest (client
+     * id / secret, the block's project username / password when set), sent
+     * to the service the proven suites mint it at ({@code goal.token_service},
+     * default {@code hospitality_partner_v2}). Asked again after four minutes; skipped, naming
+     * the keys, when the client id / secret are not set.
+     */
+    protected String goalToken() {
+        if (goalTokenValue != null && System.currentTimeMillis() - goalTokenAt < TOKEN_REUSE_MS) {
+            return goalTokenValue;
+        }
+        String why = JsonTokens.missingConfig();
+        if (!why.isEmpty()) {
+            throw new SkipException(why);
+        }
+        // Where the proven suites mint it (PartialGoalRegression, Group360Create /
+        // Shop: hospitality_partner_v2); goal.token_service names another.
+        String service = Config.get("goal.token_service", "hospitality_partner_v2");
+        String url = Config.serviceBase(service, "", goalBase()) + ApiRoutes.TOKEN;
+        String user = Config.get("api_config.username", Config.get("username", ""));
+        String pass = Config.get("api_config.password", Config.get("password", ""));
+        goalTokenValue = step("tokenRequest: GOAL service (as the converted suites)",
+                () -> JsonTokens.at(url, user, pass)).accessToken;
+        goalTokenAt = System.currentTimeMillis();
+        return goalTokenValue;
+    }
+
+    // ---- availability ---------------------------------------------------------------------
+
+    /**
+     * Setup: a property and dates with availability, as the converted
+     * AvailabilitySearch finds them -- each candidate property x each day
+     * offset, {@code GET /props/{p}/groups?arrivalDate&departureDate[&peakRooms]},
+     * the first where one of the first 6 {@code roomRates[i].inventory} is
+     * above the threshold. Candidates: {@code goal.availability.props}
+     * (comma list, from the environment; skipped naming the key when unset),
+     * {@code goal.availability.offsets} (default 32,52,62,66 days from
+     * today), {@code goal.availability.min_inventory} (default 9). The row's
+     * {@code peak_rooms}, when filled, goes in the query. Null when none
+     * answers (a SETUP failure naming what was tried).
+     */
+    protected Availability findAvailability(Map<String, String> row, String token, String tag) {
+        List<String> props = list(Config.get("goal.availability.props", ""));
+        if (props.isEmpty()) {
+            throw new SkipException("goal.availability.props is not set for env '" + Config.env()
+                    + "': list the candidate property codes (comma separated) in that block of "
+                    + "the GOAL project's configuration file -- the converted suites' availability "
+                    + "search shows the ones it uses");
+        }
+        List<Integer> offsets = new ArrayList<>();
+        for (String o : list(Config.get("goal.availability.offsets", "32,52,62,66"))) {
+            try {
+                offsets.add(Integer.parseInt(o));
+            } catch (NumberFormatException ignored) {
+                LOG.warn("goal.availability.offsets: {} is not a number of days, left out", o);
+            }
+        }
+        int min = intOr(Config.get("goal.availability.min_inventory", "9"), 9);
+        String peak = row == null ? null : row.get("peak_rooms");
+        String key = LocalDate.now() + "|" + props + "|" + offsets + "|" + min + "|" + peak;
+        Object[] kept = FOUND.get(key);
+        if (kept != null && System.currentTimeMillis() - (Long) kept[1] < FOUND_TTL_MS) {
+            Availability av = (Availability) kept[0];
+            LOG.info("SETUP {} availability (found earlier this run): {} {}", tag, av.propCode, av.arrivalDate);
+            return av;
+        }
+        List<String> tried = new ArrayList<>();
+        for (String p : props) {                           // property first, as the converted search
+            for (int days : offsets) {
+                String arrival = LocalDate.now().plusDays(days).toString();
+                String departure = LocalDate.now().plusDays(days + 1L).toString();
+                Response res = shopAt(p, arrival, departure, peak, token);
+                List<Object> inv = listAt(res, "roomRates.inventory");
+                List<Object> codes = listAt(res, "roomRates.roomTypeCode");
+                int best = -1;
+                for (int i = 0; i < Math.min(6, inv.size()); i++) {
+                    int v = intOr(String.valueOf(inv.get(i)), -1);
+                    best = Math.max(best, v);
+                    if (v > min) {
+                        String code = i < codes.size() ? String.valueOf(codes.get(i)) : "";
+                        String groupId = RestUtilities.safeJsonExtract(res, "groupId");
+                        String expiry = RestUtilities.safeJsonExtract(res, "cacheExpiryTime");
+                        LOG.info("SETUP {} availability: {} {}..{} room {} inventory {} groupId {}",
+                                tag, p, arrival, departure, code, v, groupId);
+                        Availability av = new Availability(p, arrival, departure, groupId, code, expiry, v);
+                        FOUND.put(key, new Object[] {av, System.currentTimeMillis()});
+                        return av;
+                    }
+                }
+                tried.add(p + " " + arrival + " (HTTP " + res.getStatusCode() + ", best " + best + ")");
+            }
+        }
+        softAssert.fail(tag + "/SETUP: no candidate property had inventory above " + min + ": "
+                + String.join("; ", tried));
+        return null;
+    }
+
+    /** The shop quote of the availability found -- for a case whose act IS the shop read (unasserted). */
+    protected Response shop(Availability av, String peakRooms, String token, String tag) {
+        Response res = shopAt(av.propCode, av.arrivalDate, av.departureDate, peakRooms, token);
+        RestUtilities.logResponseBody(tag, holder, RestUtilities.getResponseAsString(res));
+        return res;
+    }
+
+    private Response shopAt(String propCode, String arrival, String departure, String peakRooms, String token) {
+        String url = goalBase() + ApiRoutes.fill(ApiRoutes.PROP_GROUPS, "propCode", propCode)
+                + "?arrivalDate=" + enc(arrival) + "&departureDate=" + enc(departure)
+                + (peakRooms == null || peakRooms.isBlank() ? "" : "&peakRooms=" + enc(peakRooms.trim()));
+        return step("readPropsGroups: GET " + ApiRoutes.PROP_GROUPS,
+                () -> RestUtilities.getResponseGet(url, apiHeaders(token)));
+    }
+
+    // ---- the group chain ----------------------------------------------------------------------
+
+    /**
+     * {@code POST /props/{p}/groups} -- the converted suites send it to the
+     * block's {@code base_url} -- with {@code bodyTemplate} rendered from the
+     * row plus the availability's {@code #propCode#}, {@code #arrivalDate#},
+     * {@code #departureDate#}, {@code #groupId#}, {@code #roomTypeCode#}.
+     * Unasserted: for a case whose act IS the create.
+     */
+    protected Response createGroupResponse(Availability av, Map<String, String> row, String bodyTemplate,
+                                           String token, String tag) throws Exception {
+        String body = render(bodyTemplate, row, av);
+        RestUtilities.logRequestBody(tag, holder, body);
+        String url = Config.get("base_url", baseUrl()) + ApiRoutes.fill(ApiRoutes.PROP_GROUPS, "propCode", av.propCode);
+        Response res = step("createPropsGroups: POST " + ApiRoutes.PROP_GROUPS,
+                () -> RestUtilities.getResponsePost(body, url, apiHeaders(token)));
+        RestUtilities.logResponseBody(tag, holder, RestUtilities.getResponseAsString(res));
+        return res;
+    }
+
+    /** Setup: the group created (asserted 200). */
+    protected boolean createGroup(Availability av, Map<String, String> row, String bodyTemplate, String token,
+                                  String tag) throws Exception {
+        String status = RestUtilities.checkActualResponse(createGroupResponse(av, row, bodyTemplate, token, tag));
+        softAssert.assertEquals(status, "200", tag + "/SETUP: POST create group status");
+        return "200".equals(status);
+    }
+
+    /** Setup: {@code POST /props/{p}/groups/{groupId}/payment} (asserted 200). */
+    protected boolean payGroup(Availability av, Map<String, String> row, String bodyTemplate, String token,
+                               String tag) throws Exception {
+        String body = render(bodyTemplate, row, av);
+        String url = goalBase() + ApiRoutes.fill(ApiRoutes.PROP_GROUP_PAYMENT,
+                "propCode", av.propCode, "groupId", av.groupId);
+        Response res = step("createPropsGroupsPayment: POST " + ApiRoutes.PROP_GROUP_PAYMENT,
+                () -> RestUtilities.getResponsePost(body, url, apiHeaders(token)));
+        RestUtilities.logResponseBody(tag, holder, RestUtilities.getResponseAsString(res));
+        String status = RestUtilities.checkActualResponse(res);
+        softAssert.assertEquals(status, "200", tag + "/SETUP: POST group payment status");
+        return "200".equals(status);
+    }
+
+    /**
+     * {@code POST /props/{p}/groups/{groupId}/confirm}, with
+     * {@code Hilton-Operator-Location} from {@code goal.operator_location}
+     * when it is set. Unasserted -- the case says what the confirm must
+     * answer (a confirm without payment answers 400).
+     */
+    protected Response confirmGroup(Availability av, Map<String, String> row, String bodyTemplate, String token,
+                                    String tag) throws Exception {
+        String body = render(bodyTemplate, row, av);
+        String url = goalBase() + ApiRoutes.fill(ApiRoutes.PROP_GROUP_CONFIRM,
+                "propCode", av.propCode, "groupId", av.groupId);
+        Map<String, String> headers = apiHeaders(token);
+        String location = Config.get("goal.operator_location", "");
+        if (location != null && !location.isBlank()) {
+            headers.put("Hilton-Operator-Location", location.trim());
+        }
+        Response res = step("createPropsGroupsConfirm: POST " + ApiRoutes.PROP_GROUP_CONFIRM,
+                () -> RestUtilities.getResponsePost(body, url, headers));
+        RestUtilities.logResponseBody(tag, holder, RestUtilities.getResponseAsString(res));
+        return res;
+    }
+
+    // ---- small things ---------------------------------------------------------------------------
+
+    private String render(String template, Map<String, String> row, Availability av) throws Exception {
+        Map<String, String> data = new LinkedHashMap<>();
+        if (row != null) {
+            data.putAll(row);
+        }
+        data.putAll(av.asColumns());
+        if (data.get("inventoryCount") == null || data.get("inventoryCount").isBlank()) {
+            // The row's, else the inventory the search found for that room (as
+            // the converted search publishes it) -- never more than there is.
+            data.put("inventoryCount", row != null && row.get("inventory_count") != null
+                    && !row.get("inventory_count").isBlank() ? row.get("inventory_count").trim()
+                    : String.valueOf(av.inventory));
+        }
+        if (data.get("peakRooms") == null || data.get("peakRooms").isBlank()) {
+            data.put("peakRooms", row != null && row.get("peak_rooms") != null
+                    && !row.get("peak_rooms").isBlank() ? row.get("peak_rooms").trim() : "10");
+        }
+        return ManualBody.render(template, data, data);
+    }
+
+    private static List<String> list(String csv) {
+        List<String> out = new ArrayList<>();
+        for (String s : String.valueOf(csv == null ? "" : csv).split("[,;\\s]+")) {
+            if (!s.isBlank()) {
+                out.add(s.trim());
+            }
+        }
+        return out;
+    }
+
+    private static int intOr(String s, int dflt) {
+        try {
+            return (int) Double.parseDouble(String.valueOf(s).trim());
+        } catch (NumberFormatException e) {
+            return dflt;
+        }
+    }
+
+    private static String enc(String s) {
+        return URLEncoder.encode(s, StandardCharsets.UTF_8);
+    }
+}

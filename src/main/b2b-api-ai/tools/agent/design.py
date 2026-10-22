@@ -1615,8 +1615,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         spec_title = loop._one_line(spec["info"].get("title"), 80)
     service_name = asked_service or spec_title or job
 
-    private = loop.config_secrets(os.path.join(
-        root, "src", "main", "resources", "program_configuration.json"))
+    private = loop.private_config(root)
     # The agent copies endpoints from the prompt. If a private value
     # happens to be a path segment, the copied form must still match.
     known += [redact(line, private)[0] for line in known]

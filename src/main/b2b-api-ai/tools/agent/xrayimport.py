@@ -186,7 +186,7 @@ def run(job: str, root: str = "", story: str = "", conn=None, transport=None, cf
         raise Refused(f"{story} has no issue linked as a test (link type {opts['link_type']!r}). "
                       f"If your Jira links tests another way, set jira_config.publish.test_link_type "
                       f"to that link type's name.")
-    private = loop.config_secrets(os.path.join(root, "src", "main", "resources", "program_configuration.json"))
+    private = loop.private_config(root)
     hide = lambda s: _redact(s, private)
     cases, not_used = [], list(other_way)
     stamps = {}                                 # key -> Jira's `updated` of the version taken

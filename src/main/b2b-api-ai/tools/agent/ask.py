@@ -286,8 +286,7 @@ def ask(job: str, root: str = "", agent=None) -> int:
         answer = str(agent(prompt) or "")
     else:
         ca, cfg = loop.cursor_config(root)
-        private = loop.config_secrets(os.path.join(
-            root, "src", "main", "resources", "program_configuration.json"))
+        private = loop.private_config(root)
         clog = loop.CursorLog(job_dir, cfg.api_key, [v for v, why in private.items()
                                                      if why.startswith("value of")],
                               name=loop.cursor_log_name(scope))

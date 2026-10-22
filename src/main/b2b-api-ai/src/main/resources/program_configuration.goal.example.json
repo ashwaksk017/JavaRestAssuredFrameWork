@@ -1,0 +1,106 @@
+{
+  "_comment": "GOAL's configuration (tools/jira/projectconfig.py PROJECT_FILES): copy to program_configuration.goal.json and fill in. Same layout as program_configuration.json; the environment block needs services.hospitality_internal_all_v2 (GOAL's calls), and goal.availability lists the candidate properties the tests search for availability. Jira / Confluence / Xray settings for GOAL stories go in this file too.",
+  "stg": {
+    "database": {
+      "username": "",
+      "password": "",
+      "host": "",
+      "port": "",
+      "schema": "",
+      "groupmaintenance": {
+        "_comment": "Named database block. An imported JDBC step whose connection string points at .../groupmaintenance runs through Db.forDatabase(\"groupmaintenance\"), which reads database.groupmaintenance.* here and falls back to database.* when none of these is set. Add one sibling block per database name.",
+        "host": "",
+        "port": "",
+        "schema": "",
+        "username": "",
+        "password": ""
+      }
+    },
+    "api_config": {
+      "api_end_point": "",
+      "version": "",
+      "access_token": "",
+      "token_end_point": "",
+      "token_route": "",
+      "client_id": "",
+      "client_secret": "",
+      "grant_type": "client_credentials"
+    },
+    "sf_config": {
+      "api_end_point": "",
+      "access_token": "",
+      "token_end_point": "",
+      "grant_type": "",
+      "assertion": "",
+      "token_route": "",
+      "ui_lead_url": "",
+      "ui_account_url": "",
+      "ui_username": "",
+      "ui_password": ""
+    },
+    "kafka_config": {
+      "api_end_point": "",
+      "version": "",
+      "access_token": "",
+      "token_end_point": "",
+      "token_route": "",
+      "client_id": "",
+      "client_secret": "",
+      "grant_type": "client_credentials"
+    },
+    "xray_api_config": {
+      "api_end_point": "",
+      "route": "",
+      "token": "",
+      "testExecutionKey": ""
+    },
+    "_xray_comment": "Result publishing. Xray CLOUD wants an API key PAIR (clientId + clientSecret, from Xray > Settings > API Keys). Xray SERVER / DATA CENTER wants a Jira personal access token in `token` and no pair at all. The flavour is inferred from `baseUrl` -- a self-hosted host means Server/DC -- or state it with `flavour`. `enabled` is the master kill switch and stays false until someone turns it on. `projectKey` is only needed on Server/DC when no testExecutionKey is given.",
+    "xray": {
+      "enabled": "",
+      "flavour": "",
+      "baseUrl": "",
+      "clientId": "",
+      "clientSecret": "",
+      "token": "",
+      "importPath": "",
+      "projectKey": "",
+      "testExecutionKey": ""
+    },
+    "_jira_comment": "Read-only Jira access for the story-to-test tooling (tools/jira/). `base_urls` is an ALLOWLIST: a story URL whose host is not listed is refused rather than fetched, so a pasted link cannot redirect the fetcher at an arbitrary target. `pat` is a personal access token -- it is sent as a header, never placed in a URL or a log line. Leave the whole block empty to disable the tooling.",
+    "jira_config": {
+      "base_urls": [],
+      "pat": "",
+      "acceptance_criteria_fields": [],
+      "timeout_seconds": "",
+      "publish": {
+        "attach": false
+      }
+    },
+    "_confluence_comment": "Confluence for the story-to-test tooling (tools/confluence/). Same rules as jira_config: `base_urls` is an ALLOWLIST and includes the context path if there is one (https://host/confluence); `pat` goes in a header only. `publish.create_page` lets the workbench CREATE pages, and only in the spaces listed -- leave it false until you mean it. In jira_config, `publish.attach` likewise lets it attach files to issues; add `\"projects\": [\"ABC\"]` beside it to limit which.",
+    "confluence_config": {
+      "base_urls": [],
+      "pat": "",
+      "timeout_seconds": "",
+      "publish": {
+        "create_page": false,
+        "spaces": []
+      }
+    },
+    "poll_interval": "",
+    "timeout": "",
+    "services": {
+      "hospitality_internal_all_v2": "https://host",
+      "hospitality_partner_v2": "https://host",
+      "hospitality_corporate_v2": "https://host",
+      "mc_groupsdata": "https://host"
+    },
+    "goal": {
+      "availability": {
+        "props": "PROP1,PROP2",
+        "offsets": "32,52,62,66",
+        "min_inventory": "9"
+      },
+      "operator_location": ""
+    }
+  }
+}
