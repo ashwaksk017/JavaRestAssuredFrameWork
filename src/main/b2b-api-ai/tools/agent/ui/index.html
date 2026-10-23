@@ -626,6 +626,16 @@ Expect 201.'></textarea>
     <select id="run-env" aria-label="environment"></select>
     <label class="inline" title="delete what Maven built and the last run's reports (target/classes, test-classes, surefire-reports, allure-results...), then mvn test-compile. Uploaded suites, the failure digest and Jira fetches in target/ are kept"><input type="checkbox" id="run-compile-first" checked> clean build first</label>
   </div>
+  <div class="row run-line" id="run-threads-line">
+    <label class="run-label" for="run-threads">Parallel threads</label>
+    <select id="run-threads" aria-label="parallel threads">
+      <option value="" selected>as the suite says</option>
+      <option value="1">1 (nothing in parallel)</option>
+      <option value="2">2</option><option value="3">3</option><option value="4">4</option>
+      <option value="5">5</option><option value="6">6</option>
+    </select>
+    <span class="hint" id="run-threads-hint">a copy of the suite is run with this thread-count; the suite file is not changed</span>
+  </div>
   <div class="row actions">
     <button id="mvn-test" class="go" type="button">Run the tests</button>
     <button id="mvn-stop" type="button">Stop</button>

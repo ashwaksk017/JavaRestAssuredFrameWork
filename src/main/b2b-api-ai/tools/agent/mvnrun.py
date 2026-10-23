@@ -171,6 +171,49 @@ def check_suite(root: str, suite: str) -> str:
     return suite
 
 
+# Parallel threads, chosen on the Run tests tab: at most this many.
+MAX_THREADS = 6
+RUN_SUITES = "target/run-suites"
+_SUITE_TAG_RX = re.compile(r"<suite\b[^>]*>", re.S)
+
+
+def _with_attr(tag: str, name: str, value: str) -> str:
+    rx = re.compile(r'(\s' + re.escape(name) + r'\s*=\s*)(["\'])[^"\']*\2')
+    if rx.search(tag):
+        return rx.sub(lambda m: f'{m.group(1)}"{value}"', tag, count=1)
+    end = "/>" if tag.endswith("/>") else ">"
+    return tag[:-len(end)].rstrip() + f' {name}="{value}"' + end
+
+
+def with_threads(root: str, suite_rel: str, threads: int) -> str:
+    """A copy of the suite file with its parallel thread count set, under
+    target/run-suites/ -- the suite file itself is never changed. Its own
+    parallel mode is kept; a suite that has none runs `classes` in
+    parallel, the converter's (one class a thread: a class's steps share
+    its state). One thread: nothing in parallel. Returns the copy's path."""
+    if not 1 <= threads <= MAX_THREADS:
+        raise ValueError(f"parallel threads are 1 to {MAX_THREADS}")
+    with io.open(os.path.join(root, suite_rel.replace("/", os.sep)), encoding="utf-8-sig") as fh:
+        text = fh.read()
+    if re.search(r"<suite-file\b", text):
+        raise ValueError(f"{suite_rel} only lists other suite files: each of those sets its own "
+                         f"threads. Run one of them, or leave the threads as the suite says.")
+    m = _SUITE_TAG_RX.search(text)
+    if not m:
+        raise ValueError(f"{suite_rel} has no <suite> element")
+    tag = m.group(0)
+    have = re.search(r'\sparallel\s*=\s*["\']([^"\']*)["\']', tag)
+    mode = have.group(1).strip() if have and have.group(1).strip() not in ("", "none", "false") else "classes"
+    tag = _with_attr(_with_attr(tag, "parallel", "none" if threads == 1 else mode), "thread-count", str(threads))
+    name = os.path.basename(suite_rel)[:-len(".xml")]
+    rel = f"{RUN_SUITES}/{name}.threads-{threads}.xml"
+    out = os.path.join(root, rel.replace("/", os.sep))
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with io.open(out, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text[:m.start()] + tag + text[m.end():])
+    return rel
+
+
 def group_suite(root: str, group: str) -> str:
     """The suite file that runs one group (surefire ignores -Dgroups when a
     suite file is set, and the pom always sets one), or ""."""
@@ -406,6 +449,17 @@ def allure_report(root: str, runner=None, run=None) -> dict:
             "why": " / ".join(tail)[:600] or f"mvn allure:report exited {rc}"}
 
 
+def _threaded(root: str, suite_rel: str, threads: int) -> str:
+    """The suite file to hand Maven: itself, or a copy with the threads
+    chosen on the page."""
+    if not threads:
+        return suite_rel
+    rel = with_threads(root, suite_rel, threads)
+    say(f" ..  {threads} parallel thread(s): a copy of {suite_rel} with thread-count=\"{threads}\" "
+        f"({rel}); the suite file itself is not changed")
+    return rel
+
+
 def cmd_compile(job_dir: str, root: str, runner=None) -> int:
     rc, part = compile_(job_dir, root, runner)
     result = {"kind": "mvnrun", "what": "compile", "at": _now(), **part,
@@ -417,7 +471,7 @@ def cmd_compile(job_dir: str, root: str, runner=None) -> int:
 
 
 def cmd_test(job_dir: str, root: str, suite: str = "", test: str = "", group: str = "",
-             env: str = "", compile_first: bool = False, runner=None) -> int:
+             env: str = "", compile_first: bool = False, runner=None, threads: int = 0) -> int:
     chosen = [w for w in (suite, test, group) if str(w or "").strip()]
     if len(chosen) != 1:
         say("FAIL choose one thing to run: a suite, a test class, or a group")
@@ -429,6 +483,17 @@ def cmd_test(job_dir: str, root: str, suite: str = "", test: str = "", group: st
             test = check_test(root, test)
         if group and not GROUP_RX.match(group.strip()):
             raise ValueError("a group name is letters, digits, - and _")
+        threads = int(threads or 0)
+        if threads and not 1 <= threads <= MAX_THREADS:
+            raise ValueError(f"parallel threads are 1 to {MAX_THREADS}")
+        if threads and test and not suite and not group:
+            raise ValueError("parallel threads are set for a suite, a group or the job's tests -- "
+                             "one class or method runs as it is")
+        if threads and (suite or group):
+            # A suite that cannot take them is said now, before any compile.
+            named = suite or group_suite(root, group.strip())
+            if named:
+                with_threads(root, named, threads)
         envs = list_envs(root)
         env = (env or loop.run_env_for(root, loop.load_policy(), projectconfig.active_project())
                or envs["active"] or "stg").strip()
@@ -443,7 +508,7 @@ def cmd_test(job_dir: str, root: str, suite: str = "", test: str = "", group: st
         say(f"FAIL {why}")
         return 1
     result = {"kind": "mvnrun", "what": "test", "at": _now(), "env": env, "project": project,
-              "suite": suite, "test": test, "group": group.strip()}
+              "suite": suite, "test": test, "group": group.strip(), "threads": threads}
     if compile_first:
         rc, part = compile_(job_dir, root, runner, clean=True)
         result.update(part)
@@ -457,7 +522,7 @@ def cmd_test(job_dir: str, root: str, suite: str = "", test: str = "", group: st
     # must not move a B2B run to another file (Config.java reads it otherwise).
     args.append(f"-Dconfig.project={project}")
     if suite:
-        args.append(f"-DsuiteXmlFile={suite}")
+        args.append(f"-DsuiteXmlFile={_threaded(root, suite, threads)}")
         what = suite
     elif test:
         args.append(f"-Dtest={test}")
@@ -468,7 +533,7 @@ def cmd_test(job_dir: str, root: str, suite: str = "", test: str = "", group: st
             say(f"FAIL the group {group.strip()} has no suite file ({loop.suitemap.suite_rel(group.strip())}): "
                 f"it is written when a job's cases are first mapped to the group")
             return 1
-        args.append(f"-DsuiteXmlFile={rel}")
+        args.append(f"-DsuiteXmlFile={_threaded(root, rel, threads)}")
         what = f"the group {group.strip()} ({rel})"
     results = os.path.join(root, RESULTS_XML)
     try:
@@ -527,6 +592,7 @@ def main(argv=None) -> int:
     t.add_argument("--group", default="")
     t.add_argument("--env", default="")
     t.add_argument("--compile-first", action="store_true")
+    t.add_argument("--threads", type=int, default=0)
     a = ap.parse_args(argv)
     try:
         job_dir = loop.intake.job_dir(loop.intake.safe_job(a.job))
@@ -539,7 +605,7 @@ def main(argv=None) -> int:
         pass
     if a.cmd == "compile":
         return cmd_compile(job_dir, ROOT)
-    return cmd_test(job_dir, ROOT, a.suite, a.test, a.group, a.env, a.compile_first)
+    return cmd_test(job_dir, ROOT, a.suite, a.test, a.group, a.env, a.compile_first, threads=a.threads)
 
 
 if __name__ == "__main__":

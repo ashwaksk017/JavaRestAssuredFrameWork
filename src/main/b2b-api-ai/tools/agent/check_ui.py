@@ -937,6 +937,9 @@ def main() -> int:
                   all(f'id="{b}-pasted"' in html for b in
                       ("refine-ask", "design-notes", "agent-ask", "mig-ask", "wb-ask", "manual-notes"))
                   and "Ctrl+V pastes a screenshot for Cursor" in html)
+            check("a run can set the suite's parallel threads, 1 to 6 at most",
+                  'id="run-threads"' in html and '<option value="6">6</option>' in html
+                  and '<option value="7">' not in html)
             check("each case's suites show on its row, from the rules",
                   ">Suites<" in html and 'class="groups"' in html and "from the rules" in html)
             check("each case's Description shows on its row: the plan, step by step",

@@ -95,6 +95,59 @@ class Base(unittest.TestCase):
         return rc, buf.getvalue()
 
 
+class ParallelThreads(Base):
+    """The threads chosen on the page run a copy of the suite; the suite
+    file itself is never changed."""
+
+    def go(self, **kw):
+        return self.quiet(mr.cmd_test, self.job_dir, self.root, env="stg", runner=self.runner(rc=0), **kw)
+
+    def copy_of(self):
+        arg = next(a for a in self.mvn_test_call() if a.startswith("-DsuiteXmlFile="))
+        rel = arg.split("=", 1)[1]
+        with io.open(os.path.join(self.root, rel.replace("/", os.sep)), encoding="utf-8") as fh:
+            return rel, fh.read()
+
+    def test_a_suite_runs_as_a_copy_with_the_thread_count_and_its_own_parallel_mode(self):
+        original = '<suite name="S" parallel="methods" thread-count="3" verbose="1">\n<test name="t"/></suite>\n'
+        write(self.root, "Suites/Amex/AmexSuite.xml", original)
+        rc, said = self.go(suite="Suites/Amex/AmexSuite.xml", threads=6)
+        rel, text = self.copy_of()
+        self.assertEqual(rel, "target/run-suites/AmexSuite.threads-6.xml")
+        self.assertIn('<suite name="S" parallel="methods" thread-count="6" verbose="1">', text)
+        self.assertIn('<test name="t"/>', text)
+        with io.open(os.path.join(self.root, "Suites", "Amex", "AmexSuite.xml"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), original, "the suite file is not changed")
+        self.assertIn("6 parallel thread(s)", said)
+        self.assertEqual(self.result()["threads"], 6)
+
+    def test_a_suite_with_no_parallel_mode_runs_classes_and_one_thread_runs_nothing_in_parallel(self):
+        write(self.root, "Suites/jira/group-smoke.xml", '<suite name="jira-smoke" verbose="1"></suite>')
+        self.go(group="smoke", threads=4)
+        self.assertIn('parallel="classes" thread-count="4"', self.copy_of()[1])
+        self.calls.clear()
+        self.go(group="smoke", threads=1)
+        self.assertIn('parallel="none" thread-count="1"', self.copy_of()[1])
+
+    def test_as_the_suite_says_hands_maven_the_suite_itself(self):
+        self.go(suite="Suites/jira/job-1.xml")
+        self.assertIn("-DsuiteXmlFile=Suites/jira/job-1.xml", self.mvn_test_call())
+
+    def test_what_is_refused_before_anything_runs(self):
+        write(self.root, "src/test/resources/testng-all.xml",
+              '<suite name="All"><suite-files><suite-file path="testng-jira.xml"/></suite-files></suite>')
+        for kw, why in (({"suite": "Suites/jira/job-1.xml", "threads": 7}, "1 to 6"),
+                        ({"test": "FooTest", "threads": 2}, "one class or method runs as it is"),
+                        ({"suite": "src/test/resources/testng-all.xml", "threads": 2},
+                         "only lists other suite files")):
+            self.calls.clear()
+            rc, said = self.quiet(mr.cmd_test, self.job_dir, self.root, env="stg", compile_first=True,
+                                  runner=self.runner(rc=0), **kw)
+            self.assertEqual(rc, 1, kw)
+            self.assertIn(why, said)
+            self.assertEqual(self.calls, [], "refused before any compile or run")
+
+
 class Targets(Base):
     def test_suites_groups_and_envs_are_listed_from_disk(self):
         paths = [s["path"] for s in mr.list_suites(self.root)]

@@ -403,7 +403,7 @@ RUNNABLES = {
         "argv": [PY, "-B", os.path.join("tools", "agent", "mvnrun.py"), "test"],
         "label": "Run a suite, a test class or a group against an environment",
         "options": {"--job": "text", "--suite": "text", "--test": "text", "--group": "text",
-                    "--env": "text", "--compile-first": "flag"},
+                    "--env": "text", "--compile-first": "flag", "--threads": "text"},
     },
     # Tab 3. Fixed sub-commands of one script; the page chooses which,
     # names the job, and for `generate` picks a scope the script itself

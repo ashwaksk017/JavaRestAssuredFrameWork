@@ -961,7 +961,7 @@ function descCell(d) {
   const auto = (d.automated || []).length > 0;
   const pre = (lines) => el("pre", { class: "doc desc-text", text: (lines || []).join("\n") });
   return el("details", { class: "desc" },
-    el("summary", { text: auto ? "as automated" : "planned" }),
+    el("summary", { text: auto ? (d.stale ? "as automated -- steps changed since" : "as automated") : "planned" }),
     auto ? el("small", { text: d.file || "" }) : null,
     pre(auto ? d.automated : d.planned),
     auto ? el("details", {}, el("summary", { text: "as planned" }), pre(d.planned)) : null);
@@ -1093,8 +1093,11 @@ function reviewTable(j, what, cases, entries, after, done, change, suites, descs
                                 on: { click: () => automateCases([c.id], j) } });
       go.disabled = !(state === "approved" && e.automate !== false);
       if (!go.disabled) go.dataset.ready = "1";      // approved: then Finalize decides
+      const stale = ran && ran.written && ((descs || {})[c.id] || {}).stale;
+      if (stale) go.title = "the steps were changed after its test was written: Cursor reworks that test";
       row.push(el("div", { class: "automate-cell" }, go,
-        ran ? el("small", { class: `flag ${ran.written && ran.state === "pending-review" ? "" : "differs"}`, text: ran.said || ran.state }) : null));
+        ran ? el("small", { class: `flag ${ran.written && ran.state === "pending-review" ? "" : "differs"}`, text: ran.said || ran.state }) : null,
+        stale ? el("small", { class: "flag differs", text: "steps changed after its test was written: Automate again" }) : null));
     }
     return row;
   }));
@@ -1674,7 +1677,8 @@ async function showXrayUpdate(j) {
                                                 : `, not since our last sync (${t.synced_updated})`) : "") : "";
     const compare = t.status === "describe"
       ? el("details", {}, el("summary", { text: "the Description to send" }),
-          el("pre", { class: "doc desc-text", text: (t.description || []).join("\n") }))
+          el("pre", { class: "doc desc-text", text: (t.imported ? "(added after the test's own description)\n" : "")
+                                                     + (t.description || []).join("\n") }))
       : (t.status === "same" || t.status === "unreadable") ? el("small", { text: t.note || "" })
       : el("details", {}, el("summary", { text: "ours / Xray now / last synced" }),
           el("div", { class: "xu-diff" }, el("pre", { text: "OURS\n" + xuText(t.ours) }),
@@ -1967,6 +1971,11 @@ function jobSuite() {
 }
 function showRunWhat() {
   for (const w of ["job", "suite", "test", "group"]) $(`run-what-${w}`).hidden = chosen("run-what") !== w;
+  // One class or method runs as it is: no suite file to set threads in.
+  const oneTest = chosen("run-what") === "test";
+  $("run-threads").disabled = oneTest;
+  $("run-threads-hint").textContent = oneTest ? "for a suite, a group or the job's tests -- one class or method runs as it is"
+    : "a copy of the suite is run with this thread-count; the suite file is not changed";
   $("run-job-suite").textContent = jobSuite() || (job() ? `job ${job()} has no suite of new tests yet` : "open a job first");
 }
 let runWhatTouched = false;     // a person chose: the job's tests are no longer preselected
@@ -2035,6 +2044,7 @@ $("mvn-test").onclick = () => {
   const what = chosen("run-what");
   const options = { "--env": $("run-env").value };
   if ($("run-compile-first").checked) options["--compile-first"] = true;
+  if ($("run-threads").value && what !== "test") options["--threads"] = $("run-threads").value;
   if (what === "job") options["--suite"] = jobSuite();
   if (what === "suite") options["--suite"] = $("run-suite").value;
   if (what === "test") options["--test"] = $("run-test").value.trim();
