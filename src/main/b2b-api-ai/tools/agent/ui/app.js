@@ -519,10 +519,11 @@ async function showSources(j) {
   j = j || job();
   const box = $("sources");
   if (!box) return;
-  if (!j) { box.replaceChildren(); return; }
+  if (!j) { box.replaceChildren(); storyCheckOffered(false); return; }
   let s = null;
   try { s = await api(`/api/sources?job=${encodeURIComponent(j)}`); } catch { s = null; }
   if (j !== job()) return;
+  storyCheckOffered(Boolean(s && s.story && s.story.key));
   if (!s || (!s.read && !s.spec.name && !Object.keys(s.design_boxes || {}).length)) { box.replaceChildren(); return; }
   const chip = (cls, label, detail, title) => el("span", { class: `src ${cls}`, title: title || detail || "" },
     el("code", { text: label }), detail ? el("small", { text: detail }) : null);
@@ -671,6 +672,12 @@ async function readStories(stories, links) {
 
 // Has the story changed since the job read it? Reads Jira again and shows
 // the difference, and what in the job was made from the earlier reading.
+// Offered only once the open job has read its story from Jira (a link or a
+// key, or the story's Xray tests): before that there is nothing to compare.
+function storyCheckOffered(on) {
+  $("story-check-row").hidden = !on;
+  if (!on) { $("story-check-result").replaceChildren(); setState($("story-check-state"), "", ""); }
+}
 $("story-check").onclick = async () => {
   const j = job();
   if (!j) { setState($("story-check-state"), "bad", "name the job first"); return; }

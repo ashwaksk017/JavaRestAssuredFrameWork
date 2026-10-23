@@ -721,8 +721,12 @@ def main() -> int:
                              .get("text") or "{}")
             check("mock mode: the story can be read again and compared with what the job holds",
                   rc == 0 and got.get("ok") is True and got.get("changed") is False, str(got)[:300])
-            check("the story box offers the check",
-                  'id="story-check"' in mocked.dom("new"))
+            read_tab = mocked.dom("new", job="ABC-201")
+            check("the story box offers the check once the job has read its story",
+                  'id="story-check"' in read_tab and 'id="story-check-row"' in read_tab
+                  and 'id="story-check-row" hidden' not in read_tab)
+            check("a job that has read no story is not offered the check",
+                  'id="story-check-row" hidden' in mocked.dom("new", job="no-story-yet"))
             html = mocked.dom("new")
             check("the story is given by link or pasted, one box at a time, link first",
                   'name="story-from" value="link" checked' in html
