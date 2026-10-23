@@ -64,6 +64,21 @@ class TheJobsAnswers(Base):
                 self.root, "b2b")
         self.assertNotIn(Q1, self.known_text(), "un-kept: its entry goes")
 
+    def test_a_kept_entry_is_the_drafted_rule_with_where_it_was_found(self):
+        kn.save(self.job, [{"question": Q1, "answer": "for this story: status L",
+                            "entry": "To activate an account, set its status to L in the database first.",
+                            "evidence": ["src/main/java/x/Hooks1.java:42 -- the UPDATE"], "keep": True}],
+                self.root, "b2b")
+        text = self.known_text()
+        self.assertIn("To activate an account, set its status to L in the database first.", text)
+        self.assertNotIn("for this story", text, "the rule is kept, not the story's wording")
+        self.assertIn("Found in:\n- src/main/java/x/Hooks1.java:42 -- the UPDATE", text)
+        got = kn.known(self.root, "b2b")[0]
+        self.assertEqual(got["answer"], "To activate an account, set its status to L in the database first.")
+        with self.assertRaises(ValueError):
+            kn.save(self.job, [{"question": Q1, "answer": "x", "entry": "use db.corp.example.test",
+                                "keep": True}], self.root, private={"db.corp.example.test": "database.host"})
+
     def test_what_is_refused(self):
         with self.assertRaises(ValueError) as got:
             kn.save(self.job, [{"question": Q1, "answer": "call db.corp.example.test", "keep": True}],

@@ -962,31 +962,71 @@ function answersPanel(j) {
   const draw = (a) => {
     const qs = (a && a.questions) || [];
     if (!qs.length) { box.replaceChildren(); return; }
+    const sug = {};
+    for (const s of (a && a.suggestions) || []) sug[s.question] = s;
     const rows = qs.map((q) => {
+      const s = sug[q.question];
       const ans = el("textarea", { rows: "2", spellcheck: "true", class: "answer",
-                                   placeholder: "your answer (Design again uses it)" });
-      ans.value = q.answer || "";
+                                   placeholder: "your answer (Design again uses it) -- or Ask Cursor" });
+      ans.value = q.answer || (s && s.suggested ? s.answer : "");
       const keep = el("input", { type: "checkbox" });
       keep.checked = Boolean(q.keep);
+      const entry = el("textarea", { rows: "2", spellcheck: "true", class: "answer entry",
+                                     placeholder: "the rule later designs read (Cursor drafts it; edit it)" });
+      entry.value = q.entry || (s ? s.entry : "");
+      const entryBox = el("div", { class: "entry-box" }, el("small", { text: `kept in ${a.file} as:` }), entry);
+      entryBox.hidden = !keep.checked;
+      keep.onchange = () => { entryBox.hidden = !keep.checked; };
+      const evidence = (s && s.evidence && s.evidence.length) ? s.evidence : (q.evidence || []);
       const row = el("div", { class: "answer-row" }, el("p", { text: q.question + (q.asked ? "" : " (no longer asked)") }),
-        ans, el("label", { class: "inline", title: `kept in ${a.file}: committed with this job's change and read by every later design of the project` },
-                keep, " keep for later designs"));
+        s && s.suggested && !q.answer ? el("small", { class: "flag differs",
+          text: `Cursor's suggestion (${s.confidence} confidence) -- check it before you save` }) : null,
+        ans,
+        evidence.length ? el("details", {}, el("summary", { text: `found in ${evidence.length} place(s)` }),
+                             el("pre", { class: "doc", text: evidence.join("\n") })) : null,
+        el("label", { class: "inline", title: `kept in ${a.file}: committed with this job's change and read by every later design of the project` },
+           keep, " keep for later designs"), entryBox);
       row.dataset.q = q.question;
+      row.dataset.evidence = JSON.stringify(evidence);
       return row;
     });
+    const ask = el("button", { type: "button", text: "Ask Cursor to answer",
+                               title: "Cursor looks for the answers in this project (converted tests, their database steps, the flow guide...) and drafts the rule to keep for each. Nothing is kept until you save." });
+    ask.onclick = async () => {
+      ask.disabled = true;
+      const logBox = el("pre", { class: "log" });
+      box.append(logBox);
+      try {
+        await post("/api/start", { job: j, runnable: "answer-questions", options: { "--job": j } });
+        follow("answer-questions", logBox, st, async () => {
+          ask.disabled = false;
+          const r = await artifactJson(j, "answer-suggestions.json");
+          const now = await api(`/api/answers?job=${encodeURIComponent(j)}`).catch(() => null);
+          if (now) draw(Object.assign(now, { suggestions: (r && r.answers) || [] }));
+        }, j);
+      } catch (e) { ask.disabled = false; setState(st, "bad", e.message); }
+    };
     const save = el("button", { type: "button", text: "Save the answers" });
     save.onclick = async () => {
       const answers = [...box.querySelectorAll(".answer-row")].map((r) => ({
-        question: r.dataset.q, answer: r.querySelector("textarea").value,
+        question: r.dataset.q, answer: r.querySelector("textarea.answer:not(.entry)").value,
+        entry: r.querySelector("textarea.entry").value,
+        evidence: JSON.parse(r.dataset.evidence || "[]"),
         keep: r.querySelector("input[type=checkbox]").checked }));
       try {
         const r = await post("/api/answers", { job: j, answers });
-        setState(st, "ok", `saved${r.kept && r.kept.length ? `; ${r.kept.length} kept in ${r.file}` : ""}. Design again to use them.`);
+        setState(st, "ok", `saved${r.kept && r.kept.length ? `; ${r.kept.length} kept in ${r.file}` : ""}.`);
         draw(r);
+        // The answers are used at once: the cases are designed again with them
+        // (cases that say the same keep their id, review and Xray test).
+        if (answers.some((x) => x.answer.trim()) && chosen("story-from") !== "xray"
+            && !$("run-design").disabled && confirm("Design the cases again with these answers now?")) {
+          $("run-design").onclick();
+        }
       } catch (e) { setState(st, "bad", e.message); }
     };
     box.replaceChildren(heading("Open questions of the design", qs.length), ...rows,
-      el("div", { class: "row" }, save, st),
+      el("div", { class: "row" }, ask, save, st),
       a.diff ? el("details", {}, el("summary", { text: `${a.path}: pushed with this job's change` }),
                   el("pre", { class: "log diff", text: a.diff })) : null);
   };

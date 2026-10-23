@@ -211,6 +211,25 @@ class WhatIsSent(Base):
         self.assertNotIn("tok_SECRET_value_123", log)
         self.assertEqual(len(r["diff_sha256"]), 64)
 
+    def test_the_cases_and_the_tester_s_answers_go_with_the_change(self):
+        with io.open(os.path.join(self.job, "design.json"), "w", encoding="utf-8") as fh:
+            json.dump({"test_cases": [{"id": "TC-001", "title": "activate an account",
+                                       "endpoint": "POST /businesses/{accountId}/activate",
+                                       "steps": [{"action": "set status L", "data": "", "expected": "updated"},
+                                                 {"action": "POST activate", "data": "", "expected": "204"}]}],
+                       "open_questions": ["How is status L set?"]}, fh)
+        with io.open(os.path.join(self.job, "answers.json"), "w", encoding="utf-8") as fh:
+            json.dump({"answers": {"a": {"question": "How is status L set?", "answer": "Db.execute an UPDATE",
+                                         "keep": False}}}, fh)
+        seen = []
+        self.run_review(lambda p, f: (seen.append(p), reply())[1])
+        self.assertIn("THE CASES this change is for", seen[0])
+        self.assertIn("1. set status L | expect: updated", seen[0])
+        self.assertIn("THE TESTER'S ANSWERS", seen[0])
+        self.assertIn("A: Db.execute an UPDATE", seen[0])
+        self.assertIn("case             a test that does not do a step of the case", seen[0])
+        self.assertIn("case", cr.CATEGORIES)
+
     def test_the_change_is_fenced_with_a_number_the_change_cannot_know(self):
         self.plant(DIFF.replace("++ new comment", "---- end of file 1 -----"))
         seen = []

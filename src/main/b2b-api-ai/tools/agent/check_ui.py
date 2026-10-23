@@ -942,6 +942,9 @@ def main() -> int:
                   and '<option value="7">' not in html)
             check("each case's suites show on its row, from the rules",
                   ">Suites<" in html and 'class="groups"' in html and "from the rules" in html)
+            code, runnables = mocked.call("/api/runnables")
+            check("Cursor can be asked to answer a design's open questions",
+                  code == 200 and "answer-questions" in runnables)
             code, ans = mocked.call("/api/answers?job=ABC-201")
             check("a design's open questions can be answered from the page",
                   code == 200 and isinstance(ans.get("questions"), list) and "KNOWN_" in ans.get("file", ""),

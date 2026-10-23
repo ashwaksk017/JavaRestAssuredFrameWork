@@ -14,6 +14,7 @@ import os as _os
 _os.environ["WORKBENCH_MOCK"] = "0"      # these tests are about the real paths
 
 import csv
+import hashlib
 import importlib.util
 import io
 import logging
@@ -2405,6 +2406,30 @@ class Push(Repo):
         files = sh(self.remote, "show", "--name-only", "--format=", "agent/job1")
         self.assertIn(rel, files.splitlines())
         self.assertIn(JIRA + "NewTest.java", files.splitlines())
+
+    def test_with_the_case_check_on_a_change_is_pushed_only_after_cursor_checked_it(self):
+        self.policy["require_case_check"] = True
+        self.pending()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(self.push(), 1)
+        self.assertIn("Review the change first", out.getvalue())
+        with io.open(os.path.join(self.job, "proposed.diff"), "rb") as fh:
+            sha = hashlib.sha256(fh.read()).hexdigest()
+        finding = {"category": "case", "severity": "high", "file": JIRA + "NewTest.java",
+                   "title": "the status is never set to L"}
+        write(self.root, ".workbench/job1/code-review.json",
+              json.dumps({"diff_sha256": sha, "findings": [finding]}))
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(self.push(), 1)
+        self.assertIn("do not do what their case says", out.getvalue())
+        self.assertIn("the status is never set to L", out.getvalue())
+        write(self.root, ".workbench/job1/code-review.json",
+              json.dumps({"diff_sha256": sha, "findings": [dict(finding, severity="low")]}))
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(self.push(), 0, out.getvalue())
 
     def test_a_file_git_ignores_is_never_pushed(self):
         """Nothing is off limits to write -- but the repository is public:

@@ -101,11 +101,13 @@ def questions(job_dir: str) -> list:
         seen.add(qid(q))
         a = saved.get(qid(q)) or {}
         out.append({"id": qid(q), "question": q, "answer": a.get("answer", ""),
-                    "keep": bool(a.get("keep")), "at": a.get("at", ""), "asked": True})
+                    "keep": bool(a.get("keep")), "at": a.get("at", ""), "asked": True,
+                    "entry": a.get("entry", ""), "evidence": a.get("evidence", [])})
     for i, a in saved.items():
         if i not in seen and isinstance(a, dict) and a.get("answer"):
             out.append({"id": i, "question": a.get("question", ""), "answer": a["answer"],
-                        "keep": bool(a.get("keep")), "at": a.get("at", ""), "asked": False})
+                        "keep": bool(a.get("keep")), "at": a.get("at", ""), "asked": False,
+                        "entry": a.get("entry", ""), "evidence": a.get("evidence", [])})
     return out
 
 
@@ -137,11 +139,23 @@ def save(job_dir: str, given: list, root: str = "", project: str = "b2b", privat
                 raise ValueError("an answer to keep holds a value of the private configuration "
                                  "(a host or a credential): the knowledge file is public. Write it "
                                  "without that value.")
+        entry = str(item.get("entry") or "").strip()[:MAX_ANSWER]
+        evidence = [" ".join(str(e).split())[:300] for e in (item.get("evidence") or [])
+                    if str(e).strip()][:8] if isinstance(item.get("evidence"), list) else []
+        if keep:
+            leaked = [v for v in (private or {}) if len(v) >= 6
+                      and v.lower() in (entry + "\n" + "\n".join(evidence)).lower()]
+            if leaked:
+                raise ValueError("an entry to keep holds a value of the private configuration "
+                                 "(a host or a credential): the knowledge file is public. Write it "
+                                 "without that value.")
         prev = saved.get(qid(q)) or {}
         if not a and not prev:
             continue
-        saved[qid(q)] = {"question": q, "answer": a, "keep": keep, "at": _now()
-                         if (a, keep) != (prev.get("answer"), prev.get("keep")) else prev.get("at", _now())}
+        mine = (a, keep, entry, evidence)
+        saved[qid(q)] = {"question": q, "answer": a, "keep": keep, "entry": entry, "evidence": evidence,
+                         "at": _now() if mine != (prev.get("answer"), prev.get("keep"), prev.get("entry", ""),
+                                                  prev.get("evidence", [])) else prev.get("at", _now())}
         if keep or prev.get("keep"):
             kept_now.append(qid(q))
     data.update(kind="answers", answers=saved)
@@ -170,10 +184,13 @@ def _write_known(root: str, rel: str, project: str, saved: dict, ids: list, job:
         if not a.get("keep"):
             entries.pop(i, None)                         # un-kept: its entry goes
             continue
-        eps = endpoints_in(a["question"] + "\n" + a["answer"])
+        text = (a.get("entry") or a["answer"]).strip()     # the rule for later designs, else the answer
+        eps = endpoints_in(a["question"] + "\n" + a["answer"] + "\n" + text)
+        found = [e for e in a.get("evidence") or [] if e]
         body = (f"<!-- known:{i} -->\n### {a['question']}\n\n"
                 + (f"Endpoints: {', '.join(eps)}\n\n" if eps else "")
-                + a["answer"].strip() + "\n\n"
+                + text + "\n\n"
+                + ("Found in:\n" + "".join(f"- {e}\n" for e in found) + "\n" if found else "")
                 + f"_Kept {a['at'][:10]}" + (f" (job {job})" if job else "") + "._\n")
         entries[i] = body
     out = head.rstrip() + "\n\n" + "\n".join(e.rstrip() + "\n" for e in entries.values())
@@ -197,7 +214,8 @@ def known(root: str, project: str) -> list:
         body = m.group(2).strip()
         q = re.match(r"###\s*(.+)", body)
         eps = re.search(r"^Endpoints:\s*(.+)$", body, re.M)
-        answer = re.sub(r"^###.*\n|^Endpoints:.*\n|^_Kept .*$", "", body, flags=re.M).strip()
+        answer = re.sub(r"^###.*\n|^Endpoints:.*\n|^_Kept .*$", "", body, flags=re.M)
+        answer = re.sub(r"\nFound in:\n(?:- .*\n?)*", "\n", answer).strip()
         out.append({"id": m.group(1), "question": q.group(1).strip() if q else "",
                     "answer": answer,
                     "endpoints": [e.strip() for e in eps.group(1).split(",")] if eps else []})

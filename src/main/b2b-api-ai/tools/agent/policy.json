@@ -142,5 +142,6 @@
    "base_class": "GoalStoryTestBase",
    "run_env": "stg"
   }
- }
+ },
+ "require_case_check": true
 }

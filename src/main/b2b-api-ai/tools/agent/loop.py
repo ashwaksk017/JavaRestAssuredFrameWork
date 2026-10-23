@@ -4917,6 +4917,32 @@ def cmd_approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
 _BRANCH_NAME_RX = re.compile(r"^(?!-)(?!.*\.\.)(?!.*@\{)[A-Za-z0-9][A-Za-z0-9._/-]{0,120}(?<!\.lock)(?<!/)$")
 
 
+def case_check_refusal(job_dir: str) -> str:
+    """Why the change cannot be approved yet for want of Cursor's check
+    against its cases, or "": a review of exactly this proposed.diff with no
+    high `case` finding."""
+    path = os.path.join(job_dir, "proposed.diff")
+    try:
+        with io.open(path, "rb") as fh:
+            now = hashlib.sha256(fh.read()).hexdigest()
+    except OSError:
+        return ""
+    try:
+        with io.open(os.path.join(job_dir, "code-review.json"), encoding="utf-8") as fh:
+            got = json.load(fh)
+    except (OSError, ValueError):
+        got = {}
+    if got.get("diff_sha256") != now:
+        return ("Review the change first (Commit and push tab): Cursor checks each test against the "
+                "steps of its case and the tester's answers before it is pushed.")
+    high = [f for f in got.get("findings") or [] if f.get("category") == "case" and f.get("severity") == "high"]
+    if high:
+        return (f"the review found {len(high)} test(s) that do not do what their case says: "
+                + "; ".join(f"{f.get('file', '')}: {f.get('title', '')}" for f in high[:3])
+                + ". Ask Cursor to fix them (or correct the case's steps), then review again.")
+    return ""
+
+
 def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
              config_path: str = "", base_wanted: str = "", branch_wanted: str = "") -> int:
     review = read_review(job_dir)
@@ -4989,6 +5015,14 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
                 f"(Settings tab): run them on {wanted_env}.")
             return 1
     diff = _write_diff(root, job_dir, files, generated, gen_backup)
+    if policy.get("require_case_check") and scope["name"] == "new-test":
+        # Cursor read THIS change against its cases and the tester's answers
+        # (Review the change: codereview.py) -- and found no test that skips
+        # a step of its case.
+        why = case_check_refusal(job_dir)
+        if why:
+            say(f"FAIL {why}")
+            return 1
     # What is approved must be what was shown. If a file changed since the
     # diff was produced, show the new diff and ask again.
     now = {f: _sha(os.path.join(root, f)) for f in paths}

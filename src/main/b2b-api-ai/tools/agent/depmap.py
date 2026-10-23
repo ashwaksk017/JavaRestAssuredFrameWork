@@ -384,7 +384,7 @@ def block(root: str, project: str, spec: dict, endpoints: list) -> str:
         kmod = importlib.util.module_from_spec(spec_k)
         spec_k.loader.exec_module(kmod)
         answered = kmod.known(root, project)
-    except Exception:                                    # noqa: BLE001 -- the map goes on without it
+    except (OSError, ImportError, ValueError, AttributeError):   # the map goes on without it
         answered = []
     parts = []
     for ep in dict.fromkeys(endpoints):

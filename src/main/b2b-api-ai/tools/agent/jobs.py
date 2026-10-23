@@ -448,6 +448,14 @@ RUNNABLES = {
     # A question about the job: Cursor answers in plan mode in the project
     # folder; no file, no review state is changed (ask.py). Not EXCLUSIVE:
     # it reads, so it may be asked while the job's change waits or runs.
+    # Cursor answers the design's open questions from the project and drafts
+    # the entry to keep for each (answerq.py): plan mode, it reads; nothing is
+    # kept until a person saves the answers on the page.
+    "answer-questions": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "answerq.py")],
+        "label": "Cursor answers the design's open questions (it reads; a person keeps them)",
+        "options": {"--job": "text"},
+    },
     "agent-question": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "ask.py")],
         "label": "Cursor answers a question about this job (it reads; nothing is changed)",
@@ -1194,6 +1202,7 @@ RESULT_FILES = {"jira-": "jira-result.json", "failures-": "failures-result.json"
                 "xray-update-plan": "xray-update-plan.json",
                 "xray-update": "xray-update.json",
                 "story-check": "story-check.json",
+                "answer-questions": "answer-suggestions.json",
                 "fix-brief": "fix-brief.json",
                 "xray-import": "xray-import.json",
                 "devcode-check": "devcode.json",
@@ -1991,7 +2000,8 @@ def read_artifact(job: str, name: str) -> str:
                "publish-status.json", "publish.log",
                "devcode.json", "devcode.md", "suite-suggest.json", "mvnrun-result.json",
                # Read by the page; were missing, so it was refused and showed nothing.
-               "xray-publish.json", "convert-fix.json", "story-keys.json"}
+               "xray-publish.json", "convert-fix.json", "story-keys.json",
+               "answer-suggestions.json"}
     if name not in allowed:
         raise ValueError(f"{name!r} is not a readable artifact. "
                          f"Known: {', '.join(sorted(allowed))}")

@@ -273,6 +273,10 @@ CHECKS = [
           [PY, "tools/agent/test_fixbrief.py"],
           "a failing converted case becomes a brief for Cursor from the recorded run, surefire, "
           "the per-row log and the converter's audit notes, redacted, one suite a job"),
+    Check("agent-answerq",
+          [PY, "tools/agent/test_answerq.py"],
+          "Cursor answers a design's open questions from the project, says where it found each "
+          "and drafts the rule to keep; a person's answer stands; nothing private comes back"),
     Check("agent-knowledge",
           [PY, "tools/agent/test_knowledge.py"],
           "a design's open questions are answered on the page; an answer kept for later designs "

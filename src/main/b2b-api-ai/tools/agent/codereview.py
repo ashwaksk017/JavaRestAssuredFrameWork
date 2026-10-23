@@ -111,7 +111,7 @@ MAX_FINDINGS_PER_FILE = 12
 BRIEF_CHARS = 4_000
 
 SEVERITIES = ("high", "medium", "low")
-CATEGORIES = ("bug", "assertion", "setup", "test data", "error handling", "security",
+CATEGORIES = ("bug", "assertion", "setup", "case", "test data", "error handling", "security",
               "maintainability", "other")
 VERDICTS = ("ok", "findings", "cannot judge")
 
@@ -140,6 +140,9 @@ Report what a careful reviewer would stop the change for:
                    passes whatever the service returns -- including a
                    call that changes state (activate, a role, a status)
                    whose result the test never reads back
+  case             a test that does not do a step of the case it is for
+                   (THE CASES below), or leaves out a step a tester's
+                   answer says is needed (THE TESTER'S ANSWERS below)
   setup            a test whose Audit comment names a converted test it
                    follows but leaves out steps of it with no reason
                    given, or that assumes a state (an active account, a
@@ -454,6 +457,37 @@ def locate(f: dict, evidence) -> tuple:
 
 # ---- asking ---------------------------------------------------------------
 
+def cases_for_review(job_dir: str, root: str) -> str:
+    """THE CASES this change is for (its written cases, as reviewed) and
+    THE TESTER'S ANSWERS for their endpoints -- plain lines, no markers."""
+    try:
+        cd = loop._load("review_casedescribe", os.path.join(HERE, "casedescribe.py"))
+        kn = loop._load("review_knowledge", os.path.join(HERE, "knowledge.py"))
+    except Exception:                                    # noqa: BLE001 -- the review goes on without them
+        diag.trace()
+        return ""
+    cases = cd.reviewed_cases(job_dir)
+    ids = [i for i in cd.written(job_dir) if i in cases] or list(cases)
+    if not ids:
+        return ""
+    lines = ["THE CASES this change is for (steps as a person reviewed them):"]
+    eps = []
+    for i in ids[:30]:
+        c = cases[i]
+        lines.append(f"{i} {c.get('endpoint', '')} -- {c.get('title', '')}")
+        for n, s in enumerate(c.get("steps") or [], 1):
+            if isinstance(s, dict):
+                lines.append(f"  {n}. {s.get('action', '')}" + (f" | data: {s['data']}" if s.get("data") else "")
+                             + (f" | expect: {s['expected']}" if s.get("expected") else ""))
+        if c.get("endpoint"):
+            eps.append(str(c["endpoint"]))
+    told = kn.block(root, job_dir, loop.intake.job_project(job_dir), eps)
+    if told:
+        told = "\n".join(l for l in told.splitlines() if not l.startswith("====="))
+        lines += ["", "THE TESTER'S ANSWERS (what the specification and the code do not say):", told]
+    return "\n".join(lines)
+
+
 def build_prompt(batch: list, scope: str, brief: str, nonce: str) -> str:
     parts = []
     for i, f in enumerate(batch, 1):
@@ -573,6 +607,11 @@ def review(job: str, agent=None, root: str = "") -> dict:
     brief, _ = design.redact(loop._read(os.path.join(job_dir, "brief.md"), BRIEF_CHARS), private)
     brief, _ = design.hide_hosts(brief)
     brief = "\n".join(l for l in brief.splitlines() if "-----" not in l and "=====" not in l)
+    # What each test is FOR: its case's steps as reviewed, and what testers
+    # answered -- checked against the change (category `case`).
+    cases_text, _ = design.redact(cases_for_review(job_dir, root), private)
+    if cases_text:
+        brief = (brief + "\n\n" + cases_text).strip()
 
     secret, by = "", "cursor"
     if agent is None:

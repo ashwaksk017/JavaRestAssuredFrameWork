@@ -522,6 +522,7 @@ details.desc summary { cursor: pointer; white-space: nowrap; }
 .answers .answer-row { margin: .4rem 0 .8rem; }
 .answers .answer-row p { margin: 0 0 .25rem; }
 .answers textarea.answer { width: 100%; }
+.answers .entry-box { margin-top: .3rem; }
 pre.desc-text { white-space: pre-wrap; max-width: 34rem; min-width: 18rem; font-size: .8rem; }
 #agent-xray-exec { flex: 0 1 17rem; }
 /* Finalize the cases: the step that opens Create in Xray and Automate, as
