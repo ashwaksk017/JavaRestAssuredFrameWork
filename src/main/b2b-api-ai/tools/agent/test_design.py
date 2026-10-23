@@ -484,6 +484,21 @@ class Run(unittest.TestCase):
         with io.open(os.path.join(self.out, name), encoding="utf-8-sig") as fh:
             return fh.read()
 
+    def test_the_design_is_told_where_this_project_tests_its_endpoints_today(self):
+        os.makedirs(self.out, exist_ok=True)
+        with io.open(os.path.join(self.out, "project.json"), "w", encoding="utf-8") as fh:
+            json.dump({"project": "goal"}, fh)
+        self.run_design(self.agent(reply(case())), service="rates")
+        p = self.prompts[0]
+        self.assertIn("You MAY", p)
+        self.assertNotIn("do not use any tool", p)
+        self.assertIn("WHERE TO LOOK IN THIS PROJECT (a GOAL job", p)
+        self.assertIn(".cursor/skills/jira-to-restassured/GOAL_FLOWS.md", p)
+        self.assertIn("GoalStoryTestExample.java: the golden test", p)
+        self.assertIn("_audit/<suite>/facade_endpoints.md", p)
+        self.assertIn("Never open src/main/resources/program_configuration*.json", p)
+        self.assertIn("`converted` when from a converted test", p.replace("\n  ", " "))
+
     def test_a_good_reply_writes_the_four_files(self):
         rc = self.run_design(self.agent(reply(case(), case(id="TC-002", endpoint="GET /nope"))),
                              service="rates", requirements="AC-1 a rate can be created")
@@ -1848,7 +1863,9 @@ class DesigningForAStory(Run):
 
     def test_the_prompt_asks_for_the_answer_not_for_a_plan(self):
         _rc, seen, _d = self.ask()
-        self.assertIn("Do not write a plan first and do not use any tool", seen[0])
+        # It may read the project (WHERE TO LOOK); the answer is still the JSON, not a plan.
+        self.assertIn("Do not write a plan first", seen[0])
+        self.assertIn("The JSON object is the whole of your answer", seen[0])
 
     def test_the_command_takes_the_option(self):
         seen = {}

@@ -47,7 +47,9 @@ _NAMED_RX = re.compile(r"(?<![\w.])([a-z_]\w*)\([^()]*\)\s*\((?:in\s+)?([A-Z]\w*
 # a definition: a type before the name, a parameter list, then its body
 _DEF_RX = re.compile(r"[\w>\]]\s+([a-z_]\w*)\s*\([^()]*\)\s*(?:throws\s+[\w.,\s]+)?\{")
 _NOT_METHODS = {"if", "for", "while", "switch", "catch", "return", "new", "synchronized"}
-SOURCE_WORDS = {"spec": "the API specification", "story": "the story", "notes": "the tester's notes"}
+SOURCE_WORDS = {"spec": "the API specification", "story": "the story", "notes": "the tester's notes",
+                "flow": "the project's flow guide", "golden": "the golden test",
+                "converted": "the converted test"}
 
 
 def _one(v, cap: int = MAX_LINE) -> str:

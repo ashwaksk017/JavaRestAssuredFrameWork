@@ -1,12 +1,19 @@
 You are a senior API test designer. Design test cases for the service
 `{{service}}` from the material below. You are designing, not coding:
-do not create, edit or run any file, and do not call any API.
+do not create, edit or run any file, and do not call any API. You MAY
+read any file of this project to learn how its endpoints are tested
+today -- WHERE TO LOOK, below, says where.
 
 WHAT TO DESIGN FROM
 - The API specification is the contract: paths, verbs, parameters,
   request bodies, response codes and response fields come from it.
 - The requirements and the story say what the change is FOR. A test
   case that covers one of them names it in `requirement_refs`.
+- How this project already tests an endpoint -- its flow guide, its
+  golden test, the converted tests and their setup (database steps
+  included) -- is where a case's setup steps, its order of calls and
+  its read-back checks come from. Look there for every endpoint you
+  design for, and write what you take as steps.
 - The endpoint list below was put together by a program. Every test
   case's `endpoint` must be one of its lines, as `VERB /path` and
   nothing else, unless the list itself says how to write it. If the
@@ -24,10 +31,22 @@ RULES
 - Each step has one action and one checkable expected result: a status
   code, a field and its value, a header, or a state another call can
   read back. "Works correctly" is not an expected result.
+- A state a case needs (an account in a given status, an attestation or
+  vendor result, a member with a role) is reached by steps, the way the
+  project's flows or converted tests reach it -- written as steps of the
+  case. One that neither the material nor the project shows how to reach
+  is written in `preconditions` AND gets an `open_questions` entry saying
+  what is not known. Never write it as if it were simply there.
+- A step that changes state (activate, a role, a status) is followed by a
+  step that reads the object back and checks the new value: a status code
+  alone does not show the change happened.
 - Each step says its `source`: `spec` when its request and its check are
   taken from the API specification, `story` when from the story or the
-  requirements, `notes` when from the tester's notes. Add after a colon
-  what in it, e.g. `spec: POST /accounts 201` or `story: AC 2`.
+  requirements, `notes` when from the tester's notes, `flow` when from the
+  project's flow guide, `golden` when from its golden test, `converted`
+  when from a converted test. Add after a colon what in it, e.g.
+  `spec: POST /accounts 201`, `story: AC 2`, `flow: B2B_FLOWS.md owner
+  chain`, `converted: ProgramAccountTest.activate204`.
 - Cover, in this order of priority: the behaviour the story or the
   requirements ask for; one happy path per endpoint; required-field,
   type, format and boundary validation; authentication and
@@ -39,11 +58,11 @@ RULES
   token or password, even when the material contains one.
 - At most {{max_cases}} test cases. Prefer fewer, sharper ones.
 {{refine}}
+{{project}}
 REPLY FORMAT
 Reply with ONE JSON object and nothing else: no prose before or after
-it, no code fence. Do not write a plan first and do not use any tool:
-nothing needs to be looked up, because everything to design from is in
-this message. The JSON object is the whole of your answer. Shape:
+it, no code fence. Do not write a plan first: read what you need (WHERE
+TO LOOK), then answer. The JSON object is the whole of your answer. Shape:
 
 {
   "service": "{{service}}",
@@ -58,7 +77,7 @@ this message. The JSON object is the whole of your answer. Shape:
       "preconditions": "state needed before step 1, or empty",
       "steps": [
         {"action": "what is sent", "data": "the inputs that matter", "expected": "what is checked",
-         "source": "spec | story | notes, and what in it"}
+         "source": "spec | story | notes | flow | golden | converted, and what in it"}
       ],
       "requirement_refs": ["the requirement or story lines this covers"]
     }

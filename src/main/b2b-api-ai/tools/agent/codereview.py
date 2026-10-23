@@ -111,7 +111,7 @@ MAX_FINDINGS_PER_FILE = 12
 BRIEF_CHARS = 4_000
 
 SEVERITIES = ("high", "medium", "low")
-CATEGORIES = ("bug", "assertion", "test data", "error handling", "security",
+CATEGORIES = ("bug", "assertion", "setup", "test data", "error handling", "security",
               "maintainability", "other")
 VERDICTS = ("ok", "findings", "cannot judge")
 
@@ -137,7 +137,13 @@ reviewing. Hosts and private values have been replaced with
 Report what a careful reviewer would stop the change for:
   bug              the code does not do what it plainly intends
   assertion        a test that checks nothing, the wrong thing, or
-                   passes whatever the service returns
+                   passes whatever the service returns -- including a
+                   call that changes state (activate, a role, a status)
+                   whose result the test never reads back
+  setup            a test whose Audit comment names a converted test it
+                   follows but leaves out steps of it with no reason
+                   given, or that assumes a state (an active account, a
+                   role) no step of the change puts the data in
   test data        data that is hard-coded where it will collide, expire
                    or leak between tests
   error handling   a failure swallowed, or reported as a pass

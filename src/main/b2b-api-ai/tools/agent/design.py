@@ -1379,7 +1379,11 @@ def call_cursor(prompt: str, root: str, on_event, followup, mode: str = "plan",
     # block ends. A failed clean-up must not cost a reply already paid for.
     with tempfile.TemporaryDirectory(prefix="b2b-design-",
                                      ignore_cleanup_errors=True) as empty:
-        cfg.cwd = empty
+        # In the project, not an empty folder: the design reads how each
+        # endpoint is tested today (its flows, golden and converted tests).
+        # Plan mode reads and answers; it does not edit -- and the tree is
+        # compared before and after the run all the same.
+        cfg.cwd = root
         try:
             # Seen live (composer-2.5, plan mode): the answer was put in a
             # plan (createPlan) and the reply held one sentence.
@@ -1403,6 +1407,40 @@ def _tree_state(root: str):
     except Exception:                                    # noqa: BLE001
         diag.trace()
         return None
+
+
+def project_guide(root: str, out_dir: str) -> str:
+    """WHERE TO LOOK: the files of this project that show how its endpoints
+    are tested today -- of the job's project (B2B, GOAL)."""
+    try:
+        project = loop.intake.job_project(out_dir)
+        proj = (loop.load_policy().get("projects") or {}).get(project) or {}
+    except Exception:                                    # noqa: BLE001
+        diag.trace()
+        project, proj = "b2b", {}
+    label = str(proj.get("label") or project.upper())
+    lines = [f"WHERE TO LOOK IN THIS PROJECT (a {label} job; paths are from the project folder)"]
+    if proj.get("flows"):
+        lines.append(f"- {proj['flows']}: {label}'s flows -- the chains of calls that set up "
+                     f"people, accounts and states, and the helpers that make them")
+    for ex in proj.get("pattern_example") or []:
+        lines.append(f"- {ex}: the golden test -- a whole test, as one is written here")
+    if proj.get("base_class"):
+        lines.append(f"- src/test/java/com/hi/api/tests/{proj['base_class']}.java: the helpers a "
+                     f"{label} test calls")
+    lines += [
+        f"- .cursor/skills/jira-to-restassured/flows/{project}.json: which converted suites "
+        f"call which endpoint, in which order",
+        "- _audit/<suite>/facade_endpoints.md: the converted method that reaches each endpoint",
+        "- src/test/java/com/hi/api/tests/imported/<suite>/ and "
+        "src/main/java/com/hi/api/support/<suite>/: the converted tests, with their hooks and "
+        "phases -- the database steps and checks around each call",
+        "- src/test/java/com/hi/api/tests/legacy/ and src/test/java/com/hi/api/tests/jira/: tests "
+        "written by hand",
+        "Never open src/main/resources/program_configuration*.json or tools/cursor_agent.json: "
+        "they hold credentials. Values in tests you read are examples of FORM: a case's data is "
+        "still described, not copied."]
+    return "\n".join(lines) + "\n"
 
 
 FOCUS_RULE = (
@@ -1817,6 +1855,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         prompt = render(_read(TEMPLATE), {
             "service": service_name,
             "focus": FOCUS_RULE if focus else "",
+            "project": project_guide(root, out_dir),
             "max_cases": share,
             "endpoints": sections["endpoints"] or
                          "(none could be read. Name an endpoint only as the "

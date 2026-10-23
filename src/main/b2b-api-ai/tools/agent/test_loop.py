@@ -540,6 +540,10 @@ class TheReviewDecidesWhatIsWritten(Repo):
         # Each test carries its Audit comment: the case's Description.
         self.assertIn("`Audit: <case id>`", seen["p"])
         self.assertIn("Reference:", seen["p"])
+        # The converted test is mirrored, a change is read back, a helper is looked for first.
+        self.assertIn("**Mirror the converted test of the same endpoint**", seen["p"])
+        self.assertIn("**Read back what you change**", seen["p"])
+        self.assertIn("**Reuse before you add**", seen["p"])
         self.assertIn("WARN no Audit comment for TC-002", out.getvalue())
 
     def test_steps_edited_before_or_after_its_test_reach_cursor_and_the_test_is_reworked(self):
