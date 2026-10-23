@@ -252,6 +252,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(jobs.sources(q.get("job", "")))
             if u.path == "/api/run-targets":
                 return self._json(jobs.run_targets(q.get("job", "")))
+            if u.path == "/api/run-ask":
+                # Under a failed run: which way its failures go to Cursor,
+                # and the request to edit (runask.py). Reads only.
+                return self._json(jobs.run_ask_preview(q.get("job", "")))
             if u.path == "/api/uploads":
                 return self._json({"files": jobs.list_uploads()})
             if u.path == "/api/spec":
@@ -399,6 +403,13 @@ class Handler(BaseHTTPRequestHandler):
                 # Which project's flows, golden test, configuration and run
                 # environment this job's commands use (jobs.set_project).
                 return self._json(jobs.set_project(body.get("job", ""), body.get("project", "")))
+            if u.path == "/api/run-ask":
+                # "Ask Cursor to fix the failures" on the Run tests tab: the
+                # job's own tests to its Ask Cursor, a converted suite's to a
+                # fix brief in a new job (jobs.run_ask). The images go to the
+                # job the request goes to, so they are saved there, not here.
+                return self._json(jobs.run_ask(body.get("job", ""), body.get("text", ""),
+                                               body.get("images")))
             if u.path == "/api/agent-followup":
                 # What the reviewer asks Cursor to change, kept with the job
                 # under a fixed name; the command reads it from there.

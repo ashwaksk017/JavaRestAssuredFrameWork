@@ -2081,7 +2081,7 @@ async function allureLink(allure) {
 async function showRunResult(j) {
   const r = await artifactJson(j, "mvnrun-result.json");
   const box = $("run-result");
-  if (!r) { box.replaceChildren(); return; }
+  if (!r) { box.replaceChildren(); $("run-ask-box").hidden = true; return; }
   const kids = [];
   const report = await allureLink(r.allure);
   if (report) kids.push(report);
@@ -2114,11 +2114,72 @@ async function showRunResult(j) {
     }
   }
   box.replaceChildren(...kids);
+  await showRunAsk(j);
 }
+// ---- Ask Cursor to fix the failures (under a failed run) ------------------
+// The server says which way the run's failures go (runask.py): the job's
+// own tests to that job's Ask Cursor, a converted suite's to a fix brief in
+// a new job. The request is prefilled once per run, then left to the person:
+// a refresh must not throw away what they wrote.
+let runAskShown = null;            // the server's last answer for the box
+let runAskFrom = "";               // the run (job and time) the box was prefilled from
+let runAskSent = "";               // the job the last request went to
+async function showRunAsk(j, again) {
+  const box = $("run-ask-box");
+  let p;
+  try { p = await api(`/api/run-ask?job=${encodeURIComponent(j)}`); }
+  catch (e) { p = { kind: "none", failed: 1, why: e.message }; }
+  runAskShown = p;
+  if (!p || !p.failed) { box.hidden = true; return; }
+  box.hidden = false;
+  const usable = (p.kind === "job" || p.kind === "converted") && !p.blocked;
+  const how = p.kind === "job" ? `Goes to job ${p.job}'s Ask Cursor.`
+    : p.kind === "converted" ? `A fix brief for suite ${p.suite}, in a new job.` : "Not sent from here.";
+  $("run-ask-which").replaceChildren(
+    banner(usable ? "ok" : "warn", `${p.failed} test(s) failed. ${how} Why: ${p.why}`),
+    p.blocked ? banner("bad", p.blocked) : null);
+  const from = `${j}@${(p.run && p.run.at) || ""}`;
+  if (again || (p.text && (runAskFrom !== from || !$("run-ask").value.trim()))) {
+    $("run-ask").value = p.text || "";
+    runAskFrom = from;
+  }
+  $("run-ask-send").disabled = !usable;
+  $("run-ask-send").title = usable ? "" : (p.blocked || p.why || "");
+  $("run-ask-again").disabled = !p.text;
+}
+$("run-ask-again").onclick = () => showRunAsk(runJob(), true);
+$("run-ask-send").onclick = async () => {
+  const j = runJob();
+  const p = runAskShown;
+  const text = $("run-ask").value.trim();
+  if (!p || !text) { setState($("run-ask-state"), "bad", "write what Cursor should fix"); return; }
+  if (!confirm(p.kind === "converted"
+      ? `Cursor will change the converted files of suite "${p.suite}", in a new job of its own, from a ` +
+        "fix brief of this run's failures and the request as you wrote it. Nothing is committed. Continue?"
+      : `Cursor will change job "${p.job}"'s tests as the request asks, and the change waits for your ` +
+        "review. Nothing is committed. Continue?")) return;
+  try {
+    const r = await post("/api/run-ask", { job: j, text, images: pastedFor("run-ask") });
+    clearPasted("run-ask");
+    runAskSent = r.job;
+    $("run-ask-open").hidden = false;
+    $("run-ask-open").textContent = `Open job ${r.job} to review it`;
+    follow(r.runnable, $("run-ask-log"), $("run-ask-state"), () => {}, r.job);
+  } catch (e) { setState($("run-ask-state"), "bad", e.message); }
+};
+// The change Cursor makes is reviewed where every change is: the job's
+// Commit and push tab.
+$("run-ask-open").onclick = () => {
+  if (!runAskSent) return;
+  $("job").value = runAskSent;
+  $("job").dispatchEvent(new Event("change"));
+  goToStep("agent", "agent-push");
+};
 async function startRun(runnable, options) {
   const j = runJob();
   runBusy(true);
   $("run-result").replaceChildren();
+  $("run-ask-box").hidden = true;          // a new run: its failures, not the last one's
   try {
     await post("/api/start", { job: j, runnable, options: Object.assign({ "--job": j }, options) });
     follow(runnable, $("run-log"), $("run-state"), async () => { runBusy(false); await showRunResult(j); }, j);
@@ -4097,7 +4158,7 @@ function pastedFor(...ids) {
 function clearPasted(...ids) {
   for (const id of ids.filter(Boolean)) { pasted[id] = []; drawPasted(id); }
 }
-for (const id of ["refine-ask", "design-notes", "agent-ask", "mig-ask", "wb-ask", "manual-notes"]) acceptPaste(id);
+for (const id of ["refine-ask", "design-notes", "agent-ask", "mig-ask", "wb-ask", "manual-notes", "run-ask"]) acceptPaste(id);
 const MAX_TABLE_ROWS = 500;
 function table(headers, rows) {
   const shown = rows.slice(0, MAX_TABLE_ROWS);

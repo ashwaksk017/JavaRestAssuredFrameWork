@@ -226,6 +226,58 @@ def main() -> int:
         html = page.dom("failures")
         check("the Failures tab shows that result", "Recorded runs" in html)
 
+        # ---- Ask Cursor to fix the failures, under a failed run -------------
+        # The run's result is put where mvnrun.py writes it; which way it
+        # goes to Cursor is the server's answer (runask.py), shown as text.
+        def run_result(cls, status="FAIL"):
+            with io.open(os.path.join(job_dir, "mvnrun-result.json"), "w", encoding="utf-8") as fh:
+                json.dump({"kind": "mvnrun", "what": "test", "at": "2026-10-20T10:00:00Z", "env": "stg",
+                           "project": "b2b", "suite": "Suites/Demo.xml", "test": "", "group": "",
+                           "ok": False, "verdict": "1 test(s) failed", "passed": 0,
+                           "failed": int(status == "FAIL"), "skipped": 0, "seconds": 3, "how": "offline",
+                           "tests": [{"class": cls, "method": "getSpendTest", "status": status,
+                                      "message": "expected [200] but found [403] <img src=x onerror=alert(1)>",
+                                      "ms": 5, "config": False, "params": "{jira_xray_id=ABC-1}",
+                                      "groups": []}]}, fh)
+        try:
+            run_result("com.hi.api.tests.imported.amex.spend.SpendTest")
+            code, ask = page.call(f"/api/run-ask?job={JOB}")
+            check("a failed converted test goes to a fix brief in a new job",
+                  code == 200 and ask.get("kind") == "converted" and ask.get("suite") == "amex"
+                  and "SpendTest.getSpendTest [case ABC-1]" in (ask.get("text") or ""), str(ask)[:300])
+            html = page.dom("run")
+            check("the Run tests tab offers Ask Cursor to fix the failures, and says which way and why",
+                  re.search(r'id="run-ask-box"[^>]*hidden', html) is None
+                  and 'id="run-ask-send"' in html and "A fix brief for suite amex, in a new job." in html
+                  and "Fix with Cursor on the Failures tab" in html, html[html.find('id="run-ask-box"'):][:400])
+            check("a screenshot can be pasted into the Run tests tab's request",
+                  'id="run-ask-pasted"' in html)
+            check("a run's message is shown as text on the Run tests tab",
+                  "<img src=x" not in html and "&lt;img src=x onerror=alert(1)&gt;" in html)
+            with io.open(os.path.join(job_dir, "review.json"), "w", encoding="utf-8") as fh:
+                json.dump({"state": "pending-review", "files": {
+                    "created": ["src/test/java/com/hi/api/tests/jira/DemoStayTest.java"]}}, fh)
+            run_result("com.hi.api.tests.jira.DemoStayTest")
+            code, ask = page.call(f"/api/run-ask?job={JOB}")
+            check("a failed test of the job's waiting change goes to the job's Ask Cursor",
+                  code == 200 and ask.get("kind") == "job" and ask.get("job") == JOB, str(ask)[:300])
+            html = page.dom("run")
+            check("the Run tests tab says the request goes to the job's Ask Cursor",
+                  f"Goes to job {JOB}'s Ask Cursor." in html)
+            run_result("com.hi.api.tests.jira.DemoStayTest", "PASS")
+            code, body = page.call("/api/run-ask", {"job": JOB, "text": "Fix it."})
+            check("Ask Cursor to fix the failures is refused when no test failed",
+                  code == 400 and "no failed test" in body.get("error", ""), str(body))
+            html = page.dom("run")
+            check("a run with no failed test does not offer to fix one",
+                  re.search(r'id="run-ask-box"[^>]*hidden', html) is not None)
+        finally:
+            for name in ("mvnrun-result.json", "review.json"):
+                try:
+                    os.remove(os.path.join(job_dir, name))
+                except OSError:
+                    pass
+
         # ---- what a command says it is doing ---------------------------------
         # A command's steps are marked lines of its output (tools/diag.py).
         # The page lifts them out: the latest beside the button, all of them
