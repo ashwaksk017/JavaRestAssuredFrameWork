@@ -2928,6 +2928,18 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
         spec_block, _spec_note = spec_for_cases(job_dir, endpoints_of_cases(designed), root)
         if spec_block:
             parts += ["", spec_block]
+        # What each case's endpoint needs, who makes it, how it is tested
+        # today -- for a brand-new endpoint too (depmap.py).
+        try:
+            spec_d = job_spec(job_dir)[0]
+            deps = _load("loop_depmap", os.path.join(HERE, "depmap.py")).block(
+                root or ROOT, intake.projectconfig.active_project(), spec_d or {},
+                endpoints_of_cases(designed)) if spec_d else ""
+        except Exception:                                # noqa: BLE001 -- the run goes on without it
+            diag.trace()
+            deps = ""
+        if deps:
+            parts += ["", deps]
         # The converted flows nearest each case's endpoint, of the job's
         # project: what to reuse, and in what order -- also for an endpoint
         # nothing calls yet (the nearest path).

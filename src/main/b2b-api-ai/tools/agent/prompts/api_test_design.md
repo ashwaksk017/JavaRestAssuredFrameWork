@@ -59,6 +59,7 @@ RULES
 - At most {{max_cases}} test cases. Prefer fewer, sharper ones.
 {{refine}}
 {{project}}
+{{dependencies}}
 REPLY FORMAT
 Reply with ONE JSON object and nothing else: no prose before or after
 it, no code fence. Do not write a plan first: read what you need (WHERE

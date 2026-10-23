@@ -643,6 +643,8 @@ class TheReviewDecidesWhatIsWritten(Repo):
         self.assertIn('"rateType"', p, "the body's schema, through its $ref")
         self.assertIn('"BAR"', p, "the allowed values")
         self.assertNotIn("/other", p, "a path no case needs is not sent")
+        self.assertIn("===== DEPENDENCIES OF THE ENDPOINTS", p, "what each case's endpoint needs, and who makes it")
+        self.assertIn("* POST /x", p)
         self.assertNotIn("nobodyAsks", p, "a schema no case needs is not sent")
         self.assertNotIn("api.example.test", p, "the host is never sent")
         self.assertIn("Not in the specification (write these from the case alone, and say so): GET /nowhere", p)

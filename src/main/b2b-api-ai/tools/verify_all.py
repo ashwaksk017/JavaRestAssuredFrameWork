@@ -273,6 +273,11 @@ CHECKS = [
           [PY, "tools/agent/test_fixbrief.py"],
           "a failing converted case becomes a brief for Cursor from the recorded run, surefire, "
           "the per-row log and the converter's audit notes, redacted, one suite a job"),
+    Check("agent-depmap",
+          [PY, "tools/agent/test_depmap.py"],
+          "what each endpoint needs, who makes it and how it is tested today is worked out "
+          "from the specification, the project's helpers and the converted suites -- for a "
+          "brand-new endpoint too; what nobody makes is said, not invented"),
     Check("agent-casedescribe",
           [PY, "tools/agent/test_casedescribe.py"],
           "each designed case is described step by step for audit: planned from the "

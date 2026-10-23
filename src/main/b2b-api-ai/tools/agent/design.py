@@ -1409,6 +1409,21 @@ def _tree_state(root: str):
         return None
 
 
+MAX_DEP_ENDPOINTS = 25
+
+
+def dependency_block(root: str, out_dir: str, spec, endpoints) -> str:
+    """depmap.py's block for the endpoints designed for (the first 25)."""
+    if not spec or not endpoints:
+        return ""
+    try:
+        dm = loop._load("design_depmap", os.path.join(HERE, "depmap.py"))
+        return dm.block(root, loop.intake.job_project(out_dir), spec, list(endpoints)[:MAX_DEP_ENDPOINTS])
+    except Exception:                                    # noqa: BLE001 -- the design goes on without it
+        diag.trace()
+        return ""
+
+
 def project_guide(root: str, out_dir: str) -> str:
     """WHERE TO LOOK: the files of this project that show how its endpoints
     are tested today -- of the job's project (B2B, GOAL)."""
@@ -1819,6 +1834,9 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         raise RuntimeError("Cursor answered, but no test cases could be read "
                            "from the reply. It is in the Cursor log.")
 
+    # What each endpoint designed for needs, who makes it, how it is tested
+    # today (depmap.py) -- the producers looked for in the WHOLE specification.
+    dependencies = dependency_block(root, out_dir, spec, design_endpoints)
     raw, how_read, failed, summaries, questions, model = [], [], [], [], [], ""
     fatal = ""
     is_partial = False
@@ -1856,6 +1874,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
             "service": service_name,
             "focus": FOCUS_RULE if focus else "",
             "project": project_guide(root, out_dir),
+            "dependencies": dependencies,
             "max_cases": share,
             "endpoints": sections["endpoints"] or
                          "(none could be read. Name an endpoint only as the "

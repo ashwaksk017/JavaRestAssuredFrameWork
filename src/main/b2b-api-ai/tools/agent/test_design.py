@@ -497,6 +497,7 @@ class Run(unittest.TestCase):
         self.assertIn("GoalStoryTestExample.java: the golden test", p)
         self.assertIn("_audit/<suite>/facade_endpoints.md", p)
         self.assertIn("Never open src/main/resources/program_configuration*.json", p)
+        self.assertIn("===== DEPENDENCIES OF THE ENDPOINTS", p, "each endpoint's needs and their makers")
         self.assertIn("`converted` when from a converted test", p.replace("\n  ", " "))
 
     def test_a_good_reply_writes_the_four_files(self):
