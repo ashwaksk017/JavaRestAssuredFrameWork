@@ -180,5 +180,136 @@ class TheStages(Base):
             self.assertIn(why, str(got.exception))
 
 
+class EnvironmentValues(Base):
+    """Every value of an environment block, editable on the page."""
+
+    def setUp(self):
+        super().setUp()
+        example = os.path.join(self.root, *st.example_rel("b2b").split("/"))
+        with io.open(example, "w", encoding="utf-8") as fh:
+            json.dump({"stg": {"database": {"host": "", "port": "", "password": ""},
+                               "api_config": {"api_end_point": "", "token_end_point": "", "client_id": ""},
+                               "services": {"hospitality_partner_v2": ""},
+                               "jira_config": {"pat": "", "base_urls": [], "acceptance_criteria_fields": []},
+                               "poll_interval": "5", "retries": 3, "_jira_comment": "Jira's own note"}}, fh)
+        with io.open(self.cfg, "w", encoding="utf-8") as fh:
+            json.dump({"stg": {"database": {"host": "db.example.test", "password": "db-secret-77"},
+                               "api_config": {"client_id": "client-id-secret"},
+                               "jira_config": {"pat": "old-token-123"}, "flag": True},
+                       "qa": {"keep": "me"}}, fh)
+
+    def fields(self, env=""):
+        return {tuple(f["path"]): f for f in st.config_fields(self.root, "b2b", env)["fields"]}
+
+    def test_every_value_and_every_example_setting_is_listed_and_no_secret_is_sent(self):
+        out = st.config_fields(self.root, "b2b")
+        f = {tuple(x["path"]): x for x in out["fields"]}
+        self.assertEqual(f[("database", "host")]["value"], "db.example.test")
+        self.assertFalse(f[("database", "port")]["in_file"], "from the example: fill it in")
+        self.assertEqual(f[("database", "password")]["kind"], "secret")
+        self.assertEqual(f[("api_config", "client_id")]["kind"], "secret")
+        self.assertEqual(f[("api_config", "token_end_point")]["kind"], "text", "a token's address is not a secret")
+        self.assertEqual(f[("retries",)]["kind"], "number")
+        self.assertEqual(f[("flag",)]["kind"], "bool")
+        self.assertEqual(f[("jira_config", "acceptance_criteria_fields")]["kind"], "list")
+        self.assertNotIn(("jira_config", "pat"), f, "edited in the Jira fields above")
+        self.assertEqual(out["notes"].get("jira_config"), "Jira's own note")
+        shown = json.dumps(out)
+        for secret in ("db-secret-77", "client-id-secret", "old-token-123"):
+            self.assertNotIn(secret, shown)
+
+    def test_values_are_saved_as_the_file_types_them_and_an_empty_secret_is_kept(self):
+        r = st.save({"config": {"env": "stg", "values": [
+            {"path": ["database", "port"], "value": "5432"},
+            {"path": ["database", "password"], "value": ""},
+            {"path": ["retries"], "value": "4"},
+            {"path": ["flag"], "value": False},
+            {"path": ["jira_config", "acceptance_criteria_fields"], "value": "customfield_1, customfield_2"},
+            {"path": ["services", "hospitality_partner_v2"], "value": "https://partner.example.test"},
+            {"path": ["services", "mc_groupsdata"], "value": "https://groups.example.test", "add": True}]}},
+            self.root)
+        self.assertTrue(r["saved"])
+        self.assertNotIn("5432", r["said"], "what changed is named, not its value")
+        d = self.doc()["stg"]
+        self.assertEqual(d["database"], {"host": "db.example.test", "password": "db-secret-77", "port": "5432"})
+        self.assertEqual(d["retries"], 4)
+        self.assertIs(d["flag"], False)
+        self.assertEqual(d["jira_config"]["acceptance_criteria_fields"], ["customfield_1", "customfield_2"])
+        self.assertEqual(d["services"], {"hospitality_partner_v2": "https://partner.example.test",
+                                         "mc_groupsdata": "https://groups.example.test"})
+        self.assertEqual(self.doc()["qa"], {"keep": "me"})
+        st.save({"config": {"env": "stg", "clear": [["database", "password"]],
+                            "remove": [["services", "mc_groupsdata"]]}}, self.root)
+        d = self.doc()["stg"]
+        self.assertNotIn("password", d["database"])
+        self.assertNotIn("mc_groupsdata", d["services"])
+
+    def test_another_block_is_edited_and_a_new_one_is_made_empty_or_as_a_copy(self):
+        st.save({"config": {"env": "qa", "values": [{"path": ["database", "host"], "value": "qa-db"}]}},
+                self.root)
+        self.assertEqual(self.doc()["qa"], {"keep": "me", "database": {"host": "qa-db"}})
+        self.assertEqual(self.fields("qa")[("keep",)]["value"], "me")
+        st.save({"config": {"env": "uat", "copy_from": "stg"}}, self.root)
+        self.assertEqual(self.doc()["uat"]["database"]["password"], "db-secret-77")
+        st.save({"config": {"env": "dev"}}, self.root)
+        self.assertEqual(self.doc()["dev"], {})
+        self.assertTrue(st.config_fields(self.root, "b2b", "nope")["new"])
+
+    def test_saving_another_block_leaves_the_active_one_exactly_as_it_was(self):
+        with io.open(self.cfg, "w", encoding="utf-8") as fh:
+            json.dump({"qa": {"keep": "me"}}, fh)                      # no stg block at all
+        st.save({"config": {"env": "qa", "values": [{"path": ["keep"], "value": "you"}]}}, self.root)
+        self.assertEqual(self.doc(), {"qa": {"keep": "you"}}, "no empty stg, no empty sections")
+        with io.open(self.cfg, "w", encoding="utf-8") as fh:
+            json.dump({"stg": {"a": "1"}, "qa": {"keep": "me"}}, fh)
+        st.save({"config": {"env": "qa", "values": [{"path": ["keep"], "value": "you"}]}}, self.root)
+        self.assertEqual(self.doc()["stg"], {"a": "1"})
+
+    def test_the_block_shown_first_is_the_one_the_tests_run_against(self):
+        wb = os.path.join(self.root, st.WORKBENCH_FILE)
+        os.makedirs(os.path.dirname(wb))
+        with io.open(wb, "w", encoding="utf-8") as fh:
+            json.dump({"run_env": "qa"}, fh)
+        out = st.config_fields(self.root, "b2b")
+        self.assertEqual((out["env"], out["run_env"], out["active_env"]), ("qa", "qa", "stg"))
+
+    def test_true_false_text_stays_text_and_a_backup_keeps_no_secret_of_the_section(self):
+        with io.open(self.cfg, "w", encoding="utf-8") as fh:
+            json.dump({"stg": {"domains": {"fromDb": {"enabled": "true"}}, "username": "svc-user-1",
+                               "sf_config": {"assertion": "jwt-assertion-1", "token_end_point": "https://t"},
+                               "api_config": {"client_id": "client-id-secret"}}}, fh)
+        self.assertEqual(self.fields()[("domains", "fromDb", "enabled")]["kind"], "boolstr")
+        st.save({"config": {"values": [{"path": ["domains", "fromDb", "enabled"], "value": False}]}}, self.root)
+        self.assertEqual(self.doc()["stg"]["domains"]["fromDb"]["enabled"], "false")
+        keep = os.path.join(self.root, st.BACKUPS)
+        with io.open(os.path.join(keep, sorted(os.listdir(keep))[-1]), encoding="utf-8") as fh:
+            copy = fh.read()
+        for secret in ("svc-user-1", "jwt-assertion-1", "client-id-secret"):
+            self.assertNotIn(secret, copy)
+        self.assertIn("https://t", copy, "an address is not a secret")
+
+    def test_what_is_refused_in_the_environment_values(self):
+        for config, why in (({"env": "bad env"}, "not an environment name"),
+                            ({"env": "x", "copy_from": "nope"}, "no environment 'nope'"),
+                            ({"values": [{"path": ["services", "x"], "value": "ftp://h"}]}, "not a setting"),
+                            ({"values": [{"path": ["services", "x"], "value": "not a url", "add": True}]},
+                             "is an address"),
+                            ({"values": [{"path": ["database", "port"], "value": "54x"}]}, "port number"),
+                            ({"values": [{"path": ["retries"], "value": "many"}]}, "is a number"),
+                            ({"values": [{"path": ["jira_config", "pat"], "value": "x" * 10}]}, "fields above"),
+                            ({"values": [{"path": ["unknown"], "value": "1"}]}, "not a setting"),
+                            ({"values": [{"path": ["database", "host"], "value": "a\nb"}]}, "line break"),
+                            ({"values": [{"path": ["services", "a.b"], "value": "https://h", "add": True}]},
+                             "no dot"),
+                            ({"remove": [["database", "host"]]}, "cannot be removed"),
+                            ({"clear": [["database", "host"]]}, "not a secret")):
+            with self.assertRaises(ValueError, msg=str(config)) as got:
+                st.save({"config": config}, self.root)
+            self.assertIn(why, str(got.exception))
+        with self.assertRaises(ValueError) as got:
+            st.save({"config": {"values": []}}, self.root, busy="mvn-test (job 1)")
+        self.assertIn("is running", str(got.exception))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

@@ -228,7 +228,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(jobs.workflow_status(q.get("job", "")))
             if u.path == "/api/settings":
                 # What is set -- never a token's value.
-                return self._json(jobs.settings.status(project=q.get("project", "")))
+                out = jobs.settings.status(project=q.get("project", ""))
+                try:
+                    out["config"] = jobs.settings.config_fields(project=q.get("project", ""),
+                                                                edit_env=q.get("env", ""))
+                except (OSError, ValueError) as e:
+                    out["config"] = {"problem": str(e)}
+                return self._json(out)
             if u.path == "/api/suite-groups":
                 # Which suites each designed case's test runs in.
                 sm = jobs.casereview._suitemap()

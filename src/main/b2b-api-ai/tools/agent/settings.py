@@ -266,7 +266,9 @@ def save(changes: dict, root: str = "", busy=None, project: str = "") -> dict:
     CONFIG_REL = _rel(project)                           # this save's file, in every message below
     env, _source = _env(root)
     doc = _read(root, project)
+    had_block = env in doc
     block = doc.setdefault(env, {})
+    had = set(block) if isinstance(block, dict) else set()
     if not isinstance(block, dict):
         raise ValueError(f"`{env}` in {CONFIG_REL} is not an object")
     jira = block.setdefault("jira_config", {})
@@ -431,6 +433,15 @@ def save(changes: dict, root: str = "", busy=None, project: str = "") -> dict:
         map_change = {"about": "This machine's suite mapping, set on the Settings tab.",
                       "always": always, "rules": rules}
         said.append("suite mapping")
+    # The sections made above only to be written into: dropped when left empty
+    for name in ("jira_config", "confluence_config", "xray"):
+        if name not in had and block.get(name) == {}:
+            block.pop(name)
+    if not had_block and block == {}:
+        doc.pop(env)
+    # Every value of an environment block (the Environment values section)
+    if "config" in changes:
+        said.extend(_save_config(changes["config"], doc, root, project, CONFIG_REL))
     unchanged = json.dumps(doc, sort_keys=True) == json.dumps(_read(root, project), sort_keys=True)
     if not said or (unchanged and not wb_changed and map_change is None and not cur_changed):
         return {"saved": False, "said": "nothing to change", "status": status(root, project)}
@@ -456,13 +467,299 @@ def save(changes: dict, root: str = "", busy=None, project: str = "") -> dict:
     return {"saved": True, "said": ", ".join(said), "env": env, "status": status(root, project)}
 
 
+# ---- Every value of an environment block ------------------------------------
+# The Environment values section: each key of a block of the project's file,
+# and each key the committed example lists (so a missing one can be filled
+# in) -- except those the fields above already edit. A secret is never sent
+# back, as a token above.
+
+_COVERED = {("jira_config", "base_urls"), ("jira_config", "pat"),
+            ("confluence_config", "base_urls"), ("confluence_config", "pat"),
+            ("xray", "baseUrl"), ("xray", "token"), ("xray", "projectKey"),
+            ("xray", "regressionKey"), ("xray", "enabled"),
+            ("jira_config", "publish", "create_tests"), ("jira_config", "publish", "projects"),
+            ("jira_config", "publish", "test_issue_type"), ("jira_config", "publish", "test_link_type")}
+# By the key's own name: `token_end_point`, `token_route`, `token_service`
+# and `testExecutionKey` are not secrets; `token`, `access_token`, `pat`,
+# `client_id` and `ui_username` are (as projectconfig.SECRET_HINTS: a user
+# name is half a credential).
+_SECRET_FIELD_RX = re.compile(r"(?:^|_)(?:pat|password|secret|assertion|token|username|user|apikey|api_key)$"
+                              r"|^(?:client_?id|client_?secret|apikey)$", re.I)
+_URL_FIELD_RX = re.compile(r"(?:url|end_?point)$", re.I)
+_FIELD_KEY_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,59}$")
+_VALUE_RX = re.compile(r"^[^\x00-\x1f\x7f]{0,2000}$")
+_HTTP_RX = re.compile(r"^https?://[^\s]+$")
+# Groups whose entries the page may add or remove: one per service host.
+_OPEN_GROUPS = ("services",)
+
+
+def example_rel(project: str = "") -> str:
+    """The committed layout-only example of the project's file."""
+    rel = _rel(project)
+    return rel[:-len(".json")] + ".example.json"
+
+
+def _example_block(root: str = "", project: str = "") -> dict:
+    try:
+        with io.open(os.path.join(root or ROOT, *example_rel(project).split("/")), encoding="utf-8-sig") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(doc, dict):
+        return {}
+    if isinstance(doc.get("stg"), dict):
+        return doc["stg"]
+    return next((v for k, v in doc.items() if isinstance(v, dict) and not k.startswith("_")), {})
+
+
+def _secret_field(key: str) -> bool:
+    return bool(_SECRET_FIELD_RX.search(str(key)))
+
+
+def _kind(value) -> str:
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, list):
+        return "list" if all(isinstance(v, str) for v in value) else "json"
+    if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+        return "boolstr"                                 # "true"/"false" as text: kept as text
+    if isinstance(value, (dict, type(None))) or isinstance(value, str):
+        return "text"
+    return "json"
+
+
+def _leaves(node: dict, pre: tuple = ()):
+    """(path, value) of each value of a block, depth first; `_` keys are notes."""
+    for k, v in node.items():
+        if str(k).startswith("_"):
+            continue
+        if isinstance(v, dict):
+            yield from _leaves(v, pre + (k,))
+        else:
+            yield pre + (k,), v
+
+
+def _notes(block: dict, example: dict) -> dict:
+    """A group's note: its `_comment`, or the block's `_<group>_comment`."""
+    out = {}
+    for src in (example, block):
+        for k, v in src.items():
+            if isinstance(v, dict) and isinstance(v.get("_comment"), str):
+                out[k] = v["_comment"]
+            m = re.match(r"^_(.+)_comment$", str(k))
+            if m and isinstance(v, str):
+                name = m.group(1)                        # _jira_comment: the jira_config group
+                out[name + "_config" if (name + "_config") in src else name] = v
+    return out
+
+
+def _get(node, path):
+    for k in path:
+        if not isinstance(node, dict) or k not in node:
+            return None, False
+        node = node[k]
+    return node, True
+
+
+def config_fields(root: str = "", project: str = "", edit_env: str = "") -> dict:
+    """The values of one environment block, for the page -- a secret only
+    as "set, N characters" / "not set". Default: the block the tests run
+    against (this tab's run environment), as the Java side reads these
+    values from that one; else the active one."""
+    project = _project(project)
+    doc = _read(root, project)
+    active = _env(root)[0]
+    run = run_env_of(workbench_settings(root), project)
+    env = edit_env or (run if isinstance(doc.get(run), dict) else active)
+    if not _ENV_RX.match(env):
+        raise ValueError(f"{env!r} is not an environment name (letters, digits, _ and -)")
+    block = doc.get(env) if isinstance(doc.get(env), dict) else {}
+    example = _example_block(root, project)
+    fields = []
+    for f in config_fields_from(block, example):
+        path = tuple(f["path"])
+        value, there = _get(block, path)
+        f.update(group=path[0] if len(path) > 1 else "general", in_file=there)
+        if f["kind"] == "secret":
+            f["state"] = _token_state(value if there else "")
+        elif not there:
+            f["value"] = [] if f["kind"] == "list" else (False if f["kind"] == "bool" else
+                                                         ("false" if f["kind"] == "boolstr" else ""))
+        elif f["kind"] == "json":
+            f["value"] = json.dumps(value)
+        else:
+            f["value"] = value if value is not None else ""
+        fields.append(f)
+    return {"env": env, "envs": environments(root, project), "new": env not in doc,
+            "run_env": run, "active_env": active,
+            "example": example_rel(project), "fields": fields,
+            "notes": _notes(block, example), "open_groups": list(_OPEN_GROUPS)}
+
+
+def _coerce(path: tuple, kind: str, raw):
+    """The value the page sent, as the type the file holds there."""
+    where = ".".join(path)
+    if kind == "bool":
+        if isinstance(raw, str):
+            return raw.strip().lower() in ("true", "yes", "on", "1")
+        return bool(raw)
+    if kind == "number":
+        s = str(raw if raw is not None else "").strip()
+        try:
+            return int(s)
+        except ValueError:
+            try:
+                return float(s)
+            except ValueError:
+                raise ValueError(f"{where} is a number; {s!r} is not one") from None
+    if kind == "list":
+        items = raw if isinstance(raw, list) else re.split(r"[\n,]+", str(raw or ""))
+        out = [str(v).strip() for v in items if str(v).strip()]
+        for v in out:
+            if not _VALUE_RX.match(v):
+                raise ValueError(f"{where}: an entry has a line break or a control character")
+        return out
+    if kind == "boolstr":
+        on = raw if isinstance(raw, bool) else str(raw or "").strip().lower() in ("true", "yes", "on", "1")
+        return "true" if on else "false"
+    if kind == "json":
+        try:
+            return json.loads(str(raw or "null"))
+        except ValueError as e:
+            raise ValueError(f"{where} is JSON here; it does not parse: {e}") from None
+    s = str(raw if raw is not None else "").strip()
+    if not _VALUE_RX.match(s):
+        raise ValueError(f"{where}: up to 2000 characters, no line break or control character")
+    if s and kind == "text":
+        if (_URL_FIELD_RX.search(path[-1]) or path[0] in _OPEN_GROUPS) and not _HTTP_RX.match(s):
+            raise ValueError(f"{where} is an address: http:// or https://..., no spaces")
+        if path[-1].lower() == "port" and not re.match(r"^[0-9]{1,5}$", s):
+            raise ValueError(f"{where} is a port number")
+    return s
+
+
+def _set(block: dict, path: tuple, value, env: str, rel: str) -> None:
+    node = block
+    for i, k in enumerate(path[:-1]):
+        node = node.setdefault(k, {})
+        if not isinstance(node, dict):
+            raise ValueError(f"`{env}.{'.'.join(path[:i + 1])}` in {rel} is not an object")
+    node[path[-1]] = value
+
+
+def _save_config(change: dict, doc: dict, root: str, project: str, rel: str) -> list:
+    """Apply the Environment values section to `doc`; what changed, by path
+    (never a value)."""
+    if not isinstance(change, dict):
+        raise ValueError("send the environment values as an object")
+    env = str(change.get("env") or "").strip() or _env(root)[0]
+    if not _ENV_RX.match(env) or env.startswith("_"):
+        raise ValueError(f"{env!r} is not an environment name (letters, digits, _ and -)")
+    said = []
+    if env not in doc:
+        src = str(change.get("copy_from") or "").strip()
+        if src:
+            if not isinstance(doc.get(src), dict):
+                raise ValueError(f"there is no environment {src!r} in {rel} to copy")
+            doc[env] = json.loads(json.dumps(doc[src]))
+            said.append(f"environment {env} (a copy of {src})")
+        else:
+            doc[env] = {}
+            said.append(f"environment {env}")
+    block = doc[env]
+    if not isinstance(block, dict):
+        raise ValueError(f"`{env}` in {rel} is not an object")
+    known = {tuple(f["path"]): f for f in config_fields_from(block, _example_block(root, project))}
+
+    def field(raw_path, adding=False):
+        if not isinstance(raw_path, list) or not raw_path or \
+                not all(isinstance(k, str) and _FIELD_KEY_RX.match(k) for k in raw_path):
+            raise ValueError(f"{raw_path!r} is not a setting's path")
+        path = tuple(raw_path)
+        if path in _COVERED:
+            raise ValueError(f"{'.'.join(path)} is set in the fields above, not here")
+        if path in known:
+            return path, known[path]
+        if adding and len(path) == 2 and path[0] in _OPEN_GROUPS:
+            if "." in path[-1]:
+                raise ValueError(f"{path[-1]!r}: a name of letters, digits, _ and -, no dot")
+            return path, {"kind": "secret" if _secret_field(path[-1]) else "text", "removable": True}
+        raise ValueError(f"{'.'.join(path)} is not a setting of {env} or of {example_rel(project)}")
+
+    for item in change.get("values") or []:
+        if not isinstance(item, dict):
+            raise ValueError("each value is an object: {path, value}")
+        path, f = field(item.get("path"), adding=bool(item.get("add")))
+        if f["kind"] == "secret":
+            v = str(item.get("value") or "").strip()
+            if not v:
+                continue                                 # empty: kept as it is
+            if not _VALUE_RX.match(v):
+                raise ValueError(f"{'.'.join(path)}: no line break or control character")
+        else:
+            v = _coerce(path, f["kind"], item.get("value"))
+        before, there = _get(block, path)
+        if f["kind"] == "json" and there and before is not None and type(v) is not type(before):
+            raise ValueError(f"{'.'.join(path)} holds a {type(before).__name__}; keep it one")
+        if there and before == v and type(before) is type(v):
+            continue
+        _set(block, path, v, env, rel)
+        said.append(".".join(path))
+    for raw_path in change.get("clear") or []:
+        path, f = field(raw_path)
+        if f["kind"] != "secret":
+            raise ValueError(f"{'.'.join(path)} is not a secret; type a new value instead")
+        parent, there = _get(block, path[:-1])
+        if there and isinstance(parent, dict) and path[-1] in parent:
+            parent.pop(path[-1])
+            said.append(f"{'.'.join(path)} removed")
+    for raw_path in change.get("remove") or []:
+        path, f = field(raw_path)
+        if not f.get("removable"):
+            raise ValueError(f"{'.'.join(path)} cannot be removed here; only an entry of "
+                             + ", ".join(_OPEN_GROUPS))
+        parent, there = _get(block, path[:-1])
+        if there and isinstance(parent, dict) and path[-1] in parent:
+            parent.pop(path[-1])
+            said.append(f"{'.'.join(path)} removed")
+    return [f"{env}: {s}" for s in said]
+
+
+def config_fields_from(block: dict, example: dict) -> list:
+    """The settings a block can hold: its own and its example's (paths and
+    kinds only -- what the save checks a path against)."""
+    seen, out = set(), []
+    for src in (example, block):
+        for path, _v in _leaves(src):
+            if path in seen or path in _COVERED:
+                continue
+            seen.add(path)
+            value, there = _get(block, path)
+            shape = value if there else _get(example, path)[0]
+            out.append({"path": list(path),
+                        "kind": "secret" if _secret_field(path[-1]) else _kind(shape),
+                        "removable": len(path) == 2 and path[0] in _OPEN_GROUPS})
+    return out
+
+
 _SECRET_KEYS = ("pat", "token", "password", "secret", "clientsecret", "apikey", "api_key")
 
 
+# token_end_point, token_route, token_service: where a token is asked for, not one
+_ADDRESS_KEY_RX = re.compile(r"(?:url|end_?point|route|service)$", re.I)
+
+
 def _without_tokens(node):
+    """A copy with no secret: the token-like keys, and every key the
+    Environment values section treats as a secret (client_id, assertion,
+    user names)."""
     if isinstance(node, dict):
-        return {k: ("<removed from the copy>" if any(s in str(k).lower().replace("_", "")
-                                                       for s in (x.replace("_", "") for x in _SECRET_KEYS))
+        return {k: ("<removed from the copy>" if (_secret_field(k) or (any(
+                        s in str(k).lower().replace("_", "")
+                        for s in (x.replace("_", "") for x in _SECRET_KEYS))
+                        and not _ADDRESS_KEY_RX.search(str(k))))
                     and isinstance(v, str) and v else _without_tokens(v))
                 for k, v in node.items()}
     if isinstance(node, list):

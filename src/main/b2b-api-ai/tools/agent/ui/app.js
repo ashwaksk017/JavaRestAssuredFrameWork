@@ -2769,14 +2769,27 @@ onTab.logs = showLogs;
 const settingsProject = () =>
   (document.querySelector('input[name="settings-project"]:checked') || {}).value || "b2b";
 for (const r of document.querySelectorAll('input[name="settings-project"]')) {
-  r.addEventListener("change", () => showSettings());
+  // Another project's file has its own environments: start from its active one.
+  r.addEventListener("change", () => {
+    if (cfgDirty() && !confirm("Forget the environment values changed for the other project?")) {
+      const back = document.querySelector(`input[name="settings-project"][value="${shownProject}"]`);
+      if (back) back.checked = true;
+      return;
+    }
+    cfgEnv = "";
+    showSettings();
+  });
 }
 async function showSettings() {
   let s;
-  try { s = await api(`/api/settings?project=${encodeURIComponent(settingsProject())}`); }
+  try {
+    s = await api(`/api/settings?project=${encodeURIComponent(settingsProject())}` +
+                  (cfgEnv ? `&env=${encodeURIComponent(cfgEnv)}` : ""));
+  }
   catch (e) { setState($("settings-state"), "bad", e.message); return; }
   const box = $("settings-env");
   box.replaceChildren();
+  showConfig(s.problem ? null : s.config);
   if (s.problem) { box.append(banner("bad", s.problem)); return; }
   box.append(banner("ok", `Environment ${s.env} (chosen by ${s.env_from}); file ${s.file}` +
     (s.exists ? "" : " -- not there yet: Save makes it")));
@@ -2838,7 +2851,130 @@ $("set-sm-reset").onclick = async () => {
   showSettings();
 };
 onTab.settings = showSettings;
-$("settings-save").onclick = async () => {
+
+// ---- Settings: Environment values ------------------------------------------
+// Every value of one environment block, grouped as the file groups them.
+// Only what was changed is sent; a secret box left empty keeps the secret.
+let cfgEnv = "";                                    // empty: the run environment (else the active one)
+let shownProject = "b2b";                           // the project whose values are on the page
+async function showConfig(cfg) {
+  const where = $("cfg-where"), form = $("cfg-form");
+  where.replaceChildren();
+  form.replaceChildren();
+  if (!cfg || cfg.problem) {
+    if (cfg && cfg.problem) where.append(banner("bad", cfg.problem));
+    return;
+  }
+  cfgEnv = cfg.env;
+  shownProject = settingsProject();
+  const envs = cfg.envs || [];
+  $("cfg-env").replaceChildren(...envs.map((e) => el("option", { value: e, text: e })),
+    ...(envs.includes(cfg.env) ? [] : [el("option", { value: cfg.env, text: `${cfg.env} (new)` })]));
+  $("cfg-env").value = cfg.env;
+  $("cfg-copy-from").replaceChildren(el("option", { value: "", text: "empty (the example's settings)" }),
+    ...envs.map((e) => el("option", { value: e, text: `a copy of ${e}` })));
+  where.append(banner(cfg.new ? "warn" : "ok", `Editing ${cfg.env}` +
+    (cfg.env === cfg.run_env ? " (the tests run against it)" : ` (the tests run against ${cfg.run_env})`) +
+    (cfg.env === cfg.active_env ? "" : `; the fields above are ${cfg.active_env}'s`) +
+    (cfg.new ? " -- not in the file yet: saving adds it" : "") +
+    `. Missing settings are taken from ${cfg.example}.`));
+  const groups = new Map();
+  for (const f of cfg.fields || []) {
+    if (!groups.has(f.group)) groups.set(f.group, []);
+    groups.get(f.group).push(f);
+  }
+  for (const g of cfg.open_groups || []) if (!groups.has(g)) groups.set(g, []);
+  for (const [group, fields] of groups) {
+    const box = el("fieldset", { class: "field choice wide" }, el("legend", { text: group }));
+    const note = (cfg.notes || {})[group];
+    if (note) box.append(el("span", { class: "hint", text: note }));
+    for (const f of fields) box.append(...cfgField(f));
+    if ((cfg.open_groups || []).includes(group)) {
+      const name = el("input", { type: "text", spellcheck: "false", placeholder: "name, e.g. hospitality_partner_v2" });
+      const url = el("input", { type: "text", spellcheck: "false", placeholder: "https://..." });
+      const add = el("div", { class: "row cfg-add" }, name, url);
+      add.dataset.group = group;
+      box.append(el("span", { class: "hint", text: `add an entry to ${group}` }), add);
+    }
+    form.append(box);
+  }
+}
+// One setting: its label and its box, by kind. data-orig is what the page
+// was given, so only a changed value is sent.
+function cfgField(f) {
+  const name = f.path.slice(1).join(".") || f.path[0];
+  const id = "cfg-" + f.path.join("-").replace(/[^A-Za-z0-9_-]/g, "_");
+  const label = el("label", { for: id }, el("span", { class: "cfg-name", text: name }),
+    f.in_file ? null : el("span", { class: "hint", text: "not in this block" }));
+  let box;
+  if (f.kind === "secret") {
+    label.append(el("span", { class: "hint", text: f.state }));
+    box = el("input", { id, type: "password", autocomplete: "new-password", spellcheck: "false",
+                        placeholder: "leave empty to keep it" });
+  } else if (f.kind === "bool" || f.kind === "boolstr") {
+    box = el("input", { id, type: "checkbox" });
+    box.checked = f.kind === "bool" ? Boolean(f.value) : String(f.value).toLowerCase() === "true";
+  } else {
+    box = el("input", { id, type: f.kind === "number" ? "number" : "text", spellcheck: "false",
+                        placeholder: f.kind === "list" ? "separated by commas" : "" });
+    box.value = f.kind === "list" ? (f.value || []).join(", ") : String(f.value ?? "");
+  }
+  box.classList.add("cfg-box");
+  box.dataset.path = JSON.stringify(f.path);
+  box.dataset.kind = f.kind;
+  box.dataset.orig = box.type === "checkbox" ? String(box.checked) : (f.kind === "secret" ? "" : box.value);
+  const out = [label, box];
+  if (f.kind === "secret" && f.in_file) {
+    const clear = el("input", { type: "checkbox", class: "cfg-clear" });
+    clear.dataset.path = JSON.stringify(f.path);
+    out.push(el("label", { class: "inline" }, clear, " remove it"));
+  }
+  if (f.removable && f.in_file) {
+    const rm = el("input", { type: "checkbox", class: "cfg-remove" });
+    rm.dataset.path = JSON.stringify(f.path);
+    out.push(el("label", { class: "inline" }, rm, " remove this entry"));
+  }
+  return out;
+}
+function cfgChange() {
+  const values = [], clear = [], remove = [];
+  for (const b of document.querySelectorAll("#cfg-form .cfg-box")) {
+    const now = b.type === "checkbox" ? String(b.checked) : b.value;
+    if (now === b.dataset.orig) continue;
+    values.push({ path: JSON.parse(b.dataset.path), value: b.type === "checkbox" ? b.checked : b.value });
+  }
+  for (const c of document.querySelectorAll("#cfg-form .cfg-clear:checked")) clear.push(JSON.parse(c.dataset.path));
+  for (const c of document.querySelectorAll("#cfg-form .cfg-remove:checked")) remove.push(JSON.parse(c.dataset.path));
+  for (const row of document.querySelectorAll("#cfg-form .cfg-add")) {
+    const [name, url] = row.querySelectorAll("input");
+    if (name.value.trim()) values.push({ path: [row.dataset.group, name.value.trim()], value: url.value, add: true });
+  }
+  return { env: cfgEnv, values, clear, remove };
+}
+const cfgDirty = () => { const c = cfgChange(); return c.values.length + c.clear.length + c.remove.length > 0; };
+async function cfgPost(config) {
+  try {
+    const r = await post("/api/settings", { changes: { config }, project: settingsProject() });
+    setState($("cfg-state"), r.saved ? "ok" : "", r.saved ? `saved: ${r.said}` : r.said);
+  } catch (e) { setState($("cfg-state"), "bad", e.message); }
+  showSettings();
+}
+$("cfg-save").onclick = () => $("settings-save").onclick($("cfg-state"));
+$("cfg-env").onchange = () => {
+  if (cfgDirty() && !confirm(`Forget what was changed in ${cfgEnv}?`)) { $("cfg-env").value = cfgEnv; return; }
+  cfgEnv = $("cfg-env").value;
+  showSettings();
+};
+$("cfg-new").onclick = () => {
+  if (cfgDirty() && !confirm(`Forget what was changed in ${cfgEnv}?`)) return;
+  const name = $("cfg-new-env").value.trim();
+  if (!name) { setState($("cfg-state"), "bad", "type the new environment's name"); return; }
+  cfgEnv = name;
+  $("cfg-new-env").value = "";
+  cfgPost({ env: name, copy_from: $("cfg-copy-from").value, values: [] });
+};
+$("settings-save").onclick = async (where) => {
+  const state = where instanceof Element ? where : $("settings-state");
   const changes = {
     jira_base_urls: $("set-jira-urls").value,
     confluence_base_urls: $("set-conf-urls").value,
@@ -2870,10 +3006,11 @@ $("settings-save").onclick = async () => {
     },
   };
   if ($("set-run-env").value) changes.run_env = $("set-run-env").value;
+  if (cfgDirty()) changes.config = cfgChange();
   try {
     const r = await post("/api/settings", { changes, project: settingsProject() });
-    setState($("settings-state"), r.saved ? "ok" : "", r.saved ? `saved: ${r.said}` : r.said);
-  } catch (e) { setState($("settings-state"), "bad", e.message); }
+    setState(state, r.saved ? "ok" : "", r.saved ? `saved: ${r.said}` : r.said);
+  } catch (e) { setState(state, "bad", e.message); }
   // The token boxes are emptied either way: nothing typed stays on the page.
   for (const id of ["set-jira-pat", "set-conf-pat", "set-xray-token", "set-cursor-key"]) $(id).value = "";
   showSettings();

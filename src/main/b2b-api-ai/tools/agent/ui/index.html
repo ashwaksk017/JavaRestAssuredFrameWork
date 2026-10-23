@@ -1001,6 +1001,23 @@ Expect 201.'></textarea>
     <button id="settings-check">Check the Jira token</button>
     <span id="settings-state" class="state"></span>
   </div>
+  <h3>Environment values <span class="hint">every setting of one environment block of the project's file -- the
+    addresses, credentials and data the tests read. Empty boxes are settings the committed example lists that
+    this block does not have yet. A secret is never shown: leave its box empty to keep it.</span></h3>
+  <div class="row" id="cfg-envs">
+    <label for="cfg-env">Environment</label>
+    <select id="cfg-env"></select>
+    <input id="cfg-new-env" type="text" spellcheck="false" placeholder="new environment, e.g. qa">
+    <label for="cfg-copy-from">from</label>
+    <select id="cfg-copy-from"></select>
+    <button type="button" id="cfg-new">Add the environment</button>
+  </div>
+  <div id="cfg-where" class="result"></div>
+  <form id="cfg-form" class="form" autocomplete="off" onsubmit="return false"></form>
+  <div class="row">
+    <button id="cfg-save" class="go">Save environment values</button>
+    <span id="cfg-state" class="state"></span>
+  </div>
 </section>
 
 <script src="/app.js"></script>

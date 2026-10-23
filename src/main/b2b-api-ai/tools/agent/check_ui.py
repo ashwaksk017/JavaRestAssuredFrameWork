@@ -915,6 +915,12 @@ def main() -> int:
             check("the settings say what is set, never a token", code == 200 and "jira" in s
                   and all(not str(v).startswith("set, ") or "characters" in str(v)
                           for v in (s.get("jira") or {}).values()), str(s)[:200])
+            cfg = s.get("config") or {}
+            check("every value of an environment block can be edited, a secret only as set or not set",
+                  'id="cfg-form"' in set_tab and 'id="cfg-env"' in set_tab and 'id="cfg-save"' in set_tab
+                  and ("fields" in cfg or "problem" in cfg)
+                  and all("value" not in f for f in cfg.get("fields") or [] if f.get("kind") == "secret")
+                  and ('class="cfg-box' in set_tab or not cfg.get("fields")), str(cfg)[:200])
             check("the cases can be refined with Cursor from the review",
                   'id="refine-run"' in html and 'id="refine-ask"' in html and 'id="wf-finalize"' in html)
             check("Update in Xray previews before it sends",
