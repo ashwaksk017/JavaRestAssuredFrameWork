@@ -251,7 +251,8 @@ class Handler(BaseHTTPRequestHandler):
                 # What the job's cases were designed from: names and sizes.
                 return self._json(jobs.sources(q.get("job", "")))
             if u.path == "/api/run-targets":
-                return self._json(jobs.run_targets(q.get("job", "")))
+                # The project chosen on the tab, else the job's.
+                return self._json(jobs.run_targets(q.get("job", ""), q.get("project", "")))
             if u.path == "/api/uploads":
                 return self._json({"files": jobs.list_uploads()})
             if u.path == "/api/spec":

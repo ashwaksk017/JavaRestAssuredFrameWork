@@ -403,7 +403,9 @@ RUNNABLES = {
         "argv": [PY, "-B", os.path.join("tools", "agent", "mvnrun.py"), "test"],
         "label": "Run a suite, a test class or a group against an environment",
         "options": {"--job": "text", "--suite": "text", "--test": "text", "--group": "text",
-                    "--env": "text", "--compile-first": "flag", "--threads": "text"},
+                    "--env": "text", "--compile-first": "flag", "--threads": "text",
+                    # The project chosen on the tab (b2b, goal): its file is read.
+                    "--project": "text"},
     },
     # Tab 3. Fixed sub-commands of one script; the page chooses which,
     # names the job, and for `generate` picks a scope the script itself
@@ -502,10 +504,27 @@ EXCLUSIVE = {"convert", "convert-fix", "agent-generate", "agent-followup", "agen
 
 def suite_project(suite_rel: str) -> str:
     """The project of a converted suite file (Suites/<Suite>_*.xml): GOAL when
-    its name starts with one of GOAL's suites (flowcatalog.GOAL_SUITES), else B2B."""
-    name = os.path.basename(str(suite_rel or "")).lower().replace("-", "").replace(" ", "")
-    goal = _tool("flowcatalog").GOAL_SUITES
-    return "goal" if any(name.startswith(g) for g in goal) else "b2b"
+    its name starts with one of GOAL's suites (flowcatalog.GOAL_SUITES), else
+    B2B. One rule, mvnrun's: the run warns by the same one."""
+    return _tool("mvnrun").suite_project(suite_rel)
+
+
+def run_project(job: str, options: dict) -> str:
+    """The project an mvn-test run reads: the one chosen on the Run tests tab
+    (--project), else a converted suite's own, else the job's. A name that is
+    not a project is refused here, before anything starts."""
+    chosen = str((options or {}).get("--project") or "").strip().lower()
+    if chosen:
+        if chosen not in intake.projectconfig.PROJECT_FILES:
+            raise ValueError(f"{chosen!r} is not a project "
+                             f"({', '.join(sorted(intake.projectconfig.PROJECT_FILES))})")
+        return chosen
+    suite = str((options or {}).get("--suite") or "").replace("\\", "/")
+    if _tool("mvnrun").is_converted(suite):
+        # A converted suite's file names its suite: GOAL's suites run with
+        # GOAL's configuration, B2B's with B2B's -- whichever job is open.
+        return suite_project(suite)
+    return intake.job_project(job_dir(job))
 
 
 # Commands that are not a story's step: no project is passed to them.
@@ -946,18 +965,30 @@ def sources(job: str) -> dict:
     }
 
 
-def run_targets(job: str = "") -> dict:
+def run_targets(job: str = "", project: str = "") -> dict:
     """What the Run tests tab can run: suite files, groups, and the
-    environments of the open job's project -- a GOAL job's run reads
-    GOAL's file, so B2B's blocks are not its choices -- with that project's
-    run environment as the default."""
+    environments of the chosen project -- a GOAL run reads GOAL's file, so
+    B2B's blocks are not its choices -- with that project's run environment
+    as the default. `project`: the one chosen on the tab; none, the open
+    job's. Each converted suite says its own project, so the page can
+    default to it and warn when the other one is chosen."""
     mvnrun = _tool("mvnrun")
-    project = intake.job_project(job_dir(job)) if job else intake.projectconfig.DEFAULT_PROJECT
+    pc = intake.projectconfig
+    mine = intake.job_project(job_dir(job)) if job else pc.DEFAULT_PROJECT
+    project = mvnrun.check_project(project) or mine
     envs = mvnrun.list_envs(ROOT, project)
     loop = _loop_module()
-    return {"suites": mvnrun.list_suites(ROOT), "groups": mvnrun.list_groups(ROOT),
-            "envs": envs["envs"], "active": loop.run_env_for(ROOT, loop.load_policy(), project),
-            "project": project}
+    policy = loop.load_policy()
+    suites = mvnrun.list_suites(ROOT)
+    for s in suites:
+        if s["kind"] == "converted":
+            s["project"] = mvnrun.suite_project(s["path"])
+    return {"suites": suites, "groups": mvnrun.list_groups(ROOT),
+            "envs": envs["envs"], "active": loop.run_env_for(ROOT, policy, project),
+            "project": project, "job_project": mine,
+            "projects": [{"name": p, "label": PROJECT_LABELS.get(p, p.upper()), "config": rel,
+                          "config_exists": os.path.isfile(pc.config_path(ROOT, p))}
+                         for p, rel in pc.PROJECT_FILES.items()]}
 
 
 def devgap_request(job: str, ids) -> str:
@@ -1811,6 +1842,9 @@ def start(job: str, runnable: str, options: dict) -> dict:
     gate = workflow_gate(job, runnable, options)
     if gate:
         raise ValueError(gate)
+    # Checked before the slot is taken: a project that is not one is refused
+    # with nothing started.
+    project = run_project(job, options) if runnable == "mvn-test" else intake.job_project(out)
     wb = is_workbench_job(job)
     if runnable == "agent-generate" and ((options.get("--scope") == "workbench") != wb):
         raise ValueError("a change to the workbench is made from the Logs tab (Change the "
@@ -1862,12 +1896,9 @@ def start(job: str, runnable: str, options: dict) -> dict:
         # (tools/jira/projectconfig.py) -- Jira, Xray, the services, the
         # run's -Dconfig.project. Always set: a value left in the server's
         # own environment must not decide another job's project.
-        env = dict(os.environ, WORKBENCH_PROJECT=intake.job_project(job_dir(job)))
-        suite = str((options or {}).get("--suite") or "").replace("\\", "/")
-        if runnable == "mvn-test" and suite.startswith("Suites/") and not suite.startswith("Suites/jira/"):
-            # A converted suite's file names its suite: GOAL's suites run with
-            # GOAL's configuration, B2B's with B2B's -- whichever job is open.
-            env["WORKBENCH_PROJECT"] = suite_project(suite)
+        # A test run reads the project chosen on the Run tests tab, else a
+        # converted suite's own (run_project).
+        env = dict(os.environ, WORKBENCH_PROJECT=project)
         if runnable in NO_PROJECT_RUNNABLES:
             # Not a story's step: the converter, the gate (its tests build
             # their own configuration), the catalog. The open job's project

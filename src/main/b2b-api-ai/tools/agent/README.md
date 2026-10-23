@@ -872,8 +872,8 @@ chosen for you when it exists), a suite file (every file under `Suites/` and
 `src/test/resources/testng*.xml`), a class or method (`-Dtest=`, e.g.
 `GuestProgramAccountTest#create*`), or a TestNG group -- through its
 `Suites/jira/group-<group>.xml`, since surefire ignores `-Dgroups` when a
-suite file is set -- against an environment of
-`program_configuration.json`. Maven runs offline first and goes online
+suite file is set -- against an environment of the chosen project's
+configuration file. Maven runs offline first and goes online
 only when an artifact is missing. A `JAVA_HOME` that points at no JDK is
 replaced by a JDK 17 or later found on the machine, and the log says
 which. **Clean build first** (on by default; always for the change's
@@ -893,9 +893,25 @@ failures, read from the surefire reports; it is `mvnrun-result.json` in
 the job (`runs` when no job is chosen). One run at a time, and not while
 Cursor is writing a change.
 
+**Project** (B2B / GOAL) says whose configuration file the run reads:
+`program_configuration.json` for B2B, `program_configuration.goal.json`
+for GOAL. It decides the **Environment** list (that file's blocks), the
+environment chosen first (the Settings tab's run environment of that
+project), and the run's `-Dconfig.project` and `WORKBENCH_PROJECT`. It
+starts as the project of what is run: a converted suite's own (by its
+name, as the flow catalog splits them), else the open job's (a story
+suite, a class or method, a group). Change it and the environments follow;
+choose something else to run and it starts from that one's project again.
+The converted suites are listed by project, the chosen one's first.
+Running a converted suite with the other project is warned of, on the
+page, in the log and on the result -- not refused -- since its calls were
+converted for that project's services. A project that is not one is
+refused before anything starts.
+
 ```
 python tools/agent/mvnrun.py compile --job runs
 python tools/agent/mvnrun.py test --job runs --suite Suites/jira/group-smoke.xml --env stg --compile-first
+python tools/agent/mvnrun.py test --job runs --test FooTest --env stg --project goal
 ```
 
 ### Manual tests

@@ -95,6 +95,62 @@ class Base(unittest.TestCase):
         return rc, buf.getvalue()
 
 
+class ChosenProject(Base):
+    """The project chosen on the Run tests tab decides the configuration
+    file, the default environment and -Dconfig.project; a converted suite
+    of the other project is warned of, not refused."""
+
+    GOAL_SUITE = "Suites/Group360CreateSTAGE/Group360CreateSTAGE_Regression.xml"
+
+    def setUp(self):
+        super().setUp()
+        write(self.root, self.GOAL_SUITE, "<suite/>")
+        write(self.root, "src/main/resources/program_configuration.goal.json", json.dumps(
+            {"goalstg": {"services": {"hospitality_internal_all_v2": "https://goal.example.test",
+                                      "hospitality_partner_v2": "https://partner.example.test"}}}))
+
+    def test_goal_chosen_is_goals_file_and_config_project(self):
+        rc, said = self.quiet(mr.cmd_test, self.job_dir, self.root, suite=self.GOAL_SUITE, env="goalstg",
+                              project="GOAL", runner=self.runner(rc=0))
+        self.assertIn("-Dconfig.project=goal", self.mvn_test_call())
+        self.assertEqual(self.result()["project"], "goal")
+        self.assertNotIn("project_warning", self.result())
+        self.assertNotIn("WARN", said)
+
+    def test_the_chosen_project_is_preflighted_not_the_commands(self):
+        rc, said = self.quiet(mr.cmd_test, self.job_dir, self.root, test="FooTest", env="stg",
+                              project="goal", runner=self.runner())
+        self.assertEqual(rc, 1)
+        self.assertIn("no `stg` block", said)
+        self.assertEqual(self.calls, [], "refused before Maven")
+
+    def test_a_suite_of_the_other_project_is_warned_of_and_still_run(self):
+        rc, said = self.quiet(mr.cmd_test, self.job_dir, self.root, suite=self.GOAL_SUITE, env="stg",
+                              project="b2b", runner=self.runner(rc=0))
+        self.assertIn("WARN", said)
+        self.assertIn("GOAL suite", self.result()["project_warning"])
+        self.assertIn("-Dconfig.project=b2b", self.mvn_test_call())
+
+    def test_a_project_that_is_not_one_is_refused(self):
+        rc, said = self.quiet(mr.cmd_test, self.job_dir, self.root, test="FooTest", env="stg",
+                              project="gaol", runner=self.runner())
+        self.assertEqual(rc, 1)
+        self.assertIn("is not a project", said)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(mr.check_project(""), "")
+        self.assertEqual(mr.check_project(" B2B "), "b2b")
+
+    def test_none_chosen_is_the_commands_own(self):
+        self.quiet(mr.cmd_test, self.job_dir, self.root, test="FooTest", env="stg", runner=self.runner())
+        self.assertIn("-Dconfig.project=b2b", self.mvn_test_call())
+
+    def test_a_suites_own_project(self):
+        self.assertTrue(mr.is_converted(self.GOAL_SUITE))
+        self.assertFalse(mr.is_converted("Suites/jira/group-smoke.xml"))
+        self.assertEqual(mr.suite_project(self.GOAL_SUITE), "goal")
+        self.assertEqual(mr.suite_project("Suites/Amex/AmexSuite.xml"), "b2b")
+
+
 class ParallelThreads(Base):
     """The threads chosen on the page run a copy of the suite; the suite
     file itself is never changed."""
