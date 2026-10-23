@@ -347,6 +347,9 @@ def java_env(env: dict = None, candidates=None, saved=None) -> tuple:
     return env, f"{note}: using Java {v} at {h} for this run (set JAVA_HOME to it to make that permanent)"
 
 
+_SAID: set = set()
+
+
 def maven(root: str):
     """The Maven to run: the project's wrapper, else mvn on PATH."""
     for name in (("mvnw.cmd", "mvnw") if os.name == "nt" else ("mvnw",)):
@@ -389,7 +392,8 @@ def run_maven(root: str, args: list, timeout: float, runner=None) -> tuple:
         say("FAIL Maven is not on PATH (and the project has no mvnw)")
         return 127, "", ""
     env, note = java_env()
-    if note:
+    if note and note not in _SAID:
+        _SAID.add(note)                     # once a command, not once a Maven call
         say(f"NOTE {note}")
     rc, text = stream(root, [exe, "-o", "-B", *args], env, timeout)
     if rc != 0 and any(w in text.lower() for w in loop._NEEDS_NETWORK):

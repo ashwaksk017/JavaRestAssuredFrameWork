@@ -5,7 +5,11 @@ import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.testng.IHookCallBack;
+import org.testng.IHookable;
+import org.testng.ITestResult;
 import org.testng.SkipException;
+import org.testng.asserts.SoftAssert;
 
 import com.hi.api.auth.JsonTokens;
 import com.hi.api.config.Config;
@@ -36,7 +40,90 @@ import io.restassured.response.Response;
  * {@code "TC-003/SETUP: ..."} for setup and plumbing (which is what the
  * setup helpers here write). {@code tag} below is the case id.</p>
  */
-public abstract class StoryTestBase extends BaseApiTest {
+public abstract class StoryTestBase extends BaseApiTest implements IHookable {
+
+    /**
+     * The soft assertions are flushed as part of the test method itself, so
+     * a failed SETUP step or check fails the TEST -- as TestNG, Surefire,
+     * Allure, the run log and the failure digest all see it. Flushed only in
+     * {@code @AfterMethod} (BaseApiTest.assertAll), the test was first
+     * reported PASSED to every listener and turned FAILED afterwards: the run
+     * log said PASSED, Surefire counted 0 failures, the digest saw nothing.
+     * A test that threw keeps its own error; @AfterMethod adds the soft ones.
+     */
+    @Override
+    public void run(IHookCallBack callBack, ITestResult result) {
+        callBack.runTestMethod(result);
+        if (result.getThrowable() != null) {
+            return;
+        }
+        SoftAssert sa = com.hi.api.support.TestThreadState.softAssert();
+        if (sa == null) {
+            sa = softAssert;
+        }
+        if (sa == null) {
+            return;
+        }
+        result.setAttribute(SOFT_FLUSHED, Boolean.TRUE);
+        sa.assertAll();                      // an AssertionError: TestNG records the test FAILED
+    }
+
+    private static final Logger CHECKS = LoggerFactory.getLogger("com.hi.api.check");
+
+    /**
+     * Every check of a story test in the full run log (logger
+     * com.hi.api.check, file only): passed or failed, with what was expected
+     * and what was found -- not only the ones that failed, at the end.
+     */
+    @Override
+    protected SoftAssert newSoftAssert() {
+        return new SoftAssert() {
+            @Override
+            public void onAssertSuccess(org.testng.asserts.IAssert<?> a) {
+                try {
+                    CHECKS.info("CHECK ok      {}  [found {}]", a.getMessage(), shown(a.getActual()));
+                } catch (RuntimeException ignored) {
+                    // never the reason a test fails
+                }
+            }
+
+            @Override
+            public void onAssertFailure(org.testng.asserts.IAssert<?> a, AssertionError ex) {
+                try {
+                    CHECKS.warn("CHECK FAILED  {}  [expected {} but found {}]", a.getMessage(),
+                            shown(a.getExpected()), shown(a.getActual()));
+                } catch (RuntimeException ignored) {
+                    // never the reason a test fails
+                }
+            }
+        };
+    }
+
+    private static String shown(Object v) {
+        String s = String.valueOf(v);
+        return s.length() <= 300 ? s : s.substring(0, 300) + " ...";
+    }
+
+    /**
+     * " -- the server said: ..." for a non-2xx answer (its body, one line,
+     * capped), else "": a SETUP failure names the server's reason, not only
+     * its status.
+     */
+    protected static String said(Response res) {
+        if (res == null) {
+            return " -- no response";
+        }
+        String status = String.valueOf(res.getStatusCode());
+        if (status.startsWith("2")) {
+            return "";
+        }
+        String body = RestUtilities.getResponseAsString(res);
+        body = body == null ? "" : body.replaceAll("\\s+", " ").trim();
+        if (body.length() > 400) {
+            body = body.substring(0, 400) + " ...";
+        }
+        return " -- the server said: " + (body.isEmpty() ? "(an empty body)" : body);
+    }
 
     private static final Logger LOG = LoggerFactory.getLogger(StoryTestBase.class);
 
@@ -319,11 +406,11 @@ public abstract class StoryTestBase extends BaseApiTest {
                 () -> RestUtilities.getResponsePost(body, url, apiHeaders(token)));
         RestUtilities.logResponseBody(tag, holder, RestUtilities.getResponseAsString(res));
         String status = RestUtilities.checkActualResponse(res);
-        softAssert.assertEquals(status, "200", tag + "/SETUP: POST enroll guest status");
+        softAssert.assertEquals(status, "200", tag + "/SETUP: POST enroll guest status" + said(res));
         String guestId = RestUtilities.safeJsonExtract(res, "guestId");
         softAssert.assertTrue(present(guestId), tag + "/SETUP: the enrol response carries a guestId");
-        LOG.info("SETUP {} enrol a guest -> HTTP {}, guestId {}", tag, status, present(guestId) ? guestId.trim()
-                : "MISSING (the response did not carry one; what depends on it will fail)");
+        LOG.info("SETUP {} enrol a guest -> HTTP {}, guestId {}{}", tag, status, present(guestId) ? guestId.trim()
+                : "MISSING (the response did not carry one; what depends on it will fail)", said(res));
         return "200".equals(status) && present(guestId) ? guestId.trim() : null;
     }
 
@@ -341,7 +428,7 @@ public abstract class StoryTestBase extends BaseApiTest {
                 () -> RestUtilities.getResponsePost(body, url, apiHeaders(guestToken)));
         RestUtilities.logResponseBody(tag, holder, RestUtilities.getResponseAsString(res));
         String status = RestUtilities.checkActualResponse(res);
-        softAssert.assertEquals(status, "200", tag + "/SETUP: POST create program account status");
+        softAssert.assertEquals(status, "200", tag + "/SETUP: POST create program account status" + said(res));
         String accountId = RestUtilities.safeJsonExtract(res, "accountId");
         softAssert.assertTrue(present(accountId), tag + "/SETUP: the create response carries an accountId");
         LOG.info("SETUP {} create a program account for guest {} -> HTTP {}, accountId {}", tag, guestId, status,
@@ -526,7 +613,7 @@ public abstract class StoryTestBase extends BaseApiTest {
         String status = RestUtilities.checkActualResponse(res);
         String accountId = RestUtilities.safeJsonExtract(res, "accountId");
         String memberId = ownerMemberId(res);
-        softAssert.assertEquals(status, "200", tag + "/SETUP: POST create program account status");
+        softAssert.assertEquals(status, "200", tag + "/SETUP: POST create program account status" + said(res));
         softAssert.assertTrue(present(accountId), tag + "/SETUP: the create response carries an accountId");
         softAssert.assertTrue(present(memberId),
                 tag + "/SETUP: the create response gives the owner's memberId (body or hilton-member-location)");
@@ -564,7 +651,7 @@ public abstract class StoryTestBase extends BaseApiTest {
                 () -> RestUtilities.getResponsePost(body, url, apiHeaders(token)));
         RestUtilities.logResponseBody(tag, holder, RestUtilities.getResponseAsString(res));
         String status = RestUtilities.checkActualResponse(res);
-        softAssert.assertTrue(status.startsWith("2"), tag + "/SETUP: POST add member status (" + status + ")");
+        softAssert.assertTrue(status.startsWith("2"), tag + "/SETUP: POST add member status (" + status + ")" + said(res));
         String memberId = ownerMemberId(res);
         if (!present(memberId) && status.startsWith("2")) {
             Response list = step("listAccountMembers: GET " + ApiRoutes.GUEST_BUSINESS_MEMBERS,
@@ -587,7 +674,7 @@ public abstract class StoryTestBase extends BaseApiTest {
         Response res = step("activateAccountMember: POST " + ApiRoutes.BUSINESS_MEMBER_ACTIVATE,
                 () -> RestUtilities.getResponsePost("{}", url, apiHeaders(token)));
         String status = RestUtilities.checkActualResponse(res);
-        softAssert.assertEquals(status, "204", tag + "/SETUP: activate member status");
+        softAssert.assertEquals(status, "204", tag + "/SETUP: activate member status" + said(res));
         return "204".equals(status);
     }
 
@@ -597,7 +684,7 @@ public abstract class StoryTestBase extends BaseApiTest {
         Response res = step("activateProgramAccount: POST " + ApiRoutes.BUSINESS_ACTIVATE,
                 () -> RestUtilities.getResponsePost("{\"activationSource\":\"manual\"}", url, apiHeaders(token)));
         String status = RestUtilities.checkActualResponse(res);
-        softAssert.assertEquals(status, "204", tag + "/SETUP: activate account status");
+        softAssert.assertEquals(status, "204", tag + "/SETUP: activate account status" + said(res));
         return "204".equals(status);
     }
 
@@ -618,7 +705,7 @@ public abstract class StoryTestBase extends BaseApiTest {
                 () -> RestUtilities.getResponsePut(body, url, apiHeaders(token)));
         RestUtilities.logResponseBody(tag, holder, RestUtilities.getResponseAsString(res));
         String status = RestUtilities.checkActualResponse(res);
-        softAssert.assertEquals(status, "200", tag + "/SETUP: PUT member role " + role + " status");
+        softAssert.assertEquals(status, "200", tag + "/SETUP: PUT member role " + role + " status" + said(res));
         if (!"200".equals(status)) {
             return false;
         }
@@ -657,7 +744,7 @@ public abstract class StoryTestBase extends BaseApiTest {
                         url, apiHeaders(token)));
         RestUtilities.logResponseBody(tag, holder, RestUtilities.getResponseAsString(res));
         String status = RestUtilities.checkActualResponse(res);
-        softAssert.assertEquals(status, "200", tag + "/SETUP: confirm owner validation status");
+        softAssert.assertEquals(status, "200", tag + "/SETUP: confirm owner validation status" + said(res));
         return "200".equals(status);
     }
 

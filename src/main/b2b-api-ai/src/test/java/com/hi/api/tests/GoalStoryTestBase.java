@@ -245,8 +245,9 @@ public abstract class GoalStoryTestBase extends StoryTestBase {
     /** Setup: the group created (asserted 200). */
     protected boolean createGroup(Availability av, Map<String, String> row, String bodyTemplate, String token,
                                   String tag) throws Exception {
-        String status = RestUtilities.checkActualResponse(createGroupResponse(av, row, bodyTemplate, token, tag));
-        softAssert.assertEquals(status, "200", tag + "/SETUP: POST create group status");
+        Response res = createGroupResponse(av, row, bodyTemplate, token, tag);
+        String status = RestUtilities.checkActualResponse(res);
+        softAssert.assertEquals(status, "200", tag + "/SETUP: POST create group status" + said(res));
         return "200".equals(status);
     }
 
@@ -260,7 +261,7 @@ public abstract class GoalStoryTestBase extends StoryTestBase {
                 () -> RestUtilities.getResponsePost(body, url, apiHeaders(token)));
         RestUtilities.logResponseBody(tag, holder, RestUtilities.getResponseAsString(res));
         String status = RestUtilities.checkActualResponse(res);
-        softAssert.assertEquals(status, "200", tag + "/SETUP: POST group payment status");
+        softAssert.assertEquals(status, "200", tag + "/SETUP: POST group payment status" + said(res));
         return "200".equals(status);
     }
 

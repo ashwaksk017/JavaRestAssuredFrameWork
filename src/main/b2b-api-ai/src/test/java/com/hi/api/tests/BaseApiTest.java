@@ -330,7 +330,7 @@ public abstract class BaseApiTest {
         }
 
         holder = new RestLoggerUtilityDataHolder();
-        softAssert = new SoftAssert();
+        softAssert = newSoftAssert();
         holder.setSoftAssertRef(softAssert);
         com.hi.api.support.TestThreadState.bind(softAssert, holder);
         holders.add(holder);
@@ -367,8 +367,20 @@ public abstract class BaseApiTest {
      * own fake test. Stamp {@link ITestResult#FAILURE} instead so Allure /
      * Extent / JUnit count the real {@code @Test} method.</p>
      */
+    /** The test's SoftAssert; a base class may log each check (StoryTestBase). */
+    protected SoftAssert newSoftAssert() {
+        return new SoftAssert();
+    }
+
+    /** Set on a result whose soft assertions the test itself flushed (StoryTestBase.run). */
+    protected static final String SOFT_FLUSHED = "softAssert.flushed";
+
     @AfterMethod(alwaysRun = true)
     public void assertAll(ITestResult result) {
+        if (result != null && Boolean.TRUE.equals(result.getAttribute(SOFT_FLUSHED))) {
+            com.hi.api.support.TestThreadState.clear();   // flushed already, as part of the test
+            return;
+        }
         SoftAssert sa = com.hi.api.support.TestThreadState.softAssert();
         if (sa == null) {
             sa = softAssert;

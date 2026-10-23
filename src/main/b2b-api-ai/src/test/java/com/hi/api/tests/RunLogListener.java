@@ -6,6 +6,11 @@ import java.util.Map;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.testng.IConfigurationListener;
+import org.testng.ISuite;
+import org.testng.ISuiteListener;
+import org.testng.ISuiteResult;
+import org.testng.ITestContext;
 import org.testng.ITestListener;
 import org.testng.ITestResult;
 
@@ -43,7 +48,74 @@ import com.hi.api.rest.utilities.LastExchange;
  * rewrites keeping the listeners it does not own. Never throws: a log line
  * must not be why a test fails.</p>
  */
-public class RunLogListener implements ITestListener {
+public class RunLogListener implements ITestListener, ISuiteListener, IConfigurationListener {
+
+    /**
+     * RUN START: what the run is, against what -- and from here on, what is
+     * printed to the console goes into the run log too (ConsoleToRunLog).
+     */
+    @Override
+    public void onStart(ISuite suite) {
+        ConsoleToRunLog.install();
+        try {
+            String project = Config.projectName();
+            LOG.info("RUN START suite {} | env {} | project {} | config {} | base url {} | Java {} ({})",
+                    suite.getName(), Config.env(), project,
+                    "b2b".equals(project) ? "program_configuration.json" : "program_configuration." + project + ".json",
+                    Config.baseUrl(), System.getProperty("java.version"), System.getProperty("java.home"));
+        } catch (RuntimeException | Error e) {
+            LOG.warn("RUN START suite {} (the configuration could not be read: {})", suite.getName(), e.toString());
+        }
+    }
+
+    /** RUN END: how many passed, failed, were skipped. */
+    @Override
+    public void onFinish(ISuite suite) {
+        try {
+            int passed = 0, failed = 0, skipped = 0;
+            for (ISuiteResult r : suite.getResults().values()) {
+                ITestContext c = r.getTestContext();
+                passed += c.getPassedTests().size();
+                failed += c.getFailedTests().size() + c.getFailedButWithinSuccessPercentageTests().size();
+                skipped += c.getSkippedTests().size();
+            }
+            LOG.info("RUN END   suite {} | {} passed, {} failed, {} skipped", suite.getName(), passed, failed, skipped);
+        } catch (RuntimeException ignored) {
+            // never the reason a run fails
+        }
+    }
+
+    /**
+     * A setup or teardown method that failed (@BeforeClass, @BeforeMethod...):
+     * the tests after it are skipped for it. Allure hides these
+     * (allure.testng.hide.configuration.failures), so the run log says them.
+     */
+    @Override
+    public void onConfigurationFailure(ITestResult r) {
+        try {
+            Throwable t = r.getThrowable();
+            LOG.error("SETUP METHOD FAILED {}.{} -- {}{}", r.getTestClass().getRealClass().getSimpleName(),
+                    r.getMethod().getMethodName(), t == null ? "(no error given)" : t.toString(),
+                    t == null || t.getStackTrace().length == 0 ? "" : " at " + t.getStackTrace()[0]);
+        } catch (RuntimeException ignored) {
+            // never the reason a test fails
+        }
+    }
+
+    @Override
+    public void onConfigurationSkip(ITestResult r) {
+        try {
+            LOG.warn("SETUP METHOD SKIPPED {}.{} (an earlier setup method failed, or the run stopped)",
+                    r.getTestClass().getRealClass().getSimpleName(), r.getMethod().getMethodName());
+        } catch (RuntimeException ignored) {
+            // never the reason a test fails
+        }
+    }
+
+    @Override
+    public void onConfigurationSuccess(ITestResult r) {
+        // nothing: only what went wrong
+    }
 
     private static final Logger LOG = LoggerFactory.getLogger("RUN");
     private static final int SENT_CAP = 1500;

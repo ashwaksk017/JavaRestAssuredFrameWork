@@ -268,12 +268,54 @@ public final class Db {
     // Static shortcuts (use Config)
     // =========================================================================
 
+    // Asked for: every database call in the full run log. The SQL, its
+    // parameters and what came back are logged here for a test's own calls
+    // (a story test, a setup helper); the framework's mapped steps below log
+    // theirs already and call the quiet *Raw versions.
+
     public static Map<String, Object> queryOne(String sql, Object... params) {
-        return configured().queryOneRow(sql, params);
+        LOG.info(" .. jdbc query (one row): {}{}", sql, shownParams(params));
+        try {
+            Map<String, Object> row = queryOneRaw(sql, params);
+            LOG.info(" .. jdbc returned {}", row == null ? "no row" : "1 row: " + capped(row));
+            return row;
+        } catch (RuntimeException e) {
+            LOG.warn(" .. jdbc query FAILED: {}", e.toString());
+            throw e;
+        }
     }
 
     public static List<Map<String, Object>> queryAll(String sql, Object... params) {
+        LOG.info(" .. jdbc query: {}{}", sql, shownParams(params));
+        try {
+            List<Map<String, Object>> rows = queryAllRaw(sql, params);
+            LOG.info(" .. jdbc returned {} row(s){}", rows == null ? 0 : rows.size(),
+                    rows == null || rows.isEmpty() ? "" : "; the first: " + capped(rows.get(0)));
+            return rows;
+        } catch (RuntimeException e) {
+            LOG.warn(" .. jdbc query FAILED: {}", e.toString());
+            throw e;
+        }
+    }
+
+    private static Map<String, Object> queryOneRaw(String sql, Object... params) {
+        return configured().queryOneRow(sql, params);
+    }
+
+    private static List<Map<String, Object>> queryAllRaw(String sql, Object... params) {
         return configured().queryAllRows(sql, params);
+    }
+
+    private static String shownParams(Object... params) {
+        if (params == null || params.length == 0) {
+            return "";
+        }
+        return " | params " + capped(java.util.Arrays.asList(params));
+    }
+
+    private static String capped(Object v) {
+        String text = com.hi.api.security.Secrets.redact(String.valueOf(v));
+        return text.length() <= 1000 ? text : text.substring(0, 1000) + " ...";
     }
 
     /**
@@ -326,6 +368,13 @@ public final class Db {
     }
 
     public static int execute(String sql, Object... params) {
+        LOG.info(" .. jdbc execute: {}{}", sql, shownParams(params));
+        int n = executeRaw(sql, params);
+        LOG.info(" .. jdbc {}", n == DID_NOT_RUN ? "did not run" : n + " row(s) affected");
+        return n;
+    }
+
+    private static int executeRaw(String sql, Object... params) {
         String reason = unsafeSqlReason(sql);
         if (reason != null) {
             // Refuse to run malformed SQL against the DB -- the driver
@@ -401,7 +450,7 @@ public final class Db {
                 return DID_NOT_RUN;
             }
             LOG.info(" .. jdbc SQL: {}", sql);
-            return execute(sql);
+            return executeRaw(sql);
         } catch (Exception e) {
             LOG.warn("JDBC execute failed: {}", e.getMessage());
             return DID_NOT_RUN;
@@ -438,7 +487,7 @@ public final class Db {
                 return;
             }
             LOG.info(" .. jdbc SQL: {}", sql);
-            execute(sql);
+            executeRaw(sql);
         } catch (Exception e) {
             LOG.warn("JDBC execute failed: {}", e.getMessage());
         }
@@ -468,7 +517,7 @@ public final class Db {
                 return java.util.Collections.emptyList();
             }
             LOG.info(" .. jdbc SQL: {}", sql);
-            List<Map<String, Object>> rows = queryAll(sql, params);
+            List<Map<String, Object>> rows = queryAllRaw(sql, params);
             LOG.info(" .. jdbc rows returned: {}", rows == null ? 0 : rows.size());
             return rows == null ? java.util.Collections.emptyList() : rows;
         } catch (Exception e) {
@@ -497,7 +546,7 @@ public final class Db {
                 return null;
             }
             LOG.info(" .. jdbc SQL: {}", sql);
-            Map<String, Object> row = queryOne(sql, params);
+            Map<String, Object> row = queryOneRaw(sql, params);
             LOG.info(" .. jdbc returned {} row(s)", row == null ? 0 : 1);
             return row;
         } catch (Exception e) {
@@ -527,7 +576,7 @@ public final class Db {
                 return java.util.Collections.emptyList();
             }
             LOG.info(" .. jdbc query: {}", sql);
-            return queryAll(sql);
+            return queryAllRaw(sql);
         } catch (Exception e) {
             LOG.warn("JDBC query failed: {}", e.getMessage());
             return java.util.Collections.emptyList();

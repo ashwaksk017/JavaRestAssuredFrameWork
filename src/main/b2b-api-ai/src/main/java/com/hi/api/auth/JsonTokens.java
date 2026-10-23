@@ -149,8 +149,16 @@ public final class JsonTokens {
         return payload;
     }
 
+    /** The token URL that answered last (the first one had no such route): asked first from then on. */
+    private static volatile String answered = "";
+
     private static Session request(Map<String, String> payload) {
-        return request(payload, tokenUrls());
+        List<String> urls = new ArrayList<>(tokenUrls());
+        String known = answered;
+        if (!known.isEmpty() && urls.remove(known)) {
+            urls.add(0, known);
+        }
+        return request(payload, urls);
     }
 
     private static Session request(Map<String, String> payload, List<String> urls) {
@@ -173,7 +181,11 @@ public final class JsonTokens {
                 continue;
             }
             if (i > 0) {
-                LOG.info("token from {} (the first token URL had no such route)", urls.get(i));
+                LOG.info("token from {} (the first token URL had no such route; it is asked first from now "
+                        + "on -- set api_config.token_end_point / token_route to it)", urls.get(i));
+            }
+            if ("200".equals(status)) {
+                answered = urls.get(i);
             }
             break;
         }

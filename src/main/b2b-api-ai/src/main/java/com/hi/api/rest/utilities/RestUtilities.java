@@ -364,11 +364,62 @@ public class RestUtilities {
                 String path = url == null ? "?" : url.replaceFirst("^[a-zA-Z]+://[^/]+", "").split("\\?", 2)[0];
                 LastExchange.record(method + " " + path, method, url, res,
                         body == null ? "" : com.hi.api.security.Secrets.redact(body));
+                logCall(method, url, body, res);
             }
         } catch (RuntimeException ignored) {
             // reporting must never fail a test
         }
         return res;
+    }
+
+    private static final org.slf4j.Logger HTTP = org.slf4j.LoggerFactory.getLogger("com.hi.api.http");
+    private static final int SENT_CAP = 4000;
+    private static final int ANSWER_CAP = 6000;
+
+    /**
+     * The call, whole, in the full run log (logger com.hi.api.http, file only):
+     * method, URL, status, time, the response headers that carry ids, what was
+     * sent (redacted) and what came back (redacted; a token response is never
+     * shown). A converted step logs its own calls (RestStep); this is every
+     * other call -- a story test's, a token request. Asked for: the run log
+     * said "enrollGuest -> HTTP 400" and nothing of why.
+     */
+    private static void logCall(String method, String url, String body, Response res) {
+        try {
+            if (res == null) {
+                HTTP.info("HTTP {} {} -> no response", method, url);
+                return;
+            }
+            HTTP.info("HTTP {} {} -> {} ({} ms)", method, url, res.getStatusCode(), res.getTime());
+            StringBuilder ids = new StringBuilder();
+            for (io.restassured.http.Header h : res.getHeaders()) {
+                String n = h.getName().toLowerCase(java.util.Locale.ROOT);
+                if (n.equals("location") || n.endsWith("-location") || n.equals("content-type")
+                        || n.endsWith("request-id") || n.endsWith("correlation-id") || n.endsWith("trace-id")) {
+                    ids.append(ids.length() == 0 ? "" : "; ").append(h.getName()).append('=').append(h.getValue());
+                }
+            }
+            if (ids.length() > 0) {
+                HTTP.info("  headers : {}", ids);
+            }
+            if (body != null && !body.isEmpty()) {
+                HTTP.info("  sent    : {}", cap(com.hi.api.security.Secrets.redact(body), SENT_CAP));
+            }
+            String answer = url != null && url.toLowerCase(java.util.Locale.ROOT).contains("/token")
+                    ? "(a token response: not shown)"
+                    : cap(com.hi.api.security.Secrets.redact(res.asString()), ANSWER_CAP);
+            HTTP.info("  answered: {}", answer.isEmpty() ? "(an empty body)" : answer);
+        } catch (RuntimeException ignored) {
+            // a log line must never fail a test
+        }
+    }
+
+    private static String cap(String s, int max) {
+        if (s == null) {
+            return "";
+        }
+        String one = s.replaceAll("\\s*\\R\\s*", " ").trim();
+        return one.length() <= max ? one : one.substring(0, max) + " ... (" + (one.length() - max) + " more characters)";
     }
 
     // Preserved as a no-op for reference compat.
