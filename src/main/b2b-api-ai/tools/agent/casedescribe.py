@@ -235,6 +235,56 @@ def as_automated(root: str, java_files: list, index: dict = None) -> dict:
 _LIVE = ("pending-review", "verify-failed", "pushed", "approved-local", "push-failed")
 
 
+def as_reviewed(case: dict, entry) -> dict:
+    """The case with a person's corrected title and steps (as
+    casereview.apply does)."""
+    entry = entry if isinstance(entry, dict) else {}
+    case = dict(case)
+    if entry.get("title"):
+        case["title"] = entry["title"]
+    if isinstance(entry.get("steps"), list) and entry["steps"]:
+        case["steps"] = entry["steps"]
+    return case
+
+
+def reviewed_cases(job_dir: str) -> dict:
+    """{case id: case} -- the design with the review's corrections."""
+    review = _json(os.path.join(job_dir, "case-review.json")).get("design") or {}
+    out = {}
+    for c in _json(os.path.join(job_dir, "design.json")).get("test_cases") or []:
+        if isinstance(c, dict) and c.get("id"):
+            out[str(c["id"])] = as_reviewed(c, review.get(str(c["id"])))
+    return out
+
+
+def case_print(case: dict) -> str:
+    """What a test is written FOR: the case's title and steps, as reviewed.
+    Kept when its test is written; a different one now means a person
+    edited the case after -- its test is to be reworked."""
+    import hashlib
+    body = json.dumps([_one(case.get("title")),
+                       [[_one(s.get(k)) for k in ("action", "data", "expected")]
+                        for s in case.get("steps") or [] if isinstance(s, dict)]])
+    return hashlib.sha1(body.encode("utf-8")).hexdigest()[:16]
+
+
+def written(job_dir: str) -> dict:
+    """{case id: record} of the cases whose test is in the job's change now
+    (automated-cases.json, of this change -- not of one since discarded)."""
+    review = _json(os.path.join(job_dir, "review.json"))
+    if review.get("state") not in _LIVE:
+        return {}
+    change = str(review.get("change") or "")
+    done = _json(os.path.join(job_dir, "automated-cases.json"))
+    return {i: r for i, r in done.items() if isinstance(r, dict) and r.get("written")
+            and str(r.get("change") or "") == change}
+
+
+def stale(record: dict, case: dict) -> bool:
+    """Its test was written for other steps than the case has now."""
+    return bool(record and record.get("print")) and record["print"] != case_print(case)
+
+
 def change_files(job_dir: str) -> list:
     """The Java files of the job's change, while there is one."""
     review = _json(os.path.join(job_dir, "review.json"))
@@ -251,21 +301,23 @@ def describe(root: str, job_dir: str, cases: list = None) -> dict:
     root = root or ROOT
     if cases is None:
         cases = _json(os.path.join(job_dir, "design.json")).get("test_cases") or []
-    # A person's corrected steps (the review) are the plan, not the design's.
+    # A person's corrected title and steps (the review) are the plan, not
+    # the design's -- edited before its test was written, or after.
     review = _json(os.path.join(job_dir, "case-review.json")).get("design") or {}
     ctx = context(root, job_dir)
     done = as_automated(root, change_files(job_dir))
+    records = written(job_dir)
     out = {}
     for c in cases:
         if not isinstance(c, dict) or not c.get("id"):
             continue
         cid = str(c["id"])
-        fixed = (review.get(cid) or {}).get("steps") if isinstance(review.get(cid), dict) else None
-        if isinstance(fixed, list) and fixed:
-            c = dict(c, steps=fixed)
+        c = as_reviewed(c, review.get(cid))
         got = done.get(cid) or {}
         out[cid] = {"planned": planned(c, ctx), "automated": got.get("lines") or [],
-                    "file": got.get("file") or ""}
+                    "file": got.get("file") or "",
+                    # edited after its test was written: Automate again
+                    "stale": stale(records.get(cid) or {}, c)}
     return out
 
 
@@ -279,6 +331,8 @@ def digest(lines: list) -> str:
 def lines_for(entry: dict) -> list:
     """What goes into Xray: as automated when it is, with the plan after."""
     if entry.get("automated"):
-        return (["As automated (" + entry.get("file", "") + "):"] + entry["automated"]
+        note = (["NOTE: the steps were changed after this test was written; it is to be "
+                 "automated again, and this part will change."] if entry.get("stale") else [])
+        return (note + ["As automated (" + entry.get("file", "") + "):"] + entry["automated"]
                 + ["", "As planned:"] + entry.get("planned", []))
     return ["As planned:"] + entry.get("planned", [])

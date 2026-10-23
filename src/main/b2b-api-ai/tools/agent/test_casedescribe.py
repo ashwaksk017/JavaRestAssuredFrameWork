@@ -123,6 +123,23 @@ class AsAutomated(unittest.TestCase):
         self.assertIn("As planned:", xray)
         self.assertEqual(cd.lines_for(got["TC-002"])[0], "As planned:")
         self.assertNotEqual(cd.digest(xray), cd.digest(cd.lines_for(got["TC-002"])))
+        self.assertFalse(got["TC-001"]["stale"], "no record of what its test was written for")
+        # Its test was written for the steps as they were; a person edits them after.
+        write(self.root, "target/agent-jobs/J/review.json", json.dumps(
+            {"state": "pending-review", "change": "c1",
+             "files": {"created": [JIRA + "EnrollTest.java"], "modified": []}}))
+        write(self.root, "target/agent-jobs/J/automated-cases.json", json.dumps(
+            {"TC-001": {"written": True, "change": "c1", "print": cd.case_print(CASE)}}))
+        self.assertFalse(cd.describe(self.root, job)["TC-001"]["stale"])
+        write(self.root, "target/agent-jobs/J/case-review.json", json.dumps(
+            {"design": {"TC-001": {"steps": [{"action": "enroll the owner", "data": "",
+                                              "expected": "201 and a member id"}]}}}))
+        now = cd.describe(self.root, job)["TC-001"]
+        self.assertTrue(now["stale"])
+        self.assertTrue(cd.lines_for(now)[0].startswith("NOTE: the steps were changed after this test"))
+        write(self.root, "target/agent-jobs/J/automated-cases.json", json.dumps(
+            {"TC-001": {"written": True, "change": "an earlier, discarded change", "print": "x"}}))
+        self.assertFalse(cd.describe(self.root, job)["TC-001"]["stale"], "a record of another change is not this one's")
         # No change waiting: nothing is "as automated" any more.
         write(self.root, "target/agent-jobs/J/review.json", json.dumps({"state": "rejected"}))
         self.assertEqual(cd.describe(self.root, job)["TC-001"]["automated"], [])

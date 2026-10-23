@@ -128,7 +128,8 @@ def read_xray(conn: dict, key: str, transport=None, mocked: bool = False) -> dic
     """{title, steps: [{id, action, data, expected}]} as Xray has the test
     now. Step ids come from Xray's v1 step API; without them (an Xray that
     answers only the v2 call) the steps are read, and cannot be edited."""
-    issue = search._call(conn, "GET", f"/issue/{key}?fields=summary,updated&expand=changelog", None, transport)
+    issue = search._call(conn, "GET", f"/issue/{key}?fields=summary,updated,description&expand=changelog",
+                         None, transport)
     fields = ((issue or {}).get("fields") or {}) if isinstance(issue, dict) else {}
     title = str(fields.get("summary") or "")
     # Who changed it last, and when: the newest entry of its history. (Jira
@@ -158,6 +159,7 @@ def read_xray(conn: dict, key: str, transport=None, mocked: bool = False) -> dic
     else:
         steps = [dict(s, id=None) for s in mt.steps_of(conn, key, transport)]
     return {"title": title, "steps": steps, "updated": str(fields.get("updated") or ""),
+            "description": str(fields.get("description") or ""),
             "last_by": last_by, "last_at": str(last.get("created") or "")}
 
 
@@ -179,12 +181,29 @@ def _ours(job_dir: str, root: str = "") -> dict:
     return {c["id"]: c for c in cases}
 
 
+def _describes(entry: dict, case: dict) -> bool:
+    """Whether a send carries the case's Description: always to a test the
+    workbench made; to one taken from the story (imported) once its case is
+    automated -- as a section after its author's text (with_automation)."""
+    if not entry.get("story") or not case.get("describe"):
+        return False
+    return bool(case.get("describe_automated")) if entry.get("imported") else True
+
+
+def _description(entry: dict, case: dict, xray: dict) -> str:
+    """The description sent: the workbench's whole, or an imported test's
+    own with the workbench's section."""
+    if entry.get("imported"):
+        return xt.with_automation(xray.get("description") or "", case)
+    return xt.description_of(case, entry["story"], "design")
+
+
 def _describe_due(entry: dict, case: dict) -> bool:
-    """A test the workbench made, whose Description changed since it was
-    last sent (as automated now, say): sent on its own, steps untouched. A
-    key kept before Descriptions were sent gets one once its case is
-    automated -- not a preview full of plans nobody asked to send."""
-    if entry.get("imported") or not entry.get("story") or not case.get("describe"):
+    """A test whose Description changed since it was last sent (as automated
+    now, say): sent on its own, steps untouched. A key kept before
+    Descriptions were sent, or taken from the story, gets one once its case
+    is automated -- not a preview full of plans nobody asked to send."""
+    if not _describes(entry, case):
         return False
     if "described" not in entry:
         return bool(case.get("describe_automated"))
@@ -316,9 +335,10 @@ def _send(conn: dict, key: str, case: dict, xray: dict, entry: dict, transport) 
     fields = {}
     if _norm(xray["title"]) != ours["title"]:
         fields["summary"] = xt._one(case["title"], xt.MAX_SUMMARY)
-    if not entry.get("imported") and entry.get("story"):
+    if _describes(entry, case) or (not entry.get("imported") and entry.get("story")):
         # A test the workbench made: its description is the workbench's too.
-        fields["description"] = xt.description_of(case, entry["story"], "design")
+        # One taken from the story: its own, with the automation after it.
+        fields["description"] = _description(entry, case, xray)
     if fields:
         search._call(conn, "PUT", f"/issue/{key}", {"fields": fields}, transport)
         done.append("summary" if "summary" in fields else "description")
@@ -418,7 +438,7 @@ def apply(job: str, choices: dict, root: str = "", conn=None, transport=None, cf
                 diag.step(f"Updating the description of {key} in Xray")
                 try:
                     search._call(conn, "PUT", f"/issue/{key}", {"fields": {
-                        "description": xt.description_of(case, entry["story"], "design")}}, transport)
+                        "description": _description(entry, case, xray)}}, transport)
                 except search.JiraError as e:
                     out["failed"].append({"id": case_id, "key": key,
                                           "why": f"Jira refused the description (HTTP {e.status})"})
@@ -450,7 +470,7 @@ def apply(job: str, choices: dict, root: str = "", conn=None, transport=None, cf
                                     synced=_now(),
                                     synced_updated="" if mocked else updated_now(conn, key, transport),
                                     **({"described": case.get("described", "")}
-                                       if not entry.get("imported") and entry.get("story") else {}))
+                                       if _describes(entry, case) else {}))
         xt.write_keys(job_dir, kept)
         out["sent"].append({"id": case_id, "key": key, "done": done})
     out["ok"] = not out["failed"]

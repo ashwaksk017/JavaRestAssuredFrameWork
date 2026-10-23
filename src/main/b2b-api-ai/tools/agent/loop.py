@@ -2190,7 +2190,7 @@ def automated_by_key(root: str, keys) -> dict:
 
 
 def designed_cases(job_dir: str, cap: int = 20000, keys: dict = None, only_ids=None,
-                   automated: dict = None, roots=()) -> tuple:
+                   automated: dict = None, roots=(), root: str = "") -> tuple:
     """(text, note). The cases design.py wrote for this job, one line per
     step. Text is "" when there is no design, when it was made from a
     different brief than the job has now, or when it is unreadable; the
@@ -2242,9 +2242,24 @@ def designed_cases(job_dir: str, cap: int = 20000, keys: dict = None, only_ids=N
         cases = casereview.apply(cases, entries)
     lines = []
     mapping = suitemap.load()
+    # Where each case's test is in this job's change (its Audit comment),
+    # and what it was written for: a case edited since is reworked, in
+    # that test -- never written a second time.
+    try:
+        cdesc = _load("loop_casedescribe", os.path.join(HERE, "casedescribe.py"))
+        tests_of = cdesc.as_automated(root or ROOT, cdesc.change_files(job_dir))
+        records = cdesc.written(job_dir)
+    except Exception:                                    # noqa: BLE001
+        diag.trace()
+        cdesc, tests_of, records = None, {}, {}
     for c in cases:
         if c.get("endpoint_in_spec") is False:
             continue
+        cid = _one_line(c.get("id"), 40)
+        edited = (c.get("review") or {}).get("edited") or []
+        its_test = (tests_of.get(cid) or {}).get("file", "")
+        record = records.get(cid) or {}
+        reworked = bool(cdesc and cdesc.stale(record, c))
         key = (keys or {}).get(_one_line(c.get("id"), 40), "")
         groups = suitemap.groups_for(c, mapping, (entries.get(str(c.get("id") or "")) or {}).get("groups"))
         where = (automated or {}).get(key.upper(), []) if key else []
@@ -2255,6 +2270,9 @@ def designed_cases(job_dir: str, cap: int = 20000, keys: dict = None, only_ids=N
                      + (f" [Xray {key}]" if key else "")
                      + (f" [AUTOMATED IN {', '.join(mine[:3])}]" if mine else "")
                      + (f" [AUTOMATED OUTSIDE YOUR PATHS: {', '.join(theirs[:3])}]" if theirs and not mine else "")
+                     + (f" [ITS TEST: {its_test}]" if its_test and not mine else "")
+                     + (" [CORRECTED BY THE REVIEWER]" if edited else "")
+                     + (" [STEPS CHANGED SINCE ITS TEST WAS WRITTEN]" if reworked else "")
                      + f" [groups: {', '.join(groups)}] "
                      f"{_one_line(c.get('endpoint'), 200)} -- {_one_line(c.get('title'))}")
         for s in c.get("steps") or []:
@@ -2267,6 +2285,15 @@ def designed_cases(job_dir: str, cap: int = 20000, keys: dict = None, only_ids=N
                     if str(s.get(key) or "").strip()]
             if said:
                 lines.append("    " + " | ".join(said))
+        if reworked:
+            was = record.get("was") or {}
+            lines.append("    before -- what its test was written for: " + _one_line(was.get("title")))
+            for s in was.get("steps") or []:
+                said = [f"{word}: {_one_line(s.get(key))}" for key, word in
+                        (("action", "do"), ("data", "data"), ("expected", "expect"))
+                        if str(s.get(key) or "").strip()]
+                if said:
+                    lines.append("    before | " + " | ".join(said))
         hint = _automation_hint_for_case(c)
         if hint:
             lines.append(hint)
@@ -2730,7 +2757,7 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
     keys = xray_keys(job_dir, mocked=mock_cursor())
     designed, _note = designed_cases(job_dir, keys=keys, only_ids=only_ids,
                                      automated=automated_by_key(root or ROOT, keys.values()),
-                                     roots=scope["write_roots"])
+                                     roots=scope["write_roots"], root=root)
     decided = bool(designed) and scope["name"] != "converter" and bool(
         casereview.reviewed(casereview.read(job_dir)["design"], design_cases_raw(job_dir)))
     brief_head, brief = brief_for_agent(job_dir, policy, decided)
@@ -2861,6 +2888,15 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
                   "groups -- and so the suites -- its test runs in: put exactly those "
                   "in @Test(groups = {...}) of the method that tests it. Cases with "
                   "different groups do not share a test method.",
+                  "A case marked [CORRECTED BY THE REVIEWER] has the title and steps a person "
+                  "corrected: where they differ from the brief, the plan or the story, the "
+                  "corrected steps win. A case marked [ITS TEST: file] already has its test in "
+                  "this change (its Audit comment names it): change THAT test -- never write a "
+                  "second one for the case. One also marked [STEPS CHANGED SINCE ITS TEST WAS "
+                  "WRITTEN] was edited after its test was written: the `before` lines are what "
+                  "the test was written for, the steps above them are what it must check now -- "
+                  "rework the test, its data row and its Audit comment to the steps as they are "
+                  "now, and remove what only the old steps needed.",
                   "AUDIT: directly above each @Test method you write or change for a case "
                   "below, put a Javadoc comment whose first line is `Audit: <case id>` "
                   "(the case's own id, as listed below; a data-driven method that tests several "
@@ -3624,9 +3660,23 @@ def cmd_automate(job_dir: str, root: str, policy: dict, ids, agent=None, verifie
     else:
         written, word = False, "not written -- the run ended early; see its log"
     done = automated_cases(job_dir)
+    # What each test was written FOR -- the case as reviewed now: a person
+    # who edits the case after is told its test is to be reworked, and the
+    # next run is handed the steps it was written for beside the new ones.
+    try:
+        now = _load("loop_casedescribe", os.path.join(HERE, "casedescribe.py")).reviewed_cases(job_dir)
+    except Exception:                                    # noqa: BLE001
+        diag.trace()
+        now = {}
+    cdesc = sys.modules.get("loop_casedescribe")
     for i in ids:
         done[i] = {"state": state, "said": word, "at": _now(), "rc": rc, "written": written,
                    "change": str(after.get("change") or "") if written else ""}
+        if written and i in now and cdesc:
+            done[i]["print"] = cdesc.case_print(now[i])
+            done[i]["was"] = {"title": _one_line(now[i].get("title")),
+                              "steps": [{k: _one_line(s.get(k)) for k in ("action", "data", "expected")}
+                                        for s in now[i].get("steps") or [] if isinstance(s, dict)]}
     with io.open(os.path.join(job_dir, AUTOMATED_FILE), "w", encoding="utf-8") as fh:
         json.dump(done, fh, indent=1)
     return rc
@@ -4869,6 +4919,19 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
     stray = [p for p in paths if not in_roots(p, scope["write_roots"])]
     if stray:
         say("FAIL the review lists files outside its scope: " + ", ".join(stray[:5]))
+        return 1
+    # A test pushed for steps its case no longer has is a wrong audit trail.
+    try:
+        cdesc = _load("loop_casedescribe", os.path.join(HERE, "casedescribe.py"))
+        now, records = cdesc.reviewed_cases(job_dir), cdesc.written(job_dir)
+        behind = sorted(i for i, r in records.items() if i in now and cdesc.stale(r, now[i]))
+    except Exception:                                    # noqa: BLE001
+        diag.trace()
+        behind = []
+    if behind:
+        say(f"FAIL the steps of {', '.join(behind)} were changed after their test was written: "
+            f"Automate {'them' if len(behind) > 1 else 'it'} again (Cursor reworks the test), or put "
+            f"the steps back, then approve.")
         return 1
     if policy.get("require_green_run") and scope["name"] == "new-test":
         # Pushed only when the tests of THIS code ran, and all passed.

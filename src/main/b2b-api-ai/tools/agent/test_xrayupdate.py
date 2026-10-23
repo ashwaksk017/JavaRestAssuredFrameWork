@@ -47,11 +47,13 @@ class Xray:
             key = path.split("/issue/")[1].split("?")[0]
             t = self.tests[key]
             if method == "GET":
-                return {"key": key, "fields": {"summary": t["summary"], "updated": t["updated"]},
+                return {"key": key, "fields": {"summary": t["summary"], "updated": t["updated"],
+                                               "description": t.get("description", "")},
                         "changelog": {"histories": [{"created": t["updated"],
                                                      "author": {"displayName": t.get("by", "Someone")}}]}}
             if method == "PUT":
                 t["summary"] = body["fields"].get("summary", t["summary"])
+                t["description"] = body["fields"].get("description", t.get("description", ""))
                 t["updated"] = "2026-10-16T12:00:00.000+0000"
                 return None
         if path.startswith("/rest/raven/1.0/api/test/"):
@@ -256,6 +258,40 @@ class TheDescription(Base):
         r = self.apply({"TC-001": "send"})
         self.assertIn("private value", r["failed"][0]["why"])
         self.assertFalse([c for c in self.xray.calls if c[0] == "PUT"], "nothing was sent")
+
+    def automate_tc001(self, step):
+        rel = "src/test/java/com/hi/api/tests/jira/ListTest.java"
+        p = os.path.join(self.root, *rel.split("/"))
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with io.open(p, "w", encoding="utf-8") as fh:
+            fh.write("class ListTest {\n  /**\n   * Audit: TC-001\n   * " + step + "\n   */\n"
+                     "  void listStays() { }\n}\n")
+        self.write("review.json", {"state": "pending-review", "files": {"created": [rel], "modified": []}})
+
+    def test_a_test_taken_from_the_story_keeps_its_authors_words_and_gets_our_automation_after(self):
+        keys = json.load(io.open(os.path.join(self.job, "xray-tests.json"), encoding="utf-8"))
+        keys["tests"]["design:TC-001"]["imported"] = True
+        self.write("xray-tests.json", keys)
+        self.xray.tests["ABC-1"]["description"] = "Their own words about the test."
+        self.assertEqual({r["id"]: r["status"] for r in self.plan()["tests"]}["TC-001"], "same",
+                         "not automated yet: nothing of ours to add")
+        self.automate_tc001("Step 1: listStays() (ListTest) -- lists")
+        self.assertEqual({r["id"]: r["status"] for r in self.plan()["tests"]}["TC-001"], "describe")
+        self.apply({"TC-001": "send"})
+        now = self.xray.tests["ABC-1"]["description"]
+        self.assertTrue(now.startswith("Their own words about the test.\n\nAUTOMATION BY THE TEST WORKBENCH"))
+        self.assertIn("listStays() (ListTest)", now)
+        self.assertNotIn("Created by the test workbench", now, "it was not made here")
+        self.assertEqual({r["id"]: r["status"] for r in self.plan()["tests"]}["TC-001"], "same")
+        # The test changes: our section is replaced, theirs stays, nothing twice.
+        self.automate_tc001("Step 1: listStays() (ListTest) -- lists, sorted")
+        self.assertEqual({r["id"]: r["status"] for r in self.plan()["tests"]}["TC-001"], "describe")
+        self.apply({"TC-001": "send"})
+        now = self.xray.tests["ABC-1"]["description"]
+        self.assertEqual(now.count(xu.xt.AUTOMATION_START), 1)
+        self.assertEqual(now.count(xu.xt.AUTOMATION_END), 1)
+        self.assertEqual(now.count("Their own words about the test."), 1)
+        self.assertIn("lists, sorted", now)
 
     def test_a_case_not_automated_yet_does_not_ask_to_send_its_plan_to_an_older_key(self):
         self.assertEqual({r["id"]: r["status"] for r in self.plan()["tests"]}["TC-001"], "same")

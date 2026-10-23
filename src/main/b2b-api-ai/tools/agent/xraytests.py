@@ -236,6 +236,29 @@ def cases_of(data: dict, what: str) -> list:
 
 
 MAX_DESCRIPTION = 30000                                # Jira's limit is 32,767
+# An Xray test taken from the story (Use the story's Xray tests) keeps its
+# author's description; the workbench's automation of it, for audit, is a
+# section of its own after it, between these lines -- replaced, never added
+# twice, on a later update.
+AUTOMATION_START = "AUTOMATION BY THE TEST WORKBENCH (for audit):"
+AUTOMATION_END = "END OF THE AUTOMATION BY THE TEST WORKBENCH"
+
+
+def _plain(s: str) -> str:
+    return re.sub(r"[{}\[\]|*_^~!#+-]", lambda m: "\\" + m.group(0), s)
+
+
+def with_automation(existing: str, case: dict) -> str:
+    """An imported test's description: its author's text as it is, and the
+    workbench's section (the case's Description) after it, in place of an
+    earlier one."""
+    i, j = existing.find(AUTOMATION_START), existing.find(AUTOMATION_END)
+    theirs = (existing[:i] + existing[j + len(AUTOMATION_END):] if 0 <= i < j else existing).strip()
+    text = "\n".join(_plain(x) for x in case.get("describe") or [])
+    room = MAX_DESCRIPTION - len(theirs) - 400
+    if len(text) > room:
+        text = text[:max(room, 0)] + "\n... (cut here: the whole of it is on the workbench page)"
+    return ((theirs + "\n\n") if theirs else "") + AUTOMATION_START + "\n" + text + "\n" + AUTOMATION_END
 
 
 def described(root: str, job_dir: str, cases: list, what: str) -> None:

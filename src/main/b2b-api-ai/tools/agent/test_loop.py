@@ -542,6 +542,45 @@ class TheReviewDecidesWhatIsWritten(Repo):
         self.assertIn("Reference:", seen["p"])
         self.assertIn("WARN no Audit comment for TC-002", out.getvalue())
 
+    def test_steps_edited_before_or_after_its_test_reach_cursor_and_the_test_is_reworked(self):
+        self.design(DESIGN_CASE)
+        # Edited BEFORE automation: the corrected steps go, marked as the reviewer's.
+        loop.casereview.update(self.job, "design", ["TC-001"], state="approved",
+                               steps=[{"action": "POST a valid thing", "data": "valid values",
+                                       "expected": "201 and a Location header"}])
+        text, _n = loop.designed_cases(self.job, root=self.root)
+        self.assertIn("[CORRECTED BY THE REVIEWER]", text)
+        self.assertIn("expect: 201 and a Location header", text)
+        self.assertNotIn("[STEPS CHANGED SINCE", text, "nothing written yet")
+
+        def agent(prompt):
+            write(self.root, JIRA + "ThingTest.java",
+                  "class ThingTest {\n  /**\n   * Audit: TC-001\n   * Step 1: posts the thing\n   */\n"
+                  "  void createsAThing() { }\n}\n")
+            return {"result": "ok"}
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(loop.cmd_automate(self.job, self.root, self.policy, ["TC-001"],
+                                               agent=agent, verifier=OK), 0)
+        record = loop.automated_cases(self.job)["TC-001"]
+        self.assertTrue(record["print"])
+        self.assertEqual(record["was"]["steps"][0]["expected"], "201 and a Location header")
+        text, _n = loop.designed_cases(self.job, root=self.root)
+        self.assertIn(f"[ITS TEST: {JIRA}ThingTest.java]", text, "found by its Audit comment")
+        self.assertNotIn("[STEPS CHANGED SINCE", text, "written for the steps it has")
+        # Edited AFTER automation: the next run reworks THAT test, told what it was written for.
+        loop.casereview.update(self.job, "design", ["TC-001"],
+                               steps=[{"action": "POST a valid thing", "data": "valid values",
+                                       "expected": "201, a Location header and an ETag"}])
+        text, _n = loop.designed_cases(self.job, root=self.root)
+        self.assertIn("[STEPS CHANGED SINCE ITS TEST WAS WRITTEN]", text)
+        self.assertIn("before | do: POST a valid thing | data: valid values | expect: 201 and a Location header",
+                      text)
+        self.assertIn("expect: 201, a Location header and an ETag", text)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(loop.cmd_approve(self.job, self.root, self.policy, "job1", "job1"), 1)
+        self.assertIn("TC-001 were changed after their test was written", out.getvalue())
+
     def test_a_second_case_is_added_to_the_change_waiting(self):
         self.design(DESIGN_CASE, dict(DESIGN_CASE, id="TC-002", title="Second"))
         loop.casereview.update(self.job, "design", ["TC-001", "TC-002"], state="approved")
