@@ -273,6 +273,11 @@ CHECKS = [
           [PY, "tools/agent/test_fixbrief.py"],
           "a failing converted case becomes a brief for Cursor from the recorded run, surefire, "
           "the per-row log and the converter's audit notes, redacted, one suite a job"),
+    Check("agent-knowledge",
+          [PY, "tools/agent/test_knowledge.py"],
+          "a design's open questions are answered on the page; an answer kept for later designs "
+          "is one entry of the project's KNOWN file, never a private value, and is pushed with "
+          "the job only as the job left it"),
     Check("agent-depmap",
           [PY, "tools/agent/test_depmap.py"],
           "what each endpoint needs, who makes it and how it is tested today is worked out "

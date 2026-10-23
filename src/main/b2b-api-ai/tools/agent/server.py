@@ -241,6 +241,9 @@ class Handler(BaseHTTPRequestHandler):
                 mapping = sm.load()
                 return self._json({"cases": sm.for_job(jobs.job_dir(q.get("job", "")), mapping),
                                    "problem": mapping.get("problem", "")})
+            if u.path == "/api/answers":
+                # The design's open questions, their answers, the knowledge diff.
+                return self._json(jobs.answers_of(q.get("job", "")))
             if u.path == "/api/case-descriptions":
                 # Each designed case in words, planned and as automated.
                 return self._json(jobs.case_descriptions(q.get("job", "")))
@@ -378,6 +381,8 @@ class Handler(BaseHTTPRequestHandler):
                     body.get("text", ""))))
             if u.path == "/api/settings":
                 return self._json(jobs.settings_save(body.get("changes") or {}, body.get("project", "")))
+            if u.path == "/api/answers":
+                return self._json(jobs.answers_save(body.get("job", ""), body.get("answers") or []))
             if u.path == "/api/workflow":
                 return self._json(jobs.workflow_act(body.get("job", ""), str(body.get("action") or "")))
             if u.path == "/api/settings-check":

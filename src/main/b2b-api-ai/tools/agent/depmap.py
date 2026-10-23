@@ -335,7 +335,7 @@ def chain_for(method: str, path: str, ops: list, hs: list, gives: dict = None) -
 
 
 def describe(method: str, path: str, ops: list, hs: list, cat: dict, gives: dict = None,
-             token: str = "") -> str:
+             token: str = "", answered: list = None) -> str:
     target = f"{method.upper()} {path}"
     lines = [f"* {target}"]
     own = helper_for(method, path, hs)
@@ -351,6 +351,11 @@ def describe(method: str, path: str, ops: list, hs: list, cat: dict, gives: dict
         lines.append("  needs no id from an earlier call")
     for o in open_:
         lines.append(f"  NOT RESOLVED: {o} -- ask in open_questions")
+    for e in answered or []:
+        if any(x.split(" ", 1)[0].upper() == method.upper() and same_path(x.split(" ", 1)[-1], path)
+               for x in e.get("endpoints") or [] if " " in x):
+            lines.append(f"  known (answered before): {e['question'][:160]} -> "
+                         + " ".join(e["answer"].split())[:300])
     chains = tested_chains(cat, method, path)
     if chains:
         lines.append("  tested today by the converted suites, e.g.:")
@@ -373,11 +378,20 @@ def block(root: str, project: str, spec: dict, endpoints: list) -> str:
     hs = helpers(root, project)
     cat = catalog(root, project)
     gives = guide_gives(root, project)
+    try:
+        import importlib.util
+        spec_k = importlib.util.spec_from_file_location("depmap_knowledge", os.path.join(HERE, "knowledge.py"))
+        kmod = importlib.util.module_from_spec(spec_k)
+        spec_k.loader.exec_module(kmod)
+        answered = kmod.known(root, project)
+    except Exception:                                    # noqa: BLE001 -- the map goes on without it
+        answered = []
     parts = []
     for ep in dict.fromkeys(endpoints):
         m = re.match(r"^\s*(GET|POST|PUT|PATCH|DELETE)\s+(\S+)", str(ep), re.I)
         if m:
-            parts.append(describe(m.group(1), m.group(2), ops, hs, cat, gives, TOKEN.get(project, "")))
+            parts.append(describe(m.group(1), m.group(2), ops, hs, cat, gives, TOKEN.get(project, ""),
+                                  answered))
     if not parts:
         return ""
     text = ("===== DEPENDENCIES OF THE ENDPOINTS (worked out by the workbench from the API "

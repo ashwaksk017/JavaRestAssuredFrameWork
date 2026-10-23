@@ -2940,6 +2940,14 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
             deps = ""
         if deps:
             parts += ["", deps]
+        try:
+            told = _load("loop_knowledge", os.path.join(HERE, "knowledge.py")).block(
+                root or ROOT, job_dir, intake.projectconfig.active_project(), endpoints_of_cases(designed))
+        except Exception:                                # noqa: BLE001
+            diag.trace()
+            told = ""
+        if told:
+            parts += ["", told]
         # The converted flows nearest each case's endpoint, of the job's
         # project: what to reuse, and in what order -- also for an endpoint
         # nothing calls yet (the nearest path).
@@ -5096,6 +5104,18 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
             f"earlier job, delete it or use a new job id.")
         return 1
 
+    # The answers this job kept for later designs (knowledge.py) go with it.
+    try:
+        extra, why = _load("loop_knowledge", os.path.join(HERE, "knowledge.py")).to_push(job_dir, root)
+    except Exception:                                    # noqa: BLE001
+        diag.trace()
+        extra, why = [], ""
+    if why:
+        say(f"FAIL {why}")
+        return 1
+    if extra:
+        say(f" .. with it: {', '.join(extra)} (the answers this job kept for later designs)")
+        paths = list(paths) + [p for p in extra if p not in paths]
     index = os.path.join(job_dir, "push.index")
     try:
         os.remove(index)

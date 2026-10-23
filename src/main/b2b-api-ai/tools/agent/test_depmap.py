@@ -131,6 +131,17 @@ class AnEndpoint(Base):
             "/things/{thingId}/close": {"post": {"responses": {"204": {}}}}}}
         self.assertIn("POST /things -> `thingId`", dm.block(self.root, "b2b", spec, ["POST /things/{thingId}/close"]))
 
+    def test_what_a_tester_answered_before_shows_under_its_endpoint(self):
+        write(self.root, ".cursor/skills/jira-to-restassured/KNOWN_B2B.md",
+              "# Known answers -- B2B\n\n<!-- known:0123456789ab -->\n### How is an account put in "
+              "status L?\n\nEndpoints: POST /businesses/{accountId}/activate\n\nA status update in the "
+              "database, before activate.\n\n_Kept 2026-10-23._\n")
+        text = dm.block(self.root, "b2b", SWAGGER2, ["POST /businesses/{accountId}/activate",
+                                                     "POST /businesses/{accountId}/suspend"])
+        self.assertIn("known (answered before): How is an account put in status L? -> A status update "
+                      "in the database, before activate.", text)
+        self.assertEqual(text.count("known (answered before)"), 1, "only under its own endpoint")
+
     def test_nothing_asked_nothing_said(self):
         self.assertEqual(dm.block(self.root, "b2b", SWAGGER2, []), "")
 

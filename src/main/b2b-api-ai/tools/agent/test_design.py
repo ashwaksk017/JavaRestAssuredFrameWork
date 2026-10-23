@@ -498,6 +498,15 @@ class Run(unittest.TestCase):
         self.assertIn("_audit/<suite>/facade_endpoints.md", p)
         self.assertIn("Never open src/main/resources/program_configuration*.json", p)
         self.assertIn("===== DEPENDENCIES OF THE ENDPOINTS", p, "each endpoint's needs and their makers")
+        self.assertIn("KNOWN_GOAL.md: what testers answered before", p)
+        self.assertNotIn("ANSWERS FROM THE TESTER", p, "none given yet")
+        with io.open(os.path.join(self.out, "answers.json"), "w", encoding="utf-8") as fh:
+            json.dump({"answers": {"x": {"question": "How is a group made?", "answer": "createGroup",
+                                         "keep": False}}}, fh)
+        self.prompts.clear()
+        self.run_design(self.agent(reply(case())), service="rates")
+        self.assertIn("===== ANSWERS FROM THE TESTER", self.prompts[0])
+        self.assertIn("A: createGroup", self.prompts[0])
         self.assertIn("`converted` when from a converted test", p.replace("\n  ", " "))
 
     def test_a_good_reply_writes_the_four_files(self):

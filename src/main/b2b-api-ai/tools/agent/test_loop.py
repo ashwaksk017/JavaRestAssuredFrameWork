@@ -2383,6 +2383,29 @@ class Push(Repo):
         self.assertEqual(sh(self.root, "rev-parse", "--abbrev-ref", "HEAD"), "main",
                          "the checkout returns to where it was")
 
+    def test_answers_kept_for_later_designs_are_pushed_with_the_job_as_it_left_them(self):
+        self.pending()
+        kn = loop._load("test_loop_knowledge", os.path.join(HERE, "knowledge.py"))
+        q = "How is an account put in status L before POST /businesses/{accountId}/activate?"
+        kn.save(self.job, [{"question": q, "answer": "a status update in the database", "keep": True}],
+                self.root, "b2b", job="job1")
+        rel = kn.known_rel("b2b")
+        with io.open(os.path.join(self.root, *rel.split("/")), "a", encoding="utf-8") as fh:
+            fh.write("edited by hand after\n")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(self.push(), 1)
+        self.assertIn("changed since this job kept its answers", out.getvalue())
+        kn.save(self.job, [{"question": q, "answer": "a status update in the database", "keep": True}],
+                self.root, "b2b", job="job1")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(self.push(), 0, out.getvalue())
+        self.assertIn("the answers this job kept for later designs", out.getvalue())
+        files = sh(self.remote, "show", "--name-only", "--format=", "agent/job1")
+        self.assertIn(rel, files.splitlines())
+        self.assertIn(JIRA + "NewTest.java", files.splitlines())
+
     def test_a_file_git_ignores_is_never_pushed(self):
         """Nothing is off limits to write -- but the repository is public:
         a file git ignores stays on this machine."""

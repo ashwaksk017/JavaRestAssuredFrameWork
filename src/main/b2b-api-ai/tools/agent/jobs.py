@@ -837,6 +837,27 @@ def save_spec(job: str, name: str, stream, length: int) -> dict:
         raise ValueError(str(e)) from None
 
 
+def answers_of(job: str) -> dict:
+    """The design's open questions with their answers, and the knowledge
+    file this job's kept answers changed (its diff, as the push will add it)."""
+    d = job_dir(job)
+    k = _tool("knowledge")
+    return {"questions": k.questions(d), "file": k.known_rel(intake.job_project(d)), **k.diff(d, ROOT)}
+
+
+def answers_save(job: str, answers: list) -> dict:
+    """Keep a job's answers; those ticked "keep" go into the project's
+    knowledge file. Refused while anything runs (a design or a run reads it)."""
+    now = running_now()
+    if now:
+        raise ValueError(f"{now[0][1]} (job {now[0][0]}) is running: save the answers when nothing runs")
+    d = job_dir(job)
+    loop = _tool("mvnrun").loop                          # the copy already loaded, not another
+    out = _tool("knowledge").save(d, answers, ROOT, intake.job_project(d),
+                                  private=loop.private_config(ROOT), job=job)
+    return dict(out, **answers_of(job))
+
+
 def case_descriptions(job: str) -> dict:
     """{case id: {planned, automated, file}}: each designed case in words,
     step by step (casedescribe.py) -- the Description column."""

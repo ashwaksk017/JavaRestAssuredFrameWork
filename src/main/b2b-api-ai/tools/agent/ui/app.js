@@ -954,6 +954,46 @@ function showRefineScope() {
 // Cursor's suite suggestion for the job's cases (suite-suggest.json), by id.
 let suiteSuggest = { job: "", byId: {} };
 
+// The design's open questions: answered here, used by Design again; one
+// ticked "keep" goes into the project's KNOWN file, pushed with the job.
+function answersPanel(j) {
+  const box = el("div", { class: "answers" });
+  const st = el("span", { class: "state" });
+  const draw = (a) => {
+    const qs = (a && a.questions) || [];
+    if (!qs.length) { box.replaceChildren(); return; }
+    const rows = qs.map((q) => {
+      const ans = el("textarea", { rows: "2", spellcheck: "true", class: "answer",
+                                   placeholder: "your answer (Design again uses it)" });
+      ans.value = q.answer || "";
+      const keep = el("input", { type: "checkbox" });
+      keep.checked = Boolean(q.keep);
+      const row = el("div", { class: "answer-row" }, el("p", { text: q.question + (q.asked ? "" : " (no longer asked)") }),
+        ans, el("label", { class: "inline", title: `kept in ${a.file}: committed with this job's change and read by every later design of the project` },
+                keep, " keep for later designs"));
+      row.dataset.q = q.question;
+      return row;
+    });
+    const save = el("button", { type: "button", text: "Save the answers" });
+    save.onclick = async () => {
+      const answers = [...box.querySelectorAll(".answer-row")].map((r) => ({
+        question: r.dataset.q, answer: r.querySelector("textarea").value,
+        keep: r.querySelector("input[type=checkbox]").checked }));
+      try {
+        const r = await post("/api/answers", { job: j, answers });
+        setState(st, "ok", `saved${r.kept && r.kept.length ? `; ${r.kept.length} kept in ${r.file}` : ""}. Design again to use them.`);
+        draw(r);
+      } catch (e) { setState(st, "bad", e.message); }
+    };
+    box.replaceChildren(heading("Open questions of the design", qs.length), ...rows,
+      el("div", { class: "row" }, save, st),
+      a.diff ? el("details", {}, el("summary", { text: `${a.path}: pushed with this job's change` }),
+                  el("pre", { class: "log diff", text: a.diff })) : null);
+  };
+  api(`/api/answers?job=${encodeURIComponent(j)}`).then(draw).catch(() => {});
+  return box;
+}
+
 // A case in words, step by step (casedescribe.py): as automated -- from the
 // Audit comment of its test -- once it is, the plan under it.
 function descCell(d) {
@@ -1281,6 +1321,7 @@ async function showReview(what) {
   if (what === "design") automateReady(cases, entries);
   const live = agentReview && ["pending-review", "verify-failed", "pushed", "approved-local", "push-failed"]
     .includes(agentReview.state) ? agentReview.change : "";
+  if (what === "design") kids.push(answersPanel(j));
   kids.push(reviewTable(j, what, cases.filter((c) => c && c.id), entries, () => {
     showReview(what);
     refreshXray(what, true);
@@ -3199,6 +3240,11 @@ async function refreshReview() {
     : "—";
   if (f.created || f.modified) await showArtifact("proposed.diff", $("agent-diff"));
   else $("agent-diff").textContent = "—";
+  // The answers this job kept for later designs go with its push: shown here.
+  try {
+    const a = await api(`/api/answers?job=${encodeURIComponent(job())}`);
+    if (a && a.diff) $("agent-diff").textContent += `\n\n# with this push: ${a.path} (answers kept for later designs)\n` + a.diff;
+  } catch { /* no answers */ }
   $("agent-review").disabled = !(state === "pending-review" || state === "verify-failed");
   // Ask Cursor works in any state but these: it changes a change waiting,
   // starts one when none is, and answers a question. Where it cannot, the

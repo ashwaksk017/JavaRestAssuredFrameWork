@@ -942,6 +942,10 @@ def main() -> int:
                   and '<option value="7">' not in html)
             check("each case's suites show on its row, from the rules",
                   ">Suites<" in html and 'class="groups"' in html and "from the rules" in html)
+            code, ans = mocked.call("/api/answers?job=ABC-201")
+            check("a design's open questions can be answered from the page",
+                  code == 200 and isinstance(ans.get("questions"), list) and "KNOWN_" in ans.get("file", ""),
+                  str(ans)[:200])
             check("each case's Description shows on its row: the plan, step by step",
                   ">Description<" in html and 'class="desc"' in html and "Step 1:" in html)
             bare = subprocess.run(

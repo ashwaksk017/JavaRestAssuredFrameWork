@@ -100,4 +100,5 @@ TO LOOK), then answer. The JSON object is the whole of your answer. Shape:
 
 ===== NOTES FROM THE TESTER =====
 {{notes}}
+{{answers}}
 {{current}}

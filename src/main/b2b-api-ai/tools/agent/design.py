@@ -1444,6 +1444,8 @@ def project_guide(root: str, out_dir: str) -> str:
         lines.append(f"- src/test/java/com/hi/api/tests/{proj['base_class']}.java: the helpers a "
                      f"{label} test calls")
     lines += [
+        f"- .cursor/skills/jira-to-restassured/KNOWN_{project.upper()}.md: what testers answered "
+        f"before -- how a state is reached that the code does not show",
         f"- .cursor/skills/jira-to-restassured/flows/{project}.json: which converted suites "
         f"call which endpoint, in which order",
         "- _audit/<suite>/facade_endpoints.md: the converted method that reaches each endpoint",
@@ -1837,6 +1839,15 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
     # What each endpoint designed for needs, who makes it, how it is tested
     # today (depmap.py) -- the producers looked for in the WHOLE specification.
     dependencies = dependency_block(root, out_dir, spec, design_endpoints)
+    # What a tester answered to the open questions -- this job's, and those
+    # kept for these endpoints before (knowledge.py).
+    try:
+        answers_block = loop._load("design_knowledge", os.path.join(HERE, "knowledge.py")).block(
+            root, out_dir, loop.intake.job_project(out_dir),
+            [e.split(" -- ", 1)[0] for e in (design_endpoints or [])])
+    except Exception:                                    # noqa: BLE001
+        diag.trace()
+        answers_block = ""
     raw, how_read, failed, summaries, questions, model = [], [], [], [], [], ""
     fatal = ""
     is_partial = False
@@ -1875,6 +1886,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
             "focus": FOCUS_RULE if focus else "",
             "project": project_guide(root, out_dir),
             "dependencies": dependencies,
+            "answers": answers_block,
             "max_cases": share,
             "endpoints": sections["endpoints"] or
                          "(none could be read. Name an endpoint only as the "
