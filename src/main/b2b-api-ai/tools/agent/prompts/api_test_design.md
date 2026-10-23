@@ -24,6 +24,10 @@ RULES
 - Each step has one action and one checkable expected result: a status
   code, a field and its value, a header, or a state another call can
   read back. "Works correctly" is not an expected result.
+- Each step says its `source`: `spec` when its request and its check are
+  taken from the API specification, `story` when from the story or the
+  requirements, `notes` when from the tester's notes. Add after a colon
+  what in it, e.g. `spec: POST /accounts 201` or `story: AC 2`.
 - Cover, in this order of priority: the behaviour the story or the
   requirements ask for; one happy path per endpoint; required-field,
   type, format and boundary validation; authentication and
@@ -53,7 +57,8 @@ this message. The JSON object is the whole of your answer. Shape:
       "priority": "high | medium | low",
       "preconditions": "state needed before step 1, or empty",
       "steps": [
-        {"action": "what is sent", "data": "the inputs that matter", "expected": "what is checked"}
+        {"action": "what is sent", "data": "the inputs that matter", "expected": "what is checked",
+         "source": "spec | story | notes, and what in it"}
       ],
       "requirement_refs": ["the requirement or story lines this covers"]
     }

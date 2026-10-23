@@ -195,6 +195,14 @@ class Refusals(Base):
         with self.assertRaises(xt.Refused):
             self.create(what="manual")
 
+    def test_a_long_description_is_cut_to_what_jira_takes(self):
+        case = {"id": "TC-001", "title": "t", "endpoint": "", "preconditions": "", "refs": [],
+                "type": "", "priority": "", "steps": [], "describe": ["Step %d: %s" % (i, "x" * 590)
+                                                                     for i in range(80)]}
+        text = xt.description_of(case, "ABC-12", "design")
+        self.assertLess(len(text), 32767)
+        self.assertIn("cut here: the whole of it is on the workbench page", text)
+
     def test_a_private_value_in_a_case_stops_everything(self):
         os.makedirs(os.path.join(self.root, "src", "main", "resources"))
         with io.open(os.path.join(self.root, "src", "main", "resources",
@@ -243,6 +251,11 @@ class Creating(Base):
         self.assertEqual(body["fields"]["summary"], "Create a rate returns 201")
         self.assertIn("ABC-12", body["fields"]["description"])
         self.assertIn("Preconditions:\na group exists", body["fields"]["description"])
+        # The case in words, step by step, as planned (nothing automated yet)
+        self.assertIn("Step by step:\nAs planned:", body["fields"]["description"])
+        self.assertIn("Step 1: POST a valid rate, with a valid group id", body["fields"]["description"])
+        self.assertTrue(xt.read_keys(self.job)["tests"]["design:TC-001"]["described"],
+                        "what was sent is remembered: Update in Xray sends it again only when it changes")
         self.assertEqual(self.jira.steps["ABC-901"],
                          [{"step": "POST a valid rate", "data": "a valid group id",
                            "result": "201 and the body carries rateId"}])

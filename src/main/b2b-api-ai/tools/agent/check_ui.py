@@ -577,7 +577,9 @@ def main() -> int:
                   < html.index('id="run-token"') < html.index('id="convert-state"'))
             check("what is still shown is there to be set",
                   all(f'data-opt="{o}"' in html for o in
-                      ("--data-dir", "--suite-name", "--clean", "--classic", "--skip-self-test")))
+                      ("--data-dir", "--clean", "--classic", "--skip-self-test")))
+            check("the suite's name is not asked for: the converter takes it from the file's name",
+                  'data-opt="--suite-name"' not in html)
             code, got = page.call("/api/upload-clear", {})
             check("Remove forgets the chosen files",
                   code == 200 and got.get("removed") == 2
@@ -937,6 +939,8 @@ def main() -> int:
                   and "Ctrl+V pastes a screenshot for Cursor" in html)
             check("each case's suites show on its row, from the rules",
                   ">Suites<" in html and 'class="groups"' in html and "from the rules" in html)
+            check("each case's Description shows on its row: the plan, step by step",
+                  ">Description<" in html and 'class="desc"' in html and "Step 1:" in html)
             bare = subprocess.run(
                 [mocked.browser, "--headless=new", "--disable-gpu", "--no-first-run",
                  "--disable-extensions", "--virtual-time-budget=9000", "--dump-dom", f"{mocked.base}/#new"],

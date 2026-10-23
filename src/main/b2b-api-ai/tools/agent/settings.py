@@ -263,6 +263,8 @@ def save(changes: dict, root: str = "", busy=None, project: str = "") -> dict:
     if not isinstance(changes, dict):
         raise ValueError("send the settings as an object")
     project = _project(project)
+    if "move_env" in changes:                            # on its own: two files change
+        return _move_env(changes["move_env"], root, project)
     CONFIG_REL = _rel(project)                           # this save's file, in every message below
     env, _source = _env(root)
     doc = _read(root, project)
@@ -594,6 +596,7 @@ def config_fields(root: str = "", project: str = "", edit_env: str = "") -> dict
         fields.append(f)
     return {"env": env, "envs": environments(root, project), "new": env not in doc,
             "run_env": run, "active_env": active,
+            "other_projects": [p for p in _projectconfig().PROJECT_FILES if p != project],
             "example": example_rel(project), "fields": fields,
             "notes": _notes(block, example), "open_groups": list(_OPEN_GROUPS)}
 
@@ -725,6 +728,61 @@ def _save_config(change: dict, doc: dict, root: str, project: str, rel: str) -> 
             parent.pop(path[-1])
             said.append(f"{'.'.join(path)} removed")
     return [f"{env}: {s}" for s in said]
+
+
+def _move_env(move: dict, root: str, project: str) -> dict:
+    """Move one environment block from this project's file to another
+    project's -- the blocks of one project left in the other's file from
+    when the two shared program_configuration.json. Both files are copied
+    to .workbench/settings/ first (_write). Already in the other file, the
+    same: only removed here; different: refused, as neither is known right."""
+    if not isinstance(move, dict):
+        raise ValueError("send the move as an object: {env, to}")
+    env = str(move.get("env") or "").strip()
+    to = str(move.get("to") or "").strip().lower()
+    projects = _projectconfig().PROJECT_FILES
+    if to not in projects or to == project:
+        raise ValueError(f"{to!r} is not another project ({', '.join(p for p in projects if p != project)})")
+    src = _read(root, project)
+    if not _ENV_RX.match(env) or not isinstance(src.get(env), dict):
+        raise ValueError(f"there is no environment {env!r} in {_rel(project)}")
+    dst = _read(root, to)
+    if env in dst and dst[env] != src[env]:
+        raise ValueError(f"{_rel(to)} already has an environment {env!r}, and it is not the same: "
+                         f"compare the two by hand and remove one first")
+    if env in dst:
+        said = [f"{env} removed from {_rel(project)} ({_rel(to)} already has the same block)"]
+    else:
+        dst[env] = src[env]
+        _write(dst, root, to)                            # the other file first: the block is never in neither
+        said = [f"{env} moved from {_rel(project)} to {_rel(to)}"]
+    src.pop(env)
+    _write(src, root, project)
+    # This project's tests no longer run against a block its file lacks; the
+    # other project's, when its run environment is a block its file lacks,
+    # run against the one it now has.
+    wb = workbench_settings(root)
+    changed = False
+    if run_env_of(wb, project) == env:
+        if project == "b2b":
+            wb.pop("run_env", None)
+        else:
+            (wb.get("projects") or {}).get(project, {}).pop("run_env", None)
+        changed = True
+        said.append(f"{project.upper()}'s tests run against {run_env_of(wb, project)} again")
+    if not isinstance(dst.get(run_env_of(wb, to)), dict):
+        if to == "b2b":
+            wb["run_env"] = env
+        else:
+            wb.setdefault("projects", {}).setdefault(to, {})["run_env"] = env
+        changed = True
+        said.append(f"{to.upper()}'s tests run against {env} (Settings: Running the tests)")
+    if changed:
+        p = os.path.join(root or ROOT, WORKBENCH_FILE)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with io.open(p, "w", encoding="utf-8") as fh:
+            json.dump(wb, fh, indent=1)
+    return {"saved": True, "said": "; ".join(said), "env": env, "status": status(root, project)}
 
 
 def config_fields_from(block: dict, example: dict) -> list:

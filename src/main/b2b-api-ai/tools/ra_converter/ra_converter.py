@@ -22897,13 +22897,20 @@ def _emit_imported_tests(prep: _PreparedSuite) -> int:
 
     print()
     print(f"[ra_converter] wrote {len(emitter.written)} files under {args.output}/")
-    if len(emitter.written) <= 20:
+    # Every suite, test class and data sheet by its path; the rest counted
+    # per folder (written_files.py, as the workbench's Automate run says it).
+    try:
+        _here = os.path.dirname(os.path.abspath(__file__))
+        if _here not in sys.path:
+            sys.path.insert(0, _here)
+        import written_files
+        for line in written_files.render(emitter.written,
+                                         kept=getattr(emitter, "skipped_existing", [])):
+            print(f"[ra_converter]   {line}")
+    except Exception as exc:        # a listing must never fail the convert
+        print(f"[ra_converter] the files could not be listed by kind ({exc}):")
         for f in emitter.written:
             print(f"    {f}")
-    else:
-        for f in emitter.written[:10]:
-            print(f"    {f}")
-        print(f"    ... and {len(emitter.written) - 10} more")
 
     return 0
 

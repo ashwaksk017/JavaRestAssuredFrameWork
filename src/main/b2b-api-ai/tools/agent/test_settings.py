@@ -288,6 +288,54 @@ class EnvironmentValues(Base):
             self.assertNotIn(secret, copy)
         self.assertIn("https://t", copy, "an address is not a secret")
 
+    def goal_doc(self):
+        with io.open(os.path.join(self.root, *st._rel("goal").split("/")), encoding="utf-8-sig") as fh:
+            return json.load(fh)
+
+    def test_another_project_s_block_moves_to_its_file_and_the_run_environment_follows(self):
+        wb = os.path.join(self.root, st.WORKBENCH_FILE)
+        os.makedirs(os.path.dirname(wb))
+        with io.open(wb, "w", encoding="utf-8") as fh:
+            json.dump({"run_env": "qa"}, fh)
+        self.assertEqual(st.config_fields(self.root, "b2b")["other_projects"], ["goal"])
+        r = st.save({"move_env": {"env": "qa", "to": "goal"}}, self.root, project="b2b")
+        self.assertTrue(r["saved"])
+        self.assertNotIn("qa", self.doc())
+        self.assertEqual(self.doc()["stg"]["database"]["host"], "db.example.test", "the rest stays")
+        self.assertEqual(self.goal_doc(), {"qa": {"keep": "me"}})
+        self.assertEqual(st.run_env_of(st.workbench_settings(self.root), "b2b"), "stg")
+        self.assertIn("run against stg again", r["said"])
+        self.assertEqual(st.run_env_of(st.workbench_settings(self.root), "goal"), "qa",
+                         "GOAL's file had no block for its run environment: it runs against the one moved in")
+        self.assertIn("GOAL's tests run against qa", r["said"])
+        names = os.listdir(os.path.join(self.root, st.BACKUPS))
+        self.assertTrue(any(n.startswith("program_configuration-") for n in names), "the B2B file as it was")
+
+    def test_a_block_the_other_file_already_has_is_removed_here_only_when_it_is_the_same(self):
+        goal = os.path.join(self.root, *st._rel("goal").split("/"))
+        with io.open(goal, "w", encoding="utf-8") as fh:
+            json.dump({"qa": {"keep": "other"}}, fh)
+        with self.assertRaises(ValueError) as got:
+            st.save({"move_env": {"env": "qa", "to": "goal"}}, self.root, project="b2b")
+        self.assertIn("not the same", str(got.exception))
+        self.assertIn("qa", self.doc(), "nothing moved")
+        with io.open(goal, "w", encoding="utf-8") as fh:
+            json.dump({"qa": {"keep": "me"}}, fh)
+        r = st.save({"move_env": {"env": "qa", "to": "goal"}}, self.root, project="b2b")
+        self.assertIn("already has the same block", r["said"])
+        self.assertNotIn("qa", self.doc())
+
+    def test_what_is_refused_in_a_move(self):
+        for move, why in (({"env": "qa", "to": "b2b"}, "not another project"),
+                          ({"env": "qa", "to": "nope"}, "not another project"),
+                          ({"env": "nope", "to": "goal"}, "no environment 'nope'")):
+            with self.assertRaises(ValueError) as got:
+                st.save({"move_env": move}, self.root, project="b2b")
+            self.assertIn(why, str(got.exception))
+        with self.assertRaises(ValueError) as got:
+            st.save({"move_env": {"env": "qa", "to": "goal"}}, self.root, busy="mvn-test (job 1)")
+        self.assertIn("is running", str(got.exception))
+
     def test_what_is_refused_in_the_environment_values(self):
         for config, why in (({"env": "bad env"}, "not an environment name"),
                             ({"env": "x", "copy_from": "nope"}, "no environment 'nope'"),

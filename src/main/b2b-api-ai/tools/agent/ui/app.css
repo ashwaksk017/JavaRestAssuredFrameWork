@@ -517,6 +517,9 @@ button.go:disabled { background: var(--accent); border-style: solid; opacity: .4
 #cfg-form .cfg-name { font-family: var(--mono, monospace); font-size: .85rem; }
 #cfg-form .row.cfg-add input[type=text] { flex: 1 1 10rem; min-width: 0; }
 #cfg-envs { justify-content: flex-start; gap: .5rem; }
+/* A case's Description: closed until asked for, then readable at its width. */
+details.desc summary { cursor: pointer; white-space: nowrap; }
+pre.desc-text { white-space: pre-wrap; max-width: 34rem; min-width: 18rem; font-size: .8rem; }
 #agent-xray-exec { flex: 0 1 17rem; }
 /* Finalize the cases: the step that opens Create in Xray and Automate, as
    wide as the boxes below it; what it says goes underneath. */

@@ -211,5 +211,55 @@ class Timestamps(unittest.TestCase):
         self.assertFalse(xu.after("", "2026-10-16T09:00:00.000+0000"))
 
 
+class TheDescription(Base):
+    """Once a case is automated, its Description -- the Audit comment of its
+    test -- is sent to its Xray test on its own; the steps stay as they are."""
+
+    def test_an_automated_case_s_description_is_sent_alone_and_then_is_in_step(self):
+        rel = "src/test/java/com/hi/api/tests/jira/ListTest.java"
+        p = os.path.join(self.root, *rel.split("/"))
+        os.makedirs(os.path.dirname(p))
+        with io.open(p, "w", encoding="utf-8") as fh:
+            fh.write("class ListTest {\n  /**\n   * Audit: TC-001\n   * Step 1: listStays() (ListTest) -- lists\n"
+                     "   */\n  void listStays() { }\n}\n")
+        self.write("review.json", {"state": "pending-review", "files": {"created": [rel], "modified": []}})
+        rows = {r["id"]: r for r in self.plan()["tests"]}
+        self.assertEqual(rows["TC-001"]["status"], "describe")
+        self.assertEqual(rows["TC-001"]["default"], "send")
+        self.assertIn("Step 1: listStays() (ListTest) -- lists", rows["TC-001"]["description"])
+        self.assertEqual(rows["TC-003"]["status"], "xray_newer", "a description never hides a change")
+        self.xray.calls.clear()
+        r = self.apply({"TC-001": "send"})
+        self.assertEqual([s["id"] for s in r["sent"]], ["TC-001"])
+        puts = [c for c in self.xray.calls if c[0] == "PUT" and c[1].endswith("/issue/ABC-1")]
+        self.assertEqual(len(puts), 1)
+        self.assertIn("As automated", puts[0][2]["fields"]["description"])
+        self.assertNotIn("summary", puts[0][2]["fields"])
+        self.assertFalse([c for c in self.xray.calls if "/api/test/ABC-1/step" in c[1] and c[0] != "GET"],
+                         "no step is touched")
+        self.assertEqual({r["id"]: r["status"] for r in self.plan()["tests"]}["TC-001"], "same")
+
+    def test_a_description_holding_a_private_value_is_not_sent(self):
+        cfg = os.path.join(self.root, "src", "main", "resources")
+        os.makedirs(cfg)
+        with io.open(os.path.join(cfg, "program_configuration.json"), "w", encoding="utf-8") as fh:
+            json.dump({"jira_config": {"pat": "tok-SECRET-0123456789"}}, fh)
+        rel = "src/test/java/com/hi/api/tests/jira/ListTest.java"
+        p = os.path.join(self.root, *rel.split("/"))
+        os.makedirs(os.path.dirname(p))
+        with io.open(p, "w", encoding="utf-8") as fh:
+            fh.write("class ListTest {\n  /**\n   * Audit: TC-001\n   * Step 1: sends tok-SECRET-0123456789\n"
+                     "   */\n  void listStays() { }\n}\n")
+        self.write("review.json", {"state": "pending-review", "files": {"created": [rel], "modified": []}})
+        self.assertEqual({r["id"]: r["status"] for r in self.plan()["tests"]}["TC-001"], "describe")
+        self.xray.calls.clear()
+        r = self.apply({"TC-001": "send"})
+        self.assertIn("private value", r["failed"][0]["why"])
+        self.assertFalse([c for c in self.xray.calls if c[0] == "PUT"], "nothing was sent")
+
+    def test_a_case_not_automated_yet_does_not_ask_to_send_its_plan_to_an_older_key(self):
+        self.assertEqual({r["id"]: r["status"] for r in self.plan()["tests"]}["TC-001"], "same")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

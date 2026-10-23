@@ -2860,7 +2860,19 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
                   "case: CREATE its test. A case's [groups: ...] are the TestNG "
                   "groups -- and so the suites -- its test runs in: put exactly those "
                   "in @Test(groups = {...}) of the method that tests it. Cases with "
-                  "different groups do not share a test method.", "", designed,
+                  "different groups do not share a test method.",
+                  "AUDIT: directly above each @Test method you write or change for a case "
+                  "below, put a Javadoc comment whose first line is `Audit: <case id>` "
+                  "(the case's own id, as listed below; a data-driven method that tests several "
+                  "cases names them all: `Audit: <case id>, <case id>`), then one line per step, in the order the test does "
+                  "them: `Step n: <method>() (<Class>) -- what it does`. Name every helper or "
+                  "client method the test calls (only methods that exist), the payload each "
+                  "request sends (the template file, or the CSV file and its columns, or the "
+                  "body built in the test), and each value captured from a response and the "
+                  "step that uses it. End with a `Reference:` line: the golden test and the "
+                  "section of the flow specification you followed, and the API specification "
+                  "operation each request matches. It is the test's audit trail, in plain "
+                  "words, and the case's Description on the page and in Xray.", "", designed,
                   "===== end of proposed test cases ====="]
         spec_block, _spec_note = spec_for_cases(job_dir, endpoints_of_cases(designed), root)
         if spec_block:
@@ -4421,6 +4433,41 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                     }]}
         _write_diff(root, job_dir, changes, generated, gen_backup)
         files = changes["created"] + changes["modified"]
+        # Every suite, test class and data sheet of this change, by its path
+        # -- in the command log and the Cursor log (written_files.py, as a
+        # convert says it).
+        try:
+            wf = _load("loop_written_files", os.path.join(os.path.dirname(HERE), "ra_converter",
+                                                         "written_files.py"))
+            listing = wf.render(files + [g for g in generated if g not in files],
+                                changed=changes["modified"])
+            say(" ..  the files of this change, by kind:")
+            for line in listing:
+                say("     " + line)
+                clog.write("  " + line)
+        except Exception:                                # noqa: BLE001 -- a listing never fails the run
+            diag.trace()
+        # Each case written in this run has its Audit comment: the case's
+        # Description as automated (casedescribe.py).
+        if _AUTOMATE_ONLY:
+            try:
+                cdesc = _load("loop_casedescribe", os.path.join(HERE, "casedescribe.py"))
+                audited = cdesc.as_automated(root, [f for f in files if f.endswith(".java")])
+                missing = sorted(i for i in _AUTOMATE_ONLY if i not in audited)
+                unknown = sorted(i for i, a in audited.items() if i in _AUTOMATE_ONLY
+                                 and any("[not found in the code" in ln for ln in a["lines"]))
+                for i in sorted(_AUTOMATE_ONLY):
+                    if i in audited:
+                        clog.write(f"  audit {i} ({audited[i]['file']}): {len(audited[i]['lines'])} line(s)")
+                if missing:
+                    say(f"WARN no Audit comment for {', '.join(missing)}: the Description shows "
+                        f"only the plan. Ask Cursor: add the Audit comment to the test of "
+                        f"{', '.join(missing)}.")
+                if unknown:
+                    say(f"WARN the Audit comment of {', '.join(unknown)} names a method defined "
+                        f"nowhere in the project: see its Description")
+            except Exception:                            # noqa: BLE001 -- the audit never fails the run
+                diag.trace()
         review = dict(review, files={k: changes[k] for k in ("created", "modified")},
                       generated=generated, verify=result,
                       hashes={f: _sha(os.path.join(root, f)) for f in files})

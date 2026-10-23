@@ -840,6 +840,9 @@ def _steps(case: dict) -> list:
         step = {"action": _text(_first(s, "action", "step")),
                 "data": _text(_first(s, "data", "test_data")),
                 "expected": _text(_first(s, "expected", "expected_result", "result"))}
+        src = _text(_first(s, "source"))[:200]
+        if src:
+            step["source"] = src                         # where it came from: the Description
         if step["action"] or step["expected"]:
             out.append(step)
     # Steps given as plain sentences with ONE expected result for the case.

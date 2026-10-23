@@ -109,6 +109,10 @@ CHECKS = [
           "a row switched off with execute=N survives the next convert -- "
           "generated row files are overwritten, so a lost flag silently "
           "runs a test someone chose to stop running"),
+    Check("written-files",
+          [PY, "tools/ra_converter/test_written_files.py"],
+          "a convert and an Automate run name every suite, test class and data "
+          "sheet they wrote, by its path; the rest are counted per folder"),
     Check("phase-model",
           [PY, "tools/ra_converter/test_phase_model.py"],
           "call shapes key on the call only; specs match the emitted Java"),
@@ -269,6 +273,11 @@ CHECKS = [
           [PY, "tools/agent/test_fixbrief.py"],
           "a failing converted case becomes a brief for Cursor from the recorded run, surefire, "
           "the per-row log and the converter's audit notes, redacted, one suite a job"),
+    Check("agent-casedescribe",
+          [PY, "tools/agent/test_casedescribe.py"],
+          "each designed case is described step by step for audit: planned from the "
+          "design (spec or story), as automated from its test's Audit comment, every "
+          "method it names checked against the code"),
     Check("agent-storycheck",
           [PY, "tools/agent/test_storycheck.py"],
           "a story read again is compared with what the job holds, by revision and "

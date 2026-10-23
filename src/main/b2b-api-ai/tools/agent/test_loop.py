@@ -537,6 +537,10 @@ class TheReviewDecidesWhatIsWritten(Repo):
         done = loop.automated_cases(self.job)
         self.assertEqual(done["TC-002"]["state"], "pending-review")
         self.assertNotIn("TC-001", done)
+        # Each test carries its Audit comment: the case's Description.
+        self.assertIn("`Audit: <case id>`", seen["p"])
+        self.assertIn("Reference:", seen["p"])
+        self.assertIn("WARN no Audit comment for TC-002", out.getvalue())
 
     def test_a_second_case_is_added_to_the_change_waiting(self):
         self.design(DESIGN_CASE, dict(DESIGN_CASE, id="TC-002", title="Second"))
@@ -685,6 +689,11 @@ class TheReviewDecidesWhatIsWritten(Repo):
         self.assertIn("Suites/jira/group-regression.xml", created)
         self.assertNotIn("Suites/jira/group-negative.xml", created, "no test is in it")
         self.assertIn("WARN no test of this change is in the group(s) negative", out.getvalue())
+        said = out.getvalue()
+        self.assertIn("the files of this change, by kind:", said)
+        self.assertIn("Test classes (1)", said)
+        self.assertIn(JIRA + "NewTest.java", said.split("Test classes (1)")[1])
+        self.assertIn("Suites/jira/group-smoke.xml", said.split("TestNG suites")[1])
 
     def test_the_prompt_names_the_story_key_or_says_there_is_none(self):
         self.design(DESIGN_CASE)

@@ -241,6 +241,9 @@ class Handler(BaseHTTPRequestHandler):
                 mapping = sm.load()
                 return self._json({"cases": sm.for_job(jobs.job_dir(q.get("job", "")), mapping),
                                    "problem": mapping.get("problem", "")})
+            if u.path == "/api/case-descriptions":
+                # Each designed case in words, planned and as automated.
+                return self._json(jobs.case_descriptions(q.get("job", "")))
             if u.path == "/api/sources":
                 # What the job's cases were designed from: names and sizes.
                 return self._json(jobs.sources(q.get("job", "")))

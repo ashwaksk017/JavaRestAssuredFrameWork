@@ -72,7 +72,7 @@ RESULT = "xray-update.json"
 BACKUP = "xray-update-backup.json"
 STEP_API = "/rest/raven/1.0/api"
 CHOICES = ("send", "take", "skip")
-DEFAULT = {"update": "send", "xray_newer": "skip", "conflict": "skip"}
+DEFAULT = {"update": "send", "xray_newer": "skip", "conflict": "skip", "describe": "send"}
 _CHOICE_RX = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]{0,39})=(send|take|skip)$")
 
 
@@ -170,11 +170,25 @@ def updated_now(conn: dict, key: str, transport=None) -> str:
         return ""
 
 
-def _ours(job_dir: str) -> dict:
-    """{case id: case} -- the design with the review's corrections."""
+def _ours(job_dir: str, root: str = "") -> dict:
+    """{case id: case} -- the design with the review's corrections, and each
+    case's Description (`describe`, casedescribe.py)."""
     result = publish.result_for(job_dir, "design")
     cases = casereview.apply(xt.cases_of(result, "design"), casereview.read(job_dir)["design"])
+    xt.described(root or xt.ROOT, job_dir, cases, "design")
     return {c["id"]: c for c in cases}
+
+
+def _describe_due(entry: dict, case: dict) -> bool:
+    """A test the workbench made, whose Description changed since it was
+    last sent (as automated now, say): sent on its own, steps untouched. A
+    key kept before Descriptions were sent gets one once its case is
+    automated -- not a preview full of plans nobody asked to send."""
+    if entry.get("imported") or not entry.get("story") or not case.get("describe"):
+        return False
+    if "described" not in entry:
+        return bool(case.get("describe_automated"))
+    return case.get("described", "") != entry.get("described", "")
 
 
 def classify(entry: dict, ours: dict, xray: dict) -> tuple:
@@ -221,8 +235,9 @@ def plan(job: str, root: str = "", conn=None, transport=None, xray_cfg: dict = N
     job_dir = loop.intake.job_dir(job, root)
     conn, mocked, transport = _connect(root, conn, transport, xray_cfg)
     keys = xt.read_keys(job_dir)["tests"]
-    ours = _ours(job_dir)
-    rows, counts = [], {"same": 0, "update": 0, "xray_newer": 0, "conflict": 0, "unreadable": 0}
+    ours = _ours(job_dir, root)
+    rows, counts = [], {"same": 0, "update": 0, "xray_newer": 0, "conflict": 0, "unreadable": 0,
+                        "describe": 0}
     for ident, entry in sorted(keys.items()):
         if not ident.startswith("design:") or not isinstance(entry, dict):
             continue
@@ -241,6 +256,8 @@ def plan(job: str, root: str = "", conn=None, transport=None, xray_cfg: dict = N
                          "note": f"Xray did not answer for it (HTTP {e.status})"})
             continue
         status, oc, xc = classify(entry, case, xray)
+        if status == "same" and _describe_due(entry, case):
+            status = "describe"
         counts[status] += 1
         base = entry.get("base") if isinstance(entry.get("base"), dict) else None
         rows.append({"id": case_id, "key": key, "status": status, "ours_changed": oc,
@@ -249,14 +266,17 @@ def plan(job: str, root: str = "", conn=None, transport=None, xray_cfg: dict = N
                      "ours": shape(case["title"], case["steps"]),
                      "xray": shape(xray["title"], xray["steps"]),
                      "base": shape(base.get("title"), base.get("steps")) if base else None,
-                     "editable": all(s.get("id") is not None for s in xray["steps"]) or mocked,
+                     "editable": all(s.get("id") is not None for s in xray["steps"]) or mocked
+                                 or status == "describe",
+                     "description": case.get("describe") or [],
                      "xray_updated": xray.get("updated", ""), "last_by": xray.get("last_by", ""),
                      "last_at": xray.get("last_at", ""), "synced_updated": entry.get("synced_updated", ""),
                      "changed_after_sync": after(xray.get("updated"), entry.get("synced_updated"))})
     if not rows:
         raise Refused("no case of this job's design has an Xray test yet: Create in Xray first "
                       "(or take the story's Xray tests)")
-    bits = [f"{counts[k]} {w}" for k, w in (("update", "to send"), ("xray_newer", "newer in Xray"),
+    bits = [f"{counts[k]} {w}" for k, w in (("update", "to send"), ("describe", "with a Description to send"),
+                                           ("xray_newer", "newer in Xray"),
                                            ("conflict", "changed on both sides"), ("same", "in step"),
                                            ("unreadable", "not readable")) if counts[k]]
     out = {"kind": "xray-update-plan", "at": _now(), "job": job, "mock": mocked, "tests": rows,
@@ -341,7 +361,10 @@ def apply(job: str, choices: dict, root: str = "", conn=None, transport=None, cf
         raise Refused("writing tests to Jira is switched off (Settings: Create in Xray). Taking "
                       "Xray's steps into the cases does not need it.")
     kept = xt.read_keys(job_dir)
-    ours = _ours(job_dir)
+    ours = _ours(job_dir, root)
+    # What is sent -- steps, and a Description read from the code -- holds no
+    # value of the private configuration (as Create in Xray checks).
+    private = xt.publish.private_values(root)
     out = {"kind": "xray-update", "at": _now(), "job": job, "mock": mocked,
            "sent": [], "taken": [], "skipped": [], "failed": []}
     for case_id, choice in sorted(choices.items()):
@@ -381,6 +404,30 @@ def apply(job: str, choices: dict, root: str = "", conn=None, transport=None, cf
             xt.write_keys(job_dir, kept)
             out["taken"].append({"id": case_id, "key": key})
             continue
+        if choice == "send":
+            found = xt.publish.leaks([json.dumps(case, ensure_ascii=False)], private)
+            if found:
+                out["failed"].append({"id": case_id, "key": key,
+                                      "why": "it holds a private value and is not sent: " + "; ".join(found[:3])})
+                continue
+        if row.get("status") == "describe":
+            # The Description only: the steps are in step and stay as they are.
+            if mocked:
+                done = ["description (mock: nothing was contacted)"]
+            else:
+                diag.step(f"Updating the description of {key} in Xray")
+                try:
+                    search._call(conn, "PUT", f"/issue/{key}", {"fields": {
+                        "description": xt.description_of(case, entry["story"], "design")}}, transport)
+                except search.JiraError as e:
+                    out["failed"].append({"id": case_id, "key": key,
+                                          "why": f"Jira refused the description (HTTP {e.status})"})
+                    continue
+                done = ["description"]
+            kept["tests"][ident] = dict(entry, described=case.get("described", ""))
+            xt.write_keys(job_dir, kept)
+            out["sent"].append({"id": case_id, "key": key, "done": done})
+            continue
         # send
         if not mocked and any(s.get("id") is None for s in xray["steps"]):
             out["failed"].append({"id": case_id, "key": key,
@@ -401,7 +448,9 @@ def apply(job: str, choices: dict, root: str = "", conn=None, transport=None, cf
                 continue
         kept["tests"][ident] = dict(entry, base=snapshot(case), fingerprint=xt.fingerprint(case),
                                     synced=_now(),
-                                    synced_updated="" if mocked else updated_now(conn, key, transport))
+                                    synced_updated="" if mocked else updated_now(conn, key, transport),
+                                    **({"described": case.get("described", "")}
+                                       if not entry.get("imported") and entry.get("story") else {}))
         xt.write_keys(job_dir, kept)
         out["sent"].append({"id": case_id, "key": key, "done": done})
     out["ok"] = not out["failed"]

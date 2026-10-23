@@ -837,6 +837,12 @@ def save_spec(job: str, name: str, stream, length: int) -> dict:
         raise ValueError(str(e)) from None
 
 
+def case_descriptions(job: str) -> dict:
+    """{case id: {planned, automated, file}}: each designed case in words,
+    step by step (casedescribe.py) -- the Description column."""
+    return {"cases": _tool("casedescribe").describe(ROOT, job_dir(job))}
+
+
 def spec_state(job: str) -> dict:
     out = job_dir(job)
     if not os.path.isdir(os.path.join(out, "spec")):

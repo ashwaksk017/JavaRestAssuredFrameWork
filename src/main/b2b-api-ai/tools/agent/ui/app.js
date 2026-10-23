@@ -954,7 +954,19 @@ function showRefineScope() {
 // Cursor's suite suggestion for the job's cases (suite-suggest.json), by id.
 let suiteSuggest = { job: "", byId: {} };
 
-function reviewTable(j, what, cases, entries, after, done, change, suites) {
+// A case in words, step by step (casedescribe.py): as automated -- from the
+// Audit comment of its test -- once it is, the plan under it.
+function descCell(d) {
+  if (!d) return el("small", { text: "--" });
+  const auto = (d.automated || []).length > 0;
+  const pre = (lines) => el("pre", { class: "doc desc-text", text: (lines || []).join("\n") });
+  return el("details", { class: "desc" },
+    el("summary", { text: auto ? "as automated" : "planned" }),
+    auto ? el("small", { text: d.file || "" }) : null,
+    pre(auto ? d.automated : d.planned),
+    auto ? el("details", {}, el("summary", { text: "as planned" }), pre(d.planned)) : null);
+}
+function reviewTable(j, what, cases, entries, after, done, change, suites, descs) {
   const box = el("div", { class: "review" });
   const st = el("span", { class: "state" });
   const entryOf = (c) => entries[c.id] || {};
@@ -1000,7 +1012,8 @@ function reviewTable(j, what, cases, entries, after, done, change, suites) {
                             on: { click: () => goToStep("new", "refine-ask") } }, "Refine selected…") : null,
     el("small", { text: `${counts.approved} approved, ${counts.rejected} rejected, ${counts.proposed} not yet decided` }),
     selCount, st));
-  const headers = design ? ["Select", "Approve", "Automate", "Case", "Title", "Endpoint", "Suites", "Steps", "Note", "Write it"]
+  const headers = design ? ["Select", "Approve", "Automate", "Case", "Title", "Endpoint", "Suites", "Steps",
+                            "Description", "Note", "Write it"]
                          : ["Approve", "Case", "Title", "Steps", "Note"];
   const drawn = table(headers, cases.map((c) => {
     const e = entryOf(c);
@@ -1066,7 +1079,9 @@ function reviewTable(j, what, cases, entries, after, done, change, suites) {
       row.push(el("div", {}, groups, el("small", { text: s.chosen ? "set by hand" : "from the rules" }),
         sug && same ? el("small", { text: "Cursor agrees" }) : null, hint));
     }
-    row.push(steps, el("div", {}, note));
+    row.push(steps);
+    if (design) row.push(descCell((descs || {})[c.id]));
+    row.push(el("div", {}, note));
     if (what === "design") {
       // What the case's last run came to -- if it is about the change
       // there is now. A case written into a change since discarded (or a
@@ -1231,13 +1246,15 @@ async function showReview(what) {
     }
     return;
   }
-  const [result, review, done, agentReview, suites, sug] = await Promise.all([
+  const [result, review, done, agentReview, suites, sug, descs] = await Promise.all([
     artifactJson(j, what === "design" ? "design.json" : "manual-result.json"),
     artifactJson(j, "case-review.json"),
     what === "design" ? artifactJson(j, "automated-cases.json") : Promise.resolve(null),
     what === "design" ? artifactJson(j, "review.json") : Promise.resolve(null),
     what === "design" ? api(`/api/suite-groups?job=${encodeURIComponent(j)}`).catch(() => null) : Promise.resolve(null),
-    what === "design" ? artifactJson(j, "suite-suggest.json") : Promise.resolve(null)]);
+    what === "design" ? artifactJson(j, "suite-suggest.json") : Promise.resolve(null),
+    what === "design" ? api(`/api/case-descriptions?job=${encodeURIComponent(j)}`).catch(() => null)
+                      : Promise.resolve(null)]);
   if (j !== job()) return;
   if (what === "design") {
     const byId = {};
@@ -1264,7 +1281,7 @@ async function showReview(what) {
   kids.push(reviewTable(j, what, cases.filter((c) => c && c.id), entries, () => {
     showReview(what);
     refreshXray(what, true);
-  }, done, live, suites && suites.cases));
+  }, done, live, suites && suites.cases, descs && descs.cases));
   box.replaceChildren(...kids);
   showFlow();
 }
@@ -1625,7 +1642,8 @@ wireXray("manual");
 
 // ---- Update in Xray: preview, choose per test, send -----------------------
 const XU_LABEL = { same: "in step", update: "changed here: send it", xray_newer: "newer in Xray",
-                   conflict: "changed on both sides", unreadable: "not readable" };
+                   conflict: "changed on both sides", unreadable: "not readable",
+                   describe: "its Description changed: send it (the steps are in step)" };
 const XU_WORDS = { send: "send ours to Xray", take: "take Xray's into the case", skip: "skip" };
 function xuText(sh) {
   if (!sh) return "(not kept for this test)";
@@ -1641,8 +1659,8 @@ async function showXrayUpdate(j) {
   if (p.kind === "error") { box.append(banner("bad", p.message || "the preview failed")); return; }
   const rows = (p.tests || []).map((t) => {
     let pick = "";
-    if (["update", "xray_newer", "conflict"].includes(t.status)) {
-      const offer = t.status === "update" ? ["send", "skip"] : t.status === "xray_newer" ? ["skip", "take"]
+    if (["update", "xray_newer", "conflict", "describe"].includes(t.status)) {
+      const offer = ["update", "describe"].includes(t.status) ? ["send", "skip"] : t.status === "xray_newer" ? ["skip", "take"]
                                                                                        : ["skip", "take", "send"];
       pick = el("select", { class: "xu-choice", "data-id": t.id, "aria-label": `what to do with ${t.key}` },
         ...offer.map((v) => el("option", { value: v, text: XU_WORDS[v] })));
@@ -1654,7 +1672,10 @@ async function showXrayUpdate(j) {
     const when = t.xray_updated ? `changed in Jira ${t.xray_updated}${t.last_by ? ` by ${t.last_by}` : ""}` +
       (t.synced_updated ? (t.changed_after_sync ? `, AFTER our last sync (${t.synced_updated})`
                                                 : `, not since our last sync (${t.synced_updated})`) : "") : "";
-    const compare = (t.status === "same" || t.status === "unreadable") ? el("small", { text: t.note || "" })
+    const compare = t.status === "describe"
+      ? el("details", {}, el("summary", { text: "the Description to send" }),
+          el("pre", { class: "doc desc-text", text: (t.description || []).join("\n") }))
+      : (t.status === "same" || t.status === "unreadable") ? el("small", { text: t.note || "" })
       : el("details", {}, el("summary", { text: "ours / Xray now / last synced" }),
           el("div", { class: "xu-diff" }, el("pre", { text: "OURS\n" + xuText(t.ours) }),
              el("pre", { text: "XRAY NOW\n" + xuText(t.xray) }), el("pre", { text: "LAST SYNCED\n" + xuText(t.base) })));
@@ -2885,6 +2906,24 @@ async function showConfig(cfg) {
     (cfg.env === cfg.active_env ? "" : `; the fields above are ${cfg.active_env}'s`) +
     (cfg.new ? " -- not in the file yet: saving adds it" : "") +
     `. Missing settings are taken from ${cfg.example}.`));
+  // A block of the other project's, left here from when the two shared one
+  // file, is moved to that project's file (both files copied first).
+  if (!cfg.new) for (const other of cfg.other_projects || []) {
+    const mv = el("button", { type: "button", text: `Move ${cfg.env} to the ${other.toUpperCase()} file`,
+      title: `for an environment of ${other.toUpperCase()}'s left in this project's file` });
+    mv.onclick = async () => {
+      if (!confirm(`Move the environment ${cfg.env} out of this project's file into ${other.toUpperCase()}'s? ` +
+                   "Both files are copied to .workbench/settings/ first.")) return;
+      try {
+        const r = await post("/api/settings", { changes: { move_env: { env: cfg.env, to: other } },
+                                                project: settingsProject() });
+        cfgEnv = "";
+        setState($("cfg-state"), "ok", `saved: ${r.said}`);
+      } catch (e) { setState($("cfg-state"), "bad", e.message); }
+      showSettings();
+    };
+    where.append(el("div", { class: "row" }, mv));
+  }
   const groups = new Map();
   for (const f of cfg.fields || []) {
     if (!groups.has(f.group)) groups.set(f.group, []);

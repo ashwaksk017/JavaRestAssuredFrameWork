@@ -235,6 +235,27 @@ def cases_of(data: dict, what: str) -> list:
     return out[:MAX_CASES]
 
 
+MAX_DESCRIPTION = 30000                                # Jira's limit is 32,767
+
+
+def described(root: str, job_dir: str, cases: list, what: str) -> None:
+    """Each design case's words, step by step, put on the case as
+    `describe` (casedescribe.py): as automated once it is, the plan with it."""
+    if what != "design":
+        return
+    try:
+        cd = _load("agent_casedescribe", os.path.join(HERE, "casedescribe.py"))
+        got = cd.describe(root, job_dir)
+    except Exception:                                    # noqa: BLE001 -- a description is extra
+        diag.trace()
+        return
+    for case in cases:
+        if case["id"] in got:
+            case["describe"] = cd.lines_for(got[case["id"]])
+            case["described"] = cd.digest(case["describe"])
+            case["describe_automated"] = bool(got[case["id"]].get("automated"))
+
+
 def fingerprint(case: dict) -> str:
     body = json.dumps([case["title"], case["preconditions"], case["steps"]], sort_keys=True)
     return hashlib.sha1(body.encode("utf-8")).hexdigest()[:16]
@@ -253,6 +274,14 @@ def description_of(case: dict, story: str, what: str) -> str:
         lines += ["Preconditions:", plain(case["preconditions"]), ""]
     if case["refs"]:
         lines += ["Covers:"] + [f"- {plain(r)}" for r in case["refs"]] + [""]
+    if case.get("describe"):
+        # The case in words, step by step (casedescribe.py), for audit -- cut
+        # to what Jira takes in a description, which refuses the whole issue.
+        text = "\n".join(plain(x) for x in case["describe"])
+        room = MAX_DESCRIPTION - len("\n".join(lines)) - 400
+        if len(text) > room:
+            text = text[:max(room, 0)] + "\n... (cut here: the whole of it is on the workbench page)"
+        lines += ["Step by step:", text, ""]
     lines += [f"Case {plain(case['id'])}"
               + (f", {plain(case['type'])}" if case["type"] else "")
               + (f", priority {plain(case['priority'])}" if case["priority"] else "") + "."]
@@ -563,6 +592,7 @@ def create(job: str, what: str, story: str, confirm: str, root: str = "", conn=N
         raise Refused(f"no case is approved yet: review the {what} cases on the page and tick "
                       f"Approve for the ones to create ({tally['proposed']} proposed, "
                       f"{tally['rejected']} rejected). Nothing is created without that.")
+    described(root, job_dir, cases, what)
     for case in cases:
         case["title"] = _one(case["title"], MAX_SUMMARY)
     private = publish.private_values(root)
@@ -697,6 +727,7 @@ def create(job: str, what: str, story: str, confirm: str, root: str = "", conn=N
                "steps_of": len(case["steps"]), "linked": False}
         kept["tests"][ident] = {"key": key, "title": case["title"], "fingerprint": fingerprint(case),
                                 "story": story, "mock": mocked, "at": _now(),
+                                "described": case.get("described", ""),
                                 # What was sent, whole: Update in Xray tells from it which
                                 # side changed since (xrayupdate.py).
                                 "base": {"title": case["title"], "preconditions": case["preconditions"],

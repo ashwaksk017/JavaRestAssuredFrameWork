@@ -409,6 +409,13 @@ class WhatComesBack(unittest.TestCase):
                                        "expected": "400"}])
         self.assertEqual(c["requirement_refs"], ["BR-2"])
 
+    def test_a_step_keeps_where_it_came_from_for_the_description(self):
+        cases, _w = design.normalise([case(steps=[
+            {"action": "POST a rate", "data": "", "expected": "201", "source": "spec: POST /rates 201"},
+            {"action": "GET it", "data": "", "expected": "200"}])])
+        self.assertEqual(cases[0]["steps"][0]["source"], "spec: POST /rates 201")
+        self.assertNotIn("source", cases[0]["steps"][1], "none said, none kept")
+
     def test_missing_and_repeated_ids_are_made_unique(self):
         cases, warnings = design.normalise([case(), case(), case(id="")])
         ids = [c["id"] for c in cases]
