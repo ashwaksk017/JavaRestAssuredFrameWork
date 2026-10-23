@@ -171,6 +171,19 @@ class Running(Base):
         self.assertTrue(self.result()["allure"]["ok"])
         self.assertIn("clean build", said)
 
+    def test_without_a_clean_build_the_report_still_holds_this_run_only(self):
+        for rel in ("target/test-classes/Old.class", "target/allure-results/old-result.json",
+                    "target/allure-report/index.html"):
+            write(self.root, rel, "x")
+        rc, said = self.quiet(mr.cmd_test, self.job_dir, self.root, test="FooTest", env="stg",
+                              compile_first=False, runner=self.runner(rc=0))
+        self.assertEqual([c[0] for c in self.calls], ["test", "allure:report"])
+        for gone in ("target/allure-results", "target/allure-report"):
+            self.assertFalse(os.path.exists(os.path.join(self.root, gone)), gone)
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "target/test-classes/Old.class")),
+                        "no clean build: the compiled classes stay")
+        self.assertIn("the report holds this run only", said)
+
     def test_a_report_that_cannot_be_built_leaves_the_verdict_alone(self):
         self.allure_rc = 1
         rc, said = self.quiet(mr.cmd_test, self.job_dir, self.root, suite="Suites/jira/group-smoke.xml",

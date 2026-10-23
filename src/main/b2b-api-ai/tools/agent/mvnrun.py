@@ -475,6 +475,13 @@ def cmd_test(job_dir: str, root: str, suite: str = "", test: str = "", group: st
         os.remove(results)                  # never read an earlier run's results as this one's
     except OSError:
         pass
+    if not compile_first:
+        # No clean build: the earlier runs' Allure results are still there,
+        # and Allure would put them all in this run's report.
+        removed = buildsteps.clear_run_reports(root)
+        if removed:
+            say(" ..  removed the last run's Allure results (" + ", ".join(removed)
+                + "): the report holds this run only")
     try:
         wb = _load("mvnrun_settings", os.path.join(HERE, "settings.py")).workbench_settings(root)
     except Exception:                                    # noqa: BLE001

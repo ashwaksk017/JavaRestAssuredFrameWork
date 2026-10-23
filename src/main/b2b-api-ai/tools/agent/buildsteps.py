@@ -53,6 +53,24 @@ def clean_build_outputs(root: str) -> list:
     return removed
 
 
+# What one run reports to Allure. Allure builds its report from EVERY file
+# in allure-results: left from an earlier run, they are in this run's report.
+RUN_REPORTS = ("allure-results", "allure-report")
+
+
+def clear_run_reports(root: str) -> list:
+    """Delete an earlier run's Allure results and report (RUN_REPORTS, under
+    target/) -- before a run without a clean build. Returns those removed."""
+    removed = []
+    for name in RUN_REPORTS:
+        p = os.path.join(root, "target", name)
+        if os.path.isdir(p):
+            shutil.rmtree(p, ignore_errors=True)
+            if not os.path.exists(p):
+                removed.append(f"target/{name}")
+    return removed
+
+
 def report_dir(root: str) -> str:
     return os.path.join(root, *REPORT_REL.split("/"))
 
