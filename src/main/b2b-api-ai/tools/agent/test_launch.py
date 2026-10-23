@@ -11,8 +11,10 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import socket
 import sys
+import tempfile
 import threading
 import unittest
 from contextlib import redirect_stdout
@@ -254,6 +256,98 @@ class TheFilesThatCallIt(unittest.TestCase):
             rules = fh.read()
         self.assertIn("*.bat text eol=crlf", rules)
         self.assertIn("*.command text eol=lf", rules)
+
+
+class Requirements(unittest.TestCase):
+    """PyYAML (and the rest) were never installed: only cursor-sdk was.
+    requirements.txt lists them all; what a Python lacks is installed."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.req = os.path.join(self.root, "requirements.txt")
+        with io.open(self.req, "w", encoding="utf-8") as fh:
+            fh.write("# a comment line\ncursor-sdk  # import cursor_sdk\nPyYAML  # import yaml -- specs\n"
+                     "\nnot-checked\n")
+        self.have = {"/py": {"cursor_sdk"}}
+        self.calls = []
+        self.pip_ok = True
+        self.refuse = set()
+
+    def run_(self, argv):
+        self.calls.append(argv)
+        py = argv[0]
+        if argv[1:] == ["-c", "import sys"]:
+            return 0
+        if argv[1:2] == ["-c"] and argv[2].startswith("import "):
+            return 0 if argv[2].split()[1] in self.have.get(py, set()) else 1
+        if argv[1:4] == ["-m", "pip", "install"]:
+            if not self.pip_ok or py in self.refuse:
+                return 1
+            mods = {"PyYAML": "yaml", "cursor-sdk": "cursor_sdk"}
+            self.have.setdefault(py, set()).update(mods.get(p, p) for p in argv[6:])
+            return 0
+        if argv[1:3] == ["-m", "venv"]:
+            exe = launch.venv_python(self.root)
+            os.makedirs(os.path.dirname(exe), exist_ok=True)
+            io.open(exe, "w").close()
+            self.have[exe] = set(self.have.get(argv[0], set()))
+            return 0
+        if argv[1:] == ["-c", "import sys"]:
+            return 0
+        return 1
+
+    def quiet(self, fn, *a):
+        with redirect_stdout(io.StringIO()) as out:
+            got = fn(*a)
+        return got, out.getvalue()
+
+    def test_each_line_names_its_package_and_the_import_that_shows_it(self):
+        self.assertEqual(launch.requirements(self.req), [("cursor-sdk", "cursor_sdk"), ("PyYAML", "yaml")])
+        shipped = dict(launch.requirements(os.path.join(ROOT, "requirements.txt")))
+        for pkg in ("cursor-sdk", "PyYAML", "json-repair", "openpyxl", "pypdf"):
+            self.assertIn(pkg, shipped, "the project's requirements.txt")
+
+    def test_only_what_is_missing_is_installed(self):
+        left, said = self.quiet(launch.ensure_requirements, "/py", self.req, self.run_)
+        self.assertEqual(left, [])
+        pip = [c for c in self.calls if c[1:4] == ["-m", "pip", "install"]]
+        self.assertEqual(len(pip), 1)
+        self.assertEqual(pip[0][-1:], ["PyYAML"], "cursor-sdk was there: not asked for again")
+        self.assertIn("installed: PyYAML", said)
+        self.calls.clear()
+        self.assertEqual(self.quiet(launch.ensure_requirements, "/py", self.req, self.run_)[0], [])
+        self.assertFalse([c for c in self.calls if "pip" in c], "nothing missing: pip is not run")
+
+    def test_what_pip_cannot_get_is_said_and_the_start_goes_on(self):
+        self.pip_ok = False
+        left, said = self.quiet(launch.ensure_requirements, "/py", self.req, self.run_)
+        self.assertEqual(left, [("PyYAML", "yaml")])
+        self.assertIn("NOT installed: PyYAML", said)
+        self.assertIn("-m pip install -r requirements.txt", said)
+
+    def test_a_python_that_refuses_pip_gets_a_venv_with_them(self):
+        self.refuse.add("/opt/homebrew/bin/python3")
+        self.have["/opt/homebrew/bin/python3"] = {"cursor_sdk"}
+        (py, why), said = self.quiet(launch.with_requirements, "/opt/homebrew/bin/python3", "this Python",
+                                     self.root, self.run_)
+        self.assertEqual(py, launch.venv_python(self.root))
+        self.assertIn("yaml", self.have[py])
+        self.assertIn("a .venv is made", said)
+
+    def test_the_windows_python_check_has_no_block_a_parenthesis_ends(self):
+        # Seen: `if ... ( py -c "...(3, 9)..." )` -- the ")" of "(3, 9)"
+        # closed the block, so an installed Python was "not found".
+        with io.open(os.path.join(ROOT, "start-workbench.bat"), encoding="utf-8") as fh:
+            text = fh.read()
+        sub = text[text.index("\n:find_python\n"):]
+        for line in sub.splitlines():
+            self.assertFalse(line.rstrip().endswith("("), f"a ( ) block in :find_python: {line}")
+        self.assertIn("winget install", text)
+        with io.open(os.path.join(ROOT, "start-workbench.command"), encoding="utf-8") as fh:
+            mac = fh.read()
+        self.assertIn("brew\" install python", mac.replace("$BREW", "brew"))
+        self.assertIn("sys.version_info >= (3, 9)", mac)
 
 
 if __name__ == "__main__":

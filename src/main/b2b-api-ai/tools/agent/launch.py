@@ -161,6 +161,70 @@ def server_python(root: str = "", base: str = "", run=None) -> tuple:
     return base, "this Python (no .venv could be made)"
 
 
+ALL_REQUIREMENTS = os.path.join(ROOT, "requirements.txt")
+
+
+def requirements(path: str = "") -> list:
+    """(pip package, module to import) for each line of requirements.txt
+    ending "# import <module>"."""
+    out = []
+    try:
+        with io.open(path or ALL_REQUIREMENTS, encoding="utf-8") as fh:
+            for line in fh:
+                pkg, _, note = line.partition("#")
+                pkg, note = pkg.strip(), note.strip()
+                if pkg and note.startswith("import "):
+                    out.append((pkg, note.split()[1]))
+    except OSError:
+        pass
+    return out
+
+
+def missing(py: str, reqs: list, run=None) -> list:
+    """The packages of `reqs` that `py` cannot import."""
+    return [(pkg, mod) for pkg, mod in reqs if not _ok([py, "-c", f"import {mod}"], run, 60)]
+
+
+def ensure_requirements(py: str, path: str = "", run=None) -> list:
+    """Install into `py` what requirements.txt lists and it lacks: all in one
+    pip call, then one by one when that fails, so one package a proxy blocks
+    does not keep the others out. Says what it did. Returns what is still
+    missing -- the workbench starts anyway, and each feature that needs one
+    says so where it is used."""
+    need = missing(py, requirements(path), run)
+    if not need:
+        return []
+    names = [p for p, _m in need]
+    say(f" .. installing what this Python lacks from requirements.txt: {', '.join(names)} "
+        "(once; a minute or two)")
+    pip = [py, "-m", "pip", "install", "--disable-pip-version-check", "--no-input"]
+    if not _ok(pip + names, run, 900):
+        for pkg in names:
+            _ok(pip + [pkg], run, 900)
+    left = missing(py, need, run)
+    if left:
+        say(" .. NOT installed: " + ", ".join(p for p, _m in left) + " -- pip could not reach them "
+            "(a proxy, no network?). The workbench starts; install them with "
+            f"\"{py}\" -m pip install -r requirements.txt")
+    else:
+        say(" .. installed: " + ", ".join(names))
+    return left
+
+
+def with_requirements(py: str, why: str, root: str = "", run=None) -> tuple:
+    """`py` with requirements.txt installed. A Python that refuses pip (PEP
+    668, Homebrew's) and is not the project's .venv: a .venv is made, and
+    used when it has more of them."""
+    left = ensure_requirements(py, os.path.join(root or ROOT, "requirements.txt"), run)
+    if not left or py == venv_python(root):
+        return py, why
+    say(" .. this Python would not take them: a .venv is made for the workbench instead")
+    made = make_venv(py, root, run)
+    if made and len(ensure_requirements(made, os.path.join(root or ROOT, "requirements.txt"), run)) < len(left):
+        return made, "the project's .venv (made now, for requirements.txt)"
+    return py, why
+
+
 def say(msg: str = "") -> None:
     print(msg, flush=True)
 
@@ -238,6 +302,7 @@ def start(open_page: bool = True, wait: float = 20.0) -> int:
         return 1
     move_old_state()
     py, why = server_python()
+    py, why = with_requirements(py, why)
     say(f" .. the server runs on {why}: {py}")
     os.makedirs(os.path.dirname(CONSOLE), exist_ok=True)
     log = io.open(CONSOLE, "ab")

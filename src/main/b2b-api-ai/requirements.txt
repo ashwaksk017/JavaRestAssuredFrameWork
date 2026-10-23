@@ -1,0 +1,14 @@
+# What the workbench and the converter need from pip. start-workbench.bat /
+# start-workbench.command (tools/agent/launch.py) install whatever of this
+# is missing every time they start; nothing is reinstalled once present.
+# By hand: python -m pip install -r requirements.txt
+#
+# Each line ends with "# import <module>": the launcher checks that import
+# to know a package is there, without asking pip.
+
+cursor-sdk      # import cursor_sdk   -- every Cursor run (design, automate, fixes)
+PyYAML          # import yaml         -- a YAML API spec (Swagger / OpenAPI)
+json-repair     # import json_repair  -- mends a reply from Cursor that is almost JSON
+openpyxl        # import openpyxl     -- Excel: DataSource workbooks (converter), uploaded test cases
+pypdf           # import pypdf        -- a PDF spec or story attachment
+pyflakes        # import pyflakes     -- the workbench's own code checks
