@@ -1,0 +1,337 @@
+"""Ask Cursor to fix the failures of a run, from the Run tests tab.
+
+    python tools/agent/test_runask.py
+
+What is tested is the decision -- which existing way a run's failures go
+to Cursor, and when neither applies -- the request the person is shown,
+that nothing private is in it, and that the send reuses the two existing
+paths (the job's agent-followup; a fix brief and agent-generate in a new
+job) and refuses rather than writes when it cannot.
+"""
+from __future__ import annotations
+
+import os as _os
+_os.environ["WORKBENCH_MOCK"] = "0"
+
+import importlib.util
+import io
+import json
+import os
+import shutil
+import sys
+import tempfile
+import time
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+ra = _load("runask_under_test", os.path.join(HERE, "runask.py"))
+jobs = _load("jobs_for_runask", os.path.join(HERE, "jobs.py"))
+
+IMPORTED = "com.hi.api.tests.imported.amex.spend.SpendTest"
+JIRA = "com.hi.api.tests.jira.H4bMemberStaysTest"
+
+
+def write(root, rel, text):
+    p = os.path.join(root, rel.replace("/", os.sep))
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with io.open(p, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+
+
+def test(cls, method, status="FAIL", message="", params="", config=False):
+    return {"class": cls, "method": method, "status": status, "message": message, "ms": 10,
+            "config": config, "params": params, "groups": []}
+
+
+def run(*tests, suite="Suites/jira/job-1.xml", at="2026-10-20T10:00:00Z"):
+    return {"kind": "mvnrun", "what": "test", "at": at, "env": "stg", "project": "b2b", "suite": suite,
+            "test": "", "group": "", "ok": False, "verdict": "1 test(s) failed",
+            "passed": sum(t["status"] == "PASS" for t in tests),
+            "failed": sum(t["status"] == "FAIL" for t in tests), "skipped": 0, "tests": list(tests)}
+
+
+class Base(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="runask-")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        # No configuration file here: nothing is private unless a test says so.
+        self.addCleanup(setattr, ra.loop, "private_config", ra.loop.private_config)
+        ra.loop.private_config = lambda root="", strict=False: {}
+
+    def job(self, name, result=None, review=None):
+        d = ra.intake.job_dir(name, self.root)
+        os.makedirs(d, exist_ok=True)
+        if result is not None:
+            write(self.root, f".workbench/{name}/mvnrun-result.json", json.dumps(result))
+        if review is not None:
+            write(self.root, f".workbench/{name}/review.json", json.dumps(review))
+        return d
+
+    def suite(self, job, *classes):
+        write(self.root, f"Suites/jira/{job}.xml", "<suite><test><classes>"
+              + "".join(f'<class name="{c}"/>' for c in classes) + "</classes></test></suite>")
+
+
+class WhichWayApplies(Base):
+    def test_no_run_a_passing_run_and_a_run_without_results_have_nothing_to_fix(self):
+        self.assertEqual(ra.classify(self.root, "job-1", {})["failed"], 0)
+        self.assertIn("no tests have been run", ra.classify(self.root, "job-1", {})["why"])
+        self.assertEqual(ra.classify(self.root, "job-1", {"what": "compile", "ok": False})["failed"], 0)
+        passed = ra.classify(self.root, "job-1", run(test(JIRA, "a", "PASS")))
+        self.assertEqual((passed["kind"], passed["failed"]), ("none", 0))
+        self.assertIn("no failed test", passed["why"])
+        broken = ra.classify(self.root, "job-1", {"what": "test", "verdict": "it did not compile", "at": ""})
+        self.assertEqual(broken["failed"], 0)
+        self.assertIn("it did not compile", broken["why"])
+        skipped = ra.classify(self.root, "job-1", run(test(JIRA, "a", "SKIP", "config key x is not set")))
+        self.assertEqual(skipped["failed"], 0, "a skip is not a failure Cursor is asked to fix")
+
+    def test_the_jobs_own_suite_goes_to_that_jobs_ask_cursor(self):
+        self.job("job-1")
+        self.suite("job-1", JIRA)
+        got = ra.classify(self.root, "runs", run(test(JIRA, "staysTest", message="expected [200] but found [500]")))
+        self.assertEqual((got["kind"], got["job"], got["failed"]), ("job", "job-1", 1))
+        self.assertIn("Suites/jira/job-1.xml", got["why"])
+        self.assertIn("Ask Cursor", got["why"])
+        self.assertEqual(got["blocked"], "")
+
+    def test_the_change_waiting_for_review_makes_a_class_the_jobs_whatever_was_run(self):
+        self.job("job-2", review={"state": "pending-review", "files": {
+            "created": ["src/test/java/com/hi/api/tests/jira/NewTest.java"], "modified": []}})
+        got = ra.classify(self.root, "job-2", run(test("com.hi.api.tests.jira.NewTest", "a"),
+                                                  suite="Suites/jira/group-smoke.xml"))
+        self.assertEqual((got["kind"], got["job"]), ("job", "job-2"))
+        self.assertIn("the change waiting for its review", got["why"])
+        # Once that change is discarded, the class is no longer the job's.
+        self.job("job-2", review={"state": "discarded", "files": {
+            "created": ["src/test/java/com/hi/api/tests/jira/NewTest.java"]}})
+        got = ra.classify(self.root, "job-2", run(test("com.hi.api.tests.jira.NewTest", "a"),
+                                                  suite="Suites/jira/group-smoke.xml"))
+        self.assertEqual(got["kind"], "none")
+
+    def test_another_jobs_tests_are_said_not_sent(self):
+        self.job("job-1")
+        self.suite("job-1", JIRA)
+        got = ra.classify(self.root, "job-1", run(test("com.hi.api.tests.jira.SomeoneElsesTest", "a")))
+        self.assertEqual(got["kind"], "none")
+        self.assertIn("not job job-1's tests", got["why"])
+        self.assertEqual(got["failed"], 1, "the box still shows, with why it cannot send")
+
+    def test_a_changed_that_cannot_take_a_request_is_said_before_anything_is_written(self):
+        self.suite("job-1", JIRA)
+        for review, words in (({"state": "pushed", "branch": "agent/job-1"}, "already approved and pushed"),
+                              ({"state": "pending-review", "mock": True}, "stand-in"),
+                              ({"state": "generating"}, "has not finished"),
+                              ({"state": "push-failed"}, "push failed")):
+            self.job("job-1", review=review)
+            got = ra.classify(self.root, "job-1", run(test(JIRA, "a")))
+            self.assertEqual(got["kind"], "job")
+            self.assertIn(words, got["blocked"])
+
+    def test_one_converted_suite_goes_to_a_fix_brief(self):
+        got = ra.classify(self.root, "runs", run(test(IMPORTED, "getSpend403Test"), suite="Suites/Amex_spend.xml"))
+        self.assertEqual((got["kind"], got["suite"]), ("converted", "amex"))
+        self.assertIn("Fix with Cursor on the Failures tab", got["why"])
+        self.assertIn("new job of its own", got["why"])
+
+    def test_several_suites_or_a_mix_are_refused_with_what_to_do(self):
+        two = ra.classify(self.root, "runs", run(test(IMPORTED, "a"),
+                                                 test("com.hi.api.tests.imported.goal.shop.ShopTest", "b")))
+        self.assertEqual(two["kind"], "none")
+        self.assertIn("2 converted suites (amex, goal)", two["why"])
+        mix = ra.classify(self.root, "runs", run(test(IMPORTED, "a"), test(JIRA, "b")))
+        self.assertEqual(mix["kind"], "none")
+        self.assertIn("together", mix["why"])
+
+    def test_the_names_that_are_read_from_a_run_are_checked(self):
+        self.assertEqual(ra.converted_suite("com.hi.api.tests.imported.Amex-x.A"), "")
+        self.assertEqual(ra.converted_suite("com.hi.api.tests.jira.A"), "")
+        self.assertEqual(ra.suite_job("Suites/jira/group-smoke.xml"), "")
+        self.assertEqual(ra.suite_job("Suites/jira/../../x.xml"), "")
+        self.assertEqual(ra.suite_job("Suites/jira/job-1.xml"), "job-1")
+        self.assertEqual(ra.case_id("{jira_xray_id=ABC-1, name=x}"), "ABC-1")
+        self.assertEqual(ra.case_id("{name=x}"), "")
+
+
+class TheRequest(Base):
+    def test_it_names_each_test_its_case_why_and_the_runs_own_lines(self):
+        self.suite("job-1", JIRA)
+        d = self.job("job-1", result=run(
+            test(JIRA, "staysTest", message="expected [200] but found [500]",
+                 params="{jira_xray_id=ABC-1, name=stay}"),
+            test(JIRA, "setUp", message="no token", config=True)))
+        write(self.root, ".workbench/job-1/mvn-test.log",
+              "[INFO] Running\n[ERROR] Failures:\n[ERROR]   H4bMemberStaysTest.staysTest:42 status 500\n"
+              "[ERROR]   OtherTest.x:1 nope\n")
+        write(self.root, "target/failure-digest.txt",
+              "FAILURE DIGEST -- Demo\n\n" + ra.DIGEST_SECTION + "\n"
+              "H4bMemberStaysTest.staysTest\tABC-1\tAssertionError | status 500 from Create Stay\n")
+        got = ra.preview(self.root, "job-1")
+        text = got["text"]
+        self.assertTrue(text.startswith("Fix the tests of job job-1 that failed"))
+        self.assertIn("- H4bMemberStaysTest.staysTest [case ABC-1]: expected [200] but found [500]", text)
+        self.assertIn("- H4bMemberStaysTest.setUp (setup): no token", text)
+        self.assertIn("H4bMemberStaysTest.staysTest:42 status 500", text)
+        self.assertIn("status 500 from Create Stay", text, "the digest written by this run")
+        self.assertNotIn("OtherTest", text)
+        self.assertIn("do not change the expected value", text)
+        # A digest older than the run is another run's: not quoted.
+        os.utime(os.path.join(self.root, "target", "failure-digest.txt"), (1_600_000_000, 1_600_000_000))
+        self.assertNotIn("Create Stay", ra.preview(self.root, "job-1")["text"])
+        self.assertTrue(os.path.isdir(d))
+
+    def test_nothing_private_is_in_it(self):
+        self.suite("job-1", JIRA)
+        self.job("job-1", result=run(test(
+            JIRA, "a", message="POST https://api.internal-corp.example.test/stays failed for key s3cretvalue42")))
+        ra.loop.private_config = lambda root="", strict=False: {"s3cretvalue42": "a credential"}
+        text = ra.preview(self.root, "job-1")["text"]
+        self.assertNotIn("s3cretvalue42", text)
+        self.assertNotIn("internal-corp", text)
+        self.assertIn("<redacted>", text)
+        self.assertIn("https://host.invalid/stays", text)
+
+    def test_an_unreadable_configuration_file_refuses_rather_than_guesses(self):
+        def broken(root="", strict=False):
+            raise ValueError("program_configuration.json")
+        ra.loop.private_config = broken
+        self.suite("job-1", JIRA)
+        self.job("job-1", result=run(test(JIRA, "a")))
+        with self.assertRaises(ValueError) as got:
+            ra.preview(self.root, "job-1")
+        self.assertIn("nothing is sent to Cursor", str(got.exception))
+
+    def test_a_converted_run_lists_at_most_what_one_fix_job_takes(self):
+        self.job("runs", result=run(*[test(IMPORTED, f"t{n}Test") for n in range(12)], suite="Suites/Amex.xml"))
+        text = ra.preview(self.root, "runs")["text"]
+        self.assertTrue(text.startswith("Make the 12 failing case(s) of the converted suite amex pass"))
+        self.assertIn("- ... and 2 more (one fix job takes at most 10", text)
+        self.assertIn("surefire's message and stack", text)
+
+    def test_the_fix_briefs_failures_are_this_runs_and_this_suites(self):
+        got = ra.fixbrief_failures(run(test(IMPORTED, "a", message="403  here", params="{xray_key=ABC-2}"),
+                                       test("com.hi.api.tests.imported.goal.X", "b"),
+                                       test(IMPORTED, "c", "PASS")), "amex")
+        self.assertEqual(got, [{"test": IMPORTED + ".a", "row": "ABC-2", "signature": "403 here"}])
+
+    def test_a_fix_job_is_always_a_new_one(self):
+        from datetime import datetime
+        when = datetime(2026, 10, 20, 10, 0, 0)
+        first = ra.fix_job_name(self.root, "amex", when)
+        self.assertEqual(first, "fix-amex-20261020-100000")
+        os.makedirs(ra.intake.job_dir(first, self.root))
+        self.assertEqual(ra.fix_job_name(self.root, "amex", when), first + "-2")
+        self.assertLessEqual(len(ra.fix_job_name(self.root, "x" * 80, when)), 64)
+
+
+class Sending(Base):
+    """jobs.run_ask: the two existing paths, and the refusals before them."""
+
+    def setUp(self):
+        super().setUp()
+        for owner in (jobs, jobs.intake):
+            self.addCleanup(setattr, owner, "ROOT", owner.ROOT)
+            owner.ROOT = self.root
+        self.addCleanup(jobs._TOOLS.pop, "runask", None)
+        jobs._TOOLS["runask"] = ra
+        self.started = []
+        self.addCleanup(setattr, jobs, "start", jobs.start)
+        jobs.start = lambda job, runnable, options: (self.started.append((job, runnable, options)),
+                                                     {"started": True})[1]
+        self.addCleanup(setattr, jobs, "running_now", jobs.running_now)
+        jobs.running_now = lambda: []
+
+    def read(self, job, name):
+        with io.open(os.path.join(jobs.job_dir(job), name), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_the_jobs_own_tests_go_to_its_ask_cursor(self):
+        self.suite("job-1", JIRA)
+        self.job("job-1", result=run(test(JIRA, "a", message="boom")))
+        ra.loop.private_config = lambda root="", strict=False: {"s3cretvalue42": "a credential"}
+        r = jobs.run_ask("job-1", "Fix staysTest; the key s3cretvalue42 is right.")
+        self.assertEqual((r["kind"], r["job"], r["runnable"]), ("job", "job-1", "agent-followup"))
+        self.assertEqual(self.started, [("job-1", "agent-followup", {"--job": "job-1"})])
+        asked = self.read("job-1", "agent-followup.txt")
+        self.assertIn("Fix staysTest", asked)
+        self.assertNotIn("s3cretvalue42", asked, "what the person typed is redacted too")
+
+    def test_the_request_goes_to_the_job_whose_suite_was_run(self):
+        self.job("job-7")
+        self.suite("job-7", JIRA)
+        self.job("runs", result=run(test(JIRA, "a"), suite="Suites/jira/job-7.xml"))
+        r = jobs.run_ask("runs", "Fix it.")
+        self.assertEqual(r["job"], "job-7")
+        self.assertEqual(self.read("job-7", "agent-followup.txt"), "Fix it.")
+        self.assertFalse(os.path.exists(os.path.join(jobs.job_dir("runs"), "agent-followup.txt")))
+
+    def test_a_converted_suites_failures_become_a_fix_brief_in_a_new_job(self):
+        write(self.root, "src/test/java/com/hi/api/tests/imported/amex/spend/SpendTest.java", "class SpendTest {}\n")
+        write(self.root, "src/main/java/com/hi/api/support/amex/AmexSteps.java", "class AmexSteps {}\n")
+        self.job("runs", result=run(test(IMPORTED, "getSpend403Test", message="expected [200] but found [403]",
+                                         params="{jira_xray_id=ABC-3}"), suite="Suites/Amex_spend.xml"))
+        r = jobs.run_ask("runs", "Use the employee's token. Bearer abcdefghij0123456789abcdefghij")
+        self.assertEqual((r["kind"], r["suite"], r["runnable"], r["cases"]), ("converted", "amex", "agent-generate", 1))
+        self.assertTrue(r["job"].startswith("fix-amex-"))
+        self.assertEqual(self.started, [(r["job"], "agent-generate",
+                                         {"--job": r["job"], "--scope": "converted", "--suite": "amex"})])
+        brief = self.read(r["job"], "brief.md")
+        self.assertIn("# Fix brief: suite amex -- 1 failing case(s)", brief)
+        self.assertIn("from: .workbench/runs/mvnrun-result.json", brief)
+        self.assertIn("src/test/java/com/hi/api/tests/imported/amex/spend/SpendTest.java", brief)
+        self.assertIn("## What the person asks\n\nUse the employee's token.", brief)
+        self.assertNotIn("abcdefghij0123456789", brief)
+        plan = self.read(r["job"], "plan.md")
+        self.assertTrue(plan.startswith("# Plan: fix the converted Java of suite amex"))
+        self.assertIn("The brief ends with what the person asks", plan)
+        self.assertEqual(json.loads(self.read(r["job"], "project.json")), {"project": "b2b"})
+
+    def test_what_is_refused_writes_nothing(self):
+        self.suite("job-1", JIRA)
+        with self.assertRaises(ValueError) as got:
+            jobs.run_ask("job-1", "Fix it.")
+        self.assertIn("no tests have been run", str(got.exception))
+        self.job("job-1", result=run(test(JIRA, "a", "PASS")))
+        with self.assertRaises(ValueError) as got:
+            jobs.run_ask("job-1", "Fix it.")
+        self.assertIn("no failed test", str(got.exception))
+        self.job("job-1", result=run(test(JIRA, "a")))
+        with self.assertRaises(ValueError) as got:
+            jobs.run_ask("job-1", "   ")
+        self.assertIn("write what Cursor should fix", str(got.exception))
+        jobs.running_now = lambda: [("job-9", "mvn-test")]
+        with self.assertRaises(ValueError) as got:
+            jobs.run_ask("job-1", "Fix it.")
+        self.assertIn("mvn-test is running (job job-9)", str(got.exception))
+        jobs.running_now = lambda: []
+        self.job("job-1", review={"state": "pushed"})
+        with self.assertRaises(ValueError) as got:
+            jobs.run_ask("job-1", "Fix it.")
+        self.assertIn("already approved", str(got.exception))
+        self.assertEqual(self.started, [])
+        self.assertFalse(os.path.exists(os.path.join(jobs.job_dir("job-1"), "agent-followup.txt")))
+
+    def test_a_converted_fix_that_does_not_start_leaves_no_job(self):
+        self.job("runs", result=run(test(IMPORTED, "a"), suite="Suites/Amex.xml"))
+
+        def refuse(job, runnable, options):
+            raise RuntimeError("convert is running for job 'x'")
+        jobs.start = refuse
+        with self.assertRaises(RuntimeError):
+            jobs.run_ask("runs", "Fix it.")
+        left = [n for n in os.listdir(os.path.join(self.root, ".workbench")) if n.startswith("fix-")]
+        self.assertEqual(left, [])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=1)

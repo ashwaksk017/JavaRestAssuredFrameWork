@@ -23,6 +23,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -1674,6 +1675,84 @@ def _workbench_start(job: str, out: str, cur: dict, text: str) -> dict:
                  f"a test for the change.\n")
     return dict(start(job, "agent-generate", {"--job": job, "--scope": "workbench"}),
                 runnable="agent-generate", job=job)
+
+
+# ---- Ask Cursor to fix the failures (the Run tests tab) ----------------------
+def run_ask_preview(job: str) -> dict:
+    """Which way the last run's failures go to Cursor, and the request
+    for the person to edit (runask.py). Reads only."""
+    job_dir(job)                                   # validates the id
+    return _tool("runask").preview(ROOT, job)
+
+
+def run_ask(job: str, text: str, images=None) -> dict:
+    """Send the person's request about the failed tests of the run in
+    `job`, the way that applies to them: the job's own tests to that job's
+    Ask Cursor (agent-followup); a converted suite's to a fix brief in a
+    new job, run as the Migration tab runs one (agent-generate, scope
+    converted). Decided again here, not taken from the page; everything
+    that can refuse is asked before a file is written."""
+    ra = _tool("runask")
+    run_dir = job_dir(job)
+    text = str(text or "").strip()
+    if not text:
+        raise ValueError("write what Cursor should fix (the box was prefilled from the failed tests)")
+    if len(text) > 20000:
+        raise ValueError("that is more than 20,000 characters; keep the request short")
+    result = ra.read_result(run_dir)
+    info = ra.classify(ROOT, job, result)
+    if info["kind"] not in ("job", "converted"):
+        raise ValueError(info["why"])
+    if info.get("blocked"):
+        raise ValueError(info["blocked"])
+    # One command at a time: the run itself, a convert, another Cursor run.
+    now = [(j, r) for j, r in running_now() if r in EXCLUSIVE]
+    if now:
+        raise ValueError(f"{now[0][1]} is running (job {now[0][0]}): wait for it, or Stop it, then ask")
+    text = ra.redact(text, ra.private(ROOT))
+    if info["kind"] == "job":
+        target = info["job"]
+        out = job_dir(target)
+        running = busy(target)
+        if running:
+            raise ValueError(f"{running} is running for job {target}; wait for it, or Stop it")
+        os.makedirs(out, exist_ok=True)
+        paste.save(out, images)
+        try:
+            with io.open(os.path.join(out, "agent-followup.txt"), "w", encoding="utf-8") as fh:
+                fh.write(text)
+            started = start(target, "agent-followup", {"--job": target})
+        except BaseException:
+            paste.clear(out)
+            raise
+        return dict(started, runnable="agent-followup", job=target, kind="job")
+    suite = info["suite"]
+    target = ra.fix_job_name(ROOT, suite)
+    out = job_dir(target)
+    fixbrief = _tool("fixbrief")
+    try:
+        os.makedirs(out)
+        project = str(info["run"].get("project") or "")
+        if project in intake.projectconfig.PROJECT_FILES:
+            # The run used the suite's project; the fix is checked with the same one.
+            intake.set_job_project(out, project)
+        g = fixbrief.build(target, ROOT, suite=suite, scope="converted",
+                           failures=ra.fixbrief_failures(result, suite),
+                           run={"source": f".workbench/{job}/{ra.RESULT}", "at": info["run"]["at"],
+                                "label": f"Run tests: {info['run']['what']} on {info['run']['env']}",
+                                "suite": suite},
+                           request=text)
+        paste.save(out, images)
+        started = start(target, "agent-generate", {"--job": target, "--scope": "converted", "--suite": suite})
+    except fixbrief.Refused as e:
+        shutil.rmtree(out, ignore_errors=True)
+        raise ValueError(str(e)) from None
+    except BaseException:
+        # Nothing started: the new job would only be an empty brief in the list.
+        shutil.rmtree(out, ignore_errors=True)
+        raise
+    return dict(started, runnable="agent-generate", job=target, kind="converted", suite=suite,
+                cases=len(g["cases"]))
 
 
 def converted_suites() -> list:

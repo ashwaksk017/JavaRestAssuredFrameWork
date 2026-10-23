@@ -270,6 +270,20 @@ class WhatIsRefused(Base):
         self.assertEqual(g["run"]["source"], fb.fh.DIGEST)
         self.assertEqual(g["suite"], "amex")
 
+    def test_a_run_the_caller_holds_is_used_instead_of_the_recorded_one(self):
+        # The Run tests tab's own run (runask.py): its failures, not the
+        # latest recorded run's, and the person's words kept whole.
+        g = fb.build("fix1", self.root, suite="amex",
+                     failures=[{"test": TEST, "row": "ABC-1", "signature": "expected [200] but found [500]"}],
+                     run={"source": ".workbench/runs/mvnrun-result.json", "at": "2026-10-20T10:00:00Z"},
+                     request="Use the employee's token.")
+        self.assertEqual(g["run"]["source"], ".workbench/runs/mvnrun-result.json")
+        self.assertEqual([c["signature"] for c in g["cases"]], ["expected [200] but found [500]"])
+        brief = self.read("brief.md")
+        self.assertTrue(brief.rstrip().endswith("## What the person asks\n\nUse the employee's token."))
+        with self.assertRaises(fb.Refused):
+            fb.build("fix2", self.root, suite="amex", failures=[], run={})
+
     def test_the_command_writes_an_error_result_when_refused(self):
         self.assertEqual(fb.main(["--job", "fix1", "--signature", "0123456789"]), 1)
         self.assertEqual(json.loads(self.read("fix-brief.json"))["kind"], "error")

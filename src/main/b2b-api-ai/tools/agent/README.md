@@ -914,6 +914,28 @@ python tools/agent/mvnrun.py test --job runs --suite Suites/jira/group-smoke.xml
 python tools/agent/mvnrun.py test --job runs --test FooTest --env stg --project goal
 ```
 
+#### Ask Cursor to fix the failures
+
+Under a run with failed tests the tab offers **Ask Cursor to fix the
+failures**. It says which of the two existing ways applies, and why
+(`runask.py`):
+
+| the failing tests are | the request goes |
+|---|---|
+| the job's own: its `Suites/jira/<job>.xml` was run, or every failing class is in that suite or in the change waiting for its review | to that job's **Ask Cursor** (`agent-followup.txt`, `loop.py followup`): Cursor changes the waiting change, or starts one |
+| one converted suite's (`com.hi.api.tests.imported.<suite>.`) | to a **fix brief** -- what Fix with Cursor on the Failures tab writes (`fixbrief.py`), from THIS run's failures -- in a new job `fix-<suite>-<time>`, run as the Migration tab runs one (scope `converted`) |
+| anything else (another job's tests, several suites, a mix) | nowhere: the tab says what to do instead |
+
+The box is prefilled with each failed test, its case id, why it failed and
+the run's own lines about it (the failure digest when this run wrote it,
+surefire's `[ERROR]` lines). Edit it before sending; a screenshot can be
+pasted in. Values from the configuration files are hidden before it is
+shown and again before it is sent, and a configuration file that cannot be
+read refuses the send. Nothing is sent while another run, convert or
+Cursor run is going, or when the last run had no failed test. **Open the
+job to review it** takes you to the Commit and push tab of the job the
+request went to.
+
 ### Manual tests
 
 Manual UI test cases from requirements, written as a **delta** against
@@ -1952,7 +1974,8 @@ python tools/agent/loop.py discard --job workbench-<date>-<time>
 
 Every box whose words go to Cursor takes a pasted image as well: Ctrl+V a
 screenshot into Refine with Cursor, the design notes, the manual tests'
-notes, Ask Cursor, the Migration tab's request or Change the workbench. Up
+notes, Ask Cursor, the Migration tab's request, the Run tests tab's Ask Cursor
+to fix the failures, or Change the workbench. Up
 to 4 images of 5 MB each (PNG, JPEG, GIF, WebP -- read from the bytes, not
 the name). They go with that request's first message to Cursor, as images
 it looks at, and nothing keeps them: the run reads them into memory when it

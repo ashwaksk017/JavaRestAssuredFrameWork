@@ -478,6 +478,7 @@ button.linkish:hover, button.linkish:focus { text-decoration: underline; }
 .run-summary .tile small { color: var(--dim); }
 .run-summary .tile.ok b { color: var(--ok); } .run-summary .tile.bad b { color: var(--bad); }
 .run-summary .tile.warn b { color: var(--warn); }
+.run-ask { margin: 1rem 0; padding: .8rem 1rem; border: 1px solid var(--line); border-radius: 10px; }
 #tab-run .row select, #tab-run .row input[type=text] { width: auto; flex: 0 1 22rem; }
 #tab-run .row input[type=text].grow { flex: 1 1 22rem; }
 .status-PASS { color: var(--ok); font-weight: 600; } .status-FAIL { color: var(--bad); font-weight: 600; }

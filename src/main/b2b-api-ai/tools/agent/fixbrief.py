@@ -376,13 +376,24 @@ def _suite_files(root: str, suite: str) -> list:
 
 # ---- the brief ------------------------------------------------------------------------
 
-def gather(root: str, signature: str = "", test: str = "", suite: str = "", scope: str = "converted") -> dict:
+def gather(root: str, signature: str = "", test: str = "", suite: str = "", scope: str = "converted",
+           failures=None, run: dict = None) -> dict:
+    """What the brief says. `failures` ([{test, row, signature}]) and `run`
+    ({source, at, label, suite}): the failures of a run the caller already
+    holds -- the Run tests tab's own run (runask.py) -- instead of the
+    latest recorded one, which may be an older run of another suite."""
     if scope not in SCOPES:
         raise Refused(f"--scope is one of: {', '.join(SCOPES)}")
     if suite and not _SUITE_RX.match(suite):
         raise Refused(f"{suite!r} is not a suite directory name (lower case, digits, underscore)")
     sid = signature.strip().strip("[]").lower()
-    run = failures_of(root, sid)
+    if failures is None:
+        run = failures_of(root, sid)
+    else:
+        run = {"source": str((run or {}).get("source") or "the caller's run"),
+               "at": str((run or {}).get("at") or ""), "label": str((run or {}).get("label") or ""),
+               "suite": str((run or {}).get("suite") or ""),
+               "failures": [f for f in failures if isinstance(f, dict)]}
     chosen = run["failures"]
     if sid:
         chosen = [f for f in chosen if fh.signature_id(f.get("signature", "")) == sid]
@@ -529,8 +540,18 @@ def plan_text(g: dict) -> str:
         "is wrong, say so.", ""])
 
 
+def request_text(request: str, redact) -> str:
+    """The person's own words, as a section of the brief: what they read
+    and edited on the Run tests tab before it was sent."""
+    request = redact(str(request or "").strip())[:MAX_REQUEST]
+    return f"\n## What the person asks\n\n{request}\n" if request else ""
+
+
+MAX_REQUEST = 20_000
+
+
 def build(job: str, root: str = "", signature: str = "", test: str = "", suite: str = "",
-          scope: str = "converted") -> dict:
+          scope: str = "converted", failures=None, run: dict = None, request: str = "") -> dict:
     root = root or ROOT
     job_dir = intake.job_dir(job, root)
     # A fix is its own job. A story, a design, a review or Xray keys left
@@ -551,19 +572,23 @@ def build(job: str, root: str = "", signature: str = "", test: str = "", suite: 
     if held:
         raise Refused(f"this job already holds {', '.join(held)}; a fix is its own job -- name a new "
                       f"job (top right) and run this again")
-    diag.step("Reading the latest recorded run and what it left behind")
-    g = gather(root, signature=signature, test=test, suite=suite, scope=scope)
+    diag.step("Reading the latest recorded run and what it left behind" if failures is None
+              else "Reading what the run left behind for its failing cases")
+    g = gather(root, signature=signature, test=test, suite=suite, scope=scope, failures=failures, run=run)
     os.makedirs(job_dir, exist_ok=True)
     diag.step("Writing the fix brief and the plan")
+    # The person's words are kept whole: the cases are cut to make room.
+    asked = request_text(request, _redactor(root)) if str(request or "").strip() else ""
     text = brief_text(g, job)
-    while len(text) > BRIEF_CAP and len(g["cases"]) > 1:
+    while len(text) + len(asked) > BRIEF_CAP and len(g["cases"]) > 1:
         gone = g["cases"].pop()
         g["cut"].append(gone["test"] + (f" [row {gone['row']}]" if gone["row"] and gone["row"] != "-" else ""))
         text = brief_text(g, job)
     with io.open(os.path.join(job_dir, "brief.md"), "w", encoding="utf-8") as fh_:
-        fh_.write(text)
+        fh_.write(text + asked)
     with io.open(os.path.join(job_dir, "plan.md"), "w", encoding="utf-8") as fh_:
-        fh_.write(plan_text(g))
+        fh_.write(plan_text(g) + (("\nThe brief ends with what the person asks: do that too, within "
+                                    "the same files.\n") if asked else ""))
     out = dict(g, ok=True, job=job)
     with io.open(os.path.join(job_dir, RESULT), "w", encoding="utf-8") as fh_:
         json.dump(out, fh_, indent=1, ensure_ascii=False)
