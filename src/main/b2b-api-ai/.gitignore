@@ -29,6 +29,9 @@ test-output/
 Thumbs.db
 .DS_Store
 
+# The workbench's Python virtualenv (tools/agent/launch.py makes it): one a machine
+.venv/
+
 # Secrets (never commit)
 *.env
 .env

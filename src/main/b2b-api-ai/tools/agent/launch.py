@@ -10,6 +10,24 @@ project folder do nothing but call this, so both behave the same.
 
 The port is 8787, or WORKBENCH_PORT.
 
+WHICH PYTHON THE SERVER RUNS ON
+-------------------------------
+The server needs cursor-sdk. Seen live on a Mac: the launcher started it
+on Homebrew's Python, which refuses `pip install` (PEP 668, "externally
+managed"), so cursor-sdk could not be installed and Cursor was "NOT READY"
+-- the key was fine. So the server's Python is chosen, in this order:
+
+* the project's `.venv`, when it runs (cursor-sdk is installed into it
+  when missing);
+* else this Python, when it already has cursor-sdk (as before);
+* else a `.venv` is made (`--system-site-packages`: what this Python has
+  installed stays visible, the converter's packages too), cursor-sdk is
+  installed into it, and the server runs on it.
+
+A `.venv` that no longer runs (Homebrew upgraded the Python it was made
+from) is made again. `.venv/` is gitignored: a pull neither brings nor
+removes it.
+
 WHAT "RUNNING" MEANS, AND WHAT STOP MAY END
 -------------------------------------------
 A server left running from days ago once kept answering beside a fresh
@@ -35,6 +53,7 @@ import argparse
 import io
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -62,6 +81,84 @@ def move_old_state() -> None:
     except Exception:                                # noqa: BLE001
         pass
 HOST = "127.0.0.1"
+REQUIREMENTS = os.path.join(ROOT, "requirements-cursor.txt")
+
+
+# ---- the server's Python ----------------------------------------------------------
+
+def venv_dir(root: str = "") -> str:
+    return os.path.join(root or ROOT, ".venv")
+
+
+def venv_python(root: str = "") -> str:
+    v = venv_dir(root)
+    return os.path.join(v, "Scripts", "python.exe") if os.name == "nt" else os.path.join(v, "bin", "python")
+
+
+def _ok(argv: list, run=None, timeout: float = 120) -> bool:
+    """Did the command succeed? `run(argv) -> returncode` replaces it in the tests."""
+    if run is not None:
+        return run(argv) == 0
+    try:
+        return subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=timeout).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def runs(py: str, run=None) -> bool:
+    return bool(py) and os.path.isfile(py) and _ok([py, "-c", "import sys"], run, 60)
+
+
+def has_sdk(py: str, run=None) -> bool:
+    return _ok([py, "-c", "import cursor_sdk"], run, 60)
+
+
+def install_sdk(py: str, run=None) -> bool:
+    req = ["-r", REQUIREMENTS] if os.path.isfile(REQUIREMENTS) else ["cursor-sdk"]
+    return _ok([py, "-m", "pip", "install", "--disable-pip-version-check", "--no-input", *req], run, 900)
+
+
+def make_venv(base: str = "", root: str = "", run=None) -> str:
+    """Make the project's .venv from `base` (system site packages kept
+    visible) and install cursor-sdk into it. Its python, or "" when it
+    could not be made."""
+    v = venv_dir(root)
+    if os.path.isdir(v):
+        shutil.rmtree(v, ignore_errors=True)
+    if not _ok([base or sys.executable, "-m", "venv", "--system-site-packages", v], run, 600):
+        return ""
+    py = venv_python(root)
+    if not runs(py, run):
+        return ""
+    install_sdk(py, run)
+    return py
+
+
+def server_python(root: str = "", base: str = "", run=None) -> tuple:
+    """(the Python the server runs on, why that one)."""
+    base = base or sys.executable
+    py = venv_python(root)
+    if os.path.isdir(venv_dir(root)):
+        if runs(py, run):
+            if not has_sdk(py, run):
+                say(" .. cursor-sdk is not in the project's .venv: installing it there")
+                install_sdk(py, run)
+            return py, "the project's .venv"
+        say(" .. the project's .venv no longer runs (the Python it was made from was upgraded "
+            "or removed): it is made again")
+    elif has_sdk(base, run):
+        return base, "this Python (it has cursor-sdk)"
+    else:
+        say(" .. cursor-sdk is not in this Python, and this Python may refuse to install it "
+            "(Homebrew's does): a .venv is made for the workbench and cursor-sdk is installed "
+            "into it -- once, a minute or two")
+    made = make_venv(base, root, run)
+    if made:
+        return made, "the project's .venv (made now)"
+    say(" .. the .venv could not be made: the server runs on this Python, and the page says "
+        "what is missing")
+    return base, "this Python (no .venv could be made)"
 
 
 def say(msg: str = "") -> None:
@@ -140,6 +237,8 @@ def start(open_page: bool = True, wait: float = 20.0) -> int:
             f"WORKBENCH_PORT to another port.")
         return 1
     move_old_state()
+    py, why = server_python()
+    say(f" .. the server runs on {why}: {py}")
     os.makedirs(os.path.dirname(CONSOLE), exist_ok=True)
     log = io.open(CONSOLE, "ab")
     log.write(f"\n===== started {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n".encode())
@@ -160,7 +259,7 @@ def start(open_page: bool = True, wait: float = 20.0) -> int:
     try:
         # -u: what it says reaches the console log as it says it, not when
         # a buffer fills -- which for a server that fails at once is never.
-        proc = subprocess.Popen([sys.executable, "-B", "-u", SERVER, "--port", str(p)], **kwargs)
+        proc = subprocess.Popen([py, "-B", "-u", SERVER, "--port", str(p)], **kwargs)
     except OSError as e:
         say(f"The workbench could not be started ({type(e).__name__}: {e}).")
         return 1

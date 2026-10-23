@@ -517,12 +517,19 @@ def write_review(job_dir: str, review: dict) -> dict:
 
 # ---- cursor-sdk ------------------------------------------------------
 
-def ensure_sdk(root: str = "", pip=None) -> str:
+def ensure_sdk(root: str = "", pip=None, venv=None) -> str:
     """Import cursor-sdk, installing it once if it is missing.
 
-    Returns "present" or "installed". Raises RuntimeError with a message a
-    person can act on -- never a pip traceback -- when it cannot be
-    installed (no network, no permission, a locked-down index).
+    Returns "present", "installed" or "installed in .venv". Raises
+    RuntimeError with a message a person can act on -- never a pip
+    traceback -- when it cannot be installed (no network, no permission, a
+    locked-down index).
+
+    A Python that refuses pip (PEP 668, "externally managed": Homebrew's,
+    seen live on a Mac): cursor-sdk goes into the project's .venv instead
+    (launch.py makes it, as start-workbench does), and that .venv's packages
+    are put on this process's path -- when it is the same Python version.
+    `venv(root) -> site-packages dir or ""` replaces that in the tests.
     """
     try:
         importlib.import_module("cursor_sdk")
@@ -537,6 +544,24 @@ def ensure_sdk(root: str = "", pip=None) -> str:
     run = pip or (lambda a: subprocess.run(
         a, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, **NO_WINDOW))
     done = run(argv)
+    if done.returncode != 0 and "externally-managed-environment" in (done.stdout or ""):
+        say(" .. this Python refuses pip (it is externally managed, PEP 668): cursor-sdk goes "
+            "into the project's .venv instead")
+        site = (venv or _sdk_into_venv)(root or ROOT)
+        if site:
+            if site not in sys.path:
+                sys.path.insert(0, site)
+            importlib.invalidate_caches()
+            try:
+                importlib.import_module("cursor_sdk")
+                return "installed in .venv"
+            except ImportError:
+                pass
+        raise RuntimeError(
+            "this Python refuses pip (externally managed) and cursor-sdk could not be put in the "
+            "project's .venv for it. Start the workbench with start-workbench (it runs the server "
+            "on the .venv), or make one by hand: python3 -m venv --system-site-packages .venv && "
+            ".venv/bin/python -m pip install cursor-sdk")
     if done.returncode != 0:
         tail = "\n".join((done.stdout or "").strip().splitlines()[-6:])
         raise RuntimeError(
@@ -552,6 +577,30 @@ def ensure_sdk(root: str = "", pip=None) -> str:
             "pip reported success but cursor_sdk still does not import "
             f"from {sys.executable}: {e}") from e
     return "installed"
+
+
+def _sdk_into_venv(root: str) -> str:
+    """cursor-sdk in the project's .venv (made or mended by launch.py);
+    that .venv's site-packages when it is this Python's version, else ""."""
+    try:
+        launch = _load("loop_launch", os.path.join(HERE, "launch.py"))
+        py = launch.venv_python(root)
+        if not launch.runs(py) and not launch.make_venv(sys.executable, root):
+            return ""
+        if not launch.has_sdk(py):
+            launch.install_sdk(py)
+        got = subprocess.run([py, "-c", "import sys, sysconfig; print('%d.%d' % sys.version_info[:2]); "
+                                        "print(sysconfig.get_paths()['purelib'])"],
+                             capture_output=True, text=True, timeout=60, **NO_WINDOW)
+        lines = got.stdout.strip().splitlines()
+        if got.returncode != 0 or len(lines) < 2:
+            return ""
+        if lines[0] != "%d.%d" % sys.version_info[:2]:
+            return ""                                 # another version: its packages are not this one's
+        return lines[1]
+    except Exception:                                 # noqa: BLE001
+        diag.trace()
+        return ""
 
 
 def cursor_assist():

@@ -4399,6 +4399,59 @@ class SdkBootstrap(unittest.TestCase):
         self.assertIn("Could not find a version", str(got.exception))
 
 
+class SdkOnAnExternallyManagedPython(unittest.TestCase):
+    """Seen live on a Mac: Homebrew's Python refuses pip (PEP 668). The SDK
+    goes into the project's .venv, and that .venv's packages are put on the
+    running server's path."""
+
+    def setUp(self):
+        # This machine may really have cursor-sdk: it is hidden, so that only
+        # the test's own .venv folder can give it -- as on the Mac.
+        import importlib.abc
+        import importlib.machinery
+        self.site = tempfile.mkdtemp(prefix="venv-site-")
+        self.addCleanup(shutil.rmtree, self.site, True)
+        site = self.site
+
+        class OnlyTheVenv(importlib.abc.MetaPathFinder):
+            def find_spec(self, name, path, target=None):
+                if name != "cursor_sdk":
+                    return None
+                spec = importlib.machinery.PathFinder.find_spec(name, [site])
+                if spec is None:
+                    raise ModuleNotFoundError("No module named 'cursor_sdk'")
+                return spec
+        hook = OnlyTheVenv()
+        sys.meta_path.insert(0, hook)
+        self.addCleanup(sys.meta_path.remove, hook)
+        real = sys.modules.pop("cursor_sdk", None)
+        self.addCleanup(lambda: sys.modules.__setitem__("cursor_sdk", real) if real is not None
+                        else sys.modules.pop("cursor_sdk", None))
+        self.addCleanup(lambda: sys.path.remove(site) if site in sys.path else None)
+
+    def test_the_refusal_puts_the_sdk_in_the_venv_and_on_the_path(self):
+        site = self.site
+
+        def venv(root):
+            with io.open(os.path.join(site, "cursor_sdk.py"), "w", encoding="utf-8") as fh:
+                fh.write("VERSION = 'test'\n")
+            return site
+        refuse = lambda argv: types.SimpleNamespace(
+            returncode=1, stdout="error: externally-managed-environment\nThis environment is externally managed")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(loop.ensure_sdk(pip=refuse, venv=venv), "installed in .venv")
+        self.assertIn("refuses pip", out.getvalue())
+
+    def test_a_venv_that_cannot_help_says_how_to_start_it(self):
+        refuse =lambda argv: types.SimpleNamespace(returncode=1, stdout="externally-managed-environment")
+        with redirect_stdout(io.StringIO()):
+            with self.assertRaises(RuntimeError) as got:
+                loop.ensure_sdk(pip=refuse, venv=lambda root: "")
+        self.assertIn("start-workbench", str(got.exception))
+        self.assertIn("--system-site-packages .venv", str(got.exception))
+
+
 class WhereThingsAre(Repo):
     """Cursor is told where the project keeps its tests, suites and data
     sheets, and the log shows a person what it was told."""

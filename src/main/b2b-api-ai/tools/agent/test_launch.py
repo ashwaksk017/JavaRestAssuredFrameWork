@@ -57,6 +57,79 @@ class Base(unittest.TestCase):
                 os.environ[k] = v
 
 
+class TheServersPython(unittest.TestCase):
+    """Seen live on a Mac: the server ran on Homebrew's Python, which
+    refuses pip (PEP 668), and Cursor was NOT READY. The project's .venv
+    is used, made, or made again."""
+
+    def setUp(self):
+        import tempfile
+        import shutil
+        self.root = tempfile.mkdtemp(prefix="launch-venv-")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.calls = []
+        self.sdk_in = set()        # the pythons that have cursor-sdk
+        self.broken = set()        # the pythons that no longer run
+
+    def run_(self, argv):
+        self.calls.append(argv)
+        py = argv[0]
+        if argv[1:3] == ["-m", "venv"]:
+            exe = launch.venv_python(self.root)
+            os.makedirs(os.path.dirname(exe), exist_ok=True)
+            io.open(exe, "w").close()
+            self.broken.discard(exe)
+            return 0
+        if argv[1:] == ["-c", "import sys"]:
+            return 1 if py in self.broken else 0
+        if argv[1:] == ["-c", "import cursor_sdk"]:
+            return 0 if py in self.sdk_in else 1
+        if argv[1:4] == ["-m", "pip", "install"]:
+            self.sdk_in.add(py)
+            return 0
+        return 1
+
+    def choose(self, base="/usr/bin/python3"):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            got = launch.server_python(self.root, base, self.run_)
+        return got, out.getvalue()
+
+    def test_a_python_with_the_sdk_and_no_venv_is_used_as_before(self):
+        self.sdk_in.add("/usr/bin/python3")
+        (py, why), _said = self.choose()
+        self.assertEqual(py, "/usr/bin/python3")
+        self.assertFalse(os.path.isdir(launch.venv_dir(self.root)), "no .venv made for nothing")
+
+    def test_a_python_that_cannot_have_the_sdk_gets_a_venv_that_sees_its_packages(self):
+        (py, why), said = self.choose("/opt/homebrew/bin/python3.15")
+        self.assertEqual(py, launch.venv_python(self.root))
+        made = next(c for c in self.calls if c[1:3] == ["-m", "venv"])
+        self.assertEqual(made[0], "/opt/homebrew/bin/python3.15")
+        self.assertIn("--system-site-packages", made, "the converter's packages stay visible")
+        self.assertIn(py, self.sdk_in, "cursor-sdk is installed into it")
+        self.assertIn("a .venv is made", said)
+
+    def test_a_working_venv_is_used_and_mended_when_it_lacks_the_sdk(self):
+        exe = launch.venv_python(self.root)
+        os.makedirs(os.path.dirname(exe))
+        io.open(exe, "w").close()
+        self.sdk_in.add("/usr/bin/python3")
+        (py, why), _ = self.choose()
+        self.assertEqual(py, exe, "the project's .venv first")
+        self.assertIn(exe, self.sdk_in)
+
+    def test_a_venv_that_no_longer_runs_is_made_again(self):
+        exe = launch.venv_python(self.root)
+        os.makedirs(os.path.dirname(exe))
+        io.open(exe, "w").close()
+        self.broken.add(exe)
+        (py, why), said = self.choose()
+        self.assertEqual(py, exe)
+        self.assertIn("no longer runs", said)
+        self.assertTrue(any(c[1:3] == ["-m", "venv"] for c in self.calls))
+
+
 class StartAndStop(Base):
     def test_it_starts_once_says_where_and_stops(self):
         self.assertEqual(run("status")[0], 1)
