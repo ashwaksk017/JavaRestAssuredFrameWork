@@ -1233,6 +1233,7 @@ def job_dir(job: str) -> str:
 # Logs that are not a runnable's own output but may be read like one.
 EXTRA_LOGS = {"cursor",       # cursor.log: the conversation with Cursor
               "design-cursor",  # design-cursor.log: the design step's
+              "cursor-answers",  # cursor-answers.log: Cursor answering the design's open questions
               "migration-cursor",  # migration-cursor.log: the Migration tab's runs
               "workbench-cursor",  # workbench-cursor.log: a change to the workbench itself
               "csv-xray"}  # csv-xray.log: jira_xray_id / jira_issue auto-patch audit

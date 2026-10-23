@@ -377,6 +377,65 @@ class ThePrompt(unittest.TestCase):
         self.assertEqual(hits, 2)
 
 
+class APlanInsteadOfTheAnswer(unittest.TestCase):
+    """Seen live once Design read the project: plan mode made a plan of a
+    summary ("post the full JSON after confirm"), went quiet and was stopped
+    -- the follow-up was never asked. Now the same conversation is."""
+
+    def test_no_json_back_asks_once_more_in_the_same_conversation(self):
+        import types
+        calls = []
+        plan_summary = "# Design\\n\\n28 cases. Next step after confirm: post the full JSON object."
+        answer = json.dumps({"test_cases": [{"id": "TC-001", "title": "t", "endpoint": "GET /x",
+                                              "steps": [{"action": "a", "expected": "200"}]}]})
+
+        def run(prompt, ca, cfg, **kw):
+            calls.append({"prompt": prompt, "resume_id": kw.get("resume_id", ""), "cwd": cfg.cwd})
+            if kw.get("info") is not None:
+                kw["info"]["agent_id"] = "conv-1"
+            return {"result": plan_summary if len(calls) == 1 else answer, "model": "m"}
+        real_run, real_cfg = design.loop.cursor_call.run, design.loop.cursor_config
+        self.addCleanup(setattr, design.loop.cursor_call, "run", real_run)
+        self.addCleanup(setattr, design.loop, "cursor_config", real_cfg)
+        design.loop.cursor_call.run = run
+        design.loop.cursor_config = lambda root: (types.SimpleNamespace(redact_for_log=lambda s, k: s),
+                                                  types.SimpleNamespace(model="m", api_key="k", cwd=""))
+        root = tempfile.mkdtemp(prefix="designcall-")
+        self.addCleanup(shutil.rmtree, root, True)
+        followed = []
+
+        def followup(text):
+            followed.append(text)
+            return design.JSON_ONLY if "test_cases" not in text else None
+        out = design.call_cursor("design these", root, lambda line: None, followup)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("the plan's whole text must be that JSON object", calls[0]["prompt"])
+        self.assertEqual(calls[0]["cwd"], root, "in the project: it reads how endpoints are tested")
+        self.assertEqual(calls[1]["resume_id"], "conv-1", "the same conversation: all it read is kept")
+        self.assertIn("Reply again with ONLY the JSON", calls[1]["prompt"])
+        self.assertIn('"test_cases"', out["result"])
+
+    def test_a_json_answer_is_not_asked_again(self):
+        import types
+        calls = []
+        answer = json.dumps({"test_cases": [{"id": "TC-001", "title": "t", "endpoint": "GET /x",
+                                              "steps": [{"action": "a", "expected": "200"}]}]})
+
+        def run(prompt, ca, cfg, **kw):
+            calls.append(prompt)
+            return {"result": answer, "model": "m"}
+        real_run, real_cfg = design.loop.cursor_call.run, design.loop.cursor_config
+        self.addCleanup(setattr, design.loop.cursor_call, "run", real_run)
+        self.addCleanup(setattr, design.loop, "cursor_config", real_cfg)
+        design.loop.cursor_call.run = run
+        design.loop.cursor_config = lambda root: (types.SimpleNamespace(redact_for_log=lambda s, k: s),
+                                                  types.SimpleNamespace(model="m", api_key="k", cwd=""))
+        root = tempfile.mkdtemp(prefix="designcall-")
+        self.addCleanup(shutil.rmtree, root, True)
+        design.call_cursor("design these", root, lambda line: None, lambda text: None)
+        self.assertEqual(len(calls), 1)
+
+
 class WhatComesBack(unittest.TestCase):
     def test_a_case_without_an_expected_result_is_dropped_and_said(self):
         cases, warnings = design.normalise(

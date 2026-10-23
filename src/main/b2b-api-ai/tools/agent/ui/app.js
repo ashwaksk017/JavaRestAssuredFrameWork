@@ -1003,6 +1003,10 @@ function answersPanel(j) {
           const r = await artifactJson(j, "answer-suggestions.json");
           const now = await api(`/api/answers?job=${encodeURIComponent(j)}`).catch(() => null);
           if (now) draw(Object.assign(now, { suggestions: (r && r.answers) || [] }));
+          // Its conversation with Cursor (cursor-answers.log): what it read, what it said.
+          const conv = await api(`/api/log?job=${encodeURIComponent(j)}&runnable=cursor-answers&offset=0`).catch(() => null);
+          if (conv && conv.text) box.append(el("details", {}, el("summary", { text: "Cursor log (cursor-answers.log)" }),
+                                                el("pre", { class: "log cursor", text: conv.text.slice(-60000) })));
         }, j);
       } catch (e) { ask.disabled = false; setState(st, "bad", e.message); }
     };

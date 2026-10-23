@@ -1387,13 +1387,37 @@ def call_cursor(prompt: str, root: str, on_event, followup, mode: str = "plan",
         try:
             # Seen live (composer-2.5, plan mode): the answer was put in a
             # plan (createPlan) and the reply held one sentence.
+            # Seen live again once it read the project first: plan mode made
+            # a plan of a SUMMARY ("post the full JSON after confirm") and
+            # went quiet -- the run was stopped, so the follow-up was never
+            # asked. A plan, when there is one, must BE the JSON.
             prompt = (prompt.rstrip() + "\n\nWrite your answer -- the JSON object -- in your reply "
-                      "message itself. Do not create a plan, a file or a document for it.")
+                      "message itself. Do not create a plan, a file or a document for it. If you "
+                      "do call createPlan, the plan's whole text must be that JSON object and "
+                      "nothing else: not a summary of it, not a question whether to write it. "
+                      "Nobody confirms anything here: write the JSON object now.")
+            info = {}
             out = loop.cursor_call.run(prompt, ca, cfg,
                                        on_event=lambda line: on_event(hide(line)),
                                        followup=followup, mode=mode,
                                        deadline_seconds=deadline, quiet_seconds=DESIGN_QUIET,
-                                       answer_complete=complete)
+                                       answer_complete=complete, info=info)
+            # No JSON yet -- the run ended quiet, or after a plan: the same
+            # conversation is asked once more (it keeps all it read).
+            again = followup(str(out.get("result") or "")) if followup and not complete(
+                str(out.get("result") or "")) else None
+            if again and info.get("agent_id"):
+                on_event("the reply was not the JSON object: asked once more in the same conversation")
+                try:
+                    second = loop.cursor_call.run(
+                        again + "\n\nDo not create a plan: write the JSON object in this reply.", ca, cfg,
+                        on_event=lambda line: on_event(hide(line)), mode=mode,
+                        deadline_seconds=deadline, quiet_seconds=DESIGN_QUIET, answer_complete=complete,
+                        resume_id=info["agent_id"], fresh_prompt=prompt, info={})
+                    if str(second.get("result") or "").strip():
+                        out = second
+                except loop.cursor_call.CursorCallError as e:
+                    on_event(f"the second ask failed ({hide(e)}); the first reply is kept")
         except loop.cursor_call.CursorCallError as e:
             raise loop.CursorFailed(hide(e) + ("\n" + hide(e.details) if e.details else ""),
                                     e.kind, e.cancelled) from e

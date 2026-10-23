@@ -35,7 +35,6 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 SUGGESTIONS = "answer-suggestions.json"
 DEADLINE_SECONDS = 900
-QUIET_SECONDS = 120
 MAX_FIELD = 3000
 
 PROMPT = """You answer the open questions a test design left for this project.
@@ -230,15 +229,24 @@ def answer(job: str, root: str = "", agent=None) -> int:
         clog.write("=" * 72)
         clog.write(f"OPEN QUESTIONS  job={job}  model={cfg.model}  (plan mode: reads, writes nothing)")
         clog.block("prompt", prompt, cap=8000)
+        # The design's call: plan mode in the project, the design model, a
+        # plan that must BE the JSON, and one more ask in the same
+        # conversation when no JSON came (design.call_cursor).
+        dz = _load("answerq_design", os.path.join(HERE, "design.py"))
+
+        def followup(text):
+            try:
+                read_reply(text)
+                return None
+            except ValueError:
+                return ('Your reply could not be read. Reply again with ONLY the JSON object '
+                        '{"answers": [...]} the instructions describe, in this reply itself.')
         try:
-            out = loop.cursor_call.run(prompt, ca, cfg,
-                                       on_event=lambda line: clog.write("  cursor: " + hide(line)),
-                                       mode="plan", deadline_seconds=DEADLINE_SECONDS,
-                                       quiet_seconds=QUIET_SECONDS)
-        except loop.cursor_call.CursorCallError as e:
-            msg = hide(e) + ("\n" + hide(e.details) if e.details else "")
-            clog.write(f"FAILED after {time.time() - started:.1f}s: {msg}")
-            say(f"FAIL Cursor could not be asked: {msg}")
+            out = dz.call_cursor(prompt, root, lambda line: clog.write("  cursor: " + line), followup,
+                                 "plan", DEADLINE_SECONDS, complete=dz.answer_with("answers"))
+        except dz.loop.CursorFailed as e:
+            clog.write(f"FAILED after {time.time() - started:.1f}s: {e}")
+            say(f"FAIL Cursor could not be asked: {e}")
             return 1
         reply = hide(out.get("result") or "")
     reply = _redact(reply, private)
