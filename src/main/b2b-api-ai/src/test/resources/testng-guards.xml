@@ -18,6 +18,7 @@
             <class name="com.hi.api.tests.framework.XrayServerDcTest"/>
             <class name="com.hi.api.tests.framework.ConnectionReportingTest"/>
             <class name="com.hi.api.tests.framework.RunLogCompletenessGuardTest"/>
+            <class name="com.hi.api.tests.framework.LogBodiesTest"/>
             <class name="com.hi.api.tests.framework.PayloadOriginTest"/>
             <class name="com.hi.api.tests.framework.StoryTestBaseTest"/>
             <class name="com.hi.api.auth.AuthLoggingTest"/>

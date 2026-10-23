@@ -534,8 +534,8 @@ public final class RestStep {
             }
         }
         if (!body.isEmpty()) {
-            LOG.info(" .. request body ({} chars): {}", body.length(),
-                    capForLog(body));
+            LOG.info(" .. request body ({} chars):{}", body.length(),
+                    LogBodies.pretty(body, BODY_LOG_LIMIT));
         }
 
         final String bodyForCall = body;
@@ -1363,11 +1363,11 @@ public final class RestStep {
     private void logTruncatedBody(Response res) {
         String body = RestUtilities.getResponseAsString(res);
         if (body == null) body = "<null>";
-        body = capForLog(body);
+        body = LogBodies.pretty(body, BODY_LOG_LIMIT);
         if (res.getStatusCode() >= 400) {
-            LOG.warn(" .. response body (HTTP {}): {}", res.getStatusCode(), body);
+            LOG.warn(" .. response body (HTTP {}):{}", res.getStatusCode(), body);
         } else {
-            LOG.info(" .. response body (HTTP {}): {}", res.getStatusCode(), body);
+            LOG.info(" .. response body (HTTP {}):{}", res.getStatusCode(), body);
         }
     }
 }

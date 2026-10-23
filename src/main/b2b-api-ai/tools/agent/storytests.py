@@ -161,6 +161,92 @@ def _template_fixed_value_issues(root: str, norm: str, text: str) -> list:
     return issues
 
 
+_NUMBER_PLACEHOLDER_RX = re.compile(r"[@%][A-Za-z0-9_.]+[@%]")
+_CONVERTED_SHAPES: dict = {}
+
+
+def _json_fields(node, pre: str = "") -> set:
+    """Every field path of a JSON body: a.b, list items as a[].b."""
+    out = set()
+    if isinstance(node, dict):
+        for k, v in node.items():
+            p = f"{pre}.{k}" if pre else k
+            out.add(p)
+            out |= _json_fields(v, p)
+    elif isinstance(node, list):
+        for v in node:
+            out |= _json_fields(v, pre + "[]")
+    return out
+
+
+def _body_fields(text: str):
+    """A template's field paths, or None when it is not a JSON object (an
+    unquoted @n@ / %n% number placeholder is read as a number)."""
+    import json as _json
+    try:
+        j = _json.loads(_NUMBER_PLACEHOLDER_RX.sub("0", text))
+    except ValueError:
+        return None
+    return _json_fields(j) - {"_comment"} if isinstance(j, dict) else None
+
+
+def _converted_shapes(root: str) -> list:
+    """(path, fields) of every converted request body
+    (src/main/resources/templates/**), read once a run."""
+    base = os.path.join(root, "src", "main", "resources", "templates")
+    if root not in _CONVERTED_SHAPES:
+        shapes = []
+        for d, _dirs, files in os.walk(base):
+            for f in files:
+                if f.endswith(".json"):
+                    p = os.path.join(d, f)
+                    fields = _body_fields(_read(p, 400_000))
+                    if fields:
+                        shapes.append((os.path.relpath(p, base).replace(os.sep, "/"), fields))
+        _CONVERTED_SHAPES[root] = shapes
+    return _CONVERTED_SHAPES[root]
+
+
+def _template_drift_issues(root: str, norm: str, text: str) -> list:
+    """A hand-written body that leaves out a field the converted suites'
+    bodies of the same call always send. Seen live: the story enrolment had
+    a business address without "company", and every enrolment was answered
+    400 (notification 503, fields [company]) -- all 127 converted enrolments
+    send it. "The same call": converted bodies sharing at least half the
+    template's fields (Jaccard >= 0.5), three or more of them; "always": 90%
+    of them. No converted suites here: nothing to compare, nothing said."""
+    issues = []
+    shapes = _converted_shapes(root)
+    if not shapes:
+        return issues
+    for tpl in sorted(set(_MANUAL_BODY_TEMPLATE_RX.findall(text or ""))):
+        mine = _body_fields(_read(os.path.join(root, "src", "test", "resources", tpl.replace("/", os.sep)), 200_000))
+        if not mine:
+            continue
+        alike = [(p, f) for p, f in shapes if len(mine & f) / max(1, len(mine | f)) >= 0.5]
+        if len(alike) < 3:
+            continue
+        counts: dict = {}
+        for _p, f in alike:
+            for k in f:
+                counts[k] = counts.get(k, 0) + 1
+        missing = sorted(k for k, n in counts.items() if k not in mine and n >= 0.9 * len(alike))
+        # a missing object's own children say nothing new
+        missing = [k for k in missing if not any(k.startswith(m + ".") or k.startswith(m + "[]")
+                                                 for m in missing if m != k)]
+        if missing:
+            example = next(p for p, f in alike if all(m in f for m in missing[:1]))
+            issues.append(f"{tpl}: leaves out {', '.join(missing[:8])}"
+                          + (f" (and {len(missing) - 8} more)" if len(missing) > 8 else "")
+                          + f" -- {len(alike)} converted bodies of the same call send "
+                          + ("it" if len(missing) == 1 else "them")
+                          + f" (e.g. src/main/resources/templates/{example}); the server may refuse the body "
+                          "without them. Add them: a harmless value as the converted body has it, anything "
+                          "per environment or company-specific as \"#name#\" (read from the data sheet, the "
+                          "configuration, else what the converted bodies send)")
+    return issues
+
+
 def _csv_cell_count_issues(rel: str, sheet: str) -> list:
     """Every row has as many cells as the header (quotes respected). Seen
     live: a row of 14 cells under a header of 13 -- the data provider
@@ -443,6 +529,7 @@ def jira_parity_issues(root: str, rel_paths: list, project: str = "") -> list:
         issues.extend(_goal_issues(norm, code))
         issues.extend(_project_base_issues(norm, code, project))
         issues.extend(_template_fixed_value_issues(root, norm, text))
+        issues.extend(_template_drift_issues(root, norm, text))
         issues.extend(_new_shared_helper_issues(root, norm, text))
         cls = os.path.basename(norm)[:-5]
         issues.extend(_jira_shape_issues(root, norm, text, cls))

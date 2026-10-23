@@ -44,6 +44,18 @@ public class StoryTestBaseTest {
         static void retryFresh(Map<String, String> row) {
             forgetGenerated(row);
         }
+
+        static String letters(String s) {
+            return lettersOnly(s);
+        }
+    }
+
+    @Test(groups = {"unit"})
+    public void aMadeUpCompanyIsLettersOnly() {
+        Assert.assertEquals(Probe.letters("Smith, Jones & Wolf-Ltd."), "Smith Jones WolfLtd");
+        Assert.assertEquals(Probe.letters("&&&"), "Acme Corp");
+        Assert.assertEquals(Probe.letters(null), "Acme Corp");
+        Assert.assertTrue(Probe.letters("A".repeat(60)).length() <= 40);
     }
 
     @Test(groups = {"unit"})

@@ -84,6 +84,23 @@ public final class ManualBody {
             if (cfg != null) {
                 data.put(name, cfg[0]);
                 origins.put(name, "program_configuration.json (" + cfg[1] + ")");
+                continue;
+            }
+            // Last: what the converted suites' bodies send for the same JSON
+            // field -- a field they always send with a working value is not
+            // left out or invented by a hand-written body. Said once a field.
+            String field = fieldOf(raw, name);
+            String[] conv = ValueSources.convertedLiteral(field);
+            if (conv != null) {
+                data.put(name, conv[0]);
+                origins.put(name, "the converted suites' bodies (" + field + ": " + conv[1] + ")");
+                if (WARNED_FIELDS.add(field)) {
+                    org.slf4j.LoggerFactory.getLogger(ManualBody.class).warn(
+                            "#{}# ({}) is not in the data sheet, the test's values or program_configuration.json: "
+                                    + "using '{}', what the converted suites send ({}). Set {} in "
+                                    + "program_configuration.json -- Settings tab -- to choose another",
+                            name, field, conv[0], conv[1], name);
+                }
             }
         }
         data.putAll(resolvedRow);
@@ -117,6 +134,14 @@ public final class ManualBody {
 
     private static final Pattern HASH_NAME = Pattern.compile("#([A-Za-z0-9_.\\-]+)#");
     private static final Pattern LEFTOVER = Pattern.compile("\\$\\{[^}]+\\}|<<[^<>]+>>");
+
+    private static final java.util.Set<String> WARNED_FIELDS = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /** The JSON field a {@code "#name#"} is the value of, or null (an array item, a part of a string). */
+    static String fieldOf(String template, String name) {
+        Matcher m = Pattern.compile("\"([A-Za-z0-9_]+)\"\\s*:\\s*\"#" + Pattern.quote(name) + "#\"").matcher(template);
+        return m.find() ? m.group(1) : null;
+    }
 
     private static boolean present(String v) {
         return v != null && !v.trim().isEmpty();

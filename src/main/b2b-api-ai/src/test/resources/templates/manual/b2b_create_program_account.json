@@ -10,7 +10,8 @@
     },
     "phone": {
       "phoneNumber": "<<phone>>",
-      "phoneCountry": "1"
+      "phoneCountry": "1",
+      "phoneExtension": "81898"
     },
     "websiteDomain": "#account_email_domain#",
     "ownerEmailAddress": "#owner_company_email#"

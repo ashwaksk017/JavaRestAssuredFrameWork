@@ -133,6 +133,42 @@ public class ValueSourcesTest {
         }
     }
 
+    @Test(groups = {"guards"})
+    public void aFieldTakesTheValueTheConvertedBodiesSendMost() throws Exception {
+        Path dir = Files.createTempDirectory("vs-literals");
+        write(dir.resolve("A/enroll1.json"), "{\"address\": {\"company\": \"Plain Co\"}}");
+        write(dir.resolve("A/enroll2.json"), "{\"address\": {\"company\":\"Plain Co\"}}");
+        write(dir.resolve("B/enroll.json"), "{\"address\": {\"company\": \"Other Co\"}}");
+        // a placeholder or an empty string is not a value
+        write(dir.resolve("C/enroll.json"), "{\"company\": \"#tpl_company#\", \"x\": {\"company\": \"\"}}");
+        write(dir.resolve("C/more.json"), "{\"company\": \"<<company>>\"}");
+        String[] got = ValueSources.scanLiteral(dir, "company");
+        Assert.assertEquals(got[0], "Plain Co");
+        Assert.assertTrue(got[1].startsWith("2 converted bodies, e.g. templates/A/"), got[1]);
+        Assert.assertEquals(ValueSources.scanLiteral(dir, "nowhere").length, 0);
+    }
+
+    @Test(groups = {"guards"})
+    public void aPersonOrACredentialIsNeverTakenFromAnotherSuitesBody() throws Exception {
+        Path dir = Files.createTempDirectory("vs-private");
+        write(dir.resolve("A/b.json"), "{\"password\": \"Hunter2!\", \"emailAddress\": \"a@example.test\","
+                + " \"username\": \"someone\", \"guestId\": \"123\"}");
+        for (String f : new String[] {"password", "emailAddress", "username", "guestId"}) {
+            Assert.assertEquals(ValueSources.scanLiteral(dir, f).length, 0, f);
+            Assert.assertNull(ValueSources.convertedLiteral(f), f);
+        }
+    }
+
+    @Test(groups = {"guards"})
+    public void aPlaceholdersFieldIsTheJsonKeyItIsTheValueOf() {
+        String t = "{\"address\": {\"company\": \"#enroll_company#\"}, \"ratePlanName\" : \"#rate_plan_name#\","
+                + " \"note\": \"see #inline# here\"}";
+        Assert.assertEquals(ManualBody.fieldOf(t, "enroll_company"), "company");
+        Assert.assertEquals(ManualBody.fieldOf(t, "rate_plan_name"), "ratePlanName");
+        Assert.assertNull(ManualBody.fieldOf(t, "inline"), "part of a string: no field");
+        Assert.assertNull(ManualBody.fieldOf(t, "absent"));
+    }
+
     private static void write(Path p, String text) throws Exception {
         Files.createDirectories(p.getParent());
         Files.write(p, text.getBytes(StandardCharsets.UTF_8));

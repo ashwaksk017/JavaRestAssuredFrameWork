@@ -150,6 +150,28 @@ class WhatTheRunShows(unittest.TestCase):
         answer = "  answered   : " + "x" * 2000
         self.assertEqual(len(shown(answer)), len(answer))
 
+    def test_a_pretty_printed_body_under_a_shown_line_is_shown_with_it(self):
+        # LogBodies lays a body out on lines indented by six spaces.
+        shown = rl.Shown()
+        lines = ["14:37:31.436 [main] WARN  com.hi.api.rest.utilities.RestStep -  .. response body (HTTP 400):",
+                 "      {",
+                 "        \"code\" : 997,",
+                 "        \"fields\" : [ \"company\" ]",
+                 "      }",
+                 "14:37:31.500 [main] INFO  com.hi.api.Other - not shown",
+                 "      { \"under an unshown line\" : true }"]
+        out = [t for t in (shown(l) for l in lines) if t is not None]
+        self.assertEqual(out[:5], lines[:5])
+        self.assertEqual(len(out), 5, out)
+
+    def test_a_huge_body_stops_and_says_where_the_rest_is(self):
+        shown = rl.Shown()
+        shown("14:37:31.436 [main] WARN  X - response body (HTTP 500):")
+        out = [shown("      \"k\" : 1,") for _ in range(rl.Shown.BODY_LINES + 5)]
+        kept = [o for o in out if o is not None]
+        self.assertEqual(len(kept), rl.Shown.BODY_LINES)
+        self.assertIn("more in the full run log", kept[-1])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

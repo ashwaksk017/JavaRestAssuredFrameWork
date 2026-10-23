@@ -7,15 +7,20 @@
   "privacyRequested": false,
   "address": {
     "addressLine1": "123 Main St",
+    "addressLine2": "Block A",
+    "addressLine3": "Suite 123",
     "addressType": "business",
     "city": "Memphis",
+    "company": "#enroll_company#",
     "country": "US",
     "state": "TN",
     "postalCode": "38103"
   },
   "name": {
     "firstName": "<<firstname>>",
-    "lastName": "<<lastname>>"
+    "lastName": "<<lastname>>",
+    "middleInit": "D",
+    "title": "Mr."
   },
   "email": {
     "emailAddress": "#owner_company_email#"

@@ -126,6 +126,68 @@ public final class ValueSources {
                 + example.get(best)};
     }
 
+    /**
+     * Never taken from another suite's body: a person's identity or a
+     * credential must be this test's own (generated, or from its data sheet).
+     */
+    private static final Pattern PRIVATE_FIELD = Pattern.compile(
+            "(?i).*(password|username|user_name|secret|token|assertion|email|guestid|memberid|accountid"
+                    + "|hhonorsnumber|confirmation|otp|totp|ssn|taxid|salesforceid).*");
+    private static final Map<String, String[]> LITERALS = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * {@code {value, where}}: the value the converted suites' bodies send
+     * most for this JSON field ({@code "ratePlanName": "..."} in
+     * src/main/resources/templates/**), or null -- none, a placeholder
+     * only, an empty string only, or a field that is a person's identity
+     * or a credential. The last source for a template's #name#, after the
+     * data sheet, the test's own values and program_configuration.json: a
+     * field the converted tests always send with a working value is not
+     * left out or invented here.
+     */
+    public static String[] convertedLiteral(String field) {
+        if (field == null || field.isBlank() || PRIVATE_FIELD.matcher(field).matches()) {
+            return null;
+        }
+        String[] got = LITERALS.computeIfAbsent(field, f -> scanLiteral(templatesDir(), f));
+        return got.length == 0 ? null : got;
+    }
+
+    static String[] scanLiteral(Path dir, String field) {
+        if (PRIVATE_FIELD.matcher(field).matches()) {
+            return new String[0];
+        }
+        Pattern p = Pattern.compile("\"" + Pattern.quote(field) + "\"\\s*:\\s*\"([^\"\\\\]*)\"");
+        Map<String, Integer> seen = new HashMap<>();
+        Map<String, String> example = new HashMap<>();
+        if (dir != null && Files.isDirectory(dir)) {
+            try (Stream<Path> files = Files.walk(dir)) {
+                for (Path f : (Iterable<Path>) files.filter(x -> x.toString().endsWith(".json"))::iterator) {
+                    Matcher m = p.matcher(read(f));
+                    while (m.find()) {
+                        String v = m.group(1).trim();
+                        if (v.isEmpty() || v.matches(".*(#[^#]+#|<<.*>>|\\$\\{.*\\}|@[^@]+@|%[^%]+%).*")) {
+                            continue;
+                        }
+                        seen.merge(v, 1, Integer::sum);
+                        example.putIfAbsent(v, dir.relativize(f).toString().replace('\\', '/'));
+                    }
+                }
+            } catch (IOException | RuntimeException ignored) {
+                // none from here
+            }
+        }
+        String best = null;
+        for (Map.Entry<String, Integer> e : seen.entrySet()) {
+            if (best == null || e.getValue() > seen.get(best)
+                    || (e.getValue().equals(seen.get(best)) && e.getKey().compareTo(best) < 0)) {
+                best = e.getKey();
+            }
+        }
+        return best == null ? new String[0]
+                : new String[] {best, seen.get(best) + " converted bodies, e.g. templates/" + example.get(best)};
+    }
+
     private static final Pattern DOMAIN_KEY = Pattern.compile("(?i)^Properties\\.(Hardcodeddomain|Domain)$");
     private static volatile String domain;
 

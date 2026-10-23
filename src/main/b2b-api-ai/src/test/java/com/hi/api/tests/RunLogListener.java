@@ -125,13 +125,15 @@ public class RunLogListener implements ITestListener, ISuiteListener, IConfigura
     }
 
     private static final Logger LOG = LoggerFactory.getLogger("RUN");
-    private static final int SENT_CAP = 1500;
-    private static final int ANSWER_CAP = 2500;
+    private static final int SENT_CAP = 4000;            // laid out (LogBodies): pretty JSON runs long
+    private static final int ANSWER_CAP = 6000;
     private static final int ASSERT_LINES = 25;
 
     @Override
     public void onTestStart(ITestResult result) {
         try {
+            // This test's first failed call is its own, whichever listener runs first.
+            com.hi.api.rest.utilities.StepOutcomes.reset();
             if (!converted(result)) {
                 LOG.info("TEST START {}  [{}]{}", name(result), ids(result, false), description(result));
             }
@@ -217,7 +219,7 @@ public class RunLogListener implements ITestListener, ISuiteListener, IConfigura
             LastExchange.Recorded last = calls.get(calls.size() - 1);
             out.add("  last call  : " + last);
             if (!last.requestBody().isEmpty()) {
-                out.add("  sent       : " + cap(last.requestBody(), SENT_CAP));
+                out.add("  sent       :" + com.hi.api.rest.utilities.LogBodies.pretty(last.requestBody(), SENT_CAP));
             }
             String answered = "";
             try {
@@ -226,7 +228,22 @@ public class RunLogListener implements ITestListener, ISuiteListener, IConfigura
                 answered = "(the response body could not be read: " + e.getClass().getSimpleName() + ")";
             }
             if (answered != null && !answered.isEmpty()) {
-                out.add("  answered   : " + cap(answered, ANSWER_CAP));
+                out.add("  answered   :" + com.hi.api.rest.utilities.LogBodies.pretty(answered, ANSWER_CAP));
+            }
+            // The EARLIEST refused call, when it is not the last one: that is
+            // where the test went wrong; later calls are its symptoms.
+            String first = com.hi.api.rest.utilities.StepOutcomes.firstFailure();
+            String firstUrl = com.hi.api.rest.utilities.StepOutcomes.firstFailureUrl();
+            if (first != null && (firstUrl == null || !firstUrl.endsWith(" " + last.uri()))) {
+                out.add("  first failed call: " + first + (firstUrl == null ? "" : "  " + firstUrl));
+                String req = com.hi.api.rest.utilities.StepOutcomes.firstFailureRequest();
+                if (req != null && !req.isEmpty()) {
+                    out.add("    sent     :" + com.hi.api.rest.utilities.LogBodies.pretty(req, SENT_CAP));
+                }
+                String said = com.hi.api.rest.utilities.StepOutcomes.firstFailureBody();
+                if (said != null && !said.isEmpty()) {
+                    out.add("    answered :" + com.hi.api.rest.utilities.LogBodies.pretty(said, ANSWER_CAP));
+                }
             }
         } else {
             out.add("  calls      : none recorded (the test failed before its first request)");

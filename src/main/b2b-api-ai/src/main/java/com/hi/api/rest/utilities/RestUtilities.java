@@ -365,6 +365,13 @@ public class RestUtilities {
                 LastExchange.record(method + " " + path, method, url, res,
                         body == null ? "" : com.hi.api.security.Secrets.redact(body));
                 logCall(method, url, body, res);
+                // And for the failure digest, as RestStep does: a story test's
+                // 400 was "no failed call -- assertion-only failure", with no
+                // `we sent:` -- the request that was refused never shown.
+                if (res != null && res.getStatusCode() >= 300) {
+                    StepOutcomes.record(method + " " + path, res.getStatusCode(), -1,
+                            ResponseMasking.mask(RestStep.capForDigest(getResponseAsString(res))));
+                }
             }
         } catch (RuntimeException ignored) {
             // reporting must never fail a test
@@ -373,8 +380,8 @@ public class RestUtilities {
     }
 
     private static final org.slf4j.Logger HTTP = org.slf4j.LoggerFactory.getLogger("com.hi.api.http");
-    private static final int SENT_CAP = 4000;
-    private static final int ANSWER_CAP = 6000;
+    private static final int SENT_CAP = 8000;           // laid out: pretty JSON is about twice the text
+    private static final int ANSWER_CAP = 12000;
 
     /**
      * The call, whole, in the full run log (logger com.hi.api.http, file only):
@@ -390,7 +397,8 @@ public class RestUtilities {
                 HTTP.info("HTTP {} {} -> no response", method, url);
                 return;
             }
-            HTTP.info("HTTP {} {} -> {} ({} ms)", method, url, res.getStatusCode(), res.getTime());
+            boolean bad = res.getStatusCode() >= 400;   // WARN: the Run tests tab shows it, body and all
+            http(bad, "HTTP {} {} -> {} ({} ms)", method, url, res.getStatusCode(), res.getTime());
             StringBuilder ids = new StringBuilder();
             for (io.restassured.http.Header h : res.getHeaders()) {
                 String n = h.getName().toLowerCase(java.util.Locale.ROOT);
@@ -400,26 +408,26 @@ public class RestUtilities {
                 }
             }
             if (ids.length() > 0) {
-                HTTP.info("  headers : {}", ids);
+                http(bad, "  headers : {}", ids);
             }
             if (body != null && !body.isEmpty()) {
-                HTTP.info("  sent    : {}", cap(com.hi.api.security.Secrets.redact(body), SENT_CAP));
+                http(bad, "  sent    :{}", LogBodies.pretty(com.hi.api.security.Secrets.redact(body), SENT_CAP));
             }
             String answer = url != null && url.toLowerCase(java.util.Locale.ROOT).contains("/token")
-                    ? "(a token response: not shown)"
-                    : cap(com.hi.api.security.Secrets.redact(res.asString()), ANSWER_CAP);
-            HTTP.info("  answered: {}", answer.isEmpty() ? "(an empty body)" : answer);
+                    ? " (a token response: not shown)"
+                    : LogBodies.pretty(com.hi.api.security.Secrets.redact(res.asString()), ANSWER_CAP);
+            http(bad, "  answered:{}", answer.isEmpty() ? " (an empty body)" : answer);
         } catch (RuntimeException ignored) {
             // a log line must never fail a test
         }
     }
 
-    private static String cap(String s, int max) {
-        if (s == null) {
-            return "";
+    private static void http(boolean bad, String format, Object... args) {
+        if (bad) {
+            HTTP.warn(format, args);
+        } else {
+            HTTP.info(format, args);
         }
-        String one = s.replaceAll("\\s*\\R\\s*", " ").trim();
-        return one.length() <= max ? one : one.substring(0, max) + " ... (" + (one.length() - max) + " more characters)";
     }
 
     // Preserved as a no-op for reference compat.

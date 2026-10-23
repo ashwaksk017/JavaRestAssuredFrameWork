@@ -159,6 +159,10 @@ public class AccountActivationTest extends StoryTestBase {
 }
 ```
 
+Start every body from the converted body of the same call (`src/main/resources/templates/<suite>/...`)
+and keep EVERY field it sends: a field left out is refused (an enrolment without `address.company` is
+answered 400). Keep harmless values as they are; make per-environment or company values `#name#`.
+
 A body bigger than one field, or one that varies per row, goes in
 `src/test/resources/templates/manual/<job>_<step>.json` and is rendered with
 `ManualBody.render(template, row, ctx)` -- never `RestUtilities.mapJsonValues`

@@ -396,6 +396,50 @@ class WhatCursorIsShown(Base):
         self.assertEqual(shown, ["src/test/java/com/hi/api/tests/examples/StoryTestExample.java"])
 
 
+class TemplateDrift(unittest.TestCase):
+    """A hand-written body that leaves out what the converted bodies of the
+    same call always send. Seen live: the story enrolment had no
+    address.company and every enrolment was answered 400."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        st = loop.storytests
+        st._CONVERTED_SHAPES.pop(self.root, None)
+        self.st = st
+        conv = os.path.join(self.root, "src", "main", "resources", "templates", "s")
+        os.makedirs(conv)
+        for i in range(4):
+            write_json(os.path.join(conv, f"enroll{i}.json"),
+                       {"username": "#u#", "propCode": "X", "address": {"city": "M", "company": "C", "state": "T"},
+                        "name": {"firstName": "a", "title": "Mr."}})
+        manual = os.path.join(self.root, "src", "test", "resources", "templates", "manual")
+        os.makedirs(manual)
+        write_json(os.path.join(manual, "old.json"),
+                   {"username": "#u#", "propCode": "#p#", "address": {"city": "M", "state": "T"},
+                    "name": {"firstName": "a", "title": "Mr."}})
+        write_json(os.path.join(manual, "new.json"),
+                   {"username": "#u#", "propCode": "#p#", "address": {"city": "M", "state": "T", "company": "#c#"},
+                    "name": {"firstName": "a", "title": "Mr."}})
+
+    def issues(self, tpl):
+        return self.st._template_drift_issues(self.root, "X.java", f'ManualBody.render("templates/manual/{tpl}.json"')
+
+    def test_a_field_every_converted_body_sends_is_said(self):
+        got = self.issues("old")
+        self.assertEqual(len(got), 1, got)
+        self.assertIn("leaves out address.company", got[0])
+        self.assertIn("4 converted bodies of the same call", got[0])
+
+    def test_a_template_that_sends_it_is_fine(self):
+        self.assertEqual(self.issues("new"), [])
+
+    def test_no_converted_suites_nothing_to_compare(self):
+        shutil.rmtree(os.path.join(self.root, "src", "main"))
+        self.st._CONVERTED_SHAPES.pop(self.root, None)
+        self.assertEqual(self.issues("old"), [])
+
+
 class ProjectsDoNotMix(Base):
     def test_a_test_whose_base_is_the_other_projects_fails_the_check(self):
         st = loop.storytests

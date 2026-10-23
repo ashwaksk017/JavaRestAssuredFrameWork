@@ -442,6 +442,18 @@ public abstract class StoryTestBase extends BaseApiTest implements IHookable {
                 }
             }
         }
+        // A business address needs a company: the server answers 400 with
+        // notification 503 on "company" without one. The sheet's, else the
+        // configuration's, else what the converted enrolments send, else a
+        // made-up one -- letters only, as a punctuated faker name may be refused.
+        if (!present(row.get("enroll_company"))) {
+            String[] c = com.hi.api.data.ValueSources.fromConfig("enroll_company");
+            if (c == null) {
+                c = com.hi.api.data.ValueSources.convertedLiteral("company");
+            }
+            row.put("enroll_company", c != null ? c[0] : lettersOnly(FakeData.companyName()));
+            generated(row, "enroll_company");
+        }
         if ((!present(row.get("enroll_source_code")) || !present(row.get("enroll_prop_code")))
                 && WARNED_ENROLL_CODES.compareAndSet(false, true)) {
             LOG.warn("enroll.source_code / enroll.prop_code are not set for env '{}': an enrolment body using "
@@ -492,6 +504,15 @@ public abstract class StoryTestBase extends BaseApiTest implements IHookable {
             new java.util.concurrent.atomic.AtomicBoolean(false);
     /** In a row: the columns fillEnrollFields generated (comma separated), forgotten before a retry. */
     private static final String GENERATED = "__generated";
+
+    /** Letters and spaces only, at most 40 characters; "Acme Corp" when nothing is left. */
+    protected static String lettersOnly(String s) {
+        String v = s == null ? "" : s.replaceAll("[^A-Za-z ]", "").replaceAll("\\s+", " ").trim();
+        if (v.length() > 40) {
+            v = v.substring(0, 40).trim();
+        }
+        return v.isEmpty() ? "Acme Corp" : v;
+    }
 
     @SuppressWarnings("unchecked")
     protected static void generated(Map<String, String> row, String column) {

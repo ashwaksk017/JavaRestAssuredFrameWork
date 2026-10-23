@@ -176,6 +176,7 @@ SHOWN = ("Running ", "Tests run:", "[ERROR]", "BUILD ", "FAIL", "PASSED", "SKIPP
          "SETUP METHOD", "[Retry]")
 NOT_SHOWN = ("Ignoring duplicate listener",                 # TestNG, every run, harmless
              "[digest] 0 check(s) recorded as skipped")     # says nothing when 0
+BODY_PAD = "      "   # LogBodies.PAD: a body's lines under the line naming it
 _LEVEL_RX = re.compile(r"^\d\d:\d\d:\d\d\.\d{3} \[[^\]]*\] (WARN|ERROR)\s")
 
 
@@ -185,20 +186,31 @@ class Shown:
     lines that say where the run is. Call it with each line: the text to
     show, or None."""
 
+    # A body under a shown line (LogBodies: pretty JSON, indented): shown
+    # with it, up to this many lines -- a 400's answer is the reason.
+    BODY_LINES = 120
+
     def __init__(self):
         self.in_block = False
+        self.body_left = 0
 
     def __call__(self, line: str):
         if "==== TEST FAILED" in line:
             self.in_block = True
+            self.body_left = 0
             return line[:600]
         if self.in_block:
             if "==== end of TEST FAILED" in line:
                 self.in_block = False
             return line[:2500]
+        if self.body_left and line.startswith(BODY_PAD):
+            self.body_left -= 1
+            return line[:600] if self.body_left else line[:600] + "  ... (more in the full run log)"
+        self.body_left = 0
         if any(n in line for n in NOT_SHOWN):
             return None
         if _LEVEL_RX.match(line) or any(w in line for w in SHOWN):
+            self.body_left = self.BODY_LINES
             return line[:600]
         return None
 

@@ -5,8 +5,11 @@
   "meetingFacilitiesRequired": false,
   "roomBlockRequired": true,
   "peakRooms": "#peakRooms#",
-  "ratePlanName": "TEST",
+  "ratePlanName": "#rate_plan_name#",
   "housingMethod": "individual",
+  "termsAndConditionsLink": "#terms_and_conditions_link#",
+  "marketCategoryNew": "#market_category_new#",
+  "billingInformation": ["TESTING", "MYTESTING"],
   "roomTypes": [
     {
       "roomTypeCode": "#roomTypeCode#",
@@ -18,8 +21,9 @@
   "groupBookingContact": {
     "firstName": "<<firstname>>",
     "lastName": "<<lastname>>",
-    "address": { "addressType": "home", "addressLine1": "123 Main St", "city": "Memphis", "state": "TN",
-                 "postalCode": "38103", "country": "US" },
+    "address": { "addressLine1": "123 Main St", "city": "Memphis", "state": "TN",
+                 "postalCode": "38103", "country": "US", "company": "#group_contact_company#" },
+    "phone": { "phoneNumber": "9015551212", "phoneType": "fax", "phoneExtension": "999999", "phoneCountry": "001" },
     "email": { "emailAddress": "group.contact@example.com", "emailType": "home" }
   }
 }
