@@ -585,7 +585,7 @@ Expect 201.'></textarea>
   <p class="lede">
     Compile the project and run tests from here -- no command line. A suite file
     (<code>Suites/</code>, <code>testng*.xml</code>), one class or method, or a TestNG group, against an
-    environment of <code>program_configuration.json</code>. Maven runs offline first and goes online only
+    environment of the chosen project's configuration file (<code>program_configuration.json</code> for B2B). Maven runs offline first and goes online only
     when something is missing; a <code>JAVA_HOME</code> that points at nothing is replaced by a JDK found
     on this machine, and the log says which. One run at a time, and not while Cursor is writing a change.
   </p>
@@ -621,6 +621,14 @@ Expect 201.'></textarea>
     <datalist id="run-groups"></datalist>
     <span class="hint">runs Suites/jira/group-&lt;name&gt;.xml</span>
   </div>
+  <div class="row run-line" id="run-project" role="radiogroup" aria-label="project">
+    <span class="run-label">Project</span>
+    <label class="inline"><input type="radio" name="run-project" value="b2b" checked> B2B</label>
+    <label class="inline"><input type="radio" name="run-project" value="goal"> GOAL</label>
+    <span id="run-project-state" class="state"></span>
+  </div>
+  <p class="hint" id="run-project-hint">The project's configuration file gives the environments below and is the
+    run's <code>-Dconfig.project</code>. It starts as the open job's project, or a converted suite's own.</p>
   <div class="row run-line">
     <label class="run-label" for="run-env">Environment</label>
     <select id="run-env" aria-label="environment"></select>

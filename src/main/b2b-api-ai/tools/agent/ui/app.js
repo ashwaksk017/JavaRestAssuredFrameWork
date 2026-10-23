@@ -2030,24 +2030,94 @@ $("job").addEventListener("change", () => showDevcode());
 // story's workflow files.
 const runJob = () => job() || "runs";
 let runTargets = null;
+// The run's project (B2B / GOAL): its configuration file gives the
+// environments and the run's -Dconfig.project. It follows what is run -- a
+// converted suite's own project, else the open job's -- until a person
+// chooses one; choosing something else to run starts from its default again.
+let runProjectTouched = false;
+const runProject = () => chosen("run-project") || "b2b";
+const projectName = (p) => String(p || "").toUpperCase();
+function setRunProject(p) {
+  for (const r of document.querySelectorAll('input[name="run-project"]')) r.checked = r.value === p;
+}
+// The project of the converted suite chosen to run, or "" (a story suite, a class, a group).
+function suiteOwnProject() {
+  if (chosen("run-what") !== "suite" || !runTargets) return "";
+  const s = runTargets.suites.find((x) => x.path === $("run-suite").value);
+  return (s && s.project) || "";
+}
+const defaultRunProject = () => suiteOwnProject() || (runTargets && runTargets.job_project) || "b2b";
 async function loadRunTargets() {
-  try { runTargets = await api(`/api/run-targets?job=${encodeURIComponent(job() || "")}`); }
-  catch (e) { setState($("run-state"), "bad", e.message); return; }
-  if (runTargets.project) setState($("run-state"), "", `project ${String(runTargets.project).toUpperCase()}: `
-    + `its configuration file and environments`);
+  // The first read is the open job's project; after that, the one on the page.
+  const want = runTargets ? runProject() : "";
+  const before = runTargets && runTargets.project;
+  let t;
+  try {
+    t = await api(`/api/run-targets?job=${encodeURIComponent(job() || "")}&project=${encodeURIComponent(want)}`);
+  } catch (e) { setState($("run-state"), "bad", e.message); return; }
+  runTargets = t;
+  setRunProject(t.project);
   const keep = $("run-suite").value;
   const LABEL = { group: "Story suites by group", jira: "Story suites", project: "Project suites",
-                  job: "One job's tests", converted: "Converted ReadyAPI suites" };
+                  job: "One job's tests" };
+  // Converted suites by their own project, the chosen project's first.
   const groups = {};
-  for (const s of runTargets.suites) (groups[s.kind] = groups[s.kind] || []).push(s);
-  $("run-suite").replaceChildren(...Object.entries(groups).map(([k, list]) =>
-    el("optgroup", { label: LABEL[k] || k }, ...list.map((s) => el("option", { value: s.path, text: s.path })))));
+  for (const s of t.suites) {
+    const k = s.kind === "converted" ? `converted-${s.project || "b2b"}` : s.kind;
+    (groups[k] = groups[k] || []).push(s);
+  }
+  const mineFirst = (k) => (k === `converted-${t.project}` ? 0 : k.startsWith("converted-") ? 1 : -1);
+  const keys = Object.keys(groups).sort((a, b) => mineFirst(a) - mineFirst(b));
+  $("run-suite").replaceChildren(...keys.map((k) => {
+    const p = k.startsWith("converted-") ? k.slice("converted-".length) : "";
+    const label = p ? `Converted ReadyAPI suites: ${projectName(p)}${p === t.project ? "" : " (the other project)"}`
+      : (LABEL[k] || k);
+    return el("optgroup", { label }, ...groups[k].map((s) => el("option", { value: s.path, text: s.path })));
+  }));
   if (keep) $("run-suite").value = keep;
-  $("run-groups").replaceChildren(...runTargets.groups.map((g) => el("option", { value: g })));
+  $("run-groups").replaceChildren(...t.groups.map((g) => el("option", { value: g })));
+  // Another project's file has other blocks: start from its run environment.
   const envKeep = $("run-env").value;
-  $("run-env").replaceChildren(...runTargets.envs.map((e) => el("option", { value: e, text: e + (e === runTargets.active ? " (active)" : "") })));
-  $("run-env").value = envKeep || runTargets.active || (runTargets.envs[0] || "");
+  $("run-env").replaceChildren(...t.envs.map((e) => el("option", { value: e, text: e + (e === t.active ? " (active)" : "") })));
+  $("run-env").value = before === t.project && t.envs.includes(envKeep) ? envKeep
+    : (t.envs.includes(t.active) ? t.active : (t.envs[0] || ""));
+  showRunProject();
 }
+// The project's file, and a warning (not a refusal) when a converted suite
+// is run with the other project's configuration.
+function showRunProject() {
+  if (!runTargets) return;
+  const p = (runTargets.projects || []).find((x) => x.name === runProject()) || {};
+  const own = suiteOwnProject();
+  if (own && own !== runProject()) {
+    setState($("run-project-state"), "warn", `${$("run-suite").value} is a ${projectName(own)} suite: run with `
+      + `${projectName(runProject())}'s configuration, its calls may go to the wrong services`);
+  } else if (p.config && !p.config_exists) {
+    setState($("run-project-state"), "warn", `${p.config} is not on this machine: this project's tests cannot run here until it is`);
+  } else {
+    setState($("run-project-state"), "", p.config ? `${p.config}, environments of this file` : "");
+  }
+}
+// What is run changed: the project follows it, unless a person chose one.
+async function followRunProject() {
+  if (!runTargets) return;
+  if (!runProjectTouched && defaultRunProject() !== runProject()) {
+    setRunProject(defaultRunProject());
+    await loadRunTargets();
+    return;
+  }
+  showRunProject();
+}
+for (const r of document.querySelectorAll('input[name="run-project"]')) {
+  r.addEventListener("change", () => { runProjectTouched = true; loadRunTargets(); });
+}
+$("run-suite").addEventListener("change", () => { runProjectTouched = false; followRunProject(); });
+// Another job: its project, and nothing a person chose for the last one.
+$("job").addEventListener("change", () => {
+  runProjectTouched = false;
+  runTargets = null;
+  if (!$("tab-run").hidden) onTab.run();
+});
 // The job's own suite, when the job open on the page has one.
 function jobSuite() {
   const j = job();
@@ -2064,8 +2134,10 @@ function showRunWhat() {
   $("run-job-suite").textContent = jobSuite() || (job() ? `job ${job()} has no suite of new tests yet` : "open a job first");
 }
 let runWhatTouched = false;     // a person chose: the job's tests are no longer preselected
-for (const r of document.querySelectorAll('input[name="run-what"]')) r.onchange = () => { runWhatTouched = true; showRunWhat(); };
-$("run-suites-refresh").onclick = loadRunTargets;
+for (const r of document.querySelectorAll('input[name="run-what"]')) {
+  r.onchange = () => { runWhatTouched = true; runProjectTouched = false; showRunWhat(); followRunProject(); };
+}
+$("run-suites-refresh").onclick = async () => { await loadRunTargets(); await followRunProject(); };
 function runBusy(on) { for (const id of ["mvn-compile", "mvn-test"]) $(id).disabled = on; }
 // The Allure report of the last run: served by the workbench on a port of
 // its own (another origin: the report shows text from the APIs tested).
@@ -2092,10 +2164,11 @@ async function showRunResult(j) {
     kids.push(el("pre", { class: "doc", text: r.compile.errors.slice(0, 60).join("\n") }));
   if (r.what === "test") {
     const what = r.suite || (r.test ? `-Dtest=${r.test}` : `group ${r.group}`);
+    if (r.project_warning) kids.push(banner("warn", `${r.project_warning}: its calls may have gone to the wrong services.`));
     if (r.tests) {
       const tile = (cls, n, label) => el("div", { class: `tile ${cls}` }, el("b", { text: String(n) }), el("small", { text: label }));
       kids.push(el("div", { class: "run-summary" },
-        tile(r.ok ? "ok" : "bad", r.ok ? "PASSED" : "FAILED", `${what} on ${r.env}`),
+        tile(r.ok ? "ok" : "bad", r.ok ? "PASSED" : "FAILED", `${what} on ${r.env}${r.project ? ` (${projectName(r.project)})` : ""}`),
         tile("ok", r.passed, "passed"), tile(r.failed ? "bad" : "", r.failed, "failed"),
         tile(r.skipped ? "warn" : "", r.skipped, "skipped"),
         tile("", `${Math.round(r.seconds || 0)}s`, `Maven ${r.how || ""}`)));
@@ -2127,7 +2200,8 @@ async function startRun(runnable, options) {
 $("mvn-compile").onclick = () => startRun("mvn-compile", {});
 $("mvn-test").onclick = () => {
   const what = chosen("run-what");
-  const options = { "--env": $("run-env").value };
+  // The chosen project, always named: the run must not fall back to a guess.
+  const options = { "--env": $("run-env").value, "--project": runProject() };
   if ($("run-compile-first").checked) options["--compile-first"] = true;
   if ($("run-threads").value && what !== "test") options["--threads"] = $("run-threads").value;
   if (what === "job") options["--suite"] = jobSuite();
@@ -2149,6 +2223,7 @@ onTab.run = async () => {
     for (const r of document.querySelectorAll('input[name="run-what"]')) r.checked = r.value === "job";
   }
   showRunWhat();
+  await followRunProject();
   const j = runJob();
   // A run started earlier (or from another tab) is followed again.
   for (const r of ["mvn-test", "mvn-compile"]) {

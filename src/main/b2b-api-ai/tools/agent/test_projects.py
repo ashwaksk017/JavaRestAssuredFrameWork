@@ -226,6 +226,83 @@ class AJobsProject(Base):
                          "the job's project, not the server's own environment")
 
 
+    # ---- the Run tests tab's Project choice ------------------------------
+
+    def start_run(self, options):
+        """What jobs.start hands the subprocess for an mvn-test run: (env, argv)."""
+        seen = {}
+
+        class Proc:
+            pid = 4244
+            returncode = 0
+
+            def poll(self):
+                return 0
+
+            def wait(self, *a, **k):
+                return 0
+
+        def popen(argv, **kw):
+            seen["env"] = dict(kw.get("env") or {})
+            seen["argv"] = list(argv)
+            return Proc()
+        with mock.patch.object(jobs.subprocess, "Popen", popen), \
+                mock.patch.object(jobs, "_watch", lambda *a, **k: None, create=True), \
+                mock.patch.dict(os.environ, {"WORKBENCH_PROJECT": "b2b"}):
+            try:
+                jobs.start("job-1", "mvn-test", dict(options, **{"--job": "job-1"}))
+            except (ValueError, RuntimeError):
+                raise
+            except Exception:                            # noqa: BLE001
+                pass                                     # what follows the launch is not under test
+        return seen.get("env") or {}, seen.get("argv") or []
+
+    def test_the_run_tab_lists_the_chosen_projects_environments_not_the_jobs(self):
+        intake.set_job_project(self.dir, "goal")
+        write_json(PC.config_path(self.root, "b2b"), {"stg": {}, "STG_Partner_500": {}})
+        write_json(PC.config_path(self.root, "goal"), {"stg": {}, "goalonly": {}})
+        with mock.patch.object(jobs, "ROOT", self.root):
+            got = jobs.run_targets("job-1", "B2B")
+        self.assertEqual(got["project"], "b2b")
+        self.assertEqual(got["job_project"], "goal", "the job's own project is still said")
+        self.assertIn("STG_Partner_500", got["envs"])
+        self.assertNotIn("goalonly", got["envs"])
+        self.assertEqual({p["name"] for p in got["projects"]}, set(PC.PROJECT_FILES))
+        with mock.patch.object(jobs, "ROOT", self.root):
+            self.assertEqual(jobs.run_targets("job-1", "")["project"], "goal", "none chosen: the job's")
+            with self.assertRaises(ValueError):
+                jobs.run_targets("job-1", "gaol")
+
+    def test_each_converted_suite_says_its_own_project(self):
+        for rel in ("Suites/Group360CreateSTAGE/Group360CreateSTAGE_Regression.xml",
+                    "Suites/Eadkafkaevents/Eadkafkaevents_Regression.xml", "Suites/jira/job-1.xml"):
+            write_json(os.path.join(self.root, *rel.split("/")), {})
+        with mock.patch.object(jobs, "ROOT", self.root):
+            suites = {s["path"]: s for s in jobs.run_targets("job-1")["suites"]}
+        self.assertEqual(suites["Suites/Group360CreateSTAGE/Group360CreateSTAGE_Regression.xml"]["project"], "goal")
+        self.assertEqual(suites["Suites/Eadkafkaevents/Eadkafkaevents_Regression.xml"]["project"], "b2b")
+        self.assertNotIn("project", suites["Suites/jira/job-1.xml"], "a story suite is the job's")
+
+    def test_the_chosen_project_wins_over_the_suites_and_the_jobs(self):
+        intake.set_job_project(self.dir, "goal")
+        env, argv = self.start_run({"--suite": "Suites/Group360CreateSTAGE_Regression.xml", "--project": "b2b"})
+        self.assertEqual(env.get("WORKBENCH_PROJECT"), "b2b")
+        self.assertIn("--project", argv)
+        self.assertEqual(argv[argv.index("--project") + 1], "b2b", "mvnrun gets it for -Dconfig.project")
+
+    def test_with_no_project_chosen_a_converted_suite_runs_with_its_own_and_a_class_with_the_jobs(self):
+        env, _ = self.start_run({"--suite": "Suites/Group360CreateSTAGE_Regression.xml"})
+        self.assertEqual(env.get("WORKBENCH_PROJECT"), "goal")
+        intake.set_job_project(self.dir, "goal")
+        env, _ = self.start_run({"--test": "FooTest"})
+        self.assertEqual(env.get("WORKBENCH_PROJECT"), "goal")
+
+    def test_a_project_that_is_not_one_starts_nothing(self):
+        with self.assertRaises(ValueError):
+            self.start_run({"--test": "FooTest", "--project": "gaol"})
+        self.assertNotEqual(jobs.read_status("job-1", "mvn-test").get("state"), "running")
+
+
 class Running(Base):
     def test_goal_refuses_a_block_without_goals_service(self):
         write_json(self.goal, {"stg": {"services": {"hospitality_internal_all_v2": ""}}})

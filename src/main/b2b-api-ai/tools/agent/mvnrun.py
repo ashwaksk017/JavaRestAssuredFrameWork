@@ -4,6 +4,11 @@
     python tools/agent/mvnrun.py test --job J --suite Suites/jira/group-smoke.xml --env stg
     python tools/agent/mvnrun.py test --job J --test GuestProgramAccountTest[#method]
     python tools/agent/mvnrun.py test --job J --group smoke --env stg [--compile-first]
+    python tools/agent/mvnrun.py test --job J --suite Suites/X.xml --project goal
+
+`--project` (b2b, goal) is the project chosen on the Run tests tab: its
+configuration file gives the environments and -Dconfig.project. Without
+it the command's own project is used (WORKBENCH_PROJECT).
 
 What is run is one of three: a suite file under Suites/, one test class
 (or one method of it), or one TestNG group. Each is checked against what
@@ -160,6 +165,32 @@ def list_envs(root: str = "", project: str = "") -> dict:
     if active and active not in envs:
         envs.insert(0, active)
     return {"envs": envs, "active": active}
+
+
+def check_project(project: str) -> str:
+    """The project chosen on the Run tests tab, or "" when none was: one of
+    projectconfig.PROJECT_FILES. An unknown name is an error, not B2B -- a
+    run that quietly read another file would look like it worked."""
+    p = str(project or "").strip().lower()
+    if p and p not in projectconfig.PROJECT_FILES:
+        raise ValueError(f"{project!r} is not a project ({', '.join(sorted(projectconfig.PROJECT_FILES))})")
+    return p
+
+
+def is_converted(suite_rel: str) -> bool:
+    """A converted ReadyAPI suite: a file under Suites/ that is not a story
+    suite (Suites/jira/). Its file name names the suite, and so its project."""
+    rel = str(suite_rel or "").replace("\\", "/")
+    return rel.startswith("Suites/") and not rel.startswith("Suites/jira/")
+
+
+def suite_project(suite_rel: str) -> str:
+    """The project of a converted suite file (Suites/<Suite>_*.xml): GOAL when
+    its name starts with one of GOAL's suites (flowcatalog.GOAL_SUITES), else
+    B2B. Its own project, which a run chosen for the other one is warned of."""
+    name = os.path.basename(str(suite_rel or "")).lower().replace("-", "").replace(" ", "")
+    goal = _load("mvnrun_flowcatalog", os.path.join(HERE, "flowcatalog.py")).GOAL_SUITES
+    return "goal" if any(name.startswith(g) for g in goal) else "b2b"
 
 
 def check_suite(root: str, suite: str) -> str:
@@ -475,7 +506,11 @@ def cmd_compile(job_dir: str, root: str, runner=None) -> int:
 
 
 def cmd_test(job_dir: str, root: str, suite: str = "", test: str = "", group: str = "",
-             env: str = "", compile_first: bool = False, runner=None, threads: int = 0) -> int:
+             env: str = "", compile_first: bool = False, runner=None, threads: int = 0,
+             project: str = "") -> int:
+    """Run one suite, class or group. `project`: the one chosen on the page
+    (its configuration file, its run environment, -Dconfig.project); none
+    chosen, the command's own (WORKBENCH_PROJECT, set by the workbench)."""
     chosen = [w for w in (suite, test, group) if str(w or "").strip()]
     if len(chosen) != 1:
         say("FAIL choose one thing to run: a suite, a test class, or a group")
@@ -498,21 +533,29 @@ def cmd_test(job_dir: str, root: str, suite: str = "", test: str = "", group: st
             named = suite or group_suite(root, group.strip())
             if named:
                 with_threads(root, named, threads)
-        envs = list_envs(root)
-        env = (env or loop.run_env_for(root, loop.load_policy(), projectconfig.active_project())
+        project = check_project(project) or projectconfig.active_project()
+        envs = list_envs(root, project)
+        env = (env or loop.run_env_for(root, loop.load_policy(), project)
                or envs["active"] or "stg").strip()
         if not ENV_RX.match(env):
             raise ValueError(f"{env!r} is not an environment name")
     except ValueError as e:
         say(f"FAIL {e}")
         return 1
-    project = projectconfig.active_project()
     why = project_preflight(root, project, env)
     if why:
         say(f"FAIL {why}")
         return 1
     result = {"kind": "mvnrun", "what": "test", "at": _now(), "env": env, "project": project,
               "suite": suite, "test": test, "group": group.strip(), "threads": threads}
+    own = suite_project(suite) if is_converted(suite) else ""
+    if own and own != project:
+        # Said, not refused: a person may mean it (a suite copied across).
+        # But its calls were converted for the other project's services.
+        result["project_warning"] = (f"{suite} is a {own.upper()} suite, run with {project.upper()}'s "
+                                     f"configuration ({projectconfig.config_rel(project)})")
+        say(f"WARN {result['project_warning']}: its calls may go to the wrong services")
+    say(f" ..  project {project.upper()}: {projectconfig.config_rel(project)}, environment {env}")
     if compile_first:
         rc, part = compile_(job_dir, root, runner, clean=True)
         result.update(part)
@@ -597,6 +640,7 @@ def main(argv=None) -> int:
     t.add_argument("--env", default="")
     t.add_argument("--compile-first", action="store_true")
     t.add_argument("--threads", type=int, default=0)
+    t.add_argument("--project", default="")
     a = ap.parse_args(argv)
     try:
         job_dir = loop.intake.job_dir(loop.intake.safe_job(a.job))
@@ -609,7 +653,16 @@ def main(argv=None) -> int:
         pass
     if a.cmd == "compile":
         return cmd_compile(job_dir, ROOT)
-    return cmd_test(job_dir, ROOT, a.suite, a.test, a.group, a.env, a.compile_first, threads=a.threads)
+    try:
+        project = check_project(a.project)
+    except ValueError as e:
+        say(f"FAIL {e}")
+        return 1
+    if project:
+        # The whole command reads the chosen project's file, not only Maven.
+        os.environ["WORKBENCH_PROJECT"] = project
+    return cmd_test(job_dir, ROOT, a.suite, a.test, a.group, a.env, a.compile_first, threads=a.threads,
+                    project=project)
 
 
 if __name__ == "__main__":

@@ -940,6 +940,22 @@ def main() -> int:
             check("a run can set the suite's parallel threads, 1 to 6 at most",
                   'id="run-threads"' in html and '<option value="6">6</option>' in html
                   and '<option value="7">' not in html)
+            run_tab = mocked.dom("run")
+            m = re.search(r'id="run-project-state"[^>]*>([^<]*)<', run_tab)
+            check("the Run tests tab chooses the project (B2B / GOAL), and says its configuration file",
+                  'name="run-project" value="b2b"' in run_tab and 'name="run-project" value="goal"' in run_tab
+                  and bool(m) and "program_configuration" in m.group(1),
+                  (m.group(1) if m else "no run-project-state")[:200])
+            code, rt = mocked.call("/api/run-targets?job=ABC-201&project=goal")
+            check("the Run tests tab's environments are the chosen project's file's",
+                  code == 200 and rt.get("project") == "goal" and "job_project" in rt
+                  and {p.get("name") for p in rt.get("projects") or []} >= {"b2b", "goal"}, str(rt)[:200])
+            code, _ = mocked.call("/api/run-targets?job=ABC-201&project=gaol")
+            check("a project that is not one lists nothing", code == 400, str(code))
+            code, body = mocked.call("/api/start", {"job": "ABC-201", "runnable": "mvn-test",
+                                                    "options": {"--test": "FooTest", "--project": "gaol"}})
+            check("a run for a project that is not one is refused before it starts",
+                  code == 400 and "not a project" in json.dumps(body), str(body)[:200])
             check("each case's suites show on its row, from the rules",
                   ">Suites<" in html and 'class="groups"' in html and "from the rules" in html)
             code, runnables = mocked.call("/api/runnables")
