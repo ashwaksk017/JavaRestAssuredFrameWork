@@ -68,6 +68,10 @@ public final class Secrets {
             // Salesforce JWT-bearer
             "sf_config.assertion", "sf_config.ui_password",
             "sf_config.access_token",
+            // The project's service account (serviceToken's password grant)
+            // and the UI login: a user name is half a credential. Seen in
+            // the run log, in the token request's body.
+            "username", "password", "sf_config.ui_username", "database.username",
             // Database
             "database.password", "db.password",
             // Jira / Xray

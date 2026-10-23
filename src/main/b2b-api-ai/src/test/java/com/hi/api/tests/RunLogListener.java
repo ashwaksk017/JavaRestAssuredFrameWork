@@ -72,14 +72,21 @@ public class RunLogListener implements ITestListener, ISuiteListener, IConfigura
     @Override
     public void onFinish(ISuite suite) {
         try {
-            int passed = 0, failed = 0, skipped = 0;
+            int passed = 0, failed = 0, skipped = 0, retried = 0;
             for (ISuiteResult r : suite.getResults().values()) {
                 ITestContext c = r.getTestContext();
                 passed += c.getPassedTests().size();
                 failed += c.getFailedTests().size() + c.getFailedButWithinSuccessPercentageTests().size();
-                skipped += c.getSkippedTests().size();
+                for (ITestResult s : c.getSkippedTests().getAllResults()) {
+                    if (s.wasRetried()) {
+                        retried++;                   // an attempt that was run again, not a skipped test
+                    } else {
+                        skipped++;
+                    }
+                }
             }
-            LOG.info("RUN END   suite {} | {} passed, {} failed, {} skipped", suite.getName(), passed, failed, skipped);
+            LOG.info("RUN END   suite {} | {} passed, {} failed, {} skipped{}", suite.getName(), passed, failed,
+                    skipped, retried > 0 ? " (and " + retried + " attempt(s) retried)" : "");
         } catch (RuntimeException ignored) {
             // never the reason a run fails
         }

@@ -94,6 +94,8 @@ def compile_tree(root: str, runner=None) -> tuple:
     exe = shutil.which(COMPILE[0])
     if runner is None and not exe:
         return 127, "mvn is not on PATH"
+    if runner is None:
+        loop.ensure_framework(root)
     run = runner or (lambda argv: subprocess.run(
         argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **loop.NO_WINDOW))
     r, _how = loop.run_build(run, exe or COMPILE[0], COMPILE)

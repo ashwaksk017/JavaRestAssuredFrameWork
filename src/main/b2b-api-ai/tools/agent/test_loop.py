@@ -1353,12 +1353,14 @@ class JiraParity(unittest.TestCase):
               "  public void go(Map<String, String> row) {\n"
               "    String u = rowOrConfig(row, \"username\", \"api_config.username\");\n"
               "    String b = RestUtilities.mapJsonValues(t, row);\n"
+              "    String p = ApiRoutes.fill(ApiRoutes.BUSINESS, \"accountId\", id);\n"
               "    ManualBody.render(\"templates/manual/examples/old.json\", row, ctx);\n"
               "    SoftAssert s = new SoftAssert();\n"
               "    softAssert.assertAll();\n"
               "  }\n}\n")
         issues = "\n".join(loop.jira_parity_issues(self.root, [rel]))
         for expected in ('groups = {"jira"', "softAssert.assertAll()", "new SoftAssert()", "mapJsonValues",
+                         "ApiRoutes.fill(...) in the test",
                          "api_config.username", "@Name@", "an email address in a committed data sheet",
                          "column `password` holds a value"):
             self.assertIn(expected, issues)

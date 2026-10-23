@@ -43,6 +43,47 @@ import io.restassured.response.Response;
 public abstract class StoryTestBase extends BaseApiTest implements IHookable {
 
     /**
+     * The values this test captured or generated (an id from a response, a
+     * name it made up) -- the converted tests' ctx. Every template a helper
+     * renders reads it (after the data sheet's row; config before both), so
+     * a test that puts {@code ctx.put("accountId", id)} has {@code #accountId#}
+     * and {@code ${accountId}} filled in every later body. Empty at the start
+     * of every attempt. The helpers do not write into it on their own: with
+     * two guests, "the last guestId" would be the wrong one for the other.
+     */
+    protected final Map<String, String> ctx = new java.util.LinkedHashMap<>();
+
+    /** The row with its ${ref}, #name# and <<generator>> cells resolved -- for an expected value. */
+    protected Map<String, String> resolved(Map<String, String> row) {
+        return com.hi.api.data.PlaceholderResolver.resolveRow(row, ctx);
+    }
+
+    /** The data sheet's row, the test's values and the configuration, for one template. */
+    protected Map<String, String> values(String... more) {
+        Map<String, String> v = new java.util.LinkedHashMap<>(ctx);
+        for (int i = 0; i + 1 < more.length; i += 2) {
+            v.put(more[i], more[i + 1]);
+        }
+        return v;
+    }
+
+    /**
+     * A route with its ids filled; an EMPTY id stops the test with its name,
+     * instead of a call to {@code /businesses//activate} that the server
+     * answers with a 404 nobody can read (the converted path fails fast the
+     * same way: RestUtilities.assertPathResolved).
+     */
+    protected static String route(String template, String... nameValues) {
+        for (int i = 0; i + 1 < nameValues.length; i += 2) {
+            if (!present(nameValues[i + 1])) {
+                throw new IllegalStateException(template + ": {" + nameValues[i] + "} is empty -- an earlier "
+                        + "step did not give it (look for a SETUP failure above)");
+            }
+        }
+        return ApiRoutes.fill(template, nameValues);
+    }
+
+    /**
      * The soft assertions are flushed as part of the test method itself, so
      * a failed SETUP step or check fails the TEST -- as TestNG, Surefire,
      * Allure, the run log and the failure digest all see it. Flushed only in
@@ -53,6 +94,17 @@ public abstract class StoryTestBase extends BaseApiTest implements IHookable {
      */
     @Override
     public void run(IHookCallBack callBack, ITestResult result) {
+        ctx.clear();
+        // A retried attempt starts from the sheet's row: what fillEnrollFields
+        // generated for the last attempt (a user name the server now has) goes.
+        Object[] params = result.getParameters();
+        if (params != null) {
+            for (Object p : params) {
+                if (p instanceof Map) {
+                    forgetGenerated((Map<?, ?>) p);
+                }
+            }
+        }
         callBack.runTestMethod(result);
         if (result.getThrowable() != null) {
             return;
@@ -195,6 +247,12 @@ public abstract class StoryTestBase extends BaseApiTest implements IHookable {
                 return fromConfig.trim();
             }
         }
+        // Deliberately NOT the column's bare name in the configuration
+        // (ValueSources.fromConfig): every caller names its keys, and the
+        // callers are personas -- a story's owner "username" would quietly
+        // become the project's service account, and the test would run as
+        // the wrong person instead of skipping. Body #name#s do get that
+        // lookup, in ManualBody.
         return null;
     }
 
@@ -330,30 +388,66 @@ public abstract class StoryTestBase extends BaseApiTest implements IHookable {
         Map<String, String> signup = FakeData.signupDataMap();
         if (!present(row.get("enroll_username"))) {
             row.put("enroll_username", signup.get("username"));
+            generated(row, "enroll_username");
         }
         if (!present(row.get("enroll_password"))) {
             row.put("enroll_password", signup.get("password"));
+            generated(row, "enroll_password");
         }
         if (!present(row.get("account_email_domain"))) {
             row.put("account_email_domain", allowedDomainOrRandom());
+            generated(row, "account_email_domain");
         }
         if (!present(row.get("owner_company_email"))) {
             row.put("owner_company_email", row.get("enroll_username") + "@" + row.get("account_email_domain"));
+            generated(row, "owner_company_email");
         }
         // The enrolment's source and property codes: per environment, from the
         // configuration (the converted bodies carry them as literals; the
         // committed starter body does not).
+        // The data sheet's, else program_configuration.json's (enroll.source_code,
+        // and the converted suites' own propcode), else the codes the converted
+        // suites' enrol bodies send -- they carry them as literals, so that is
+        // the only other place they are. Said in the run log, with where.
         if (!present(row.get("enroll_source_code"))) {
-            row.put("enroll_source_code", Config.get("enroll.source_code", ""));
+            String[] c = com.hi.api.data.ValueSources.fromConfig("enroll_source_code");
+            if (c != null) {
+                row.put("enroll_source_code", c[0]);
+            }
         }
         if (!present(row.get("enroll_prop_code"))) {
-            row.put("enroll_prop_code", Config.get("enroll.prop_code", ""));
+            String[] c = com.hi.api.data.ValueSources.fromConfig("enroll_prop_code");
+            if (c == null) {
+                c = com.hi.api.data.ValueSources.fromConfig("propcode");
+            }
+            if (c != null) {
+                row.put("enroll_prop_code", c[0]);
+            }
+        }
+        if (!present(row.get("enroll_source_code")) || !present(row.get("enroll_prop_code"))) {
+            String[] conv = com.hi.api.data.ValueSources.convertedEnrollCodes();
+            if (conv != null) {
+                if (!present(row.get("enroll_source_code"))) {
+                    row.put("enroll_source_code", conv[0]);
+                    generated(row, "enroll_source_code");
+                }
+                if (!present(row.get("enroll_prop_code"))) {
+                    row.put("enroll_prop_code", conv[1]);
+                    generated(row, "enroll_prop_code");
+                }
+                if (WARNED_CONVERTED_CODES.compareAndSet(false, true)) {
+                    LOG.warn("enrolment codes {} / {} taken from the converted suites ({}): set "
+                            + "enroll.source_code / enroll.prop_code in program_configuration.json -- Settings "
+                            + "tab, Environment values, `enroll` -- to choose others", conv[0], conv[1], conv[2]);
+                }
+            }
         }
         if ((!present(row.get("enroll_source_code")) || !present(row.get("enroll_prop_code")))
                 && WARNED_ENROLL_CODES.compareAndSet(false, true)) {
             LOG.warn("enroll.source_code / enroll.prop_code are not set for env '{}': an enrolment body using "
-                    + "#enroll_source_code# / #enroll_prop_code# sends them empty. Set them in that block of "
-                    + "program_configuration.json (the converted suites' enrol bodies show the values).",
+                    + "#enroll_source_code# / #enroll_prop_code# cannot be filled. Set them in that block of "
+                    + "program_configuration.json -- Settings tab, Environment values, `enroll` -- (the "
+                    + "converted suites' enrol bodies show the values).",
                     Config.env());
         }
     }
@@ -373,6 +467,15 @@ public abstract class StoryTestBase extends BaseApiTest implements IHookable {
                 return domains.get(java.util.concurrent.ThreadLocalRandom.current().nextInt(domains.size()));
             }
         }
+        String frozen = com.hi.api.data.ValueSources.frozenDomain();
+        if (present(frozen)) {
+            if (WARNED_DOMAINS.compareAndSet(false, true)) {
+                LOG.warn("ALLOWED_DOMAINS is not configured -- generated e-mails use {}, the domain the "
+                        + "converted suites' data uses (test_data_defaults). Set ALLOWED_DOMAINS in "
+                        + "program_configuration.json to choose.", frozen);
+            }
+            return frozen;
+        }
         if (WARNED_DOMAINS.compareAndSet(false, true)) {
             LOG.warn("ALLOWED_DOMAINS is not configured -- a generated email uses a random word.com domain, "
                     + "which the target's domain allowlist rejects. Set ALLOWED_DOMAINS in "
@@ -385,6 +488,35 @@ public abstract class StoryTestBase extends BaseApiTest implements IHookable {
             new java.util.concurrent.atomic.AtomicBoolean(false);
     private static final java.util.concurrent.atomic.AtomicBoolean WARNED_DOMAINS =
             new java.util.concurrent.atomic.AtomicBoolean(false);
+    private static final java.util.concurrent.atomic.AtomicBoolean WARNED_CONVERTED_CODES =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+    /** In a row: the columns fillEnrollFields generated (comma separated), forgotten before a retry. */
+    private static final String GENERATED = "__generated";
+
+    @SuppressWarnings("unchecked")
+    protected static void generated(Map<String, String> row, String column) {
+        try {
+            String had = row.get(GENERATED);
+            row.put(GENERATED, had == null || had.isEmpty() ? column : had + "," + column);
+        } catch (UnsupportedOperationException ignored) {
+            // an unmodifiable row is not reused by a retry
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    protected static void forgetGenerated(Map<?, ?> row) {
+        try {
+            Object had = row.get(GENERATED);
+            if (had instanceof String) {
+                for (String c : ((String) had).split(",")) {
+                    ((Map<String, String>) row).remove(c);
+                }
+                ((Map<String, String>) row).remove(GENERATED);
+            }
+        } catch (RuntimeException ignored) {
+            // never the reason a test fails
+        }
+    }
 
     /**
      * Setup: enrol a new guest and return its guest id, or null when the
@@ -397,11 +529,9 @@ public abstract class StoryTestBase extends BaseApiTest implements IHookable {
     protected String enrollGuest(Map<String, String> row, String bodyTemplate, String tag) throws Exception {
         fillEnrollFields(row);
         String token = clientToken();
-        Map<String, String> ctx = new java.util.LinkedHashMap<>();
-        ctx.put("accessToken", token);
-        String body = ManualBody.render(bodyTemplate, row, ctx);
+        String body = ManualBody.render(bodyTemplate, row, values("accessToken", token));
         RestUtilities.logRequestBody(tag, holder, body);
-        String url = baseUrl() + ApiRoutes.fill(ApiRoutes.GUEST_ENROLL);
+        String url = baseUrl() + route(ApiRoutes.GUEST_ENROLL);
         Response res = step("enrollGuest: POST " + ApiRoutes.GUEST_ENROLL,
                 () -> RestUtilities.getResponsePost(body, url, apiHeaders(token)));
         RestUtilities.logResponseBody(tag, holder, RestUtilities.getResponseAsString(res));
@@ -420,10 +550,9 @@ public abstract class StoryTestBase extends BaseApiTest implements IHookable {
      */
     protected String createProgramAccount(Map<String, String> row, String bodyTemplate, String guestId,
                                           String guestToken, String tag) throws Exception {
-        Map<String, String> ctx = new java.util.LinkedHashMap<>();
-        String body = ManualBody.render(bodyTemplate, row, ctx);
+        String body = ManualBody.render(bodyTemplate, row, values());
         RestUtilities.logRequestBody(tag, holder, body);
-        String url = baseUrl() + ApiRoutes.fill(ApiRoutes.GUEST_BUSINESSES, "guestId", guestId);
+        String url = baseUrl() + route(ApiRoutes.GUEST_BUSINESSES, "guestId", guestId);
         Response res = step("createProgramAccount: POST " + ApiRoutes.GUEST_BUSINESSES,
                 () -> RestUtilities.getResponsePost(body, url, apiHeaders(guestToken)));
         RestUtilities.logResponseBody(tag, holder, RestUtilities.getResponseAsString(res));
@@ -444,9 +573,9 @@ public abstract class StoryTestBase extends BaseApiTest implements IHookable {
      */
     protected Response createProgramAccountResponse(Map<String, String> row, String bodyTemplate, String guestId,
                                                     String guestToken, String tag) throws Exception {
-        String body = ManualBody.render(bodyTemplate, row, new java.util.LinkedHashMap<>());
+        String body = ManualBody.render(bodyTemplate, row, values());
         RestUtilities.logRequestBody(tag, holder, body);
-        String url = baseUrl() + ApiRoutes.fill(ApiRoutes.GUEST_BUSINESSES, "guestId", guestId);
+        String url = baseUrl() + route(ApiRoutes.GUEST_BUSINESSES, "guestId", guestId);
         Response res = step("createProgramAccount: POST " + ApiRoutes.GUEST_BUSINESSES,
                 () -> RestUtilities.getResponsePost(body, url, apiHeaders(guestToken)));
         RestUtilities.logResponseBody(tag, holder, RestUtilities.getResponseAsString(res));
@@ -623,7 +752,7 @@ public abstract class StoryTestBase extends BaseApiTest implements IHookable {
 
     /** The account's invite key ({@code GET /businesses/{accountId}} -> inviteKey), or null (asserted). */
     protected String inviteKey(String accountId, String token, String tag) {
-        String url = baseUrl() + ApiRoutes.fill(ApiRoutes.BUSINESS, "accountId", accountId);
+        String url = baseUrl() + route(ApiRoutes.BUSINESS, "accountId", accountId);
         Response res = step("readProgramAccount: GET " + ApiRoutes.BUSINESS,
                 () -> RestUtilities.getResponseGet(url, apiHeaders(token)));
         RestUtilities.logResponseBody(tag, holder, RestUtilities.getResponseAsString(res));
@@ -642,7 +771,12 @@ public abstract class StoryTestBase extends BaseApiTest implements IHookable {
      */
     protected String addMember(Actor member, String accountId, String role, String inviteKey, String token,
                                String tag) {
-        String url = baseUrl() + ApiRoutes.fill(ApiRoutes.GUEST_BUSINESS_MEMBERS,
+        if (member == null || !present(member.email) || !present(role)) {
+            softAssert.fail(tag + "/SETUP: add member: " + (member == null ? "no member (its enrolment failed)"
+                    : !present(member.email) ? "the member has no e-mail" : "no role given") + " -- not sent");
+            return null;
+        }
+        String url = baseUrl() + route(ApiRoutes.GUEST_BUSINESS_MEMBERS,
                 "guestId", member.guestId, "accountId", accountId);
         String body = "{\"emailAddress\":" + jsonString(member.email) + ",\"role\":" + jsonString(role)
                 + (present(inviteKey) ? ",\"inviteKey\":" + jsonString(inviteKey) : "") + "}";
@@ -669,7 +803,7 @@ public abstract class StoryTestBase extends BaseApiTest implements IHookable {
 
     /** Setup: {@code POST /businesses/{accountId}/members/{memberId}/activate} (204). */
     protected boolean activateMember(String accountId, String memberId, String token, String tag) {
-        String url = baseUrl() + ApiRoutes.fill(ApiRoutes.BUSINESS_MEMBER_ACTIVATE,
+        String url = baseUrl() + route(ApiRoutes.BUSINESS_MEMBER_ACTIVATE,
                 "accountId", accountId, "memberId", memberId);
         Response res = step("activateAccountMember: POST " + ApiRoutes.BUSINESS_MEMBER_ACTIVATE,
                 () -> RestUtilities.getResponsePost("{}", url, apiHeaders(token)));
@@ -680,7 +814,7 @@ public abstract class StoryTestBase extends BaseApiTest implements IHookable {
 
     /** Setup: {@code POST /businesses/{accountId}/activate} with activationSource manual (204). */
     protected boolean activateAccount(String accountId, String token, String tag) {
-        String url = baseUrl() + ApiRoutes.fill(ApiRoutes.BUSINESS_ACTIVATE, "accountId", accountId);
+        String url = baseUrl() + route(ApiRoutes.BUSINESS_ACTIVATE, "accountId", accountId);
         Response res = step("activateProgramAccount: POST " + ApiRoutes.BUSINESS_ACTIVATE,
                 () -> RestUtilities.getResponsePost("{\"activationSource\":\"manual\"}", url, apiHeaders(token)));
         String status = RestUtilities.checkActualResponse(res);
@@ -696,7 +830,13 @@ public abstract class StoryTestBase extends BaseApiTest implements IHookable {
      */
     protected boolean setMemberRole(Actor owner, String accountId, Actor member, String role, String token,
                                     String tag) {
-        String url = baseUrl() + ApiRoutes.fill(ApiRoutes.GUEST_BUSINESS_MEMBER,
+        if (owner == null || member == null || !present(member.email) || !present(role)) {
+            softAssert.fail(tag + "/SETUP: member role: " + (owner == null || member == null
+                    ? "an actor is missing (its enrolment failed)" : !present(member.email)
+                    ? "the member has no e-mail" : "no role given") + " -- not sent");
+            return false;
+        }
+        String url = baseUrl() + route(ApiRoutes.GUEST_BUSINESS_MEMBER,
                 "guestId", owner.guestId, "accountId", accountId, "memberId", member.memberId);
         String body = "{\"status\":\"active\",\"emailAddress\":" + jsonString(member.email)
                 + ",\"role\":" + jsonString(role) + "}";
@@ -711,7 +851,7 @@ public abstract class StoryTestBase extends BaseApiTest implements IHookable {
         }
         // The converted suite waits after this PUT (Delay_5Sec); here the role
         // is read back until it shows, with a deadline -- not a sleep.
-        String read = baseUrl() + ApiRoutes.fill(ApiRoutes.GUEST_BUSINESS_MEMBER,
+        String read = baseUrl() + route(ApiRoutes.GUEST_BUSINESS_MEMBER,
                 "guestId", member.guestId, "accountId", accountId, "memberId", member.memberId);
         Response back = step("readAccountMember: GET " + ApiRoutes.GUEST_BUSINESS_MEMBER + " (role settled)",
                 () -> com.hi.api.retry.Poller.untilJsonEquals(
@@ -737,7 +877,7 @@ public abstract class StoryTestBase extends BaseApiTest implements IHookable {
         if (!present(otp)) {
             return false;
         }
-        String url = baseUrl() + ApiRoutes.fill(ApiRoutes.MEMBER_CONFIRM_VALIDATION,
+        String url = baseUrl() + route(ApiRoutes.MEMBER_CONFIRM_VALIDATION,
                 "guestId", owner.guestId, "accountId", accountId, "memberId", ownerMemberId);
         Response res = step("confirmMemberTotp: POST " + ApiRoutes.MEMBER_CONFIRM_VALIDATION,
                 () -> RestUtilities.getResponsePost("{\"totpCode\":" + jsonString(otp.trim()) + "}",

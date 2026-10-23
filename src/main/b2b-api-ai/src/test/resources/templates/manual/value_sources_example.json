@@ -1,0 +1,6 @@
+{
+  "_comment": "Rendered by ValueSourcesTest: one placeholder per source a story test's body reads -- the data sheet row, a value captured earlier in the test, and program_configuration.json. Nothing here is a real value -- this directory is COMMITTED.",
+  "fromRow": "#Properties_Email#",
+  "fromCaptured": "#captured_member_id#",
+  "fromConfig": "#guard_enroll_source_code#"
+}

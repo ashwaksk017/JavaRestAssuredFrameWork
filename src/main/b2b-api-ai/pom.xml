@@ -286,7 +286,14 @@ No converted output found -- this tree has not been through the converter yet.
 
   com.hi.api.support is GENERATED and gitignored, but the committed code
   (domain/, dsl/, rest/utilities/) imports it, so compilation cannot work
-  until you convert at least once.
+  until those framework classes exist.
+
+  Only writing your own tests (the workbench's story tests)? No ReadyAPI XML
+  is needed -- write the framework classes once (the workbench does this by
+  itself before every compile):
+         python tools/ra_converter/ra_converter.py --bootstrap --output . --package-root com.hi.api
+
+  To convert ReadyAPI suites instead:
 
   1. Put your ReadyAPI / SoapUI project XML(s) in:
          tools/ra_converter/input/

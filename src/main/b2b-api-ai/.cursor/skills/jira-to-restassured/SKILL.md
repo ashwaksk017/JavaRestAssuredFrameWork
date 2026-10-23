@@ -125,7 +125,7 @@ config helper **fails the workbench's checks** (`story-test-shared-helpers`):
 
 Also already there, for calls and assertions: `RestUtilities.getResponseGet/Post/Put/Patch/Delete`,
 `checkActualResponse`, `safeJsonExtract`, `safeJsonGet`; `ManualBody.render(template, row, ctx)`;
-`ApiRoutes.fill(ApiRoutes.GUEST_BUSINESSES, "guestId", guestId)`; `baseUrl()`; and the fluent
+`route(ApiRoutes.GUEST_BUSINESSES, "guestId", guestId)` (never `ApiRoutes.fill`: `route` stops the test naming an empty id); `baseUrl()`; and the fluent
 flows in `CreateTestCase.md` (`CustomerOnboarding`, `MasterClass.onboarding(row)`).
 
 ```java
@@ -150,7 +150,7 @@ public class AccountActivationTest extends StoryTestBase {
         String accountId = acc[0];
         Response res = step("readProgramAccount: GET " + ApiRoutes.BUSINESS,
                 () -> RestUtilities.getResponseGet(
-                        baseUrl() + ApiRoutes.fill(ApiRoutes.BUSINESS, "accountId", accountId),
+                        baseUrl() + route(ApiRoutes.BUSINESS, "accountId", accountId),
                         apiHeaders(svc)));
         RestUtilities.logResponseBody(CASE, holder, RestUtilities.getResponseAsString(res));
         softAssert.assertEquals(RestUtilities.checkActualResponse(res), "200",
@@ -163,6 +163,10 @@ A body bigger than one field, or one that varies per row, goes in
 `src/test/resources/templates/manual/<job>_<step>.json` and is rendered with
 `ManualBody.render(template, row, ctx)` -- never `RestUtilities.mapJsonValues`
 (a `<<faker>>` token would go to the server verbatim; see MANUAL_FIXES.md section 5).
+
+`ctx` is StoryTestBase's own per-test map (empty at each attempt): `ctx.put("accountId", accountId)`
+after an extract fills `#accountId#` in every later body; a `#name#` neither the row nor `ctx` has
+is read from program_configuration.json under that name (as the converted tests do).
 
 ### The verb helpers
 
@@ -391,7 +395,7 @@ project.
 committed interface.** Generated suite clients implement extra methods, but
 jira tests compile on a bare clone without those clients. Use
 `StoryTestBase`'s helpers + `RestUtilities` + `baseUrl()` and
-`ApiRoutes.fill(...)`, like the skeleton in section 2.
+`route(...)`, like the skeleton in section 2.
 
 ### Auth and setup the AC does not spell out
 

@@ -37,7 +37,23 @@ public class RetryAnalyzerTest {
         Assert.assertTrue(RetryAnalyzer.moreRetriesRemain(r));
     }
 
+    @Test(groups = {"unit"})
+    @Story("a missing value is not retried")
+    @Description("An unresolved placeholder fails every attempt the same way: no retry.")
+    public void anUnresolvedPlaceholderIsNotRetried() {
+        RetryAnalyzer.resetAttempts();
+        ITestResult r = stubResult(new RuntimeException("wrapped",
+                new com.hi.api.rest.utilities.RestUtilities.UnresolvedPlaceholderException("#accountId# has no value")));
+        Assert.assertFalse(new RetryAnalyzer().retry(r));
+        Assert.assertFalse(RetryAnalyzer.moreRetriesRemain(r), "counted as the last attempt");
+        RetryAnalyzer.clearAttempts(r);
+    }
+
     private static ITestResult stubResult() {
+        return stubResult(null);
+    }
+
+    private static ITestResult stubResult(Throwable thrown) {
         ClassLoader cl = RetryAnalyzerTest.class.getClassLoader();
         ITestClass testClass = (ITestClass) Proxy.newProxyInstance(
                 cl, new Class<?>[] {ITestClass.class}, (p, m, a) -> {
@@ -54,6 +70,7 @@ public class RetryAnalyzerTest {
                     if ("getTestClass".equals(m.getName())) return testClass;
                     if ("getMethod".equals(m.getName())) return method;
                     if ("getParameters".equals(m.getName())) return new Object[0];
+                    if ("getThrowable".equals(m.getName())) return thrown;
                     return defaultValue(m.getReturnType());
                 });
     }

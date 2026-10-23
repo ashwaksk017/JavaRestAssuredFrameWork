@@ -10,6 +10,7 @@
     <test name="Guards">
         <classes>
             <class name="com.hi.api.data.ExecutionFlagTest"/>
+            <class name="com.hi.api.data.ValueSourcesTest"/>
             <class name="com.hi.api.tests.framework.ExecuteFlagEndToEndTest"/>
             <class name="com.hi.api.tests.framework.ManualTemplateExampleTest"/>
             <class name="com.hi.api.tests.framework.XrayKeyGuardTest"/>

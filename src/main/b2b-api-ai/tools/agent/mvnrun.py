@@ -105,12 +105,14 @@ TEST_RX = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,200}(#[A-Za-z_*][A-Za-z0-9_*]{0
 GROUP_RX = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 ENV_RX = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 COMPILE_TIMEOUT = 20 * 60
-SHOWN = ("Running ", "Tests run:", "[ERROR]", "BUILD ", "FAIL", "PASSED", "SKIPPED",
-         "COMPILATION ERROR", "[WARNING] COMPILATION")
-
 
 def say(msg: str) -> None:
     loop.say(msg)
+
+
+def _runlog():
+    """runlog.py: which lines of a run the page shows (one filter, two runs)."""
+    return _load("mvnrun_runlog", os.path.join(HERE, "runlog.py"))
 
 
 def _now() -> str:
@@ -362,14 +364,16 @@ def maven(root: str):
 def stream(root: str, argv: list, env: dict, timeout: float) -> tuple:
     """(rc, text). Lines worth seeing are said as they come."""
     lines, start = [], time.time()
+    shown = _runlog().Shown()
     proc = subprocess.Popen(argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             env=env, **loop.NO_WINDOW)
     try:
         for raw in iter(proc.stdout.readline, b""):
             line = raw.decode("utf-8", "replace").rstrip()
             lines.append(line)
-            if any(w in line for w in SHOWN):
-                say("    " + line[:300])
+            text = shown(line)
+            if text is not None:
+                say("    " + text)
             if time.time() - start > timeout:
                 proc.kill()
                 lines.append(f"stopped after {timeout:.0f}s")
@@ -391,6 +395,7 @@ def run_maven(root: str, args: list, timeout: float, runner=None) -> tuple:
     if not exe:
         say("FAIL Maven is not on PATH (and the project has no mvnw)")
         return 127, "", ""
+    loop.ensure_framework(root, say)        # a copy never converted: the framework classes first
     env, note = java_env()
     if note and note not in _SAID:
         _SAID.add(note)                     # once a command, not once a Maven call

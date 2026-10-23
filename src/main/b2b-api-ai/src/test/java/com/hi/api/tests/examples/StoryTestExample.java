@@ -83,7 +83,7 @@ public class StoryTestExample extends StoryTestBase {
         }
 
         // Act -- as the coordinator: their guest id and member id in the path.
-        String url = baseUrl() + ApiRoutes.fill(ApiRoutes.GUEST_BUSINESS_MEMBER,
+        String url = baseUrl() + route(ApiRoutes.GUEST_BUSINESS_MEMBER,
                 "guestId", coordinator.guestId, "accountId", accountId, "memberId", coordinator.memberId);
         Response res = step("readAccountMember: GET " + ApiRoutes.GUEST_BUSINESS_MEMBER,
                 () -> RestUtilities.getResponseGet(url, apiHeaders(svc)));

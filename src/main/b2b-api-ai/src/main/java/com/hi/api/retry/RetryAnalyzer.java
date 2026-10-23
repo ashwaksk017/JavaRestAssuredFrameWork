@@ -42,6 +42,16 @@ public class RetryAnalyzer implements IRetryAnalyzer {
     // 0). Trivial trade-off vs. an OOM in a long CI run.
     private static final int MAX_ENTRIES = 1000;
 
+    /** A failure no retry changes: an unresolved placeholder in what is sent. */
+    private static boolean deterministic(ITestResult r) {
+        for (Throwable t = r.getThrowable(); t != null; t = t.getCause()) {
+            if (t instanceof com.hi.api.rest.utilities.RestUtilities.UnresolvedPlaceholderException) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static String key(ITestResult r) {
         return r.getTestClass().getRealClass().getName()
                 + "#" + r.getMethod().getMethodName()
@@ -66,6 +76,16 @@ public class RetryAnalyzer implements IRetryAnalyzer {
                     result.getTestClass().getRealClass().getSimpleName(),
                     result.getMethod().getMethodName(),
                     "the server refused the same write the same way twice");
+            return false;
+        }
+        if (deterministic(result)) {
+            // A value the test cannot fill (an unresolved #placeholder#, a
+            // missing configuration key): every attempt fails the same way.
+            ATTEMPTS_BY_KEY.put(k, Math.max(max, 0));
+            System.err.printf("[Retry] %s.%s -- not retried: %s%n",
+                    result.getTestClass().getRealClass().getSimpleName(),
+                    result.getMethod().getMethodName(),
+                    "a value is missing, and it is missing the same way every attempt");
             return false;
         }
         rememberRejection(result);

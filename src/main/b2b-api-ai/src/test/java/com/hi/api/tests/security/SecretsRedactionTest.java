@@ -22,6 +22,24 @@ import io.qameta.allure.Story;
 public class SecretsRedactionTest {
 
     @Test(groups = {"unit", "security"})
+    @Story("The configured service user name is masked")
+    @Description("Seen in a run log: the token request carried the service "
+            + "account's user name. The configured VALUE is masked wherever "
+            + "it appears; the field name stays readable.")
+    public void configuredUserName_isMaskedWherever() {
+        System.setProperty("username", "svc-guard-user@example.test");
+        try {
+            Secrets.resetForTest();
+            String out = Secrets.redact("grant_type=password&username=svc-guard-user@example.test&x=1");
+            Assert.assertFalse(out.contains("svc-guard-user@example.test"), out);
+            Assert.assertTrue(out.contains("username="), out);
+        } finally {
+            System.clearProperty("username");
+            Secrets.resetForTest();
+        }
+    }
+
+    @Test(groups = {"unit", "security"})
     @Story("Token request body is masked")
     @Description("The exact leak found in the Extent reports: a token-request "
             + "body carrying client_id / client_secret / password.")

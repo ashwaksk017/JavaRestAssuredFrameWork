@@ -32,6 +32,50 @@ public class StoryTestBaseTest {
         static boolean truthy(Map<String, String> row, String col, String key) {
             return truthyRowOrConfig(row, col, key);
         }
+
+        static String path(String template, String... nameValues) {
+            return route(template, nameValues);
+        }
+
+        static void minted(Map<String, String> row, String col) {
+            generated(row, col);
+        }
+
+        static void retryFresh(Map<String, String> row) {
+            forgetGenerated(row);
+        }
+    }
+
+    @Test(groups = {"unit"})
+    public void aPathWithAnEmptyIdStopsBeforeTheCall() {
+        Assert.assertEquals(Probe.path("/accounts/{accountId}/members", "accountId", "42"), "/accounts/42/members");
+        for (String empty : new String[] {null, "", "  "}) {
+            try {
+                Probe.path("/accounts/{accountId}/members", "accountId", empty);
+                Assert.fail("an empty {accountId} must not become /accounts//members");
+            } catch (IllegalStateException e) {
+                Assert.assertTrue(e.getMessage().contains("{accountId} is empty"), e.getMessage());
+            }
+        }
+    }
+
+    @Test(groups = {"unit"})
+    public void aRetryForgetsTheValuesTheFirstAttemptGenerated() {
+        Map<String, String> row = new HashMap<>();
+        row.put("email", "from-the-sheet@example.test");
+        row.put("firstName", "made-up");
+        row.put("lastName", "made-up-too");
+        Probe.minted(row, "firstName");
+        Probe.minted(row, "lastName");
+        Probe.retryFresh(row);
+        Assert.assertEquals(row.get("email"), "from-the-sheet@example.test", "the sheet's value stays");
+        Assert.assertFalse(row.containsKey("firstName"), row.toString());
+        Assert.assertFalse(row.containsKey("lastName"), row.toString());
+        Assert.assertFalse(row.containsKey("__generated"), row.toString());
+
+        Map<String, String> fixed = java.util.Collections.unmodifiableMap(new HashMap<>(row));
+        Probe.minted(fixed, "x");   // no throw on a row that cannot change
+        Probe.retryFresh(fixed);
     }
 
     @AfterMethod(alwaysRun = true)

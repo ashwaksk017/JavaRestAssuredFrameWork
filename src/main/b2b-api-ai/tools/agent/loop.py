@@ -1665,7 +1665,12 @@ def jira_requirements_block(scope: dict) -> str:
             "and group C/D columns the method reads.\n"
             "- JSON bodies: `ManualBody.render(\"templates/manual/….json\", row, ctx)`; "
             "every `#column#` in the template must be a CSV column, `ctx` after extract, "
-            "or `<<faker>>`/`${}` in CSV (MANUAL_FIXES.md §5).\n"
+            "or `<<faker>>`/`${}` in CSV (MANUAL_FIXES.md §5). `ctx` is StoryTestBase's own "
+            "per-test map: `ctx.put(\"accountId\", accountId)` after each extract fills "
+            "`#accountId#` in every later body; a `#name#` neither the row nor `ctx` has is read "
+            "from program_configuration.json under that name.\n"
+            "- Paths: `route(ApiRoutes.X, \"accountId\", accountId)` -- it stops the test naming an "
+            "empty id; never `ApiRoutes.fill` (an empty id becomes `/businesses//...`).\n"
             "- **Mirror the converted test of the same endpoint**: "
             "`_audit/<suite>/facade_endpoints.md` names the converted method that reaches each "
             "endpoint. Open that converted test (src/test/java/com/hi/api/tests/imported/<suite>/) "
@@ -3128,6 +3133,46 @@ def run_build(run, exe: str, cmd: list) -> tuple:
     return run([exe, *args]), "online"
 
 
+SUPPORT_DIR = "src/main/java/com/hi/api/support"
+SUPPORT_NEEDED = ("ImportedScenario.java", "ImportedRestClient.java")
+
+
+def ensure_framework(root: str, say_=None, run=None) -> str:
+    """Make a copy that was never converted compile, before any Maven call.
+
+    com.hi.api.support is generated and gitignored, yet the committed
+    framework (dsl/, domain/, rest/utilities/, BaseApiTest) imports it -- so
+    a fresh clone, or a copy that only ever made story tests, failed every
+    compile with the pom's "No converted output found" and told the person
+    to convert ReadyAPI XMLs they may not have. The converter's --bootstrap
+    writes exactly those framework types (no XML, never touches an existing
+    file or program_configuration.json); a later convert replaces them.
+
+    Returns what was done ("" when the tree already has them)."""
+    missing = [f for f in SUPPORT_NEEDED
+               if not os.path.isfile(os.path.join(root, *SUPPORT_DIR.split("/"), f))]
+    conv = os.path.join(root, "tools", "ra_converter", "ra_converter.py")
+    if not missing or not os.path.isfile(conv):
+        return ""
+    tell = say_ or say
+    tell(f" ..  this copy has no converted framework classes ({', '.join(missing)} under "
+         f"{SUPPORT_DIR}/): writing them with the converter's --bootstrap -- no ReadyAPI XML needed")
+    argv = [sys.executable, "-B", conv, "--bootstrap", "--output", ".", "--package-root", "com.hi.api"]
+    try:
+        r = (run or (lambda a: subprocess.run(a, cwd=root, stdout=subprocess.PIPE,
+                                              stderr=subprocess.STDOUT, timeout=600, **NO_WINDOW)))(argv)
+        out = r.stdout.decode("utf-8", "replace") if isinstance(r.stdout, bytes) else (r.stdout or "")
+        rc = r.returncode
+    except (OSError, subprocess.SubprocessError) as e:
+        out, rc = str(e), 1
+    if rc == 0 and all(os.path.isfile(os.path.join(root, *SUPPORT_DIR.split("/"), f)) for f in SUPPORT_NEEDED):
+        tell(" ..  framework classes written (--bootstrap); converting a ReadyAPI suite later replaces them")
+        return "bootstrapped"
+    tell(f"FAIL the converter's --bootstrap did not write them (exit {rc}): "
+         + " | ".join(out.strip().splitlines()[-5:])[:600])
+    return "failed"
+
+
 def compile_baseline(root: str, scope: dict, runner=None):
     """What already fails to compile BEFORE the agent runs.
 
@@ -3141,6 +3186,8 @@ def compile_baseline(root: str, scope: dict, runner=None):
     exe = shutil.which(cmd[0]) if cmd else None
     if not exe:
         return None
+    if runner is None:
+        ensure_framework(root)
     run = runner or (lambda argv: subprocess.run(
         argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **NO_WINDOW))
     r, _how = run_build(run, exe, cmd)
@@ -3180,6 +3227,8 @@ def compile_baseline_cached(root: str, policy: dict, scope: dict, runner=None, s
     if not cmd:
         return None
     path = os.path.join(root, ".workbench", "compile-baseline.json")
+    if runner is None:
+        ensure_framework(root, say_)        # before the key: the key is of the tree that compiles
     key = _tree_key(root, policy, cmd)
     try:
         with io.open(path, encoding="utf-8") as fh:
@@ -3246,6 +3295,8 @@ def run_verify(root: str, scope: dict, runner=None, gate_before=None,
         argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **NO_WINDOW))
     steps = []
     compile_cmd = list(scope.get("compile") or [])
+    if compile_cmd and runner is None:
+        ensure_framework(root)
     if compile_cmd:
         exe = shutil.which(compile_cmd[0])
         if not exe:
@@ -5291,19 +5342,19 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
 RUN_RESULTS = os.path.join("target", "surefire-reports", "testng-results.xml")
 RUN_TIMEOUT = 45 * 60
 _ENV_RX = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
-_RUN_SHOWN = ("Running ", "Tests run:", "[ERROR]", "BUILD ", "FAIL", "PASSED", "SKIPPED")
-
 
 def _stream(root: str, argv: list, timeout: float) -> tuple:
     """Run a command, printing the lines worth seeing as they come; (rc, text)."""
     proc = subprocess.Popen(argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     lines, start = [], time.time()
+    shown = _load("loop_runlog", os.path.join(HERE, "runlog.py")).Shown()   # as the Run tests tab
     try:
         for raw in iter(proc.stdout.readline, b""):
             line = raw.decode("utf-8", "replace").rstrip()
             lines.append(line)
-            if any(w in line for w in _RUN_SHOWN):
-                say("    " + line[:300])
+            text = shown(line)
+            if text is not None:
+                say("    " + text)
             if time.time() - start > timeout:
                 proc.kill()
                 lines.append(f"stopped after {timeout:.0f}s")
@@ -5357,6 +5408,7 @@ def cmd_run(job_dir: str, root: str, policy: dict, env: str = "", runner=None) -
         exe_ = shutil.which("mvn")
         if not exe_:
             return 127, "mvn is not on PATH.", ""
+        ensure_framework(root)
         rc_, text_ = _stream(root, [exe_, "-o", "-B", *args], timeout)
         if rc_ != 0 and any(w in text_.lower() for w in _NEEDS_NETWORK):
             say(" .. offline was not enough; running online")

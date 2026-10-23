@@ -2,7 +2,11 @@ package com.hi.api.data;
 
 import java.io.BufferedReader;
 import java.io.Reader;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import com.hi.api.rest.utilities.RestUtilities;
@@ -61,12 +65,61 @@ public final class ManualBody {
                                 Map<String, String> row,
                                 Map<String, String> ctx) throws Exception {
         String raw = read(classpathTemplate);
-        Map<String, String> data = PlaceholderResolver.resolveRow(row, ctx);
+        // The converted path's order (ImportedScenario.mergedRow): the
+        // configuration under the placeholder's name and its alias forms,
+        // then the data sheet's row over it, then the values this test
+        // captured or generated (ctx) over both. Before, only the row was
+        // asked: a #name# the configuration or an earlier call had was
+        // "unresolved" here and resolved in a converted test.
+        Map<String, String> resolvedRow = PlaceholderResolver.resolveRow(row, ctx);
+        Map<String, String> data = new LinkedHashMap<>();
+        Map<String, String> origins = new HashMap<>();
+        Matcher m = HASH_NAME.matcher(raw);
+        while (m.find()) {
+            String name = m.group(1);
+            if (present(resolvedRow.get(name)) || (ctx != null && present(ctx.get(name)))) {
+                continue;
+            }
+            String[] cfg = ValueSources.fromConfig(name);
+            if (cfg != null) {
+                data.put(name, cfg[0]);
+                origins.put(name, "program_configuration.json (" + cfg[1] + ")");
+            }
+        }
+        data.putAll(resolvedRow);
+        if (ctx != null) {
+            for (Map.Entry<String, String> e : ctx.entrySet()) {
+                if (present(e.getValue()) && !PayloadProvenance.isReserved(e.getKey())) {
+                    if (!present(resolvedRow.get(e.getKey()))) {
+                        origins.put(e.getKey(), "a value this test captured or generated");
+                    }
+                    data.put(e.getKey(), e.getValue());
+                }
+            }
+        }
+        PayloadProvenance.noteOrigins(data, origins);
         // Same order as RestStep: tokens first, then columns, then any
         // token a column's value itself carried.
         String tokensFirst = PlaceholderResolver.resolveAll(raw, ctx);
         String mapped = RestUtilities.mapJsonValues(tokensFirst, data, true);
-        return PlaceholderResolver.resolveAll(mapped, ctx);
+        String out = PlaceholderResolver.resolveAll(mapped, ctx);
+        // A ${ref} or <<generator>> nothing knew stays in the text verbatim:
+        // the server would get it literally. Said now, by name -- as the
+        // strict #name# check does, so RetryAnalyzer does not retry it.
+        Matcher left = LEFTOVER.matcher(out);
+        if (left.find()) {
+            throw new RestUtilities.UnresolvedPlaceholderException("template '" + classpathTemplate + "': " + left.group()
+                    + " has no value -- not in the data sheet, not captured earlier in the test, not in "
+                    + "program_configuration.json, and not a known generator (<<email>>, <<firstname>>, ...)");
+        }
+        return out;
+    }
+
+    private static final Pattern HASH_NAME = Pattern.compile("#([A-Za-z0-9_.\\-]+)#");
+    private static final Pattern LEFTOVER = Pattern.compile("\\$\\{[^}]+\\}|<<[^<>]+>>");
+
+    private static boolean present(String v) {
+        return v != null && !v.trim().isEmpty();
     }
 
     /** The template text, or a message saying where it should have been. */

@@ -110,5 +110,46 @@ class DiagApi(unittest.TestCase):
         self.assertIn("XRAY TRACE", text)
 
 
+class WhatTheRunShows(unittest.TestCase):
+    """Seen live on the Run tests tab: a failed test's block was shown EMPTY
+    and the WARN naming the cause was not shown at all. These are that
+    run's own lines."""
+
+    LINES = [
+        "14:37:19.292 [main] WARN  org.testng.TestNG - Ignoring duplicate listener : io.qameta.allure.testng.AllureTestNg",
+        "14:37:19.719 [main] INFO  RUN - RUN START suite jira-job-1 | env stg | project b2b",
+        "14:37:22.313 [main] INFO  com.hi.api.rest.ApiRoutes - ApiRoutes: loaded 0 path override(s) from routes.json",
+        "14:37:29.785 [main] WARN  com.hi.api.tests.StoryTestBase - enroll.source_code / enroll.prop_code are not set for env 'stg'",
+        "[Retry] Abc1Test.rejects_400 -- attempt 1/2",
+        "14:37:31.436 [main] ERROR RUN - ==== TEST FAILED: Abc1Test.rejects_400  [case TC-001 | story ABC-1 | env stg | 0.5 s]",
+        "  why        : UnresolvedPlaceholderException: Unresolved placeholders: [#enroll_source_code#, #enroll_prop_code#]",
+        "  calls      : POST /v2/realms/applications/token -> 200",
+        "  answered   : {\"access_token\":\"***REDACTED***\"}",
+        "==== end of TEST FAILED",
+        "14:37:31.448 [main] INFO  RUN - TEST END   Abc1Test.rejects_400  FAILED  [case TC-001]",
+        "[digest] 0 check(s) recorded as skipped. If the run logged `[assert SKIPPED]` lines, ...",
+        "[INFO] Download progress 45%",
+        "14:37:33.563 [main] INFO  RUN - RUN END   suite jira-job-1 | 0 passed, 2 failed, 0 skipped",
+    ]
+
+    def test_a_failed_tests_block_whole_every_warn_and_where_the_run_is(self):
+        shown = rl.Shown()
+        out = [t for t in (shown(l) for l in self.LINES) if t is not None]
+        text = "\n".join(out)
+        for must in ("RUN START", "enroll.source_code / enroll.prop_code are not set", "[Retry]",
+                     "==== TEST FAILED", "  why        : UnresolvedPlaceholderException",
+                     "  calls      : POST", "  answered   :", "==== end of TEST FAILED",
+                     "TEST END", "RUN END"):
+            self.assertIn(must, text)
+        for never in ("Ignoring duplicate listener", "[digest] 0 check(s)", "Download progress", "ApiRoutes"):
+            self.assertNotIn(never, text)
+
+    def test_a_long_block_line_is_kept_long_enough_to_read_the_server(self):
+        shown = rl.Shown()
+        shown("==== TEST FAILED: X")
+        answer = "  answered   : " + "x" * 2000
+        self.assertEqual(len(shown(answer)), len(answer))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

@@ -323,5 +323,60 @@ class Java(unittest.TestCase):
         self.assertIn("no JDK 17+", note)
 
 
+class NeverConverted(unittest.TestCase):
+    """A copy that only ever made story tests has no com.hi.api.support:
+    every compile failed with the pom's "No converted output found". The
+    converter's --bootstrap is run first, once, and only when they are missing."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        conv = os.path.join(self.root, "tools", "ra_converter")
+        os.makedirs(conv)
+        open(os.path.join(conv, "ra_converter.py"), "w").close()
+        self.calls, self.said = [], []
+
+    def run_(self, writes=True, rc=0):
+        def run(argv):
+            self.calls.append(argv)
+            if writes:
+                d = os.path.join(self.root, *mr.loop.SUPPORT_DIR.split("/"))
+                os.makedirs(d, exist_ok=True)
+                for f in mr.loop.SUPPORT_NEEDED:
+                    open(os.path.join(d, f), "w").close()
+
+            class R:
+                returncode, stdout = rc, b"[ra_converter] --bootstrap: wrote 9 file(s)"
+            return R()
+        return run
+
+    def test_missing_framework_classes_are_bootstrapped(self):
+        got = mr.loop.ensure_framework(self.root, self.said.append, self.run_())
+        self.assertEqual(got, "bootstrapped")
+        self.assertEqual(len(self.calls), 1)
+        argv = self.calls[0]
+        self.assertIn("--bootstrap", argv)
+        self.assertEqual(argv[argv.index("--package-root") + 1], "com.hi.api")
+        self.assertNotIn("--input", argv, "no ReadyAPI XML is needed")
+        self.assertTrue(any("--bootstrap" in s for s in self.said), self.said)
+
+    def test_a_converted_copy_is_left_alone(self):
+        self.run_()([])                                    # the classes exist
+        self.calls.clear()
+        self.assertEqual(mr.loop.ensure_framework(self.root, self.said.append, self.run_()), "")
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.said, [])
+
+    def test_a_failed_bootstrap_is_said(self):
+        got = mr.loop.ensure_framework(self.root, self.said.append, self.run_(writes=False, rc=2))
+        self.assertEqual(got, "failed")
+        self.assertTrue(any(s.startswith("FAIL") and "exit 2" in s for s in self.said), self.said)
+
+    def test_no_converter_in_the_copy_nothing_is_tried(self):
+        shutil.rmtree(os.path.join(self.root, "tools"))
+        self.assertEqual(mr.loop.ensure_framework(self.root, self.said.append, self.run_()), "")
+        self.assertEqual(self.calls, [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

@@ -163,3 +163,42 @@ def after_maven(root: str, started_before: float) -> dict:
                     "Open the Logs tab → Maven test run log for why.",
         }
     return {}
+
+
+# ---- what a test run shows on the page, as it runs ----------------------------------
+# Seen live: the Run tests tab showed a failed test's block EMPTY -- "==== TEST
+# FAILED" and "==== end of TEST FAILED" with nothing between, because the
+# lines between (why, assertion, calls, sent, answered) carry no keyword --
+# and never showed the WARN that named the cause. One filter for both runs
+# (the Run tests tab, and a change's own Run the tests).
+SHOWN = ("Running ", "Tests run:", "[ERROR]", "BUILD ", "FAIL", "PASSED", "SKIPPED",
+         "COMPILATION ERROR", "[WARNING] COMPILATION", "RUN START", "RUN END",
+         "SETUP METHOD", "[Retry]")
+NOT_SHOWN = ("Ignoring duplicate listener",                 # TestNG, every run, harmless
+             "[digest] 0 check(s) recorded as skipped")     # says nothing when 0
+_LEVEL_RX = re.compile(r"^\d\d:\d\d:\d\d\.\d{3} \[[^\]]*\] (WARN|ERROR)\s")
+
+
+class Shown:
+    """Which lines of a Maven test run the page shows, as they come: a
+    failed test's block whole, every WARN and ERROR the run logged, and the
+    lines that say where the run is. Call it with each line: the text to
+    show, or None."""
+
+    def __init__(self):
+        self.in_block = False
+
+    def __call__(self, line: str):
+        if "==== TEST FAILED" in line:
+            self.in_block = True
+            return line[:600]
+        if self.in_block:
+            if "==== end of TEST FAILED" in line:
+                self.in_block = False
+            return line[:2500]
+        if any(n in line for n in NOT_SHOWN):
+            return None
+        if _LEVEL_RX.match(line) or any(w in line for w in SHOWN):
+            return line[:600]
+        return None
+

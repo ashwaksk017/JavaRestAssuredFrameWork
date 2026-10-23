@@ -219,6 +219,10 @@ def _jira_shape_issues(root: str, norm: str, text: str, cls: str) -> list:
     if re.search(r"\bmapJsonValues\s*\(", text):
         issues.append(f"{norm}: a raw mapJsonValues(...) body: <<faker>> and ${{ref}} tokens are not resolved "
                       "and a missing #column# is sent as \"null\"; use ManualBody.render(template, row, ctx)")
+    if re.search(r"\bApiRoutes\s*\.\s*fill\s*\(", text):
+        issues.append(f"{norm}: ApiRoutes.fill(...) in the test: an empty id is sent as /businesses//... and "
+                      "the server's 404 does not say which; use route(ApiRoutes.X, \"name\", value), which "
+                      "stops the test naming the empty id")
     for key in _CONFIG_LITERAL_RX.findall(text):
         if not key.startswith("jira."):
             issues.append(f"{norm}: config key \"{key}\" is not jira.<story>.<object>.<field>; a story's "

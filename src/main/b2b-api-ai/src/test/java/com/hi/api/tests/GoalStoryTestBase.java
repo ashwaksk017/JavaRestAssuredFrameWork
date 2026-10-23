@@ -115,11 +115,19 @@ public abstract class GoalStoryTestBase extends StoryTestBase {
         String url = Config.serviceBase(service, "", goalBase()) + ApiRoutes.TOKEN;
         String user = Config.get("api_config.username", Config.get("username", ""));
         String pass = Config.get("api_config.password", Config.get("password", ""));
+        if ((user.isBlank() || pass.isBlank()) && WARNED_GOAL_CREDENTIAL.compareAndSet(false, true)) {
+            LOG.warn("GOAL token: the project credential (username / password of this environment) is not "
+                    + "set -- the token is asked with the client credentials only; set them in "
+                    + "program_configuration.goal.json if the token service needs them");
+        }
         goalTokenValue = step("tokenRequest: GOAL service (as the converted suites)",
                 () -> JsonTokens.at(url, user, pass)).accessToken;
         goalTokenAt = System.currentTimeMillis();
         return goalTokenValue;
     }
+
+    private static final java.util.concurrent.atomic.AtomicBoolean WARNED_GOAL_CREDENTIAL =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
 
     // ---- availability ---------------------------------------------------------------------
 
@@ -215,7 +223,7 @@ public abstract class GoalStoryTestBase extends StoryTestBase {
     }
 
     private Response shopAt(String propCode, String arrival, String departure, String peakRooms, String token) {
-        String url = goalBase() + ApiRoutes.fill(ApiRoutes.PROP_GROUPS, "propCode", propCode)
+        String url = goalBase() + route(ApiRoutes.PROP_GROUPS, "propCode", propCode)
                 + "?arrivalDate=" + enc(arrival) + "&departureDate=" + enc(departure)
                 + (peakRooms == null || peakRooms.isBlank() ? "" : "&peakRooms=" + enc(peakRooms.trim()));
         return step("readPropsGroups: GET " + ApiRoutes.PROP_GROUPS,
@@ -235,7 +243,7 @@ public abstract class GoalStoryTestBase extends StoryTestBase {
                                            String token, String tag) throws Exception {
         String body = render(bodyTemplate, row, av);
         RestUtilities.logRequestBody(tag, holder, body);
-        String url = Config.get("base_url", baseUrl()) + ApiRoutes.fill(ApiRoutes.PROP_GROUPS, "propCode", av.propCode);
+        String url = Config.get("base_url", baseUrl()) + route(ApiRoutes.PROP_GROUPS, "propCode", av.propCode);
         Response res = step("createPropsGroups: POST " + ApiRoutes.PROP_GROUPS,
                 () -> RestUtilities.getResponsePost(body, url, apiHeaders(token)));
         RestUtilities.logResponseBody(tag, holder, RestUtilities.getResponseAsString(res));
@@ -255,7 +263,7 @@ public abstract class GoalStoryTestBase extends StoryTestBase {
     protected boolean payGroup(Availability av, Map<String, String> row, String bodyTemplate, String token,
                                String tag) throws Exception {
         String body = render(bodyTemplate, row, av);
-        String url = goalBase() + ApiRoutes.fill(ApiRoutes.PROP_GROUP_PAYMENT,
+        String url = goalBase() + route(ApiRoutes.PROP_GROUP_PAYMENT,
                 "propCode", av.propCode, "groupId", av.groupId);
         Response res = step("createPropsGroupsPayment: POST " + ApiRoutes.PROP_GROUP_PAYMENT,
                 () -> RestUtilities.getResponsePost(body, url, apiHeaders(token)));
@@ -274,7 +282,7 @@ public abstract class GoalStoryTestBase extends StoryTestBase {
     protected Response confirmGroup(Availability av, Map<String, String> row, String bodyTemplate, String token,
                                     String tag) throws Exception {
         String body = render(bodyTemplate, row, av);
-        String url = goalBase() + ApiRoutes.fill(ApiRoutes.PROP_GROUP_CONFIRM,
+        String url = goalBase() + route(ApiRoutes.PROP_GROUP_CONFIRM,
                 "propCode", av.propCode, "groupId", av.groupId);
         Map<String, String> headers = apiHeaders(token);
         String location = Config.get("goal.operator_location", "");
@@ -306,7 +314,9 @@ public abstract class GoalStoryTestBase extends StoryTestBase {
             data.put("peakRooms", row != null && row.get("peak_rooms") != null
                     && !row.get("peak_rooms").isBlank() ? row.get("peak_rooms").trim() : "10");
         }
-        return ManualBody.render(template, data, data);
+        Map<String, String> known = new LinkedHashMap<>(ctx);  // the test's own values, the row and the search after
+        known.putAll(data);
+        return ManualBody.render(template, data, known);
     }
 
     private static List<String> list(String csv) {
