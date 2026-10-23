@@ -549,7 +549,7 @@ public abstract class StoryTestBase extends BaseApiTest implements IHookable {
      */
     protected String enrollGuest(Map<String, String> row, String bodyTemplate, String tag) throws Exception {
         fillEnrollFields(row);
-        String token = clientToken();
+        String token = enrollToken();
         String body = ManualBody.render(bodyTemplate, row, values("accessToken", token));
         RestUtilities.logRequestBody(tag, holder, body);
         String url = baseUrl() + route(ApiRoutes.GUEST_ENROLL);
@@ -671,6 +671,33 @@ public abstract class StoryTestBase extends BaseApiTest implements IHookable {
      * setup and act call (see the helpers below). Asked again after four
      * minutes. Skipped, naming the keys, when unset.
      */
+    /**
+     * The token an enrolment is made with: the service token, as every
+     * converted enrolment (217 of 217) is -- a client-credentials token was
+     * accepted, but it is not the token the flow after it was proven with.
+     * Without the project credential, the client token, said once.
+     */
+    protected String enrollToken() {
+        if (hasServiceCredential()) {
+            return serviceToken();
+        }
+        if (WARNED_ENROLL_TOKEN.compareAndSet(false, true)) {
+            LOG.warn("enrolment: no project credential (username / password) in env '{}' -- enrolling with the "
+                    + "client-credentials token; the converted suites enrol with the service token. Set them in "
+                    + "program_configuration.json -- Settings tab, Environment values", Config.env());
+        }
+        return clientToken();
+    }
+
+    /** The project credential serviceToken() logs in with is set for this environment. */
+    protected static boolean hasServiceCredential() {
+        return present(Config.get("api_config.username", Config.get("username", "")))
+                && present(Config.get("api_config.password", Config.get("password", "")));
+    }
+
+    private static final java.util.concurrent.atomic.AtomicBoolean WARNED_ENROLL_TOKEN =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
     protected String serviceToken() {
         if (serviceTokenValue != null && System.currentTimeMillis() - serviceTokenAt < SERVICE_TOKEN_REUSE_MS) {
             return serviceTokenValue;

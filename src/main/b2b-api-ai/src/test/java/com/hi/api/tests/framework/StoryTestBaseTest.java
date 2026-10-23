@@ -48,6 +48,26 @@ public class StoryTestBaseTest {
         static String letters(String s) {
             return lettersOnly(s);
         }
+
+        static boolean serviceCredential() {
+            return hasServiceCredential();
+        }
+    }
+
+    @Test(groups = {"unit"})
+    public void anEnrolmentUsesTheServiceTokenWhenTheProjectCredentialIsSet() {
+        String[] keys = {"api_config.username", "api_config.password"};
+        try {
+            System.setProperty(keys[0], "svc-user");
+            System.setProperty(keys[1], "__SET_ME__");
+            Assert.assertFalse(Probe.serviceCredential(), "a placeholder password is not a credential");
+            System.setProperty(keys[1], "s3cret-value");
+            Assert.assertTrue(Probe.serviceCredential());
+        } finally {
+            for (String k : keys) {
+                System.clearProperty(k);
+            }
+        }
     }
 
     @Test(groups = {"unit"})
