@@ -54,6 +54,8 @@ function jobIntoAddress() {
 // says what IT is doing, beside its own button (see follow()).
 const QUIET = ["/api/log", "/api/status", "/api/mock", "/api/location", "/api/client-error", "/api/whoami", "/api/jobs"];
 const DOING = {
+  "/api/release/versions": "Reading the Jira project's releases",
+  "/api/release/stories": "Reading the release's stories",
   "/api/intake": "Saving the story and its links",
   "/api/design": "Starting the design",
   "/api/manual": "Starting",
@@ -692,6 +694,83 @@ async function readStories(stories, links) {
     `${done.filter((r) => r.cls === "ok").length} of ${stories.length} stories read with requests; ` +
     "press Open on one to go on with it");
 }
+
+// ---- stories of one release -----------------------------------------------
+// Asked for: read the stories of a release, not every story of the Jira
+// project -- `project = KEY AND fixVersion = "R" AND issuetype = Story`.
+// The ticked keys go into the story box; "Read it" then makes one job a
+// story, as several pasted keys always have. Read with the Jira of the
+// project chosen above (B2B / GOAL).
+const RELEASE_KEY_STORE = "workbench.release-key";
+try { $("release-key").value = localStorage.getItem(RELEASE_KEY_STORE) || ""; } catch { /* no storage here */ }
+function releaseKey() {
+  const k = $("release-key").value.trim().toUpperCase();
+  if (!/^[A-Z][A-Z0-9_]+$/.test(k)) {
+    setState($("release-state"), "bad", "give the Jira project key, e.g. ABC");
+    return "";
+  }
+  $("release-key").value = k;
+  try { localStorage.setItem(RELEASE_KEY_STORE, k); } catch { /* no storage here */ }
+  return k;
+}
+$("release-load").onclick = async () => {
+  const k = releaseKey();
+  if (!k) return;
+  setState($("release-state"), "run", `reading ${k}'s releases…`);
+  try {
+    const r = await api(`/api/release/versions?project_key=${encodeURIComponent(k)}` +
+      `&project=${encodeURIComponent(pageProject())}${$("release-archived").checked ? "&all=1" : ""}`);
+    const list = r.versions || [];
+    $("release-version").replaceChildren(...(list.length ? list.map((v) => el("option", {
+      value: v.name,
+      text: v.name + (v.released ? "  (released)" : "") + (v.archived ? "  (archived)" : "") +
+            (v.release_date ? `  ${v.release_date}` : "") })) : [el("option", { value: "", text: "— no releases —" })]));
+    setState($("release-state"), list.length ? "ok" : "warn",
+      list.length ? `${list.length} release(s) of ${k}, newest first — choose one` : `${k} has no releases`);
+  } catch (e) { setState($("release-state"), "bad", e.message); }
+};
+$("release-list").onclick = async () => {
+  const k = releaseKey();
+  if (!k) return;
+  const v = $("release-version").value;
+  if (!v) { setState($("release-state"), "bad", "load the releases and choose one"); return; }
+  const type = $("release-type").value.trim();
+  const box = $("release-stories");
+  box.replaceChildren();
+  setState($("release-state"), "run", `reading the ${type || "issues"} of ${k} ${v}…`);
+  let r;
+  try {
+    r = await api(`/api/release/stories?project_key=${encodeURIComponent(k)}&version=${encodeURIComponent(v)}` +
+      `&type=${encodeURIComponent(type)}&project=${encodeURIComponent(pageProject())}`);
+  } catch (e) { setState($("release-state"), "bad", e.message); return; }
+  const issues = r.issues || [];
+  const boxes = issues.map((i) => el("input", { type: "checkbox", value: i.key, "aria-label": `pick ${i.key}` }));
+  const facts = [el("div", { class: "meta" }, `${issues.length} read of ${r.total ?? "?"}  ·  `, el("code", { text: r.jql || "" }))];
+  if (r.complete === false) facts.push(banner("bad", `INCOMPLETE — ${r.why_incomplete || "the list is short"}`));
+  if (r.limited) facts.push(banner("warn", `Only the first ${r.limit} were read: narrow it with the type box.`));
+  const use = el("button", { type: "button", class: "go", on: { click: () => {
+    const keys = boxes.filter((b) => b.checked).map((b) => b.value);
+    if (!keys.length) { setState($("release-state"), "bad", "tick at least one story"); return; }
+    if (keys.length > MAX_STORIES) {
+      setState($("release-state"), "bad", `${keys.length} ticked; up to ${MAX_STORIES} are read at a time`);
+      return;
+    }
+    const radio = document.querySelector('input[name="story-from"][value="link"]');
+    if (radio && !radio.checked) { radio.checked = true; radio.dispatchEvent(new Event("change")); }
+    $("story").value = keys.join("\n");
+    setState($("release-state"), "ok", `${keys.length} story key(s) put in the box: press Read it`);
+    $("story").scrollIntoView({ block: "center" });
+  } } }, "Use the ticked stories");
+  const all = (on) => el("button", { type: "button", on: { click: () => boxes.forEach((b) => { b.checked = on; }) } },
+    on ? "Tick all" : "Tick none");
+  box.replaceChildren(heading(`${type || "Issues"} in ${k} ${v}`, issues.length), ...facts,
+    issues.length ? table(["", "Key", "Status", "Summary", "Fix versions"], issues.map((i, n) =>
+      [boxes[n], el("code", { text: i.key }), i.status, i.summary, (i.fix_versions || []).join(", ")])) : banner("warn",
+      `no ${type || "issue"} is in ${v}`),
+    issues.length ? el("div", { class: "row" }, use, all(true), all(false)) : null);
+  setState($("release-state"), issues.length ? "ok" : "warn",
+    issues.length ? `${issues.length} in ${v}: tick the ones to work on` : `nothing of type ${type || "any"} in ${v}`);
+};
 
 // Has the story changed since the job read it? Reads Jira again and shows
 // the difference, and what in the job was made from the earlier reading.
@@ -2689,6 +2768,7 @@ $("manual-pull").onclick = async () => {
   }
   const options = { "--job": j, "--project": project };
   if ($("manual-type").value.trim()) options["--type"] = $("manual-type").value.trim();
+  if ($("manual-version").value.trim()) options["--version"] = $("manual-version").value.trim();
   if ($("manual-extra").value.trim()) options["--extra"] = $("manual-extra").value.trim();
   $("manual-pull").disabled = true;
   try {
@@ -4373,6 +4453,8 @@ $("jira-tests").onclick = () => {
   const o = jiraOptions({ "--project": p });
   if (!o) return;
   if ($("jira-type").value.trim()) o["--type"] = $("jira-type").value.trim();
+  // The Version box narrows this too: one release's tests, not the project's every test.
+  if ($("jira-version").value.trim()) o["--version"] = $("jira-version").value.trim();
   runTool("jira-tests", o, jiraUi);
 };
 

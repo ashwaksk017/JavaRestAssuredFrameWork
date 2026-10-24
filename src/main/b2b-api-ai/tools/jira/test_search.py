@@ -365,6 +365,15 @@ class ReleasesAndTests(unittest.TestCase):
         self.assertEqual(search.tests_jql("abc", "Xray Test", "labels = api OR labels = b2b"),
                          'project = ABC AND issuetype = "Xray Test" AND (labels = api OR labels = b2b)')
 
+    def test_the_inventory_query_of_one_release(self):
+        # Asked for: one release's tests, not the project's whole history.
+        self.assertEqual(search.tests_jql("abc", "Test", "", "6.02"),
+                         'project = ABC AND issuetype = "Test" AND fixVersion = "6.02"')
+        self.assertEqual(search.tests_jql("abc", "Test", "labels = api", 'Release "2"'),
+                         'project = ABC AND issuetype = "Test" AND fixVersion = "Release \\"2\\"" '
+                         'AND (labels = api)')
+        self.assertEqual(search.tests_jql("abc", "Test", "", "  "), 'project = ABC AND issuetype = "Test"')
+
 
 class TheCommand(unittest.TestCase):
     def run_main(self, argv, transport, cfg=None):

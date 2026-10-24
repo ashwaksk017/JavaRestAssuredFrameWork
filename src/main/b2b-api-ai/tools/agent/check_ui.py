@@ -752,6 +752,28 @@ def main() -> int:
                   rc == 0 and "Only in Release 2.0" in html and "Only in Release 1.1" in html
                   and "ABC-5" in html)
 
+            # The Automate tab's release picker: a release's stories, not the project's every story.
+            code, got = mocked.call("/api/release/versions?project_key=ABC&project=b2b")
+            names = [v.get("name") for v in (got.get("versions") or [])]
+            check("mock mode: the Automate tab lists a project's releases, newest first",
+                  code == 200 and names[:1] == ["Release 2.0"] and "Release 1.0" in names)
+            code, got = mocked.call("/api/release/stories?project_key=ABC&version=Release%202.0&type=Story&project=b2b")
+            check("mock mode: a release's stories are read by project AND fixVersion AND type",
+                  code == 200 and 'fixVersion = "Release 2.0"' in (got.get("jql") or "")
+                  and 'issuetype = "Story"' in (got.get("jql") or "")
+                  and bool(got.get("issues"))
+                  and all(i.get("type") == "Story" for i in got.get("issues") or []))
+            code, got = mocked.call("/api/release/stories?project_key=ABC&version=&project=b2b")
+            check("mock mode: no release chosen is refused, in one line",
+                  code == 400 and "choose the release" in (got.get("error") or ""))
+            html = mocked.dom("new")
+            check("the Automate tab offers to pick stories from a release",
+                  'id="release-pick"' in html and 'id="release-version"' in html and 'id="release-list"' in html)
+            code, rc = press("jira-tests", {"--project": "ABC", "--version": "Release 2.0"})
+            html = mocked.dom("jira")
+            check("mock mode: the tests list can be narrowed to one release",
+                  rc in (0, 1) and 'fixVersion = "Release 2.0"' in html)
+
             # A story given by its link: read with what is around it.
             code, rc = press("intake", None, route="/api/intake",
                              extra={"text": "", "links": ["https://jira.example.test/browse/ABC-123"]})

@@ -577,7 +577,8 @@ def steps_of(conn: dict, key: str, transport=None) -> list:
 
 
 def pull(job: str, project: str, issue_type: str = "Test", extra: str = "",
-         limit: int = MAX_INVENTORY, conn=None, transport=None, root: str = "") -> dict:
+         limit: int = MAX_INVENTORY, conn=None, transport=None, root: str = "",
+         version: str = "") -> dict:
     """Read the existing tests into the job directory. Returns the summary."""
     job_dir = loop.intake.job_dir(job, root or ROOT)
     conn = conn or search.connect()
@@ -588,7 +589,8 @@ def pull(job: str, project: str, issue_type: str = "Test", extra: str = "",
     if limit < 1:
         raise Refused("--max must be at least 1")
     limit = min(limit, MAX_INVENTORY)
-    jql = search.tests_jql(project, issue_type or "Test", extra or "")
+    # One release's tests when a release is given: not the project's whole history.
+    jql = search.tests_jql(project, issue_type or "Test", extra or "", version or "")
     got = search.search(conn, jql, ["summary", "description", "status", "issuetype",
                                     "labels", "updated"], limit, transport)
     tests, absent, errors, skipped, odd = [], 0, 0, 0, 0
@@ -1085,6 +1087,7 @@ def main(argv=None, agent=None, transport=None) -> int:
     p.add_argument("--project", required=True)
     p.add_argument("--type", default="Test")
     p.add_argument("--extra", default="", help="a further JQL condition")
+    p.add_argument("--version", default="", help="only this release's tests (fixVersion)")
     p.add_argument("--max", default=str(MAX_INVENTORY))
     p = sub.add_parser("generate", help="write the new cases and the updates")
     p.add_argument("--job", required=True)
@@ -1117,7 +1120,7 @@ def main(argv=None, agent=None, transport=None) -> int:
                 pass
     try:
         if a.cmd == "inventory":
-            r = pull(a.job, a.project, a.type, a.extra, a.max, transport=transport)
+            r = pull(a.job, a.project, a.type, a.extra, a.max, transport=transport, version=a.version)
             _write(os.path.join(job_dir, PULL_RESULT), json.dumps(dict(r, at=_now())))
             say(("MOCK  " if r["mock_jira"] else " ok   ") + r["message"])
             if not r["complete"] or r["limited"]:

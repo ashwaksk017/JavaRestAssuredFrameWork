@@ -94,6 +94,22 @@
   <label for="story">Jira story <span class="hint">a link to it, or its key — the story, its comments, its parent, its attachments and the Confluence pages it points at are read for you. Several keys (one a line, or separated by commas) make one job per story, named by its key</span></label>
   <textarea id="story" rows="2" spellcheck="false" autocomplete="off"
     placeholder="https://jira.example.com/browse/ABC-123   or   ABC-123   — or several: ABC-123, ABC-124"></textarea>
+  <details class="more" id="release-pick">
+    <summary>…or pick stories from a release</summary>
+    <p class="hint">Reads only that release's stories — <code>project = KEY AND fixVersion = "release" AND issuetype = Story</code> —
+      not every story of the Jira project. Tick the ones to work on: their keys go into the box above, and <b>Read it</b>
+      makes one job a story (up to 10 at a time). The Jira is the one of the project chosen above.</p>
+    <div class="row">
+      <label class="inline">Jira project key <input id="release-key" type="text" spellcheck="false" size="8" placeholder="ABC"></label>
+      <button id="release-load" type="button">Load releases</button>
+      <label class="inline">Release <select id="release-version"><option value="">— load the releases first —</option></select></label>
+      <label class="inline" title="Story unless changed: the release's other issue types (Bug, Task) are left out of the list.">Type <input id="release-type" type="text" spellcheck="false" size="8" value="Story"></label>
+      <label class="inline"><input type="checkbox" id="release-archived"> include archived</label>
+      <button id="release-list" type="button">List its stories</button>
+      <span id="release-state" class="state"></span>
+    </div>
+    <div id="release-stories" class="result"></div>
+  </details>
   <div id="stories" class="result"></div>
   <div class="row" id="story-check-row" hidden>
     <button id="story-check" type="button">Has the story changed?</button>
@@ -706,6 +722,8 @@ Expect 201.'></textarea>
   <div class="row">
     <input id="manual-project" type="text" spellcheck="false" placeholder="project key, e.g. ABC">
     <input id="manual-type" type="text" spellcheck="false" placeholder="issue type" value="Test">
+    <input id="manual-version" type="text" spellcheck="false" size="10" placeholder="release (fixVersion)"
+           title="Only this release's tests: fixVersion = this. Empty: every test of the project.">
     <input id="manual-extra" type="text" spellcheck="false" class="grow"
            placeholder='a further condition, e.g. labels = ui (optional)'>
     <button id="manual-pull">Read existing tests</button>
@@ -762,7 +780,7 @@ Expect 201.'></textarea>
     <div class="field">
       <label for="jira-version">Version</label>
       <input id="jira-version" type="text" spellcheck="false" placeholder="6.02">
-      <small>Click a name in the list of versions to fill this in.</small>
+      <small>Click a name in the list of versions to fill this in. It narrows "tests" to that release too.</small>
     </div>
     <div class="field">
       <label for="jira-compare">Compare with</label>

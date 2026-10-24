@@ -30,7 +30,7 @@ QUICK_TESTS = ("test_jobs.py", "test_casereview.py", "test_suitemap.py", "test_i
                "test_xraytrace.py", "test_devcode.py", "test_suitesuggest.py", "test_mvnrun.py",
                "test_partest.py", "test_convertfix.py", "test_ask.py", "test_runask.py",
                "test_storykeys.py", "test_projects.py",
-               "test_flowcatalog.py", "test_safe_output.py")
+               "test_flowcatalog.py", "test_safe_output.py", "test_release.py")
 
 
 def _run(argv, timeout=900) -> tuple:

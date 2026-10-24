@@ -540,9 +540,13 @@ def compare(new: dict, old: dict) -> dict:
             "reliable": usable(new) and usable(old)}
 
 
-def tests_jql(project: str, issue_type: str = "Test", extra: str = "") -> str:
-    """The tests a project already has (Xray stores a test as an issue)."""
+def tests_jql(project: str, issue_type: str = "Test", extra: str = "", version: str = "") -> str:
+    """The tests a project already has (Xray stores a test as an issue) --
+    of one release when `version` is given (fixVersion), so a project's
+    whole history is not read to find one release's tests."""
     jql = f"project = {project_key(project)} AND issuetype = {jql_quote(issue_type)}"
+    if (version or "").strip():
+        jql += f" AND fixVersion = {jql_quote(version.strip())}"
     if extra.strip():
         jql += f" AND ({contained(extra)})"
     return jql
@@ -696,6 +700,7 @@ def main(argv=None, transport=None) -> int:
     p.add_argument("--project", required=True)
     p.add_argument("--type", default="Test", help="the issue type tests are stored as")
     p.add_argument("--jql", default="", help="a further condition, ANDed on")
+    p.add_argument("--version", default="", help="only this release's tests (fixVersion)")
     p.add_argument("--max", type=int, default=DEFAULT_MAX)
     for p in parsers:
         p.add_argument("--job", default="",
@@ -811,7 +816,7 @@ def main(argv=None, transport=None) -> int:
             return 0 if usable(r) else 1
 
         if a.cmd == "tests":
-            r = search(conn, tests_jql(a.project, a.type, a.jql), max_results=a.max,
+            r = search(conn, tests_jql(a.project, a.type, a.jql, a.version), max_results=a.max,
                        transport=transport, on_page=progress)
             report(r, "tests ")
             rows = [slim(i) for i in r["issues"]]

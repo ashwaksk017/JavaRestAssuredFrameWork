@@ -226,6 +226,15 @@ class Handler(BaseHTTPRequestHandler):
                 # the launcher stops THIS workbench and no other program
                 # that happens to hold the port.
                 return self._json({"pid": os.getpid(), "root": ROOT})
+            if u.path == "/api/release/versions":
+                # The Automate tab's release picker: read-only, no job yet.
+                return self._json(jobs.release_versions(q.get("project_key", ""), q.get("project", ""),
+                                                        q.get("all") == "1"))
+            if u.path == "/api/release/stories":
+                # One release's stories (project AND fixVersion AND type),
+                # not every story of the Jira project.
+                return self._json(jobs.release_stories(q.get("project_key", ""), q.get("version", ""),
+                                                       q.get("project", ""), q.get("type", "Story")))
             if u.path == "/api/location":
                 # For the banner on every tab: a project in a OneDrive /
                 # iCloud / Dropbox / Google Drive folder loses writes mid-run.

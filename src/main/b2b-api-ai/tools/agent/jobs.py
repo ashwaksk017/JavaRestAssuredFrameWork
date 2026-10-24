@@ -160,7 +160,7 @@ RUNNABLES = {
         "argv": [PY, "-B", os.path.join("tools", "agent", "manualtests.py"), "inventory"],
         "label": "Read the existing tests, with their steps",
         "options": {"--job": "text", "--project": "text", "--type": "text",
-                    "--extra": "text", "--max": "text"},
+                    "--extra": "text", "--version": "text", "--max": "text"},
     },
     "manual-generate": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "manualtests.py"), "generate"],
@@ -315,7 +315,7 @@ RUNNABLES = {
         "argv": [PY, "-B", os.path.join("tools", "jira", "search.py"), "tests"],
         "label": "The tests a project already has",
         "options": {"--job": "text", "--project": "text", "--type": "text",
-                    "--jql": "text", "--max": "text"},
+                    "--jql": "text", "--version": "text", "--max": "text"},
     },
     "jira-paste": {
         "argv": [PY, "-B", os.path.join("tools", "jira", "search.py"), "paste"],
@@ -572,6 +572,30 @@ def _diag():
 
 
 diag = _diag()
+
+
+def _release():
+    """tools/agent/release.py, once: a release's stories for the Automate tab."""
+    if "jobs_release" not in sys.modules:
+        spec = importlib.util.spec_from_file_location("jobs_release", os.path.join(HERE, "release.py"))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["jobs_release"] = mod
+        try:
+            spec.loader.exec_module(mod)
+        except BaseException:
+            sys.modules.pop("jobs_release", None)
+            raise
+    return sys.modules["jobs_release"]
+
+
+def release_versions(project_key: str, project: str = "", include_archived: bool = False) -> dict:
+    """A Jira project's versions, newest first (release.versions)."""
+    return _release().versions(project_key, project, include_archived)
+
+
+def release_stories(project_key: str, version: str, project: str = "", issue_type: str = "Story") -> dict:
+    """One release's stories, not the Jira project's every story (release.stories)."""
+    return _release().stories(project_key, version, project, issue_type)
 
 
 def read_diag(job: str, which: str = "job", lines: int = 400) -> str:
