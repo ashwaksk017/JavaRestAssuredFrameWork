@@ -226,6 +226,10 @@ class Handler(BaseHTTPRequestHandler):
                 # the launcher stops THIS workbench and no other program
                 # that happens to hold the port.
                 return self._json({"pid": os.getpid(), "root": ROOT})
+            if u.path == "/api/location":
+                # For the banner on every tab: a project in a OneDrive /
+                # iCloud / Dropbox / Google Drive folder loses writes mid-run.
+                return self._json({"synced": diag.synced_folder(ROOT), "root": ROOT})
             if u.path == "/api/jobs":
                 return self._json(jobs.list_jobs())
             if u.path == "/api/workbench-job":

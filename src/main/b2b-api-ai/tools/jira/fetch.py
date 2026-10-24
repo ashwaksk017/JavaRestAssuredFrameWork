@@ -246,7 +246,20 @@ def _urllib_transport(url: str, token: str, timeout: int) -> dict:
             raw = r.read()
             ms = int((time.time() - t0) * 1000)
             say(f"     {r.status} {r.reason}  {_human(len(raw))} in {ms} ms")
-            return json.loads(raw.decode("utf-8", "replace"))
+            text = raw.decode("utf-8", "replace")
+            try:
+                return json.loads(text)
+            except ValueError:
+                # A single sign-on page answers 200 with HTML. Before, this
+                # escaped as "Expecting value: line 8 column 1" and nothing
+                # said it was a page, let alone which.
+                m = re.search(r"<title[^>]*>(.*?)</title>", text, re.I | re.S)
+                title = re.sub(r"\s+", " ", m.group(1)).strip()[:120] if m else ""
+                raise RuntimeError(
+                    f"Jira answered {r.status} with a page that is not JSON"
+                    + (f" (page title \"{title}\")" if title else "")
+                    + ": usually a sign-in page -- the token was not accepted, or a single sign-on "
+                      "gateway answered. Check jira_config.pat on the Settings tab.") from None
     except urllib.error.HTTPError as e:
         ms = int((time.time() - t0) * 1000)
         body = ""

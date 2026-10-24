@@ -52,7 +52,7 @@ function jobIntoAddress() {
 // button that sent it cannot be pressed again until it has answered.
 // The polls that follow a running command are not named here: the command
 // says what IT is doing, beside its own button (see follow()).
-const QUIET = ["/api/log", "/api/status", "/api/mock", "/api/client-error", "/api/whoami", "/api/jobs"];
+const QUIET = ["/api/log", "/api/status", "/api/mock", "/api/location", "/api/client-error", "/api/whoami", "/api/jobs"];
 const DOING = {
   "/api/intake": "Saving the story and its links",
   "/api/design": "Starting the design",
@@ -156,6 +156,29 @@ async function showMockBanner() {
   bar.hidden = !(m.error || which.length);
 }
 setInterval(showMockBanner, 5000);
+
+// ---- where the project lives -----------------------------------------
+// A project in a OneDrive / iCloud / Dropbox / Google Drive folder loses
+// writes mid-run: seen on a Mac, the job log timed out (Errno 60), a design
+// run crashed and an intake lost a page it had fetched. Said on every tab,
+// since the launcher's warning is in a terminal nobody reads twice.
+async function showSyncedBanner() {
+  const bar = $("synced-banner");
+  if (!bar) return;
+  let where;
+  try { where = await api("/api/location"); } catch (e) { bar.hidden = true; return; }
+  if (!where || !where.synced) { bar.hidden = true; return; }
+  bar.replaceChildren(
+    el("strong", { text: "RUN THIS FROM A LOCAL FOLDER" }),
+    " — this project is inside a synced folder (OneDrive, iCloud, Dropbox or Google Drive): ",
+    el("code", { text: where.root || "" }),
+    ". The sync client holds files while they are written, so job logs, target/ and git can time " +
+    "out or go missing mid-run. Move it to a folder that is not synced — e.g. ~/b2bworkbench (macOS) " +
+    "or C:\\b2bworkbench (Windows) — with git clone, copy src/main/resources/program_configuration*.json " +
+    "across, and start the workbench from there.");
+  bar.hidden = false;
+}
+showSyncedBanner();
 
 async function showCursorSetupBanner() {
   const bar = $("cursor-setup-banner");

@@ -292,6 +292,17 @@ class TheRealTransport(unittest.TestCase):
             fetch.VERBOSE = real_verbose
         return out, err, buf.getvalue()
 
+    def test_a_sign_in_page_instead_of_json_is_named(self):
+        # Seen against Confluence on a Mac; the same bare "Expecting value"
+        # would have come from here.
+        page = b"<html><head><title>Log In</title></head><body>sso</body></html>"
+        out, err, _log = self._run(lambda req, timeout=None: self._Resp(page))
+        self.assertIsNone(out)
+        self.assertIn("not JSON", err)
+        self.assertIn('page title "Log In"', err)
+        self.assertIn("sign-in page", err)
+        self.assertIn("jira_config.pat", err)
+
     def test_a_good_response_is_parsed_and_reported(self):
         out, err, log = self._run(
             lambda req, timeout=None: self._Resp(b'{"key":"A-1"}'))

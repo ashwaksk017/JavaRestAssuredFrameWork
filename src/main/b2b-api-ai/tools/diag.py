@@ -69,6 +69,22 @@ _STATE = {"path": "", "module": "", "seen": {}, "secrets": None, "secrets_note":
           "job": "", "steps": [], "handled": [], "creating": False}
 
 
+# Whole folder names: "OneDrive", "OneDrive - Corp", "OneDrive-Corp" -- not "onedrivetools".
+SYNCED_FOLDERS = re.compile(r"/(library/cloudstorage|library/mobile documents|onedrive(?:[ -][^/]*)?"
+                            r"|dropbox(?: \([^/]*\))?|google ?drive|icloud ?drive)/")
+
+
+def synced_folder(root: str) -> bool:
+    """The project is in a folder a sync client owns (OneDrive, iCloud,
+    Dropbox, Google Drive). Seen on a Mac (~/Library/CloudStorage/
+    OneDrive-...): a write to the job log timed out (Errno 60) while
+    OneDrive held the file -- a design run crashed on a print, an intake
+    lost a page it had fetched. Maven's target/ and git do the same there.
+    The launcher says so at start; the page shows it on every tab."""
+    p = "/" + os.path.abspath(root).replace("\\", "/").lower().strip("/") + "/"
+    return bool(SYNCED_FOLDERS.search(p))
+
+
 def level() -> str:
     v = os.environ.get("WORKBENCH_LOG", "").strip().lower()
     if v in ("off", "0", "false", "no"):

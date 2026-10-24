@@ -688,6 +688,12 @@ def main() -> int:
         check("the title, and no mock banner while the stand-ins are off",
               "<h1>AI Enabled Test WorkBench</h1>" in html
               and 'id="mock-banner" class="mockbar" hidden' in html)
+        code, where = page.call("/api/location")
+        synced_here = bool(where.get("synced"))
+        check("the synced-folder banner shows exactly when the project is in OneDrive / iCloud / Dropbox",
+              code == 200 and isinstance(where.get("synced"), bool)
+              and ('id="synced-banner" class="mockbar broken" role="alert" hidden' in html) != synced_here
+              and (not synced_here or "RUN THIS FROM A LOCAL FOLDER" in html))
 
         # ---- mock mode, through a server that has it switched on ----------------
         srv.terminate()

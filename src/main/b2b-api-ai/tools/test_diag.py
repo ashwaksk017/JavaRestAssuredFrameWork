@@ -583,5 +583,19 @@ class ALogThatTimesOut(unittest.TestCase):
         print("x", file=tee, flush=True)
 
 
+class ASyncedFolder(unittest.TestCase):
+    """The page's banner and the launcher's warning ask this one check."""
+
+    def test_synced_folders_by_whole_name(self):
+        for p in ("/Users/a/Library/CloudStorage/OneDrive-Corp/Documents/b2b-api-ai",
+                  "/Users/a/OneDrive - Corp/repos/b2b-api-ai",
+                  "/Users/a/Library/Mobile Documents/com~apple~CloudDocs/b2b",
+                  "/Users/a/Dropbox/b2b", "/Users/a/Google Drive/b2b"):
+            self.assertTrue(diag.synced_folder(p), p)
+        for p in ("/Users/a/b2bworkbench/b2b-api-ai", "/Users/a/repos/onedrivetools-not",
+                  "/Users/a/dropboxish/b2b"):
+            self.assertFalse(diag.synced_folder(p), p)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

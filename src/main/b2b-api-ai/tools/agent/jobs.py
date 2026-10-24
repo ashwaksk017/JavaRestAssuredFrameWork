@@ -45,6 +45,19 @@ _spec.loader.exec_module(intake)
 
 ROOT = intake.ROOT
 PY = sys.executable
+SAFE_OUTPUT = os.path.join("tools", "safe_output.py")
+
+
+def safe_output(argv: list) -> list:
+    """`python -B <script> ...` run through tools/safe_output.py, so a write
+    to the job's log that times out (a project in a OneDrive folder, seen
+    on a Mac) cannot end the command -- every command, the ones without
+    diag.run (the converter, verify_all) and any added later. Anything
+    else is run as it is."""
+    if len(argv) >= 3 and argv[0] == PY and argv[1] == "-B" and str(argv[2]).endswith(".py") \
+            and os.path.isfile(os.path.join(ROOT, SAFE_OUTPUT)):
+        return [argv[0], "-B", SAFE_OUTPUT] + list(argv[2:])
+    return list(argv)
 CURSOR_SETUP_REL = os.path.join(".workbench", "cursor-setup.json")
 
 
@@ -1987,7 +2000,7 @@ def start(job: str, runnable: str, options: dict) -> dict:
             # The converter's Cursor conversation -- and the fixes after it --
             # in the file the Convert tab's Cursor log shows.
             env["WORKBENCH_CURSOR_LOG"] = log_path(job, "migration-cursor")
-        proc = subprocess.Popen(argv, cwd=ROOT, stdout=logf,
+        proc = subprocess.Popen(safe_output(argv), cwd=ROOT, stdout=logf,
                                 stderr=subprocess.STDOUT, env=env, **NO_WINDOW)
     except Exception as e:
         # Without this the status file says "running" for a process that

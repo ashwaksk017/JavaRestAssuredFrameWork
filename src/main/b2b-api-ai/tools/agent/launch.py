@@ -212,19 +212,17 @@ def ensure_requirements(py: str, path: str = "", run=None) -> list:
     return left
 
 
-# Whole folder names: "OneDrive", "OneDrive - Corp", "OneDrive-Corp" -- not "onedrivetools".
-SYNCED_FOLDERS = re.compile(r"/(library/cloudstorage|library/mobile documents|onedrive(?:[ -][^/]*)?"
-                            r"|dropbox(?: \([^/]*\))?|google ?drive|icloud ?drive)/")
-
-
 def synced_folder(root: str = "") -> bool:
-    """The project is in a folder a sync client owns (OneDrive, iCloud,
-    Dropbox, Google Drive). Seen on a Mac (~/Library/CloudStorage/
-    OneDrive-...): a write to the job log timed out (Errno 60) while
-    OneDrive held the file -- a design run crashed on a print, an intake
-    lost a page it had fetched. Maven's target/ and git do the same there."""
-    p = "/" + os.path.abspath(root or ROOT).replace("\\", "/").lower().strip("/") + "/"
-    return bool(SYNCED_FOLDERS.search(p))
+    """The project is in a OneDrive / iCloud / Dropbox / Google Drive
+    folder: tools/diag.py's check, the one the page's banner uses too."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("launch_diag_synced", os.path.join(ROOT, "tools", "diag.py"))
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+        return mod.synced_folder(root or ROOT)
+    except Exception:                                # noqa: BLE001
+        return False
 
 
 def warn_if_synced(root: str = "") -> None:
