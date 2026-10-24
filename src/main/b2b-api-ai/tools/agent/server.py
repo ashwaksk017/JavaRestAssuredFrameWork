@@ -111,8 +111,14 @@ class Handler(BaseHTTPRequestHandler):
         # Nothing here is worth caching, and a cached app.js is the old
         # page running against a pulled server: every answer is fresh.
         self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # The page left before the answer arrived (a refresh, a closed
+            # tab, a poll overtaken by the next): nothing failed. Logged as
+            # a FAIL with a traceback, it read like the cause of a real one.
+            self.close_connection = True
 
     def _json(self, payload, code: int = 200) -> None:
         self._send(code, json.dumps(payload, ensure_ascii=False).encode(),

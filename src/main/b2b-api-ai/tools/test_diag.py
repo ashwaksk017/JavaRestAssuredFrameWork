@@ -536,5 +536,52 @@ class TheStateFolder(unittest.TestCase):
         self.assertFalse(os.path.exists(old), "the old folder is removed once empty")
 
 
+class ALogThatTimesOut(unittest.TestCase):
+    """Seen on a Mac with the project in OneDrive: a write to the job log
+    raised TimeoutError [Errno 60] and the command crashed on a print."""
+
+    class Stream:
+        def __init__(self, fail):
+            self.fail, self.out = fail, []
+
+        def write(self, text):
+            if self.fail:
+                self.fail -= 1
+                raise TimeoutError(60, "Operation timed out")
+            self.out.append(text)
+            return len(text)
+
+        def flush(self):
+            if self.fail:
+                self.fail -= 1
+                raise TimeoutError(60, "Operation timed out")
+
+    def setUp(self):
+        self.old = diag._Tee.RETRIES
+        diag._Tee.RETRIES = (0, 0, 0)
+        self.addCleanup(setattr, diag._Tee, "RETRIES", self.old)
+
+    def test_a_write_that_times_out_once_is_tried_again(self):
+        s = self.Stream(fail=1)
+        tee = diag._Tee(s)
+        self.assertEqual(tee.write("one\n"), 4)
+        self.assertEqual(s.out, ["one\n"])
+
+    def test_a_write_that_keeps_failing_is_dropped_and_said_later(self):
+        s = self.Stream(fail=4)
+        tee = diag._Tee(s)
+        tee.write("lost\n")                 # four failures: dropped, no exception
+        self.assertEqual(s.out, [])
+        tee.write("next\n")
+        self.assertEqual(s.out[0], "next\n")
+        self.assertIn("1 line(s) of output could not be written", s.out[1])
+        self.assertIn("TimeoutError", s.out[1])
+
+    def test_a_flush_that_times_out_does_not_end_the_command(self):
+        tee = diag._Tee(self.Stream(fail=4))
+        tee.flush()                          # no exception
+        print("x", file=tee, flush=True)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

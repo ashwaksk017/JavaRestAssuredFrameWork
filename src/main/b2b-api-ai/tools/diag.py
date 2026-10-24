@@ -424,7 +424,7 @@ class _Tee:
         except Exception:                                # noqa: BLE001
             pass
         try:
-            return self._stream.write(text)
+            return self._retrying(self._stream.write, text)
         except UnicodeEncodeError:
             # A Windows console or pipe is often cp1252. Cursor's answer can
             # hold a character that encoding has no byte for (an arrow).
@@ -432,7 +432,41 @@ class _Tee:
             # stream's own stand-in and the command carries on.
             enc = getattr(self._stream, "encoding", None) or "utf-8"
             safe = str(text).encode(enc, errors="replace").decode(enc, errors="replace")
-            return self._stream.write(safe)
+            return self._retrying(self._stream.write, safe)
+
+    def flush(self):
+        return self._retrying(self._stream.flush)
+
+    # Seen on a Mac whose project sat in a OneDrive folder (~/Library/
+    # CloudStorage): the job log is a file there, and a write to it raised
+    # TimeoutError [Errno 60] while OneDrive held it -- a design run CRASHED
+    # on a print, and an intake counted a page it HAD fetched as failed. A
+    # line the log cannot take is tried again, then dropped: the command
+    # goes on, and the drop is said once (with why) when the log takes it.
+    RETRIES = (0.2, 0.5, 1.0)
+
+    def _retrying(self, fn, *args):
+        # Already dropping: one try, no waits -- a stalled log must not slow every line.
+        for wait in (() if getattr(self, "_dropped", 0) else self.RETRIES) + (None,):
+            try:
+                out = fn(*args)
+                if getattr(self, "_dropped", 0) and fn != self._stream.flush:
+                    n, self._dropped = self._dropped, 0
+                    try:
+                        self._stream.write(f"[diag] {n} line(s) of output could not be written here "
+                                           f"({self._why}) -- dropped, the command carried on. A project "
+                                           "in a OneDrive / iCloud / Dropbox folder does this: move it out.\n")
+                    except OSError:
+                        self._dropped = n
+                return out
+            except UnicodeEncodeError:
+                raise
+            except (OSError, ValueError) as e:     # TimeoutError, BrokenPipeError, a closed file
+                if wait is None:
+                    self._dropped = getattr(self, "_dropped", 0) + (1 if args else 0)
+                    self._why = f"{type(e).__name__}: {e}"
+                    return len(args[0]) if args else None
+                time.sleep(wait)
 
     def said(self) -> list:
         return [l for l in self.lines + ([self._part] if self._part else []) if l.strip()]

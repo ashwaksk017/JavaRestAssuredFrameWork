@@ -217,6 +217,8 @@ def _get(url: str, token: str, timeout: int) -> dict:
         with _opener(url).open(req, timeout=timeout) as resp:
             raw = resp.read(MAX_RESPONSE_BYTES + 1).decode(
                 "utf-8", errors="replace")
+            status = getattr(resp, "status", "?")
+            ctype = resp.headers.get("Content-Type", "?") if resp.headers else "?"
         if len(raw) > MAX_RESPONSE_BYTES:
             raise RuntimeError(
                 f"Confluence returned more than {_human(MAX_RESPONSE_BYTES)}; "
@@ -233,7 +235,26 @@ def _get(url: str, token: str, timeout: int) -> dict:
     try:
         return json.loads(raw)
     except ValueError as e:
-        raise RuntimeError(f"Confluence did not return JSON: {e}") from e
+        raise RuntimeError(f"Confluence did not return JSON: {e} -- {not_json(status, ctype, raw)}") from e
+
+
+def not_json(status, ctype: str, raw: str) -> str:
+    """What came back instead of JSON, said so a person can act on it. Seen:
+    the same page fetched, then twice an HTML page -- and the message only
+    said "Expecting value: line 8 column 1", nothing about what it was."""
+    m = re.search(r"<title[^>]*>(.*?)</title>", raw or "", re.I | re.S)
+    title = re.sub(r"\s+", " ", m.group(1)).strip()[:120] if m else ""
+    low = (raw or "").lower()
+    if any(w in low for w in ("log in", "login", "sign in", "saml", "sso", "j_username", "os_username")):
+        hint = "a sign-in page: the token was not accepted this time, or a single sign-on gateway answered"
+    elif any(w in low for w in ("too many requests", "rate limit", "throttl")):
+        hint = "a rate limit: wait a minute and fetch again"
+    elif any(w in low for w in ("maintenance", "unavailable", "bad gateway", "gateway time")):
+        hint = "the server or a gateway is not available right now: fetch again later"
+    else:
+        hint = "not the REST API: check confluence_config.base_urls and --api-path for this host"
+    return (f"HTTP {status}, {ctype or '?'}" + (f", page title \"{redact(title)}\"" if title else "")
+            + f": {hint}")
 
 
 def resolve(ref, base_url: str, token: str, api_path: str,

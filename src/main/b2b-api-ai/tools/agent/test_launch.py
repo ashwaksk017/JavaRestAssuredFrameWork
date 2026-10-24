@@ -48,6 +48,11 @@ class Base(unittest.TestCase):
         os.environ["WORKBENCH_PORT"] = str(self.port)
         os.environ["WORKBENCH_MOCK"] = "1"
         self.addCleanup(self.restore)
+        # These start the REAL project's server: no pip, and no .venv made in
+        # it by a test (one was, and from then on every start "did not come up").
+        real = launch.with_requirements
+        launch.with_requirements = lambda py, why, *a, **k: (py, why)
+        self.addCleanup(setattr, launch, "with_requirements", real)
 
     def restore(self):
         there = launch.who(self.port)
@@ -348,6 +353,26 @@ class Requirements(unittest.TestCase):
             mac = fh.read()
         self.assertIn("brew\" install python", mac.replace("$BREW", "brew"))
         self.assertIn("sys.version_info >= (3, 9)", mac)
+
+
+class SyncedFolder(unittest.TestCase):
+    """A project in OneDrive/iCloud/Dropbox: writes time out mid-run."""
+
+    def test_synced_folders_are_recognised(self):
+        for p in ("/Users/a/Library/CloudStorage/OneDrive-Corp/Documents/b2b-api-ai",
+                  r"C:\Users\a\OneDrive - Corp\repos\b2b-api-ai",
+                  "/Users/a/Library/Mobile Documents/com~apple~CloudDocs/b2b",
+                  "/Users/a/Dropbox/b2b"):
+            self.assertTrue(launch.synced_folder(p), p)
+        for p in ("/Users/a/b2bworkbench/b2b-api-ai", r"C:\b2bworkbench\b2b-api-ai",
+                  "/Users/a/repos/onedrivetools-not"):
+            self.assertFalse(launch.synced_folder(p), p)
+
+    def test_the_warning_says_where_to_move_it(self):
+        with redirect_stdout(io.StringIO()) as out:
+            launch.warn_if_synced("/Users/a/Library/CloudStorage/OneDrive-Corp/b2b")
+        self.assertIn("WARN this project is inside a synced folder", out.getvalue())
+        self.assertIn("~/b2bworkbench", out.getvalue())
 
 
 if __name__ == "__main__":

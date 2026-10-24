@@ -52,6 +52,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import re
 import os
 import shutil
 import signal
@@ -211,6 +212,31 @@ def ensure_requirements(py: str, path: str = "", run=None) -> list:
     return left
 
 
+# Whole folder names: "OneDrive", "OneDrive - Corp", "OneDrive-Corp" -- not "onedrivetools".
+SYNCED_FOLDERS = re.compile(r"/(library/cloudstorage|library/mobile documents|onedrive(?:[ -][^/]*)?"
+                            r"|dropbox(?: \([^/]*\))?|google ?drive|icloud ?drive)/")
+
+
+def synced_folder(root: str = "") -> bool:
+    """The project is in a folder a sync client owns (OneDrive, iCloud,
+    Dropbox, Google Drive). Seen on a Mac (~/Library/CloudStorage/
+    OneDrive-...): a write to the job log timed out (Errno 60) while
+    OneDrive held the file -- a design run crashed on a print, an intake
+    lost a page it had fetched. Maven's target/ and git do the same there."""
+    p = "/" + os.path.abspath(root or ROOT).replace("\\", "/").lower().strip("/") + "/"
+    return bool(SYNCED_FOLDERS.search(p))
+
+
+def warn_if_synced(root: str = "") -> None:
+    if synced_folder(root):
+        say("WARN this project is inside a synced folder (OneDrive / iCloud / Dropbox / Google Drive):\n"
+            f"       {os.path.abspath(root or ROOT)}\n"
+            "     The sync client holds files as they are written: job logs, target/ and .git time out\n"
+            "     or go missing mid-run (seen: TimeoutError [Errno 60] on a Mac). Move the project to a\n"
+            "     folder that is not synced -- e.g. ~/b2bworkbench (macOS) or C:\\b2bworkbench (Windows) --\n"
+            "     with `git clone` there, then copy src/main/resources/program_configuration*.json across.")
+
+
 def with_requirements(py: str, why: str, root: str = "", run=None) -> tuple:
     """`py` with requirements.txt installed. A Python that refuses pip (PEP
     668, Homebrew's) and is not the project's .venv: a .venv is made, and
@@ -301,6 +327,7 @@ def start(open_page: bool = True, wait: float = 20.0) -> int:
             f"WORKBENCH_PORT to another port.")
         return 1
     move_old_state()
+    warn_if_synced()
     py, why = server_python()
     py, why = with_requirements(py, why)
     say(f" .. the server runs on {why}: {py}")
@@ -333,8 +360,13 @@ def start(open_page: bool = True, wait: float = 20.0) -> int:
     deadline = time.time() + wait
     while time.time() < deadline:
         there = who(p, 1.0)
-        if isinstance(there, dict) and there["pid"] == proc.pid:
-            say(f"The workbench is running (process {proc.pid}): {url(p)}\n"
+        # This folder's workbench on a port that was free a moment ago: the
+        # one just started. Not "its process id is proc.pid": on Windows a
+        # .venv's python.exe is a stub that runs the real Python as a CHILD,
+        # so the server's own id differs -- it was never seen as up, and was
+        # ended after 20 seconds.
+        if isinstance(there, dict) and same_folder(there["root"], ROOT):
+            say(f"The workbench is running (process {there['pid']}): {url(p)}\n"
                 f"To stop it: stop-workbench  (or: python tools/agent/launch.py stop)")
             if open_page:
                 webbrowser.open(url(p))

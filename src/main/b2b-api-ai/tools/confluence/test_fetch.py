@@ -339,5 +339,24 @@ class AConfluenceThatIsNotAtTheTopOfItsHost(unittest.TestCase):
         self.assertEqual(self.base("12345", []), "")
 
 
+class WhatCameBackInsteadOfJson(unittest.TestCase):
+    """Seen: a page fetched, then twice an HTML page -- the message said only
+    "Expecting value: line 8 column 1"."""
+
+    def test_a_sign_in_page_is_named(self):
+        said = cf.not_json(200, "text/html", "<html><head><title>Log In - Wiki</title></head>"
+                                             "<form><input name='os_username'></form></html>")
+        self.assertIn("HTTP 200, text/html", said)
+        self.assertIn('page title "Log In - Wiki"', said)
+        self.assertIn("a sign-in page", said)
+
+    def test_a_rate_limit_and_an_outage_are_named(self):
+        self.assertIn("rate limit", cf.not_json(429, "text/html", "<p>Too Many Requests</p>"))
+        self.assertIn("not available right now", cf.not_json(502, "text/html", "<h1>Bad Gateway</h1>"))
+
+    def test_anything_else_points_at_the_configuration(self):
+        self.assertIn("base_urls", cf.not_json(200, "text/html", "<html><title>Dashboard</title></html>"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
