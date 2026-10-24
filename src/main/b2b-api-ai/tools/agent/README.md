@@ -315,6 +315,18 @@ Things it says rather than hides:
   to go on with it. The Confluence links go with every story; pasted text
   and page text go with none (they belong to one story). Up to ten at a
   time.
+- **Stories of one release** (*…or pick stories from a release*, under the
+  story box). A Jira project key -- remembered per workbench project, as
+  B2B's and GOAL's live under different keys -- then *Load releases*
+  (newest first; *include archived* for old ones), a release and a type
+  (`Story`; empty for every type), and *List its stories*: only
+  `project = KEY AND fixVersion = "release" AND issuetype = Story` is read,
+  never the project's every story; the query is shown over the list, and a
+  list cut short says so. A story that already has a job here (one named
+  by its key) says *has a job*. Tick some and *Use the ticked stories*:
+  their keys go into the story box, and *Read it* makes one job a story as
+  above. Read with the Jira of the project chosen on the tab (B2B / GOAL);
+  changing the project or the key clears what was listed.
 
 Text from Jira is quoted line by line in the brief and is described
 there as material, not instructions. Credentials written in it --
@@ -954,7 +966,9 @@ only. Nothing on this tab writes to Jira.
 - **Notes** -- free text.
 - **The story** read on the Automate Test Case tab for the same job, if any.
 - **Existing tests** -- *Read existing tests* takes a project key, an
-  issue type (default `Test`) and optionally one further condition, and
+  issue type (default `Test`), optionally a release (`fixVersion` -- only
+  that release's tests, not the project's whole history; past the 200 below
+  a project's list is cut short) and optionally one further condition, and
   reads up to 200 tests with their Xray steps (Server / Data Center; when
   Xray gives no steps the test's description is used, and the page says
   so; steps that could not be read because Jira refused or did not answer
@@ -998,7 +1012,7 @@ only. Nothing on this tab writes to Jira.
   are plain text: nothing in them becomes a link, a mention or a formula.
 
 ```
-python tools/agent/manualtests.py inventory --job <job> --project ABC
+python tools/agent/manualtests.py inventory --job <job> --project ABC [--version 6.02]
 python tools/agent/manualtests.py generate  --job <job> --app "Group booking"
 ```
 
@@ -1524,7 +1538,8 @@ writes to Jira. The address and the token are the ones in
   filled in, it also shows what is only in one of the two, and what is
   in both.
 - **Existing tests** lists the issues of type `Test` (or the type
-  given) the project has, so a new test can be checked against them.
+  given) the project has, so a new test can be checked against them --
+  only that release's when *Version* is filled in.
 
 Every list says how much of it was read. **INCOMPLETE** (an issue moved
 while the pages were read, or Jira stopped early), **LIMIT** (more than

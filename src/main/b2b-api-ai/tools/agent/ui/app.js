@@ -601,6 +601,7 @@ async function showProject() {
     }
     const radio = document.querySelector(`input[name="project-pick"][value="${r.project}"]`);
     if (radio) radio.checked = true;
+    releaseFollowProject();          // the release picker reads this project's Jira
     const p = (r.projects || []).find((x) => x.name === r.project) || {};
     setState($("project-state"), p.config_exists ? "" : "warn", p.config_exists
       ? `${p.config} -- tests run on ${p.run_env}`
@@ -701,8 +702,34 @@ async function readStories(stories, links) {
 // The ticked keys go into the story box; "Read it" then makes one job a
 // story, as several pasted keys always have. Read with the Jira of the
 // project chosen above (B2B / GOAL).
-const RELEASE_KEY_STORE = "workbench.release-key";
-try { $("release-key").value = localStorage.getItem(RELEASE_KEY_STORE) || ""; } catch { /* no storage here */ }
+// One Jira project key remembered per workbench project: B2B's and GOAL's
+// stories live under different keys.
+function releaseStore() { return `workbench.release-key.${pageProject()}`; }
+// Called whenever the page shows a project (a radio clicked, or a job
+// opened, which sets the radio without a change event): only a real change
+// of project clears what was read. Kept on the element, not in a variable:
+// showProject runs before this part of the file has been read.
+function releaseFollowProject() {
+  const box = $("release-key");
+  if (!box || box.dataset.project === pageProject()) return;
+  box.dataset.project = pageProject();
+  releaseRecall();
+  releaseReset();
+}
+function releaseReset(why) {
+  // Releases and stories read for another project or key are not this one's.
+  $("release-version").replaceChildren(el("option", { value: "", text: "— load the releases first —" }));
+  $("release-stories").replaceChildren();
+  setState($("release-state"), "", why || "");
+}
+function releaseRecall() {
+  try { $("release-key").value = localStorage.getItem(releaseStore()) || ""; } catch { /* no storage here */ }
+}
+releaseFollowProject();
+$("release-key").addEventListener("input", () => releaseReset());
+for (const r of document.querySelectorAll('input[name="project-pick"]')) {
+  r.addEventListener("change", releaseFollowProject);
+}
 function releaseKey() {
   const k = $("release-key").value.trim().toUpperCase();
   if (!/^[A-Z][A-Z0-9_]+$/.test(k)) {
@@ -710,7 +737,7 @@ function releaseKey() {
     return "";
   }
   $("release-key").value = k;
-  try { localStorage.setItem(RELEASE_KEY_STORE, k); } catch { /* no storage here */ }
+  try { localStorage.setItem(releaseStore(), k); } catch { /* no storage here */ }
   return k;
 }
 $("release-load").onclick = async () => {
@@ -744,6 +771,11 @@ $("release-list").onclick = async () => {
       `&type=${encodeURIComponent(type)}&project=${encodeURIComponent(pageProject())}`);
   } catch (e) { setState($("release-state"), "bad", e.message); return; }
   const issues = r.issues || [];
+  // A story read before has a job named by its key: said, so it is not
+  // read again by accident (Read it would read it again into that job).
+  let jobs = new Map();
+  try { jobs = new Map((await api("/api/jobs")).map((x) => [String(x.job).toUpperCase(), x.modified])); }
+  catch { /* the list is still useful without it */ }
   const boxes = issues.map((i) => el("input", { type: "checkbox", value: i.key, "aria-label": `pick ${i.key}` }));
   const facts = [el("div", { class: "meta" }, `${issues.length} read of ${r.total ?? "?"}  ·  `, el("code", { text: r.jql || "" }))];
   if (r.complete === false) facts.push(banner("bad", `INCOMPLETE — ${r.why_incomplete || "the list is short"}`));
@@ -755,8 +787,12 @@ $("release-list").onclick = async () => {
       setState($("release-state"), "bad", `${keys.length} ticked; up to ${MAX_STORIES} are read at a time`);
       return;
     }
-    const radio = document.querySelector('input[name="story-from"][value="link"]');
-    if (radio && !radio.checked) { radio.checked = true; radio.dispatchEvent(new Event("change")); }
+    // Keys are read by "A link or a key" and by "Use the story's Xray tests"
+    // alike: only "Paste the story" cannot take them.
+    if (chosen("story-from") === "paste") {
+      const radio = document.querySelector('input[name="story-from"][value="link"]');
+      if (radio) { radio.checked = true; radio.dispatchEvent(new Event("change")); }
+    }
     $("story").value = keys.join("\n");
     setState($("release-state"), "ok", `${keys.length} story key(s) put in the box: press Read it`);
     $("story").scrollIntoView({ block: "center" });
@@ -764,8 +800,9 @@ $("release-list").onclick = async () => {
   const all = (on) => el("button", { type: "button", on: { click: () => boxes.forEach((b) => { b.checked = on; }) } },
     on ? "Tick all" : "Tick none");
   box.replaceChildren(heading(`${type || "Issues"} in ${k} ${v}`, issues.length), ...facts,
-    issues.length ? table(["", "Key", "Status", "Summary", "Fix versions"], issues.map((i, n) =>
-      [boxes[n], el("code", { text: i.key }), i.status, i.summary, (i.fix_versions || []).join(", ")])) : banner("warn",
+    issues.length ? table(["", "Key", "Status", "Summary", "Fix versions", "Job here"], issues.map((i, n) =>
+      [boxes[n], el("code", { text: i.key }), i.status, i.summary, (i.fix_versions || []).join(", "),
+       jobs.has(i.key.toUpperCase()) ? `has a job (${jobs.get(i.key.toUpperCase())})` : ""])) : banner("warn",
       `no ${type || "issue"} is in ${v}`),
     issues.length ? el("div", { class: "row" }, use, all(true), all(false)) : null);
   setState($("release-state"), issues.length ? "ok" : "warn",

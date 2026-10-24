@@ -4,7 +4,7 @@
     python tools/jira/search.py versions    --project ABC
     python tools/jira/search.py search      --jql "project = ABC AND labels = api"
     python tools/jira/search.py fix-version --project ABC --version 6.02 [--compare 6.01]
-    python tools/jira/search.py tests       --project ABC
+    python tools/jira/search.py tests       --project ABC [--version 6.02]
     python tools/jira/search.py paste "<a key, keys, a query, or a Jira address>"
 
 Read-only. Nothing here writes to Jira.
