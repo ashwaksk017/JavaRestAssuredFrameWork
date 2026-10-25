@@ -3713,6 +3713,37 @@ class FakeSdk:
         self.module.CursorAgentError = CursorAgentError
 
 
+class ARunThatEndsInError(unittest.TestCase):
+    """Seen: a design run ended "error" after 6s and the failure blamed "a very
+    large prompt" -- sending the person to split a 55,000-character prompt that
+    was not the cause. The failure now says what Cursor said, and that a quick
+    end is no timeout."""
+
+    def test_a_quick_end_is_no_timeout_and_cursors_words_are_given(self):
+        msg = loop.cursor_call.ended_in_error("run-1", 6, ["status ERROR: usage limit reached"], [])
+        self.assertIn("after 6s", msg)
+        self.assertIn("too soon to be a timeout or the prompt's size", msg.lower())
+        self.assertIn("usage limit reached", msg)
+        self.assertNotIn("very large prompt", msg)
+
+    def test_with_no_issue_line_cursors_last_lines_are_given(self):
+        msg = loop.cursor_call.ended_in_error("run-1", 6, [], ["backend request #1", "status RUNNING"])
+        self.assertIn("Cursor's last word: status RUNNING", msg)
+        self.assertIn("Cursor said nothing", loop.cursor_call.ended_in_error("run-1", 6, [], []))
+
+    def test_a_long_run_names_the_slow_causes(self):
+        msg = loop.cursor_call.ended_in_error("run-1", 600, [], [])
+        self.assertIn("slow network or VPN", msg)
+
+    def test_issue_lines_are_found_in_any_case_and_wording(self):
+        rx = loop.cursor_call.ISSUE_RX
+        for line in ("status ERROR: x", "tool shell error: y", "Rate limit exceeded", "403 Forbidden",
+                     "Unauthorized", "unknown model composer-9", "quota exhausted", "request failed"):
+            self.assertTrue(rx.search(line), line)
+        for line in ("status RUNNING", "backend request #1", "usage: 10 in, 2 out, 12 in all"):
+            self.assertFalse(rx.search(line), line)
+
+
 class CallingCursor(unittest.TestCase):
     """The call itself, against a fake SDK: what is sent, what is reported
     while it runs, and how each kind of failure reads."""

@@ -196,6 +196,33 @@ def _assistant_text(message) -> str:
     return " ".join(parts)
 
 
+import re as _re
+
+# A line from the run that says why it went wrong, in any case.
+ISSUE_RX = _re.compile(r"(?i)\b(error|errored|fail(ed|ure)?|denied|forbidden|unauthori[sz]ed|"
+                       r"rate.?limit|quota|limit (reached|exceeded)|too many|not allowed|invalid|"
+                       r"unknown model|expired|refused|status (cancelled|expired))\b")
+# A run that ends sooner than this did not run out of time and was not
+# slowed by its size: Cursor refused it, or the request failed.
+QUICK_END_SECONDS = 60
+
+
+def ended_in_error(run_id: str, seconds: float, diagnostics: list, recent: list) -> str:
+    """Why a run ended in "error" with no answer -- from what Cursor said,
+    not a guess. A run that ended within a minute is said to be no timeout
+    and no matter of prompt size: seen, a design run ended after 6s and the
+    message blamed "a very large prompt", sending the person to split it."""
+    said = (diagnostics or recent or [""])[-1].strip()
+    head = f"the agent started but did not finish (run id {run_id}, after {seconds:.0f}s)"
+    if seconds < QUICK_END_SECONDS:
+        why = ("too soon to be a timeout or the prompt's size: Cursor refused the run or the "
+               "request failed -- its account (usage limit, key, model), the network or VPN to Cursor")
+    else:
+        why = "usual causes: a slow network or VPN to Cursor, or the model timing out"
+    return (f"{head}. {why[0].upper() + why[1:]}." + (f" Cursor's last word: {said[:300]}" if said else
+            " Cursor said nothing before it ended.") + " The whole run is in the Cursor log.")
+
+
 def describe(message, timing: dict = None) -> str:
     """One line for the Cursor log from one streamed message, or "".
 
@@ -537,6 +564,11 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
 
     startup_error = getattr(cursor_sdk, "CursorAgentError", None)
     diagnostics: list = []
+    # Cursor's last words, whatever they were: a run that ends in "error"
+    # with no line matching ISSUE_RX still says what it last did. Seen: a
+    # design run ended after 6s, and the failure showed only a guess
+    # ("a very large prompt...") -- nothing Cursor had said.
+    recent: list = []
 
     last = {"at": time.monotonic(), "line": ""}
     heard = {"any": False}          # has anything at all come from the run?
@@ -752,7 +784,11 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
             if not line:
                 continue
             say(line)
-            if " error" in line:
+            recent.append(line)
+            del recent[:-8]
+            # Any case: a status line reads "status ERROR: ...", and a refusal
+            # need not say "error" at all (a limit, a denial, a bad model).
+            if ISSUE_RX.search(line):
                 diagnostics.append(line)
         end_thinking()
         flush_said()
@@ -944,10 +980,8 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
                     "transport": "session", "ended_in_error": True,
                     "diagnostics": diagnostics[:12]}
         raise CursorCallError(
-            f"the agent started but did not finish (run id {run_id}, after "
-            f"{time.time() - started:.0f}s). Usual causes: a very large "
-            f"prompt, a slow network or VPN to Cursor, or the model timing "
-            f"out.", "run", run_id=run_id,
-            details="\n".join(diagnostics[:12]))
+            ended_in_error(run_id, time.time() - started, diagnostics, recent),
+            "run", run_id=run_id,
+            details="\n".join(diagnostics[:12] or ["Cursor's last lines:"] + recent))
     return {"status": status, "result": str(text), "id": run_id,
             "model": cfg.model, "transport": "session"}
