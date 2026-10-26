@@ -1,0 +1,49 @@
+# What Cursor must not read when the workbench runs it in this folder.
+#
+# A file Cursor opens itself goes to Cursor's servers as it is -- WITHOUT
+# the redaction the workbench applies to the prompts it writes (hosts,
+# tokens, passwords removed: tools/agent/design.py redact). Until this file
+# existed, only a sentence in the prompt ("never open
+# program_configuration*.json") kept the credentials out. Same syntax as
+# .gitignore. tools/agent/test_cursorignore.py checks every secret file the
+# .gitignore names is here too.
+
+# Credentials: one configuration file a project, and the Cursor key.
+src/main/resources/program_configuration.json
+src/main/resources/program_configuration.goal.json
+program_configuration.json
+program_configuration.goal.json
+cursor_agent.json
+**/cursor_agent.json
+tools/ra_converter/cursor_agent.json
+**/cursor_agent.local.json
+
+# Any other secret file the .gitignore keeps out of git.
+*.env
+.env
+application-secret.properties
+application-local.properties
+src/main/resources/application-local.properties
+src/test/resources/application-local.properties
+src/main/resources/application-*.properties
+src/test/resources/application-*.properties
+!src/main/resources/application-qa.properties
+**/*SET_c_id_*
+src/main/resources/config/qa.json
+src/main/resources/config/prod.json
+**/credentials.properties
+**/*-credentials.properties
+src/main/resources/templates/tokenrequest.json
+
+# The workbench's own state: job logs, Jira and Confluence copies, the
+# server's logs. A job's brief and plan reach Cursor in the prompt, redacted.
+.workbench/
+
+# Build output and run logs (request and response bodies of real calls).
+# The ReadyAPI suites a convert read stay readable: answering open
+# questions searches them for an endpoint.
+target/*
+!target/convert-input/
+
+# The project's own Python, if made by the launcher.
+.venv/

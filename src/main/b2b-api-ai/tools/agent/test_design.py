@@ -554,7 +554,12 @@ class Run(unittest.TestCase):
         self.assertIn("WHERE TO LOOK IN THIS PROJECT (a GOAL job", p)
         self.assertIn(".cursor/skills/jira-to-restassured/GOAL_FLOWS.md", p)
         self.assertIn("GoalStoryTestExample.java: the golden test", p)
-        self.assertIn("_audit/<suite>/facade_endpoints.md", p)
+        # The converted files are pointed at only where they exist (they are
+        # made by a convert, not in git); a copy without them is told so.
+        self.assertTrue("_audit/<suite>/facade_endpoints.md" in p
+                        or "no converted suite is on this machine" in p, p[:2000])
+        self.assertNotIn("src/test/java/com/hi/api/tests/imported/<suite>/ and", p,
+                         "no folder-wide pointer to the whole converted tree")
         self.assertIn("Never open src/main/resources/program_configuration*.json", p)
         self.assertIn("===== DEPENDENCIES OF THE ENDPOINTS", p, "each endpoint's needs and their makers")
         self.assertIn("KNOWN_GOAL.md: what testers answered before", p)

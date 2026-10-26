@@ -1448,6 +1448,26 @@ def dependency_block(root: str, out_dir: str, spec, endpoints) -> str:
         return ""
 
 
+def flows_block(root: str, out_dir: str, endpoints) -> str:
+    """The converted flows nearest the designed endpoints, each with the few
+    files of this machine to open (flowcatalog.block) -- so Cursor reads
+    those, not the whole converted tree. Needs no specification: an
+    endpoint the intake read is enough."""
+    calls = []
+    for e in list(endpoints or [])[:MAX_DEP_ENDPOINTS]:
+        m = re.match(r"\s*([A-Za-z]+)\s+(/\S*)", str(e))
+        if m and f"{m.group(1).upper()} {m.group(2)}" not in calls:
+            calls.append(f"{m.group(1).upper()} {m.group(2)}")
+    if not calls:
+        return ""
+    try:
+        fc = loop._load("design_flowcatalog", os.path.join(HERE, "flowcatalog.py"))
+        return fc.block(root, loop.intake.job_project(out_dir), calls)
+    except Exception:                                    # noqa: BLE001 -- the design goes on without it
+        diag.trace()
+        return ""
+
+
 def project_guide(root: str, out_dir: str) -> str:
     """WHERE TO LOOK: the files of this project that show how its endpoints
     are tested today -- of the job's project (B2B, GOAL)."""
@@ -1472,10 +1492,23 @@ def project_guide(root: str, out_dir: str) -> str:
         f"before -- how a state is reached that the code does not show",
         f"- .cursor/skills/jira-to-restassured/flows/{project}.json: which converted suites "
         f"call which endpoint, in which order",
-        "- _audit/<suite>/facade_endpoints.md: the converted method that reaches each endpoint",
-        "- src/test/java/com/hi/api/tests/imported/<suite>/ and "
-        "src/main/java/com/hi/api/support/<suite>/: the converted tests, with their hooks and "
-        "phases -- the database steps and checks around each call",
+    ]
+    try:
+        here = loop._load("design_flowcatalog", os.path.join(HERE, "flowcatalog.py")).converted_here(root)
+    except Exception:                                    # noqa: BLE001
+        diag.trace()
+        here = True
+    if here:
+        lines += [
+            "- the converted tests (GENERATED, read only): open the files EXISTING FLOWS names for "
+            "each endpoint, below -- the test method, its data sheet, its phases and "
+            "_audit/<suite>/facade_endpoints.md -- not the whole of tests/imported/ or support/ "
+            "(tens of megabytes)"]
+    else:
+        lines += [
+            "- no converted suite is on this machine (a convert makes them; they are not in git): "
+            "design from the story, the flows file above and the hand-written tests"]
+    lines += [
         "- src/test/java/com/hi/api/tests/legacy/ and src/test/java/com/hi/api/tests/jira/: tests "
         "written by hand",
         "Never open src/main/resources/program_configuration*.json or tools/cursor_agent.json: "
@@ -1863,6 +1896,11 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
     # What each endpoint designed for needs, who makes it, how it is tested
     # today (depmap.py) -- the producers looked for in the WHOLE specification.
     dependencies = dependency_block(root, out_dir, spec, design_endpoints)
+    # The converted flows nearest these endpoints, with the files to open:
+    # what to read, instead of "look in the converted folders".
+    near = flows_block(root, out_dir, design_endpoints)
+    if near:
+        dependencies = (dependencies + "\n\n" + near) if dependencies else near
     # What a tester answered to the open questions -- this job's, and those
     # kept for these endpoints before (knowledge.py).
     try:
