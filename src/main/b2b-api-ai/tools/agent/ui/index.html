@@ -348,6 +348,7 @@ Expect 201.'></textarea>
   </p>
   <div class="row">
     <button id="auto-selected" class="go">Automate the approved cases</button>
+    <label class="inline" title="Automate waits when &quot;Is it already automated?&quot; stopped a request: UPSTREAM (a converted test already covers it -- the change belongs in the ReadyAPI XML) or CONFIRM (matched loosely). Tick to write the tests anyway; the log says so, for the reviewer."><input type="checkbox" id="auto-past-stops"> go ahead anyway, although a request is already covered</label>
     <button id="agent-stop">Stop</button>
     <span id="auto-state" class="state"></span>
   </div>

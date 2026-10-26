@@ -533,9 +533,24 @@ $("run-intake").onclick = async () => {
       links: (story ? [story] : []).concat(links),
     });
     follow("intake", $("new-log"), $("new-state"),
-           () => { showArtifact("brief.md", $("brief")); showSources(); });
+           () => { showArtifact("brief.md", $("brief")); showSources(); showLocated(); });
   } catch (e) { setState($("new-state"), "bad", e.message); }
 };
+
+// "Is it already automated?" runs after every read now: its plan is shown
+// with the brief, and a stop is said where the read's state is.
+async function showLocated(j) {
+  j = j || job();
+  await showArtifact("plan.md", $("plan"));
+  try {
+    const r = await api(`/api/artifact?job=${encodeURIComponent(j)}&name=locate.json`);
+    const stops = (JSON.parse(r.text || "{}").stops || []).length;
+    if (stops && j === job()) {
+      setState($("new-state"), "warn", `read; ${stops} request(s) already covered or unclear — see the plan: ` +
+        "Automate waits for them");
+    }
+  } catch { /* no plan: the story held no request, or the check could not run */ }
+}
 
 // Everything the cases are designed from, named: the story, each story
 // read around it and why, the pages, what could not be read, the
@@ -845,7 +860,7 @@ $("story-check").onclick = async () => {
             await post("/api/intake", { job: j, again: true });
             $("stories").replaceChildren();
             follow("intake", $("new-log"), $("new-state"),
-                   () => { again.disabled = false; showArtifact("brief.md", $("brief")); showSources(); });
+                   () => { again.disabled = false; showArtifact("brief.md", $("brief")); showSources(); showLocated(); });
           } catch (e) { again.disabled = false; setState($("new-state"), "bad", e.message); }
         };
         kids.push(el("div", { class: "row" }, [again]));
@@ -4004,7 +4019,11 @@ async function automateCases(ids, forJob) {
   if (!confirm(`Cursor writes the test(s) of ${ids.join(", ")} for job "${j}", in tests/jira/ and ` +
                `csv/manual/${adds ? ", added to the change already waiting for review" : ""}. ` +
                "Nothing is committed. Continue?")) return;
-  runAgent("agent-automate", { "--job": j, "--cases": ids.join(",") }, $("auto-log"), $("auto-state"));
+  const opts = { "--job": j, "--cases": ids.join(",") };
+  // Automate waits on "Is it already automated?" stops unless told otherwise.
+  if ($("auto-past-stops").checked) opts["--past-stops"] = true;
+  runAgent("agent-automate", opts, $("auto-log"), $("auto-state"));
+  $("auto-past-stops").checked = false;     // once, for this run
 }
 $("auto-selected").onclick = async () => {
   const j = job();

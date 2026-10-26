@@ -45,7 +45,7 @@ GOAL_SUITES = frozenset({
 _HOST_RX = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://[^/]+")
 TOKEN_PATH = "/realms/applications/token"
 PER_ENDPOINT = 3           # chains shown for one endpoint
-BLOCK_CAP = 9000           # characters of the prompt block (with the files to open)
+BLOCK_CAP = 12000          # characters of the prompt block (with the files to open)
 
 
 def project_of(suite: str) -> str:
@@ -226,23 +226,87 @@ def files_for(root: str, chain: dict) -> list:
         test_file = os.path.join(root, *rel.split("/"))
         if os.path.isfile(test_file):
             method = str(row.get("java_method") or "").strip()
-            out.append(rel + (f" (method {method})" if method else ""))
+            out.append(rel + (f" (test, method {method})" if method else " (test)"))
             uses = phase_files(root, suite, test_file)
     sheet = str(row.get("csv_path") or "").strip().replace("\\", "/")
     if sheet and os.path.isfile(os.path.join(root, *sheet.split("/"))):
-        out.append(sheet + " (its data sheet: its columns and expected statuses -- describe its values, never copy them)")
+        out.append(sheet + " (data sheet)")
+    for t, step in templates_for(root, suite, case or ""):
+        out.append(f"{t} (body of step {step})")
+    for x in suites_for(root, fqn):
+        out.append(f"{x} (TestNG suite)")
     if uses:
         # The phase classes this test imports, not the suite's whole folder:
         # a suite's Steps class can be thousands of lines.
-        out += [u + " (a phase class it uses: the database steps and checks)" for u in uses]
+        out += [u + " (phase class)" for u in uses]
     else:
         phases = f"src/main/java/com/hi/api/support/{suite}"
         if os.path.isdir(os.path.join(root, *phases.split("/"))):
-            out.append(phases + "/ (its phases and hooks: the database steps and checks)")
+            out.append(phases + "/ (phase classes)")
     emap = f"{AUDIT}/{suite}/facade_endpoints.md"
     if os.path.isfile(os.path.join(root, *emap.split("/"))):
         out.append(emap)
     return out
+
+
+MAX_TEMPLATES = 3
+MAX_SUITES = 2
+_TEMPLATES: dict = {}
+_SUITE_TEXTS: dict = {}
+
+
+def templates_for(root: str, suite: str, case: str) -> list:
+    """[(template, step)] a converted case sends -- from the converter's own
+    index, templates/<suite>/_index.csv (case, step, template) -- the token
+    request left out, at most MAX_TEMPLATES, only files that exist here."""
+    if not case:
+        return []
+    key = (root, suite)
+    if key not in _TEMPLATES:
+        rows: dict = {}
+        path = os.path.join(root, "src", "main", "resources", "templates", suite, "_index.csv")
+        if os.path.isfile(path):
+            with io.open(path, encoding="utf-8", errors="replace") as fh:
+                for row in csv.DictReader(fh):
+                    rows.setdefault(str(row.get("case") or ""), []).append(
+                        (str(row.get("template") or "").replace("\\", "/"), str(row.get("step") or "")))
+        _TEMPLATES[key] = rows
+    out = []
+    for template, step in _TEMPLATES[key].get(case, []):
+        rel = "src/main/resources/" + template.lstrip("/")
+        if (not template or "token" in template.lower() or any(rel == t for t, _ in out)
+                or not os.path.isfile(os.path.join(root, *rel.split("/")))):
+            continue
+        out.append((rel, step))
+        if len(out) >= MAX_TEMPLATES:
+            break
+    return out
+
+
+def suites_for(root: str, fqn: str) -> list:
+    """The TestNG suite files (Suites/*.xml, src/test/resources/testng*.xml)
+    that run a converted test class -- naming it, or its package -- at most
+    MAX_SUITES."""
+    if not fqn:
+        return []
+    if root not in _SUITE_TEXTS:
+        texts = {}
+        for rel_dir, pattern in (("Suites", ".xml"), ("src/test/resources", ".xml")):
+            d = os.path.join(root, *rel_dir.split("/"))
+            if not os.path.isdir(d):
+                continue
+            for name in sorted(os.listdir(d)):
+                if name.endswith(pattern) and (rel_dir == "Suites" or name.startswith("testng")):
+                    try:
+                        with io.open(os.path.join(d, name), encoding="utf-8", errors="replace") as fh:
+                            texts[f"{rel_dir}/{name}"] = fh.read(400_000)
+                    except OSError:
+                        pass
+        _SUITE_TEXTS[root] = texts
+    pkg = fqn.rsplit(".", 1)[0]
+    out = [rel for rel, text in _SUITE_TEXTS[root].items()
+           if f'"{fqn}"' in text or f'"{pkg}"' in text or f'"{pkg}.*"' in text]
+    return out[:MAX_SUITES]
 
 
 MAX_PHASE_FILES = 4
@@ -289,7 +353,12 @@ def block(root: str, project: str, calls: list) -> str:
     named: set = set()
     if here:
         lines.append("Each chain names the files to OPEN for it on this machine -- read those, not "
-                     "the whole converted tree. They are converted (GENERATED) code: read, never edit.")
+                     "the whole converted tree. They are converted (GENERATED) code: read, never edit. "
+                     "test: the converted test method; data sheet: its columns and expected statuses "
+                     "(describe its values, never copy them); body of step: the request template it "
+                     "sends; phase class: its setup, database steps and checks; TestNG suite: how it is "
+                     "run; facade_endpoints.md: which method reaches which endpoint. The request URL is "
+                     "the chain's VERB /path (the host comes from the configuration).")
     else:
         lines.append("No converted suite is on this machine (the converted tests are made by a "
                      "convert and are not in git): the chains are names only, with no files to "

@@ -42,6 +42,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import sys
 from datetime import datetime, timezone
 
@@ -1066,9 +1067,64 @@ def main(argv=None) -> int:
         near = [a for a in (r.get("around") or []) if a.get("ok")]
         if near:
             print("  read around it: " + ", ".join(f"{a['key']} ({a['how']})" for a in near))
+    # "Is it already automated?" -- run now, not left to a button nobody may
+    # press: without it Automate wrote a new test for a call a converted or
+    # hand-written test already covers. With no request read (a prose
+    # story), it is run after Design, on the designed endpoints.
+    if r["requests"]:
+        auto_locate(args.job, args.root)
+    else:
+        forget_locate(out)
     # A story that was read is a result, with or without a request in it:
     # the tests can be designed from it.
     return 0 if r["ok"] or r.get("story") else 1
+
+
+LOCATE_RESULTS = ("locate.json", "plan.md")
+
+
+def forget_locate(out: str) -> None:
+    """An earlier reading's verdicts, gone: they were about requests this
+    reading did not find, and would stop (or wave through) the wrong ones."""
+    for name in LOCATE_RESULTS:
+        try:
+            os.remove(os.path.join(out, name))
+        except OSError:
+            pass
+
+
+def auto_locate(job: str, root: str = "", run=None) -> int:
+    """tools/agent/locate.py for this job, as the "Is it already automated?"
+    button runs it, its words in this log. Its exit 1 is a request that
+    STOPS (upstream, or a person decides) -- the stage working. Never the
+    reason the read fails. Returns its exit code (-1: it could not run)."""
+    out = job_dir(job, root)
+    forget_locate(out)                       # this reading's verdicts, not the last one's
+    if run is None and os.environ.get("WORKBENCH_NO_AUTO_LOCATE") == "1":
+        return -1                            # a test of reading alone
+    argv = [sys.executable, "-B", os.path.join(HERE, "locate.py"), "--job", job]
+    if root:
+        argv += ["--root", root]
+    print("==> Is it already automated? (run after every read; the shape index is built "
+          "the first time, which can take minutes)")
+    sys.stdout.flush()
+    try:
+        got = (run or (lambda a: subprocess.run(a, cwd=root or ROOT, stdout=subprocess.PIPE,
+                                                stderr=subprocess.STDOUT, timeout=1800)))(argv)
+        text = got.stdout.decode("utf-8", "replace") if isinstance(got.stdout, bytes) else (got.stdout or "")
+        rc = got.returncode
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"  note: it could not be run ({type(e).__name__}: {e}); press \"Then: is it "
+              "already automated?\" to run it")
+        return -1
+    for line in text.splitlines():
+        print("  " + line)
+    if rc == 1:
+        print("  WARN a request stops here (UPSTREAM or CONFIRM): see plan.md -- Automate waits "
+              "for it, or for \"go ahead anyway\"")
+    elif rc not in (0,):
+        print(f"  note: it ended with exit {rc}; press \"Then: is it already automated?\" to run it again")
+    return rc
 
 
 if __name__ == "__main__":

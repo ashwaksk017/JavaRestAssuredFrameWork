@@ -347,6 +347,23 @@ class ASpecificationTooLargeForOnePrompt(unittest.TestCase):
 
 
 class ThePrompt(unittest.TestCase):
+    def test_what_is_already_automated_reaches_the_design(self):
+        # "Is it already automated?" runs after the read now; Design starts
+        # from what it found instead of proposing it again.
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        self.assertEqual(design.coverage_block(d), "", "no check run: nothing said")
+        with io.open(os.path.join(d, "locate.json"), "w", encoding="utf-8") as fh:
+            json.dump({"decisions": [
+                {"verb": "POST", "path": "/b/{id}/activate", "decision": "upstream",
+                 "matches": [{"java_class_fqn": "com.x.ActivateTest", "java_method": "activate"}]},
+                {"verb": "GET", "path": "/c", "decision": "create", "matches": []}]}, fh)
+        block = design.coverage_block(d)
+        self.assertIn("ALREADY AUTOMATED?", block)
+        self.assertIn("POST /b/{id}/activate -> UPSTREAM: a CONVERTED test covers it", block)
+        self.assertIn("covered by com.x.ActivateTest#activate", block)
+        self.assertIn("GET /c -> CREATE: nothing covers it", block)
+
     def test_a_section_over_its_limit_is_cut_and_reported(self):
         out, notes = design.fit({"story": "s" * 500, "notes": "n" * 50},
                                 {"story": 100, "notes": 100}, total=10_000)

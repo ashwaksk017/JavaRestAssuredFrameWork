@@ -12,8 +12,11 @@ from __future__ import annotations
 
 import os as _os
 _os.environ["WORKBENCH_MOCK"] = "0"      # these tests are about the real paths
+_os.environ["WORKBENCH_NO_AUTO_LOCATE"] = "1"   # reading alone; AutoLocate below runs it through a fake
 
+import contextlib
 import importlib.util
+import types
 import io
 import json
 import os
@@ -120,6 +123,48 @@ class Base(unittest.TestCase):
         with io.open(os.path.join(intake.job_dir(job, self.tmp),
                                   "intake.json"), encoding="utf-8") as fh:
             return json.load(fh)
+
+
+class AutoLocate(Base):
+    """"Is it already automated?" runs after every read, not only when a
+    button is pressed; an earlier reading's verdicts do not outlive it."""
+
+    def setUp(self):
+        super().setUp()
+        self.out = intake.job_dir("j", self.tmp)
+        os.makedirs(self.out, exist_ok=True)
+        for name in intake.LOCATE_RESULTS:
+            io.open(os.path.join(self.out, name), "w").close()      # a reading before
+        self.calls = []
+
+    def fake(self, rc, said="Plan: 1 create"):
+        def run(argv):
+            self.calls.append(argv)
+            return types.SimpleNamespace(returncode=rc, stdout=said.encode())
+        return run
+
+    def test_it_runs_locate_for_the_job_and_shows_what_it_said(self):
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            rc = intake.auto_locate("j", self.tmp, run=self.fake(0))
+        self.assertEqual(rc, 0)
+        argv = self.calls[0]
+        self.assertTrue(argv[2].endswith("locate.py"), argv)
+        self.assertEqual(argv[argv.index("--job") + 1], "j")
+        self.assertIn("Is it already automated?", out.getvalue())
+        self.assertIn("Plan: 1 create", out.getvalue())
+        for name in intake.LOCATE_RESULTS:
+            self.assertFalse(os.path.exists(os.path.join(self.out, name)), "the old verdicts go first")
+
+    def test_a_stop_is_said_and_is_not_a_failed_read(self):
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            rc = intake.auto_locate("j", self.tmp, run=self.fake(1, "1 request(s) stop here"))
+        self.assertEqual(rc, 1)
+        self.assertIn("Automate waits", out.getvalue())
+
+    def test_a_reading_with_no_request_forgets_the_old_verdicts(self):
+        intake.forget_locate(self.out)
+        for name in intake.LOCATE_RESULTS:
+            self.assertFalse(os.path.exists(os.path.join(self.out, name)))
 
 
 class ReadsRequests(Base):

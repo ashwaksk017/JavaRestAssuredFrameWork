@@ -3740,7 +3740,31 @@ def automate_refusal(job_dir: str, ids) -> str:
     return ""
 
 
-def cmd_automate(job_dir: str, root: str, policy: dict, ids, agent=None, verifier=None) -> int:
+def located_stops(job_dir: str) -> str:
+    """Why Automate waits, or "": the requests "Is it already automated?"
+    stopped (locate.json) -- UPSTREAM, a converted test already covers the
+    call and the change belongs in the ReadyAPI XML; CONFIRM, matched only
+    loosely, a person decides. Before, Automate went on regardless, and
+    could write a second test of a covered call."""
+    try:
+        with io.open(os.path.join(job_dir, "locate.json"), encoding="utf-8") as fh:
+            plan = json.load(fh)
+    except (OSError, ValueError):
+        return ""
+    stops = [d for d in plan.get("decisions") or []
+             if str(d.get("decision") or "").lower() in ("upstream", "confirm")]
+    if not stops:
+        return ""
+    named = "; ".join(f"{d.get('verb', '?')} {d.get('path', '?')} -> {str(d.get('decision')).upper()}"
+                      for d in stops[:4]) + (f"; and {len(stops) - 4} more" if len(stops) > 4 else "")
+    return (f"{len(stops)} request(s) of this job stop at \"Is it already automated?\" ({named}). "
+            "UPSTREAM: a converted test already covers the call -- the change belongs in the "
+            "ReadyAPI XML and a reconvert. CONFIRM: it only matched loosely -- decide whether it "
+            "is the same call. See plan.md. To write the tests anyway, tick \"go ahead anyway\"")
+
+
+def cmd_automate(job_dir: str, root: str, policy: dict, ids, agent=None, verifier=None,
+                 past_stops: bool = False) -> int:
     """Cursor writes the tests of some of the approved cases (one row's
     Automate, or the ticked ones). All of a job's runs make ONE change: a
     run when a change is already waiting adds to it, as Ask Cursor to
@@ -3751,6 +3775,13 @@ def cmd_automate(job_dir: str, root: str, policy: dict, ids, agent=None, verifie
     if why:
         say(f"FAIL {why}")
         return 1
+    stop = located_stops(job_dir)
+    if stop and not past_stops:
+        say(f"FAIL {stop}")
+        return 1
+    if stop:
+        say(f"WARN going ahead anyway, as asked: {stop.split(' (')[0]} -- the reviewer should "
+            "check these tests do not repeat the existing ones")
     ids = [str(i).strip() for i in ids if str(i).strip()]
     try:
         os.remove(os.path.join(job_dir, AUTOMATE_FILE))      # left by an earlier version
@@ -5608,6 +5639,8 @@ def main(argv=None) -> int:
                              "reapply", "run"))
     ap.add_argument("--env", default="", help="run: the environment (default: the policy's run_env)")
     ap.add_argument("--cases", default="", help="automate: the case ids, comma-separated")
+    ap.add_argument("--past-stops", action="store_true",
+                    help="automate: write the tests although \"Is it already automated?\" stopped a request")
     ap.add_argument("--job", required=True)
     ap.add_argument("--scope", default="new-test")
     ap.add_argument("--suite", default="")
@@ -5628,7 +5661,8 @@ def main(argv=None) -> int:
     if args.command == "setup":
         return cmd_setup(job_dir, ROOT)
     if args.command == "automate":
-        why = automate_refusal(job_dir, args.cases.split(","))
+        why = automate_refusal(job_dir, args.cases.split(",")) or (
+            "" if args.past_stops else located_stops(job_dir))
         if why:
             say(f"FAIL {why}")
             return 1
@@ -5645,7 +5679,7 @@ def main(argv=None) -> int:
     if args.command == "generate":
         return cmd_generate(job_dir, ROOT, policy, args.scope, args.suite)  # convertfix passes must_fix
     if args.command == "automate":
-        return cmd_automate(job_dir, ROOT, policy, args.cases.split(","))
+        return cmd_automate(job_dir, ROOT, policy, args.cases.split(","), past_stops=args.past_stops)
     if args.command == "run":
         return cmd_run(job_dir, ROOT, policy, args.env)
     if args.command == "discard":

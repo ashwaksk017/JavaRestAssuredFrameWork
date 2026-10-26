@@ -440,7 +440,7 @@ RUNNABLES = {
     "agent-automate": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "loop.py"), "automate"],
         "label": "Cursor writes the tests of the chosen approved cases, in the job's one change",
-        "options": {"--job": "text", "--cases": "text"},
+        "options": {"--job": "text", "--cases": "text", "--past-stops": "flag"},
     },
     # The last run's results, to a new Xray Test Execution; the regression
     # tests to the regression Test Set / Plan (the Settings tab's).

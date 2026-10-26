@@ -3713,6 +3713,42 @@ class FakeSdk:
         self.module.CursorAgentError = CursorAgentError
 
 
+class AutomateWaitsOnIsItAutomated(unittest.TestCase):
+    """Before, Automate went on whatever "Is it already automated?" said --
+    and wrote a second test of a call a converted test already covered."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+
+    def plan(self, *decisions):
+        with io.open(os.path.join(self.dir, "locate.json"), "w", encoding="utf-8") as fh:
+            json.dump({"decisions": [{"verb": v, "path": p, "decision": d} for v, p, d in decisions]}, fh)
+
+    def test_no_check_and_no_stop_let_it_go_on(self):
+        self.assertEqual(loop.located_stops(self.dir), "", "no locate.json: the old way")
+        self.plan(("GET", "/a", "create"), ("PUT", "/b", "update"))
+        self.assertEqual(loop.located_stops(self.dir), "")
+
+    def test_upstream_and_confirm_stop_it_saying_which(self):
+        self.plan(("GET", "/a", "create"), ("POST", "/b/{id}/activate", "upstream"), ("GET", "/c", "confirm"))
+        why = loop.located_stops(self.dir)
+        self.assertIn("2 request(s)", why)
+        self.assertIn("POST /b/{id}/activate -> UPSTREAM", why)
+        self.assertIn("GET /c -> CONFIRM", why)
+        self.assertIn("go ahead anyway", why)
+
+    def test_go_ahead_anyway_is_an_option_of_automate(self):
+        self.assertEqual(jobs_module().RUNNABLES["agent-automate"]["options"].get("--past-stops"), "flag")
+
+
+def jobs_module():
+    spec = importlib.util.spec_from_file_location("jobs_for_gate", os.path.join(HERE, "jobs.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 class ARunThatEndsInError(unittest.TestCase):
     """Seen: a design run ended "error" after 6s and the failure blamed "a very
     large prompt" -- sending the person to split a 55,000-character prompt that

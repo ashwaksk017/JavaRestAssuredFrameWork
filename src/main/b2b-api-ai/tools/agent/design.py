@@ -1448,6 +1448,38 @@ def dependency_block(root: str, out_dir: str, spec, endpoints) -> str:
         return ""
 
 
+def coverage_block(out_dir: str) -> str:
+    """What "Is it already automated?" (locate.json, run after the read)
+    found for each request: covered by a converted test (UPSTREAM), by a
+    hand-written one (UPDATE), loosely (CONFIRM), or not at all (CREATE) --
+    and by which test. So the design starts from what exists instead of
+    proposing it again."""
+    try:
+        plan = json.loads(_read(os.path.join(out_dir, "locate.json")) or "{}")
+    except ValueError:
+        return ""
+    decisions = plan.get("decisions") if isinstance(plan, dict) else None
+    if not decisions:
+        return ""
+    meaning = {"create": "nothing covers it: new cases",
+               "update": "a HAND-WRITTEN test covers it: design additions to that test, not a second one",
+               "upstream": "a CONVERTED test covers it: design only what it does not already check",
+               "confirm": "matched only loosely: say whether it is the same call"}
+    lines = ["===== ALREADY AUTOMATED? (checked against the converted and hand-written tests) =====",
+             "Per request, what covers it today. Do not design again what a test below already "
+             "checks; say, per case, which existing test it adds to or differs from."]
+    for d in decisions[:25]:
+        verdict = str(d.get("decision") or "?").lower()
+        lines.append(f"- {d.get('verb', '?')} {d.get('path', '?')} -> {verdict.upper()}: "
+                     f"{meaning.get(verdict, verdict)}")
+        for m in (d.get("matches") or [])[:3]:
+            where = m.get("java_class_fqn") or m.get("suite") or "?"
+            meth = m.get("java_method") or ""
+            lines.append(f"    covered by {where}{'#' + meth if meth else ''}")
+    lines.append("===== end of already automated =====")
+    return "\n".join(lines)
+
+
 def flows_block(root: str, out_dir: str, endpoints) -> str:
     """The converted flows nearest the designed endpoints, each with the few
     files of this machine to open (flowcatalog.block) -- so Cursor reads
@@ -1901,6 +1933,9 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
     near = flows_block(root, out_dir, design_endpoints)
     if near:
         dependencies = (dependencies + "\n\n" + near) if dependencies else near
+    covered = coverage_block(out_dir)
+    if covered:
+        dependencies = (covered + "\n\n" + dependencies) if dependencies else covered
     # What a tester answered to the open questions -- this job's, and those
     # kept for these endpoints before (knowledge.py).
     try:
@@ -2191,11 +2226,22 @@ def main(argv=None) -> int:
         given = {"swagger": a.swagger_file, "requirements": a.requirements_file,
                  "notes": a.notes_file}
         text = {k: _read(v or os.path.join(out_dir, PASTED[k])) for k, v in given.items()}
-        return design(a.job, a.service, text["swagger"], text["requirements"],
-                      text["notes"], a.speed, mode=a.mode, fresh=a.fresh,
-                      whole_spec=a.whole_spec,
-                      refine=_read(os.path.join(out_dir, PASTED["refine"])),
-                      current=_read(os.path.join(out_dir, PASTED["current"])))
+        rc = design(a.job, a.service, text["swagger"], text["requirements"],
+                    text["notes"], a.speed, mode=a.mode, fresh=a.fresh,
+                    whole_spec=a.whole_spec,
+                    refine=_read(os.path.join(out_dir, PASTED["refine"])),
+                    current=_read(os.path.join(out_dir, PASTED["current"])))
+        # A story with no request in it: "Is it already automated?" is asked
+        # now, of the designed endpoints (after a read with requests it ran
+        # then). Automate waits on what it says.
+        if rc == 0:
+            try:
+                read = json.loads(_read(os.path.join(out_dir, "intake.json")) or "{}")
+            except ValueError:
+                read = {}
+            if isinstance(read, dict) and not read.get("requests"):
+                loop.intake.auto_locate(a.job)
+        return rc
     except ValueError as e:                   # an unusable job id
         say(f"FAIL {e}")
         return 1

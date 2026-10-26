@@ -110,8 +110,8 @@ class TheFilesToOpen(unittest.TestCase):
 
     def test_a_chain_names_its_own_test_sheet_phases_and_map(self):
         got = fc.files_for(self.root, self.chain)
-        self.assertEqual(got[0], "src/test/java/com/hi/api/tests/imported/s1/ActivateTest.java (method activateTest)")
-        self.assertTrue(any(g.startswith("src/test/resources/csv/s1/ActivateTest/activateTest.csv (its data sheet") for g in got), got)
+        self.assertEqual(got[0], "src/test/java/com/hi/api/tests/imported/s1/ActivateTest.java (test, method activateTest)")
+        self.assertTrue(any(g == "src/test/resources/csv/s1/ActivateTest/activateTest.csv (data sheet)" for g in got), got)
         self.assertTrue(any(g.startswith("src/main/java/com/hi/api/support/s1/") for g in got), got)
         self.assertIn("_audit/s1/facade_endpoints.md", got)
 
@@ -131,6 +131,30 @@ class TheFilesToOpen(unittest.TestCase):
                          ["src/main/java/com/hi/api/support/s1/scenario/Onboarding.java",
                           "src/main/java/com/hi/api/support/s1/TestSupport.java"], "the scenario first")
         self.assertFalse(any(p.split(" ")[0].endswith("/s1/") for p in phases), "not the folder")
+
+    def test_the_request_body_and_the_testng_suite_are_named(self):
+        tdir = os.path.join(self.root, "src", "main", "resources", "templates", "s1")
+        os.makedirs(os.path.join(tdir, "businesses"))
+        io.open(os.path.join(tdir, "businesses", "activate_1.json"), "w").close()
+        io.open(os.path.join(tdir, "tokenrequest_1.json"), "w").close()
+        with io.open(os.path.join(tdir, "_index.csv"), "w", encoding="utf-8", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(["case", "step", "template", "constant"])
+            w.writerow(["ABC-1_activate", "tokenRequest", "templates/s1/tokenrequest_1.json", "T"])
+            w.writerow(["ABC-1_activate", "http_request_204", "templates/s1/businesses/activate_1.json", "A"])
+            w.writerow(["ABC-1_activate", "gone", "templates/s1/businesses/not_here.json", "G"])
+        os.makedirs(os.path.join(self.root, "Suites"))
+        with io.open(os.path.join(self.root, "Suites", "S1_Regression.xml"), "w", encoding="utf-8") as fh:
+            fh.write('<suite><test><packages><package name="com.hi.api.tests.imported.s1.*"/></packages></test></suite>')
+        with io.open(os.path.join(self.root, "Suites", "Other.xml"), "w", encoding="utf-8") as fh:
+            fh.write('<suite><test><classes><class name="com.hi.api.tests.imported.s2.X"/></classes></test></suite>')
+        fc._TEMPLATES.clear()
+        fc._SUITE_TEXTS.clear()
+        got = fc.files_for(self.root, self.chain)
+        self.assertIn("src/main/resources/templates/s1/businesses/activate_1.json (body of step http_request_204)", got)
+        self.assertFalse(any("tokenrequest" in g or "not_here" in g for g in got), got)
+        self.assertIn("Suites/S1_Regression.xml (TestNG suite)", got)
+        self.assertFalse(any("Other.xml" in g for g in got), got)
 
     def test_only_files_that_exist_here_are_named(self):
         os.remove(os.path.join(self.root, *"src/test/resources/csv/s1/ActivateTest/activateTest.csv".split("/")))
