@@ -26,11 +26,14 @@
     </span>
   </span>
   <h1>AI Enabled Test WorkBench</h1>
+  <span class="job-area">
+  <button type="button" id="page-reset" title="Empty every box on every tab and start a new, empty job. Nothing is deleted: earlier jobs stay in the job list, and a command still running goes on.">Reset page</button>
   <label class="job">job
     <input id="job" value="" spellcheck="false" list="known-jobs"
            title="Names a directory under .workbench/. Letters, digits, dot, dash, underscore. A fresh start is a new, empty job; pick an earlier one from the list to go back to it.">
     <datalist id="known-jobs"></datalist>
   </label>
+  </span>
 </header>
 
 <div id="mock-banner" class="mockbar" hidden></div>

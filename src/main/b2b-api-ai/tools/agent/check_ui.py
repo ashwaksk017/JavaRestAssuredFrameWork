@@ -688,6 +688,8 @@ def main() -> int:
         check("the title, and no mock banner while the stand-ins are off",
               "<h1>AI Enabled Test WorkBench</h1>" in html
               and 'id="mock-banner" class="mockbar" hidden' in html)
+        check("Reset page is in the header, beside the job box",
+              'id="page-reset"' in html and html.index('id="page-reset"') < html.index('id="job"'))
         code, where = page.call("/api/location")
         synced_here = bool(where.get("synced"))
         check("the synced-folder banner shows exactly when the project is in OneDrive / iCloud / Dropbox",

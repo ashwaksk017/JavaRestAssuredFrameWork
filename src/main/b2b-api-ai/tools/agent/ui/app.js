@@ -31,6 +31,32 @@ function jobIntoAddress() {
   $("job").addEventListener("change", jobIntoAddress);
 })();
 
+// ---- reset the page ---------------------------------------------------
+// Refresh changed nothing: the address keeps ?job=, so the page came back on
+// the same job and every tab showed its results again. Reset opens the page
+// on a NEW, empty job: every tab is empty. Nothing is deleted on the server
+// -- earlier jobs stay in the job list -- and a command already running goes
+// on (reopen its job from the list to follow it). What this browser keeps
+// for the page (a release picker's key, the developer-change repo) is
+// forgotten too; the colour theme stays.
+const PAGE_MEMORY = (k) => k.startsWith("workbench.") || k === "wb-devcode";
+$("page-reset").onclick = () => {
+  if (!confirm("Reset the page? Every box on every tab is emptied and a new, empty job is started.\n\n" +
+               "Nothing is deleted: earlier jobs stay in the job list, and a command still running " +
+               "goes on.")) return;
+  for (const e of document.querySelectorAll("input, textarea, select")) {
+    if (e.type === "checkbox" || e.type === "radio") e.checked = e.defaultChecked;
+    else if (e.tagName === "SELECT") for (const o of e.options) o.selected = o.defaultSelected;
+    else if (e.type !== "file") e.value = e.defaultValue;
+    else e.value = "";
+  }
+  try {
+    for (const k of Object.keys(localStorage)) if (PAGE_MEMORY(k)) localStorage.removeItem(k);
+  } catch { /* no storage here: nothing kept to forget */ }
+  // No ?job= and no tab: the page starts as on its first open, with a new job.
+  location.replace(location.pathname);
+};
+
 // ---- theme ------------------------------------------------------------
 // Dark, light or blue: one attribute on <html>, kept in this browser. Set
 // before the page paints by the script in index.html's head.
