@@ -150,6 +150,7 @@ class AutoLocate(Base):
         argv = self.calls[0]
         self.assertTrue(argv[2].endswith("locate.py"), argv)
         self.assertEqual(argv[argv.index("--job") + 1], "j")
+        self.assertIn("--rebuild-if-stale", argv, "after a convert the old index would wave a duplicate through")
         self.assertIn("Is it already automated?", out.getvalue())
         self.assertIn("Plan: 1 create", out.getvalue())
         for name in intake.LOCATE_RESULTS:

@@ -1102,7 +1102,7 @@ def auto_locate(job: str, root: str = "", run=None) -> int:
     forget_locate(out)                       # this reading's verdicts, not the last one's
     if run is None and os.environ.get("WORKBENCH_NO_AUTO_LOCATE") == "1":
         return -1                            # a test of reading alone
-    argv = [sys.executable, "-B", os.path.join(HERE, "locate.py"), "--job", job]
+    argv = [sys.executable, "-B", os.path.join(HERE, "locate.py"), "--job", job, "--rebuild-if-stale"]
     if root:
         argv += ["--root", root]
     print("==> Is it already automated? (run after every read; the shape index is built "

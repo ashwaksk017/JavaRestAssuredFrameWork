@@ -433,7 +433,7 @@ RUNNABLES = {
     "agent-generate": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "loop.py"), "generate"],
         "label": "Cursor makes the change, then it is verified",
-        "options": {"--job": "text", "--scope": "text", "--suite": "text"},
+        "options": {"--job": "text", "--scope": "text", "--suite": "text", "--past-stops": "flag"},
     },
     # The reviewer's words are written by the server to a fixed file in the
     # job directory; the command reads them from there, never from a path.

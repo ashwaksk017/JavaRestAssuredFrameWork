@@ -664,6 +664,7 @@ async function readStories(stories, links) {
           $("job").value = s.key;
           $("job").dispatchEvent(new Event("change"));
           showArtifact("brief.md", $("brief"));
+          showLocated(s.key);              // its "Is it already automated?" plan too
           setState($("new-state"), "", `job ${s.key} is in the box`);
         } } }, "Open");
         return [el("code", { text: s.key }),

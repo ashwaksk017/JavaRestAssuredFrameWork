@@ -47,6 +47,37 @@ def entry(generated=False, meth="create"):
             "suite": "goal" if generated else "jira"}
 
 
+class OneProjectsTests(unittest.TestCase):
+    """B2B and GOAL share one input folder and one shape index: a GOAL job's
+    call matched a B2B converted test (or the reverse) and was stopped as
+    UPSTREAM for the other project's XML."""
+
+    def converted(self, suite):
+        return {"java_class_fqn": f"com.hi.api.tests.imported.{suite}.x.XTest", "java_method": "m",
+                "csv_path": f"src/test/resources/csv/{suite}/x.csv", "suite": suite}
+
+    def test_the_other_projects_converted_tests_are_set_aside(self):
+        result = {"verdict": locate.shape_match.EXACT_MANY,
+                  "exact_matches": [self.converted("programaccountregression"), self.converted("roomratesstage")]}
+        dropped = locate.keep_own_project(result, "goal")
+        self.assertEqual([e["suite"] for e in dropped], ["programaccountregression"])
+        self.assertEqual([e["suite"] for e in result["exact_matches"]], ["roomratesstage"])
+        self.assertEqual(locate.decide(result)[0], locate.UPSTREAM, "its own converted test still stops it")
+
+    def test_only_the_other_project_matched_is_a_create(self):
+        result = {"verdict": locate.shape_match.EXACT_ONE,
+                  "exact_matches": [self.converted("programaccountregression")]}
+        locate.keep_own_project(result, "goal")
+        self.assertEqual(locate.decide(result)[0], locate.CREATE)
+
+    def test_hand_written_tests_and_an_unknown_project_are_kept(self):
+        result = {"verdict": locate.shape_match.EXACT_ONE, "exact_matches": [entry()]}
+        self.assertEqual(locate.keep_own_project(result, "goal"), [])
+        result = {"verdict": locate.shape_match.EXACT_ONE,
+                  "exact_matches": [self.converted("programaccountregression")]}
+        self.assertEqual(locate.keep_own_project(result, ""), [], "no project: nothing set aside")
+
+
 class Decide(unittest.TestCase):
     """The verdict-to-action mapping, which is this stage's whole job."""
 

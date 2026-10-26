@@ -262,6 +262,45 @@ def _entries(result: dict) -> list:
             or result.get("loose_matches") or [])
 
 
+def intake_mod_project(out: str) -> str:
+    """The job's project (project.json), or "" when it cannot be read."""
+    try:
+        return intake.job_project(out)
+    except Exception:                                    # noqa: BLE001
+        return ""
+
+
+def suite_project(suite: str) -> str:
+    """b2b or goal, as the flow catalog sorts the converted suites."""
+    try:
+        return _load("locate_flowcatalog", os.path.join(HERE, "flowcatalog.py")).project_of(suite or "")
+    except Exception:                                    # noqa: BLE001 -- unknown: not set aside
+        return ""
+
+
+def keep_own_project(result: dict, project: str) -> list:
+    """Drop, from a match, the CONVERTED tests of the other project; return
+    them. One input folder holds B2B's and GOAL's ReadyAPI suites, and the
+    shape index all of their tests: a GOAL story's call matched a B2B
+    converted test (or the reverse) and was stopped as UPSTREAM, for a
+    change that belongs to the other project's XML. Hand-written tests stay:
+    they are not sorted by suite."""
+    if not project:
+        return []
+    dropped = []
+    for key in ("duplicate_candidates", "exact_matches", "loose_matches"):
+        kept = []
+        for e in result.get(key) or []:
+            owner = suite_project(str(e.get("suite") or "")) if is_generated(e) else ""
+            if owner and owner != project:
+                dropped.append(e)
+            else:
+                kept.append(e)
+        if key in result:
+            result[key] = kept
+    return dropped
+
+
 def decide(result: dict, ambiguous_path: bool = False) -> tuple[str, list]:
     """(decision, the entries it was based on)."""
     entries = _entries(result)
@@ -365,6 +404,8 @@ def run(job: str, root: str = "", index_path: str = DEFAULT_INDEX,
     with io.open(intake_path, encoding="utf-8") as fh:
         intake = json.load(fh)
 
+    # Its own project's converted tests only (B2B / GOAL share one input folder).
+    job_project = intake_mod_project(out)
     requests = intake.get("requests") or []
     requests_note = ""
     if not requests:
@@ -432,6 +473,7 @@ def run(job: str, root: str = "", index_path: str = DEFAULT_INDEX,
                 t["alternatives"] = t["alternatives"] + again["_templatized"]["alternatives"]
         t = cand.pop("_templatized")
         result = shape_match.match(cand, index)
+        other = keep_own_project(result, job_project)
         decision, entries = decide(result, ambiguous_path=ambiguous)
         unsure = ""
         if decision == UPDATE and ambiguous:
@@ -441,6 +483,10 @@ def run(job: str, root: str = "", index_path: str = DEFAULT_INDEX,
             unsure = ("it matches a recorded case that is mapped to no test, so there is "
                       "nothing to add to; a person decides")
         why, notes = WHY[decision], []
+        if other:
+            notes.append(f"{len(other)} converted test(s) of the other project matched too "
+                         f"(e.g. {other[0].get('suite')}) and were set aside: this is a "
+                         f"{job_project.upper()} job")
         if unsure:
             decision, why = CONFIRM, unsure
         has_body = bool(str(req.get("body") or "").strip())
@@ -681,7 +727,19 @@ def main(argv=None) -> int:
     ap.add_argument("--rebuild-index", action="store_true",
                     help="the index is a snapshot of what is converted NOW; "
                          "rebuild it after a convert")
+    ap.add_argument("--rebuild-if-stale", action="store_true",
+                    help="rebuild only when the tree was converted after the index was built "
+                         "(the run after every read uses this)")
     args = ap.parse_args(argv)
+    if args.rebuild_if_stale and not args.rebuild_index:
+        path = (args.index if os.path.isabs(args.index)
+                else os.path.join(ROOT, args.index.replace("/", os.sep)))
+        if staleness(path):
+            # A convert since it was built: every CREATE would describe the
+            # old tree -- the direction that lets a duplicate be written.
+            print("  the shape index is older than the converted tree: rebuilding it first "
+                  "(minutes, once after a convert)")
+            args.rebuild_index = True
 
     plan = run(args.job, root=args.root, index_path=args.index,
                rebuild=args.rebuild_index)

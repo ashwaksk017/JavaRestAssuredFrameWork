@@ -3937,8 +3937,17 @@ def cmd_followup(job_dir: str, root: str, policy: dict, agent=None, verifier=Non
 
 def cmd_generate(job_dir: str, root: str, policy: dict, scope_name: str = "new-test",
                  suite: str = "", agent=None, verifier=None, followup: str = "",
-                 must_fix=()) -> int:
+                 must_fix=(), past_stops: bool = False) -> int:
     """Cursor writes; the files are checked; the result is held for review."""
+    if scope_name == "new-test" and not followup:
+        # New tests from the job's plan wait on "Is it already automated?",
+        # as Automate does: this is the other way into the same writing.
+        stop = located_stops(job_dir)
+        if stop and not past_stops:
+            say(f"FAIL {stop}")
+            return 1
+        if stop:
+            say(f"WARN going ahead anyway, as asked: {stop.split(' (')[0]}")
     prior = read_review(job_dir)
     if followup and prior.get("state") in ("pending-review", "verify-failed"):
         try:
@@ -5677,7 +5686,8 @@ def main(argv=None) -> int:
     if args.command == "followup":
         return cmd_ask(job_dir, ROOT, policy)
     if args.command == "generate":
-        return cmd_generate(job_dir, ROOT, policy, args.scope, args.suite)  # convertfix passes must_fix
+        return cmd_generate(job_dir, ROOT, policy, args.scope, args.suite,  # convertfix passes must_fix
+                            past_stops=args.past_stops)
     if args.command == "automate":
         return cmd_automate(job_dir, ROOT, policy, args.cases.split(","), past_stops=args.past_stops)
     if args.command == "run":
