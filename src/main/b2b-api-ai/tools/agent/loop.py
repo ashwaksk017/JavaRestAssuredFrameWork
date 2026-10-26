@@ -2871,7 +2871,7 @@ def build_prompt(job_dir: str, policy: dict, scope: dict, repair: str = "",
         + "".join(f"\n  - {p}  (credentials: put back after every run)"
                   for p in policy.get("protected_files") or []),
         ("Files the converter generates (src/main/java/com/hi/api/support/, rest/clients/, "
-         "tests/imported/, the generated templates and CSVs) may be changed, but git ignores "
+         "tests/imported/ and tests/classic/, the generated templates and CSVs) may be changed, but git ignores "
          "them: they stay on this machine, a push never carries them, and the next convert "
          "overwrites them. Prefer a fix that lives in a committed file."
          if "**" in scope["write_roots"] else ""),
@@ -3694,7 +3694,7 @@ PROPOSED FOR THIS JOB, under src/test/java/com/hi/api/tests/jira/.
 
 Before writing one, look for an existing test of the same endpoint and
 behaviour (tests/jira/, tests/manual/, and the converted tests under
-tests/imported/). One in the paths you may write that already covers a
+tests/imported/ or tests/classic/). One in the paths you may write that already covers a
 case is UPDATED to the case -- with the case's Xray key, when it has
 one -- instead of a second test being written. One outside those paths:
 write nothing for it and name that test in your reply.

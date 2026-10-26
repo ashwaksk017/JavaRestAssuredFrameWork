@@ -61,6 +61,7 @@ COMPILE = ["mvn", "-q", "-DskipTests", "test-compile"]
 # Where a converted suite's own files are (policy.json, scope "converted").
 _SUITE_RX = (
     re.compile(r"^src/test/java/com/hi/api/tests/imported/([A-Za-z0-9_]+)/"),
+    re.compile(r"^src/test/java/com/hi/api/tests/classic/([A-Za-z0-9_]+)/"),     # --classic
     re.compile(r"^src/main/java/com/hi/api/support/([A-Za-z0-9_]+)/"),
     re.compile(r"^src/main/resources/templates/([A-Za-z0-9_]+)/"),
     re.compile(r"^src/main/java/com/hi/api/rest/clients/([A-Za-z0-9_]+)Client\.java$"),

@@ -39,6 +39,13 @@ class Placing(unittest.TestCase):
         self.assertEqual(cf.suite_of(AMEX), "amex")
         self.assertEqual(cf.suite_of(AMEX_STEPS), "amex")
         self.assertEqual(cf.suite_of("src/main/resources/templates/goal/x.json"), "goal")
+        # A --classic convert writes its tests under tests/classic/<suite>/.
+        self.assertEqual(cf.suite_of("src/test/java/com/hi/api/tests/classic/amex/x/ATest.java"), "amex")
+        # Its fixes are stored and re-applied like a phase-mode suite's.
+        pspec = importlib.util.spec_from_file_location("patches_for_classic", os.path.join(HERE, "patches.py"))
+        patches = importlib.util.module_from_spec(pspec)
+        pspec.loader.exec_module(patches)
+        self.assertIn("src/test/java/com/hi/api/tests/classic/amex/", patches.suite_roots("amex"))
         self.assertEqual(cf.suite_of("src/main/java/com/hi/api/rest/clients/AmexClient.java"), "amex")
         self.assertEqual(cf.suite_of(SHARED), "")
         self.assertEqual(cf.suite_of("src\\test\\java\\com\\hi\\api\\tests\\imported\\Goal\\G.java"), "goal")

@@ -43,7 +43,8 @@ any API.
 
 For each question below, find the answer IN THIS PROJECT -- how its
 existing tests already do it -- and say where you found it:
-- the converted tests (src/test/java/com/hi/api/tests/imported/<suite>/)
+- the converted tests (src/test/java/com/hi/api/tests/imported/<suite>/,
+  or tests/classic/<suite>/ after a classic convert)
   and their hooks and phases (src/main/java/com/hi/api/support/<suite>/):
   the database steps and checks around each call;
   _audit/<suite>/facade_endpoints.md names which converted method

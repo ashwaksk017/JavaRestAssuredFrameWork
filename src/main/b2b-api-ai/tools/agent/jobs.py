@@ -1506,7 +1506,8 @@ def migration_ask(job: str, scope: str, suite: str, text: str) -> dict:
         with io.open(os.path.join(out, "agent-followup.txt"), "w", encoding="utf-8") as fh:
             fh.write(text)
         return dict(start(job, "agent-followup", {"--job": job}), runnable="agent-followup")
-    what = (f"suite {suite}'s converted Java: support/{suite}/, tests/imported/{suite}/, "
+    what = (f"suite {suite}'s converted Java: support/{suite}/, tests/imported/{suite}/ (or "
+            f"tests/classic/{suite}/), "
             f"templates/{suite}/, csv/{suite}/ and its client" if scope == "converted"
             else "the converter (tools/ra_converter/) and the runtime under it")
     with io.open(os.path.join(out, "brief.md"), "w", encoding="utf-8") as fh:

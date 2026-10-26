@@ -86,6 +86,7 @@ _ID_RX = re.compile(r"^\d{3,}-[A-Za-z0-9_][A-Za-z0-9._-]{0,100}$")
 SUITE_ROOTS = (
     "src/main/java/com/hi/api/support/{suite}/",
     "src/test/java/com/hi/api/tests/imported/{suite}/",
+    "src/test/java/com/hi/api/tests/classic/{suite}/",       # a --classic convert writes here
     "src/main/resources/templates/{suite}/",
     "src/test/resources/csv/{suite}/",
     "src/main/java/com/hi/api/rest/clients/{Suite}Client.java",
