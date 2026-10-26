@@ -1735,7 +1735,7 @@ def run_ask(job: str, text: str, images=None) -> dict:
     run_dir = job_dir(job)
     text = str(text or "").strip()
     if not text:
-        raise ValueError("write what Cursor should fix (the box was prefilled from the failed tests)")
+        raise ValueError("write what Cursor should fix (the box was prefilled from the failed tests or compile errors)")
     if len(text) > 20000:
         raise ValueError("that is more than 20,000 characters; keep the request short")
     result = ra.read_result(run_dir)

@@ -310,6 +310,21 @@ class CompileErrors(Base):
         self.assertEqual(none["kind"], "none")
         self.assertIn("name no source file", none["why"])
 
+    def test_a_project_under_a_src_folder_still_finds_its_files(self):
+        # Maven's real output, read the way mvnrun reads it: this project sits
+        # under .../src/main/b2b-api-ai/, so the line starts at the outer src/.
+        out = ("[ERROR] /C:/work/Framework/src/main/b2b-api-ai/" + JIRA_FILE + ":[42,9] cannot find symbol\n"
+               "[ERROR] /C:/work/Framework/src/main/b2b-api-ai/src/main/java/com/hi/api/support/scenario/"
+               "Insights.java:[3,1] x\n")
+        errors = ra.loop.compile_errors(out)
+        self.assertEqual([ra.error_file(e) for e in errors],
+                         [JIRA_FILE, "src/main/java/com/hi/api/support/scenario/Insights.java"])
+        self.job("job-1")
+        self.suite("job-1", JIRA)
+        got = ra.classify(self.root, "job-1", compiled(errors[0]))
+        self.assertEqual((got["kind"], got["job"]), ("job", "job-1"))
+        self.assertIn("generated support file", ra.classify(self.root, "job-1", compiled(errors[1]))["why"])
+
     def test_the_count_includes_the_errors_left_off_the_list(self):
         self.assertEqual(ra.error_count([f"{JIRA_FILE}:1: x", "... and 7 more error(s)"]), 8)
 

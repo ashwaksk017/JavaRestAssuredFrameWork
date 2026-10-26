@@ -216,8 +216,16 @@ def compile_errors(result: dict) -> list:
 
 
 def error_file(line: str) -> str:
+    """The error's file, from the project root. Maven names it from the
+    first `src/` in its absolute path, and this project may itself sit
+    under a `src/` (.../src/main/b2b-api-ai/): what counts is the last
+    `src/main/java/` or `src/test/java/`."""
     m = _ERR_RX.match(str(line or ""))
-    return m.group(1) if m else ""
+    if not m:
+        return ""
+    rel = m.group(1)
+    at = max(rel.rfind("src/main/java/"), rel.rfind("src/test/java/"))
+    return rel[at:] if at > 0 else rel
 
 
 def error_count(errors: list) -> int:
