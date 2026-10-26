@@ -239,6 +239,85 @@ class TheRequest(Base):
         self.assertLessEqual(len(ra.fix_job_name(self.root, "x" * 80, when)), 64)
 
 
+JIRA_FILE = "src/test/java/com/hi/api/tests/jira/H4bMemberStaysTest.java"
+
+
+def compiled(*errors, what="compile"):
+    """A run whose compile failed: Compile itself, or a run's compile first."""
+    part = {"compile": {"ok": False, "exit_code": 1, "how": "offline", "errors": list(errors), "seconds": 3}}
+    if what == "compile":
+        return dict(part, kind="mvnrun", what="compile", at="2026-10-26T10:00:00Z", ok=False,
+                    verdict="the compile failed")
+    return dict(part, kind="mvnrun", what="test", at="2026-10-26T10:00:00Z", env="stg", project="b2b",
+                suite="Suites/jira/job-1.xml", test="", group="", ok=False,
+                verdict="the compile failed: no test was run")
+
+
+class CompileErrors(Base):
+    """A compile that failed: no test ran, but the errors name their files."""
+
+    def test_the_jobs_own_file_goes_to_its_ask_me_with_the_errors(self):
+        self.suite("job-1", JIRA)
+        self.job("job-1", result=compiled(f"{JIRA_FILE}:42: cannot find symbol",
+                                          f"{JIRA_FILE}:50: ';' expected"))
+        got = ra.preview(self.root, "job-1")
+        self.assertEqual((got["kind"], got["job"], got["failed"], got["compile"]), ("job", "job-1", 2, True))
+        self.assertIn("its suite Suites/jira/job-1.xml", got["why"])
+        self.assertTrue(got["text"].startswith("Fix the compile errors in job job-1's files: the last Compile"))
+        self.assertIn(f"- {JIRA_FILE}:42: cannot find symbol", got["text"])
+        self.assertIn("Make the project compile", got["text"])
+
+    def test_a_runs_compile_first_and_a_run_that_did_not_compile_count_too(self):
+        self.job("job-1")
+        self.suite("job-1", JIRA)
+        got = ra.classify(self.root, "job-1", compiled(f"{JIRA_FILE}:1: x", what="test"))
+        self.assertEqual((got["kind"], got["compile"]), ("job", True))
+        self.job("job-1", result={"what": "test", "at": "", "suite": "Suites/jira/job-1.xml", "ok": False,
+                                  "verdict": "it did not compile", "errors": [f"{JIRA_FILE}:1: x"]})
+        text = ra.preview(self.root, "job-1")["text"]
+        self.assertIn("the last run of Suites/jira/job-1.xml", text)
+
+    def test_a_helper_in_the_waiting_change_is_the_jobs(self):
+        helper = "src/main/java/com/hi/api/rest/utilities/StayHelper.java"
+        self.job("job-2", review={"state": "pending-review", "files": {"created": [helper], "modified": []}})
+        got = ra.classify(self.root, "job-2", compiled(f"{helper}:9: x"))
+        self.assertEqual((got["kind"], got["job"]), ("job", "job-2"))
+        self.assertIn("the change waiting for its review", got["why"])
+
+    def test_generated_and_converted_files_are_said_not_sent(self):
+        self.job("job-1")
+        self.suite("job-1", JIRA)
+        gen = ra.classify(self.root, "job-1", compiled(
+            "src/main/java/com/hi/api/support/scenario/Insights.java:12: cannot find symbol"))
+        self.assertEqual((gen["kind"], gen["failed"]), ("none", 1))
+        self.assertIn("generated support file", gen["why"])
+        self.assertIn("Convert the suite again", gen["why"])
+        conv = ra.classify(self.root, "job-1", compiled(
+            "src/test/java/com/hi/api/tests/imported/amex/spend/SpendTest.java:3: x"))
+        self.assertEqual(conv["kind"], "none")
+        self.assertIn("suite amex", conv["why"])
+        self.assertNotIn("text", ra.preview(self.root, "job-1"))
+
+    def test_someone_elses_files_or_no_file_are_said_not_sent(self):
+        self.job("job-1")
+        self.suite("job-1", JIRA)
+        other = ra.classify(self.root, "job-1", compiled(
+            "src/test/java/com/hi/api/tests/jira/OtherTest.java:3: x", f"{JIRA_FILE}:1: y"))
+        self.assertEqual(other["kind"], "none")
+        self.assertIn("not job job-1's", other["why"])
+        self.assertIn("OtherTest.java", other["why"])
+        none = ra.classify(self.root, "job-1", compiled("[ERROR] something odd"))
+        self.assertEqual(none["kind"], "none")
+        self.assertIn("name no source file", none["why"])
+
+    def test_the_count_includes_the_errors_left_off_the_list(self):
+        self.assertEqual(ra.error_count([f"{JIRA_FILE}:1: x", "... and 7 more error(s)"]), 8)
+
+    def test_a_compile_that_passed_is_nothing_to_ask_about(self):
+        ok = {"what": "compile", "ok": True, "compile": {"ok": True, "errors": []}}
+        self.assertEqual(ra.classify(self.root, "job-1", ok)["failed"], 0)
+
+
 class Sending(Base):
     """jobs.run_ask: the two existing paths, and the refusals before them."""
 
@@ -325,6 +404,17 @@ class Sending(Base):
         self.assertIn("already approved", str(got.exception))
         self.assertEqual(self.started, [])
         self.assertFalse(os.path.exists(os.path.join(jobs.job_dir("job-1"), "agent-followup.txt")))
+
+    def test_compile_errors_in_the_jobs_files_go_to_its_ask_me(self):
+        self.suite("job-1", JIRA)
+        self.job("job-1", result=compiled(f"{JIRA_FILE}:42: cannot find symbol"))
+        r = jobs.run_ask("job-1", "Fix the compile.")
+        self.assertEqual((r["kind"], r["job"], r["runnable"]), ("job", "job-1", "agent-followup"))
+        self.assertEqual(self.read("job-1", "agent-followup.txt"), "Fix the compile.")
+        self.job("job-1", result=compiled("src/main/java/com/hi/api/support/scenario/Insights.java:1: x"))
+        with self.assertRaises(ValueError) as got:
+            jobs.run_ask("job-1", "Fix it.")
+        self.assertIn("Convert the suite again", str(got.exception))
 
     def test_a_converted_fix_that_does_not_start_leaves_no_job(self):
         self.job("runs", result=run(test(IMPORTED, "a"), suite="Suites/Amex.xml"))

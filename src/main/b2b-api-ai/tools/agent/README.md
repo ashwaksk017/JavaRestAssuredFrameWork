@@ -948,6 +948,16 @@ Cursor run is going, or when the last run had no failed test. **Open the
 job to review it** takes you to the Commit and push tab of the job the
 request went to.
 
+A **compile that failed** (Compile, a run's compile first, or a run that
+did not compile) offers the box too: no test ran, but each error names its
+file, and the files say whose they are.
+
+| the errors are in | the request goes |
+|---|---|
+| the job's own files: its suite's classes, or any Java file of the change waiting for its review (a helper under `src/main` too) | to that job's **Ask Me**, prefilled with the errors (`file:line: message`) |
+| files the converter writes (`com.hi.api.support`, a converted suite's tests) | nowhere: an edit there is lost on the next convert. The tab says to convert the suite again (a stale generated wrapper is removed on the next Compile by itself), or to fix the converter |
+| anything else (another job's files, a mix, no file named) | nowhere: the tab says what to do instead |
+
 ### Manual tests
 
 Manual UI test cases from requirements, written as a **delta** against

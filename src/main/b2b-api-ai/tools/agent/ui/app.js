@@ -2415,7 +2415,8 @@ async function showRunAsk(j, again) {
   const how = p.kind === "job" ? `Goes to job ${p.job}'s Ask Me.`
     : p.kind === "converted" ? `A fix brief for suite ${p.suite}, in a new job.` : "Not sent from here.";
   $("run-ask-which").replaceChildren(
-    banner(usable ? "ok" : "warn", `${p.failed} test(s) failed. ${how} Why: ${p.why}`),
+    banner(usable ? "ok" : "warn", `${p.compile ? `The compile failed: ${p.failed} error(s).`
+      : `${p.failed} test(s) failed.`} ${how} Why: ${p.why}`),
     p.blocked ? banner("bad", p.blocked) : null);
   const from = `${j}@${(p.run && p.run.at) || ""}`;
   if (again || (p.text && (runAskFrom !== from || !$("run-ask").value.trim()))) {

@@ -182,12 +182,133 @@ def _what_ran(result: dict) -> str:
             or (f"the group {result['group']}" if result.get("group") else "the tests"))
 
 
+def _candidates(root: str, run_job: str, result: dict) -> list:
+    """The jobs a run's failures may be: the job whose suite was run, then
+    the job the run was started from -- each only when it exists."""
+    out = []
+    named = suite_job(result.get("suite"))
+    if named and os.path.isdir(intake.job_dir(named, root)):
+        out.append(named)
+    if run_job and run_job not in out and os.path.isdir(intake.job_dir(run_job, root)):
+        out.append(run_job)
+    return out
+
+
+# ---- a compile that failed -------------------------------------------------------------
+# Compile, a run's compile first, or a run that did not compile: no test
+# ran, so there is no failed test -- but the errors name their files, and
+# the files say whose they are. Generated and converted files are not
+# Cursor's to edit: the next convert writes them again.
+
+SUPPORT = "src/main/java/com/hi/api/support/"
+_ERR_RX = re.compile(r"^((?:src|tools)/[^\s:]+\.java):(\d+): ")
+_MORE_RX = re.compile(r"^\.\.\. and (\d+) more error")
+
+
+def compile_errors(result: dict) -> list:
+    """The `file:line: message` lines of the run's failed compile, or []."""
+    result = result or {}
+    c = result.get("compile") if isinstance(result.get("compile"), dict) else {}
+    errors = c.get("errors") if c and not c.get("ok") else None
+    if not errors and result.get("what") == "test" and result.get("tests") is None:
+        errors = result.get("errors")
+    return [str(e) for e in errors or [] if isinstance(e, str) and e.strip()]
+
+
+def error_file(line: str) -> str:
+    m = _ERR_RX.match(str(line or ""))
+    return m.group(1) if m else ""
+
+
+def error_count(errors: list) -> int:
+    n = 0
+    for e in errors:
+        m = _MORE_RX.match(e)
+        n += int(m.group(1)) if m else (1 if error_file(e) else 0)
+    return n
+
+
+def _dotted(rel: str) -> str:
+    for base in ("src/test/java/", "src/main/java/"):
+        if rel.startswith(base) and rel.endswith(".java"):
+            return rel[len(base):-len(".java")].replace("/", ".")
+    return ""
+
+
+def job_files(root: str, job: str) -> dict:
+    """{file: where} of the source files that are the job's: its suite's
+    classes, and every Java file of the change waiting for its review."""
+    out = {f"src/test/java/{c.replace('.', '/')}.java": w for c, w in job_classes(root, job).items()}
+    review = _read_json(os.path.join(intake.job_dir(job, root), "review.json"))
+    if review.get("state") in WAITING:
+        files = review.get("files") or {}
+        for rel in list(files.get("created") or []) + list(files.get("modified") or []):
+            rel = str(rel).replace("\\", "/")
+            if rel.endswith(".java"):
+                out.setdefault(rel, "the change waiting for its review")
+    return out
+
+
+def classify_compile(root: str, run_job: str, result: dict, errors: list) -> dict:
+    """classify() for a run whose compile failed: `failed` counts errors."""
+    what = "Compile" if result.get("what") == "compile" else _what_ran(result)
+    run = {"what": what, "env": str(result.get("env") or ""), "at": str(result.get("at") or ""),
+           "project": str(result.get("project") or "")}
+    base = {"failed": error_count(errors) or len(errors), "compile": True, "run": run, "run_job": run_job}
+    files = sorted({f for f in map(error_file, errors) if f})
+    if not files:
+        return dict(base, kind="none", why="the compile errors name no source file: the log above says what "
+                                           "stopped it")
+    generated = [f for f in files if f.startswith(SUPPORT)]
+    suites = sorted({s for s in (converted_suite(_dotted(f)) for f in files) if s})
+    if generated or suites:
+        where = ", ".join(([f"suite {', '.join(suites)}"] if suites else [])
+                          + ([f"{len(generated)} generated support file(s)"] if generated else []))
+        return dict(base, kind="none", why=(
+            f"the errors are in files the converter writes ({where}); an edit there is lost on the next "
+            f"convert. Convert the suite again on the Migration from ReadyAPI tab -- a generated wrapper "
+            f"left from an older convert is removed on the next Compile by itself. If the errors stay, the "
+            f"converter needs the fix: the Migration tab's Ask Me, scope converter"))
+    candidates = _candidates(root, run_job, result)
+    for job in candidates:
+        own = job_files(root, job)
+        if all(f in own for f in files):
+            where = sorted({own[f] for f in files})
+            return dict(base, kind="job", job=job, blocked=blocked(root, job), why=(
+                f"the errors are in job {job}'s own files ({'; '.join(where)}). As Ask Me on the Automate "
+                f"Test Case tab does, the request goes to that job: Cursor changes the change waiting for "
+                f"its review, or starts one when none is waiting; then it is checked and waits for your "
+                f"review on the Commit and push tab."))
+    who = (f"job {candidates[0]}'s" if candidates else "the open job's")
+    return dict(base, kind="none", why=(
+        f"the errors are in files that are not {who} and not a converted suite's "
+        f"({', '.join(f.rsplit('/', 1)[-1] for f in files[:5])}" + (", ..." if len(files) > 5 else "")
+        + "): open the job that wrote them and compile there -- or ask on the Automate Test Case tab in "
+          "your own words"))
+
+
+def prefill_compile(info: dict, errors: list) -> str:
+    run = info["run"]
+    head = (f"the last Compile ({run['at']})" if run["what"] == "Compile"
+            else f"the last run of {run['what']}" + (f" on {run['env']}" if run["env"] else "") + f" ({run['at']})")
+    L = [f"Fix the compile errors in job {info['job']}'s files: {head} did not compile -- "
+         f"{info['failed']} error(s).", "", "Errors (file:line: message):"]
+    L += [f"- {e[:400]}" for e in errors[:MAX_LISTED * 2]]
+    L += ["", f"Make the project compile. Change only job {info['job']}'s files; where an error comes from "
+              f"a class the job did not write, say so instead of changing that class."]
+    return "\n".join(L)
+
+
 def classify(root: str, run_job: str, result: dict) -> dict:
     """{kind, why, ...}: `job` (the job's own tests: `job` names it),
     `converted` (one converted suite: `suite`), or `none` (why says what
-    to do instead). `failed` is how many tests failed; 0 means there is
-    nothing to ask about."""
+    to do instead). `failed` is how many tests failed -- or, with
+    `compile`, how many compile errors; 0 means there is nothing to ask
+    about."""
     result = result or {}
+    errors = compile_errors(result)
+    if errors:
+        return classify_compile(root, run_job, result, errors)
     if result.get("what") != "test":
         return {"kind": "none", "failed": 0, "why": "no tests have been run from this tab for this job yet: "
                                                     "run them, then ask Cursor to fix what failed"}
@@ -219,12 +340,7 @@ def classify(root: str, run_job: str, result: dict) -> dict:
         return dict(base, kind="none", why=(
             "the failing tests are converted ReadyAPI tests and hand-written ones together: run them "
             "apart (one suite file at a time), then ask"))
-    candidates = []
-    named = suite_job(result.get("suite"))
-    if named and os.path.isdir(intake.job_dir(named, root)):
-        candidates.append(named)
-    if run_job and run_job not in candidates and os.path.isdir(intake.job_dir(run_job, root)):
-        candidates.append(run_job)
+    candidates = _candidates(root, run_job, result)
     for job in candidates:
         own = job_classes(root, job)
         if all(c in own for c in classes):
@@ -339,7 +455,9 @@ def preview(root: str, run_job: str) -> dict:
     run_dir = intake.job_dir(run_job, root)
     result = read_result(run_dir)
     info = classify(root, run_job, result)
-    if info["kind"] in ("job", "converted"):
+    if info.get("compile") and info["kind"] == "job":
+        info["text"] = redact(prefill_compile(info, compile_errors(result)), private(root))
+    elif info["kind"] in ("job", "converted"):
         values = private(root)
         lines = failure_lines(root, run_dir, failed_tests(result), info["run"]["at"])
         info["text"] = redact(prefill(info, result, lines), values)
