@@ -220,21 +220,51 @@ def files_for(root: str, chain: dict) -> list:
     out = []
     row = local["methods"].get(case or "") or {}
     fqn = str(row.get("java_class_fqn") or "").strip()
+    uses = []
     if fqn:
         rel = "src/test/java/" + fqn.replace(".", "/") + ".java"
-        if os.path.isfile(os.path.join(root, *rel.split("/"))):
+        test_file = os.path.join(root, *rel.split("/"))
+        if os.path.isfile(test_file):
             method = str(row.get("java_method") or "").strip()
             out.append(rel + (f" (method {method})" if method else ""))
+            uses = phase_files(root, suite, test_file)
     sheet = str(row.get("csv_path") or "").strip().replace("\\", "/")
     if sheet and os.path.isfile(os.path.join(root, *sheet.split("/"))):
-        out.append(sheet + " (its data sheet)")
-    phases = f"src/main/java/com/hi/api/support/{suite}"
-    if os.path.isdir(os.path.join(root, *phases.split("/"))):
-        out.append(phases + "/ (its phases and hooks: the database steps and checks)")
+        out.append(sheet + " (its data sheet: its columns and expected statuses -- describe its values, never copy them)")
+    if uses:
+        # The phase classes this test imports, not the suite's whole folder:
+        # a suite's Steps class can be thousands of lines.
+        out += [u + " (a phase class it uses: the database steps and checks)" for u in uses]
+    else:
+        phases = f"src/main/java/com/hi/api/support/{suite}"
+        if os.path.isdir(os.path.join(root, *phases.split("/"))):
+            out.append(phases + "/ (its phases and hooks: the database steps and checks)")
     emap = f"{AUDIT}/{suite}/facade_endpoints.md"
     if os.path.isfile(os.path.join(root, *emap.split("/"))):
         out.append(emap)
     return out
+
+
+MAX_PHASE_FILES = 4
+
+
+def phase_files(root: str, suite: str, test_file: str) -> list:
+    """The suite's own support classes a converted test imports
+    (`import com.hi.api.support.<suite>.scenario.Onboarding;`), as files of
+    this machine -- at most MAX_PHASE_FILES, the scenario ones first."""
+    pkg = f"com.hi.api.support.{suite}."
+    try:
+        with io.open(test_file, encoding="utf-8", errors="replace") as fh:
+            head = fh.read(20000)          # the imports are at the top
+    except OSError:
+        return []
+    found = []
+    for m in re.finditer(r"^import\s+(" + re.escape(pkg) + r"[\w.]+)\s*;", head, re.M):
+        rel = "src/main/java/" + m.group(1).replace(".", "/") + ".java"
+        if rel not in found and os.path.isfile(os.path.join(root, *rel.split("/"))):
+            found.append(rel)
+    found.sort(key=lambda r: (".scenario." not in r.replace("/", "."), r))
+    return found[:MAX_PHASE_FILES]
 
 
 def converted_here(root: str) -> bool:

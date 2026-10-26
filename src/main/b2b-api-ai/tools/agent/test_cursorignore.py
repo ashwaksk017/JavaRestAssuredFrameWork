@@ -111,9 +111,26 @@ class TheFilesToOpen(unittest.TestCase):
     def test_a_chain_names_its_own_test_sheet_phases_and_map(self):
         got = fc.files_for(self.root, self.chain)
         self.assertEqual(got[0], "src/test/java/com/hi/api/tests/imported/s1/ActivateTest.java (method activateTest)")
-        self.assertIn("src/test/resources/csv/s1/ActivateTest/activateTest.csv (its data sheet)", got)
+        self.assertTrue(any(g.startswith("src/test/resources/csv/s1/ActivateTest/activateTest.csv (its data sheet") for g in got), got)
         self.assertTrue(any(g.startswith("src/main/java/com/hi/api/support/s1/") for g in got), got)
         self.assertIn("_audit/s1/facade_endpoints.md", got)
+
+    def test_the_phase_classes_it_imports_are_named_not_the_whole_folder(self):
+        test = os.path.join(self.root, *"src/test/java/com/hi/api/tests/imported/s1/ActivateTest.java".split("/"))
+        with io.open(test, "w", encoding="utf-8") as fh:
+            fh.write("package x;\nimport com.hi.api.support.s1.TestSupport;\n"
+                     "import com.hi.api.support.s1.scenario.Onboarding;\nimport com.hi.api.support.CtxFields;\n")
+        for rel in ("src/main/java/com/hi/api/support/s1/TestSupport.java",
+                    "src/main/java/com/hi/api/support/s1/scenario/Onboarding.java"):
+            p = os.path.join(self.root, *rel.split("/"))
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            io.open(p, "w").close()
+        got = fc.files_for(self.root, self.chain)
+        phases = [g for g in got if g.startswith("src/main/java/com/hi/api/support/")]
+        self.assertEqual([p.split(" ")[0] for p in phases],
+                         ["src/main/java/com/hi/api/support/s1/scenario/Onboarding.java",
+                          "src/main/java/com/hi/api/support/s1/TestSupport.java"], "the scenario first")
+        self.assertFalse(any(p.split(" ")[0].endswith("/s1/") for p in phases), "not the folder")
 
     def test_only_files_that_exist_here_are_named(self):
         os.remove(os.path.join(self.root, *"src/test/resources/csv/s1/ActivateTest/activateTest.csv".split("/")))
@@ -124,6 +141,33 @@ class TheFilesToOpen(unittest.TestCase):
         self.assertTrue(fc.converted_here(self.root))
         shutil.rmtree(os.path.join(self.root, "src", "test", "java", "com", "hi", "api", "tests", "imported"))
         self.assertFalse(fc.converted_here(self.root))
+
+
+class ACredentialReadIsSaid(unittest.TestCase):
+    """.cursorignore is best effort: a shell command still reads an ignored
+    file. A tool call that names one is said in the log (cursor_call)."""
+
+    @classmethod
+    def setUpClass(cls):
+        s = importlib.util.spec_from_file_location("cursor_call_under_test", os.path.join(HERE, "cursor_call.py"))
+        cls.cc = importlib.util.module_from_spec(s)
+        s.loader.exec_module(cls.cc)
+
+    def test_credential_files_in_a_tool_call_are_seen(self):
+        for line in ("tool read started: path=src/main/resources/program_configuration.json",
+                     r"tool shell started: command=type src\main\resources\program_configuration.goal.json",
+                     "tool shell started: command=cat tools/cursor_agent.json",
+                     "tool grep started: path=src/main/resources/application-stg.properties",
+                     "tool shell started: command=cat .env"):
+            self.assertTrue(self.cc.PROTECTED_RX.search(line), line)
+
+    def test_the_committed_examples_and_ordinary_calls_are_not(self):
+        for line in ("tool read started: path=src/main/resources/program_configuration.example.json",
+                     "tool read started: path=tools/cursor_agent.json.example",
+                     "tool read started: path=src/main/resources/application-qa.properties",
+                     "tool shell started: command=mvn -q -DskipTests test-compile",
+                     "tool read started: path=src/test/java/com/hi/api/tests/StoryTestBase.java"):
+            self.assertFalse(self.cc.PROTECTED_RX.search(line), line)
 
 
 if __name__ == "__main__":

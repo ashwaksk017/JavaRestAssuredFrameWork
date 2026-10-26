@@ -202,6 +202,12 @@ import re as _re
 ISSUE_RX = _re.compile(r"(?i)\b(error|errored|fail(ed|ure)?|denied|forbidden|unauthori[sz]ed|"
                        r"rate.?limit|quota|limit (reached|exceeded)|too many|not allowed|invalid|"
                        r"unknown model|expired|refused|status (cancelled|expired))\b")
+# A file of credentials (the .cursorignore's own) named in a tool call. The
+# committed .example copies are not secrets.
+PROTECTED_RX = _re.compile(r"(?i)(program_configuration(\.goal)?\.json(?!\.example)"
+                           r"|cursor_agent(\.local)?\.json(?!\.example)"
+                           r"|credentials\.properties|application-(?!qa\.)[a-z0-9_-]+\.properties"
+                           r"|(^|[\s/\\\"'=])\.env\b|tokenrequest\.json)")
 # A run that ends sooner than this did not run out of time and was not
 # slowed by its size: Cursor refused it, or the request failed.
 QUICK_END_SECONDS = 60
@@ -790,6 +796,13 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
             # need not say "error" at all (a limit, a denial, a bad model).
             if ISSUE_RX.search(line):
                 diagnostics.append(line)
+            # .cursorignore is best effort: a shell command Cursor runs (cat,
+            # type, grep) still reads an ignored file. Not stoppable from
+            # here; said, loudly, when a tool call names one.
+            if line.startswith("tool ") and PROTECTED_RX.search(line):
+                say(f"WARN Cursor's tool call names a credential file ({line[:200]}): what it "
+                    "read went to Cursor unredacted -- check what it did, and change those "
+                    "credentials if it read them")
         end_thinking()
         flush_said()
         return ""

@@ -7,6 +7,11 @@
 # program_configuration*.json") kept the credentials out. Same syntax as
 # .gitignore. tools/agent/test_cursorignore.py checks every secret file the
 # .gitignore names is here too.
+#
+# BEST EFFORT, by Cursor's own account: its file reads respect this, but a
+# shell command it runs (cat, type, grep) can still read an ignored file.
+# The workbench says so in the log, as a WARN, whenever one of Cursor's tool
+# calls names a file below (tools/agent/cursor_call.py PROTECTED_RX).
 
 # Credentials: one configuration file a project, and the Cursor key.
 src/main/resources/program_configuration.json
