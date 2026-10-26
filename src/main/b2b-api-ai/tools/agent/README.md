@@ -926,15 +926,15 @@ python tools/agent/mvnrun.py test --job runs --suite Suites/jira/group-smoke.xml
 python tools/agent/mvnrun.py test --job runs --test FooTest --env stg --project goal
 ```
 
-#### Ask Cursor to fix the failures
+#### Ask Me to fix the failures
 
-Under a run with failed tests the tab offers **Ask Cursor to fix the
+Under a run with failed tests the tab offers **Ask Me to fix the
 failures**. It says which of the two existing ways applies, and why
 (`runask.py`):
 
 | the failing tests are | the request goes |
 |---|---|
-| the job's own: its `Suites/jira/<job>.xml` was run, or every failing class is in that suite or in the change waiting for its review | to that job's **Ask Cursor** (`agent-followup.txt`, `loop.py followup`): Cursor changes the waiting change, or starts one |
+| the job's own: its `Suites/jira/<job>.xml` was run, or every failing class is in that suite or in the change waiting for its review | to that job's **Ask Me** (`agent-followup.txt`, `loop.py followup`): Cursor changes the waiting change, or starts one |
 | one converted suite's (`com.hi.api.tests.imported.<suite>.`) | to a **fix brief** -- what Fix with Cursor on the Failures tab writes (`fixbrief.py`), from THIS run's failures -- in a new job `fix-<suite>-<time>`, run as the Migration tab runs one (scope `converted`) |
 | anything else (another job's tests, several suites, a mix) | nowhere: the tab says what to do instead |
 
@@ -1019,14 +1019,14 @@ python tools/agent/manualtests.py generate  --job <job> --app "Group booking"
 ### Migration from ReadyAPI
 
 *(Was "Convert ReadyAPI".)* Converts ReadyAPI project files into this
-project, and below the converter, **Ask Cursor**: say what should be
+project, and below the converter, **Ask Me**: say what should be
 different, and choose what Cursor may change -- this suite's converted
 Java (kept on this machine, re-applied after every reconvert of the
 suite) or the converter itself (committed and pushed). A job's first
 request becomes its brief and plan; a request while a change is waiting
 adds to it. A job that holds a story or a design is refused: a migration
 request is its own job. Fix with Cursor on the Failures tab writes the
-request for you -- leave the box empty and press Ask Cursor. The change
+request for you -- leave the box empty and press Ask Me. The change
 waits on the Commit and push tab.
 
 The converter itself: The page shows the
@@ -1085,7 +1085,7 @@ problem rather than a missing path, which is why the form says so.
 *(Was "Agentic Test Creation". Cursor is now run where the work starts:
 **Automate the cases** at the bottom of the Automate Test Case tab --
 a case's own Automate button, or every approved case at once -- and
-**Ask Cursor** on the Migration from ReadyAPI tab. All of a job's runs
+**Ask Me** on the Migration from ReadyAPI tab. All of a job's runs
 make one change; this tab is where it is reviewed and pushed. The
 Cursor setup is checked as every run starts; there is no button for it.
 What this section says about running Cursor, its log and the follow-up
@@ -1119,7 +1119,7 @@ does every such case in one run. Cursor is handed only those cases. When
 a change is already waiting, the run adds to it -- the cases written
 before stay -- so a job has one change however many runs it took. Each
 row then says what its last run came to (written, does not compile,
-rejected). **Ask Cursor to change it** sits beside, for anything the
+rejected). **Ask Me to change it** sits beside, for anything the
 cases do not say.
 
 **The repository, and where the branch goes.** The strip at the top of
@@ -1142,7 +1142,7 @@ the way. When another tracked file is changed the strip names it and
 the button says so: commit, stash or discard that file first.
 
 **Asking Cursor to change what it wrote.** Under the review controls,
-*Ask Cursor to change it* takes your words -- "use the member's email
+*Ask Me to change it* takes your words -- "use the member's email
 from the CSV instead of a fixed one" -- and runs Cursor again on the
 same job: same scope, same paths, with your ask and the diff so far in
 front of it. The result is verified and waits for your review again as
@@ -1966,7 +1966,7 @@ book it is held to; an edit there is put back and the run rejected.
   while a change waits is added to it.
 - It runs only while nothing else runs, and nothing else starts until it has
   finished: every other command is started by, or reads, the files it
-  changes. A workbench job runs only Ask Cursor, Review, Approve and Discard.
+  changes. A workbench job runs only Ask Me, Review, Approve and Discard.
 - It never changes `policy.json`, `mock.json` or `check_workbench.py` (the
   checker it is verified by). A change to the files that decide what later
   runs may do -- jobs.py, loop.py, workflow.py, the tests -- is named at
@@ -1989,7 +1989,7 @@ python tools/agent/loop.py discard --job workbench-<date>-<time>
 
 Every box whose words go to Cursor takes a pasted image as well: Ctrl+V a
 screenshot into Refine with Cursor, the design notes, the manual tests'
-notes, Ask Cursor, the Migration tab's request, the Run tests tab's Ask Cursor
+notes, Ask Me, the Migration tab's request, the Run tests tab's Ask Me
 to fix the failures, or Change the workbench. Up
 to 4 images of 5 MB each (PNG, JPEG, GIF, WebP -- read from the bytes, not
 the name). They go with that request's first message to Cursor, as images
@@ -2011,7 +2011,7 @@ Each stage is a link to where it is done, and the server holds the gates
 
 | Stage | Done when | It unlocks |
 |---|---|---|
-| Finalize | **Finalize the cases** (under the review): the approved cases -- titles, steps, suites, Automate -- frozen. An edit afterwards reopens it. | For a job with designed cases: Create in Xray, Automate, Ask Cursor, a follow-up, Run the tests and Approve |
+| Finalize | **Finalize the cases** (under the review): the approved cases -- titles, steps, suites, Automate -- frozen. An edit afterwards reopens it. | For a job with designed cases: Create in Xray, Automate, Ask Me, a follow-up, Run the tests and Approve |
 | Regression | **Confirm the regression cases** (Commit and push tab): the automated cases in the `regression` group, for the change as it is now -- a follow-up or another Automate needs it again. Publish adds exactly these to the regression Test Set / Plan. | Run the tests |
 | Run on stg | **Run the tests**, on the environment chosen beside it (the Settings tab's by default): every test passed (a row switched off in its sheet aside; an attempt retried to a pass is not a skip). It can be run again after the change is approved or pushed; only a run while it waits for review opens the push. **Compile** beside it compiles the project and lists the errors in the change's own files first. | Approve & push -- for a run on the Settings tab's environment, of exactly these files |
 | Push | **Approve & push** to `feature_<story key>` (`feature_<job>` without one; `feature_<key>_<job>` when the story's branch exists already). | Publish to Xray |

@@ -72,7 +72,7 @@ def _loop_module():
     return mod
 
 
-# Question or change, for an "Ask Cursor" message that does not say (ask.py).
+# Question or change, for an "Ask Me" message that does not say (ask.py).
 _aspec = importlib.util.spec_from_file_location("jobs_ask", os.path.join(HERE, "ask.py"))
 ask = importlib.util.module_from_spec(_aspec)
 _aspec.loader.exec_module(ask)
@@ -1179,7 +1179,7 @@ def workflow_gate(job: str, runnable: str, options: dict) -> str:
     if is_workbench_job(job):
         # A workbench job makes a change to the workbench, and nothing else.
         if runnable not in WORKBENCH_RUNNABLES:
-            return ("this is a job for changing the workbench itself: only Ask Cursor, Review, "
+            return ("this is a job for changing the workbench itself: only Ask Me, Review, "
                     "Approve and Discard run in it -- use a story's job for the workflow")
         return ""
     out = job_dir(job)
@@ -1187,7 +1187,7 @@ def workflow_gate(job: str, runnable: str, options: dict) -> str:
     designed = bool(_read_json(os.path.join(out, "design.json")).get("test_cases"))
     # A job with designed cases: no code is written, run or pushed for it
     # until its cases are final -- whichever button started it (Automate,
-    # Ask Cursor, a follow-up, Run, Approve).
+    # Ask Me, a follow-up, Run, Approve).
     finalize_first = runnable in ("agent-automate", "agent-followup", "agent-run-tests", "agent-approve") \
         or (runnable == "agent-generate" and (options.get("--scope") or "new-test") == "new-test") \
         or (runnable == "xray-create" and options.get("--what") == "design")
@@ -1441,7 +1441,7 @@ def plan_scope(job: str) -> tuple:
 
 def migration_refusal(job: str, scope: str, suite: str) -> str:
     """Why a migration run (Cursor on a converted suite or the converter)
-    cannot start for this job, or "". The page's empty-box Ask Cursor
+    cannot start for this job, or "". The page's empty-box Ask Me
     starts agent-generate directly, so start() asks this too."""
     held = migration_held(job)
     if held:
@@ -1501,7 +1501,7 @@ def migration_ask(job: str, scope: str, suite: str, text: str) -> dict:
             raise ValueError("this job's plan is not a migration request; name a new job (top right)")
         if kind == "fix":
             raise ValueError("this job holds the brief Fix with Cursor wrote: leave the box empty and "
-                             "press Ask Cursor to run it, or name a new job for a request of your own")
+                             "press Ask Me to run it, or name a new job for a request of your own")
     os.makedirs(out, exist_ok=True)
     if waiting:
         with io.open(os.path.join(out, "agent-followup.txt"), "w", encoding="utf-8") as fh:
@@ -1545,7 +1545,7 @@ _LOOP = None
 
 
 def _agent_loop():
-    """loop.py, loaded once. Ask Cursor reads git status from it."""
+    """loop.py, loaded once. Ask Me reads git status from it."""
     global _LOOP
     if _LOOP is None:
         spec = importlib.util.spec_from_file_location(
@@ -1583,7 +1583,7 @@ def _git_left(job_name: str):
 
 def _settle_committed(name: str, review: dict) -> None:
     """The run stopped in `generating`, and git status no longer has its
-    edits. Record that, so Ask Cursor is not held and Discard is not
+    edits. Record that, so Ask Me is not held and Discard is not
     offered — Discard would restore the copies from before the commit."""
     now = _now()
     settled = dict(review)
@@ -1618,7 +1618,7 @@ def workbench_unfinished() -> str:
     those edits from the command line. That is read from git status, not
     from the review file alone: a clean status (or dirt that matches the
     snapshot taken before the run) is recorded as committed outside the
-    workbench, and Ask Cursor starts.
+    workbench, and Ask Me starts.
     """
     base = os.path.join(ROOT, ".workbench")
     try:
@@ -1716,7 +1716,7 @@ def _workbench_start(job: str, out: str, cur: dict, text: str) -> dict:
                 runnable="agent-generate", job=job)
 
 
-# ---- Ask Cursor to fix the failures (the Run tests tab) ----------------------
+# ---- Ask Me to fix the failures (the Run tests tab) ----------------------
 def run_ask_preview(job: str) -> dict:
     """Which way the last run's failures go to Cursor, and the request
     for the person to edit (runask.py). Reads only."""
@@ -1727,7 +1727,7 @@ def run_ask_preview(job: str) -> dict:
 def run_ask(job: str, text: str, images=None) -> dict:
     """Send the person's request about the failed tests of the run in
     `job`, the way that applies to them: the job's own tests to that job's
-    Ask Cursor (agent-followup); a converted suite's to a fix brief in a
+    Ask Me (agent-followup); a converted suite's to a fix brief in a
     new job, run as the Migration tab runs one (agent-generate, scope
     converted). Decided again here, not taken from the page; everything
     that can refuse is asked before a file is written."""

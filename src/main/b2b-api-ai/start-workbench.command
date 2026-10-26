@@ -1,5 +1,5 @@
 #!/bin/bash
-# Start the AI Enabled Test WorkBench and open it in the browser (macOS, Linux).
+# Start the AI-Integrated QA Workbench and open it in the browser (macOS, Linux).
 # Double-click this file in Finder, or run ./start-workbench.command in a
 # terminal. Python 3.9+ is found, or installed with Homebrew when there is
 # none; tools/agent/launch.py then installs what requirements.txt lists and

@@ -8,7 +8,7 @@ and writes the request the person reads and edits before it is sent:
 * **The job's own tests** -- the run was the job's suite
   (`Suites/jira/<job>.xml`), or every failing class is in that suite or
   in the change waiting for the job's review. The request goes where the
-  Automate tab's "Ask Cursor" sends a change: the job's
+  Automate tab's "Ask Me" sends a change: the job's
   `agent-followup.txt`, run by `loop.py followup` (cmd_ask), which works
   on the waiting change or starts one.
 * **A converted suite's tests** -- every failing class is under
@@ -230,7 +230,7 @@ def classify(root: str, run_job: str, result: dict) -> dict:
         if all(c in own for c in classes):
             where = sorted({own[c] for c in classes})
             return dict(base, kind="job", job=job, blocked=blocked(root, job), why=(
-                f"the failing tests are job {job}'s own ({'; '.join(where)}). As Ask Cursor on the Automate "
+                f"the failing tests are job {job}'s own ({'; '.join(where)}). As Ask Me on the Automate "
                 f"Test Case tab does, the request goes to that job: Cursor changes the change waiting for "
                 f"its review, or starts one when none is waiting; then it is checked and waits for your "
                 f"review on the Commit and push tab."))

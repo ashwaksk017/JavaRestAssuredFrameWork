@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stop the AI Enabled Test WorkBench started from THIS folder (macOS, Linux).
+# Stop the AI-Integrated QA Workbench started from THIS folder (macOS, Linux).
 # It ends only a server that says it is this folder's workbench; anything
 # else on the port is left alone and named. See tools/agent/launch.py.
 cd "$(dirname "$0")" || exit 1

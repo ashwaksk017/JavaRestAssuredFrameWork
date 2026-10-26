@@ -1,6 +1,6 @@
 """Ask Cursor a question about a job: it reads and answers, nothing is changed.
 
-"Ask Cursor" on the Automate Test Case tab used to send every message
+"Ask Me" on the Automate Test Case tab used to send every message
 through the code-writing run (loop.py cmd_ask): the whole Automate prompt
 -- rules, brief, plan, the approved cases with "CREATE its test" -- and
 the person's words as one block at the end. Seen live: "what is the name

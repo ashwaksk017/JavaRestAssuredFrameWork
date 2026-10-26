@@ -161,14 +161,14 @@ def run(job: str, root: str = "", use_cursor: bool = True, runner=None, generate
         say("    " + e[:300])
     if shared:
         say("WARN errors in shared framework files are not a converted suite's to fix: "
-            + ", ".join(shared[:8]) + " -- a person fixes those (or Ask Cursor, scope "
+            + ", ".join(shared[:8]) + " -- a person fixes those (or Ask Me, scope "
             "\"the converter\", on the Migration tab)")
     if not by_suite:
         write_result(job_dir, result)
         return 1
     if not use_cursor:
         say("NOTE Cursor is off for this convert: nothing was fixed. Turn Cursor assist on, "
-            "or use Ask Cursor on the Migration tab with the suite.")
+            "or use Ask Me on the Migration tab with the suite.")
         result["suites"] = {s: {"state": "not fixed (Cursor off)", "files": f} for s, f in by_suite.items()}
         write_result(job_dir, result)
         return 1

@@ -511,7 +511,7 @@ def brief_text(g: dict, job: str) -> str:
     if g["suite_files"]:
         L += [f"## This suite's generated classes (`src/main/java/com/hi/api/support/{g['suite']}/`)", "",
               ", ".join(g["suite_files"]), ""]
-    L += ["## Next", "", "On the Migration from ReadyAPI tab, press Ask Cursor with the box empty: it runs on this brief."]
+    L += ["## Next", "", "On the Migration from ReadyAPI tab, press Ask Me with the box empty: it runs on this brief."]
     return "\n".join(L).rstrip() + "\n"
 
 
@@ -624,7 +624,7 @@ def main(argv=None) -> int:
             pass
         return 1
     print(f" ok   {len(g['cases'])} failing case(s) of suite {g['suite'] or '-'} in the brief; "
-          f"scope {g['scope']}. Next: the Migration from ReadyAPI tab, Ask Cursor.")
+          f"scope {g['scope']}. Next: the Migration from ReadyAPI tab, Ask Me.")
     for c in g["cases"]:
         print(f"  - {c['test']}" + (f" [row {c['row']}]" if c['row'] and c['row'] != '-' else ""))
     return 0

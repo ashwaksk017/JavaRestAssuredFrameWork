@@ -226,7 +226,7 @@ def main() -> int:
         html = page.dom("failures")
         check("the Failures tab shows that result", "Recorded runs" in html)
 
-        # ---- Ask Cursor to fix the failures, under a failed run -------------
+        # ---- Ask Me to fix the failures, under a failed run -------------
         # The run's result is put where mvnrun.py writes it; which way it
         # goes to Cursor is the server's answer (runask.py), shown as text.
         def run_result(cls, status="FAIL"):
@@ -246,7 +246,7 @@ def main() -> int:
                   code == 200 and ask.get("kind") == "converted" and ask.get("suite") == "amex"
                   and "SpendTest.getSpendTest [case ABC-1]" in (ask.get("text") or ""), str(ask)[:300])
             html = page.dom("run")
-            check("the Run tests tab offers Ask Cursor to fix the failures, and says which way and why",
+            check("the Run tests tab offers Ask Me to fix the failures, and says which way and why",
                   re.search(r'id="run-ask-box"[^>]*hidden', html) is None
                   and 'id="run-ask-send"' in html and "A fix brief for suite amex, in a new job." in html
                   and "Fix with Cursor on the Failures tab" in html, html[html.find('id="run-ask-box"'):][:400])
@@ -259,14 +259,14 @@ def main() -> int:
                     "created": ["src/test/java/com/hi/api/tests/jira/DemoStayTest.java"]}}, fh)
             run_result("com.hi.api.tests.jira.DemoStayTest")
             code, ask = page.call(f"/api/run-ask?job={JOB}")
-            check("a failed test of the job's waiting change goes to the job's Ask Cursor",
+            check("a failed test of the job's waiting change goes to the job's Ask Me",
                   code == 200 and ask.get("kind") == "job" and ask.get("job") == JOB, str(ask)[:300])
             html = page.dom("run")
-            check("the Run tests tab says the request goes to the job's Ask Cursor",
-                  f"Goes to job {JOB}'s Ask Cursor." in html)
+            check("the Run tests tab says the request goes to the job's Ask Me",
+                  f"Goes to job {JOB}'s Ask Me." in html)
             run_result("com.hi.api.tests.jira.DemoStayTest", "PASS")
             code, body = page.call("/api/run-ask", {"job": JOB, "text": "Fix it."})
-            check("Ask Cursor to fix the failures is refused when no test failed",
+            check("Ask Me to fix the failures is refused when no test failed",
                   code == 400 and "no failed test" in body.get("error", ""), str(body))
             html = page.dom("run")
             check("a run with no failed test does not offer to fix one",
@@ -606,7 +606,7 @@ def main() -> int:
             html = page.dom("convert")
             # Only the Convert tab's own part of the page: another tab's
             # help text names some of these options.
-            # The converter's form: the Migration tab up to its Ask Cursor part.
+            # The converter's form: the Migration tab up to its Ask Me part.
             html = html[html.index('id="tab-convert"'):html.index('id="migration-ask-part"')]
             check("the Convert tab lists what was chosen, with where it was put",
                   "Check Ui Suite.xml" in html
@@ -686,7 +686,7 @@ def main() -> int:
         html = page.dom("agent")
         check("tab 3 still opens", 'id="tab-agent" class="tab" role="tabpanel" hidden' not in html)
         check("the title, and no mock banner while the stand-ins are off",
-              "<h1>AI Enabled Test WorkBench</h1>" in html
+              "<h1>AI-Integrated QA Workbench</h1>" in html
               and 'id="mock-banner" class="mockbar" hidden' in html)
         check("Reset page is in the header, beside the job box",
               'id="page-reset"' in html and html.index('id="page-reset"') < html.index('id="job"'))
@@ -987,8 +987,8 @@ def main() -> int:
             check("each Cursor pane reads its own file, from its own place in it",
                   "runnable=${CURSOR_FILES[p.src]}&offset=${p.offset}" in agent_js
                   and "runnable=${CURSOR_FILES[p.src]}&end=1" in agent_js)
-            check("Ask Cursor is one box for a change, a new request or a question",
-                  '>Ask Cursor</button>' in html and 'id="agent-ask-send" disabled' not in tab_new)
+            check("Ask Me is one box for a change, a new request or a question",
+                  '>Ask Me</button>' in html and 'id="agent-ask-send" disabled' not in tab_new)
             logs_tab = mocked.dom("logs")
             check("the Logs tab can ask Cursor to change the workbench itself",
                   'id="wb-run"' in logs_tab and 'id="wb-cursor-log"' in logs_tab and 'id="wb-review"' in logs_tab)
@@ -1202,13 +1202,13 @@ def main() -> int:
             with io.open(os.path.join(job_dir, "review.json"), "w", encoding="utf-8") as fh:
                 json.dump({"state": "generating", "scope": "new-test"}, fh)
             html = mocked.dom("agent")
-            check("a story job that did not finish does not mention the workbench on Ask Cursor",
+            check("a story job that did not finish does not mention the workbench on Ask Me",
                   "change to the workbench did not finish" not in html
                   and "A run of this job did not finish" in html)
             with io.open(os.path.join(job_dir, "review.json"), "w", encoding="utf-8") as fh:
                 json.dump({"state": "generating", "scope": "workbench"}, fh)
             html = mocked.dom("agent")
-            check("a workbench change that did not finish says so on Ask Cursor",
+            check("a workbench change that did not finish says so on Ask Me",
                   "change to the workbench did not finish" in html)
             with io.open(os.path.join(job_dir, "review.json"), "w", encoding="utf-8") as fh:
                 json.dump({"state": "rejected", "scope": "new-test", "why": "timeout", "undone": True,

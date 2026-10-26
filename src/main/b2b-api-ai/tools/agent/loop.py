@@ -1073,7 +1073,7 @@ def head_forbidden(base_commit: str, base_branch: str, commit_now: str, branch_n
 
 
 def unfinished_run_refusal(prior: dict, job_name: str) -> str:
-    """Why Ask Cursor / generate cannot start while the last run did not finish."""
+    """Why Ask Me / generate cannot start while the last run did not finish."""
     if (prior.get("scope") or "") == "workbench":
         return (f"a change to the workbench did not finish (job {job_name}): "
                 f"Discard it on the Commit and push tab first")
@@ -3822,7 +3822,7 @@ def cmd_automate(job_dir: str, root: str, policy: dict, ids, agent=None, verifie
                  past_stops: bool = False) -> int:
     """Cursor writes the tests of some of the approved cases (one row's
     Automate, or the ticked ones). All of a job's runs make ONE change: a
-    run when a change is already waiting adds to it, as Ask Cursor to
+    run when a change is already waiting adds to it, as Ask Me to
     change it does; otherwise it starts the change. What each case's run
     came to is kept for the page (automated-cases.json)."""
     global _AUTOMATE_ONLY
@@ -3913,13 +3913,13 @@ def cmd_automate(job_dir: str, root: str, policy: dict, ids, agent=None, verifie
 
 FOLLOWUP_FILE = "agent-followup.txt"
 MAX_FOLLOWUP = 20000
-# What a person typed in "Ask Cursor" when no change was waiting: the request
+# What a person typed in "Ask Me" when no change was waiting: the request
 # of a new change, said in the prompt (build_prompt). Kept in the process.
 _REQUEST = {"text": ""}
 
 ASK_PLAN = """# Plan: as the person asks
 
-Written by Ask Cursor: no plan was made for this job. The request is the
+Written by Ask Me: no plan was made for this job. The request is the
 person's own words, under THE PERSON ASKS below. Do what it asks within
 the paths you may write; if it is a question, answer it in your reply and
 change nothing.
@@ -3927,7 +3927,7 @@ change nothing.
 
 
 def cmd_ask(job_dir: str, root: str, policy: dict, agent=None, verifier=None) -> int:
-    """"Ask Cursor" on the Automate Test Case tab, whatever the job's state.
+    """"Ask Me" on the Automate Test Case tab, whatever the job's state.
     A change waiting for review: Cursor changes it (cmd_followup). None:
     the request starts a change of its own. A question is answered: when
     Cursor changes no file, its answer is said, not taken for a failure."""
@@ -4749,7 +4749,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                         clog.write(f"  audit {i} ({audited[i]['file']}): {len(audited[i]['lines'])} line(s)")
                 if missing:
                     say(f"WARN no Audit comment for {', '.join(missing)}: the Description shows "
-                        f"only the plan. Ask Cursor: add the Audit comment to the test of "
+                        f"only the plan. Ask Me: add the Audit comment to the test of "
                         f"{', '.join(missing)}.")
                 if unknown:
                     say(f"WARN the Audit comment of {', '.join(unknown)} names a method defined "
@@ -5142,7 +5142,7 @@ def case_check_refusal(job_dir: str) -> str:
     if high:
         return (f"the review found {len(high)} test(s) that do not do what their case says: "
                 + "; ".join(f"{f.get('file', '')}: {f.get('title', '')}" for f in high[:3])
-                + ". Ask Cursor to fix them (or correct the case's steps), then review again.")
+                + ". Ask Me to fix them (or correct the case's steps), then review again.")
     return ""
 
 
@@ -5206,7 +5206,7 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
             return 1
         if not ran.get("ok"):
             say(f"FAIL the last run, on {ran.get('env')}, did not pass: {ran.get('why')}. Fix it "
-                f"(Ask Cursor) and run the tests again.")
+                f"(Ask Me) and run the tests again.")
             return 1
         now_hashes = {p: _sha(os.path.join(root, p)) for p in paths}
         if now_hashes != (ran.get("hashes") or {}):

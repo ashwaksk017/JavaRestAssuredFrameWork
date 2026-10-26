@@ -1,5 +1,5 @@
 @echo off
-rem Stop the AI Enabled Test WorkBench started from THIS folder.
+rem Stop the AI-Integrated QA Workbench started from THIS folder.
 rem It ends only a server that says it is this folder's workbench; anything
 rem else on the port is left alone and named. See tools\agent\launch.py.
 setlocal

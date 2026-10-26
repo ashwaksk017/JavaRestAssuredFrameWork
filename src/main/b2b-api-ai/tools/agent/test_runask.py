@@ -102,7 +102,7 @@ class WhichWayApplies(Base):
         got = ra.classify(self.root, "runs", run(test(JIRA, "staysTest", message="expected [200] but found [500]")))
         self.assertEqual((got["kind"], got["job"], got["failed"]), ("job", "job-1", 1))
         self.assertIn("Suites/jira/job-1.xml", got["why"])
-        self.assertIn("Ask Cursor", got["why"])
+        self.assertIn("Ask Me", got["why"])
         self.assertEqual(got["blocked"], "")
 
     def test_the_change_waiting_for_review_makes_a_class_the_jobs_whatever_was_run(self):

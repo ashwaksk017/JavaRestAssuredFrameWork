@@ -1173,7 +1173,7 @@ function answersPanel(j) {
     const rows = qs.map((q) => {
       const s = sug[q.question];
       const ans = el("textarea", { rows: "2", spellcheck: "true", class: "answer",
-                                   placeholder: "your answer (Design again uses it) -- or Ask Cursor" });
+                                   placeholder: "your answer (Design again uses it) -- or Ask Me" });
       ans.value = q.answer || (s && s.suggested ? s.answer : "");
       const keep = el("input", { type: "checkbox" });
       keep.checked = Boolean(q.keep);
@@ -1196,7 +1196,7 @@ function answersPanel(j) {
       row.dataset.evidence = JSON.stringify(evidence);
       return row;
     });
-    const ask = el("button", { type: "button", text: "Ask Cursor to answer",
+    const ask = el("button", { type: "button", text: "Ask Me to answer",
                                title: "Cursor looks for the answers in this project (converted tests, their database steps, the flow guide...) and drafts the rule to keep for each. Nothing is kept until you save." });
     ask.onclick = async () => {
       ask.disabled = true;
@@ -2395,9 +2395,9 @@ async function showRunResult(j) {
   box.replaceChildren(...kids);
   await showRunAsk(j);
 }
-// ---- Ask Cursor to fix the failures (under a failed run) ------------------
+// ---- Ask Me to fix the failures (under a failed run) ------------------
 // The server says which way the run's failures go (runask.py): the job's
-// own tests to that job's Ask Cursor, a converted suite's to a fix brief in
+// own tests to that job's Ask Me, a converted suite's to a fix brief in
 // a new job. The request is prefilled once per run, then left to the person:
 // a refresh must not throw away what they wrote.
 let runAskShown = null;            // the server's last answer for the box
@@ -2412,7 +2412,7 @@ async function showRunAsk(j, again) {
   if (!p || !p.failed) { box.hidden = true; return; }
   box.hidden = false;
   const usable = (p.kind === "job" || p.kind === "converted") && !p.blocked;
-  const how = p.kind === "job" ? `Goes to job ${p.job}'s Ask Cursor.`
+  const how = p.kind === "job" ? `Goes to job ${p.job}'s Ask Me.`
     : p.kind === "converted" ? `A fix brief for suite ${p.suite}, in a new job.` : "Not sent from here.";
   $("run-ask-which").replaceChildren(
     banner(usable ? "ok" : "warn", `${p.failed} test(s) failed. ${how} Why: ${p.why}`),
@@ -3580,7 +3580,7 @@ async function refreshReview() {
   else if (state === "rejected" && review.why === "call")
     detail = "Rejected — the Cursor call failed.";
   else if (state === "rejected" && review.why === "answered")
-    detail = "Cursor answered and changed nothing — its answer is in the command log under Ask Cursor.";
+    detail = "Cursor answered and changed nothing — its answer is in the command log under Ask Me.";
   if (review.mock) detail = "MOCK RUN — written by the stand-in for Cursor; it cannot be " +
                             "approved, only discarded. " + detail;
   if (review.reason) detail += " " + review.reason;
@@ -3633,7 +3633,7 @@ async function refreshReview() {
     if (a && a.diff) $("agent-diff").textContent += `\n\n# with this push: ${a.path} (answers kept for later designs)\n` + a.diff;
   } catch { /* no answers */ }
   $("agent-review").disabled = !(state === "pending-review" || state === "verify-failed");
-  // Ask Cursor works in any state but these: it changes a change waiting,
+  // Ask Me works in any state but these: it changes a change waiting,
   // starts one when none is, and answers a question. Where it cannot, the
   // button says why instead of only being grey.
   const askBlocked = review.mock && ["pending-review", "verify-failed"].includes(state)
@@ -3779,7 +3779,7 @@ async function showCodeReview(j, run) {
 }
 
 // Cursor's conversations are files of the job, appended to across runs:
-// cursor.log for the code it writes (Automate, Ask Cursor), design-cursor.log
+// cursor.log for the code it writes (Automate, Ask Me), design-cursor.log
 // for the design and its refinements, migration-cursor.log for the
 // Migration tab. Each area shows ITS conversation in the Logs block under
 // its own button -- Design under the design, Refine under Refine, Automate
@@ -4102,7 +4102,7 @@ function scopeChanged() {
 $("agent-scope").onchange = scopeChanged;
 scopeChanged();
 
-// ---- Ask Cursor (the Migration from ReadyAPI tab) -------------------------
+// ---- Ask Me (the Migration from ReadyAPI tab) -------------------------
 // A request in the box becomes the job's brief and plan (or is added to the
 // change waiting). An empty box runs on the brief already written -- by Fix
 // with Cursor on the Failures tab.
@@ -4328,7 +4328,7 @@ $("agent-push").onclick = () => {
   runAgent("agent-approve", options);
 };
 onTab.agent = () => { showRepo(); focusUnfinishedWorkbench(); };
-// The Logs tab's Ask Cursor refuses while a workbench run stopped with
+// The Logs tab's Ask Me refuses while a workbench run stopped with
 // edits still uncommitted, and tells the person to Discard on THIS tab.
 // This tab shows the job in the box. When that job has nothing to
 // discard, open the unfinished workbench job so Discard is enabled.
@@ -4360,8 +4360,8 @@ async function focusUnfinishedWorkbench() {
   $("job").dispatchEvent(new Event("change"));
   watchCursorLog();
 }
-// The review state drives buttons on three tabs (Ask Cursor to change it,
-// the Migration tab's Ask Cursor, Commit and push): read it when any of
+// The review state drives buttons on three tabs (Ask Me to change it,
+// the Migration tab's Ask Me, Commit and push): read it when any of
 // them is opened, and once at load.
 for (const tab of ["new", "convert"]) {
   const b = document.querySelector(`.tabs button[data-tab="${tab}"]`);
@@ -4779,12 +4779,12 @@ async function fixWithCursor(sid, scope) {
         if (/name the suite/i.test(why)) {
           fixNeedsSuite.add(sid);
           $("fail-detail").replaceChildren(banner("warn", why +
-            " Type it in the Suite box of the Migration from ReadyAPI tab (Ask Cursor), then click again."));
+            " Type it in the Suite box of the Migration from ReadyAPI tab (Ask Me), then click again."));
         } else $("fail-detail").replaceChildren(banner("bad", why));
         return;
       }
       $("fail-detail").replaceChildren(banner("ok", `Brief written for ${r.cases.length} case(s)` +
-        (r.suite ? ` of suite ${r.suite}` : "") + `. On the Migration from ReadyAPI tab, press Ask Cursor ` +
+        (r.suite ? ` of suite ${r.suite}` : "") + `. On the Migration from ReadyAPI tab, press Ask Me ` +
         `with the box empty to run on it.`));
       $("agent-scope").value = r.scope;
       $("agent-scope").dispatchEvent(new Event("change"));
@@ -4839,7 +4839,7 @@ function signatureCard(s) {
   // the run left behind, and the Agentic tab opens on the right scope.
   card.append(el("div", { class: "noterow" },
     el("button", { "data-fail": "", class: "go", text: "Fix with Cursor (this suite's Java)",
-                   title: "writes the brief for this signature; then Ask Cursor on the Migration from ReadyAPI tab",
+                   title: "writes the brief for this signature; then Ask Me on the Migration from ReadyAPI tab",
                    on: { click: () => fixWithCursor(s.id, "converted") } }),
     el("button", { "data-fail": "", text: "Fix the converter with Cursor",
                    title: "the same brief, for the emitter: scope The converter itself",

@@ -1,5 +1,5 @@
 @echo off
-rem Start the AI Enabled Test WorkBench and open it in the browser.
+rem Start the AI-Integrated QA Workbench and open it in the browser.
 rem Double-click this file, or run it from a console. Python 3.9+ is found,
 rem or installed (winget) when there is none; tools\agent\launch.py then
 rem installs what requirements.txt lists and this Python lacks, and starts

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AI Enabled Test WorkBench</title>
+<title>AI-Integrated QA Workbench</title>
 <script>
   // Before the stylesheet paints: the theme chosen last time, so the page
   // does not flash dark on its way to light.
@@ -25,7 +25,7 @@
       <button type="button" data-theme-pick="blue" aria-pressed="false">Blue</button>
     </span>
   </span>
-  <h1>AI Enabled Test WorkBench</h1>
+  <h1>AI-Integrated QA Workbench</h1>
   <span class="job-area">
   <button type="button" id="page-reset" title="Empty every box on every tab and start a new, empty job. Nothing is deleted: earlier jobs stay in the job list, and a command still running goes on.">Reset page</button>
   <label class="job">job
@@ -371,7 +371,7 @@ Expect 201.'></textarea>
       </fieldset><pre id="cursor-log" class="log cursor"></pre></div>
     </div>
   </details>
-  <label for="agent-ask">Ask Cursor <span class="hint">in your words: a question about this job -- answered in the command log, nothing changed -- or a change: what should be different in the change waiting (Cursor works on the same files and it waits for your review again), or something new when none is waiting</span></label>
+  <label for="agent-ask">Ask Me <span class="hint">in your words: a question about this job -- answered in the command log, nothing changed -- or a change: what should be different in the change waiting (Cursor works on the same files and it waits for your review again), or something new when none is waiting</span></label>
   <textarea id="agent-ask" rows="3" spellcheck="false"
     placeholder="e.g. Which suite file runs this job's tests?  or  Use the member's email from the CSV instead of a fixed one."></textarea>
   <fieldset class="choice" id="ask-kind">
@@ -380,7 +380,7 @@ Expect 201.'></textarea>
     <label><input type="radio" name="ask-kind" value="change" checked> A change <span class="hint">Cursor writes code, then it is checked and waits for your review</span></label>
   </fieldset>
   <div class="row">
-    <button id="agent-ask-send">Ask Cursor</button>
+    <button id="agent-ask-send">Ask Me</button>
     <span id="ask-state" class="state"></span>
   </div>
   <details class="area-logs" id="ask-logs">
@@ -490,13 +490,13 @@ Expect 201.'></textarea>
     <pre id="verify-log" class="log"></pre>
   </div>
 
-  <h2 class="part" id="migration-ask-part">Ask Cursor <span class="hint">change a converted suite's Java, or the converter itself</span></h2>
+  <h2 class="part" id="migration-ask-part">Ask Me <span class="hint">change a converted suite's Java, or the converter itself</span></h2>
   <p class="lede">
     Say what should be different. Cursor is held to what you choose below; the change waits
     on the Commit and push tab. A converted suite's change is kept on this machine and put
     back after every convert of the suite; a change to the converter is committed and pushed.
     A request while a change is waiting adds to it. From the Failures tab, Fix with Cursor
-    writes the request for you: leave the box empty and press Ask Cursor.
+    writes the request for you: leave the box empty and press Ask Me.
   </p>
   <div class="form">
     <div class="field req">
@@ -529,7 +529,7 @@ Expect 201.'></textarea>
   <textarea id="mig-ask" rows="4" spellcheck="false"
     placeholder="e.g. The getSpend403 case sends the admin's token; the employee's token from the CSV is the one the case means."></textarea>
   <div class="row">
-    <button id="mig-run" class="go">Ask Cursor</button>
+    <button id="mig-run" class="go">Ask Me</button>
     <button id="mig-stop">Stop</button>
     <span id="mig-state" class="state"></span>
   </div>
@@ -676,12 +676,12 @@ Expect 201.'></textarea>
   </div>
   <div id="run-result" class="result"></div>
   <div id="run-ask-box" class="run-ask" hidden>
-    <h3>Ask Cursor to fix the failures</h3>
+    <h3>Ask Me to fix the failures</h3>
     <div id="run-ask-which"></div>
     <label for="run-ask">What Cursor is asked <span class="hint">prefilled from the failed tests -- each test, its case id, why it failed and the run's own lines about it. Edit it before you send it; values from the configuration files are hidden before it goes.</span></label>
     <textarea id="run-ask" rows="10" spellcheck="false"></textarea>
     <div class="row">
-      <button id="run-ask-send" class="go" type="button">Ask Cursor to fix the failures</button>
+      <button id="run-ask-send" class="go" type="button">Ask Me to fix the failures</button>
       <button id="run-ask-again" type="button" title="write the request again from the last run's failures">Prefill again</button>
       <button id="run-ask-open" type="button" hidden>Open the job to review it</button>
       <span id="run-ask-state" class="state"></span>
@@ -959,7 +959,7 @@ Expect 201.'></textarea>
   <textarea id="wb-ask" rows="4" spellcheck="false"
     placeholder="e.g. Show the number of approved cases beside the Automate the approved cases button."></textarea>
   <div class="row">
-    <button id="wb-run" class="go">Ask Cursor</button>
+    <button id="wb-run" class="go">Ask Me</button>
     <button id="wb-stop">Stop</button>
     <button id="wb-review">Review it</button>
     <span id="wb-state" class="state"></span>
@@ -990,7 +990,7 @@ Expect 201.'></textarea>
       <label for="set-cursor-key">API key <span class="hint" id="set-cursor-key-state"></span></label>
       <input id="set-cursor-key" type="password" autocomplete="new-password" spellcheck="false" placeholder="leave empty to keep it">
       <label class="inline"><input type="checkbox" id="set-cursor-key-clear"> remove the saved key</label>
-      <label for="set-cursor-model">Model <span class="hint">writes and changes the tests (Automate, Ask Cursor); default composer-2.5</span></label>
+      <label for="set-cursor-model">Model <span class="hint">writes and changes the tests (Automate, Ask Me); default composer-2.5</span></label>
       <input id="set-cursor-model" type="text" spellcheck="false" list="cursor-models" placeholder="composer-2.5">
       <label for="set-cursor-design-model">Design model <span class="hint">designs, refines and reviews (JSON answers); empty: the model above. A faster one helps here</span></label>
       <input id="set-cursor-design-model" type="text" spellcheck="false" list="cursor-models" placeholder="the model above">
