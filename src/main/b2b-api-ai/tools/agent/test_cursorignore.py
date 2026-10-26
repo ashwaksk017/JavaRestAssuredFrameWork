@@ -165,6 +165,9 @@ class TheFilesToOpen(unittest.TestCase):
         self.assertTrue(fc.converted_here(self.root))
         shutil.rmtree(os.path.join(self.root, "src", "test", "java", "com", "hi", "api", "tests", "imported"))
         self.assertFalse(fc.converted_here(self.root))
+        classic = os.path.join(self.root, "src", "test", "java", "com", "hi", "api", "tests", "classic", "s1")
+        os.makedirs(classic)
+        self.assertTrue(fc.converted_here(self.root), "a classic convert counts")
 
 
 class ACredentialReadIsSaid(unittest.TestCase):

@@ -70,6 +70,8 @@ MAX_LOG_CHARS = 4000
 MAX_STACK_LINES = 25
 MAX_NOTE_LINES = 12
 IMPORTED = "src/test/java/com/hi/api/tests/imported/"
+CLASSIC = "src/test/java/com/hi/api/tests/classic/"      # --classic converts write here
+CONVERTED_DIRS = (IMPORTED, CLASSIC)
 _SUITE_RX = re.compile(r"^[a-z0-9_]{1,80}$")
 
 
@@ -173,12 +175,13 @@ def _candidates(root: str, cls: str) -> list:
         if os.path.isfile(os.path.join(root, rel)):
             return [(cls, rel, _suite_of(rel))]
     out = []
-    base = os.path.join(root, IMPORTED.replace("/", os.sep))
-    for dirpath, _dirs, files in os.walk(base):
-        if simple + ".java" in files:
-            rel = os.path.relpath(os.path.join(dirpath, simple + ".java"), root).replace("\\", "/")
-            fqn = rel[len("src/test/java/"):-len(".java")].replace("/", ".")
-            out.append((fqn, rel, _suite_of(rel)))
+    for converted in CONVERTED_DIRS:
+        base = os.path.join(root, converted.replace("/", os.sep))
+        for dirpath, _dirs, files in os.walk(base):
+            if simple + ".java" in files:
+                rel = os.path.relpath(os.path.join(dirpath, simple + ".java"), root).replace("\\", "/")
+                fqn = rel[len("src/test/java/"):-len(".java")].replace("/", ".")
+                out.append((fqn, rel, _suite_of(rel)))
     return sorted(out)
 
 
@@ -254,10 +257,10 @@ def _resolve(root: str, cls: str, method: str, suite: str) -> tuple:
 
 
 def _suite_of(class_file: str) -> str:
-    if class_file.startswith(IMPORTED):
-        rest = class_file[len(IMPORTED):]
-        suite = rest.split("/", 1)[0]
-        return suite if _SUITE_RX.match(suite) else ""
+    for converted in CONVERTED_DIRS:              # phase mode, or --classic
+        if class_file.startswith(converted):
+            suite = class_file[len(converted):].split("/", 1)[0]
+            return suite if _SUITE_RX.match(suite) else ""
     return ""
 
 
@@ -443,7 +446,7 @@ def gather(root: str, signature: str = "", test: str = "", suite: str = "", scop
                       + "; ".join(other_suites[:5]))
     the_suite = suite or (next(iter(suites)) if suites else "")
     if scope == "converted" and not the_suite:
-        raise Refused("the suite could not be told from the failing tests (not under tests/imported/"
+        raise Refused("the suite could not be told from the failing tests (not under tests/imported/ or tests/classic/"
                       "<suite>/); name it with --suite, or choose scope converter")
     note = fh.notes(root).get(sid) if sid else None
     return {"kind": "fix-brief", "at": _now(), "scope": scope, "suite": the_suite,
@@ -520,7 +523,8 @@ def plan_text(g: dict) -> str:
             f"# Plan: fix the converted Java of suite {g['suite']}", "",
             f"FIX -- make these {len(g['cases'])} case(s) pass: {names}", "",
             f"Change only this suite's generated files: support/{g['suite']}/ (Hooks, Specs, Phases, "
-            f"Steps), tests/imported/{g['suite']}/, templates/{g['suite']}/, csv/{g['suite']}/, and "
+            f"Steps), tests/imported/{g['suite']}/ (tests/classic/{g['suite']}/ after a classic convert), "
+            f"templates/{g['suite']}/, csv/{g['suite']}/, and "
             f"its client. The brief says what failed, what was sent and what came back, and what the "
             f"converter noted about the case.", "",
             "If the cause is in a class EVERY suite shares (ImportedScenario, ImportedRestClient, "

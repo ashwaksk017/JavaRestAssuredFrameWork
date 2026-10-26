@@ -291,5 +291,15 @@ class WhatIsRefused(Base):
         self.assertEqual(json.loads(self.read("fix-brief.json"))["kind"], "fix-brief")
 
 
+class AClassicConvert(unittest.TestCase):
+    """--classic writes the converted tests under tests/classic/<suite>/: the
+    fix brief tells their suite as it does for tests/imported/."""
+
+    def test_the_suite_of_a_classic_test_is_told(self):
+        self.assertEqual(fb._suite_of("src/test/java/com/hi/api/tests/classic/amex/x/ATest.java"), "amex")
+        self.assertEqual(fb._suite_of("src/test/java/com/hi/api/tests/imported/amex/x/ATest.java"), "amex")
+        self.assertEqual(fb._suite_of("src/test/java/com/hi/api/tests/jira/ATest.java"), "")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

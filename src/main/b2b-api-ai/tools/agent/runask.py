@@ -113,13 +113,18 @@ def case_id(params: str) -> str:
     return m.group(2) if m else ""
 
 
+CLASSIC = "com.hi.api.tests.classic."            # --classic converts write here
+
+
 def converted_suite(cls: str) -> str:
-    """The converted suite of a test class (com.hi.api.tests.imported.<suite>.X), or ""."""
+    """The converted suite of a test class (com.hi.api.tests.imported.<suite>.X,
+    or tests.classic.<suite>.X after a classic convert), or ""."""
     cls = str(cls or "")
-    if not cls.startswith(IMPORTED):
-        return ""
-    suite = cls[len(IMPORTED):].split(".", 1)[0]
-    return suite if _SUITE_RX.match(suite) else ""
+    for prefix in (IMPORTED, CLASSIC):
+        if cls.startswith(prefix):
+            suite = cls[len(prefix):].split(".", 1)[0]
+            return suite if _SUITE_RX.match(suite) else ""
+    return ""
 
 
 def suite_job(suite_rel: str) -> str:

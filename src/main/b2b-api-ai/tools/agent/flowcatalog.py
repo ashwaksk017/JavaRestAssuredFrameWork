@@ -332,9 +332,14 @@ def phase_files(root: str, suite: str, test_file: str) -> list:
 
 
 def converted_here(root: str) -> bool:
-    """Has this machine run a convert (the converted tests are gitignored)?"""
-    d = os.path.join(root, "src", "test", "java", "com", "hi", "api", "tests", "imported")
-    return os.path.isdir(d) and any(os.scandir(d))
+    """Has this machine run a convert (the converted tests are gitignored)?
+    Phase mode writes them under tests/imported/, --classic under
+    tests/classic/: either counts."""
+    for sub in ("imported", "classic"):
+        d = os.path.join(root, "src", "test", "java", "com", "hi", "api", "tests", sub)
+        if os.path.isdir(d) and any(os.scandir(d)):
+            return True
+    return False
 
 
 def block(root: str, project: str, calls: list) -> str:

@@ -1534,7 +1534,7 @@ def project_guide(root: str, out_dir: str) -> str:
         lines += [
             "- the converted tests (GENERATED, read only): open the files EXISTING FLOWS names for "
             "each endpoint, below -- the test method, its data sheet, its phases and "
-            "_audit/<suite>/facade_endpoints.md -- not the whole of tests/imported/ or support/ "
+            "_audit/<suite>/facade_endpoints.md -- not the whole of tests/imported/, tests/classic/ or support/ "
             "(tens of megabytes)"]
     else:
         lines += [

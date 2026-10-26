@@ -153,6 +153,11 @@ class WhichWayApplies(Base):
         self.assertEqual(mix["kind"], "none")
         self.assertIn("together", mix["why"])
 
+    def test_a_classic_convert_is_a_converted_suite_too(self):
+        # --classic writes under tests.classic.<suite>: its failures go to a fix brief as well.
+        self.assertEqual(ra.converted_suite("com.hi.api.tests.classic.amex.x.ATest"), "amex")
+        self.assertEqual(ra.converted_suite("com.hi.api.tests.imported.amex.x.ATest"), "amex")
+
     def test_the_names_that_are_read_from_a_run_are_checked(self):
         self.assertEqual(ra.converted_suite("com.hi.api.tests.imported.Amex-x.A"), "")
         self.assertEqual(ra.converted_suite("com.hi.api.tests.jira.A"), "")

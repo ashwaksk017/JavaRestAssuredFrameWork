@@ -196,6 +196,7 @@ DEFAULT_POLICY = {
             "write_roots": [
                 "src/main/java/com/hi/api/support/{suite}/",
                 "src/test/java/com/hi/api/tests/imported/{suite}/",
+                "src/test/java/com/hi/api/tests/classic/{suite}/",
                 "src/main/resources/templates/{suite}/",
                 "src/test/resources/csv/{suite}/",
                 "src/main/java/com/hi/api/rest/clients/{Suite}Client.java",
@@ -1681,7 +1682,8 @@ def jira_requirements_block(scope: dict) -> str:
             "for each endpoint the files to open (`open:` lines) -- start there, and do not search "
             "the whole converted tree (tens of megabytes). Otherwise "
             "`_audit/<suite>/facade_endpoints.md` names the converted method that reaches each "
-            "endpoint. Open that converted test (src/test/java/com/hi/api/tests/imported/<suite>/) "
+            "endpoint. Open that converted test (src/test/java/com/hi/api/tests/imported/<suite>/, or "
+            "tests/classic/<suite>/ after a classic convert) "
             "and the hooks and phases it calls (src/main/java/com/hi/api/support/<suite>/), and "
             "copy its preconditions -- including a database step that puts the data in the state "
             "the call needs --, its order of calls and the checks it makes. Name it on the Audit "
@@ -2526,6 +2528,7 @@ def project_map(root: str, policy: dict, scope: dict) -> str:
     tests = "src/test/java/com/hi/api/tests/"
     csv_root = "src/test/resources/csv/"
     suites = _dirs_in(root, tests + "imported")
+    classic = _dirs_in(root, tests + "classic")          # --classic writes here instead
     hand = [r for r in (policy.get("handwritten_roots") or []) if "/tests/" in r]
     try:
         runs = sorted(f for f in os.listdir(os.path.join(root, "src", "test", "resources"))
@@ -2546,6 +2549,8 @@ def project_map(root: str, policy: dict, scope: dict) -> str:
     lines += [
         f"    converted      {tests}imported/<suite>/  ({len(suites)} suite(s) converted here"
         + (f": {shown}" if suites else "") + ")  GENERATED",
+        *([f"    converted      {tests}classic/<suite>/  ({len(classic)} suite(s) converted in "
+           f"classic mode: " + ", ".join(classic[:40]) + ")  GENERATED"] if classic else []),
         f"    shared base    {tests}StoryTestBase.java (story tests extend it), "
         f"{tests}BaseApiTest.java, {tests}ImportedTest.java",
         "",
