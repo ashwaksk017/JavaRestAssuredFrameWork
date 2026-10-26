@@ -71,6 +71,13 @@
       "base_urls": [],
       "pat": "",
       "acceptance_criteria_fields": [],
+      "epic_link_field": "",
+      "linked_stories": {
+        "link_types": ["block", "depend", "relate"],
+        "issue_types": ["Story", "Task", "Sub-task", "Subtask"],
+        "same_project": true,
+        "same_release": true
+      },
       "timeout_seconds": "",
       "publish": {
         "attach": false

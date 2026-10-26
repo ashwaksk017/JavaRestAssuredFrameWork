@@ -768,9 +768,17 @@ def main() -> int:
             code, got = mocked.call("/api/release/stories?project_key=ABC&version=&project=b2b")
             check("mock mode: no release chosen is refused, in one line",
                   code == 400 and "choose the release" in (got.get("error") or ""))
+            code, got = mocked.call("/api/release/stories?project_key=ABC&version=Release%202.0"
+                                    "&type=Story&project=b2b&related_to=ABC-6")
+            rows = got.get("issues") or []
+            check("mock mode: each of a release's stories says why it is related to the story in question",
+                  code == 200 and got.get("related_to") == "ABC-6" and rows[:1]
+                  and rows[0].get("key") == "ABC-6" and all("related" in i for i in rows))
             html = mocked.dom("new")
             check("the Automate tab offers to pick stories from a release",
                   'id="release-pick"' in html and 'id="release-version"' in html and 'id="release-list"' in html)
+            check("the release picker takes the story in question and can show only related ones",
+                  'id="release-related"' in html and 'id="release-only-related"' in html)
             code, rc = press("jira-tests", {"--project": "ABC", "--version": "Release 2.0"})
             html = mocked.dom("jira")
             check("mock mode: the tests list can be narrowed to one release",

@@ -46,10 +46,10 @@
     <span class="name">Automate Test Case</span><span class="what">read a story, plan, design</span></button>
   <button role="tab" aria-selected="false" data-tab="convert">
     <span class="name">Migration from ReadyAPI</span><span class="what">convert, then ask Cursor</span></button>
-  <button role="tab" aria-selected="false" data-tab="agent">
-    <span class="name">Commit and push</span><span class="what">review the change, push it</span></button>
   <button role="tab" aria-selected="false" data-tab="run">
     <span class="name">Run tests</span><span class="what">compile, run a suite, see results</span></button>
+  <button role="tab" aria-selected="false" data-tab="agent">
+    <span class="name">Commit and push</span><span class="what">review the change, push it</span></button>
   <button role="tab" aria-selected="false" data-tab="manual">
     <span class="name">Manual tests</span><span class="what">new cases, and Xray updates</span></button>
   <button role="tab" aria-selected="false" data-tab="jira">
@@ -101,13 +101,17 @@
     <summary>…or pick stories from a release</summary>
     <p class="hint">Reads only that release's stories — <code>project = KEY AND fixVersion = "release" AND issuetype = Story</code> —
       not every story of the Jira project. Tick the ones to work on: their keys go into the box above, and <b>Read it</b>
-      makes one job a story (up to 10 at a time). The Jira is the one of the project chosen above.</p>
+      makes one job a story (up to 10 at a time). The Jira is the one of the project chosen above.
+      Give the story you are working on in <b>Related to</b> and each story says why it goes with it — linked to it,
+      the same epic, a component or a label in common — related ones first.</p>
     <div class="row">
       <label class="inline">Jira project key <input id="release-key" type="text" spellcheck="false" size="8" placeholder="ABC"></label>
       <button id="release-load" type="button">Load releases</button>
       <label class="inline">Release <select id="release-version"><option value="">— load the releases first —</option></select></label>
       <label class="inline" title="Story unless changed: the release's other issue types (Bug, Task) are left out of the list.">Type <input id="release-type" type="text" spellcheck="false" size="8" value="Story"></label>
       <label class="inline"><input type="checkbox" id="release-archived"> include archived</label>
+      <label class="inline" title="The story in question, e.g. ABC-123. Empty: the first key in the story box, or the open job's story.">Related to <input id="release-related" type="text" spellcheck="false" size="10" placeholder="ABC-123"></label>
+      <label class="inline" title="Hide the release's stories that nothing relates to the story in question."><input type="checkbox" id="release-only-related" checked> only related</label>
       <button id="release-list" type="button">List its stories</button>
       <span id="release-state" class="state"></span>
     </div>

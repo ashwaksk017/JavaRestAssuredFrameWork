@@ -56,6 +56,28 @@ everything — the safe reading of "nothing is approved yet".
 `acceptance_criteria_fields` names the custom field your project puts AC
 in. Leave it empty and the description is searched instead.
 
+`epic_link_field` (optional) is the id of the Epic Link field on Jira
+Server / Data Center, where a story's epic is kept there and not in
+`parent`. Leave it empty and the field Jira names "Epic Link" is used.
+
+`linked_stories` (optional) says which of a story's Jira links are read
+with it as context (tools/jira/related.py). By default a link is read when
+its name holds one of `block`, `depend`, `relate`, the issue is a Story,
+Task or Sub-task of the same Jira project, and it shares the story's
+release when both have one. Clones, duplicates, Xray tests and bugs are
+left out, and the brief names each one with the reason. Sub-tasks are
+always read. The same rules mark which of a release's stories are related
+to the story in question on the Automate tab's release picker.
+
+```json
+"linked_stories": {
+  "link_types": ["block", "depend", "relate"],
+  "issue_types": ["Story", "Task", "Sub-task", "Subtask"],
+  "same_project": true,
+  "same_release": true
+}
+```
+
 Check what resolved, without printing any value:
 
 ```bash

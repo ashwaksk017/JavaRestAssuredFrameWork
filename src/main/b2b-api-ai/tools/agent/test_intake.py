@@ -666,6 +666,66 @@ class Story(Base):
         self.read()
         self.assertFalse(any("ABC-50" in u or "ABC-60" in u for u in self.asked))
 
+    def test_links_not_related_to_the_story_are_not_read_and_say_why(self):
+        """Asked for (2026-10-26): clones, tests, bugs, other projects and
+        other releases were read into the brief as if they were this
+        story's neighbours."""
+        f = self.issues["ABC-1"]["fields"]
+        f["fixVersions"] = [{"name": "R2"}]
+        f["issuelinks"] += [
+            {"type": {"name": "Cloners", "outward": "clones"}, "outwardIssue": {"key": "ABC-20"}},
+            {"type": {"name": "Tests", "inward": "is tested by"},
+             "inwardIssue": {"key": "ABC-21", "fields": {"issuetype": {"name": "Test"}}}},
+            {"type": {"name": "Blocks", "outward": "blocks"}, "outwardIssue": {"key": "XYZ-22"}},
+            {"type": {"name": "Relates", "outward": "relates to"}, "outwardIssue": {"key": "ABC-23"}},
+            {"type": {"name": "Relates", "outward": "relates to"}, "outwardIssue": {"key": "ABC-24"}}]
+        self.issues["ABC-23"] = issue("ABC-23", "Bug", "A bug", "It broke.")
+        self.issues["ABC-24"] = issue("ABC-24", "Story", "Last release's", "Old.",
+                                      fixVersions=[{"name": "R1"}])
+        r = self.read()
+        read = [a["key"] for a in r["around"]]
+        for key in ("ABC-20", "ABC-21", "XYZ-22", "ABC-23", "ABC-24"):
+            self.assertNotIn(key, read)
+        for key in ("ABC-20", "ABC-21", "XYZ-22"):        # left out without a call
+            self.assertFalse(any(f"/issue/{key}" in u for u in self.asked), key)
+        why = " | ".join(r["story"]["linked_not_read"])
+        for said in ("ABC-20 (clones)", "ABC-21 (is tested by)", "XYZ-22 (blocks): another Jira project",
+                     "ABC-23 (relates to): a Bug", "ABC-24 (relates to): another release"):
+            self.assertIn(said, why)
+        self.assertIn("ABC-2", read)                     # blocks: still read
+        self.assertIn("ABC-4", read)                     # a sub-task: always read
+        brief = self.brief("j")
+        self.assertIn("### Linked in Jira, not read", brief)
+        self.assertIn("ABC-24 (relates to): another release", brief)
+
+    def test_the_rules_are_jira_configs(self):
+        intake.projectconfig.section = lambda name: (
+            {"linked_stories": {"link_types": ["clone"]}}, "test")
+        self.issues["ABC-1"]["fields"]["issuelinks"].append(
+            {"type": {"name": "Cloners", "outward": "clones"}, "outwardIssue": {"key": "ABC-30"}})
+        self.issues["ABC-30"] = issue("ABC-30", "Story", "The one it was cloned from", "Old.")
+        r = self.read()
+        self.assertIn("ABC-30", [a["key"] for a in r["around"]])
+        self.assertIn("ABC-3", " ".join(r["story"]["linked_not_read"]))
+
+    def test_above_the_parent_only_the_summary_is_shown(self):
+        self.issues["ABC-9"]["fields"]["parent"] = {"key": "ABC-90"}
+        self.issues["ABC-90"] = issue("ABC-90", "Initiative", "The whole programme",
+                                      "A very long initiative text " * 20)
+        r = self.read()
+        top = [a for a in r["around"] if a["key"] == "ABC-90"][0]
+        self.assertEqual(top["how"], "parent of the parent")
+        self.assertEqual(top["text"], "")
+        self.assertNotIn("very long initiative", self.brief("j"))
+
+    def test_the_epic_link_of_jira_server_is_the_parent(self):
+        f = self.issues["ABC-1"]["fields"]
+        del f["parent"]
+        f["customfield_10008"] = "ABC-9"
+        self.issues["ABC-1"]["names"] = {"customfield_10008": "Epic Link"}
+        r = self.read()
+        self.assertEqual(r["story"]["parents"], ["ABC-9"])
+
     def test_the_text_around_the_story_is_whole(self):
         self.issues["ABC-2"]["fields"]["description"] = "x" * 50000
         r = self.read()

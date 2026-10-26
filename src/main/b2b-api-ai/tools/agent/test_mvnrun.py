@@ -321,6 +321,14 @@ class Running(Base):
         self.assertEqual(rc, 0, said)
         self.assertTrue(self.result()["compile"]["ok"])
 
+    def test_compile_alone_is_the_clean_build_a_run_does(self):
+        """Compile said "no errors", Run then failed: old classes stood in
+        for a generated file that no longer compiled."""
+        write(self.root, "target/classes/Old.class", "x")
+        rc, said = self.quiet(mr.cmd_compile, self.job_dir, self.root, runner=self.runner())
+        self.assertFalse(os.path.exists(os.path.join(self.root, "target/classes/Old.class")))
+        self.assertIn("clean build", said)
+
 
 class Java(unittest.TestCase):
     def setUp(self):
@@ -427,6 +435,26 @@ class NeverConverted(unittest.TestCase):
         got = mr.loop.ensure_framework(self.root, self.said.append, self.run_(writes=False, rc=2))
         self.assertEqual(got, "failed")
         self.assertTrue(any(s.startswith("FAIL") and "exit 2" in s for s in self.said), self.said)
+
+    def test_a_wrapper_calling_runners_scenario_steps_lost_is_removed(self):
+        """Seen: support/scenario/Insights.java from an earlier convert,
+        calling runVerifyAccountMember() that ScenarioSteps no longer has."""
+        self.run_()([])
+        d = os.path.join(self.root, *mr.loop.SUPPORT_DIR.split("/"), "scenario")
+        os.makedirs(d)
+        files = {
+            "ScenarioSteps.java": "public abstract class ScenarioSteps<S> {\n"
+                                  "    public void runVerifyKept() throws Exception {\n    }\n}\n",
+            "Insights.java": "class Insights {\n  static void a() throws Exception {\n"
+                             "    ScenarioSteps.current().runVerifyAccountMember();\n  }\n}\n",
+            "PartnerRelationships.java": "class P {\n  static void a() throws Exception {\n"
+                                         "    ScenarioSteps.current().runVerifyKept();\n  }\n}\n"}
+        for name, text in files.items():
+            with open(os.path.join(d, name), "w") as fh:
+                fh.write(text)
+        self.assertEqual(mr.loop.ensure_framework(self.root, self.said.append, self.run_()), "")
+        self.assertEqual(sorted(os.listdir(d)), ["PartnerRelationships.java", "ScenarioSteps.java"])
+        self.assertTrue(any("removed" in s and "runVerifyAccountMember" in s for s in self.said), self.said)
 
     def test_no_converter_in_the_copy_nothing_is_tried(self):
         shutil.rmtree(os.path.join(self.root, "tools"))

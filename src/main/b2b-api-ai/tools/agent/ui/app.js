@@ -590,6 +590,8 @@ async function showSources(j) {
   try { s = await api(`/api/sources?job=${encodeURIComponent(j)}`); } catch { s = null; }
   if (j !== job()) return;
   storyCheckOffered(Boolean(s && s.story && s.story.key));
+  // The release picker's "Related to" falls back on the open job's story.
+  $("release-related").dataset.jobStory = (s && s.story && s.story.key) || "";
   if (!s || (!s.read && !s.spec.name && !Object.keys(s.design_boxes || {}).length)) { box.replaceChildren(); return; }
   const chip = (cls, label, detail, title) => el("span", { class: `src ${cls}`, title: title || detail || "" },
     el("code", { text: label }), detail ? el("small", { text: detail }) : null);
@@ -607,7 +609,9 @@ async function showSources(j) {
   }
   kids.push(group("Read around it", (s.around || []).map((a) => chip(a.ok ? (a.cut ? "cut" : "ok") : "bad", a.key,
     a.ok ? `${a.how}: ${a.summary || ""}${a.cut ? ` (${a.cut} chars cut)` : ""}` : `${a.how}: NOT read — ${a.reason}`))));
-  kids.push(group("Linked, not read", (st.linked_not_read || []).map((p) => chip("bad", p, "over the limit of stories read"))));
+  // "KEY (how): why" -- left out on purpose: not related to the story.
+  kids.push(group("Linked, not related (not read)", (st.linked_not_read || []).map((p) =>
+    chip("cut", p.split(" ")[0], `left out: ${p.slice(p.indexOf(" ") + 1)}`))));
   kids.push(group("Confluence pages", (s.pages || []).map((p) => chip(p.cut ? "cut" : "ok",
     p.pasted ? "pasted" : (p.link.length > 60 ? p.link.slice(0, 57) + "…" : p.link),
     `${k(p.chars)}${p.cut ? `, ${p.cut} cut` : ""}${p.from_story ? ` — linked from ${p.from_story}` : ""}`, p.link))));
@@ -804,22 +808,40 @@ $("release-list").onclick = async () => {
   const v = $("release-version").value;
   if (!v) { setState($("release-state"), "bad", "load the releases and choose one"); return; }
   const type = $("release-type").value.trim();
+  // The story in question: the box, else the first key in the story box,
+  // else the open job's story. Empty: the list is the release's, unranked.
+  const related = ($("release-related").value.trim() ||
+    (($("story").value.match(/\b[A-Za-z][A-Za-z0-9_]+-[0-9]+\b/) || [""])[0]) ||
+    $("release-related").dataset.jobStory || "").toUpperCase();
+  if (related && !/^[A-Z][A-Z0-9_]*-[0-9]+$/.test(related)) {
+    setState($("release-state"), "bad", `"Related to" takes a story key, e.g. ABC-123`);
+    return;
+  }
   const box = $("release-stories");
   box.replaceChildren();
   setState($("release-state"), "run", `reading the ${type || "issues"} of ${k} ${v}…`);
   let r;
   try {
     r = await api(`/api/release/stories?project_key=${encodeURIComponent(k)}&version=${encodeURIComponent(v)}` +
-      `&type=${encodeURIComponent(type)}&project=${encodeURIComponent(pageProject())}`);
+      `&type=${encodeURIComponent(type)}&project=${encodeURIComponent(pageProject())}` +
+      (related ? `&related_to=${encodeURIComponent(related)}` : ""));
   } catch (e) { setState($("release-state"), "bad", e.message); return; }
-  const issues = r.issues || [];
+  const ranked = Boolean(r.related_to);
+  // "only related" hides what nothing relates to the story in question;
+  // the server put the related first, the strongest reason first.
+  const onlyRelated = ranked && $("release-only-related").checked;
+  const issues = (r.issues || []).filter((i) => !onlyRelated || (i.related || []).length);
   // A story read before has a job named by its key: said, so it is not
   // read again by accident (Read it would read it again into that job).
   let jobs = new Map();
   try { jobs = new Map((await api("/api/jobs")).map((x) => [String(x.job).toUpperCase(), x.modified])); }
   catch { /* the list is still useful without it */ }
   const boxes = issues.map((i) => el("input", { type: "checkbox", value: i.key, "aria-label": `pick ${i.key}` }));
-  const facts = [el("div", { class: "meta" }, `${issues.length} read of ${r.total ?? "?"}  ·  `, el("code", { text: r.jql || "" }))];
+  const facts = [el("div", { class: "meta" }, `${(r.issues || []).length} read of ${r.total ?? "?"}  ·  `, el("code", { text: r.jql || "" }))];
+  if (ranked) facts.push(el("div", { class: "meta", text: `${r.related} related to ${r.related_to}` +
+    (onlyRelated ? ` — only those are shown (untick "only related" for all ${(r.issues || []).length})` : "") +
+    ". Linked and same-epic are strong reasons; a shared label alone is weak." }));
+  if (r.related_note) facts.push(banner("warn", r.related_note));
   if (r.complete === false) facts.push(banner("bad", `INCOMPLETE — ${r.why_incomplete || "the list is short"}`));
   if (r.limited) facts.push(banner("warn", `Only the first ${r.limit} were read: narrow it with the type box.`));
   const use = el("button", { type: "button", class: "go", on: { click: () => {
@@ -842,10 +864,13 @@ $("release-list").onclick = async () => {
   const all = (on) => el("button", { type: "button", on: { click: () => boxes.forEach((b) => { b.checked = on; }) } },
     on ? "Tick all" : "Tick none");
   box.replaceChildren(heading(`${type || "Issues"} in ${k} ${v}`, issues.length), ...facts,
-    issues.length ? table(["", "Key", "Status", "Summary", "Fix versions", "Job here"], issues.map((i, n) =>
-      [boxes[n], el("code", { text: i.key }), i.status, i.summary, (i.fix_versions || []).join(", "),
+    issues.length ? table(["", "Key", "Status", "Summary", ...(ranked ? ["Related because"] : []), "Fix versions", "Job here"],
+      issues.map((i, n) =>
+      [boxes[n], el("code", { text: i.key }), i.status, i.summary,
+       ...(ranked ? [(i.related || []).join("; ") || "—"] : []), (i.fix_versions || []).join(", "),
        jobs.has(i.key.toUpperCase()) ? `has a job (${jobs.get(i.key.toUpperCase())})` : ""])) : banner("warn",
-      `no ${type || "issue"} is in ${v}`),
+      onlyRelated && (r.issues || []).length ? `nothing in ${v} is related to ${r.related_to}: untick "only related" to see all`
+                                             : `no ${type || "issue"} is in ${v}`),
     issues.length ? el("div", { class: "row" }, use, all(true), all(false)) : null);
   setState($("release-state"), issues.length ? "ok" : "warn",
     issues.length ? `${issues.length} in ${v}: tick the ones to work on` : `nothing of type ${type || "any"} in ${v}`);

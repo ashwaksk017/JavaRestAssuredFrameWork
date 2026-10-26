@@ -3148,6 +3148,55 @@ def run_build(run, exe: str, cmd: list) -> tuple:
 
 SUPPORT_DIR = "src/main/java/com/hi/api/support"
 SUPPORT_NEEDED = ("ImportedScenario.java", "ImportedRestClient.java")
+_RUNNER_CALL_RX = re.compile(r"ScenarioSteps\.current\(\)\s*\.\s*(run[A-Z]\w*)\s*\(\s*\)")
+_RUNNER_DEF_RX = re.compile(r"\b(run[A-Z]\w*)\s*\(\s*\)\s*(?:throws\b[^{]*)?\{")
+
+
+def prune_stale_scenario_wrappers(root: str, say_=None) -> list:
+    """Delete a generated wrapper in support/scenario/ that calls a
+    ScenarioSteps runner which is no longer there. Returns what was removed.
+
+    Seen (2026-10-26): support/scenario/Insights.java, written by an
+    earlier convert, calling ScenarioSteps.current().runVerifyAccountMember()
+    -- and a later convert had rewritten ScenarioSteps without it (each
+    suite's verifies now live in support/<suite>/scenario/). Five "cannot
+    find symbol" and no test could run. The converter removes such a file
+    only on some of its paths; this runs before every Maven call.
+
+    Only files in that one generated, gitignored folder, only when a call
+    names a runner ScenarioSteps.java does not define: a wrapper whose
+    runners all exist is current and is left alone."""
+    folder = os.path.join(root, *SUPPORT_DIR.split("/"), "scenario")
+    steps = os.path.join(folder, "ScenarioSteps.java")
+    try:
+        with io.open(steps, encoding="utf-8", errors="replace") as fh:
+            defined = set(_RUNNER_DEF_RX.findall(fh.read()))
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return []
+    removed = []
+    for name in names:
+        path = os.path.join(folder, name)
+        if not name.endswith(".java") or name == "ScenarioSteps.java" or not os.path.isfile(path):
+            continue
+        try:
+            with io.open(path, encoding="utf-8", errors="replace") as fh:
+                missing = sorted(set(_RUNNER_CALL_RX.findall(fh.read())) - defined)
+        except OSError:
+            continue
+        if not missing:
+            continue
+        try:
+            os.remove(path)
+        except OSError as e:
+            (say_ or say)(f"WARN {SUPPORT_DIR}/scenario/{name} calls {', '.join(missing[:3])} that "
+                          f"ScenarioSteps no longer has, and could not be removed ({e})")
+            continue
+        removed.append(name)
+        (say_ or say)(f" ..  removed {SUPPORT_DIR}/scenario/{name}: left by an earlier convert, it "
+                      f"calls {', '.join(missing[:3])}{' ...' if len(missing) > 3 else ''}, which "
+                      f"ScenarioSteps no longer has (generated, so nothing of yours is lost)")
+    return removed
 
 
 def ensure_framework(root: str, say_=None, run=None) -> str:
@@ -3162,6 +3211,7 @@ def ensure_framework(root: str, say_=None, run=None) -> str:
     file or program_configuration.json); a later convert replaces them.
 
     Returns what was done ("" when the tree already has them)."""
+    prune_stale_scenario_wrappers(root, say_)
     missing = [f for f in SUPPORT_NEEDED
                if not os.path.isfile(os.path.join(root, *SUPPORT_DIR.split("/"), f))]
     conv = os.path.join(root, "tools", "ra_converter", "ra_converter.py")

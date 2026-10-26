@@ -593,9 +593,10 @@ def release_versions(project_key: str, project: str = "", include_archived: bool
     return _release().versions(project_key, project, include_archived)
 
 
-def release_stories(project_key: str, version: str, project: str = "", issue_type: str = "Story") -> dict:
+def release_stories(project_key: str, version: str, project: str = "", issue_type: str = "Story",
+                    related_to: str = "") -> dict:
     """One release's stories, not the Jira project's every story (release.stories)."""
-    return _release().stories(project_key, version, project, issue_type)
+    return _release().stories(project_key, version, project, issue_type, related_to=related_to)
 
 
 def read_diag(job: str, which: str = "job", lines: int = 400) -> str:
@@ -983,7 +984,7 @@ def sources(job: str) -> dict:
                    "type": one(story.get("type"), 40), "status": one(story.get("status"), 40),
                    "parents": [one(p, 40) for p in story.get("parents") or []][:10],
                    "unread_parents": [one(p, 40) for p in story.get("unread_parents") or []][:10],
-                   "linked_not_read": [one(p, 60) for p in story.get("linked_not_read") or []][:20],
+                   "linked_not_read": [one(p, 160) for p in story.get("linked_not_read") or []][:20],
                    "comments": int(story.get("comments") or 0),
                    "attachments": [one((a or {}).get("name"), 120) for a in story.get("attachments") or []
                                    if isinstance(a, dict)][:20],

@@ -46,6 +46,39 @@ class TheReleasePicker(unittest.TestCase):
         got = release.stories("ABC", "Release 2.0", issue_type="")
         self.assertNotIn("issuetype", got["jql"])
 
+    def test_without_a_story_in_question_nothing_is_ranked(self):
+        got = release.stories("ABC", "Release 2.0")
+        self.assertEqual(got["related_to"], "")
+        self.assertTrue(all("related" not in i for i in got["issues"]))
+
+    def test_each_story_says_why_it_is_related_to_the_one_in_question(self):
+        got = release.stories("ABC", "Release 2.0", related_to="abc-6")
+        self.assertEqual(got["related_to"], "ABC-6")
+        self.assertEqual(got["issues"][0]["key"], "ABC-6", "the story itself first")
+        self.assertEqual(got["issues"][0]["related"], ["this is the story"])
+        # The sample stories share a component and labels: said, weakest last.
+        five = [i for i in got["issues"] if i["key"] == "ABC-5"][0]
+        self.assertEqual(five["related"][0], "component Booking")
+        self.assertTrue(five["related"][-1].startswith("label"))
+        self.assertEqual(got["related"], len(got["issues"]))
+
+    def test_related_first_strongest_first(self):
+        self.assertLess(release._strength(["linked: ABC-1 blocks ABC-2"]),
+                        release._strength(["same epic ABC-9"]))
+        self.assertLess(release._strength(["same epic ABC-9"]), release._strength(["component X"]))
+        self.assertLess(release._strength(["label x"]), release._strength([]))
+
+    def test_a_story_in_question_jira_does_not_have_is_said(self):
+        # The stand-in Jira answers every key; a real one may not.
+        got = release.stories("ABC", "Release 2.0", related_to="ABC-6",
+                              transport=lambda m, url, *a, **k: (
+                                  {"issues": [], "total": 0, "startAt": 0} if "/search" in url
+                                  else []))
+        self.assertIn("not found", got["related_note"])
+        self.assertEqual(got["related_to"], "")
+        with self.assertRaises(release.Refused):
+            release.stories("ABC", "Release 2.0", related_to="not a key")
+
     def test_what_cannot_be_asked_is_refused_plainly(self):
         with self.assertRaises(release.Refused):
             release.stories("ABC", "")

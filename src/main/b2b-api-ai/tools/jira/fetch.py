@@ -47,6 +47,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 import projectconfig  # noqa: E402
+import related  # noqa: E402
 import safehttp  # noqa: E402
 
 ROOT = projectconfig.ROOT
@@ -286,7 +287,7 @@ def fetch_issue(key: str, base_url: str, token: str, api_path: str = DEFAULT_API
     # comments for sample payloads, so it would have searched a field it
     # was never sent and reported "no payload found" with a straight face.
     url = (f"{base_url.rstrip('/')}{api_path}/issue/{key}"
-           f"?expand=changelog,renderedFields&fields=*all")
+           f"?expand=changelog,renderedFields,names&fields=*all")
     fn = transport or _urllib_transport
     return fn(url, token, timeout)
 
@@ -365,15 +366,22 @@ MAX_PARENT_DEPTH = 3
 # carries none at all. Walking up is what stops "this story has no
 # acceptance criteria" from being wrong whenever the team put them one
 # level above.
-def parent_key(issue: dict) -> str:
+#
+# The parent is `parent` on Jira Cloud (and for a sub-task everywhere);
+# Jira Server / Data Center keep a story's epic in the Epic Link field
+# instead, which `names` (asked for in fetch_issue) lets us find.
+def parent_key(issue: dict, epic_field: str = "") -> str:
     f = (issue or {}).get("fields") or {}
     p = f.get("parent") or {}
-    return str(p.get("key") or "").strip() if isinstance(p, dict) else ""
+    if isinstance(p, dict) and str(p.get("key") or "").strip():
+        return str(p.get("key") or "").strip()
+    return related.epic_of(issue, epic_field)
 
 
 def fetch_chain(key: str, base_url: str, token: str,
                 api_path: str = DEFAULT_API_PATH, timeout: int = 30,
-                transport=None, max_depth: int = MAX_PARENT_DEPTH) -> list:
+                transport=None, max_depth: int = MAX_PARENT_DEPTH,
+                epic_field: str = "") -> list:
     """[story, parent, grandparent...], stopping at the first gap.
 
     Bounded, and it refuses to revisit a key: a parent link that loops
@@ -403,7 +411,7 @@ def fetch_chain(key: str, base_url: str, token: str,
             break
         _top_up_comments(issue, cur, base_url, token, api_path, timeout, transport)
         chain.append(issue)
-        nxt = parent_key(issue)
+        nxt = parent_key(issue, epic_field)
         if nxt and not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*-[0-9]+", nxt):
             # The parent's key comes from Jira's ANSWER and goes into the
             # next address. One that is not a key is not followed.
@@ -706,7 +714,8 @@ def main(argv: list[str] | None = None) -> int:
     say("-" * 68)
     print(f"fetch : {key} from {base}{args.api_path}/issue/{key}")
     chain = fetch_chain(key, base, token, args.api_path, timeout,
-                        max_depth=args.max_parent_depth)
+                        max_depth=args.max_parent_depth,
+                        epic_field=str(cfg.get("epic_link_field") or "").strip())
     if not chain or chain[0].get("_error"):
         print(f"failed: {chain[0].get('_error') if chain else 'nothing returned'}")
         return 1

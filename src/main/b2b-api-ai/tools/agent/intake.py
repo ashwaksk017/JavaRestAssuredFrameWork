@@ -101,6 +101,7 @@ conf_pageref = _load("agent_conf_pageref", os.path.join(_CONF, "pageref.py"))
 conf_fetch = _load("agent_conf_fetch", os.path.join(_CONF, "fetch.py"))
 jira_fetch = _load("agent_jira_fetch", os.path.join(_JIRA, "fetch.py"))
 jira_search = _load("agent_jira_search", os.path.join(_JIRA, "search.py"))
+jira_related = _load("agent_jira_related", os.path.join(_JIRA, "related.py"))
 
 ROOT = projectconfig.ROOT
 
@@ -337,11 +338,14 @@ def _page_for_brief(body: str, budget: int) -> tuple:
     text = _PAGE_FENCE_RX.sub(named, body or "").strip()
     cap = max(0, min(MAX_PAGE_CHARS, budget))
     return text[:cap], max(0, len(text) - cap)
-# Every linked story and sub-task is read, and each story around this one
-# -- parents, linked -- is in the brief whole. Asked for (2026-10-21): it was
-# the first 8 linked stories, 1500 characters each, 12000 in all. The brief
-# is part of what Cursor is sent, so a story with many long neighbours makes
-# a longer prompt.
+# Every RELATED linked story and every sub-task is read, and each story
+# around this one -- parent, linked -- is in the brief whole. Asked for
+# (2026-10-21): it was the first 8 linked stories, 1500 characters each. And
+# (2026-10-26): every link of every kind was read -- clones from an older
+# release, Xray tests, bugs, other projects -- so the brief held stories
+# that were not this one's. tools/jira/related.py now says which links are
+# read; the rest are named in the brief with the reason. Above the parent
+# (an epic's initiative) only the key and summary are shown.
 _KEY_IN_LINK_RX = re.compile(r"\b([A-Za-z][A-Za-z0-9_]+-[0-9]+)\b")
 
 
@@ -387,37 +391,29 @@ def _named(value) -> str:
 
 
 def _links_of(issue: dict) -> list:
-    """[(key, how it is related)] for the stories Jira links to this one,
-    and its sub-tasks, in Jira's order."""
+    """Every issue Jira links to this one, and its sub-tasks, in Jira's
+    order: dicts {key, how, kind, type, sub} (related.links, plus `sub`
+    for a sub-task, which is always read)."""
     f = issue.get("fields") if isinstance(issue.get("fields"), dict) else {}
-    out = []
-    for link in _listed(f.get("issuelinks")):
-        if not isinstance(link, dict):
-            continue
-        kind = link.get("type") if isinstance(link.get("type"), dict) else {}
-        if isinstance(link.get("outwardIssue"), dict):
-            other, how = link["outwardIssue"], kind.get("outward") or kind.get("name")
-        elif isinstance(link.get("inwardIssue"), dict):
-            other, how = link["inwardIssue"], kind.get("inward") or kind.get("name")
-        else:
-            continue
-        out.append((str(other.get("key") or ""), _one_line(how or "linked to", 40)))
+    out = [dict(link, how=_one_line(link["how"], 40), sub=False)
+           for link in jira_related.links(f)]
     for sub in _listed(f.get("subtasks")):
         if isinstance(sub, dict):
-            out.append((str(sub.get("key") or ""), "sub-task of this story"))
+            out.append({"key": str(sub.get("key") or "").upper(), "how": "sub-task of this story",
+                        "kind": "", "type": "", "fields": {}, "sub": True})
     seen, keep = set(), []
-    for key, how in out:
-        key = key.upper()
-        if _KEY_IN_LINK_RX.fullmatch(key) and key not in seen:
-            seen.add(key)
-            keep.append((key, how))
+    for link in out:
+        if _KEY_IN_LINK_RX.fullmatch(link["key"]) and link["key"] not in seen:
+            seen.add(link["key"])
+            keep.append(link)
     return keep
 
 
-def _around(issue: dict, how: str) -> dict:
-    """One story near this job's story, as the brief will show it: whole."""
+def _around(issue: dict, how: str, whole: bool = True) -> dict:
+    """One story near this job's story, as the brief will show it: whole,
+    or (not `whole`) its key and summary only."""
     f = issue.get("fields") or {}
-    text = conf_fetch.redact(_about(issue))
+    text = conf_fetch.redact(_about(issue)) if whole else ""
     return {"key": _one_line(issue.get("key"), 40), "how": how, "ok": True,
             "type": _one_line(_named(f.get("issuetype")), 40),
             "status": _one_line(_named(f.get("status")), 40),
@@ -513,10 +509,15 @@ def gather_jira(link: str, sources: str, slot: str, connect=None, transport=None
             return out
     if mocked and transport is None:
         transport = lambda url, token, timeout: jira_search.mock().story_transport(url)
+    cfg = {}
+    if not mocked:
+        cfg, _note = projectconfig.section("jira_config")
+        cfg = cfg if isinstance(cfg, dict) else {}
     diag.step(f"Reading the sample story {key} (mock mode)" if mocked
               else f"Asking Jira for the story {key}, its comments and its parents")
     chain = jira_fetch.fetch_chain(key, conn["base"], conn["token"], conn["api"],
-                                   conn["timeout"], transport)
+                                   conn["timeout"], transport,
+                                   epic_field=str(cfg.get("epic_link_field") or "").strip())
     chain = [i for i in chain if isinstance(i, dict)]
     if not chain or chain[0].get("_error"):
         why = chain[0].get("_error") if chain else "nothing came back"
@@ -558,23 +559,34 @@ def gather_jira(link: str, sources: str, slot: str, connect=None, transport=None
                 out.setdefault("warnings", []).append(
                     f"the attachments of {folder} could not be read ({type(e).__name__})")
 
-    fields = []
-    if not mocked:
-        cfg, _note = projectconfig.section("jira_config")
-        fields = (cfg or {}).get("acceptance_criteria_fields") or []
+    fields = cfg.get("acceptance_criteria_fields") or []
     ac = jira_fetch.acceptance_criteria_chain(chain, fields)
     own_fields = read[0].get("fields") or {}
 
     # ---- what is around the story ---------------------------------------
     around = []
     for depth, issue in enumerate(read[1:], 1):
-        around.append(_around(issue, "parent" if depth == 1 else "parent of the parent"))
-    linked = [(k, how) for k, how in _links_of(read[0])
-              if k not in {str(i.get("key") or "").upper() for i in chain}]
+        around.append(_around(issue, "parent" if depth == 1 else "parent of the parent",
+                              whole=depth == 1))
+    rule = jira_related.rules(cfg)
+    in_chain = {str(i.get("key") or "").upper() for i in chain}
+    linked, not_read = [], []
+    for link in _links_of(read[0]):
+        if link["key"] in in_chain:
+            continue
+        why = "" if link["sub"] else jira_related.skip_link(rule, key, link)
+        if why:
+            not_read.append(f"{link['key']} ({link['how']}): {why}")
+        else:
+            linked.append(link)
     if linked:
         diag.step(f"Reading {len(linked)} linked stor{'y' if len(linked) == 1 else 'ies'} "
                   f"for the bigger picture")
-    for other, how in linked:
+    if not_read:
+        diag.step(f"Not reading {len(not_read)} linked issue(s) not related to {key}: "
+                  + "; ".join(not_read[:10]))
+    for link in linked:
+        other, how = link["key"], link["how"]
         try:
             issue = jira_fetch.fetch_issue(other, conn["base"], conn["token"], conn["api"],
                                            conn["timeout"], transport)
@@ -592,8 +604,11 @@ def gather_jira(link: str, sources: str, slot: str, connect=None, transport=None
                            "reason": "Jira's answer was not an issue"})
             continue
         issue["key"] = other                             # the key that was ASKED for
+        why = "" if link["sub"] else jira_related.skip_issue(rule, own_fields, issue["fields"])
+        if why:
+            not_read.append(f"{other} ({how}): {why}")
+            continue
         around.append(_around(issue, how))
-    not_read = []                                        # every linked story is read
 
     # Requests are looked for in the story and its parents (a contract kept
     # on the epic is the commonest place one lives) -- not in linked stories.
@@ -938,6 +953,13 @@ def _write_brief(out: str, r: dict) -> None:
                 if a.get("cut"):
                     lines += ["", f"({a['cut']} more character(s) not shown.)"]
                 lines.append("")
+    skipped = (story or {}).get("linked_not_read") or []
+    if story and skipped:
+        lines += ["### Linked in Jira, not read", "",
+                  f"Not related to {story['key']} by the rules (jira_config "
+                  f"`linked_stories`): left out so they do not pass for this story's.", ""]
+        lines += [f"- {_one_line(s, 200)}" for s in skipped]
+        lines.append("")
 
     shown_pages = [p for p in (r.get("pages") or []) if p.get("text")]
     if shown_pages:

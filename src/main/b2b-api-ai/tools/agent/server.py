@@ -234,7 +234,8 @@ class Handler(BaseHTTPRequestHandler):
                 # One release's stories (project AND fixVersion AND type),
                 # not every story of the Jira project.
                 return self._json(jobs.release_stories(q.get("project_key", ""), q.get("version", ""),
-                                                       q.get("project", ""), q.get("type", "Story")))
+                                                       q.get("project", ""), q.get("type", "Story"),
+                                                       q.get("related_to", "")))
             if u.path == "/api/location":
                 # For the banner on every tab: a project in a OneDrive /
                 # iCloud / Dropbox / Google Drive folder loses writes mid-run.

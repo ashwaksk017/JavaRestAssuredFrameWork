@@ -501,7 +501,11 @@ def _threaded(root: str, suite_rel: str, threads: int) -> str:
 
 
 def cmd_compile(job_dir: str, root: str, runner=None) -> int:
-    rc, part = compile_(job_dir, root, runner)
+    # A clean build, as a run's compile is. Asked for (2026-10-26): Compile
+    # said "no errors" and Run then failed to compile -- Maven had kept the
+    # classes of a generated file that no longer compiled, and only the
+    # run's clean build read it again. What compiles here compiles there.
+    rc, part = compile_(job_dir, root, runner, clean=True)
     result = {"kind": "mvnrun", "what": "compile", "at": _now(), **part,
               "ok": rc == 0, "verdict": "compiled" if rc == 0 else "the compile failed"}
     _write(job_dir, result)
