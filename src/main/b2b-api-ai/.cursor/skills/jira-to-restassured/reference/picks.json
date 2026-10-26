@@ -1,0 +1,37 @@
+[
+  {
+    "project": "b2b",
+    "title": "Enrol a guest, create a program account, activate it",
+    "suite": "programaccountregression",
+    "steps": ["POST /realms/guests/enroll", "POST /guests/{guestId}/businesses", "POST /businesses/{accountId}/activate"]
+  },
+  {
+    "project": "b2b",
+    "title": "Create an account and add a member to it",
+    "suite": "memberregistrationregression",
+    "steps": ["POST /realms/guests/enroll", "POST /guests/{guestId}/businesses", "GET /businesses/{accountId}",
+              "POST /guests/{guestId}/businesses/{accountId}/members"]
+  },
+  {
+    "project": "b2b",
+    "title": "Account and member spend detail after activation",
+    "suite": "accountdashboardregression",
+    "steps": ["POST /realms/guests/enroll", "POST /guests/{guestId}/businesses",
+              "POST /guests/{guestId}/businesses/{accountId}/members/{memberId}/confirmValidation",
+              "POST /businesses/{accountId}/activate", "GET /shop/props/{propCode}",
+              "GET /guests/{guestId}/businesses/{accountId}/spendDetail",
+              "GET /guests/{guestId}/businesses/{accountId}/members/{memberId}/spendDetail"]
+  },
+  {
+    "project": "goal",
+    "title": "Find a property's groups, then create a group",
+    "suite": "group360createstage",
+    "steps": ["GET /props/{propCode}/groups", "POST /props/{propCode}/groups"]
+  },
+  {
+    "project": "goal",
+    "title": "Pay for an existing group",
+    "suite": "group360createstage",
+    "steps": ["GET /props/{propCode}/groups", "POST /props/{propCode}/groups/{groupId}/payment"]
+  }
+]

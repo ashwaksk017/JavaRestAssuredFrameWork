@@ -1,0 +1,56 @@
+[
+  {
+    "project": "b2b",
+    "title": "Enrol a guest, create a program account, activate it",
+    "file": ".cursor/skills/jira-to-restassured/reference/b2b/enrol-a-guest-create-a-program-account-activate-it.md",
+    "calls": [
+      "POST /realms/guests/enroll",
+      "POST /guests/{guestId}/businesses",
+      "POST /businesses/{accountId}/activate"
+    ]
+  },
+  {
+    "project": "b2b",
+    "title": "Create an account and add a member to it",
+    "file": ".cursor/skills/jira-to-restassured/reference/b2b/create-an-account-and-add-a-member-to-it.md",
+    "calls": [
+      "POST /realms/guests/enroll",
+      "POST /realms/guests/enroll",
+      "POST /guests/{guestId}/businesses",
+      "GET /businesses/{accountId}",
+      "POST /guests/{guestId}/businesses/{accountId}/members"
+    ]
+  },
+  {
+    "project": "b2b",
+    "title": "Account and member spend detail after activation",
+    "file": ".cursor/skills/jira-to-restassured/reference/b2b/account-and-member-spend-detail-after-activation.md",
+    "calls": [
+      "POST /realms/guests/enroll",
+      "POST /guests/{guestId}/businesses",
+      "POST /guests/{guestId}/businesses/{accountId}/members/{memberId}/confirmValidation",
+      "POST /businesses/{accountId}/activate",
+      "GET /shop/props/{propCode}",
+      "GET /guests/{guestId}/businesses/{accountId}/spendDetail",
+      "GET /guests/{guestId}/businesses/{accountId}/members/{memberId}/spendDetail"
+    ]
+  },
+  {
+    "project": "goal",
+    "title": "Find a property's groups, then create a group",
+    "file": ".cursor/skills/jira-to-restassured/reference/goal/find-a-property-s-groups-then-create-a-group.md",
+    "calls": [
+      "GET /props/{propCode}/groups",
+      "POST /props/{propCode}/groups"
+    ]
+  },
+  {
+    "project": "goal",
+    "title": "Pay for an existing group",
+    "file": ".cursor/skills/jira-to-restassured/reference/goal/pay-for-an-existing-group.md",
+    "calls": [
+      "GET /props/{propCode}/groups",
+      "POST /props/{propCode}/groups/{groupId}/payment"
+    ]
+  }
+]

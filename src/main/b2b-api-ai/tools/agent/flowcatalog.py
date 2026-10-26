@@ -331,6 +331,38 @@ def phase_files(root: str, suite: str, test_file: str) -> list:
     return found[:MAX_PHASE_FILES]
 
 
+REFERENCE_INDEX = os.path.join(".cursor", "skills", "jira-to-restassured", "reference", "index.json")
+MAX_REFERENCES = 2
+_REFS: dict = {}
+
+
+def references_for(root: str, project: str, call: str) -> list:
+    """[(file, title)] of the committed, scrubbed reference examples
+    (tools/agent/refexamples.py) that make this call -- else one on the same
+    path -- of this project. On every machine, converted or not: they are
+    in git, as the converted tests are not."""
+    key = root
+    if key not in _REFS:
+        try:
+            with io.open(os.path.join(root, REFERENCE_INDEX), encoding="utf-8") as fh:
+                _REFS[key] = json.load(fh)
+        except (OSError, ValueError):
+            _REFS[key] = []
+    method, segs = _segments(call)
+    want = [_shape(s) for s in segs]
+    same, near = [], []
+    for ex in _REFS[key]:
+        if ex.get("project") != project or not os.path.isfile(os.path.join(root, *str(ex.get("file", "")).split("/"))):
+            continue
+        shapes = [(_segments(c)[0], [_shape(s) for s in _segments(c)[1]]) for c in ex.get("calls") or []]
+        item = (ex["file"], ex.get("title") or "")
+        if (method, want) in shapes:
+            same.append(item)
+        elif any(p == want for _m, p in shapes):
+            near.append(item)
+    return (same + near)[:MAX_REFERENCES]
+
+
 def converted_here(root: str) -> bool:
     """Has this machine run a convert (the converted tests are gitignored)?
     Phase mode writes them under tests/imported/, --classic under
@@ -367,15 +399,24 @@ def block(root: str, project: str, calls: list) -> str:
     else:
         lines.append("No converted suite is on this machine (the converted tests are made by a "
                      "convert and are not in git): the chains are names only, with no files to "
-                     "open. Build from the flow guide and the story tests in tests/jira/.")
+                     "open. Build from the reference examples named below, the flow guide and the "
+                     "story tests in tests/jira/.")
+    lines.append("reference: a committed, scrubbed example of a converted test making that call "
+                 "(the test method, each step's call and checks, the request body's shape, the data "
+                 "sheet's columns) -- on every machine. It shows the SHAPE; its values are stand-ins.")
     for call in calls:
         how, found = nearest(cat, call)
         lines.append("")
+        refs = references_for(root or ROOT, project, call)
         if not found:
             lines.append(f"{call}: no converted case calls it or anything near it -- a new flow; "
                          "build it from the flow guide's building blocks.")
+            for f, title in refs:
+                lines.append(f"  reference: {f} ({title})")
             continue
         lines.append(f"{call} ({how}):")
+        for f, title in refs:
+            lines.append(f"  reference: {f} ({title})")
         for ch in found:
             lines.append(f"  - {ch['suite']} / {ch['case']}:")
             lines.append("      " + " -> ".join(ch["steps"]))
@@ -383,7 +424,8 @@ def block(root: str, project: str, calls: list) -> str:
                 try:
                     for f in files_for(root or ROOT, ch):
                         # A suite's phases and endpoint map once in the block, not a chain each.
-                        if (f.startswith("src/main/java/com/hi/api/support/") or f.startswith(AUDIT + "/"))                                 and f in named:
+                        shared = f.startswith("src/main/java/com/hi/api/support/") or f.startswith(AUDIT + "/")
+                        if shared and f in named:
                             continue
                         named.add(f)
                         lines.append(f"      open: {f}")
