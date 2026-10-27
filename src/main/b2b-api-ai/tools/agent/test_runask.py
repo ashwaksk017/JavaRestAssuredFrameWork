@@ -462,6 +462,12 @@ class Sending(Base):
         r = jobs.run_ask("job-1", "Fix the compile.")
         self.assertEqual((r["kind"], r["job"], r["runnable"]), ("job", "job-1", "agent-followup"))
         self.assertEqual(self.read("job-1", "agent-followup.txt"), "Fix the compile.")
+        self.assertEqual(json.loads(self.read("job-1", "agent-mustfix.json")), {"files": [JIRA_FILE]},
+                         "the fix is checked against the files that failed, not excused by the baseline")
+        self.job("job-1", result=run(test(JIRA, "a")))
+        jobs.run_ask("job-1", "Fix the test.")
+        self.assertFalse(os.path.exists(os.path.join(jobs.job_dir("job-1"), "agent-mustfix.json")),
+                         "a failed test is not a compile fix")
         self.job("job-1", result=compiled("src/main/java/com/hi/api/support/scenario/Insights.java:1: x"))
         with self.assertRaises(ValueError) as got:
             jobs.run_ask("job-1", "Fix it.")

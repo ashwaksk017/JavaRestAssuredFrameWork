@@ -967,6 +967,12 @@ or a tab switch shows the box and sends nothing. The change still waits for
 review on the Commit and push tab. Untick it to look at the errors first.
 Errors that go nowhere are never sent.
 
+A compile fix is checked against the files that failed. They are listed in
+`agent-mustfix.json`, which the follow-up reads once. The follow-up's
+before-compile is of the tree with the change already in it, so without
+that list those files counted as "already broken" and a fix that fixed
+nothing passed its check.
+
 ### Manual tests
 
 Manual UI test cases from requirements, written as a **delta** against

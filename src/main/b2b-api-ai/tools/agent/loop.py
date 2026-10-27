@@ -3922,6 +3922,7 @@ def cmd_automate(job_dir: str, root: str, policy: dict, ids, agent=None, verifie
 
 
 FOLLOWUP_FILE = "agent-followup.txt"
+MUSTFIX_FILE = "agent-mustfix.json"     # {"files": [...]}: a compile fix's files (jobs.run_ask)
 MAX_FOLLOWUP = 20000
 # What a person typed in "Ask Me" when no change was waiting: the request
 # of a new change, said in the prompt (build_prompt). Kept in the process.
@@ -3982,6 +3983,22 @@ def cmd_followup(job_dir: str, root: str, policy: dict, agent=None, verifier=Non
     FIRST run, so Discard still puts everything back and the diff shows
     the whole change. `text`: the request, when it is not the one typed in
     the box (Automate's) -- the box's own text is left as it is."""
+    must_fix = []
+    if text is None:
+        # Sent from a failed compile (the Run tests tab): the files with
+        # errors. The baseline is taken from the tree WITH the change in it,
+        # so without this they were "already broken before" and a fix that
+        # fixed nothing passed its check. Read once: a later Ask Me is not one.
+        path = os.path.join(job_dir, MUSTFIX_FILE)
+        try:
+            with io.open(path, encoding="utf-8") as fh:
+                must_fix = [str(f) for f in (json.load(fh).get("files") or []) if f]
+        except (OSError, ValueError, AttributeError):
+            must_fix = []
+        try:
+            os.remove(path)
+        except OSError:
+            pass
     text = (_read(os.path.join(job_dir, FOLLOWUP_FILE)) if text is None else text).strip()
     if not text:
         say("FAIL nothing was asked: write what Cursor should change in the box first.")
@@ -3997,7 +4014,8 @@ def cmd_followup(job_dir: str, root: str, policy: dict, agent=None, verifier=Non
             "tools/agent/mock.json, and run again.")
         return 1
     return cmd_generate(job_dir, root, policy, prior.get("scope") or "new-test",
-                        prior.get("suite") or "", agent, verifier, followup=text[:MAX_FOLLOWUP])
+                        prior.get("suite") or "", agent, verifier, followup=text[:MAX_FOLLOWUP],
+                        must_fix=must_fix)
 
 
 def cmd_generate(job_dir: str, root: str, policy: dict, scope_name: str = "new-test",
@@ -4018,7 +4036,7 @@ def cmd_generate(job_dir: str, root: str, policy: dict, scope_name: str = "new-t
         try:
             with RepoLock(root, f"followup, job {os.path.basename(job_dir)}"):
                 return _generate(job_dir, root, policy, scope_name, suite, agent, verifier,
-                                 followup=followup, prior=prior)
+                                 followup=followup, prior=prior, must_fix=must_fix)
         except RuntimeError as e:
             say(f"FAIL {e}")
             return 1

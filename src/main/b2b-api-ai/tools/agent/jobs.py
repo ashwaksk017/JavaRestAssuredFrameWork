@@ -1757,9 +1757,19 @@ def run_ask(job: str, text: str, images=None) -> dict:
             raise ValueError(f"{running} is running for job {target}; wait for it, or Stop it")
         os.makedirs(out, exist_ok=True)
         paste.save(out, images)
+        # A compile fix is checked against the files that failed: the
+        # follow-up's baseline holds the broken change, and would excuse them.
+        must_fix = sorted({f for f in map(ra.error_file, ra.compile_errors(result)) if f}) \
+            if info.get("compile") else []
+        mustfix_path = os.path.join(out, "agent-mustfix.json")
         try:
             with io.open(os.path.join(out, "agent-followup.txt"), "w", encoding="utf-8") as fh:
                 fh.write(text)
+            if must_fix:
+                with io.open(mustfix_path, "w", encoding="utf-8") as fh:
+                    json.dump({"files": must_fix}, fh)
+            elif os.path.exists(mustfix_path):
+                os.remove(mustfix_path)
             started = start(target, "agent-followup", {"--job": target})
         except BaseException:
             paste.clear(out)

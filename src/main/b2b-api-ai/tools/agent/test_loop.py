@@ -905,6 +905,36 @@ class AskingForMore(Repo):
         self.assertFalse(os.path.exists(os.path.join(self.root, JIRA, "NewTestData.java")))
         self.assertEqual(self.state()["state"], "discarded")
 
+    def test_a_compile_fix_must_make_the_failing_files_compile(self):
+        """The Run tests tab sends a failed compile: the baseline is the tree
+        WITH the change in it, so its failing files were "already broken
+        before" and a fix that fixed nothing passed."""
+        self.first_run()
+        broken = JIRA + "NewTest.java"
+        helper = "src/main/java/com/hi/api/support/Steps.java"
+        other = "src/test/java/com/hi/api/tests/manual/Other.java"
+        seen = {}
+        saved = (loop.compile_baseline_cached, loop.run_verify)
+        self.addCleanup(lambda: (setattr(loop, "compile_baseline_cached", saved[0]),
+                                 setattr(loop, "run_verify", saved[1])))
+        loop.compile_baseline_cached = lambda *a, **kw: {broken, helper, other}
+
+        def verify(*a, **kw):
+            seen.setdefault("before", []).append(kw.get("compile_before"))
+            return OK()
+        loop.run_verify = verify
+        write(self.root, ".workbench/job1/" + loop.MUSTFIX_FILE, json.dumps({"files": [broken, helper]}))
+        quiet = lambda p: (write(self.root, broken, "class NewTest { }\n"), {"result": "ok"})[1]
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(self.ask("make it compile", quiet, verifier=None), 0)
+        self.assertEqual(seen["before"][-1], {other}, "only files it was not asked to fix may stay broken")
+        self.assertFalse(os.path.exists(os.path.join(self.job, loop.MUSTFIX_FILE)), "read once")
+        again = lambda p: (write(self.root, broken, "class NewTest { void c() {} }\n"), {"result": "ok"})[1]
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(self.ask("rename a test", again, verifier=None), 0)
+        self.assertEqual(len(seen["before"]), 2)
+        self.assertEqual(seen["before"][-1], {broken, helper, other}, "a later Ask Me is not a compile fix")
+
     def test_a_second_follow_up_is_kept_in_order(self):
         self.first_run()
         quiet = lambda p: {"result": "nothing more"}
