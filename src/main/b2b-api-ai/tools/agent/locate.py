@@ -267,6 +267,7 @@ def intake_mod_project(out: str) -> str:
     try:
         return intake.job_project(out)
     except Exception:                                    # noqa: BLE001
+        diag.trace()
         return ""
 
 
@@ -275,6 +276,7 @@ def suite_project(suite: str) -> str:
     try:
         return _load("locate_flowcatalog", os.path.join(HERE, "flowcatalog.py")).project_of(suite or "")
     except Exception:                                    # noqa: BLE001 -- unknown: not set aside
+        diag.trace()
         return ""
 
 
