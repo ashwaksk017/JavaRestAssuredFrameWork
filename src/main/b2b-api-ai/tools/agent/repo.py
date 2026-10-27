@@ -118,11 +118,18 @@ def info(root: str = "", remote: str = "origin") -> dict:
     _rc, head = git(root, "rev-parse", "--short", "HEAD")
     out["head"] = head.strip() if _rc == 0 else ""
     rc, status = git(root, "status", "--porcelain=v1", "--untracked-files=all")
+    # Porcelain paths are from the top of the repository, and this project
+    # may sit below it (.../src/main/b2b-api-ai/): read from the project,
+    # or an edited CARRIED file was never recognised and blocked the switch.
+    _rc, prefix = git(root, "rev-parse", "--show-prefix")
+    prefix = prefix.strip() if _rc == 0 else ""
     if rc == 0:
         lines = [l for l in status.splitlines() if l.strip()]
         out["dirty"], out["clean"] = len(lines), not lines
         for line in lines:
             code, path = line[:2], line[3:].strip().split(" -> ")[-1].strip('"')
+            if prefix and path.startswith(prefix):
+                path = path[len(prefix):]
             (out["untracked"] if code == "??" else out["modified"]).append(path)
         out["modified"], out["untracked"] = out["modified"][:MAX_NAMED], out["untracked"][:MAX_NAMED]
         out["blocking"] = [p for p in out["modified"] if p not in CARRIED]

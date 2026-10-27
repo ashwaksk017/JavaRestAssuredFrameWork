@@ -682,7 +682,10 @@ def changed_paths(root: str = ROOT) -> list:
     """What git says changed: the working tree and the index against HEAD,
     and new files."""
     out = []
-    for argv in (["git", "diff", "--name-only", "HEAD"],
+    # --relative: from the project, as ls-files names them. This project
+    # may sit below the top of its repository (.../src/main/b2b-api-ai/);
+    # named from the top, a tools/agent/ change read as src/ -> java only.
+    for argv in (["git", "diff", "--name-only", "--relative", "HEAD"],
                  ["git", "ls-files", "--others", "--exclude-standard"]):
         try:
             r = subprocess.run(argv, cwd=root, capture_output=True, text=True)

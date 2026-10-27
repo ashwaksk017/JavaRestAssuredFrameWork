@@ -121,6 +121,22 @@ class Info(WithARepo):
                          "https://git.example.test:8443/r.git")
 
 
+class AProjectBelowTheTop(WithARepo):
+    """This project sits under .../src/main/b2b-api-ai/ of its repository:
+    git status names files from the top, the workbench from the project."""
+
+    def test_the_mock_switches_ride_along_from_a_project_below_the_top(self):
+        project = os.path.join(self.root, "src", "main", "proj")
+        write(self.root, "src/main/proj/tools/agent/mock.json", '{"jira": true}\n')
+        sh(self.root, "add", "-A")
+        sh(self.root, "commit", "-q", "-m", "a project below the top")
+        write(self.root, "src/main/proj/tools/agent/mock.json", '{"jira": false}\n')
+        write(self.root, "README.md", "edited\n")        # above the project: still blocks, named from the top
+        r = repo.info(project)
+        self.assertEqual(sorted(r["modified"]), ["README.md", "tools/agent/mock.json"])
+        self.assertEqual(r["blocking"], ["README.md"])
+
+
 class Checkout(WithARepo):
     def test_it_switches_a_clean_tree_to_a_local_branch(self):
         r = repo.checkout(self.root, "local-only", "local-only")
