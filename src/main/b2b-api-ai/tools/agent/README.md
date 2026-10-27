@@ -955,7 +955,8 @@ file, and the files say whose they are.
 | the errors are in | the request goes |
 |---|---|
 | the job's own files: its suite's classes, or any Java file of the change waiting for its review (a helper under `src/main` too) | to that job's **Ask Me**, prefilled with the errors (`file:line: message`) |
-| files the converter writes (`com.hi.api.support`, a converted suite's tests) | nowhere: an edit there is lost on the next convert. The tab says to convert the suite again (a stale generated wrapper is removed on the next Compile by itself), or to fix the converter |
+| files the converter writes (`com.hi.api.support`, a converted suite's tests), and the open job's waiting change broke them -- its own check failed on them (`verify-failed`), or the job's own files fail too | to that job's **Ask Me**: Cursor changes what the job changed (a shared helper) so they compile again, and leaves the generated files alone |
+| files the converter writes, otherwise | nowhere: an edit there is lost on the next convert. The tab says to convert the suite again (a stale generated wrapper is removed on the next Compile by itself), or to fix the converter -- and, when the job's change passed its check, that the suite was broken before it and stops every compile on the machine, the job's new tests included |
 | anything else (another job's files, a mix, no file named) | nowhere: the tab says what to do instead |
 
 ### Manual tests
