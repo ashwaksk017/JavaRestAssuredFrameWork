@@ -264,6 +264,19 @@ def main() -> int:
             html = page.dom("run")
             check("the Run tests tab says the request goes to the job's Ask Me",
                   f"Goes to job {JOB}'s Ask Me." in html)
+            with io.open(os.path.join(job_dir, "mvnrun-result.json"), "w", encoding="utf-8") as fh:
+                json.dump({"kind": "mvnrun", "what": "compile", "at": "2026-10-20T10:05:00Z", "ok": False,
+                           "compile": {"ok": False, "how": "offline", "seconds": 4, "errors": [
+                               "src/test/java/com/hi/api/tests/jira/DemoStayTest.java:5: error: ';' expected"]}}, fh)
+            code, ask = page.call(f"/api/run-ask?job={JOB}")
+            check("a failed compile of the job's own file goes to the job's Ask Me",
+                  code == 200 and ask.get("compile") and ask.get("kind") == "job", str(ask)[:300])
+            html = page.dom("run")
+            check("a failed compile shown on opening the tab is offered, never sent by itself",
+                  'id="run-ask-auto"' in html and "The compile failed: 1 error(s)." in html
+                  and "Sent to Cursor without a click" not in html
+                  and not os.path.exists(os.path.join(job_dir, "agent-followup.txt")),
+                  html[html.find('id="run-ask-box"'):][:400])
             run_result("com.hi.api.tests.jira.DemoStayTest", "PASS")
             code, body = page.call("/api/run-ask", {"job": JOB, "text": "Fix it."})
             check("Ask Me to fix the failures is refused when no test failed",

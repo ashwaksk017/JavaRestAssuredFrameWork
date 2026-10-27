@@ -2356,7 +2356,7 @@ async function allureLink(allure) {
   return el("p", {}, el("a", { href: a.url, target: "_blank", rel: "noopener", text: "Open the Allure report" }),
     el("small", { text: `  (${a.url}, this run only)` }));
 }
-async function showRunResult(j) {
+async function showRunResult(j, fresh) {
   const r = await artifactJson(j, "mvnrun-result.json");
   const box = $("run-result");
   if (!r) { box.replaceChildren(); $("run-ask-box").hidden = true; return; }
@@ -2393,7 +2393,7 @@ async function showRunResult(j) {
     }
   }
   box.replaceChildren(...kids);
-  await showRunAsk(j);
+  await showRunAsk(j, false, fresh);
 }
 // ---- Ask Me to fix the failures (under a failed run) ------------------
 // The server says which way the run's failures go (runask.py): the job's
@@ -2403,7 +2403,7 @@ async function showRunResult(j) {
 let runAskShown = null;            // the server's last answer for the box
 let runAskFrom = "";               // the run (job and time) the box was prefilled from
 let runAskSent = "";               // the job the last request went to
-async function showRunAsk(j, again) {
+async function showRunAsk(j, again, fresh) {
   const box = $("run-ask-box");
   let p;
   try { p = await api(`/api/run-ask?job=${encodeURIComponent(j)}`); }
@@ -2426,14 +2426,25 @@ async function showRunAsk(j, again) {
   $("run-ask-send").disabled = !usable;
   $("run-ask-send").title = usable ? "" : (p.blocked || p.why || "");
   $("run-ask-again").disabled = !p.text;
+  // A compile this page just ran, that failed where Cursor may fix it: sent
+  // without a click, once per run. A reload or a tab switch never sends.
+  if (fresh && p.compile && usable && p.text && $("run-ask-auto").checked && runAskAuto !== from) {
+    runAskAuto = from;
+    $("run-ask").value = p.text;
+    await sendRunAsk(true);
+  }
 }
+let runAskAuto = "";               // the run the box sent by itself
 $("run-ask-again").onclick = () => showRunAsk(runJob(), true);
-$("run-ask-send").onclick = async () => {
+$("run-ask-send").onclick = () => sendRunAsk(false);
+async function sendRunAsk(auto) {
   const j = runJob();
   const p = runAskShown;
   const text = $("run-ask").value.trim();
   if (!p || !text) { setState($("run-ask-state"), "bad", "write what Cursor should fix"); return; }
-  if (!confirm(p.kind === "converted"
+  if (auto) $("run-ask-which").append(banner("ok", "Sent to Cursor without a click: the compile failed. " +
+    "Untick \"Cursor fixes compile errors\" above to stop that."));
+  else if (!confirm(p.kind === "converted"
       ? `Cursor will change the converted files of suite "${p.suite}", in a new job of its own, from a ` +
         "fix brief of this run's failures and the request as you wrote it. Nothing is committed. Continue?"
       : `Cursor will change job "${p.job}"'s tests as the request asks, and the change waits for your ` +
@@ -2462,7 +2473,7 @@ async function startRun(runnable, options) {
   $("run-ask-box").hidden = true;          // a new run: its failures, not the last one's
   try {
     await post("/api/start", { job: j, runnable, options: Object.assign({ "--job": j }, options) });
-    follow(runnable, $("run-log"), $("run-state"), async () => { runBusy(false); await showRunResult(j); }, j);
+    follow(runnable, $("run-log"), $("run-state"), async () => { runBusy(false); await showRunResult(j, true); }, j);
   } catch (e) { runBusy(false); setState($("run-state"), "bad", e.message); }
 }
 $("mvn-compile").onclick = () => startRun("mvn-compile", {});
@@ -2497,7 +2508,7 @@ onTab.run = async () => {
   for (const r of ["mvn-test", "mvn-compile"]) {
     let st = null;
     try { st = await api(`/api/status?job=${encodeURIComponent(j)}&runnable=${r}`); } catch { st = null; }
-    if (st && st.state === "running") { runBusy(true); follow(r, $("run-log"), $("run-state"), async () => { runBusy(false); await showRunResult(j); }, j); return; }
+    if (st && st.state === "running") { runBusy(true); follow(r, $("run-log"), $("run-state"), async () => { runBusy(false); await showRunResult(j, true); }, j); return; }
   }
   showRunResult(j);
 };
