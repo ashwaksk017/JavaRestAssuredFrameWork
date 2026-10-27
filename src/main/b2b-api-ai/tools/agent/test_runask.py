@@ -284,19 +284,38 @@ class CompileErrors(Base):
         self.assertEqual((got["kind"], got["job"]), ("job", "job-2"))
         self.assertIn("the change waiting for its review", got["why"])
 
-    def test_generated_and_converted_files_are_said_not_sent(self):
+    def test_shared_generated_files_are_said_not_sent(self):
         self.job("job-1")
         self.suite("job-1", JIRA)
         gen = ra.classify(self.root, "job-1", compiled(
             "src/main/java/com/hi/api/support/scenario/Insights.java:12: cannot find symbol"))
-        self.assertEqual((gen["kind"], gen["failed"]), ("none", 1))
+        self.assertEqual((gen["kind"], gen["failed"]), ("none", 1), "support/scenario/ is every suite's")
         self.assertIn("generated support file", gen["why"])
         self.assertIn("Convert the suite again", gen["why"])
-        conv = ra.classify(self.root, "job-1", compiled(
-            "src/test/java/com/hi/api/tests/imported/amex/spend/SpendTest.java:3: x"))
-        self.assertEqual(conv["kind"], "none")
-        self.assertIn("suite amex", conv["why"])
-        self.assertNotIn("text", ra.preview(self.root, "job-1"))
+
+    def test_a_converted_suite_that_does_not_compile_goes_to_convert_fix(self):
+        self.job("job-1")
+        self.suite("job-1", JIRA)
+        self.job("job-1", result=compiled(
+            "src/test/java/com/hi/api/tests/imported/amex/spend/SpendTest.java:3: x",
+            "src/main/java/com/hi/api/support/amex/AmexSteps.java:9: y",
+            "src/main/java/com/hi/api/support/scenario/Insights.java:12: z"))
+        got = ra.preview(self.root, "job-1")
+        self.assertEqual((got["kind"], got["suites"], got["fix_jobs"], got["blocked"]),
+                         ("convert-fix", ["amex"], ["job-1-fix-amex"], ""))
+        self.assertEqual(got["shared"], ["src/main/java/com/hi/api/support/scenario/Insights.java"])
+        self.assertIn("a fix job of its own (job-1-fix-amex)", got["why"])
+        self.assertIn("a person fixes those", got["why"])
+        self.assertNotIn("text", got, "convertfix writes the brief")
+        self.job("job-1-fix-amex", review={"state": "pending-review"})
+        self.assertIn("already has a fix waiting (job-1-fix-amex)", ra.preview(self.root, "job-1")["blocked"])
+
+    def test_the_suite_places_are_convertfixs(self):
+        cf = ra._load("test_runask_convertfix", os.path.join(ra.HERE, "convertfix.py"))
+        self.assertEqual([r.pattern for r in ra.CONVERTED_RX], [r.pattern for r in cf._SUITE_RX])
+        for rel in ("src/main/java/com/hi/api/support/scenario/X.java",
+                    "src/main/java/com/hi/api/rest/clients/AmexClient.java", "src/main/java/X.java"):
+            self.assertEqual(ra.converted_owner(rel), cf.suite_of(rel), rel)
 
     def test_someone_elses_files_or_no_file_are_said_not_sent(self):
         self.job("job-1")
@@ -356,10 +375,10 @@ class CompileErrors(Base):
                                   "files": {"created": ["src/test/java/com/hi/api/tests/jira/NewTest.java"]},
                                   "verify": {"ok": True, "steps": []}})
         got = ra.classify(self.root, "job-3", compiled(f"{self.BACKBOOK}:12: y"))
-        self.assertEqual(got["kind"], "none")
+        self.assertEqual((got["kind"], got["suites"]), ("convert-fix", ["amexbackbook"]))
         self.assertIn("failed before job job-3's change too", got["why"])
         self.assertIn("job job-3's new tests included", got["why"])
-        self.assertIn("Convert the suite again", got["why"])
+        self.assertIn("Migration tab (Ask Me, scope converter)", got["why"])
 
     def test_the_count_includes_the_errors_left_off_the_list(self):
         self.assertEqual(ra.error_count([f"{JIRA_FILE}:1: x", "... and 7 more error(s)"]), 8)
@@ -472,6 +491,48 @@ class Sending(Base):
         with self.assertRaises(ValueError) as got:
             jobs.run_ask("job-1", "Fix it.")
         self.assertIn("Convert the suite again", str(got.exception))
+
+    AMEX = "src/test/java/com/hi/api/tests/imported/amex/spend/SpendTest.java"
+
+    def test_a_converted_suite_that_does_not_compile_starts_convert_fix(self):
+        self.job("job-1", result=compiled(f"{self.AMEX}:3: x"))
+        r = jobs.run_ask("job-1", "")
+        self.assertEqual((r["kind"], r["runnable"], r["fix_jobs"]), ("convert-fix", "convert-fix", ["job-1-fix-amex"]))
+        self.assertEqual(self.started, [("job-1", "convert-fix", {"--job": "job-1"})])
+
+    def test_a_failed_compile_asked_for_it_is_sent_by_itself(self):
+        self.suite("job-1", JIRA)
+        self.job("job-1", result=dict(compiled(f"{JIRA_FILE}:42: cannot find symbol"), auto_fix=True))
+        got = jobs.auto_fix("job-1")
+        self.assertEqual((got["sent"], got["kind"], got["job"], got["runnable"]),
+                         (True, "job", "job-1", "agent-followup"))
+        self.assertIn(f"{JIRA_FILE}:42: cannot find symbol", self.read("job-1", "agent-followup.txt"))
+        self.assertEqual(json.loads(self.read("job-1", "agent-mustfix.json")), {"files": [JIRA_FILE]})
+        self.assertEqual(jobs.run_ask_preview("job-1")["auto"]["job"], "job-1", "the page is told")
+
+    def test_nothing_is_sent_by_itself_unless_asked_or_allowed(self):
+        self.suite("job-1", JIRA)
+        self.job("job-1", result=compiled(f"{JIRA_FILE}:42: x"))
+        self.assertEqual(jobs.auto_fix("job-1"), {}, "not asked for")
+        self.job("job-1", result=dict(run(test(JIRA, "a")), auto_fix=True))
+        self.assertEqual(jobs.auto_fix("job-1"), {}, "a failed test is the person's to send")
+        self.job("job-1", result=dict(compiled("src/main/java/com/hi/api/support/scenario/I.java:1: x"),
+                                      auto_fix=True))
+        self.assertEqual(jobs.auto_fix("job-1"), {}, "what goes nowhere stays in the box")
+        self.assertEqual(self.started, [])
+        jobs.running_now = lambda: [("job-9", "convert")]
+        self.job("job-1", result=dict(compiled(f"{JIRA_FILE}:42: x"), auto_fix=True))
+        got = jobs.auto_fix("job-1")
+        self.assertEqual(got["sent"], False)
+        self.assertIn("convert is running", got["error"])
+        self.assertIn("convert is running", jobs.run_ask_preview("job-1")["auto"]["error"])
+        self.job("job-1", result=dict(compiled(f"{JIRA_FILE}:42: x"), at="2026-10-27T09:00:00Z"))
+        self.assertNotIn("auto", jobs.run_ask_preview("job-1"), "an earlier run's record is not this run's")
+
+    def test_the_compile_commands_take_auto_fix(self):
+        self.assertIn("--auto-fix", jobs.build_argv("mvn-compile", {"--job": "j", "--auto-fix": True}))
+        self.assertIn("--auto-fix", jobs.build_argv("mvn-test", {"--job": "j", "--suite": "S.xml",
+                                                                 "--auto-fix": True}))
 
     def test_a_converted_fix_that_does_not_start_leaves_no_job(self):
         self.job("runs", result=run(test(IMPORTED, "a"), suite="Suites/Amex.xml"))

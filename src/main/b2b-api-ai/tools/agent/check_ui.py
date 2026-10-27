@@ -277,6 +277,17 @@ def main() -> int:
                   and "Sent to Cursor without a click" not in html
                   and not os.path.exists(os.path.join(job_dir, "agent-followup.txt")),
                   html[html.find('id="run-ask-box"'):][:400])
+            # What the workbench sent by itself when that compile ended (jobs.auto_fix).
+            with io.open(os.path.join(job_dir, "run-ask-auto.json"), "w", encoding="utf-8") as fh:
+                json.dump({"at": "2026-10-20T10:05:00Z", "sent": True, "kind": "job", "job": JOB,
+                           "runnable": "agent-followup", "fix_jobs": []}, fh)
+            html = page.dom("run")
+            check("the Run tests tab says what was sent to Cursor by itself, and does not offer it again",
+                  f"Sent to Cursor without a click: job {JOB}'s Ask Me" in html
+                  and re.search(r'id="run-ask-send"[^>]*disabled', html) is not None,
+                  html[html.find('id="run-ask-box"'):][:600])
+            check("the Commit and push tab's Compile can send its errors to Cursor too",
+                  'id="agent-compile-auto"' in page.dom("agent"))
             run_result("com.hi.api.tests.jira.DemoStayTest", "PASS")
             code, body = page.call("/api/run-ask", {"job": JOB, "text": "Fix it."})
             check("Ask Me to fix the failures is refused when no test failed",
@@ -285,7 +296,7 @@ def main() -> int:
             check("a run with no failed test does not offer to fix one",
                   re.search(r'id="run-ask-box"[^>]*hidden', html) is not None)
         finally:
-            for name in ("mvnrun-result.json", "review.json"):
+            for name in ("mvnrun-result.json", "review.json", "run-ask-auto.json"):
                 try:
                     os.remove(os.path.join(job_dir, name))
                 except OSError:

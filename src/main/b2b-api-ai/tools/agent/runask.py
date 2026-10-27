@@ -257,6 +257,46 @@ def job_files(root: str, job: str) -> dict:
     return out
 
 
+# A converted suite's own files: the places convertfix.py fixes, one suite
+# at a time (its _SUITE_RX; test_runask checks the two agree).
+CONVERTED_RX = (
+    re.compile(r"^src/test/java/com/hi/api/tests/imported/([A-Za-z0-9_]+)/"),
+    re.compile(r"^src/test/java/com/hi/api/tests/classic/([A-Za-z0-9_]+)/"),
+    re.compile(r"^src/main/java/com/hi/api/support/([A-Za-z0-9_]+)/"),
+    re.compile(r"^src/main/resources/templates/([A-Za-z0-9_]+)/"),
+    re.compile(r"^src/main/java/com/hi/api/rest/clients/([A-Za-z0-9_]+)Client\.java$"),
+)
+SHARED_SUPPORT = ("scenario",)          # support/scenario/: wrappers every suite shares
+
+
+def converted_owner(rel: str) -> str:
+    """The converted suite a file belongs to, or "" for shared code."""
+    rel = str(rel or "").replace("\\", "/")
+    for rx in CONVERTED_RX:
+        m = rx.match(rel)
+        if m:
+            s = m.group(1).lower()
+            return "" if s in SHARED_SUPPORT else s
+    return ""
+
+
+def compile_fix_job(run_job: str, suite: str) -> str:
+    """convertfix.fix_job: the job a suite's compile fix is made in."""
+    name = f"{run_job}-fix-{suite}"
+    return name if re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", name) else f"{run_job[:40]}-fix-{suite[:16]}"
+
+
+def fix_jobs_waiting(root: str, run_job: str, suites: list) -> list:
+    """The suites' fix jobs that already hold a fix (convertfix skips them)."""
+    out = []
+    for s in suites:
+        name = compile_fix_job(run_job, s)
+        state = _read_json(os.path.join(intake.job_dir(name, root), "review.json")).get("state")
+        if state in WAITING + ("generating",):
+            out.append(name)
+    return out
+
+
 def verified_error_files(review: dict) -> set:
     """The files the change's own check (run_verify) found with errors."""
     out = set()
@@ -306,6 +346,28 @@ def classify_compile(root: str, run_job: str, result: dict, errors: list) -> dic
             before = (f" They failed before job {job}'s change too: its check compiled the tree before "
                       f"and after, so the change is not the cause. Until they compile, nothing on this "
                       f"machine compiles or runs -- job {job}'s new tests included.")
+        owned = sorted({s for s in map(converted_owner, files) if s})
+        if owned:
+            # Not the job's doing: what a convert's own check does when its
+            # suites do not compile (convertfix.py) -- each suite in a fix job
+            # of its own, held for review only once that suite compiles.
+            shared = sorted(f for f in files if not converted_owner(f))
+            waiting = fix_jobs_waiting(root, run_job, owned)
+            return dict(base, kind="convert-fix", suites=owned, shared=shared,
+                        fix_jobs=[compile_fix_job(run_job, s) for s in owned],
+                        blocked=(f"every suite already has a fix waiting ({', '.join(waiting)}): review or "
+                                 f"discard it on the Commit and push tab first" if len(waiting) == len(owned)
+                                 else ""),
+                        why=(f"the errors are in the converted files of suite {', '.join(owned)}, and no change "
+                             f"waiting for review caused them.{before} As after a convert, Cursor makes each "
+                             f"suite compile in a fix job of its own ({compile_fix_job(run_job, owned[0])}"
+                             + (", ..." if len(owned) > 1 else "") + "), changing only that suite's converted "
+                             f"files, and the fix waits for review only once the suite compiles. A suite's "
+                             f"fix is lost on its next convert: when the converter is the cause, fix it on the "
+                             f"Migration tab (Ask Me, scope converter)"
+                             + (f". {len(shared)} other file(s) with errors are not a suite's "
+                                f"({', '.join(f.rsplit('/', 1)[-1] for f in shared[:4])}): a person fixes "
+                                f"those" if shared else "")))
         return dict(base, kind="none", why=(
             f"the errors are in files the converter writes ({where}); an edit there is lost on the next "
             f"convert.{before} Convert the suite again on the Migration from ReadyAPI tab -- a generated "

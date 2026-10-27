@@ -956,16 +956,20 @@ file, and the files say whose they are.
 |---|---|
 | the job's own files: its suite's classes, or any Java file of the change waiting for its review (a helper under `src/main` too) | to that job's **Ask Me**, prefilled with the errors (`file:line: message`) |
 | files the converter writes (`com.hi.api.support`, a converted suite's tests), and the open job's waiting change broke them -- its own check failed on them (`verify-failed`), or the job's own files fail too | to that job's **Ask Me**: Cursor changes what the job changed (a shared helper) so they compile again, and leaves the generated files alone |
-| files the converter writes, otherwise | nowhere: an edit there is lost on the next convert. The tab says to convert the suite again (a stale generated wrapper is removed on the next Compile by itself), or to fix the converter -- and, when the job's change passed its check, that the suite was broken before it and stops every compile on the machine, the job's new tests included |
+| a converted suite's own files (`imported/<suite>/`, `support/<suite>/`, its client, its templates), and no waiting change broke them | to **convert-fix**, what runs after a convert (`convertfix.py`): Cursor makes each suite compile in a fix job of its own (`<job>-fix-<suite>`, scope `converted`). Each fix waits for review only once its suite compiles. A suite whose fix job is already waiting is not asked again. The fix is lost on the suite's next convert: when the converter is the cause, fix the converter |
+| shared generated files (`support/*.java`, `support/scenario/`) | nowhere: the tab says to convert again (a stale generated wrapper is removed on the next Compile by itself) or to fix the converter |
 | anything else (another job's files, a mix, no file named) | nowhere: the tab says what to do instead |
 
-When the errors go to a job, **Cursor fixes compile errors** (ticked by
-default, next to *clean build first*) sends the prefilled request as soon
-as the compile ends, without a click or a confirm. It only does this for a
-compile started or followed on this page, and only once per run. A reload
-or a tab switch shows the box and sends nothing. The change still waits for
-review on the Commit and push tab. Untick it to look at the errors first.
-Errors that go nowhere are never sent.
+**Cursor fixes compile errors** is ticked by default. It sits next to
+*clean build first* on this tab, and next to *Compile* on the Commit and
+push tab. With it ticked, the compile or run carries `--auto-fix`. When it
+ends with errors that go to a job or to convert-fix, the workbench itself
+sends them (`jobs.auto_fix`), without a click or a confirm. That happens
+in the server, so the page may be closed. What was sent, or why it could
+not be, is kept beside the run (`run-ask-auto.json`). Both tabs show it and
+follow its log. The fix still waits for review on the Commit and push tab.
+Failed tests are never sent by themselves, and neither are errors that go
+nowhere. Untick it to look at the errors first.
 
 A compile fix is checked against the files that failed. They are listed in
 `agent-mustfix.json`, which the follow-up reads once. The follow-up's

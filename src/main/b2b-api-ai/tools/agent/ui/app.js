@@ -2356,7 +2356,7 @@ async function allureLink(allure) {
   return el("p", {}, el("a", { href: a.url, target: "_blank", rel: "noopener", text: "Open the Allure report" }),
     el("small", { text: `  (${a.url}, this run only)` }));
 }
-async function showRunResult(j, fresh) {
+async function showRunResult(j) {
   const r = await artifactJson(j, "mvnrun-result.json");
   const box = $("run-result");
   if (!r) { box.replaceChildren(); $("run-ask-box").hidden = true; return; }
@@ -2393,7 +2393,7 @@ async function showRunResult(j, fresh) {
     }
   }
   box.replaceChildren(...kids);
-  await showRunAsk(j, false, fresh);
+  await showRunAsk(j);
 }
 // ---- Ask Me to fix the failures (under a failed run) ------------------
 // The server says which way the run's failures go (runask.py): the job's
@@ -2403,7 +2403,20 @@ async function showRunResult(j, fresh) {
 let runAskShown = null;            // the server's last answer for the box
 let runAskFrom = "";               // the run (job and time) the box was prefilled from
 let runAskSent = "";               // the job the last request went to
-async function showRunAsk(j, again, fresh) {
+// What the workbench sent by itself after a failed compile (jobs.auto_fix),
+// as a banner. Shared with the Commit and push tab's Compile.
+function autoFixBanner(a) {
+  if (!a) return null;
+  if (!a.sent) return banner("bad", `The failed compile was not sent to Cursor by itself: ${a.error || "refused"}`);
+  return banner("ok", a.kind === "convert-fix"
+    ? `Sent to Cursor without a click: each converted suite is made to compile in a fix job of its own ` +
+      `(${(a.fix_jobs || []).join(", ")}). Untick "Cursor fixes compile errors" to stop that.`
+    : `Sent to Cursor without a click: job ${a.job}'s Ask Me is fixing the compile errors. ` +
+      `Untick "Cursor fixes compile errors" to stop that.`);
+}
+function sentJob(r) { return (r.kind === "convert-fix" && (r.fix_jobs || [])[0]) || r.job; }
+let runAskFollowing = "";          // the auto-sent run whose log the box follows
+async function showRunAsk(j, again) {
   const box = $("run-ask-box");
   let p;
   try { p = await api(`/api/run-ask?job=${encodeURIComponent(j)}`); }
@@ -2411,50 +2424,53 @@ async function showRunAsk(j, again, fresh) {
   runAskShown = p;
   if (!p || !p.failed) { box.hidden = true; return; }
   box.hidden = false;
-  const usable = (p.kind === "job" || p.kind === "converted") && !p.blocked;
+  const sent = !!(p.auto && p.auto.sent);
+  const usable = ["job", "converted", "convert-fix"].includes(p.kind) && !p.blocked && !sent;
   const how = p.kind === "job" ? `Goes to job ${p.job}'s Ask Me.`
-    : p.kind === "converted" ? `A fix brief for suite ${p.suite}, in a new job.` : "Not sent from here.";
+    : p.kind === "converted" ? `A fix brief for suite ${p.suite}, in a new job.`
+    : p.kind === "convert-fix" ? `Cursor makes suite ${p.suites.join(", ")} compile, each in a fix job of its own.`
+    : "Not sent from here.";
   $("run-ask-which").replaceChildren(
-    banner(usable ? "ok" : "warn", `${p.compile ? `The compile failed: ${p.failed} error(s).`
+    banner(usable || sent ? "ok" : "warn", `${p.compile ? `The compile failed: ${p.failed} error(s).`
       : `${p.failed} test(s) failed.`} ${how} Why: ${p.why}`),
-    p.blocked ? banner("bad", p.blocked) : null);
+    p.blocked ? banner("bad", p.blocked) : null, autoFixBanner(p.auto));
   const from = `${j}@${(p.run && p.run.at) || ""}`;
   if (again || (p.text && (runAskFrom !== from || !$("run-ask").value.trim()))) {
     $("run-ask").value = p.text || "";
     runAskFrom = from;
   }
+  $("run-ask").disabled = p.kind === "convert-fix";      // convertfix writes each suite's brief
   $("run-ask-send").disabled = !usable;
-  $("run-ask-send").title = usable ? "" : (p.blocked || p.why || "");
+  $("run-ask-send").title = sent ? "already sent to Cursor after this run" : usable ? "" : (p.blocked || p.why || "");
   $("run-ask-again").disabled = !p.text;
-  // A compile this page just ran, that failed where Cursor may fix it: sent
-  // without a click, once per run. A reload or a tab switch never sends.
-  if (fresh && p.compile && usable && p.text && $("run-ask-auto").checked && runAskAuto !== from) {
-    runAskAuto = from;
-    $("run-ask").value = p.text;
-    await sendRunAsk(true);
+  if (sent && runAskFollowing !== from) {
+    runAskFollowing = from;
+    runAskSent = sentJob(p.auto);
+    $("run-ask-open").hidden = false;
+    $("run-ask-open").textContent = `Open job ${runAskSent} to review it`;
+    follow(p.auto.runnable, $("run-ask-log"), $("run-ask-state"), () => {}, p.auto.job);
   }
 }
-let runAskAuto = "";               // the run the box sent by itself
 $("run-ask-again").onclick = () => showRunAsk(runJob(), true);
-$("run-ask-send").onclick = () => sendRunAsk(false);
-async function sendRunAsk(auto) {
+$("run-ask-send").onclick = async () => {
   const j = runJob();
   const p = runAskShown;
   const text = $("run-ask").value.trim();
-  if (!p || !text) { setState($("run-ask-state"), "bad", "write what Cursor should fix"); return; }
-  if (auto) $("run-ask-which").append(banner("ok", "Sent to Cursor without a click: the compile failed. " +
-    "Untick \"Cursor fixes compile errors\" above to stop that."));
-  else if (!confirm(p.kind === "converted"
+  if (!p || (!text && p.kind !== "convert-fix")) { setState($("run-ask-state"), "bad", "write what Cursor should fix"); return; }
+  if (!confirm(p.kind === "converted"
       ? `Cursor will change the converted files of suite "${p.suite}", in a new job of its own, from a ` +
         "fix brief of this run's failures and the request as you wrote it. Nothing is committed. Continue?"
+      : p.kind === "convert-fix"
+      ? `Cursor will make suite ${p.suites.join(", ")} compile, changing only each suite's converted files, ` +
+        "in a fix job per suite. Nothing is committed. Continue?"
       : `Cursor will change job "${p.job}"'s tests as the request asks, and the change waits for your ` +
         "review. Nothing is committed. Continue?")) return;
   try {
     const r = await post("/api/run-ask", { job: j, text, images: pastedFor("run-ask") });
     clearPasted("run-ask");
-    runAskSent = r.job;
+    runAskSent = sentJob(r);
     $("run-ask-open").hidden = false;
-    $("run-ask-open").textContent = `Open job ${r.job} to review it`;
+    $("run-ask-open").textContent = `Open job ${runAskSent} to review it`;
     follow(r.runnable, $("run-ask-log"), $("run-ask-state"), () => {}, r.job);
   } catch (e) { setState($("run-ask-state"), "bad", e.message); }
 };
@@ -2472,8 +2488,10 @@ async function startRun(runnable, options) {
   $("run-result").replaceChildren();
   $("run-ask-box").hidden = true;          // a new run: its failures, not the last one's
   try {
+    // Ticked: a failed compile goes to Cursor from the server when the run ends.
+    if ($("run-ask-auto").checked) options = Object.assign({ "--auto-fix": true }, options);
     await post("/api/start", { job: j, runnable, options: Object.assign({ "--job": j }, options) });
-    follow(runnable, $("run-log"), $("run-state"), async () => { runBusy(false); await showRunResult(j, true); }, j);
+    follow(runnable, $("run-log"), $("run-state"), async () => { runBusy(false); await showRunResult(j); }, j);
   } catch (e) { runBusy(false); setState($("run-state"), "bad", e.message); }
 }
 $("mvn-compile").onclick = () => startRun("mvn-compile", {});
@@ -2508,7 +2526,7 @@ onTab.run = async () => {
   for (const r of ["mvn-test", "mvn-compile"]) {
     let st = null;
     try { st = await api(`/api/status?job=${encodeURIComponent(j)}&runnable=${r}`); } catch { st = null; }
-    if (st && st.state === "running") { runBusy(true); follow(r, $("run-log"), $("run-state"), async () => { runBusy(false); await showRunResult(j, true); }, j); return; }
+    if (st && st.state === "running") { runBusy(true); follow(r, $("run-log"), $("run-state"), async () => { runBusy(false); await showRunResult(j); }, j); return; }
   }
   showRunResult(j);
 };
@@ -4228,7 +4246,9 @@ $("agent-compile").onclick = async () => {
   box.replaceChildren(banner("warn", "Compiling…"));
   $("agent-compile").disabled = true;
   try {
-    await post("/api/start", { job: j, runnable: "mvn-compile", options: { "--job": j } });
+    const options = { "--job": j };
+    if ($("agent-compile-auto").checked) options["--auto-fix"] = true;
+    await post("/api/start", { job: j, runnable: "mvn-compile", options });
     follow("mvn-compile", $("agent-log"), $("agent-state"), async () => {
       $("agent-compile").disabled = false;
       const r = await artifactJson(j, "mvnrun-result.json");
@@ -4243,7 +4263,17 @@ $("agent-compile").onclick = async () => {
       if (ours.length) kids.push(el("pre", { class: "doc", text: ours.slice(0, 60).join("\n") }));
       if (errs.length > ours.length) kids.push(el("details", {}, el("summary", { text: "Errors in other files" }),
         el("pre", { class: "doc", text: errs.filter((e) => !ours.includes(e)).slice(0, 60).join("\n") })));
+      // What the workbench sent to Cursor by itself, and its log to follow.
+      let p = null;
+      if (!c.ok) { try { p = await api(`/api/run-ask?job=${encodeURIComponent(j)}`); } catch { p = null; } }
+      const a = p && p.auto;
+      if (a) kids.unshift(autoFixBanner(a));
+      else if (p && !c.ok) kids.push(banner("warn", `Not sent to Cursor: ${p.blocked || p.why}`));
       box.replaceChildren(...kids);
+      if (a && a.sent) {
+        if (a.runnable === "agent-followup") { agentRunning = a.runnable; watchCursorLog(); }
+        follow(a.runnable, $("agent-log"), $("agent-state"), () => { refreshReview(); pollCursorPanes(false); }, a.job);
+      }
     }, j);
   } catch (e) { $("agent-compile").disabled = false; box.replaceChildren(banner("bad", e.message)); }
 };

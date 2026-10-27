@@ -411,13 +411,14 @@ RUNNABLES = {
     "mvn-compile": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "mvnrun.py"), "compile"],
         "label": "Compile the project and its tests",
-        "options": {"--job": "text"},
+        # --auto-fix: a failed compile goes to Cursor when it ends (auto_fix).
+        "options": {"--job": "text", "--auto-fix": "flag"},
     },
     "mvn-test": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "mvnrun.py"), "test"],
         "label": "Run a suite, a test class or a group against an environment",
         "options": {"--job": "text", "--suite": "text", "--test": "text", "--group": "text",
-                    "--env": "text", "--compile-first": "flag", "--threads": "text",
+                    "--env": "text", "--compile-first": "flag", "--threads": "text", "--auto-fix": "flag",
                     # The project chosen on the tab (b2b, goal): its file is read.
                     "--project": "text"},
     },
@@ -1717,11 +1718,54 @@ def _workbench_start(job: str, out: str, cur: dict, text: str) -> dict:
 
 
 # ---- Ask Me to fix the failures (the Run tests tab) ----------------------
+AUTO_FIX_FILE = "run-ask-auto.json"     # what auto_fix did after the run it names
+
+
 def run_ask_preview(job: str) -> dict:
     """Which way the last run's failures go to Cursor, and the request
-    for the person to edit (runask.py). Reads only."""
-    job_dir(job)                                   # validates the id
-    return _tool("runask").preview(ROOT, job)
+    for the person to edit (runask.py). Reads only. `auto`: what the
+    workbench sent by itself after THIS run, when it did (auto_fix)."""
+    out = job_dir(job)                             # validates the id
+    info = _tool("runask").preview(ROOT, job)
+    auto = _read_json(os.path.join(out, AUTO_FIX_FILE))
+    if auto and auto.get("at") and auto.get("at") == (info.get("run") or {}).get("at"):
+        info["auto"] = auto
+    return info
+
+
+def auto_fix(job: str) -> dict:
+    """After a Compile or a run started with --auto-fix: a failed compile
+    goes to Cursor the way the Run tests tab would send it, without a
+    click -- in the server, so it happens whether a page is open or not.
+    Only what Ask Me may send (the job's Ask Me, a converted suite's
+    compile fix); anything else is left in the box with its reason.
+    What was done is kept beside the run (AUTO_FIX_FILE); {} when nothing."""
+    ra = _tool("runask")
+    out = job_dir(job)
+    result = ra.read_result(out)
+    if not result.get("auto_fix") or not ra.compile_errors(result):
+        return {}
+    record = {"at": str(result.get("at") or ""), "sent": False}
+    try:
+        p = ra.preview(ROOT, job)
+        if p.get("kind") not in ("job", "convert-fix"):
+            return {}
+        if p.get("blocked"):
+            record["error"] = p["blocked"]
+        else:
+            r = run_ask(job, p.get("text") or "")
+            record.update(sent=True, kind=r["kind"], job=r["job"], runnable=r["runnable"],
+                          fix_jobs=r.get("fix_jobs") or [])
+    except Exception as e:                               # noqa: BLE001 -- said on the page
+        record["error"] = str(e)[:500]
+    _write(os.path.join(out, AUTO_FIX_FILE), record)
+    try:
+        diag.job_note(job, "[jobs] the failed compile was sent to Cursor by itself: "
+                      + (f"{record.get('runnable')} for job {record.get('job')}" if record["sent"]
+                         else f"not sent ({record.get('error')})"), ROOT)
+    except Exception:                                    # noqa: BLE001
+        pass
+    return record
 
 
 def run_ask(job: str, text: str, images=None) -> dict:
@@ -1729,25 +1773,31 @@ def run_ask(job: str, text: str, images=None) -> dict:
     `job`, the way that applies to them: the job's own tests to that job's
     Ask Me (agent-followup); a converted suite's to a fix brief in a
     new job, run as the Migration tab runs one (agent-generate, scope
-    converted). Decided again here, not taken from the page; everything
-    that can refuse is asked before a file is written."""
+    converted); converted suites that do not compile to convert-fix.
+    Decided again here, not taken from the page; everything that can
+    refuse is asked before a file is written."""
     ra = _tool("runask")
     run_dir = job_dir(job)
     text = str(text or "").strip()
-    if not text:
-        raise ValueError("write what Cursor should fix (the box was prefilled from the failed tests or compile errors)")
     if len(text) > 20000:
         raise ValueError("that is more than 20,000 characters; keep the request short")
     result = ra.read_result(run_dir)
     info = ra.classify(ROOT, job, result)
-    if info["kind"] not in ("job", "converted"):
+    if info["kind"] not in ("job", "converted", "convert-fix"):
         raise ValueError(info["why"])
     if info.get("blocked"):
         raise ValueError(info["blocked"])
+    if not text and info["kind"] != "convert-fix":
+        raise ValueError("write what Cursor should fix (the box was prefilled from the failed tests or compile errors)")
     # One command at a time: the run itself, a convert, another Cursor run.
     now = [(j, r) for j, r in running_now() if r in EXCLUSIVE]
     if now:
         raise ValueError(f"{now[0][1]} is running (job {now[0][0]}): wait for it, or Stop it, then ask")
+    if info["kind"] == "convert-fix":
+        # convertfix.py writes each suite's brief from the compile itself.
+        started = start(job, "convert-fix", {"--job": job})
+        return dict(started, runnable="convert-fix", job=job, kind="convert-fix",
+                    suites=info["suites"], fix_jobs=info["fix_jobs"])
     text = ra.redact(text, ra.private(ROOT))
     if info["kind"] == "job":
         target = info["job"]
@@ -2063,6 +2113,13 @@ def start(job: str, runnable: str, options: dict) -> dict:
             logf.close()
         except Exception:
             pass
+        if runnable in ("mvn-compile", "mvn-test") and rc != 0:
+            # Before "done" is written: the page that sees the run end sees
+            # what was sent with it.
+            try:
+                auto_fix(job)
+            except Exception as e:                       # noqa: BLE001
+                diag.job_note(job, f"[jobs] auto_fix failed: {type(e).__name__}: {e}", ROOT)
         done = dict(status)
         done.update({"state": "done" if rc == 0 else "failed",
                      "exit_code": rc, "finished": _now()})

@@ -253,6 +253,15 @@ class Running(Base):
         r = self.result()
         self.assertFalse(r["compile"]["ok"])
         self.assertTrue(r["compile"]["errors"])
+        self.assertFalse(r["auto_fix"])
+
+    def test_a_run_and_a_compile_record_that_a_failed_compile_goes_to_cursor(self):
+        """The workbench reads it when the command ends (jobs.auto_fix)."""
+        self.quiet(mr.cmd_test, self.job_dir, self.root, test="FooTest", env="stg", compile_first=True,
+                   runner=self.runner(compile_rc=1), auto_fix=True)
+        self.assertTrue(self.result()["auto_fix"])
+        self.quiet(mr.cmd_compile, self.job_dir, self.root, runner=self.runner(compile_rc=1), auto_fix=True)
+        self.assertTrue(self.result()["auto_fix"])
 
     def test_no_results_is_a_failure_with_the_tail(self):
         rc, said = self.quiet(mr.cmd_test, self.job_dir, self.root, test="FooTest", env="stg",

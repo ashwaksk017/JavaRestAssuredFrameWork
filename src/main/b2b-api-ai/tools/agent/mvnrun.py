@@ -500,13 +500,15 @@ def _threaded(root: str, suite_rel: str, threads: int) -> str:
     return rel
 
 
-def cmd_compile(job_dir: str, root: str, runner=None) -> int:
+def cmd_compile(job_dir: str, root: str, runner=None, auto_fix: bool = False) -> int:
     # A clean build, as a run's compile is. Asked for (2026-10-26): Compile
     # said "no errors" and Run then failed to compile -- Maven had kept the
     # classes of a generated file that no longer compiled, and only the
     # run's clean build read it again. What compiles here compiles there.
     rc, part = compile_(job_dir, root, runner, clean=True)
-    result = {"kind": "mvnrun", "what": "compile", "at": _now(), **part,
+    # `auto_fix`: the person asked that a failed compile go to Cursor by
+    # itself; the workbench does that when this command ends (jobs.auto_fix).
+    result = {"kind": "mvnrun", "what": "compile", "at": _now(), **part, "auto_fix": bool(auto_fix),
               "ok": rc == 0, "verdict": "compiled" if rc == 0 else "the compile failed"}
     _write(job_dir, result)
     say(("DONE: the project compiles" if rc == 0 else
@@ -516,7 +518,7 @@ def cmd_compile(job_dir: str, root: str, runner=None) -> int:
 
 def cmd_test(job_dir: str, root: str, suite: str = "", test: str = "", group: str = "",
              env: str = "", compile_first: bool = False, runner=None, threads: int = 0,
-             project: str = "") -> int:
+             project: str = "", auto_fix: bool = False) -> int:
     """Run one suite, class or group. `project`: the one chosen on the page
     (its configuration file, its run environment, -Dconfig.project); none
     chosen, the command's own (WORKBENCH_PROJECT, set by the workbench)."""
@@ -556,7 +558,8 @@ def cmd_test(job_dir: str, root: str, suite: str = "", test: str = "", group: st
         say(f"FAIL {why}")
         return 1
     result = {"kind": "mvnrun", "what": "test", "at": _now(), "env": env, "project": project,
-              "suite": suite, "test": test, "group": group.strip(), "threads": threads}
+              "suite": suite, "test": test, "group": group.strip(), "threads": threads,
+              "auto_fix": bool(auto_fix)}
     own = suite_project(suite) if is_converted(suite) else ""
     if own and own != project:
         # Said, not refused: a person may mean it (a suite copied across).
@@ -641,7 +644,9 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("compile")
     c.add_argument("--job", required=True)
+    c.add_argument("--auto-fix", action="store_true")
     t = sub.add_parser("test")
+    t.add_argument("--auto-fix", action="store_true")
     t.add_argument("--job", required=True)
     t.add_argument("--suite", default="")
     t.add_argument("--test", default="")
@@ -661,7 +666,7 @@ def main(argv=None) -> int:
     except OSError:
         pass
     if a.cmd == "compile":
-        return cmd_compile(job_dir, ROOT)
+        return cmd_compile(job_dir, ROOT, auto_fix=a.auto_fix)
     try:
         project = check_project(a.project)
     except ValueError as e:
@@ -671,7 +676,7 @@ def main(argv=None) -> int:
         # The whole command reads the chosen project's file, not only Maven.
         os.environ["WORKBENCH_PROJECT"] = project
     return cmd_test(job_dir, ROOT, a.suite, a.test, a.group, a.env, a.compile_first, threads=a.threads,
-                    project=project)
+                    project=project, auto_fix=a.auto_fix)
 
 
 if __name__ == "__main__":

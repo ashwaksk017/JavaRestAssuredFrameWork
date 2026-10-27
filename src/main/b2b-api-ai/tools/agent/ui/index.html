@@ -573,6 +573,7 @@ Expect 201.'></textarea>
     <div class="row">
       <button id="wf-regression" title="confirm which automated cases are regression cases; the tests run only after it">Confirm the regression cases</button>
       <button id="agent-compile" title="compile the project; the errors in this change's files are listed first">Compile</button>
+      <label class="inline" title="when the compile fails in this change's files (or files it broke), or in converted suites, the errors go to Cursor without a click; the fix still waits for review"><input type="checkbox" id="agent-compile-auto" checked> Cursor fixes compile errors</label>
       <select id="agent-run-env" aria-label="environment to run against"></select>
       <button id="agent-run" title="run this change's tests; while it waits for review, Approve &amp; push opens only when they all pass">Run the tests</button>
     </div>
@@ -658,7 +659,7 @@ Expect 201.'></textarea>
     <label class="run-label" for="run-env">Environment</label>
     <select id="run-env" aria-label="environment"></select>
     <label class="inline" title="delete what Maven built and the last run's reports (target/classes, test-classes, surefire-reports, allure-results...), then mvn test-compile. Uploaded suites, the failure digest and Jira fetches in target/ are kept"><input type="checkbox" id="run-compile-first" checked> clean build first</label>
-    <label class="inline" title="when a compile here fails in files Cursor may change (the job's tests, or a shared helper the job's change broke), the errors go to Cursor without a click; the change still waits for your review. Errors in converted suites the job did not break are not sent: convert the suite again"><input type="checkbox" id="run-ask-auto" checked> Cursor fixes compile errors</label>
+    <label class="inline" title="when a compile here fails, the errors go to Cursor without a click, from the workbench itself (the page may be closed): the job's own files, or a helper its change broke, to the job's Ask Me; converted suites, each to a fix job of its own. The fix still waits for your review"><input type="checkbox" id="run-ask-auto" checked> Cursor fixes compile errors</label>
   </div>
   <div class="row run-line" id="run-threads-line">
     <label class="run-label" for="run-threads">Parallel threads</label>

@@ -79,7 +79,8 @@ def suite_of(rel: str) -> str:
     for rx in _SUITE_RX:
         m = rx.match(rel)
         if m:
-            return m.group(1).lower()
+            # support/scenario/ holds the wrappers every suite shares: not a suite.
+            return "" if m.group(1).lower() == "scenario" else m.group(1).lower()
     return ""
 
 
