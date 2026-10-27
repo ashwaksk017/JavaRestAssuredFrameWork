@@ -518,7 +518,7 @@ class TheReviewDecidesWhatIsWritten(Repo):
         out = io.StringIO()
         with redirect_stdout(out):
             self.assertEqual(self.generate(self.agent_that_writes(seen)), 1)
-        self.assertNotIn("p", seen, "Cursor was not called")
+        self.assertNotIn("p", seen, "AI Agent was not called")
         self.assertIn("renumbered them since", out.getvalue())
         self.assertIn("Review the cases on the Automate Test Case tab again", out.getvalue())
         self.assertNotIn("every designed case is rejected", out.getvalue(), "not the wrong reason")
@@ -779,7 +779,7 @@ class TheReviewDecidesWhatIsWritten(Repo):
         out = io.StringIO()
         with redirect_stdout(out):
             loop.cmd_ask(self.job, self.root, self.policy, agent=answers, verifier=OK)
-        self.assertIn("Cursor changed no file. It answered:", out.getvalue())
+        self.assertIn("AI Agent changed no file. It answered:", out.getvalue())
         self.assertIn("    Run: mvn -o test -Dtest=NewTest", out.getvalue())
         self.assertNotIn("FAIL the agent changed no file", out.getvalue())
         self.assertEqual(self.state()["why"], "answered")
@@ -963,12 +963,12 @@ class AskingForMore(Repo):
         write(self.root, JIRA + "Mine.java", "class Mine { /* the reviewer's */ }\n")
 
         def agent(_prompt):
-            write(self.root, JIRA + "Mine.java", "class Mine { /* Cursor's */ }\n")
+            write(self.root, JIRA + "Mine.java", "class Mine { /* AI Agent's */ }\n")
             return {"result": "ok"}
         with redirect_stdout(io.StringIO()):
             self.ask("change Mine too", agent)
         self.assertIn(JIRA + "Mine.java", self.state()["files"]["modified"],
-                      "edited by Cursor: now in the change")
+                      "edited by AI Agent: now in the change")
         with redirect_stdout(io.StringIO()):
             loop.cmd_discard(self.job, self.root, self.policy)
         with io.open(os.path.join(self.root, JIRA, "Mine.java"), encoding="utf-8") as fh:
@@ -1057,7 +1057,7 @@ class AskingForMore(Repo):
 
         def agent(_p):
             write(self.root, JIRA + "NewTest.java", "class NewTest { half }\n")
-            raise loop.CursorFailed("Cursor did not finish within 2700s", "timeout", True)
+            raise loop.CursorFailed("AI Agent did not finish within 2700s", "timeout", True)
         out = io.StringIO()
         with redirect_stdout(out):
             self.assertNotEqual(self.ask("more", agent), 0)
@@ -1835,7 +1835,7 @@ class VerifyAndRepair(Repo):
         with redirect_stdout(out):
             self.assertEqual(self.generate(agent), 0)
         self.assertEqual(self.state()["state"], "pending-review")
-        self.assertIn("time limit ended the run after Cursor had answered", out.getvalue())
+        self.assertIn("time limit ended the run after AI Agent had answered", out.getvalue())
         self.assertTrue(os.path.isfile(os.path.join(self.root, JIRA, "NewTest.java")), "kept, not undone")
 
     def test_an_answer_from_a_run_that_ended_in_error_is_verified_not_undone(self):
@@ -2057,7 +2057,7 @@ class VerifyAndRepair(Repo):
 
         def times_out(_prompt):
             write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
-            raise loop.CursorFailed("Cursor did not finish within 1s", "timeout", True)
+            raise loop.CursorFailed("AI Agent did not finish within 1s", "timeout", True)
         out = io.StringIO()
         with redirect_stdout(out):
             self.assertEqual(self.generate(times_out), 1)
@@ -2160,7 +2160,7 @@ class ARunThatTimedOut(Repo):
             write(self.root, JIRA + "ExistingTest.java", "class ExistingTest { int x; }\n")
             if after:
                 after()
-            raise loop.CursorFailed("Cursor did not finish within 2700s", "timeout", cancelled)
+            raise loop.CursorFailed("AI Agent did not finish within 2700s", "timeout", cancelled)
         return agent
 
     def test_a_cancelled_run_is_put_back_and_that_is_the_end_of_it(self):
@@ -2211,7 +2211,7 @@ class ARunThatTimedOut(Repo):
             write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
             loop.hidden_flags = slow_check          # from now on: inside sweep()
             calls.append(1)
-            raise loop.CursorFailed("Cursor did not finish within 2700s", "timeout", True)
+            raise loop.CursorFailed("AI Agent did not finish within 2700s", "timeout", True)
         try:
             self.assertEqual(self.generate(agent), 1)
         finally:
@@ -2233,7 +2233,7 @@ class ARunThatTimedOut(Repo):
             write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
             write(self.root, cfg, '{"pat": "swapped"}\n')
             write(self.root, ".git/hooks/pre-push", "#!/bin/sh\ncurl evil\n")
-            raise loop.CursorFailed("Cursor did not finish within 2700s", "timeout", True)
+            raise loop.CursorFailed("AI Agent did not finish within 2700s", "timeout", True)
         self.assertEqual(self.generate(agent), 1)
         with io.open(os.path.join(self.root, cfg), encoding="utf-8") as fh:
             self.assertIn("the-real-one", fh.read())
@@ -2263,7 +2263,7 @@ class ARunThatTimedOut(Repo):
 
         def agent(_prompt):
             write(self.root, "README.md", "recreated by the agent\n")
-            raise loop.CursorFailed("Cursor did not finish within 2700s", "timeout", True)
+            raise loop.CursorFailed("AI Agent did not finish within 2700s", "timeout", True)
         self.assertEqual(self.generate(agent), 1)
         r = self.state()
         self.assertNotIn("wrote again afterwards", r["reason"])
@@ -2282,7 +2282,7 @@ class ARunThatTimedOut(Repo):
             if len(calls) == 1:
                 write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
                 return {"result": "wrote it"}
-            raise loop.CursorFailed("Cursor did not finish within 2700s", "timeout", True)
+            raise loop.CursorFailed("AI Agent did not finish within 2700s", "timeout", True)
         failing = lambda: {"ok": False, "steps": [
             {"name": "compile", "rc": 1, "tail": "error"}]}
         self.assertEqual(self.generate(agent, verifier=failing), 1)
@@ -2563,7 +2563,7 @@ class Push(Repo):
         write(self.root, JIRA + "ExistingTest.java", "class ExistingTest { /* mine, uncommitted */ }\n")
 
         def agent(_prompt):
-            write(self.root, JIRA + "ExistingTest.java", "class ExistingTest { /* Cursor's */ }\n")
+            write(self.root, JIRA + "ExistingTest.java", "class ExistingTest { /* AI Agent's */ }\n")
             return {"result": "ok"}
         with redirect_stdout(io.StringIO()):
             self.assertEqual(loop.cmd_generate(self.job, self.root, self.policy, "new-test", "",
@@ -3805,8 +3805,8 @@ class ARunThatEndsInError(unittest.TestCase):
 
     def test_with_no_issue_line_cursors_last_lines_are_given(self):
         msg = loop.cursor_call.ended_in_error("run-1", 6, [], ["backend request #1", "status RUNNING"])
-        self.assertIn("Cursor's last word: status RUNNING", msg)
-        self.assertIn("Cursor said nothing", loop.cursor_call.ended_in_error("run-1", 6, [], []))
+        self.assertIn("AI Agent's last word: status RUNNING", msg)
+        self.assertIn("AI Agent said nothing", loop.cursor_call.ended_in_error("run-1", 6, [], []))
 
     def test_a_long_run_names_the_slow_causes(self):
         msg = loop.cursor_call.ended_in_error("run-1", 600, [], [])
@@ -3971,7 +3971,7 @@ class CallingCursor(unittest.TestCase):
             setattr(loop.cursor_call, name, value)
         seen = []
         loop.cursor_call.run("p", self.ca, self.cfg, on_event=seen.append)
-        pulses = [s for s in seen if s.startswith("still working: nothing from Cursor")]
+        pulses = [s for s in seen if s.startswith("still working: nothing from AI Agent")]
         self.assertTrue(pulses, seen)
         self.assertIn("(last: tool shell started: command=mvn test)", pulses[0])
         self.assertLess(seen.index(pulses[0]), seen.index([s for s in seen if "completed" in s][0]))
@@ -4365,7 +4365,7 @@ class CallingCursor(unittest.TestCase):
         out = loop.cursor_call.run("p", self.ca, self.cfg, on_event=seen.append, deadline_seconds=0.5)
         self.assertEqual((out["status"], out["ended_in_timeout"], out["cancelled"]), ("timeout", True, True))
         self.assertEqual(out["result"], "## Files created: XTest.java")
-        self.assertTrue(any("time limit came after Cursor had answered" in s for s in seen), seen)
+        self.assertTrue(any("time limit came after AI Agent had answered" in s for s in seen), seen)
 
     def test_a_run_that_never_said_anything_waits_for_the_hard_limit(self):
         def silent():
@@ -4779,7 +4779,7 @@ class WhereThingsAre(Repo):
         self.assertIn("WHERE THINGS ARE IN THIS PROJECT", seen["p"])
         self.assertLess(seen["p"].index("WHERE THINGS ARE"), seen["p"].index("WHERE YOU MAY WRITE"))
         log = self.cursor_log()
-        self.assertIn("----- what Cursor was told about where things are -----", log)
+        self.assertIn("----- what AI Agent was told about where things are -----", log)
         self.assertIn("(2 suite(s) converted here: amex, goal)", log)
 
 

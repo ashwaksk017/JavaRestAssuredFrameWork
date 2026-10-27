@@ -45,7 +45,7 @@
   <button role="tab" aria-selected="true"  data-tab="new">
     <span class="name">Automate Test Case</span><span class="what">read a story, plan, design</span></button>
   <button role="tab" aria-selected="false" data-tab="convert">
-    <span class="name">Migration from ReadyAPI</span><span class="what">convert, then ask Cursor</span></button>
+    <span class="name">Migration from ReadyAPI</span><span class="what">convert, then ask AI Agent</span></button>
   <button role="tab" aria-selected="false" data-tab="run">
     <span class="name">Run tests</span><span class="what">compile, run a suite, see results</span></button>
   <button role="tab" aria-selected="false" data-tab="agent">
@@ -93,7 +93,7 @@
   <div id="story-from-link">
   <p class="hint" id="story-xray-note" hidden>The story is read by its link or key, as usual. <b>Design the tests</b>
     then takes the Xray tests already linked to it -- with their steps -- as the cases, instead of
-    Cursor proposing new ones; review and Automate them as any others.</p>
+    AI Agent proposing new ones; review and Automate them as any others.</p>
   <label for="story">Jira story <span class="hint">a link to it, or its key — the story, its comments, its parent, its attachments and the Confluence pages it points at are read for you. Several keys (one a line, or separated by commas) make one job per story, named by its key</span></label>
   <textarea id="story" rows="2" spellcheck="false" autocomplete="off"
     placeholder="https://jira.example.com/browse/ABC-123   or   ABC-123   — or several: ABC-123, ABC-124"></textarea>
@@ -171,14 +171,14 @@ Expect 201.'></textarea>
 
   <h2 class="part">Design the API tests <span class="hint">optional — what should be tested, before any code</span></h2>
   <p class="lede">
-    Cursor reads the API specification, the requirements and the brief
+    AI Agent reads the API specification, the requirements and the brief
     above, and proposes test cases with steps and expected results. It
     is asked in plan mode, from an empty directory; host names and the
     private configuration's values are taken out of what is sent. Read
     the result before the cases are automated (Automate the cases, below).
   </p>
   <details class="more" id="design-options">
-  <summary>Options <span class="hint">service name, how many cases, how Cursor is run -- the defaults suit most designs</span></summary>
+  <summary>Options <span class="hint">service name, how many cases, how AI Agent is run -- the defaults suit most designs</span></summary>
   <div class="form">
     <div class="field">
       <label for="design-service">Service name <span class="hint">empty: the specification's title</span></label>
@@ -193,7 +193,7 @@ Expect 201.'></textarea>
       </select>
     </div>
     <div class="field">
-      <label for="design-mode">How Cursor is run</label>
+      <label for="design-mode">How AI Agent is run</label>
       <select id="design-mode">
         <option value="plan" selected>Plan — it proposes and changes nothing</option>
         <option value="agent">Agent — only if Plan gives no usable reply</option>
@@ -228,10 +228,10 @@ Expect 201.'></textarea>
   </div>
   <div class="row design-go">
     <button id="run-design" class="go">Design the tests</button>
-    <label class="inline" title="A design request that has not changed reuses the reply kept from last time instead of paying for it again. Tick this to forget every reply kept for this job and ask Cursor."><input type="checkbox" id="design-fresh"> Ask again</label>
+    <label class="inline" title="A design request that has not changed reuses the reply kept from last time instead of paying for it again. Tick this to forget every reply kept for this job and ask AI Agent."><input type="checkbox" id="design-fresh"> Ask again</label>
     <label class="inline" title="When the job has a story, the tests are designed for the endpoints the story names, and the result says which those were. Tick this to design every endpoint of the specification instead."><input type="checkbox" id="design-whole"> Design the whole specification, not only what the story touches</label>
     <button id="stop-design">Stop</button>
-    <button id="clear-design" type="button" title="takes this job's design and the kept Cursor replies out, so the next design asks Cursor afresh; review decisions and Xray keys stay">Clear the design</button>
+    <button id="clear-design" type="button" title="takes this job's design and the kept AI Agent replies out, so the next design asks AI Agent afresh; review decisions and Xray keys stay">Clear the design</button>
     <a id="dl-design" class="dl" hidden>design.md</a>
     <a id="dl-cases" class="dl" hidden>test-cases.csv</a>
     <a id="dl-xray" class="dl" hidden>xray.csv</a>
@@ -255,17 +255,17 @@ Expect 201.'></textarea>
   <label for="design-notes">Notes for the designer <span class="hint">what to focus on, what to leave out</span></label>
   <textarea id="design-notes" rows="2" spellcheck="false"></textarea>
   <details class="area-logs" id="design-logs">
-    <summary>Logs <span class="hint">of Design the tests (and Take the story's Xray tests): the command, and its conversation with Cursor</span></summary>
+    <summary>Logs <span class="hint">of Design the tests (and Take the story's Xray tests): the command, and its conversation with AI Agent</span></summary>
     <div class="split">
       <div><h3>Command log</h3><pre id="design-log" class="log"></pre></div>
-      <div><h3>Cursor log</h3><pre id="design-cursor-log" class="log cursor"></pre></div>
+      <div><h3>AI Agent log</h3><pre id="design-cursor-log" class="log cursor"></pre></div>
     </div>
   </details>
 
-  <h3>Review the designed cases <span class="hint">tick Approve for the cases that stand, Automate for the ones Cursor should write; a title can be corrected in place. Create in Xray and Automate take approved cases only</span></h3>
+  <h3>Review the designed cases <span class="hint">tick Approve for the cases that stand, Automate for the ones AI Agent should write; a title can be corrected in place. Create in Xray and Automate take approved cases only</span></h3>
   <div id="design-review" class="result"></div>
   <div class="row">
-    <button id="suite-suggest" type="button" title="Cursor reads each case and proposes the suites (TestNG groups) its test belongs in -- regression, smoke, negative... -- with a reason. Nothing changes until you Use a suggestion; the Suites box stays yours to edit.">Suggest suites with Cursor</button>
+    <button id="suite-suggest" type="button" title="AI Agent reads each case and proposes the suites (TestNG groups) its test belongs in -- regression, smoke, negative... -- with a reason. Nothing changes until you Use a suggestion; the Suites box stays yours to edit.">Suggest suites with AI Agent</button>
     <button id="suite-suggest-all" type="button" disabled title="put every suggestion into its case's Suites box">Use every suggestion</button>
     <span id="suite-suggest-state" class="state"></span>
   </div>
@@ -273,11 +273,11 @@ Expect 201.'></textarea>
     <button id="wf-finalize" type="button" title="freeze the approved cases: Create in Xray and Automate take only finalized cases; an edit after it reopens them">Finalize the cases</button>
     <span id="wf-final-state" class="state"></span>
   </div>
-  <label for="refine-ask">Refine with Cursor <span class="hint">how the cases should change -- tick cases in the Select column to refine only those (the rest are kept exactly as they are), or none to refine the whole list. Cases it leaves alone keep your decisions</span></label>
+  <label for="refine-ask">Refine with AI Agent <span class="hint">how the cases should change -- tick cases in the Select column to refine only those (the rest are kept exactly as they are), or none to refine the whole list. Cases it leaves alone keep your decisions</span></label>
   <textarea id="refine-ask" rows="2" spellcheck="false"
     placeholder="e.g. Split TC-004 into a 403 and a 404 case, and drop the duplicate paging cases."></textarea>
   <div class="row">
-    <button id="refine-run" type="button">Refine with Cursor</button>
+    <button id="refine-run" type="button">Refine with AI Agent</button>
     <span id="refine-scope" class="hint">the whole list</span>
     <span id="refine-state" class="state"></span>
   </div>
@@ -285,7 +285,7 @@ Expect 201.'></textarea>
     <summary>Logs <span class="hint">of the last refinement only</span></summary>
     <div class="split">
       <div><h3>Command log</h3><pre id="refine-log" class="log"></pre></div>
-      <div><h3>Cursor log</h3><pre id="refine-cursor-log" class="log cursor"></pre></div>
+      <div><h3>AI Agent log</h3><pre id="refine-cursor-log" class="log cursor"></pre></div>
     </div>
   </details>
 
@@ -310,9 +310,9 @@ Expect 201.'></textarea>
   </div>
   <div class="row">
     <button id="devcode-run" class="go" type="button">Check the cases against the change</button>
-    <label class="inline" title="Also send the change (the diff, cut to size, host names and private values removed) and the cases to Cursor in plan mode, for gaps the program's own reading cannot see. Slower; costs a Cursor call."><input type="checkbox" id="devcode-cursor"> also ask Cursor</label>
+    <label class="inline" title="Also send the change (the diff, cut to size, host names and private values removed) and the cases to AI Agent in plan mode, for gaps the program's own reading cannot see. Slower; costs an AI Agent call."><input type="checkbox" id="devcode-cursor"> also ask AI Agent</label>
     <button id="devcode-stop" type="button">Stop</button>
-    <button id="devcode-add" type="button" disabled title="Cursor adds cases for the chosen gaps -- a refinement that keeps every existing case as it is">Add cases for the chosen gaps</button>
+    <button id="devcode-add" type="button" disabled title="AI Agent adds cases for the chosen gaps -- a refinement that keeps every existing case as it is">Add cases for the chosen gaps</button>
     <span id="devcode-state" class="state"></span>
   </div>
   <div id="devcode-result" class="result"></div>
@@ -347,10 +347,10 @@ Expect 201.'></textarea>
   <div id="xray-update-result" class="result"></div>
   <pre id="xray-update-log" class="log" hidden></pre>
 
-  <h2 class="part" id="automate-part">Automate the cases <span class="hint">Cursor writes REST Assured tests for the approved cases</span></h2>
+  <h2 class="part" id="automate-part">Automate the cases <span class="hint">AI Agent writes REST Assured tests for the approved cases</span></h2>
   <p class="lede">
     Automate one case from its row in the review above, or every approved case marked
-    Automate at once. Each run adds to the job's one change; the Cursor setup is checked as
+    Automate at once. Each run adds to the job's one change; the AI Agent setup is checked as
     the run starts. Review the change and push it on the Commit and push tab.
   </p>
   <div class="row">
@@ -360,10 +360,10 @@ Expect 201.'></textarea>
     <span id="auto-state" class="state"></span>
   </div>
   <details class="area-logs" id="automate-logs">
-    <summary>Logs <span class="hint">of Automate: the command, and Cursor writing the tests (every run of this job)</span></summary>
+    <summary>Logs <span class="hint">of Automate: the command, and AI Agent writing the tests (every run of this job)</span></summary>
     <div class="split">
       <div><h3>Command log</h3><pre id="auto-log" class="log"></pre></div>
-      <div><h3>Cursor log</h3>
+      <div><h3>AI Agent log</h3>
       <fieldset class="choice" id="cursor-from">
         <legend>Show</legend>
         <label><input type="radio" name="cursor-from" value="tests" checked> Writing the tests</label>
@@ -371,23 +371,23 @@ Expect 201.'></textarea>
       </fieldset><pre id="cursor-log" class="log cursor"></pre></div>
     </div>
   </details>
-  <label for="agent-ask">Ask Me <span class="hint">in your words: a question about this job -- answered in the command log, nothing changed -- or a change: what should be different in the change waiting (Cursor works on the same files and it waits for your review again), or something new when none is waiting</span></label>
+  <label for="agent-ask">Ask Me <span class="hint">in your words: a question about this job -- answered in the command log, nothing changed -- or a change: what should be different in the change waiting (AI Agent works on the same files and it waits for your review again), or something new when none is waiting</span></label>
   <textarea id="agent-ask" rows="3" spellcheck="false"
     placeholder="e.g. Which suite file runs this job's tests?  or  Use the member's email from the CSV instead of a fixed one."></textarea>
   <fieldset class="choice" id="ask-kind">
     <legend>This is</legend>
-    <label><input type="radio" name="ask-kind" value="question"> A question <span class="hint">Cursor reads and answers; no file and no state is changed</span></label>
-    <label><input type="radio" name="ask-kind" value="change" checked> A change <span class="hint">Cursor writes code, then it is checked and waits for your review</span></label>
+    <label><input type="radio" name="ask-kind" value="question"> A question <span class="hint">AI Agent reads and answers; no file and no state is changed</span></label>
+    <label><input type="radio" name="ask-kind" value="change" checked> A change <span class="hint">AI Agent writes code, then it is checked and waits for your review</span></label>
   </fieldset>
   <div class="row">
     <button id="agent-ask-send">Ask Me</button>
     <span id="ask-state" class="state"></span>
   </div>
   <details class="area-logs" id="ask-logs">
-    <summary>Logs <span class="hint">of the last ask only: what was asked, what Cursor answered and changed</span></summary>
+    <summary>Logs <span class="hint">of the last ask only: what was asked, what AI Agent answered and changed</span></summary>
     <div class="split">
       <div><h3>Command log</h3><pre id="ask-log" class="log"></pre></div>
-      <div><h3>Cursor log</h3><pre id="ask-cursor-log" class="log cursor"></pre></div>
+      <div><h3>AI Agent log</h3><pre id="ask-cursor-log" class="log cursor"></pre></div>
     </div>
   </details>
 </section>
@@ -428,9 +428,9 @@ Expect 201.'></textarea>
       <label><input type="radio" name="cv-phase" value="off"> Off <span class="hint">--no-phase-specs</span></label>
     </fieldset>
     <fieldset class="field choice">
-      <legend>Cursor assist</legend>
+      <legend>AI Agent assist</legend>
       <label><input type="radio" name="cv-cursor" value="off" checked> Off <span class="hint">--no-cursor-assist</span></label>
-      <label><input type="radio" name="cv-cursor" value="on"> On <span class="hint">--cursor-assist: calls the real Cursor</span></label>
+      <label><input type="radio" name="cv-cursor" value="on"> On <span class="hint">--cursor-assist: calls the real AI Agent</span></label>
     </fieldset>
 
     <div class="field flag">
@@ -473,15 +473,15 @@ Expect 201.'></textarea>
     <button id="run-keys">Audit service keys</button>
     <button id="run-token">Audit token chain</button>
     <button id="run-verify" title="run the checks chosen in What to verify, now">Verify</button>
-    <button id="run-flow-catalog" title="after a convert: the converted cases' ordered calls, by project, which Cursor reuses for new cases (.cursor/skills/jira-to-restassured/flows/, committed)">Rebuild flow catalog</button>
-    <button id="run-convert-fix" title="compile what the convert wrote; with Cursor assist on, Cursor makes each suite that does not compile compile -- held for review only once it does">Check it compiles</button>
+    <button id="run-flow-catalog" title="after a convert: the converted cases' ordered calls, by project, which AI Agent reuses for new cases (.cursor/skills/jira-to-restassured/flows/, committed)">Rebuild flow catalog</button>
+    <button id="run-convert-fix" title="compile what the convert wrote; with AI Agent assist on, AI Agent makes each suite that does not compile compile -- held for review only once it does">Check it compiles</button>
   </div>
   <div class="row center"><span id="convert-state" class="state"></span></div>
   <h3>Log</h3>
   <pre id="convert-log" class="log"></pre>
   <div id="convert-fix-block" hidden>
     <h3>Does it compile? <span id="convert-fix-state" class="state"></span>
-      <span class="hint">after every convert; with Cursor assist on, Cursor fixes each suite that does not -- its conversation is in the Cursor log below</span></h3>
+      <span class="hint">after every convert; with AI Agent assist on, AI Agent fixes each suite that does not -- its conversation is in the AI Agent log below</span></h3>
     <pre id="convert-fix-log" class="log"></pre>
     <div id="convert-fix-result" class="result"></div>
   </div>
@@ -492,15 +492,15 @@ Expect 201.'></textarea>
 
   <h2 class="part" id="migration-ask-part">Ask Me <span class="hint">change a converted suite's Java, or the converter itself</span></h2>
   <p class="lede">
-    Say what should be different. Cursor is held to what you choose below; the change waits
+    Say what should be different. AI Agent is held to what you choose below; the change waits
     on the Commit and push tab. A converted suite's change is kept on this machine and put
     back after every convert of the suite; a change to the converter is committed and pushed.
-    A request while a change is waiting adds to it. From the Failures tab, Fix with Cursor
+    A request while a change is waiting adds to it. From the Failures tab, Fix with AI Agent
     writes the request for you: leave the box empty and press Ask Me.
   </p>
   <div class="form">
     <div class="field req">
-      <label for="agent-scope">What may Cursor change?</label>
+      <label for="agent-scope">What may AI Agent change?</label>
       <select id="agent-scope">
         <option value="converted">Converted Java of one suite — after a convert</option>
         <option value="converter">The converter itself, and the runtime under it</option>
@@ -513,7 +513,7 @@ Expect 201.'></textarea>
              placeholder="amexbackbook">
       <datalist id="converted-suites"></datalist>
       <small>The lower-case suite directory under <code>support/</code>.
-             Cursor is limited to this suite's generated files; another
+             AI Agent is limited to this suite's generated files; another
              suite's classes and the shared ones are put back if touched.</small>
       <div class="row">
         <button id="agent-patches">Stored changes</button>
@@ -535,14 +535,14 @@ Expect 201.'></textarea>
   </div>
   <div class="split">
     <div><h3>Command log</h3><pre id="mig-log" class="log"></pre></div>
-    <div><h3>Cursor log</h3><pre id="mig-cursor-log" class="log cursor"></pre></div>
+    <div><h3>AI Agent log</h3><pre id="mig-cursor-log" class="log cursor"></pre></div>
   </div>
 </section>
 
 <!-- ───────────────────────────── tab 3 ───────────────────────────── -->
 <section id="tab-agent" class="tab" role="tabpanel" hidden>
   <p class="lede">
-    The change Cursor made for this job -- on the Automate Test Case tab or the Migration from
+    The change AI Agent made for this job -- on the Automate Test Case tab or the Migration from
     ReadyAPI tab -- waits here: its files, its diff and a code review. Approve commits it to
     its own branch and pushes it (a converted suite's change is kept on this machine instead);
     Discard puts everything back.
@@ -573,7 +573,7 @@ Expect 201.'></textarea>
     <div class="row">
       <button id="wf-regression" title="confirm which automated cases are regression cases; the tests run only after it">Confirm the regression cases</button>
       <button id="agent-compile" title="compile the project; the errors in this change's files are listed first">Compile</button>
-      <label class="inline" title="when the compile fails in this change's files (or files it broke), or in converted suites, the errors go to Cursor without a click; the fix still waits for review"><input type="checkbox" id="agent-compile-auto" checked> Cursor fixes compile errors</label>
+      <label class="inline" title="when the compile fails in this change's files (or files it broke), or in converted suites, the errors go to AI Agent without a click; the fix still waits for review"><input type="checkbox" id="agent-compile-auto" checked> AI Agent fixes compile errors</label>
       <select id="agent-run-env" aria-label="environment to run against"></select>
       <button id="agent-run" title="run this change's tests; while it waits for review, Approve &amp; push opens only when they all pass">Run the tests</button>
     </div>
@@ -592,7 +592,7 @@ Expect 201.'></textarea>
     <div id="agent-xray-result" class="result"></div>
   </div>
 
-  <h3>Code review <span class="hint">Cursor reads the change and lists what looks wrong — advice, it does not block Approve</span>
+  <h3>Code review <span class="hint">AI Agent reads the change and lists what looks wrong — advice, it does not block Approve</span>
     <a id="dl-review" class="dl" hidden>code-review.md</a></h3>
   <div id="agent-codereview" class="result"></div>
 
@@ -613,7 +613,7 @@ Expect 201.'></textarea>
     (<code>Suites/</code>, <code>testng*.xml</code>), one class or method, or a TestNG group, against an
     environment of the chosen project's configuration file (<code>program_configuration.json</code> for B2B). Maven runs offline first and goes online only
     when something is missing; a <code>JAVA_HOME</code> that points at nothing is replaced by a JDK found
-    on this machine, and the log says which. One run at a time, and not while Cursor is writing a change.
+    on this machine, and the log says which. One run at a time, and not while AI Agent is writing a change.
   </p>
   <div class="row">
     <button id="mvn-compile" class="go" type="button">Compile</button>
@@ -659,7 +659,7 @@ Expect 201.'></textarea>
     <label class="run-label" for="run-env">Environment</label>
     <select id="run-env" aria-label="environment"></select>
     <label class="inline" title="delete what Maven built and the last run's reports (target/classes, test-classes, surefire-reports, allure-results...), then mvn test-compile. Uploaded suites, the failure digest and Jira fetches in target/ are kept"><input type="checkbox" id="run-compile-first" checked> clean build first</label>
-    <label class="inline" title="when a compile here fails, the errors go to Cursor without a click, from the workbench itself (the page may be closed): the job's own files, or a helper its change broke, to the job's Ask Me; converted suites, each to a fix job of its own. The fix still waits for your review"><input type="checkbox" id="run-ask-auto" checked> Cursor fixes compile errors</label>
+    <label class="inline" title="when a compile here fails, the errors go to AI Agent without a click, from the workbench itself (the page may be closed): the job's own files, or a helper its change broke, to the job's Ask Me; converted suites, each to a fix job of its own. The fix still waits for your review"><input type="checkbox" id="run-ask-auto" checked> AI Agent fixes compile errors</label>
   </div>
   <div class="row run-line" id="run-threads-line">
     <label class="run-label" for="run-threads">Parallel threads</label>
@@ -680,7 +680,7 @@ Expect 201.'></textarea>
   <div id="run-ask-box" class="run-ask" hidden>
     <h3>Ask Me to fix the failures</h3>
     <div id="run-ask-which"></div>
-    <label for="run-ask">What Cursor is asked <span class="hint">prefilled from the failed tests -- each test, its case id, why it failed and the run's own lines about it -- or from the compile errors. Edit it before you send it; values from the configuration files are hidden before it goes.</span></label>
+    <label for="run-ask">What AI Agent is asked <span class="hint">prefilled from the failed tests -- each test, its case id, why it failed and the run's own lines about it -- or from the compile errors. Edit it before you send it; values from the configuration files are hidden before it goes.</span></label>
     <textarea id="run-ask" rows="10" spellcheck="false"></textarea>
     <div class="row">
       <button id="run-ask-send" class="go" type="button">Ask Me to fix the failures</button>
@@ -699,7 +699,7 @@ Expect 201.'></textarea>
   <p class="lede">
     Manual UI test cases from requirements, as a <strong>delta</strong>
     against the tests the team already has: what is new, and which existing
-    tests a changed rule makes wrong. Cursor reads and proposes only.
+    tests a changed rule makes wrong. AI Agent reads and proposes only.
     Nothing here writes to Jira.
   </p>
 
@@ -827,7 +827,7 @@ Expect 201.'></textarea>
     For Jira bugs: the reason each one happened. <strong>Load</strong> reads
     the bugs and the reason each already has, and finds similar earlier
     bugs and what reason those were given. <strong>Suggest</strong> has
-    Cursor propose a reason from your team's list, with why, and marks where
+    AI Agent propose a reason from your team's list, with why, and marks where
     it disagrees with the current one. Nothing is written to Jira unless you
     press <em>Write to Jira</em> on a row, and that button only exists when
     writing has been switched on in the configuration.
@@ -849,7 +849,7 @@ Expect 201.'></textarea>
     <div class="field">
       <label for="defects-max">At most</label>
       <input id="defects-max" type="text" spellcheck="false" placeholder="50">
-      <small>Each bug's text is sent to Cursor when you ask for suggestions. 200 at the very most.</small>
+      <small>Each bug's text is sent to AI Agent when you ask for suggestions. 200 at the very most.</small>
     </div>
   </div>
   <div class="row">
@@ -947,9 +947,9 @@ Expect 201.'></textarea>
   <h3>Maven test run log <span class="hint" id="logs-run-path">target/b2b-full-run.log — written when Surefire starts TestNG; Run the tests uses -Dlog.level=debug</span></h3>
   <pre id="logs-run" class="log tall">—</pre>
 
-  <h2 class="part" id="workbench-part">Change the workbench <span class="hint">Cursor changes this page, its server and their tests (tools/agent)</span></h2>
+  <h2 class="part" id="workbench-part">Change the workbench <span class="hint">AI Agent changes this page, its server and their tests (tools/agent)</span></h2>
   <p class="lede">
-    Say what should be different in the workbench. Cursor changes <code>tools/agent/</code> only --
+    Say what should be different in the workbench. AI Agent changes <code>tools/agent/</code> only --
     never <code>policy.json</code>, which says what each run may change. It runs only while
     nothing else runs, and nothing else starts until it has finished. Before you review it, the
     change must pass the workbench checks: the Python compiles, the page parses, the workbench's
@@ -968,7 +968,7 @@ Expect 201.'></textarea>
   </div>
   <div class="split">
     <div><h3>Command log <span class="hint" id="wb-job"></span></h3><pre id="wb-log" class="log"></pre></div>
-    <div><h3>Cursor log</h3><pre id="wb-cursor-log" class="log cursor"></pre></div>
+    <div><h3>AI Agent log</h3><pre id="wb-cursor-log" class="log cursor"></pre></div>
   </div>
 </section>
 
@@ -977,7 +977,7 @@ Expect 201.'></textarea>
     How this machine reaches Jira, Confluence and Xray, for each project. Saved into the active
     environment's block of the project's file -- <code>src/main/resources/program_configuration.json</code>
     (B2B), <code>program_configuration.goal.json</code> (GOAL) -- gitignored, the only place a
-    credential belongs. The Cursor key and the suite map are the same for every project. A token is never shown again: the page says only whether it is
+    credential belongs. The AI Agent key and the suite map are the same for every project. A token is never shown again: the page says only whether it is
     set. Leave a token box empty to keep the token as it is. Each save keeps a copy of the
     file as it was in <code>.workbench/settings/</code>. Nothing can be saved while a command runs.
   </p>
@@ -988,7 +988,7 @@ Expect 201.'></textarea>
   </fieldset>
   <div id="settings-env" class="result"></div>
   <form id="settings-form" class="form" autocomplete="off" onsubmit="return false">
-    <fieldset class="field choice wide"><legend>Cursor</legend>
+    <fieldset class="field choice wide"><legend>AI Agent</legend>
       <label for="set-cursor-key">API key <span class="hint" id="set-cursor-key-state"></span></label>
       <input id="set-cursor-key" type="password" autocomplete="new-password" spellcheck="false" placeholder="leave empty to keep it">
       <label class="inline"><input type="checkbox" id="set-cursor-key-clear"> remove the saved key</label>

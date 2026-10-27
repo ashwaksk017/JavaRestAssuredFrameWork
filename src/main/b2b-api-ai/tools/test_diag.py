@@ -118,7 +118,7 @@ class TheFullRunLog(Base):
     def test_making_tests_says_what_it_did_in_the_run_log_and_the_kept_activity_log(self):
         """Asked for: the run log said only what FAILED while tests were made."""
         def designs():
-            print(" ..  asking Cursor (9412 characters)")
+            print(" ..  asking AI Agent (9412 characters)")
             print(" ok  35 test case(s) designed. Read design.md")
             print(f"     TC-001  ABC-901  a case {TOKEN}")
             return 0
@@ -128,7 +128,7 @@ class TheFullRunLog(Base):
         self.assertIn("WORKBENCH STEP [design] END --job j1 --speed fast -- exit 0", text)
         self.assertIn("ok  35 test case(s) designed", text)
         self.assertIn("TC-001  ABC-901", text)
-        self.assertNotIn("asking Cursor", text, "progress is not a step's outcome")
+        self.assertNotIn("asking AI Agent", text, "progress is not a step's outcome")
         self.assertNotIn(TOKEN, text)
         with io.open(diag.activity_log(self.root), encoding="utf-8") as fh:
             kept = fh.read()
@@ -143,17 +143,17 @@ class TheFullRunLog(Base):
     def test_a_failure_says_the_steps_it_took_and_what_it_handled(self):
         def fails():
             diag.step("Reading the story")
-            diag.step("Asking Cursor")
+            diag.step("Asking AI Agent")
             try:
                 raise TimeoutError("slow")
             except TimeoutError:
-                diag.trace("asking Cursor")
-            print("FAIL Cursor did not answer")
+                diag.trace("asking AI Agent")
+            print("FAIL AI Agent did not answer")
             return 1
         self.run_cmd(fails, module="loop")
         text = self.run_log()
-        self.assertIn("steps it took: Reading the story > Asking Cursor", text)
-        self.assertIn("errors it handled first: TimeoutError while asking Cursor at test_diag.py:", text)
+        self.assertIn("steps it took: Reading the story > Asking AI Agent", text)
+        self.assertIn("errors it handled first: TimeoutError while asking AI Agent at test_diag.py:", text)
 
     def test_the_page_checks_jobs_stay_out_of_the_run_log(self):
         os.makedirs(os.path.join(self.root, ".workbench", "check-ui-throwaway"))
@@ -496,8 +496,8 @@ class Step(unittest.TestCase):
         """The commands behind the page's long waits each name the wait."""
         tools = HERE
         for rel, phrase in (("jira/search.py", "Asking Jira"),
-                            ("agent/design.py", "Asking Cursor"),
-                            ("agent/loop.py", "Asking Cursor to write the change"),
+                            ("agent/design.py", "Asking AI Agent"),
+                            ("agent/loop.py", "Asking AI Agent to write the change"),
                             ("agent/intake.py", "Fetching a linked Confluence page"),
                             ("agent/locate.py", "Reading the hand-written tests"),
                             ("agent/specsource.py", "Asking Confluence"),

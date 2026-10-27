@@ -185,7 +185,7 @@ def run(job: str, ids=None, root: str = "", agent=None) -> int:
         try:
             if loop.mock_cursor():
                 agent = loop.mock.cursor
-                loop.say("MOCK CURSOR: the suggestion below comes from the workbench's stand-in (a rule).")
+                loop.say("MOCK AI AGENT: the suggestion below comes from the workbench's stand-in (a rule).")
         except RuntimeError as e:
             loop.say(f"FAIL {e}")
             return 1
@@ -197,12 +197,12 @@ def run(job: str, ids=None, root: str = "", agent=None) -> int:
             loop.say(f"FAIL {e}")
             return 1
         if not secret:
-            loop.say("FAIL no Cursor API key (Settings tab)")
+            loop.say("FAIL no AI Agent API key (Settings tab)")
             return 1
     clog = loop.CursorLog(job_dir, secret, list(private), name="design-cursor.log")
     clog.write(f"===== suite suggestion: {len(cases)} case(s) =====")
     clog.block("prompt (suites)", prompt, cap=8000)
-    diag.step(f"Asking Cursor which suites {len(cases)} case(s) belong in")
+    diag.step(f"Asking AI Agent which suites {len(cases)} case(s) belong in")
 
     def followup(text):
         try:
@@ -221,7 +221,7 @@ def run(job: str, ids=None, root: str = "", agent=None) -> int:
         clog.block("reply (suites)", raw, cap=8000)
         data, _how = jsonfix.loads(raw, partial_key="suggestions", list_key="suggestions")
     except (RuntimeError, ValueError) as e:
-        loop.say(f"FAIL Cursor gave no usable answer: {(str(e).strip().splitlines() or [type(e).__name__])[0][:300]}")
+        loop.say(f"FAIL AI Agent gave no usable answer: {(str(e).strip().splitlines() or [type(e).__name__])[0][:300]}")
         return 1
     ids_asked = {str(c["id"]) for c in cases}
     rows = clean(data, ids_asked, groups)

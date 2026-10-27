@@ -221,12 +221,12 @@ def ended_in_error(run_id: str, seconds: float, diagnostics: list, recent: list)
     said = (diagnostics or recent or [""])[-1].strip()
     head = f"the agent started but did not finish (run id {run_id}, after {seconds:.0f}s)"
     if seconds < QUICK_END_SECONDS:
-        why = ("too soon to be a timeout or the prompt's size: Cursor refused the run or the "
-               "request failed -- its account (usage limit, key, model), the network or VPN to Cursor")
+        why = ("too soon to be a timeout or the prompt's size: AI Agent refused the run or the "
+               "request failed -- its account (usage limit, key, model), the network or VPN to AI Agent")
     else:
-        why = "usual causes: a slow network or VPN to Cursor, or the model timing out"
-    return (f"{head}. {why[0].upper() + why[1:]}." + (f" Cursor's last word: {said[:300]}" if said else
-            " Cursor said nothing before it ended.") + " The whole run is in the Cursor log.")
+        why = "usual causes: a slow network or VPN to AI Agent, or the model timing out"
+    return (f"{head}. {why[0].upper() + why[1:]}." + (f" AI Agent's last word: {said[:300]}" if said else
+            " AI Agent said nothing before it ended.") + " The whole run is in the AI Agent log.")
 
 
 def describe(message, timing: dict = None) -> str:
@@ -473,7 +473,7 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
     images = list(_ATTACHED)
     if not getattr(cfg, "api_key", ""):
         raise CursorCallError(
-            "no Cursor API key. Set CURSOR_API_KEY, or put it in "
+            "no AI Agent API key. Set CURSOR_API_KEY, or put it in "
             "tools/ra_converter/cursor_agent.json (gitignored).", "setup")
     try:
         import cursor_sdk
@@ -515,27 +515,27 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
         if answered.get("text") is not None:
             return                          # ended because the answer was complete
         if turn["rerun"]:
-            emit("the bridge ran the same request again after Cursor's turn had ended: the run "
+            emit("the bridge ran the same request again after AI Agent's turn had ended: the run "
                  "is taken as finished"
                  + ("" if live["cancelled"] else " (it could not be cancelled and may still be working)")
                  + "; what it wrote is checked now")
             return
         if turn["closed"]:
-            emit(f"Cursor's turn ended (its usage line) and nothing came for {AFTER_USAGE_QUIET} s: "
+            emit(f"AI Agent's turn ended (its usage line) and nothing came for {AFTER_USAGE_QUIET} s: "
                  f"the run is taken as finished"
                  + ("" if live["cancelled"] else " (it could not be cancelled and may still be working)")
                  + "; what it wrote is checked now")
             return
-        emit(f"nothing came from Cursor for {quiet_seconds / 60:.0f} min after its last word: "
+        emit(f"nothing came from AI Agent for {quiet_seconds / 60:.0f} min after its last word: "
              f"the run is taken as finished"
              + ("" if live["cancelled"] else " (it could not be cancelled and may still be working)")
              + "; what it wrote is checked now")
 
     def timed_out(e) -> CursorCallError:
         return CursorCallError(
-            f"Cursor did not finish within {deadline_seconds:.0f}s and was "
+            f"AI Agent did not finish within {deadline_seconds:.0f}s and was "
             f"stopped waiting for. This is a stuck or very slow run, not a "
-            f"refusal: check the network path to Cursor, make the request "
+            f"refusal: check the network path to AI Agent, make the request "
             f"smaller, or raise the limit."
             + ("" if live.get("cancelled") else
                " The run could NOT be confirmed cancelled and may still be "
@@ -648,7 +648,7 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
                 quiet_stop.set()
                 return
             if quiet >= QUIET_FOR and now - last_pulse >= QUIET_FOR:
-                emit(f"still working: nothing from Cursor for {quiet / 60:.0f} min"
+                emit(f"still working: nothing from AI Agent for {quiet / 60:.0f} min"
                      + (f" (last: {last['line'][:100]})" if last["line"] else "")
                      + f", {(now - t0) / 60:.0f} min in all")
                 last_pulse = now
@@ -800,8 +800,8 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
             # type, grep) still reads an ignored file. Not stoppable from
             # here; said, loudly, when a tool call names one.
             if line.startswith("tool ") and PROTECTED_RX.search(line):
-                say(f"WARN Cursor's tool call names a credential file ({line[:200]}): what it "
-                    "read went to Cursor unredacted -- check what it did, and change those "
+                say(f"WARN AI Agent's tool call names a credential file ({line[:200]}): what it "
+                    "read went to AI Agent unredacted -- check what it did, and change those "
                     "credentials if it read them")
         end_thinking()
         flush_said()
@@ -936,7 +936,7 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
         if parts and live.get("cancelled"):
             done.set()
             run_id = str(getattr(live.get("run"), "id", "") or "")
-            emit("the time limit came after Cursor had answered; the answer is kept and what it "
+            emit("the time limit came after AI Agent had answered; the answer is kept and what it "
                  "wrote is checked")
             return {"status": "timeout", "result": best_answer() or "\n\n".join(parts), "id": run_id,
                     "model": cfg.model, "transport": "session", "ended_in_timeout": True,
@@ -947,7 +947,7 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
             # The whole answer came; leaving the session (closing an agent
             # whose run was still live) then failed. The answer is kept.
             done.set()
-            emit(f"closing the Cursor session failed after the answer came ({type(e).__name__}: "
+            emit(f"closing the AI Agent session failed after the answer came ({type(e).__name__}: "
                  f"{_one_line(e, 200)}); the answer is kept")
             return {"status": "answered", "result": answered["text"].strip(),
                     "id": str(getattr(live.get("run"), "id", "") or ""), "model": cfg.model,
@@ -955,11 +955,11 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
         if startup_error is not None and isinstance(e, startup_error):
             raise CursorCallError(
                 f"the agent did not start: {e}. This is the key, the network "
-                f"path to Cursor, or the local bridge -- not the prompt.",
+                f"path to AI Agent, or the local bridge -- not the prompt.",
                 "startup") from e
         if getattr(e, "winerror", None) == 10038:
             raise CursorCallError(
-                "the Cursor bridge could not start on Windows (WinError 10038). "
+                "the AI Agent bridge could not start on Windows (WinError 10038). "
                 "The patch for this is applied; if it still fails, upgrade "
                 "cursor-sdk.", "startup") from e
         raise CursorCallError(f"unexpected error calling the agent: {e}", "run") from e
@@ -995,6 +995,6 @@ def run(prompt: str, ca, cfg, on_event=None, followup=None, mode: str = "agent",
         raise CursorCallError(
             ended_in_error(run_id, time.time() - started, diagnostics, recent),
             "run", run_id=run_id,
-            details="\n".join(diagnostics[:12] or ["Cursor's last lines:"] + recent))
+            details="\n".join(diagnostics[:12] or ["AI Agent's last lines:"] + recent))
     return {"status": status, "result": str(text), "id": run_id,
             "model": cfg.model, "transport": "session"}

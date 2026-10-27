@@ -158,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
             pass
 
     # --- 5. the packet -----------------------------------------------
-    _rule("4/4  packet -- the brief Cursor reads")
+    _rule("4/4  packet -- the brief AI Agent reads")
     packet_argv = ["--story", story_path, "--candidate", candidate_path,
                    "--out-dir", outdir]
     if os.path.isfile(verdict_path):

@@ -184,8 +184,8 @@ class CursorAssistTest(unittest.TestCase):
                 "status": "finished", "id": "run-9",
                 "result": "Patched groovy_translator.py; key secret-key-123"})
             text = self.read(log)
-            self.assertIn("[convert] asking Cursor about 1 conversion gap(s) in prog", text)
-            self.assertIn("Cursor answered (finished, run run-9)", text)
+            self.assertIn("[convert] asking AI Agent about 1 conversion gap(s) in prog", text)
+            self.assertIn("AI Agent answered (finished, run run-9)", text)
             self.assertIn("Patched groovy_translator.py", text)
             self.assertNotIn("secret-key-123", text)
 
@@ -198,7 +198,7 @@ class CursorAssistTest(unittest.TestCase):
             args = SimpleNamespace(cursor_config=path, cursor_assist=False,
                                    no_cursor_assist=False, output=td)
             self.assertIsNone(cursor_assist.flush(args, call_agent=lambda p, c: {}))
-            self.assertIn("Cursor was not asked about the converter", self.read(log))
+            self.assertIn("AI Agent was not asked about the converter", self.read(log))
 
     def test_the_call_streams_through_the_workbench_caller(self):
         seen = {}

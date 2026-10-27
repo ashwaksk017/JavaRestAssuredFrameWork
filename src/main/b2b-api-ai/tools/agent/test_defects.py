@@ -373,7 +373,7 @@ class Suggesting(Base):
         def reply(prompt):
             n.append(1)
             if len(n) == 2:
-                raise RuntimeError("Cursor answered nothing usable")
+                raise RuntimeError("AI Agent answered nothing usable")
             keys = [l[4:-4] for l in prompt.splitlines() if l.startswith("--- ") and l.endswith(" ---")]
             return answer(*[(k, "Code defect", "high") for k in keys])
         state = self.suggest(reply)

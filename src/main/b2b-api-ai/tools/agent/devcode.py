@@ -851,7 +851,7 @@ def ask_cursor(job_dir: str, root: str, ticket: str, diff: str, cases: list, age
         try:
             if loop.mock_cursor():
                 agent = loop.mock.cursor
-                say("MOCK CURSOR: the gaps below marked as Cursor's come from the workbench's stand-in.")
+                say("MOCK AI AGENT: the gaps below marked as AI Agent's come from the workbench's stand-in.")
         except RuntimeError as e:
             return {"error": str(e)}
     if agent is None:
@@ -861,13 +861,13 @@ def ask_cursor(job_dir: str, root: str, ticket: str, diff: str, cases: list, age
         except RuntimeError as e:
             return {"error": str(e)}
         if not secret:
-            return {"error": "no Cursor API key (Settings tab)"}
+            return {"error": "no AI Agent API key (Settings tab)"}
     clog = loop.CursorLog(job_dir, secret, list(private), name="design-cursor.log")
     clog.write(f"===== developer change: ticket {ticket}, {len(diff):,} characters of diff "
                f"({len(shown):,} sent), {len(cases)} case(s) =====")
     clog.block("prompt (developer change)", prompt, cap=12000)
-    diag.step("Asking Cursor which behaviour of the change no case tests")
-    say(f" ..  asking Cursor ({len(prompt):,} characters, plan mode); progress is in the Cursor log")
+    diag.step("Asking AI Agent which behaviour of the change no case tests")
+    say(f" ..  asking AI Agent ({len(prompt):,} characters, plan mode); progress is in the AI Agent log")
 
     def followup(text):
         try:
@@ -925,7 +925,7 @@ def report_md(result: dict) -> str:
     lines += ["## Gaps", ""]
     if not result.get("gaps"):
         lines.append("None found by reading the change." + ("" if result.get("cursor") else
-                                                            " (Cursor was not asked.)"))
+                                                            " (AI Agent was not asked.)"))
     for g in result.get("gaps") or []:
         lines.append(f"- **{g['id']}** [{g['severity']}, {g['kind']}] {g['title']}  ")
         lines.append(f"  {g['detail']}" + (f"  \n  evidence: {', '.join(g['evidence'][:4])}" if g.get("evidence") else ""))
@@ -1011,14 +1011,14 @@ def run(job: str, repo_url: str, branch: str, ticket: str = "", base: str = "",
     if ask:
         cursor = ask_cursor(job_dir, root, ticket, diff, cases, agent)
         if cursor.get("error"):
-            notes.append(f"Cursor was asked and gave no usable answer: {cursor['error']}")
-            say(f"WARN Cursor: {cursor['error']}")
+            notes.append(f"AI Agent was asked and gave no usable answer: {cursor['error']}")
+            say(f"WARN AI Agent: {cursor['error']}")
         else:
             start = len(gaps)
             for n, g in enumerate(cursor.get("gaps") or [], start + 1):
                 g["id"] = f"G-{n:03d}"
                 gaps.append(g)
-            say(f" ok  Cursor named {len(cursor.get('gaps') or [])} more gap(s)")
+            say(f" ok  AI Agent named {len(cursor.get('gaps') or [])} more gap(s)")
     result = {"kind": "devcode", "at": _now(), "repo": repo["shown"], "branch": branch, "base": base,
               "ticket": ticket, "commit_mode": mode, "commits": found_commits[:MAX_COMMITS],
               "files": files[:400], "found": found, "gaps": gaps, "covered": covered,

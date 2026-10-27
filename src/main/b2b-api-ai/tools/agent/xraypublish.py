@@ -191,7 +191,7 @@ def run(job: str, root: str = "", transport=None, conf: dict = None, mocked: boo
         raise Refused("none of the run's tests carries an Xray key (a jira_xray_id column, or "
                       "@XrayTest): there is nothing to publish to. A test gets its case's key "
                       "when the case is in Xray BEFORE Automate: Create in Xray (Review the "
-                      "designed cases), then Automate again -- or ask Cursor to add the keys")
+                      "designed cases), then Automate again -- or ask AI Agent to add the keys")
     try:
         with io.open(os.path.join(job_dir, "review.json"), encoding="utf-8") as fh:
             change = str(json.load(fh).get("state") or "none")

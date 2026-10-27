@@ -425,7 +425,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n{g['status']} -- the packet says so on its first line. "
               f"Nothing should be written from it.")
         return 1
-    print(f"\nHand `{md}` to Cursor with the `{packet['skill']}` skill active.")
+    print(f"\nHand `{md}` to AI Agent with the `{packet['skill']}` skill active.")
     return 0
 
 

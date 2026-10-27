@@ -907,8 +907,8 @@ def generate(job: str, app: str = "", speed: str = "balanced", agent=None,
         try:
             if loop.mock_cursor():
                 agent, by = loop.mock.cursor, "mock"
-                say("MOCK CURSOR: the cases below are made up by the workbench's stand-in. "
-                    "Cursor is not called.")
+                say("MOCK AI AGENT: the cases below are made up by the workbench's stand-in. "
+                    "AI Agent is not called.")
         except RuntimeError as e:
             raise Refused(str(e)) from None
     if agent is None:
@@ -918,7 +918,7 @@ def generate(job: str, app: str = "", speed: str = "balanced", agent=None,
         except RuntimeError as e:
             raise Refused(str(e)) from None
         if not secret:
-            raise Refused("no Cursor API key. Set CURSOR_API_KEY, or put it in "
+            raise Refused("no AI Agent API key. Set CURSOR_API_KEY, or put it in "
                           "tools/ra_converter/cursor_agent.json (gitignored).")
 
     prompt = PROMPT.format(
@@ -929,10 +929,10 @@ def generate(job: str, app: str = "", speed: str = "balanced", agent=None,
         no_inventory=("" if sent_keys else
                       "No existing tests were given, so `updates` MUST be an empty list."))
     clog = loop.CursorLog(job_dir, secret, list(private))
-    clog.write(f"===== manual tests{' (MOCK: Cursor is not called)' if by == 'mock' else ''}: "
+    clog.write(f"===== manual tests{' (MOCK: AI Agent is not called)' if by == 'mock' else ''}: "
                f"job {job}, {len(sent_docs)} document(s), {len(sent_keys)} existing test(s) =====")
     clog.block("prompt", prompt)
-    say(f" ..  asking Cursor: {len(sent_docs)} document(s), {len(sent_keys)} existing "
+    say(f" ..  asking AI Agent: {len(sent_docs)} document(s), {len(sent_keys)} existing "
         f"test(s), {len(prompt):,} characters")
 
     def followup(text: str):
@@ -956,7 +956,7 @@ def generate(job: str, app: str = "", speed: str = "balanced", agent=None,
     except (RuntimeError, ValueError) as e:
         diag.trace()
         first = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
-        raise Refused(f"Cursor gave no usable answer: {first[:200]}") from None
+        raise Refused(f"AI Agent gave no usable answer: {first[:200]}") from None
     if how.startswith("partial"):
         failures.append(f"the reply was cut off ({how}); cases after the cut are missing and "
                         f"NO update could be read from it")
@@ -999,9 +999,9 @@ def report(r: dict) -> str:
     out = [f"# Manual test cases: {md(r['app']) or md('job ' + r['job'])}", ""]
     if r["mock"]:
         out += ["> **MOCK.** These cases were made up by the workbench's stand-in for "
-                "Cursor. They are not test cases.", ""]
+                "AI Agent. They are not test cases.", ""]
     inv = r["inventory"]
-    out += [f"- Written: {r['at']}, by {'the MOCK stand-in' if r['mock'] else 'Cursor'}",
+    out += [f"- Written: {r['at']}, by {'the MOCK stand-in' if r['mock'] else 'AI Agent'}",
             f"- From: {', '.join(code(d['name']) for d in r['documents'] if d['sent_chars']) or 'no documents'}",
             f"- Existing tests compared with: {inv['sent']}"
             + (f" of {inv['count']}" if inv["count"] > inv["sent"] else "")

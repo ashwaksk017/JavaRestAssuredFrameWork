@@ -706,8 +706,8 @@ def cmd_suggest(job: str, keys: list = None, agent=None, root: str = "") -> dict
         try:
             if loop.mock_cursor():
                 agent, by = loop.mock.cursor, "mock"
-                say("MOCK CURSOR: reasons below are a keyword match by the "
-                    "workbench's stand-in. Cursor is not called.")
+                say("MOCK AI AGENT: reasons below are a keyword match by the "
+                    "workbench's stand-in. AI Agent is not called.")
         except RuntimeError as e:
             raise Refused(str(e)) from None
     if agent is None:
@@ -717,7 +717,7 @@ def cmd_suggest(job: str, keys: list = None, agent=None, root: str = "") -> dict
         except RuntimeError as e:
             raise Refused(str(e)) from None
         if not secret:
-            raise Refused("no Cursor API key. Set CURSOR_API_KEY, or put it in "
+            raise Refused("no AI Agent API key. Set CURSOR_API_KEY, or put it in "
                           "tools/ra_converter/cursor_agent.json (gitignored).")
     clog = loop.CursorLog(job_dir(job), secret, list(private))
     clog.write(f"===== suggest reasons: job {job}, {len(wanted)} defect(s) =====")
@@ -730,7 +730,7 @@ def cmd_suggest(job: str, keys: list = None, agent=None, root: str = "") -> dict
         prompt, _ = design.redact(prompt, private)
         prompt, _ = design.hide_hosts(prompt)
         clog.block(f"prompt ({label})", prompt)
-        say(f" ..  asking Cursor about {len(batch)} defect(s), {label} "
+        say(f" ..  asking AI Agent about {len(batch)} defect(s), {label} "
             f"({len(prompt)} characters)")
 
         def followup(text: str):
@@ -757,7 +757,7 @@ def cmd_suggest(job: str, keys: list = None, agent=None, root: str = "") -> dict
                           f"{' ...' if len(batch) > 4 else ''}): {first[:200]}")
             for d in batch:
                 d.update(suggested="", confidence="", reviewed=False, said="", evidence="",
-                         flag="NOT REVIEWED", why="Cursor gave no usable answer for this batch")
+                         flag="NOT REVIEWED", why="AI Agent gave no usable answer for this batch")
             say(f"WARN {failed[-1]}")
             if getattr(e, "kind", "") in ("setup", "startup", "timeout"):
                 for later in parts[n:]:
@@ -822,7 +822,7 @@ def cmd_apply(job: str, key: str, reason: str, confirm: str, transport=None,
             and reason == target.get("suggested"):
         # A keyword match by the stand-in, sitting in the box the page
         # offers. It is not a suggestion anybody made about a real bug.
-        raise Refused(f"{reason!r} is what the MOCK Cursor put against {key} -- a keyword "
+        raise Refused(f"{reason!r} is what the MOCK AI Agent put against {key} -- a keyword "
                       f"match, not a judgement. Ask for suggestions again with "
                       f"\"cursor\": false in tools/agent/mock.json, or load the defects "
                       f"again and choose the reason yourself.")
@@ -940,7 +940,7 @@ def main(argv=None, transport=None, agent=None) -> int:
     p.add_argument("--version", default="")
     p.add_argument("--max", type=int, default=DEFAULT_MAX)
     p.add_argument("--job", required=True)
-    p = sub.add_parser("suggest", help="have Cursor propose a reason for each")
+    p = sub.add_parser("suggest", help="have AI Agent propose a reason for each")
     p.add_argument("--keys", default="", help="only these, comma separated")
     p.add_argument("--job", required=True)
     p = sub.add_parser("apply", help="write one reason to one defect in Jira")

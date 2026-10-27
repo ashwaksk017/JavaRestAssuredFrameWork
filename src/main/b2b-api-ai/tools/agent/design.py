@@ -958,7 +958,7 @@ def write_outputs(out_dir: str, design: dict) -> None:
     md = [f"# API test design: {design['service'] or design['job']}", ""]
     if design.get("mock"):
         md += ["**MOCK. This is not a design.** It was produced by the workbench's "
-               "stand-in for Cursor (tools/agent/mock.json), two cases per endpoint, "
+               "stand-in for AI Agent (tools/agent/mock.json), two cases per endpoint, "
                "so the flow can be tried.", ""]
     md += [
           f"- job: {design['job']}", f"- at: {design['at']}",
@@ -967,7 +967,7 @@ def write_outputs(out_dir: str, design: dict) -> None:
              "produced nothing)" if design.get("partial") else ""),
           f"- reply read: {design['parsed']}"]
     if design.get("reused_calls"):
-        md.append(f"- Cursor was NOT asked again for {design['reused_calls']} of "
+        md.append(f"- AI Agent was NOT asked again for {design['reused_calls']} of "
                   f"{design.get('calls', 1)} call(s): nothing in the request had "
                   f"changed since {', '.join(design.get('reused_from') or ['an earlier run'])}. "
                   f"Run with `--fresh` (the page: *Ask again*) for a new answer.")
@@ -1367,7 +1367,7 @@ def call_cursor(prompt: str, root: str, on_event, followup, mode: str = "plan",
     """Cursor, in plan mode, started in an empty directory. Every caller
     wants one JSON answer: the run ends as soon as one has come whole
     (`complete`), not when the SDK says so -- see cursor_call.run."""
-    diag.step("Asking Cursor and waiting for its reply (this can take a few minutes)")
+    diag.step("Asking AI Agent and waiting for its reply (this can take a few minutes)")
     ca, cfg = loop.cursor_config(root)
     quick = design_model(root)
     if quick:
@@ -1779,8 +1779,8 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         # Its own cache key too: a stand-in's answer is never handed back
         # later as what Cursor said.
         agent, asked_model = loop.mock.cursor, "mock"
-        say("MOCK CURSOR: the design below comes from the workbench's stand-in, "
-            "two cases per endpoint, to show the flow. Cursor is not called. "
+        say("MOCK AI AGENT: the design below comes from the workbench's stand-in, "
+            "two cases per endpoint, to show the flow. AI Agent is not called. "
             "(\"cursor\": false in tools/agent/mock.json for a real design.)")
     if agent is None and not mocked:
         if loop.cmd_setup(loop.intake.job_dir(job), root):
@@ -1791,7 +1791,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
             secret, asked_model = _cfg.api_key, str(getattr(_cfg, "model", "") or "")
         except Exception as e:                           # noqa: BLE001
             diag.trace()
-            say(f"FAIL the Cursor configuration could not be read ({type(e).__name__})")
+            say(f"FAIL the AI Agent configuration could not be read ({type(e).__name__})")
             return 1
     sdk_ready = []
 
@@ -1806,7 +1806,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
             raise loop.CursorFailed(str(e), "setup") from e
         if not secret:
             raise loop.CursorFailed(
-                "no Cursor API key. Set CURSOR_API_KEY, or put it in "
+                "no AI Agent API key. Set CURSOR_API_KEY, or put it in "
                 "tools/ra_converter/cursor_agent.json (gitignored).", "setup")
         sdk_ready.append(True)
 
@@ -1869,7 +1869,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
                 # Kept by a version that read replies differently, or
                 # damaged since. Asking again is right; failing is not.
                 clog.write(f"the kept reply (design-cache/{key[:12]}...) can no "
-                           f"longer be read; asking Cursor again")
+                           f"longer be read; asking AI Agent again")
                 cache_drop(out_dir, key)
                 hit = None
         if hit:
@@ -1880,12 +1880,12 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
                 f"request has changed since {hit['at'] or 'an earlier run'}; "
                 f"that reply is used (--fresh asks again)")
             clog.write(f"reused the reply of {hit['at'] or '?'} "
-                       f"(design-cache/{key[:12]}...); Cursor was not called")
+                       f"(design-cache/{key[:12]}...); AI Agent was not called")
         else:
-            say(f" ..  asking Cursor{' for ' + label if label else ''} "
+            say(f" ..  asking AI Agent{' for ' + label if label else ''} "
                 f"({len(prompt)} characters, {mode} mode"
                 + (f", up to {deadline:.0f}s" if deadline else "")
-                + "); progress is in the Cursor log")
+                + "); progress is in the AI Agent log")
             if agent is not None:
                 got = agent(prompt, followup)
             else:
@@ -1922,8 +1922,8 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
                 keep = (key, reply, str(got.get("model", "") or asked_model)) \
                     if (not hit and not partial and text is reply and one_turn and not with_images) else None
                 return data, how, got.get("model", ""), keep
-        raise RuntimeError("Cursor answered, but no test cases could be read "
-                           "from the reply. It is in the Cursor log.")
+        raise RuntimeError("AI Agent answered, but no test cases could be read "
+                           "from the reply. It is in the AI Agent log.")
 
     # What each endpoint designed for needs, who makes it, how it is tested
     # today (depmap.py) -- the producers looked for in the WHOLE specification.
@@ -2087,7 +2087,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
 
     if before is not None and _tree_state(root) != before:
         msg = ("files in the repository changed while the design ran. This "
-               "step asks Cursor to change nothing: look at `git status` "
+               "step asks AI Agent to change nothing: look at `git status` "
                "before going on.")
         warnings.append(msg)
         clog.write("WARNING: " + msg)
@@ -2100,7 +2100,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
             f"replaced with host.invalid")
     if removed["leaked"]:
         warnings.append(f"{removed['leaked']} host or credential value(s) of the "
-                        f"private configuration were in Cursor's reply and were removed")
+                        f"private configuration were in AI Agent's reply and were removed")
         say(f"WARN {removed['leaked']} private value(s) were in the reply and were removed")
     if not raw:
         for line in failed:
@@ -2203,12 +2203,12 @@ def main(argv=None) -> int:
     ap.add_argument("--notes-file", default="")
     ap.add_argument("--speed", default="balanced")
     ap.add_argument("--fresh", action="store_true",
-                    help="forget every reply kept for this job, and ask Cursor")
+                    help="forget every reply kept for this job, and ask AI Agent")
     ap.add_argument("--whole-spec", action="store_true",
                     help="design every endpoint of the specification, even when the "
                          "story names only some (the default is to design those)")
     ap.add_argument("--mode", default="plan",
-                    help="plan (default): Cursor proposes and changes nothing. "
+                    help="plan (default): AI Agent proposes and changes nothing. "
                          "agent: only if plan mode gives no usable reply.")
     a = ap.parse_args(argv)
     for flag, path in (("--swagger-file", a.swagger_file),

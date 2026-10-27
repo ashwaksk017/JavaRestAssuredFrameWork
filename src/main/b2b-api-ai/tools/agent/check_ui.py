@@ -249,7 +249,7 @@ def main() -> int:
             check("the Run tests tab offers Ask Me to fix the failures, and says which way and why",
                   re.search(r'id="run-ask-box"[^>]*hidden', html) is None
                   and 'id="run-ask-send"' in html and "A fix brief for suite amex, in a new job." in html
-                  and "Fix with Cursor on the Failures tab" in html, html[html.find('id="run-ask-box"'):][:400])
+                  and "Fix with AI Agent on the Failures tab" in html, html[html.find('id="run-ask-box"'):][:400])
             check("a screenshot can be pasted into the Run tests tab's request",
                   'id="run-ask-pasted"' in html)
             check("a run's message is shown as text on the Run tests tab",
@@ -274,7 +274,7 @@ def main() -> int:
             html = page.dom("run")
             check("a failed compile shown on opening the tab is offered, never sent by itself",
                   'id="run-ask-auto"' in html and "The compile failed: 1 error(s)." in html
-                  and "Sent to Cursor without a click" not in html
+                  and "Sent to AI Agent without a click" not in html
                   and not os.path.exists(os.path.join(job_dir, "agent-followup.txt")),
                   html[html.find('id="run-ask-box"'):][:400])
             # What the workbench sent by itself when that compile ended (jobs.auto_fix).
@@ -282,11 +282,11 @@ def main() -> int:
                 json.dump({"at": "2026-10-20T10:05:00Z", "sent": True, "kind": "job", "job": JOB,
                            "runnable": "agent-followup", "fix_jobs": []}, fh)
             html = page.dom("run")
-            check("the Run tests tab says what was sent to Cursor by itself, and does not offer it again",
-                  f"Sent to Cursor without a click: job {JOB}'s Ask Me" in html
+            check("the Run tests tab says what was sent to AI Agent by itself, and does not offer it again",
+                  f"Sent to AI Agent without a click: job {JOB}'s Ask Me" in html
                   and re.search(r'id="run-ask-send"[^>]*disabled', html) is not None,
                   html[html.find('id="run-ask-box"'):][:600])
-            check("the Commit and push tab's Compile can send its errors to Cursor too",
+            check("the Commit and push tab's Compile can send its errors to AI Agent too",
                   'id="agent-compile-auto"' in page.dom("agent"))
             run_result("com.hi.api.tests.jira.DemoStayTest", "PASS")
             code, body = page.call("/api/run-ask", {"job": JOB, "text": "Fix it."})
@@ -342,17 +342,17 @@ def main() -> int:
               and re.search(r'class="state ok"[^>]*>finished in \d+:\d\d<', html) is not None,
               steps_only[:400])
         html = running("running", [
-            "==> Asking Cursor to write the change (this can take several minutes)",
+            "==> Asking AI Agent to write the change (this can take several minutes)",
             "==> Running the check check_workbench.py"])
         steps_only = html[html.find('class="steps"'):]
         steps_only = steps_only[:steps_only.find("</ol>")]
-        check("once Cursor has returned, the page says the code is written and the check is not a test yet",
-              "Cursor has finished writing the code change" in steps_only
-              and "Asking Cursor to write the change" not in steps_only
+        check("once AI Agent has returned, the page says the code is written and the check is not a test yet",
+              "AI Agent has finished writing the code change" in steps_only
+              and "Asking AI Agent to write the change" not in steps_only
               and "not ready to test until this passes" in steps_only
               and 'class="now"' in steps_only, steps_only[:500])
         html = running("done", [
-            "==> Asking Cursor to write the change (this can take several minutes)",
+            "==> Asking AI Agent to write the change (this can take several minutes)",
             "==> Running the check check_workbench.py",
             "PENDING REVIEW -- read proposed.diff."])
         check("a change held for review says it is ready to test",
@@ -409,8 +409,8 @@ def main() -> int:
                        "Signatures in this run", "RESEMBLES", "A pointer, not a diagnosis",
                        "Save note", "Every run it was in"):
             check(f"Failures tab shows: {needle}", needle in html)
-        check("a signature offers Fix with Cursor, for the suite's Java and for the converter",
-              "Fix with Cursor (this suite" in html and "Fix the converter with Cursor" in html)
+        check("a signature offers Fix with AI Agent, for the suite's Java and for the converter",
+              "Fix with AI Agent (this suite" in html and "Fix the converter with AI Agent" in html)
         check("a note is shown as text, not run as markup",
               "the token was for &lt;b&gt;another&lt;/b&gt; account" in html
               and "<b>another</b>" not in html)
@@ -643,7 +643,7 @@ def main() -> int:
                     break
             else:
                 check("the options that keep their defaults are not on the Convert tab", True)
-            check("diagrams, phase specs and Cursor assist are each one choice",
+            check("diagrams, phase specs and AI Agent assist are each one choice",
                   html.count('name="cv-diagrams"') == 3 and html.count('name="cv-phase"') == 2
                   and html.count('name="cv-cursor"') == 2)
             check("Verify all is a tick box, and the buttons are in the middle",
@@ -893,12 +893,12 @@ def main() -> int:
                   0 < bar.find("Automate Test Case") < bar.find("Migration from ReadyAPI")
                   < bar.find("Commit and push") < bar.find("Manual tests")
                   and "Agentic Test Creation<" not in bar and "Convert ReadyAPI<" not in bar)
-            check("Cursor is run from where the cases are, and setup is not a button",
+            check("AI Agent is run from where the cases are, and setup is not a button",
                   'id="auto-selected"' in html and 'id="agent-ask"' in html and 'id="cursor-log"' in html
                   and 'id="agent-setup"' not in html and 'id="agent-generate"' not in html)
             mig = mocked.dom("convert")
             mig = mig[mig.find('id="migration-ask-part"'):]
-            check("the Migration tab asks Cursor about a converted suite or the converter, nothing else",
+            check("the Migration tab asks AI Agent about a converted suite or the converter, nothing else",
                   'id="mig-run"' in mig and 'value="converted"' in mig and 'value="converter"' in mig
                   and 'value="new-test"' not in mig and 'id="converted-suites"' in mig)
             check("the design can be asked for the whole specification",
@@ -928,9 +928,9 @@ def main() -> int:
                   and "the defects are sample data" in html)
             code, rc = press("defects-suggest", {})
             html = mocked.dom("defects")
-            check("mock mode: Suggest reasons, without Cursor",
+            check("mock mode: Suggest reasons, without AI Agent",
                   rc == 0 and "DIFFERS from the current reason" in html
-                  and "a keyword match, not Cursor" in html)
+                  and "a keyword match, not AI Agent" in html)
             code, rc = press("defects-apply", {"--key": "ABC-101", "--reason": "Code defect",
                                                "--confirm-key": "ABC-101"})
             html = mocked.dom("defects")
@@ -1005,16 +1005,16 @@ def main() -> int:
             check("each field of a step can be removed, and a step as a whole",
                   'class="drop d-do"' in html and 'class="drop d-expect"' in html
                   and ">Remove step</button>" in html, html[html.find('class="steps-edit"'):][:300])
-            check("the Migration tab's Cursor log follows its own file, not the Automate tab's",
+            check("the Migration tab's AI Agent log follows its own file, not the Automate tab's",
                   'migration: "migration-cursor"' in agent_js
                   and 'migration: { el: "mig-cursor-log", src: "migration" }' in agent_js)
-            check("each Cursor pane reads its own file, from its own place in it",
+            check("each AI Agent pane reads its own file, from its own place in it",
                   "runnable=${CURSOR_FILES[p.src]}&offset=${p.offset}" in agent_js
                   and "runnable=${CURSOR_FILES[p.src]}&end=1" in agent_js)
             check("Ask Me is one box for a change, a new request or a question",
                   '>Ask Me</button>' in html and 'id="agent-ask-send" disabled' not in tab_new)
             logs_tab = mocked.dom("logs")
-            check("the Logs tab can ask Cursor to change the workbench itself",
+            check("the Logs tab can ask AI Agent to change the workbench itself",
                   'id="wb-run"' in logs_tab and 'id="wb-cursor-log"' in logs_tab and 'id="wb-review"' in logs_tab)
             code, st = mocked.call("/api/workbench-job")
             check("the workbench's own job is named, not taken from the job box",
@@ -1026,7 +1026,7 @@ def main() -> int:
             set_tab = mocked.dom("settings")
             check("the Settings tab takes the tokens, as password boxes, and shows none back",
                   'id="set-jira-pat"' in set_tab and 'type="password"' in set_tab and 'id="settings-save"' in set_tab)
-            check("the Settings tab takes the Cursor key (a password box) and its models",
+            check("the Settings tab takes the AI Agent key (a password box) and its models",
                   'id="set-cursor-key"' in set_tab and 'id="set-cursor-model"' in set_tab
                   and 'id="set-cursor-design-model"' in set_tab)
             code, s = mocked.call("/api/settings")
@@ -1041,16 +1041,16 @@ def main() -> int:
                   and ("fields" in cfg or "problem" in cfg)
                   and all("value" not in f for f in cfg.get("fields") or [] if f.get("kind") == "secret")
                   and ('class="cfg-box' in set_tab or not cfg.get("fields")), str(cfg)[:200])
-            check("the cases can be refined with Cursor from the review",
+            check("the cases can be refined with AI Agent from the review",
                   'id="refine-run"' in html and 'id="refine-ask"' in html and 'id="wf-finalize"' in html)
             check("Update in Xray previews before it sends",
                   'id="xray-update-preview"' in html and 'id="xray-update-send"' in html)
             check("Publish to Xray can name an existing Test Execution",
                   'id="agent-xray"' in html and 'id="agent-xray-exec"' in html)
-            check("a screenshot can be pasted into each box whose words go to Cursor",
+            check("a screenshot can be pasted into each box whose words go to AI Agent",
                   all(f'id="{b}-pasted"' in html for b in
                       ("refine-ask", "design-notes", "agent-ask", "mig-ask", "wb-ask", "manual-notes"))
-                  and "Ctrl+V pastes a screenshot for Cursor" in html)
+                  and "Ctrl+V pastes a screenshot for AI Agent" in html)
             check("a run can set the suite's parallel threads, 1 to 6 at most",
                   'id="run-threads"' in html and '<option value="6">6</option>' in html
                   and '<option value="7">' not in html)
@@ -1073,7 +1073,7 @@ def main() -> int:
             check("each case's suites show on its row, from the rules",
                   ">Suites<" in html and 'class="groups"' in html and "from the rules" in html)
             code, runnables = mocked.call("/api/runnables")
-            check("Cursor can be asked to answer a design's open questions",
+            check("AI Agent can be asked to answer a design's open questions",
                   code == 200 and "answer-questions" in runnables)
             code, ans = mocked.call("/api/answers?job=ABC-201")
             check("a design's open questions can be answered from the page",
@@ -1121,11 +1121,11 @@ def main() -> int:
             code, rc = press("agent-design", None, route="/api/design",
                              extra={"swagger": spec, "service": "rates", "speed": "fast"})
             html = mocked.dom("new")
-            check("mock mode: Design the tests, without Cursor",
+            check("mock mode: Design the tests, without AI Agent",
                   rc == 0 and "MOCK. This is not a design." in html
                   and "[MOCK] POST /groups/{id}/rates succeeds" in html, f"rc={rc}")
             code, rc = press("agent-setup", {})
-            check("mock mode: Check Cursor setup needs no SDK and no key", rc == 0)
+            check("mock mode: Check AI Agent setup needs no SDK and no key", rc == 0)
 
             # ---- the review of a proposed change -----------------------------
             # A change waiting for a person, as the Agentic Test Creation tab leaves it. The
@@ -1186,7 +1186,7 @@ def main() -> int:
                                          "why": "<b>w</b>", "fix": "f", "evidence": "<i>e</i>"}],
                            "unconfirmed": [], "dropped": 0, "over": 0}, fh)
             html = mocked.dom("agent")
-            check("what Cursor wrote reaches the page as text, never as markup",
+            check("what AI Agent wrote reaches the page as text, never as markup",
                   "&lt;img src=x onerror=alert(1)&gt;" in html and "<img src=x" not in html
                   and "&lt;i&gt;e&lt;/i&gt;" in html)
             check("files that were not read are said above the findings",
@@ -1217,7 +1217,7 @@ def main() -> int:
             # ---- an old outcome: worded by what happened, and put away ---------
             with io.open(os.path.join(job_dir, "review.json"), "w", encoding="utf-8") as fh:
                 json.dump({"state": "rejected", "scope": "new-test", "why": "timeout", "undone": True,
-                           "reason": "Cursor call failed: Cursor did not finish within 2700s",
+                           "reason": "AI Agent call failed: AI Agent did not finish within 2700s",
                            "updated": "2026-10-10T12:00:00Z"}, fh)
             html = mocked.dom("agent")
             check("a timeout is not called a broken rule, and says when it was",
@@ -1236,13 +1236,13 @@ def main() -> int:
                   "change to the workbench did not finish" in html)
             with io.open(os.path.join(job_dir, "review.json"), "w", encoding="utf-8") as fh:
                 json.dump({"state": "rejected", "scope": "new-test", "why": "timeout", "undone": True,
-                           "reason": "Cursor call failed: Cursor did not finish within 2700s",
+                           "reason": "AI Agent call failed: AI Agent did not finish within 2700s",
                            "updated": "2026-10-10T12:00:00Z"}, fh)
             html = mocked.dom("agent")
             check("an outcome with nothing in the tree offers Dismiss",
                   'id="agent-dismiss" title=' in html and 'id="agent-dismiss" disabled' not in html)
             with io.open(os.path.join(job_dir, "cursor.log"), "w", encoding="utf-8") as fh:
-                fh.write("2026-10-10 12:00:00  an old conversation with Cursor\n")
+                fh.write("2026-10-10 12:00:00  an old conversation with AI Agent\n")
             with io.open(os.path.join(job_dir, "agent-generate.log"), "w", encoding="utf-8") as fh:
                 fh.write("FAIL an old command log\n")
             with io.open(os.path.join(job_dir, "agent-prompt-1.txt"), "w", encoding="utf-8") as fh:
@@ -1316,7 +1316,7 @@ def main() -> int:
                                           "flags": ["<u>f</u>"], "source": "<s>"}],
                            "updates": []}, fh)
             html = mocked.dom("manual")
-            check("what a document or Cursor wrote reaches the Manual tests tab as text",
+            check("what a document or AI Agent wrote reaches the Manual tests tab as text",
                   "&lt;img src=x onerror=alert(1)&gt;" in html and "<img src=x" not in html
                   and "&lt;b&gt;a&lt;/b&gt;" in html and "&lt;u&gt;f&lt;/u&gt;" in html)
             check("what is not whole is said above the cases, and no updates without existing tests",

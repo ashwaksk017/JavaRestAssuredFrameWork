@@ -275,7 +275,7 @@ def build_conversion_report(
         lines.append("")
     lines.append("## Next")
     lines.append("")
-    lines.append("If assist is enabled and an API key is set, a Cursor agent "
+    lines.append("If assist is enabled and an API key is set, an AI Agent "
                  "will attempt **emitter/helper** fixes (not hand-edits of "
                  "imported tests), then write `cursor_assist_after.md`.")
     lines.append("")
@@ -337,7 +337,7 @@ def load_memory() -> str:
 
 def _memory_header() -> str:
     return (
-        "# Cursor assist memory\n\n"
+        "# AI Agent assist memory\n\n"
         "Lessons from converter-assist runs. The next convert prepends this "
         "file to the fix-agent prompt so the same ReadyAPI-vs-emit mistakes "
         "are less likely to repeat. Keep bullets short. No secrets.\n"
@@ -550,7 +550,7 @@ def _sdk_prompt(prompt: str, cfg: CursorAssistConfig) -> dict[str, Any]:
         text = str(result)
     run_id = getattr(result, "id", "") or ""
     if str(status).lower() == "error":
-        raise RuntimeError(f"Cursor agent run failed id={run_id} status={status}")
+        raise RuntimeError(f"AI Agent run failed id={run_id} status={status}")
     return {"status": str(status), "result": str(text), "id": str(run_id)}
 
 
@@ -667,7 +667,7 @@ def write_index(
         report_rel: str, after_rel: str,
         fix_status: str, run_id: str = "") -> str:
     body = (
-        f"# Cursor assist\n\n"
+        f"# AI Agent assist\n\n"
         f"1. **Conversion report** (before fix): [{report_rel}]({report_rel})\n"
         f"2. **Fix attempt**: {fix_status}"
         f"{f' (run `{run_id}`)' if run_id else ''}\n"
@@ -701,8 +701,8 @@ def flush(
     if not gaps:
         print("[ra_converter] cursor assist: enabled, no confusion signals "
               "(FULL coverage is not reviewed)")
-        cursor_log("Cursor assist is on, and the convert found nothing it was unsure of "
-                   "(no TODO, stub or partial step, no serious preflight finding): Cursor was "
+        cursor_log("AI Agent assist is on, and the convert found nothing it was unsure of "
+                   "(no TODO, stub or partial step, no serious preflight finding): AI Agent was "
                    "not asked about the converter. Whether the result compiles is checked next.",
                    cfg.api_key)
         return None
@@ -717,7 +717,7 @@ def flush(
         print("[ra_converter] cursor assist: enabled but no API key "
               "(set CURSOR_API_KEY or apiKey in cursor_agent.json) -- "
               "fix skipped, report kept")
-        cursor_log(f"Cursor assist is on but there is no Cursor key (Settings tab): Cursor was not "
+        cursor_log(f"AI Agent assist is on but there is no AI Agent key (Settings tab): AI Agent was not "
                    f"asked. {len(gaps)} gap(s) are in {report_path}.")
         write_text(after_path, "# After-fix report\n\nFix skipped: no API key.\n")
         return write_index(
@@ -730,9 +730,9 @@ def flush(
     prompt = build_prompt(
         gaps, cfg.max_samples_per_category, suites,
         report_path=report_path, memory_text=memory)
-    print(f"[ra_converter] cursor assist: calling Cursor agent to fix "
+    print(f"[ra_converter] cursor assist: calling AI Agent to fix "
           f"(model={cfg.model}, cwd={cfg.cwd})")
-    cursor_log(f"asking Cursor about {len(gaps)} conversion gap(s) in {', '.join(suites)} "
+    cursor_log(f"asking AI Agent about {len(gaps)} conversion gap(s) in {', '.join(suites)} "
                f"(model {cfg.model}; prompt {len(prompt)} characters; the gaps: {report_path})",
                cfg.api_key)
     fn = call_agent or _streamed_prompt
@@ -765,10 +765,10 @@ def flush(
         f"Restore narrowed smoke XMLs after `--clean`.\n"
     )
     write_text(after_path, after_body)
-    cursor_log(f"Cursor answered ({result.get('status')}, run {result.get('id')}). What it changed "
+    cursor_log(f"AI Agent answered ({result.get('status')}, run {result.get('id')}). What it changed "
                f"in the converter: {changed.strip()[:400] or 'nothing'}. The whole answer: {after_path}",
                cfg.api_key)
-    cursor_log("----- Cursor's answer -----\n" + text[:6000], cfg.api_key)
+    cursor_log("----- AI Agent's answer -----\n" + text[:6000], cfg.api_key)
     try:
         append_memory_run(
             suites, len(gaps),

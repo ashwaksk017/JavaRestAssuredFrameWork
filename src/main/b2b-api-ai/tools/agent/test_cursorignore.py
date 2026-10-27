@@ -78,7 +78,7 @@ class WhatCursorMayRead(unittest.TestCase):
                                          "secret", "application-"))]
         self.assertTrue(wanted)
         for p in wanted:
-            self.assertIn(p, self.pats, f".gitignore keeps {p} out of git; .cursorignore must keep it from Cursor")
+            self.assertIn(p, self.pats, f".gitignore keeps {p} out of git; .cursorignore must keep it from AI Agent")
 
 
 class TheFilesToOpen(unittest.TestCase):

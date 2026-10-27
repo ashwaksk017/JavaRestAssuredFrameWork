@@ -195,7 +195,7 @@ RUNNABLES = {
     # converter's audit notes. Reads the project; writes only the job.
     "fix-brief": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "fixbrief.py")],
-        "label": "Write the brief for Cursor to fix a failing converted case",
+        "label": "Write the brief for AI Agent to fix a failing converted case",
         "options": {"--job": "text", "--signature": "text", "--test": "text", "--suite": "text",
                     "--scope": "text"},
     },
@@ -256,7 +256,7 @@ RUNNABLES = {
     # compile, in a job of its own, held for review only once it does.
     "convert-fix": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "convertfix.py")],
-        "label": "Check that the convert compiles; Cursor fixes each suite that does not",
+        "label": "Check that the convert compiles; AI Agent fixes each suite that does not",
         "options": {"--job": "text", "--no-cursor": "flag"},
     },
     # The converted cases' ordered calls, by project (flowcatalog.py): what
@@ -264,7 +264,7 @@ RUNNABLES = {
     # a convert; the result is committed.
     "flow-catalog": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "flowcatalog.py"), "build"],
-        "label": "Rebuild the flow catalog from the converted suites (what Cursor reuses for new cases)",
+        "label": "Rebuild the flow catalog from the converted suites (what AI Agent reuses for new cases)",
         "options": {},
     },
     # The whole gate, as `python tools/verify_all.py`. No options: what it
@@ -335,7 +335,7 @@ RUNNABLES = {
     },
     "defects-suggest": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "defects.py"), "suggest"],
-        "label": "Cursor proposes a reason for each loaded defect",
+        "label": "AI Agent proposes a reason for each loaded defect",
         "options": {"--job": "text", "--keys": "text"},
     },
     "defects-apply": {
@@ -384,7 +384,7 @@ RUNNABLES = {
     # and copied into a log this API serves.
     "agent-design": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "design.py")],
-        "label": "Design the API test cases (Cursor, plan mode)",
+        "label": "Design the API test cases (AI Agent, plan mode)",
         "options": {"--job": "text", "--service": "text", "--speed": "text",
                     "--mode": "text", "--fresh": "flag", "--whole-spec": "flag"},
     },
@@ -403,7 +403,7 @@ RUNNABLES = {
     # decided until a person takes a suggestion on the review table.
     "suite-suggest": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "suitesuggest.py")],
-        "label": "Cursor suggests which suites each case belongs in",
+        "label": "AI Agent suggests which suites each case belongs in",
         "options": {"--job": "text", "--ids": "text"},
     },
     # The Run tests tab. What is run is a suite file under Suites/, a test
@@ -428,19 +428,19 @@ RUNNABLES = {
     # network, and it refuses without --confirm <job>.
     "agent-setup": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "loop.py"), "setup"],
-        "label": "Check Cursor: SDK, key, git",
+        "label": "Check AI Agent: SDK, key, git",
         "options": {"--job": "text"},
     },
     "agent-generate": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "loop.py"), "generate"],
-        "label": "Cursor makes the change, then it is verified",
+        "label": "AI Agent makes the change, then it is verified",
         "options": {"--job": "text", "--scope": "text", "--suite": "text", "--past-stops": "flag"},
     },
     # The reviewer's words are written by the server to a fixed file in the
     # job directory; the command reads them from there, never from a path.
     "agent-automate": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "loop.py"), "automate"],
-        "label": "Cursor writes the tests of the chosen approved cases, in the job's one change",
+        "label": "AI Agent writes the tests of the chosen approved cases, in the job's one change",
         "options": {"--job": "text", "--cases": "text", "--past-stops": "flag"},
     },
     # The last run's results, to a new Xray Test Execution; the regression
@@ -459,7 +459,7 @@ RUNNABLES = {
     },
     "agent-followup": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "loop.py"), "followup"],
-        "label": "Cursor changes what it wrote, as the reviewer asks; then it is verified",
+        "label": "AI Agent changes what it wrote, as the reviewer asks; then it is verified",
         "options": {"--job": "text"},
     },
     # A question about the job: Cursor answers in plan mode in the project
@@ -470,12 +470,12 @@ RUNNABLES = {
     # kept until a person saves the answers on the page.
     "answer-questions": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "answerq.py")],
-        "label": "Cursor answers the design's open questions (it reads; a person keeps them)",
+        "label": "AI Agent answers the design's open questions (it reads; a person keeps them)",
         "options": {"--job": "text"},
     },
     "agent-question": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "ask.py")],
-        "label": "Cursor answers a question about this job (it reads; nothing is changed)",
+        "label": "AI Agent answers a question about this job (it reads; nothing is changed)",
         "options": {"--job": "text"},
     },
     # Reads the job's proposed.diff and asks Cursor about it, in plan mode
@@ -483,7 +483,7 @@ RUNNABLES = {
     # job's state. No path and no text is taken from the page.
     "agent-review": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "codereview.py")],
-        "label": "Cursor reads the proposed change and lists what looks wrong",
+        "label": "AI Agent reads the proposed change and lists what looks wrong",
         "options": {"--job": "text"},
     },
     "agent-approve": {
@@ -1470,14 +1470,14 @@ def migration_ask(job: str, scope: str, suite: str, text: str) -> dict:
     suite = str(suite or "").strip()
     text = str(text or "").strip()
     if scope not in MIGRATION_SCOPES:
-        raise ValueError("choose what Cursor may change: this suite's converted Java, or the converter")
+        raise ValueError("choose what AI Agent may change: this suite's converted Java, or the converter")
     if scope == "converted":
         if not re.fullmatch(r"[a-z0-9_]{1,80}", suite):
             raise ValueError("name the converted suite (its folder under support/)")
         if not os.path.isdir(os.path.join(ROOT, "src", "main", "java", "com", "hi", "api", "support", suite)):
             raise ValueError(f"suite {suite} is not converted on this machine")
     if not text:
-        raise ValueError("write what Cursor should change")
+        raise ValueError("write what AI Agent should change")
     if len(text) > 20000:
         raise ValueError("that is more than 20,000 characters; keep the request short")
     # Everything that can refuse is asked BEFORE a file is written: a
@@ -1485,7 +1485,7 @@ def migration_ask(job: str, scope: str, suite: str, text: str) -> dict:
     running = busy(job)
     review = _read_json(os.path.join(out, "review.json"))
     if running or review.get("state") == "generating":
-        raise ValueError(f"{running or 'a Cursor run'} is running for this job; wait for it, or Stop it")
+        raise ValueError(f"{running or 'an AI Agent run'} is running for this job; wait for it, or Stop it")
     held = migration_held(job)
     if held:
         raise ValueError(f"this job holds {', '.join(held)}; a migration request is its own job -- "
@@ -1501,7 +1501,7 @@ def migration_ask(job: str, scope: str, suite: str, text: str) -> dict:
         if kind == "other":
             raise ValueError("this job's plan is not a migration request; name a new job (top right)")
         if kind == "fix":
-            raise ValueError("this job holds the brief Fix with Cursor wrote: leave the box empty and "
+            raise ValueError("this job holds the brief Fix with AI Agent wrote: leave the box empty and "
                              "press Ask Me to run it, or name a new job for a request of your own")
     os.makedirs(out, exist_ok=True)
     if waiting:
@@ -1760,7 +1760,7 @@ def auto_fix(job: str) -> dict:
         record["error"] = str(e)[:500]
     _write(os.path.join(out, AUTO_FIX_FILE), record)
     try:
-        diag.job_note(job, "[jobs] the failed compile was sent to Cursor by itself: "
+        diag.job_note(job, "[jobs] the failed compile was sent to AI Agent by itself: "
                       + (f"{record.get('runnable')} for job {record.get('job')}" if record["sent"]
                          else f"not sent ({record.get('error')})"), ROOT)
     except Exception:                                    # noqa: BLE001
@@ -1788,7 +1788,7 @@ def run_ask(job: str, text: str, images=None) -> dict:
     if info.get("blocked"):
         raise ValueError(info["blocked"])
     if not text and info["kind"] != "convert-fix":
-        raise ValueError("write what Cursor should fix (the box was prefilled from the failed tests or compile errors)")
+        raise ValueError("write what AI Agent should fix (the box was prefilled from the failed tests or compile errors)")
     # One command at a time: the run itself, a convert, another Cursor run.
     now = [(j, r) for j, r in running_now() if r in EXCLUSIVE]
     if now:
@@ -2057,7 +2057,7 @@ def start(job: str, runnable: str, options: dict) -> dict:
             raise RuntimeError(f"{alive[0][1]} is running for job {alive[0][0]!r}: the "
                                f"workbench is changed only while nothing else runs. Wait for it.")
         if not wb and any(is_workbench_job(j) for j, _r in alive):
-            raise RuntimeError("Cursor is changing the workbench itself: nothing else starts "
+            raise RuntimeError("AI Agent is changing the workbench itself: nothing else starts "
                                "until that run has finished. Wait for it, or Stop it on the "
                                "Logs tab.")
         # The slot is taken now, inside the lock: two requests at the same

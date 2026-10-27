@@ -88,7 +88,7 @@ class Answering(Base):
             self.job, [{"question": Q2, "answer": "the person's answer", "keep": False}], self.root)
         rc, _said, seen = self.run_it(json.dumps({"answers": [
             {"question": Q1, "answer": "a", "entry": "e1"},
-            {"question": Q2, "answer": "Cursor's other answer", "entry": "a rule"}]}))
+            {"question": Q2, "answer": "AI Agent's other answer", "entry": "a rule"}]}))
         self.assertEqual(rc, 0)
         self.assertIn("ANSWERED by a person: the person's answer", seen[0])
         s = {x["question"]: x for x in self.suggestions()}

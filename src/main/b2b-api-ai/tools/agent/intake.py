@@ -1028,7 +1028,7 @@ def main(argv=None) -> int:
                          "(pasted.txt, pasted-pages.txt); it wins over --text-file. The page "
                          "uses this, never a path: a "
                          "path confined to the repository still reaches the private "
-                         "configuration, and whatever is read here is quoted to Cursor")
+                         "configuration, and whatever is read here is quoted to AI Agent")
     ap.add_argument("--link", action="append", default=[],
                     help="a Jira story (link or key) or a Confluence page link; "
                          "repeatable. One story a job")

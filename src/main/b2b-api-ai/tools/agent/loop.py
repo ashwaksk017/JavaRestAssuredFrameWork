@@ -382,9 +382,9 @@ WORKBENCH_MAP = """WHERE THINGS ARE IN THE WORKBENCH (tools/agent):
   server.py                              the HTTP server: every /api/... route
   jobs.py                                what a button may start (RUNNABLES), job folders,
                                          start/stop, status and logs
-  loop.py                                the Cursor runs: prompt, write roots, verify, review,
+  loop.py                                the AI Agent runs: prompt, write roots, verify, review,
                                          approve, discard
-  cursor_call.py                         one call to Cursor through cursor-sdk
+  cursor_call.py                         one call to AI Agent through cursor-sdk
   design.py, casereview.py, suitemap.py  designing and reviewing test cases
   intake.py, xraytests.py, xrayimport.py reading a story; Xray tests
   manualtests.py, defects.py, codereview.py, publish.py, fixbrief.py, ...  the other tabs
@@ -669,7 +669,7 @@ def call_cursor(prompt: str, root: str, on_event=None, deadline: float = 0,
                 fresh_prompt: str = "") -> dict:
     """One prompt to Cursor in this repository. See cursor_call.py for why
     it is a session with streamed progress rather than one blocking call."""
-    diag.step(what or "Asking Cursor to write the change (this can take several minutes)")
+    diag.step(what or "Asking AI Agent to write the change (this can take several minutes)")
     ca, cfg = cursor_config(root)
     redact = lambda s: ca.redact_for_log(str(s), cfg.api_key)
     info = {}
@@ -1277,7 +1277,7 @@ _SCOPE_BRIEFING = {
         "You are changing the test workbench itself: the web page (tools/agent/ui: "
         "index.html, app.js, app.css -- plain JavaScript, no framework, no build step) "
         "and its Python server and commands (tools/agent/*.py, standard library only). "
-        "Text from Jira, Confluence, Cursor or a test run reaches the page only as "
+        "Text from Jira, Confluence, AI Agent or a test run reaches the page only as "
         "TEXT (el(..., {text}) / textContent), never as HTML. Keep the page's look "
         "and wording. Add or extend a test for what you change: test_*.py for Python, "
         "check_ui.py for the page. The person restarts the workbench to use the "
@@ -2733,7 +2733,7 @@ def write_job_suite(root: str, job_dir: str, scope: dict) -> str:
          '<!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">',
          "",
          f"<!-- The tests written for job {job.replace('-', '- ')}. Written by the test workbench",
-         "     (tools/agent) when Cursor finished; run on their own with",
+         "     (tools/agent) when AI Agent finished; run on their own with",
          f"       mvn -o test -DsuiteXmlFile={rel}",
          "     testng-jira.xml runs them too, with every other story's. -->",
          f'<suite name="jira-{job}" verbose="1">',
@@ -2781,7 +2781,7 @@ def write_group_suites(root: str, job_dir: str, scope: dict) -> list:
     missing = sorted(expected - used)
     if missing and texts:
         said.append("WARN no test of this change is in the group(s) " + ", ".join(missing)
-                    + " a case was mapped to; ask Cursor to add them, or change the case's groups")
+                    + " a case was mapped to; ask AI Agent to add them, or change the case's groups")
     return said
 
 
@@ -3329,9 +3329,9 @@ def _after_cursor(attempt: int, detail: str) -> str:
     """The status line once Cursor has returned. A later attempt must not
     reuse the first attempt's sentence, or the page looks stuck."""
     if attempt > 1:
-        return (f"Attempt {attempt}. Cursor has written the code again. {detail} "
+        return (f"Attempt {attempt}. AI Agent has written the code again. {detail} "
                 "- not ready to test until this passes")
-    return f"Cursor has finished writing the code. {detail} - not ready to test until this passes"
+    return f"AI Agent has finished writing the code. {detail} - not ready to test until this passes"
 
 
 def fast_compile_cmd(cmd: list):
@@ -3656,15 +3656,15 @@ def cursor_setup_check(root: str) -> dict:
         return fail(str(e))
 
     if mocked:
-        lines.append("MOCK CURSOR is switched on (tools/agent/mock.json): Cursor is not "
-                       "installed, asked for a key, or called. Run Cursor will write one "
+        lines.append("MOCK AI AGENT is switched on (tools/agent/mock.json): AI Agent is not "
+                       "installed, asked for a key, or called. Run AI Agent will write one "
                        "placeholder test so the checks, the review and Discard can be tried; "
                        "it cannot be approved.")
         rc, out = git(root, "rev-parse", "--is-inside-work-tree")
         if rc != 0:
             return fail(f"not a git work tree: {out.strip()[:200]}")
         lines.append(" ok  git work tree")
-        lines.append(" ..  set \"cursor\": false in tools/agent/mock.json to check the real Cursor")
+        lines.append(" ..  set \"cursor\": false in tools/agent/mock.json to check the real AI Agent")
         return {"ok": True, "mock": True, "model": "mock", "sdk": "mock", "bridge": "mock",
                 "problem": "", "lines": lines}
 
@@ -3676,23 +3676,23 @@ def cursor_setup_check(root: str) -> dict:
 
     _ca, cfg = cursor_config(root)
     if not cfg.api_key:
-        return fail("no Cursor API key. Set CURSOR_API_KEY, or put it in "
+        return fail("no AI Agent API key. Set CURSOR_API_KEY, or put it in "
                       "tools/ra_converter/cursor_agent.json (gitignored; copy the "
                       ".example beside it).",
-                      "no Cursor API key")
+                      "no AI Agent API key")
     key_from = "CURSOR_API_KEY" if os.environ.get("CURSOR_API_KEY", "").strip() else \
         (cfg.config_path or "tools/ra_converter/cursor_agent.json")
-    lines.append(f" ok  Cursor API key found ({len(cfg.api_key)} characters), "
+    lines.append(f" ok  AI Agent API key found ({len(cfg.api_key)} characters), "
                    f"model {cfg.model}, from {key_from}")
     lines.append(" ..  note: `enabled` in cursor_agent.json is only for the converter's "
                    "assist during reconvert; the workbench uses the key whenever you run "
                    "Design or Automate.")
     ok, why = cursor_call.warm_up(_ca)
     if ok is False:
-        return fail(f"the Cursor bridge did not start: {why}. On Windows, allow "
+        return fail(f"the AI Agent bridge did not start: {why}. On Windows, allow "
                     f"the cursor-sdk bridge through antivirus and check that Node "
                     f"is not blocked.", f"bridge: {why}")
-    lines.append(f" ok  Cursor bridge {why}" if ok else f" ..  Cursor bridge {why}")
+    lines.append(f" ok  AI Agent bridge {why}" if ok else f" ..  AI Agent bridge {why}")
     rc, out = git(root, "rev-parse", "--is-inside-work-tree")
     if rc != 0:
         return fail(f"not a git work tree: {out.strip()[:200]}")
@@ -3787,7 +3787,7 @@ def automate_refusal(job_dir: str, ids) -> str:
         return "a run of this job is still going. Wait for it, or Stop it."
     if state in ("pending-review", "verify-failed"):
         if prior.get("mock"):
-            return ("the change waiting was made by the stand-in (mock Cursor). Discard it on the "
+            return ("the change waiting was made by the stand-in (mock AI Agent). Discard it on the "
                     "Commit and push tab, set \"cursor\": false in tools/agent/mock.json, then Automate.")
         if (prior.get("scope") or "new-test") != "new-test":
             return (f"the change waiting for this job was made for {prior.get('scope')}"
@@ -3881,7 +3881,7 @@ def cmd_automate(job_dir: str, root: str, policy: dict, ids, agent=None, verifie
                 f"TEST CASES PROPOSED FOR THIS JOB), in the same change: keep everything already "
                 f"written, and add to it."))
         else:
-            say(f" .. Cursor writes the test(s) of: {', '.join(ids)}")
+            say(f" .. AI Agent writes the test(s) of: {', '.join(ids)}")
             rc = cmd_generate(job_dir, root, policy, "new-test", "", agent, verifier)
     finally:
         _AUTOMATE_ONLY = set()
@@ -4001,16 +4001,16 @@ def cmd_followup(job_dir: str, root: str, policy: dict, agent=None, verifier=Non
             pass
     text = (_read(os.path.join(job_dir, FOLLOWUP_FILE)) if text is None else text).strip()
     if not text:
-        say("FAIL nothing was asked: write what Cursor should change in the box first.")
+        say("FAIL nothing was asked: write what AI Agent should change in the box first.")
         return 1
     prior = read_review(job_dir)
     if prior.get("state") not in ("pending-review", "verify-failed"):
         say(f"FAIL there is no change waiting for review to work on (state: "
-            f"{prior.get('state')}). Run Cursor first.")
+            f"{prior.get('state')}). Run AI Agent first.")
         return 1
     if prior.get("mock"):
-        say("FAIL the change waiting here was made by the stand-in (mock Cursor); there is "
-            "nothing real to ask Cursor to change. Discard it, set \"cursor\": false in "
+        say("FAIL the change waiting here was made by the stand-in (mock AI Agent); there is "
+            "nothing real to ask AI Agent to change. Discard it, set \"cursor\": false in "
             "tools/agent/mock.json, and run again.")
         return 1
     return cmd_generate(job_dir, root, policy, prior.get("scope") or "new-test",
@@ -4085,7 +4085,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             lambda prompt: {"result": "MOCK AGENT: nothing was changed. The mock only "
                                       "writes its placeholder for the new-test scope.",
                             "status": "finished", "id": "mock", "model": "mock"})
-        say("MOCK CURSOR: Cursor is not called. A placeholder test is written so the "
+        say("MOCK AI AGENT: AI Agent is not called. A placeholder test is written so the "
             "checks and the review can be tried. It cannot be approved; use Discard.")
     if agent is None:
         try:
@@ -4094,8 +4094,8 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         except RuntimeError as e:
             say(f"FAIL {e}")
             return 1
-    diag.step("Writing the placeholder test (mock mode: Cursor is not asked)" if mocked
-              else "Getting ready to ask Cursor for the change")
+    diag.step("Writing the placeholder test (mock mode: AI Agent is not asked)" if mocked
+              else "Getting ready to ask AI Agent for the change")
     cursor_attempt = [1]
     # The conversation of this run's first call, and what a repair sends to it.
     conv = {"id": "", "repair": ""}
@@ -4109,9 +4109,9 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         out = call_cursor(
             short or prompt, root, on_event=lambda line: clog.write("  cursor: " + line),
             deadline=cursor_deadline(policy, "generate"), quiet=cursor_quiet(policy),
-            what=("Asking Cursor to write the change (this can take several minutes)"
+            what=("Asking AI Agent to write the change (this can take several minutes)"
                   if cursor_attempt[0] == 1 else
-                  "Cursor is fixing what the check found (attempt "
+                  "AI Agent is fixing what the check found (attempt "
                   f"{cursor_attempt[0]})"),
             resume_id=conv["id"] if short else "", fresh_prompt=prompt if short else "")
         if out.get("agent_id"):
@@ -4135,7 +4135,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                 and "different brief" not in (design_note or "") and "MOCK" not in (design_note or ""):
             say("FAIL the review left no case to automate: every designed case is rejected, "
                 "or none that is approved is marked Automate. Tick Approve and Automate on "
-                "the Automate Test Case tab for the cases Cursor should write.")
+                "the Automate Test Case tab for the cases AI Agent should write.")
             return 1
         if not design_text:
             why = design_note or "it holds no case"
@@ -4143,7 +4143,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             # matches wants a review, not another design.
             if "Review the cases" in why:
                 next_step = ("Next: on the Automate Test Case tab, tick Approve (and Automate) on "
-                             "the cases Cursor should write, then run again.")
+                             "the cases AI Agent should write, then run again.")
             else:
                 next_step = ("Next: Design again from the brief the job has now, review the cases, "
                              "then run again -- or remove design.json to run from the plan alone.")
@@ -4446,7 +4446,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
     for attempt in range(1, attempts + 1):
         cursor_attempt[0] = attempt
         continuous = attempt > 1
-        say(f" .. calling Cursor (attempt {attempt}"
+        say(f" .. calling AI Agent (attempt {attempt}"
             + (f", until it verifies or {attempts} attempts" if until_fixed else f" of {attempts}")
             + f") -- the conversation is in {cursor_log_name(scope['name'])}")
         prompt = build_prompt(job_dir, policy, scope, repair, root, followup=followup)
@@ -4459,7 +4459,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         if attempt == 1:
             # Its own block: the prompt below is cut off in this log, and
             # where Cursor was told to look is the part a person asks about.
-            clog.block("what Cursor was told about where things are",
+            clog.block("what AI Agent was told about where things are",
                        project_map(root, policy, scope))
             _sk, ex_paths = skill_and_example_block(root, policy, scope,
                                                     hint=example_hint(job_dir))
@@ -4475,12 +4475,12 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             answer = call(prompt)
         except Exception as e:                           # noqa: BLE001
             diag.trace()
-            say(f"FAIL Cursor call failed: {e}")
+            say(f"FAIL AI Agent call failed: {e}")
             clog.write(f"call FAILED after {time.time() - started:.1f}s: {e}")
             # A call that failed is not a call that did nothing. Everything
             # the finished path checks before trusting the tree is checked
             # here too, and anything it finds is said.
-            reason = f"Cursor call failed: {e}"
+            reason = f"AI Agent call failed: {e}"
             why = "timeout" if getattr(e, "kind", "") == "timeout" else "call"
 
             def checked() -> tuple:
@@ -4548,7 +4548,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                         " The tree was put back, but the run "
                         + ("wrote again afterwards" if late else
                            "could not be confirmed stopped")
-                        + ". End the Cursor bridge process (cursor-sdk-bridge / "
+                        + ". End the AI Agent bridge process (cursor-sdk-bridge / "
                           "node) FIRST if it is still running, then use Discard "
                           "once: it puts back anything written after this.")
             if found:
@@ -4573,18 +4573,18 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                    f"model={answer.get('model', '')}")
         clog.block("answer", text)
         if answer.get("quiet"):
-            say(" .. Cursor went quiet after its last word and was not waited for further; "
+            say(" .. AI Agent went quiet after its last word and was not waited for further; "
                 "checking what it wrote")
         elif answer.get("ended_in_timeout"):
-            say("WARN the time limit ended the run after Cursor had answered; what it wrote is "
+            say("WARN the time limit ended the run after AI Agent had answered; what it wrote is "
                 "checked rather than undone. The verify step decides.")
         elif answer.get("ended_in_error"):
-            say("WARN Cursor reported an error at the end of the run, but it had answered; what it "
+            say("WARN AI Agent reported an error at the end of the run, but it had answered; what it "
                 "wrote is checked rather than undone. The verify step decides.")
             for line in answer.get("diagnostics") or []:
                 clog.write(f"cursor error detail: {line}")
         else:
-            say(" .. Cursor finished; checking what it changed")
+            say(" .. AI Agent finished; checking what it changed")
 
         suite_rel = write_job_suite(root, job_dir, scope)
         if suite_rel:
@@ -4600,8 +4600,8 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             was = call_commit if (call_commit and branch_now == branch) else commit
             msg = (f"HEAD moved ({branch}@{was[:8]} -> {branch_now}@"
                    f"{commit_now[:8]})"
-                   + (" during the Cursor call" if was == call_commit and call_commit else "")
-                   + ". Nothing may commit or switch branches while Cursor runs -- "
+                   + (" during the AI Agent call" if was == call_commit and call_commit else "")
+                   + ". Nothing may commit or switch branches while AI Agent runs -- "
                    f"not the agent, not anyone else. Nothing was reverted for this: "
                    f"check `git reflog` and put the branch back by hand.")
             say(f"FAIL {msg}")
@@ -4687,11 +4687,11 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             if (followup or _REQUEST["text"]) and said:
                 # A question, or a request that needed no file changed: the
                 # answer is the outcome, said here, not a failure.
-                say(" .. Cursor changed no file. It answered:")
+                say(" .. AI Agent changed no file. It answered:")
                 for line in said.splitlines()[:60]:
                     say("    " + line[:400])
                 clog.write("ANSWERED without changing a file")
-                reject("Cursor answered and changed no file", restore=False, why="answered")
+                reject("AI Agent answered and changed no file", restore=False, why="answered")
                 return 0                    # an answer is what was asked for
             if attempt < attempts:
                 repair = (
@@ -4700,7 +4700,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                     "csv/manual data sheets, templates, and suite XML the plan requires. "
                     "Do not reply with only a description of what you would write."
                     + (f"\n\nYour last reply began with:\n{said[:4000]}" if said else ""))
-                say(f"FAIL the agent changed no file; asking Cursor again (attempt "
+                say(f"FAIL the agent changed no file; asking AI Agent again (attempt "
                     f"{attempt + 1} of {attempts})")
                 clog.write("NO FILES CHANGED -- another attempt with a repair prompt")
                 continue
@@ -4798,7 +4798,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
             say(f"WARN none of the {len(given_ids)} case(s) written is in Xray yet, so their tests "
                 f"carry no Xray key and Publish to Xray will have nothing to send for them. "
                 f"Create in Xray first (Review the designed cases), then Automate -- or ask "
-                f"Cursor to add the keys once they exist.")
+                f"AI Agent to add the keys once they exist.")
         if handed:
             landed = xray_landed(root, files, handed)
             if landed["missing"]:
@@ -4845,7 +4845,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                         "name": "xray-keys-in-files",
                         "rc": 1,
                         "tail": (
-                            "Handed Xray Test keys must appear in what Cursor wrote: put each key "
+                            "Handed Xray Test keys must appear in what AI Agent wrote: put each key "
                             "in the jira_xray_id column of its csv/manual/ data row (and jira_issue "
                             "for the story), or in @XrayTest on the test method.\n\n"
                             f"Still missing: {gaps}\n\n"
@@ -4890,10 +4890,10 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                 # The same step, the same output: the last attempt changed
                 # nothing that mattered. Another would not either.
                 say(f" .. the errors are exactly as they were after attempt {attempt - 1}: "
-                    f"Cursor is not getting anywhere, so no further attempt is made")
+                    f"AI Agent is not getting anywhere, so no further attempt is made")
                 clog.write("STOPPED: the verify output did not change between attempts")
                 break
-            say(f" .. the errors changed; asking Cursor again (attempt {attempt + 1})")
+            say(f" .. the errors changed; asking AI Agent again (attempt {attempt + 1})")
         last_failure = this_failure
         repair = f"$ {failed['name']}\n{failed['tail']}"
         # The repair attempt edits the files just written. `before` stays
@@ -4904,7 +4904,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
     clog.write(f"VERIFY FAILED after {attempt} attempt(s)")
     say(f"VERIFY FAILED after {attempt} attempt(s). The files are still in "
         "place so you can look at them; `discard` puts them back, or ask "
-        "Cursor to change it with what you see.")
+        "AI Agent to change it with what you see.")
     return 1
 
 
@@ -5164,7 +5164,7 @@ def case_check_refusal(job_dir: str) -> str:
     except (OSError, ValueError):
         got = {}
     if got.get("diff_sha256") != now:
-        return ("Review the change first (Commit and push tab): Cursor checks each test against the "
+        return ("Review the change first (Commit and push tab): AI Agent checks each test against the "
                 "steps of its case and the tester's answers before it is pushed.")
     high = [f for f in got.get("findings") or [] if f.get("category") == "case" and f.get("severity") == "high"]
     if high:
@@ -5187,7 +5187,7 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
         say("FAIL this run was made by the MOCK agent: what it wrote is a "
             "placeholder, and nothing is committed, pushed or stored for it. "
             "Use Discard. For a real run set \"cursor\": false in "
-            "tools/agent/mock.json and run Cursor again.")
+            "tools/agent/mock.json and run AI Agent again.")
         return 1
     if confirm != job:
         say("FAIL approve needs --confirm with the job id: it is the approval.")
@@ -5222,7 +5222,7 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
         behind = []
     if behind:
         say(f"FAIL the steps of {', '.join(behind)} were changed after their test was written: "
-            f"Automate {'them' if len(behind) > 1 else 'it'} again (Cursor reworks the test), or put "
+            f"Automate {'them' if len(behind) > 1 else 'it'} again (AI Agent reworks the test), or put "
             f"the steps back, then approve.")
         return 1
     if policy.get("require_green_run") and scope["name"] == "new-test":
@@ -5700,7 +5700,7 @@ def _commit_body(job_dir: str, files: dict) -> str:
     published with the commit."""
     listed = "\n".join(f"- {p}" for p in
                        (files.get("created") or []) + (files.get("modified") or []))
-    return ("Written by the Cursor agent from the workbench plan and "
+    return ("Written by the AI Agent from the workbench plan and "
             "approved at review.\n\n" + listed).strip()
 
 
@@ -5762,7 +5762,7 @@ def main(argv=None) -> int:
         # Every run checks the Cursor setup first (the SDK, the key, the
         # bridge, the work tree): a run that would fail on one says so in
         # seconds, not after the prompt is built. There is no button for it.
-        diag.step("Checking the Cursor setup")
+        diag.step("Checking the AI Agent setup")
         rc = cmd_setup(job_dir, ROOT)
         if rc:
             return rc

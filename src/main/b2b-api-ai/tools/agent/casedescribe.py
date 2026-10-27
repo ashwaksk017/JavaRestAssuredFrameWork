@@ -126,7 +126,7 @@ def planned(case: dict, ctx: dict) -> list:
     refs = [_one(r, 200) for r in case.get("requirement_refs") or case.get("refs") or [] if _one(r)]
     if refs:
         lines.append("Covers: " + "; ".join(refs[:6]))
-    how = f"When automated: Cursor follows the {ctx.get('label', '')} flow specification"
+    how = f"When automated: AI Agent follows the {ctx.get('label', '')} flow specification"
     how += f" ({ctx['flows']})" if ctx.get("flows") else ""
     if ctx.get("golden"):
         how += f" and the golden test {', '.join(ctx['golden'])}"

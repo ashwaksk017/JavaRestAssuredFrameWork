@@ -198,18 +198,18 @@ def answer(job: str, root: str = "", agent=None) -> int:
     private = loop.private_config(root)
     out_path = os.path.join(job_dir, SUGGESTIONS)
     if agent is None and loop.mock_cursor():
-        say("MOCK  Cursor is the stand-in (tools/agent/mock.json): it is not asked; stand-in "
+        say("MOCK  AI Agent is the stand-in (tools/agent/mock.json): it is not asked; stand-in "
             "suggestions are written, marked as such.")
         result = [{"id": q["id"], "question": q["question"], "answer": q["answer"] or
                    "MOCK: the stand-in does not research the project.", "suggested": not q["answer"],
                    "evidence": [], "confidence": "low",
-                   "entry": "MOCK: a real Cursor drafts the rule for later designs here."} for q in asked]
+                   "entry": "MOCK: a real AI Agent drafts the rule for later designs here."} for q in asked]
         with io.open(out_path, "w", encoding="utf-8") as fh:
             json.dump({"kind": "answer-suggestions", "mock": True, "answers": result}, fh, indent=1)
         return 0
-    say(f" .. Cursor looks for the answers to {len(asked)} question(s) in this project "
+    say(f" .. AI Agent looks for the answers to {len(asked)} question(s) in this project "
         f"(plan mode: it reads, nothing is changed)")
-    loop.diag.step("Asking Cursor to answer the design's open questions")
+    loop.diag.step("Asking AI Agent to answer the design's open questions")
     try:
         before = (loop.dirty_paths(root), loop.head(root))
     except Exception:                                    # noqa: BLE001
@@ -247,7 +247,7 @@ def answer(job: str, root: str = "", agent=None) -> int:
                                  "plan", DEADLINE_SECONDS, complete=dz.answer_with("answers"))
         except dz.loop.CursorFailed as e:
             clog.write(f"FAILED after {time.time() - started:.1f}s: {e}")
-            say(f"FAIL Cursor could not be asked: {e}")
+            say(f"FAIL AI Agent could not be asked: {e}")
             return 1
         reply = hide(out.get("result") or "")
     reply = _redact(reply, private)
@@ -255,14 +255,14 @@ def answer(job: str, root: str = "", agent=None) -> int:
     if before is not None:
         try:
             if (loop.dirty_paths(root), loop.head(root)) != before:
-                say("WARN files changed while Cursor answered -- it is not meant to write in this "
+                say("WARN files changed while AI Agent answered -- it is not meant to write in this "
                     "mode; look at `git status`. Nothing was put back.")
         except Exception:                                # noqa: BLE001
             loop.diag.trace()
     try:
         result = clean(read_reply(reply), asked, private)
     except ValueError as e:
-        say(f"FAIL {e}. The reply is in the Cursor log (cursor-answers.log).")
+        say(f"FAIL {e}. The reply is in the AI Agent log (cursor-answers.log).")
         return 1
     with io.open(out_path, "w", encoding="utf-8") as fh:
         json.dump({"kind": "answer-suggestions", "mock": False, "at": loop._now(),

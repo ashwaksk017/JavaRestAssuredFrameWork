@@ -157,7 +157,7 @@ const post = (path, payload) =>
               body: JSON.stringify(payload) });
 
 // ---- mock mode -------------------------------------------------------
-// When Jira or Cursor is a stand-in (tools/agent/mock.json), the page says
+// When Jira or AI Agent is a stand-in (tools/agent/mock.json), the page says
 // so on every tab, for as long as it is so. Asked again every few seconds:
 // the file can be edited while the page is open, and a banner that
 // outlives the switch is as wrong as one that is missing.
@@ -166,7 +166,7 @@ async function showMockBanner() {
   let m;
   try { m = await api("/api/mock"); }
   catch (e) { m = { jira: true, cursor: true, error: `the server did not say (${e.message}).` }; }
-  const which = [m.jira ? "Jira" : "", m.cursor ? "Cursor" : ""].filter(Boolean);
+  const which = [m.jira ? "Jira" : "", m.cursor ? "AI Agent" : ""].filter(Boolean);
   bar.className = "mockbar" + (m.error ? " broken" : "");
   if (m.error) {
     bar.replaceChildren(el("strong", { text: "MOCK SETTINGS CANNOT BE READ" }),
@@ -178,7 +178,7 @@ async function showMockBanner() {
       which.length === 1 ? ` — ${which[0]} only` : "");
     bar.title = `${which.join(" and ")} ${which.length > 1 ? "are" : "is"} simulated on this ` +
       "machine. To use the real one, set it to false in tools/agent/mock.json. Confluence " +
-      "links, the converter (and its own Cursor assist) and git are never simulated.";
+      "links, the converter (and its own AI Agent assist) and git are never simulated.";
   }
   if (m.error || !which.length) bar.removeAttribute("title");
   bar.hidden = !(m.error || which.length);
@@ -224,9 +224,9 @@ async function showCursorSetupBanner() {
     return;
   }
   const when = rt.at ? ` (checked ${rt.at.replace("T", " ").replace("Z", " UTC")})` : "";
-  const msg = rt.problem || "Cursor is not ready on this machine.";
+  const msg = rt.problem || "AI Agent is not ready on this machine.";
   bar.replaceChildren(
-    el("strong", { text: "CURSOR NOT READY" }),
+    el("strong", { text: "AI AGENT NOT READY" }),
     ` — ${msg}${when} Fix it in Settings (a saved key is checked again at once), or restart the ` +
     "server after editing cursor_agent.json by hand. A CURSOR_API_KEY environment variable, when set, wins over both.");
   bar.hidden = false;
@@ -263,7 +263,7 @@ api("/api/runnables").then((r) => {
 }).catch(() => { /* the label is then "Working" */ });
 
 // The list of steps a command has said, at the top of its log pane: the
-// steps and the log share one box (.logframe), so "Checking the Cursor
+// steps and the log share one box (.logframe), so "Checking the AI Agent
 // setup" is read with the rest of the command's output, not above it.
 function stepsAbove(logEl) {
   let frame = logEl.parentElement;
@@ -284,19 +284,19 @@ function stepsAbove(logEl) {
 }
 const STEP_MARK = "==> ";
 
-// A check that starts after Cursor has returned used to be named only by
+// A check that starts after AI Agent has returned used to be named only by
 // the script. Say what that means: the code is already written, and it is
 // not ready to test until the check passes. Older logs still have the
 // short line, so the page says the same thing for those.
 function shownStep(text) {
   const check = /^Running the check (.+)$/.exec(text);
   if (check)
-    return "Cursor has finished writing the code. Running " + check[1]
+    return "AI Agent has finished writing the code. Running " + check[1]
       + " - not ready to test until this passes";
   if (text.startsWith("Checking that the project still compiles"))
-    return "Cursor has finished writing the code. Checking that the project still compiles - not ready to test until this passes";
+    return "AI Agent has finished writing the code. Checking that the project still compiles - not ready to test until this passes";
   if (text.startsWith("Running the full gate"))
-    return "Cursor has finished writing the code. Running the full gate - not ready to test until this passes";
+    return "AI Agent has finished writing the code. Running the full gate - not ready to test until this passes";
   return text;
 }
 
@@ -363,21 +363,21 @@ function follow(runnable, logEl, stateEl, onDone, forJob) {
   };
   const say = (text) => {
     text = shownStep(text);
-    // The same sentence is used every time Cursor is asked and every time
+    // The same sentence is used every time AI Agent is asked and every time
     // the check starts again. Number the later ones, or the status line
-    // stays word for word as it was and a new Cursor answer looks ignored.
-    if (text.startsWith("Asking Cursor to write the change")
-        || text.startsWith("Cursor is writing the code")) {
+    // stays word for word as it was and a new AI Agent answer looks ignored.
+    if (text.startsWith("Asking AI Agent to write the change")
+        || text.startsWith("AI Agent is writing the code")) {
       askRound += 1;
       text = askRound === 1
-        ? "Cursor is writing the code"
-        : "Cursor is writing the code again (attempt " + askRound + "). The last check did not pass";
+        ? "AI Agent is writing the code"
+        : "AI Agent is writing the code again (attempt " + askRound + "). The last check did not pass";
     } else if (text.indexOf("not ready to test until this passes") >= 0) {
       checkRound += 1;
       if (checkRound > 1 && !text.startsWith("Attempt "))
         text = "Attempt " + checkRound + ". " + text.replace(
-          "Cursor has finished writing the code.",
-          "Cursor has written the code again.");
+          "AI Agent has finished writing the code.",
+          "AI Agent has written the code again.");
     }
     if (!text || text === doing) return;
     doing = text;
@@ -386,11 +386,11 @@ function follow(runnable, logEl, stateEl, onDone, forJob) {
     for (const li of stepsEl.children) {
       li.className = "done";
       // That sentence is only true while the call is open. Once a later
-      // step starts, Cursor has returned and the line must not still say
+      // step starts, AI Agent has returned and the line must not still say
       // it is writing.
-      if (String(li.textContent).startsWith("Asking Cursor to write the change")
-          || String(li.textContent).startsWith("Cursor is writing the code"))
-        li.textContent = "Cursor has finished writing the code change";
+      if (String(li.textContent).startsWith("Asking AI Agent to write the change")
+          || String(li.textContent).startsWith("AI Agent is writing the code"))
+        li.textContent = "AI Agent has finished writing the code change";
     }
     const li = document.createElement("li");
     li.className = "now";
@@ -419,7 +419,7 @@ function follow(runnable, logEl, stateEl, onDone, forJob) {
       if (ownsLabel()) {
         if (st.state === "done") setState(stateEl, "ok",
           /PENDING REVIEW/.test(logEl.textContent)
-            ? `Ready to test. Cursor has finished and the checks passed (${clock()}).`
+            ? `Ready to test. AI Agent has finished and the checks passed (${clock()}).`
             : `finished in ${clock()}`);
         else if (st.state === "none") setState(stateEl, "", "not run yet for this job");
         else {
@@ -511,7 +511,7 @@ function showChosen(name) {
     if ($("story-xray-note")) $("story-xray-note").hidden = !xray;
     if ($("run-design")) {
       $("run-design").textContent = xray ? "Design from the Xray tests" : "Design the tests";
-      $("run-design").title = xray ? "the Xray tests linked to the story, with their steps, become the cases; Cursor is not asked" : "";
+      $("run-design").title = xray ? "the Xray tests linked to the story, with their steps, become the cases; AI Agent is not asked" : "";
     }
   }
 }
@@ -922,7 +922,7 @@ $("story-check").onclick = async () => {
         else kids.push(el("small", { text: "To take the change in: Read it again (the button above reuses what " +
           "this job was given), then Design again (cases that say the same thing keep their id, their " +
           "review and their Xray test; a changed case is a new case), review the new ones, Create in Xray " +
-          "for them (an earlier case's test stays in Jira until closed by hand), and ask Cursor to change " +
+          "for them (an earlier case's test stays in Jira until closed by hand), and ask AI Agent to change " +
           "the automated test with what changed." }));
       }
       box.replaceChildren(...kids);
@@ -1145,7 +1145,7 @@ async function decide(j, what, ids, fields, stateEl) {
 }
 
 // The design cases ticked in the Select column, for this job: Refine with
-// Cursor changes only these, and the bulk buttons act on them.
+// AI Agent changes only these, and the bulk buttons act on them.
 const selectedCases = { job: "", ids: new Set() };
 function selectedFor(j) {
   if (selectedCases.job !== j) { selectedCases.job = j; selectedCases.ids = new Set(); }
@@ -1157,7 +1157,7 @@ function showRefineScope() {
     ? `only ${ids.length === 1 ? "this case" : `these ${ids.length} cases`}: ${ids.join(", ")} (the rest are kept as they are)`
     : "the whole list";
 }
-// Cursor's suite suggestion for the job's cases (suite-suggest.json), by id.
+// AI Agent's suite suggestion for the job's cases (suite-suggest.json), by id.
 let suiteSuggest = { job: "", byId: {} };
 
 // The design's open questions: answered here, used by Design again; one
@@ -1178,7 +1178,7 @@ function answersPanel(j) {
       const keep = el("input", { type: "checkbox" });
       keep.checked = Boolean(q.keep);
       const entry = el("textarea", { rows: "2", spellcheck: "true", class: "answer entry",
-                                     placeholder: "the rule later designs read (Cursor drafts it; edit it)" });
+                                     placeholder: "the rule later designs read (AI Agent drafts it; edit it)" });
       entry.value = q.entry || (s ? s.entry : "");
       const entryBox = el("div", { class: "entry-box" }, el("small", { text: `kept in ${a.file} as:` }), entry);
       entryBox.hidden = !keep.checked;
@@ -1186,7 +1186,7 @@ function answersPanel(j) {
       const evidence = (s && s.evidence && s.evidence.length) ? s.evidence : (q.evidence || []);
       const row = el("div", { class: "answer-row" }, el("p", { text: q.question + (q.asked ? "" : " (no longer asked)") }),
         s && s.suggested && !q.answer ? el("small", { class: "flag differs",
-          text: `Cursor's suggestion (${s.confidence} confidence) -- check it before you save` }) : null,
+          text: `AI Agent's suggestion (${s.confidence} confidence) -- check it before you save` }) : null,
         ans,
         evidence.length ? el("details", {}, el("summary", { text: `found in ${evidence.length} place(s)` }),
                              el("pre", { class: "doc", text: evidence.join("\n") })) : null,
@@ -1197,7 +1197,7 @@ function answersPanel(j) {
       return row;
     });
     const ask = el("button", { type: "button", text: "Ask Me to answer",
-                               title: "Cursor looks for the answers in this project (converted tests, their database steps, the flow guide...) and drafts the rule to keep for each. Nothing is kept until you save." });
+                               title: "AI Agent looks for the answers in this project (converted tests, their database steps, the flow guide...) and drafts the rule to keep for each. Nothing is kept until you save." });
     ask.onclick = async () => {
       ask.disabled = true;
       const logBox = el("pre", { class: "log" });
@@ -1209,9 +1209,9 @@ function answersPanel(j) {
           const r = await artifactJson(j, "answer-suggestions.json");
           const now = await api(`/api/answers?job=${encodeURIComponent(j)}`).catch(() => null);
           if (now) draw(Object.assign(now, { suggestions: (r && r.answers) || [] }));
-          // Its conversation with Cursor (cursor-answers.log): what it read, what it said.
+          // Its conversation with AI Agent (cursor-answers.log): what it read, what it said.
           const conv = await api(`/api/log?job=${encodeURIComponent(j)}&runnable=cursor-answers&offset=0`).catch(() => null);
-          if (conv && conv.text) box.append(el("details", {}, el("summary", { text: "Cursor log (cursor-answers.log)" }),
+          if (conv && conv.text) box.append(el("details", {}, el("summary", { text: "AI Agent log (cursor-answers.log)" }),
                                                 el("pre", { class: "log cursor", text: conv.text.slice(-60000) })));
         }, j);
       } catch (e) { ask.disabled = false; setState(st, "bad", e.message); }
@@ -1298,7 +1298,7 @@ function reviewTable(j, what, cases, entries, after, done, change, suites, descs
                             on: { click: onSelected({ state: "approved" }) } }, "Approve selected") : null,
     design ? el("button", { type: "button", "data-sel": "1", title: "reject the ticked cases",
                             on: { click: onSelected({ state: "rejected" }) } }, "Reject selected") : null,
-    design ? el("button", { type: "button", "data-sel": "1", title: "refine only the ticked cases with Cursor",
+    design ? el("button", { type: "button", "data-sel": "1", title: "refine only the ticked cases with AI Agent",
                             on: { click: () => goToStep("new", "refine-ask") } }, "Refine selected…") : null,
     el("small", { text: `${counts.approved} approved, ${counts.rejected} rejected, ${counts.proposed} not yet decided` }),
     selCount, st));
@@ -1360,14 +1360,14 @@ function reviewTable(j, what, cases, entries, after, done, change, suites, descs
       const sug = suiteSuggest.job === j ? suiteSuggest.byId[c.id] : null;
       const same = sug && [...sug.groups].sort().join(",") === [...(s.groups || [])].sort().join(",");
       const hint = sug && !same ? el("div", { class: "suggest" },
-        el("span", {}, el("b", { text: "Cursor: " }), sug.groups.filter((g) => g !== "jira").join(", ") || "jira only",
+        el("span", {}, el("b", { text: "AI Agent: " }), sug.groups.filter((g) => g !== "jira").join(", ") || "jira only",
            el("small", { text: ` (${sug.confidence})` })),
         sug.why ? el("small", { text: sug.why }) : null,
         el("button", { type: "button", title: "put this suggestion in the Suites box (recorded as set by hand)",
                        on: { click: async () => { if (await decide(j, what, [c.id], { groups: sug.groups.join(",") }, st)) after(); } } },
            "Use")) : null;
       row.push(el("div", {}, groups, el("small", { text: s.chosen ? "set by hand" : "from the rules" }),
-        sug && same ? el("small", { text: "Cursor agrees" }) : null, hint));
+        sug && same ? el("small", { text: "AI Agent agrees" }) : null, hint));
     }
     row.push(steps);
     if (design) row.push(descCell((descs || {})[c.id]));
@@ -1379,12 +1379,12 @@ function reviewTable(j, what, cases, entries, after, done, change, suites, descs
       let ran = (done || {})[c.id];
       if (ran && ran.written && (!change || ran.change !== change)) ran = null;
       const go = el("button", { type: "button", text: ran && ran.written ? "Again" : "Automate",
-                                title: "Cursor writes this case's test, in the job's one change",
+                                title: "AI Agent writes this case's test, in the job's one change",
                                 on: { click: () => automateCases([c.id], j) } });
       go.disabled = !(state === "approved" && e.automate !== false);
       if (!go.disabled) go.dataset.ready = "1";      // approved: then Finalize decides
       const stale = ran && ran.written && ((descs || {})[c.id] || {}).stale;
-      if (stale) go.title = "the steps were changed after its test was written: Cursor reworks that test";
+      if (stale) go.title = "the steps were changed after its test was written: AI Agent reworks that test";
       row.push(el("div", { class: "automate-cell" }, go,
         ran ? el("small", { class: `flag ${ran.written && ran.state === "pending-review" ? "" : "differs"}`, text: ran.said || ran.state }) : null,
         stale ? el("small", { class: "flag differs", text: "steps changed after its test was written: Automate again" }) : null));
@@ -1493,7 +1493,7 @@ function stepEditor(given, save, st) {
 }
 
 // "Automate the approved cases" can be pressed only when there is one, and
-// not while a design runs (it would hand Cursor a design about to change).
+// not while a design runs (it would hand AI Agent a design about to change).
 let designRunning = false;
 // Automate waits for Finalize: the server refuses it, and the page says so
 // before anyone presses. Set by showFlow from /api/workflow.
@@ -1509,14 +1509,14 @@ function automateReady(cases, entries) {
   b.title = designRunning ? "a design is running; automate when it has finished"
     : !n ? "approve a case and tick Automate first (Review the designed cases)"
     : !wfFinalized.ok ? `${wfFinalized.why} -- Automate takes finalized cases only`
-    : `Cursor writes the tests of the ${n} approved case(s) marked Automate`;
+    : `AI Agent writes the tests of the ${n} approved case(s) marked Automate`;
 }
 // The row's Automate buttons follow the same rule.
 function rowAutomateReady() {
   for (const go of document.querySelectorAll("#design-review .automate-cell button")) {
     if (go.dataset.ready === "1") {
       go.disabled = !wfFinalized.ok;
-      go.title = wfFinalized.ok ? "Cursor writes this case's test, in the job's one change"
+      go.title = wfFinalized.ok ? "AI Agent writes this case's test, in the job's one change"
         : `${wfFinalized.why} -- Automate takes finalized cases only`;
     }
   }
@@ -1566,7 +1566,7 @@ async function showReview(what) {
     return;
   }
   const kids = [];
-  if (result.mock) kids.push(banner("warn", "These are a stand-in's cases (mock Cursor); a review of them goes nowhere real."));
+  if (result.mock) kids.push(banner("warn", "These are a stand-in's cases (mock AI Agent); a review of them goes nowhere real."));
   if (suites && suites.problem) kids.push(banner("warn", `suite-map.json: ${suites.problem}. Every case gets the default groups.`));
   if (what === "design") automateReady(cases, entries);
   const live = agentReview && ["pending-review", "verify-failed", "pushed", "approved-local", "push-failed"]
@@ -2016,7 +2016,7 @@ $("xray-update-send").onclick = async () => {
 };
 
 
-// Refine with Cursor: the next design run carries this request (the server
+// Refine with AI Agent: the next design run carries this request (the server
 // adds the cases as they are now).
 let pendingRefine = "";
 let pendingRefineIds = [];
@@ -2025,8 +2025,8 @@ $("refine-run").onclick = () => {
   const text = $("refine-ask").value.trim();
   if (!text) { setState($("refine-state"), "bad", "write how the cases should be refined"); return; }
   const ids = [...selectedFor(job())].sort();
-  if (!confirm((ids.length ? `Cursor changes only ${ids.join(", ")} as you ask; every other case is kept as it is. `
-                           : "Cursor revises the whole case list as you ask. ") +
+  if (!confirm((ids.length ? `AI Agent changes only ${ids.join(", ")} as you ask; every other case is kept as it is. `
+                           : "AI Agent revises the whole case list as you ask. ") +
                "Cases it leaves alone keep your decisions; a changed case is reviewed again, and finalized " +
                "cases reopen. Continue?")) return;
   pendingRefine = text;
@@ -2038,7 +2038,7 @@ $("run-design").onclick = async () => {
   const button = $("run-design");
   // A refinement is its own area: its logs are under Refine.
   const area = pendingRefine ? "refine" : "design";
-  // One at a time: a second click used to wipe the Cursor pane of the run
+  // One at a time: a second click used to wipe the AI Agent pane of the run
   // already going, fail with "already running", and stop the pane's timer.
   button.disabled = true;
   let stopCursorLog = () => {};
@@ -2049,7 +2049,7 @@ $("run-design").onclick = async () => {
   }
   try {
     const j = job();
-    // Where the Cursor log ends NOW, read before the run starts, so the
+    // Where the AI Agent log ends NOW, read before the run starts, so the
     // pane shows this run and nothing is lost between start and first poll.
     await startArea(area);
     designRunning = true;
@@ -2094,7 +2094,7 @@ $("run-design").onclick = async () => {
     setState($(`${area}-state`), "bad", e.message);
   }
 };
-// ---- Cursor suggests the suites of each case -------------------------------
+// ---- AI Agent suggests the suites of each case -------------------------------
 // Nothing is decided by the suggestion: each case shows it beside its
 // Suites box, with Use; "Use every suggestion" takes all that differ.
 $("suite-suggest").onclick = async () => {
@@ -2112,7 +2112,7 @@ $("suite-suggest").onclick = async () => {
       if (r && st.state === "done") {
         const differ = (r.suggestions || []).filter((s) => !s.same).length;
         setState($("suite-suggest-state"), "ok", `${(r.suggestions || []).length} case(s): ${differ} differ from what ` +
-          `the rules say${r.mock ? " (mock Cursor)" : ""} — see each case's Suites box`);
+          `the rules say${r.mock ? " (mock AI Agent)" : ""} — see each case's Suites box`);
       }
       if (j === job()) showReview("design");
     }, j);
@@ -2122,14 +2122,14 @@ $("suite-suggest-all").onclick = async () => {
   const j = job();
   const ids = ($("suite-suggest-all").dataset.ids || "").split(",").filter(Boolean);
   if (!ids.length || suiteSuggest.job !== j) return;
-  if (!confirm(`Put Cursor's suites into ${ids.length} case(s)? Each is then recorded as set by hand ` +
+  if (!confirm(`Put AI Agent's suites into ${ids.length} case(s)? Each is then recorded as set by hand ` +
                "(empty a Suites box to go back to the rules).")) return;
   let ok = 0;
   for (const id of ids) {
     const s = suiteSuggest.byId[id];
     if (s && await decide(j, "design", [id], { groups: s.groups.join(",") }, $("suite-suggest-state"))) ok += 1;
   }
-  setState($("suite-suggest-state"), ok === ids.length ? "ok" : "warn", `${ok} of ${ids.length} case(s) took Cursor's suites`);
+  setState($("suite-suggest-state"), ok === ids.length ? "ok" : "warn", `${ok} of ${ids.length} case(s) took AI Agent's suites`);
   showReview("design");
 };
 
@@ -2145,7 +2145,7 @@ const DEVCODE_KEY = "wb-devcode";
 })();
 const GAP_KIND = { endpoint: "endpoint", status: "status", validation: "validation", param: "parameter",
                    field: "field", "removed-field": "removed field", enum: "enum", "error-code": "error code",
-                   cursor: "Cursor" };
+                   cursor: "AI Agent" };
 async function showDevcode(j) {
   j = j || job();
   const box = $("devcode-result");
@@ -2158,9 +2158,9 @@ async function showDevcode(j) {
   const kids = [banner(gaps.length ? (high ? "bad" : "warn") : "ok",
     `${gaps.length} gap(s)${high ? ` (${high} high)` : ""}, ${(r.covered || []).length} thing(s) covered — ` +
     `${(r.commits || []).length} commit(s) on ${r.branch}${r.commit_mode === "ticket" ? ` naming ${r.ticket}` : ""}, ` +
-    `${(r.files || []).length} file(s), ${r.cases_checked} case(s) checked${r.mock ? " (Cursor's part is a mock)" : ""}.`)];
+    `${(r.files || []).length} file(s), ${r.cases_checked} case(s) checked${r.mock ? " (AI Agent's part is a mock)" : ""}.`)];
   for (const n of r.notes || []) kids.push(banner("warn", n));
-  if (r.cursor && r.cursor.asked && r.cursor.summary) kids.push(el("p", { class: "hint", text: `Cursor: ${r.cursor.summary}` }));
+  if (r.cursor && r.cursor.asked && r.cursor.summary) kids.push(el("p", { class: "hint", text: `AI Agent: ${r.cursor.summary}` }));
   if (gaps.length) {
     const all = el("input", { type: "checkbox", "aria-label": "choose every gap" });
     const rows = gaps.map((g) => {
@@ -2220,7 +2220,7 @@ $("devcode-stop").onclick = () => post("/api/stop", { job: job(), runnable: "dev
 $("devcode-add").onclick = () => {
   const ids = [...document.querySelectorAll("#devcode-result input[data-gap]:checked")].map((c) => c.dataset.gap);
   if (!ids.length) { setState($("devcode-state"), "bad", "choose at least one gap"); return; }
-  if (!confirm(`Cursor adds cases for ${ids.length} gap(s): ${ids.join(", ")}. Every existing case is kept as it is; ` +
+  if (!confirm(`AI Agent adds cases for ${ids.length} gap(s): ${ids.join(", ")}. Every existing case is kept as it is; ` +
                "the new ones come in as proposed, for review. Continue?")) return;
   pendingGaps = ids;
   goToStep("new", "design-review");
@@ -2407,12 +2407,12 @@ let runAskSent = "";               // the job the last request went to
 // as a banner. Shared with the Commit and push tab's Compile.
 function autoFixBanner(a) {
   if (!a) return null;
-  if (!a.sent) return banner("bad", `The failed compile was not sent to Cursor by itself: ${a.error || "refused"}`);
+  if (!a.sent) return banner("bad", `The failed compile was not sent to AI Agent by itself: ${a.error || "refused"}`);
   return banner("ok", a.kind === "convert-fix"
-    ? `Sent to Cursor without a click: each converted suite is made to compile in a fix job of its own ` +
-      `(${(a.fix_jobs || []).join(", ")}). Untick "Cursor fixes compile errors" to stop that.`
-    : `Sent to Cursor without a click: job ${a.job}'s Ask Me is fixing the compile errors. ` +
-      `Untick "Cursor fixes compile errors" to stop that.`);
+    ? `Sent to AI Agent without a click: each converted suite is made to compile in a fix job of its own ` +
+      `(${(a.fix_jobs || []).join(", ")}). Untick "AI Agent fixes compile errors" to stop that.`
+    : `Sent to AI Agent without a click: job ${a.job}'s Ask Me is fixing the compile errors. ` +
+      `Untick "AI Agent fixes compile errors" to stop that.`);
 }
 function sentJob(r) { return (r.kind === "convert-fix" && (r.fix_jobs || [])[0]) || r.job; }
 let runAskFollowing = "";          // the auto-sent run whose log the box follows
@@ -2428,7 +2428,7 @@ async function showRunAsk(j, again) {
   const usable = ["job", "converted", "convert-fix"].includes(p.kind) && !p.blocked && !sent;
   const how = p.kind === "job" ? `Goes to job ${p.job}'s Ask Me.`
     : p.kind === "converted" ? `A fix brief for suite ${p.suite}, in a new job.`
-    : p.kind === "convert-fix" ? `Cursor makes suite ${p.suites.join(", ")} compile, each in a fix job of its own.`
+    : p.kind === "convert-fix" ? `AI Agent makes suite ${p.suites.join(", ")} compile, each in a fix job of its own.`
     : "Not sent from here.";
   $("run-ask-which").replaceChildren(
     banner(usable || sent ? "ok" : "warn", `${p.compile ? `The compile failed: ${p.failed} error(s).`
@@ -2441,7 +2441,7 @@ async function showRunAsk(j, again) {
   }
   $("run-ask").disabled = p.kind === "convert-fix";      // convertfix writes each suite's brief
   $("run-ask-send").disabled = !usable;
-  $("run-ask-send").title = sent ? "already sent to Cursor after this run" : usable ? "" : (p.blocked || p.why || "");
+  $("run-ask-send").title = sent ? "already sent to AI Agent after this run" : usable ? "" : (p.blocked || p.why || "");
   $("run-ask-again").disabled = !p.text;
   if (sent && runAskFollowing !== from) {
     runAskFollowing = from;
@@ -2456,14 +2456,14 @@ $("run-ask-send").onclick = async () => {
   const j = runJob();
   const p = runAskShown;
   const text = $("run-ask").value.trim();
-  if (!p || (!text && p.kind !== "convert-fix")) { setState($("run-ask-state"), "bad", "write what Cursor should fix"); return; }
+  if (!p || (!text && p.kind !== "convert-fix")) { setState($("run-ask-state"), "bad", "write what AI Agent should fix"); return; }
   if (!confirm(p.kind === "converted"
-      ? `Cursor will change the converted files of suite "${p.suite}", in a new job of its own, from a ` +
+      ? `AI Agent will change the converted files of suite "${p.suite}", in a new job of its own, from a ` +
         "fix brief of this run's failures and the request as you wrote it. Nothing is committed. Continue?"
       : p.kind === "convert-fix"
-      ? `Cursor will make suite ${p.suites.join(", ")} compile, changing only each suite's converted files, ` +
+      ? `AI Agent will make suite ${p.suites.join(", ")} compile, changing only each suite's converted files, ` +
         "in a fix job per suite. Nothing is committed. Continue?"
-      : `Cursor will change job "${p.job}"'s tests as the request asks, and the change waits for your ` +
+      : `AI Agent will change job "${p.job}"'s tests as the request asks, and the change waits for your ` +
         "review. Nothing is committed. Continue?")) return;
   try {
     const r = await post("/api/run-ask", { job: j, text, images: pastedFor("run-ask") });
@@ -2474,7 +2474,7 @@ $("run-ask-send").onclick = async () => {
     follow(r.runnable, $("run-ask-log"), $("run-ask-state"), () => {}, r.job);
   } catch (e) { setState($("run-ask-state"), "bad", e.message); }
 };
-// The change Cursor makes is reviewed where every change is: the job's
+// The change AI Agent makes is reviewed where every change is: the job's
 // Commit and push tab.
 $("run-ask-open").onclick = () => {
   if (!runAskSent) return;
@@ -2488,7 +2488,7 @@ async function startRun(runnable, options) {
   $("run-result").replaceChildren();
   $("run-ask-box").hidden = true;          // a new run: its failures, not the last one's
   try {
-    // Ticked: a failed compile goes to Cursor from the server when the run ends.
+    // Ticked: a failed compile goes to AI Agent from the server when the run ends.
     if ($("run-ask-auto").checked) options = Object.assign({ "--auto-fix": true }, options);
     await post("/api/start", { job: j, runnable, options: Object.assign({ "--job": j }, options) });
     follow(runnable, $("run-log"), $("run-state"), async () => { runBusy(false); await showRunResult(j); }, j);
@@ -2535,7 +2535,7 @@ onTab.run = async () => {
 showDesign();
 showSpec();
 $("job").addEventListener("change", () => { showDesign(); showSpec(); refreshXray("manual"); showReview("manual"); });
-// The story's existing Xray tests, as the design: no Cursor call. Then the
+// The story's existing Xray tests, as the design: no AI Agent call. Then the
 // usual Review and the Agentic step, with the tests' real keys.
 // Started by Design the tests when the Jira story choice is "Use the
 // story's Xray tests".
@@ -2559,8 +2559,8 @@ async function xrayImport() {
 $("clear-design").onclick = async () => {
   const j = job();
   if (!j) { setState($("design-state"), "bad", "name the job first"); return; }
-  if (!confirm("Clear this job's design? The cases, design.md and the kept Cursor replies are moved " +
-               "aside; the next design asks Cursor afresh. Review decisions and Xray keys stay.")) return;
+  if (!confirm("Clear this job's design? The cases, design.md and the kept AI Agent replies are moved " +
+               "aside; the next design asks AI Agent afresh. Review decisions and Xray keys stay.")) return;
   try {
     const r = await post("/api/design-clear", { job: j });
     setState($("design-state"), r.cleared ? "ok" : "", r.cleared ? "design cleared" : "no design to clear");
@@ -2680,7 +2680,7 @@ function warn() {
               "everything classic replaces them.");
   }
   if (o["--cursor-assist"]) {
-    msgs.push("Cursor assist calls the REAL Cursor after the convert, whatever " +
+    msgs.push("AI Agent assist calls the REAL AI Agent after the convert, whatever " +
               "tools/agent/mock.json says. It can cost money and edit files.");
   }
   // Only for a chosen file that has DataSource steps reading a workbook:
@@ -2718,8 +2718,8 @@ $("run-flow-catalog").onclick = () => {
     .catch((e) => setState($("verify-state"), "bad", e.message));
 };
 
-// After a convert: compile; Cursor fixes each suite that does not compile
-// (tools/agent/convertfix.py). Its Cursor conversation is in the tab's Cursor log.
+// After a convert: compile; AI Agent fixes each suite that does not compile
+// (tools/agent/convertfix.py). Its AI Agent conversation is in the tab's AI Agent log.
 function runConvertFix(j, withCursor, then) {
   $("convert-fix-block").hidden = false;
   $("convert-fix-result").replaceChildren();
@@ -2734,8 +2734,8 @@ function runConvertFix(j, withCursor, then) {
         for (const [suite, s] of Object.entries(r.suites || {})) {
           kids.push(banner(s.state === "pending-review" ? "ok" : "bad",
             s.state === "pending-review"
-              ? `${suite} compiles now: Cursor's fix is waiting for review (job ${s.job}, Commit and push tab).`
-              : `${suite} does not compile (${s.state})${s.job ? ` -- job ${s.job} holds what Cursor tried` : ""}.`));
+              ? `${suite} compiles now: AI Agent's fix is waiting for review (job ${s.job}, Commit and push tab).`
+              : `${suite} does not compile (${s.state})${s.job ? ` -- job ${s.job} holds what AI Agent tried` : ""}.`));
         }
         if ((r.shared || []).length) kids.push(banner("warn",
           `Errors in shared framework files, not a suite's to fix: ${r.shared.slice(0, 6).join(", ")}`));
@@ -2764,7 +2764,7 @@ $("run-convert").onclick = async () => {
     await post("/api/start", { job: j, runnable: "convert", options: o });
     follow("convert", $("convert-log"), $("convert-state"), (st) => {
       // Nobody is handed a convert that does not compile: checked, and with
-      // Cursor assist on, fixed -- then verified, when that was ticked.
+      // AI Agent assist on, fixed -- then verified, when that was ticked.
       if (st.state === "done") {
         runConvertFix(j, chosen("cv-cursor") === "on", () => { if (verifyAfter) runVerifyAll(j); });
         return;
@@ -2806,7 +2806,7 @@ for (const [btn, runnable] of [["run-keys", "audit-service-keys"],
 // Requirement files are kept for the job under .workbench/<job>/docs/,
 // as the specification is: the page sends the file and is told the path.
 // Everything shown here that came from a document, from Jira or from
-// Cursor is put on the page as text.
+// AI Agent is put on the page as text.
 async function showManualDocs(j, problem) {
   j = j || job();
   const box = $("manual-docs");
@@ -2939,7 +2939,7 @@ async function showManual(j) {
   const kids = [];
   const inv = r.inventory || {};
   if (r.mock) kids.push(banner("warn", "MOCK. These cases were made up by the stand-in for " +
-    "Cursor (tools/agent/mock.json). They are not test cases."));
+    "AI Agent (tools/agent/mock.json). They are not test cases."));
   if (inv.mock_jira && !r.mock) kids.push(banner("warn", "The existing tests these were " +
     "compared with are sample data, not Jira's."));
   // What is not whole, before what was found.
@@ -3561,7 +3561,7 @@ window.addEventListener("unhandledrejection", (e) =>
 // command refuses anything else whatever the page sends.
 const REVIEW_TEXT = {
   "none": "No agent run for this job yet.",
-  "generating": "Cursor is working… (if the run was stopped or died, Discard puts everything back)",
+  "generating": "AI Agent is working… (if the run was stopped or died, Discard puts everything back)",
   "rejected": "Rejected — the agent broke a rule.",
   "verify-failed": "Did not verify. The files are still in the working tree.",
   "pending-review": "PENDING REVIEW — read the diff, then approve or discard.",
@@ -3606,12 +3606,12 @@ async function refreshReview() {
   // A rejection is worded by what happened: a rule broken, or a call
   // that did not finish -- which is no fault of the change.
   if (state === "rejected" && review.why === "timeout")
-    detail = "Rejected — the Cursor call did not finish in time. No rule was broken; the files it had written were put back.";
+    detail = "Rejected — the AI Agent call did not finish in time. No rule was broken; the files it had written were put back.";
   else if (state === "rejected" && review.why === "call")
-    detail = "Rejected — the Cursor call failed.";
+    detail = "Rejected — the AI Agent call failed.";
   else if (state === "rejected" && review.why === "answered")
-    detail = "Cursor answered and changed nothing — its answer is in the command log under Ask Me.";
-  if (review.mock) detail = "MOCK RUN — written by the stand-in for Cursor; it cannot be " +
+    detail = "AI Agent answered and changed nothing — its answer is in the command log under Ask Me.";
+  if (review.mock) detail = "MOCK RUN — written by the stand-in for AI Agent; it cannot be " +
                             "approved, only discarded. " + detail;
   if (review.reason) detail += " " + review.reason;
   if (review.branch) detail += ` Branch: ${review.branch}.`;
@@ -3667,7 +3667,7 @@ async function refreshReview() {
   // starts one when none is, and answers a question. Where it cannot, the
   // button says why instead of only being grey.
   const askBlocked = review.mock && ["pending-review", "verify-failed"].includes(state)
-    ? "The change waiting here was made by the stand-in (mock Cursor): Discard it first."
+    ? "The change waiting here was made by the stand-in (mock AI Agent): Discard it first."
     : state === "generating" ? ((review.scope || "") === "workbench"
       ? `A change to the workbench did not finish (job ${shown}): Discard it on the Commit and push tab first.`
       : "A run of this job did not finish: Discard it on the Commit and push tab first.")
@@ -3710,7 +3710,7 @@ async function refreshReview() {
 }
 
 // code-review.json, written by tools/agent/codereview.py. Every word in
-// it that came from Cursor or from the change is put on the page as text.
+// it that came from AI Agent or from the change is put on the page as text.
 async function showCodeReview(j, run) {
   const box = $("agent-codereview");
   // Emptied first: whatever goes wrong below, another job's review is not
@@ -3753,7 +3753,7 @@ async function showCodeReview(j, run) {
   }
   const kids = [];
   if (r.mock) kids.push(banner("warn", "MOCK. These findings are a keyword match by the " +
-    "stand-in for Cursor (tools/agent/mock.json). This is not a review."));
+    "stand-in for AI Agent (tools/agent/mock.json). This is not a review."));
   // Said before anything it found.
   const waitingNow = run.state === "pending-review" || run.state === "verify-failed";
   if (!waitingNow) {
@@ -3774,7 +3774,7 @@ async function showCodeReview(j, run) {
       `${r.files.length} file(s):`));
     kids.push(table(["File", "Read", "Why"], unread.map((f) => [f.file, f.status, f.why])));
   }
-  for (const f of r.failures || []) kids.push(banner("bad", `A question to Cursor failed — ${f}`));
+  for (const f of r.failures || []) kids.push(banner("bad", `A question to AI Agent failed — ${f}`));
   for (const n of r.notes || []) kids.push(banner("warn", `Note — ${n}`));
   kids.push(banner(r.findings.length ? "warn" : "ok", (r.message || "") +
     (r.findings.length ? "" : " No findings is not a sign-off: read the change.")));
@@ -3808,7 +3808,7 @@ async function showCodeReview(j, run) {
   box.replaceChildren(...kids);
 }
 
-// Cursor's conversations are files of the job, appended to across runs:
+// AI Agent's conversations are files of the job, appended to across runs:
 // cursor.log for the code it writes (Automate, Ask Me), design-cursor.log
 // for the design and its refinements, migration-cursor.log for the
 // Migration tab. Each area shows ITS conversation in the Logs block under
@@ -4015,7 +4015,7 @@ for (const r of document.querySelectorAll('input[name="ask-kind"]')) {
 
 $("agent-ask-send").onclick = async () => {
   const text = $("agent-ask").value.trim();
-  if (!text) { setState($("ask-state"), "bad", "write what Cursor should change, or ask it something"); return; }
+  if (!text) { setState($("ask-state"), "bad", "write what AI Agent should change, or ask it something"); return; }
   const kind = askKind();
   if (kind === "question") {
     // Nothing is changed, so nothing to confirm.
@@ -4035,9 +4035,9 @@ $("agent-ask-send").onclick = async () => {
   }
   const adds = $("agent-ask-send").dataset.waiting === "1";
   if (!confirm(adds
-      ? `Cursor will change what it wrote for job "${job()}" as you ask, within the same paths. ` +
+      ? `AI Agent will change what it wrote for job "${job()}" as you ask, within the same paths. ` +
         "Nothing is committed. Continue?"
-      : `No change is waiting for job "${job()}": Cursor starts one as you ask, in tests/jira/ and ` +
+      : `No change is waiting for job "${job()}": AI Agent starts one as you ask, in tests/jira/ and ` +
         "csv/manual/. Nothing is committed. Continue?")) return;
   agentRunning = "agent-followup";
   try {
@@ -4074,7 +4074,7 @@ function runAgent(runnable, options, logEl, stateEl) {
 
 // ---- Automate the cases (the Automate Test Case tab) ----------------------
 // One row's case, or every approved case marked Automate. The command adds
-// to the job's change when one is waiting, and checks the Cursor setup first.
+// to the job's change when one is waiting, and checks the AI Agent setup first.
 async function automateCases(ids, forJob) {
   const j = job();
   if (!j) { setState($("auto-state"), "bad", "name the job (top right) first"); return; }
@@ -4090,7 +4090,7 @@ async function automateCases(ids, forJob) {
   const waiting = await artifactJson(j, "review.json");
   const st = (waiting && waiting.state) || "none";
   if (["pending-review", "verify-failed"].includes(st) && waiting.mock) {
-    setState($("auto-state"), "bad", "the change waiting was made by the stand-in (mock Cursor): Discard it on the Commit and push tab first");
+    setState($("auto-state"), "bad", "the change waiting was made by the stand-in (mock AI Agent): Discard it on the Commit and push tab first");
     return;
   }
   if (["pending-review", "verify-failed"].includes(st) && (waiting.scope || "new-test") !== "new-test") {
@@ -4098,7 +4098,7 @@ async function automateCases(ids, forJob) {
     return;
   }
   const adds = ["pending-review", "verify-failed"].includes(st);
-  if (!confirm(`Cursor writes the test(s) of ${ids.join(", ")} for job "${j}", in tests/jira/ and ` +
+  if (!confirm(`AI Agent writes the test(s) of ${ids.join(", ")} for job "${j}", in tests/jira/ and ` +
                `csv/manual/${adds ? ", added to the change already waiting for review" : ""}. ` +
                "Nothing is committed. Continue?")) return;
   const opts = { "--job": j, "--cases": ids.join(",") };
@@ -4135,25 +4135,25 @@ scopeChanged();
 // ---- Ask Me (the Migration from ReadyAPI tab) -------------------------
 // A request in the box becomes the job's brief and plan (or is added to the
 // change waiting). An empty box runs on the brief already written -- by Fix
-// with Cursor on the Failures tab.
+// with AI Agent on the Failures tab.
 $("mig-run").onclick = async () => {
   const j = job();
   if (!j) { setState($("mig-state"), "bad", "name the job (top right) first"); return; }
   const scope = $("agent-scope").value;
   const suite = $("agent-suite").value.trim();
   const text = $("mig-ask").value.trim();
-  if (scope === "converted" && !suite) { setState($("mig-state"), "bad", "name the suite Cursor may change"); return; }
+  if (scope === "converted" && !suite) { setState($("mig-state"), "bad", "name the suite AI Agent may change"); return; }
   const what = scope === "converted" ? `the converted files of suite "${suite}"` : "the converter and its runtime";
   if (!text) {
     const plan = await artifactText(j, "plan.md");
-    if (!plan.trim()) { setState($("mig-state"), "bad", "write what Cursor should change"); return; }
-    if (!confirm(`Cursor will change ${what} for job "${j}", as the job's brief says. Nothing is committed. Continue?`)) return;
+    if (!plan.trim()) { setState($("mig-state"), "bad", "write what AI Agent should change"); return; }
+    if (!confirm(`AI Agent will change ${what} for job "${j}", as the job's brief says. Nothing is committed. Continue?`)) return;
     const options = { "--job": j, "--scope": scope };
     if (scope === "converted") options["--suite"] = suite;
     runAgent("agent-generate", options, $("mig-log"), $("mig-state"));
     return;
   }
-  if (!confirm(`Cursor will change ${what} for job "${j}" as you ask. Nothing is committed. Continue?`)) return;
+  if (!confirm(`AI Agent will change ${what} for job "${j}" as you ask. Nothing is committed. Continue?`)) return;
   try {
     const r = await post("/api/migration-ask", { job: j, scope, suite, text, images: pastedFor("mig-ask") });
     clearPasted("mig-ask");
@@ -4263,12 +4263,12 @@ $("agent-compile").onclick = async () => {
       if (ours.length) kids.push(el("pre", { class: "doc", text: ours.slice(0, 60).join("\n") }));
       if (errs.length > ours.length) kids.push(el("details", {}, el("summary", { text: "Errors in other files" }),
         el("pre", { class: "doc", text: errs.filter((e) => !ours.includes(e)).slice(0, 60).join("\n") })));
-      // What the workbench sent to Cursor by itself, and its log to follow.
+      // What the workbench sent to AI Agent by itself, and its log to follow.
       let p = null;
       if (!c.ok) { try { p = await api(`/api/run-ask?job=${encodeURIComponent(j)}`); } catch { p = null; } }
       const a = p && p.auto;
       if (a) kids.unshift(autoFixBanner(a));
-      else if (p && !c.ok) kids.push(banner("warn", `Not sent to Cursor: ${p.blocked || p.why}`));
+      else if (p && !c.ok) kids.push(banner("warn", `Not sent to AI Agent: ${p.blocked || p.why}`));
       box.replaceChildren(...kids);
       if (a && a.sent) {
         if (a.runnable === "agent-followup") { agentRunning = a.runnable; watchCursorLog(); }
@@ -4361,7 +4361,7 @@ $("agent-push").onclick = () => {
     ? `Approve and push?\n\nThis commits the reviewed files to branch ${branch}, built on ` +
       `${remote}/${base}, and pushes that branch to ${remote}. The repository is public. ` +
       `${base} itself is not touched.`
-    : "Approve?\n\nThe converted files stay as Cursor left them, on this " +
+    : "Approve?\n\nThe converted files stay as AI Agent left them, on this " +
       "machine only. Nothing is committed or pushed. The change is " +
       "stored and put back after every convert of the suite.";
   if (!confirm(msg)) return;
@@ -4433,8 +4433,8 @@ function el(tag, props, ...kids) {
 const banner = (cls, text) => el("div", { class: `banner ${cls}`, text });
 
 // ---- pasted images ---------------------------------------------------
-// Ctrl+V a screenshot into a box whose words go to Cursor: it goes with the
-// request, as an image Cursor looks at, and is deleted once the run has
+// Ctrl+V a screenshot into a box whose words go to AI Agent: it goes with the
+// request, as an image AI Agent looks at, and is deleted once the run has
 // read it (paste.py). Nothing keeps it.
 const PASTE_MAX = 4, PASTE_EACH = 5 * 1024 * 1024;
 const PASTE_TYPES = /^image\/(png|jpeg|gif|webp)$/;
@@ -4449,8 +4449,8 @@ function drawPasted(id) {
       el("button", { type: "button", class: "x", title: "remove this image", "aria-label": `remove image ${i + 1}`,
                      on: { click: () => { list.splice(i, 1); drawPasted(id); } } }, "\u00d7"))),
     el("small", { class: "dim", text: list.length
-      ? `${list.length} image(s) go to Cursor with this request, and are deleted once it has read them`
-      : "Ctrl+V pastes a screenshot for Cursor (up to 4)" }));
+      ? `${list.length} image(s) go to AI Agent with this request, and are deleted once it has read them`
+      : "Ctrl+V pastes a screenshot for AI Agent (up to 4)" }));
 }
 function acceptPaste(id) {
   const box = $(id);
@@ -4700,7 +4700,7 @@ $("defects-load").onclick = () => {
 $("defects-suggest").onclick = () => {
   const n = defectsShown && defectsShown.kind === "defects" ? (defectsShown.defects || []).length : 0;
   if (!n) { setState($("defects-state"), "bad", "load some defects first"); return; }
-  if (!confirm(`Send the text of ${n} defect(s) to Cursor for a suggested reason?\n\n` +
+  if (!confirm(`Send the text of ${n} defect(s) to AI Agent for a suggested reason?\n\n` +
                "Summaries, descriptions and recent comments are sent, with host names and the " +
                "private configuration's values removed. Nothing is written to Jira.")) return;
   runTool("defects-suggest", {}, defectUi);
@@ -4773,7 +4773,7 @@ function renderDefects(r) {
   if (r.kind !== "defects") return;
   if (r.mock_jira || r.mock_cursor) box.append(banner("warn",
     "MOCK — " + [r.mock_jira ? "the defects are sample data, and a write changes only a file on this machine" : "",
-                 r.mock_cursor ? "the suggested reasons are a keyword match, not Cursor" : ""]
+                 r.mock_cursor ? "the suggested reasons are a keyword match, not AI Agent" : ""]
       .filter(Boolean).join("; ") + "."));
   if (r.message) box.append(banner(r.ok === false ? "bad" : "ok", r.message));
   box.append(
@@ -4877,13 +4877,13 @@ function signatureCard(s) {
     } } }),
     el("button", { "data-fail": "", text: "Every run it was in", on: { click: () =>
       runTool("failures-show", { "--id": s.id }, failUi) } })));
-  // The failure becomes a job for Cursor: the brief is written from what
+  // The failure becomes a job for AI Agent: the brief is written from what
   // the run left behind, and the Agentic tab opens on the right scope.
   card.append(el("div", { class: "noterow" },
-    el("button", { "data-fail": "", class: "go", text: "Fix with Cursor (this suite's Java)",
+    el("button", { "data-fail": "", class: "go", text: "Fix with AI Agent (this suite's Java)",
                    title: "writes the brief for this signature; then Ask Me on the Migration from ReadyAPI tab",
                    on: { click: () => fixWithCursor(s.id, "converted") } }),
-    el("button", { "data-fail": "", text: "Fix the converter with Cursor",
+    el("button", { "data-fail": "", text: "Fix the converter with AI Agent",
                    title: "the same brief, for the emitter: scope The converter itself",
                    on: { click: () => fixWithCursor(s.id, "converter") } })));
   return card;
@@ -4966,7 +4966,7 @@ showMockBanner();
 // Whatever tab the address names, open it -- after every tab above has
 // said what it does when opened.
 // ---- Change the workbench (the Logs tab) --------------------------------
-// Cursor changing the workbench itself, in a job of its own (workbench-...),
+// AI Agent changing the workbench itself, in a job of its own (workbench-...),
 // only while nothing else runs. Its conversation is workbench-cursor.log.
 let wbJob = "";
 let wbTimer = null;
@@ -4991,7 +4991,7 @@ function wbWatch(j) {
   read();
   wbTimer = setInterval(read, 1500);
 }
-// A refresh drops the poller that writes the status line. The Cursor log
+// A refresh drops the poller that writes the status line. The AI Agent log
 // keeps moving on its own, so attach the command log again while the run
 // is still going.
 async function wbFollowLive(j) {
@@ -5038,7 +5038,7 @@ async function wbRefresh() {
 $("wb-run").onclick = async () => {
   const text = $("wb-ask").value.trim();
   if (!text) { setState($("wb-state"), "bad", "write what should be different in the workbench"); return; }
-  if (!confirm("Cursor will change the workbench itself (tools/agent) as you ask. Nothing else can " +
+  if (!confirm("AI Agent will change the workbench itself (tools/agent) as you ask. Nothing else can " +
                "run until it has finished, and the change waits for your review. Continue?")) return;
   $("wb-run").disabled = true;
   try {

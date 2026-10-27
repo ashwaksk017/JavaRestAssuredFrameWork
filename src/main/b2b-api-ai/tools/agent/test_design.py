@@ -691,7 +691,7 @@ class Run(unittest.TestCase):
         for name in design.ARTIFACTS + ("design-cursor.log",):
             self.assertNotIn("Zx9-very-private-value", self.read(name), name)
         d = json.loads(self.read("design.json"))
-        self.assertTrue(any("were in Cursor's reply" in w for w in d["warnings"]))
+        self.assertTrue(any("were in AI Agent's reply" in w for w in d["warnings"]))
 
     def test_url_hosts_in_the_material_are_not_sent(self):
         self.run_design(self.agent(reply(case())),
@@ -748,7 +748,7 @@ class Run(unittest.TestCase):
         def agent(prompt, followup):
             n.append(1)
             if len(n) == 2:
-                raise RuntimeError("Cursor did not finish within 900s and was stopped waiting for.")
+                raise RuntimeError("AI Agent did not finish within 900s and was stopped waiting for.")
             return {"result": reply(case(endpoint="GET /things0/{id}"))}
         self.assertEqual(self.run_design(agent, swagger=json.dumps(spec)), 0)
         d = json.loads(self.read("design.json"))
@@ -876,13 +876,13 @@ class Run(unittest.TestCase):
         self.assertEqual(len(self.cached()), 1)
         again = self.agent(reply(case(title="a different answer")))
         self.assertEqual(self.run_design(again, fresh=False), 0)
-        self.assertEqual(len(self.prompts), 1, "Cursor was asked once")
+        self.assertEqual(len(self.prompts), 1, "AI Agent was asked once")
         d = json.loads(self.read("design.json"))
         self.assertEqual(d["test_cases"][0]["title"], "Create a rate returns 201")
         self.assertEqual(d["reused_calls"], 1)
         self.assertTrue(d["reused_from"])
-        self.assertIn("Cursor was NOT asked again", self.read("design.md"))
-        self.assertIn("Cursor was not called", self.read("design-cursor.log"))
+        self.assertIn("AI Agent was NOT asked again", self.read("design.md"))
+        self.assertIn("AI Agent was not called", self.read("design-cursor.log"))
 
     def test_any_change_to_what_is_sent_asks_again(self):
         self.run_design(self.agent(reply(case())), fresh=False)
@@ -1005,7 +1005,7 @@ class Run(unittest.TestCase):
         def stops_at_two(prompt, followup):
             n.append(1)
             if len(n) == 2:
-                raise loop.CursorFailed("Cursor did not finish within 900s", "timeout", True)
+                raise loop.CursorFailed("AI Agent did not finish within 900s", "timeout", True)
             return {"result": reply(case(endpoint="GET /things0/{id}"))}
         self.run_design(stops_at_two, swagger=spec, fresh=True)
         self.assertEqual(len(self.cached()), 1, "only the part this run finished")
@@ -1033,13 +1033,13 @@ class Run(unittest.TestCase):
 
     def test_a_single_call_that_fails_still_ends_in_its_own_fail_line(self):
         def boom(prompt, followup):
-            raise loop.CursorFailed("Cursor did not finish within 900s", "timeout", False)
+            raise loop.CursorFailed("AI Agent did not finish within 900s", "timeout", False)
         import contextlib
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             rc = self.run_design(boom)
         self.assertEqual(rc, 1)
-        self.assertIn("FAIL Cursor did not finish within 900s", out.getvalue())
+        self.assertIn("FAIL AI Agent did not finish within 900s", out.getvalue())
         self.assertNotIn("no part of the design", out.getvalue())
 
     def test_ask_again_forgets_nothing_when_cursor_cannot_be_asked(self):

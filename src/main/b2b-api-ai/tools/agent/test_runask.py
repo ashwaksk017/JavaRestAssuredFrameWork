@@ -94,7 +94,7 @@ class WhichWayApplies(Base):
         self.assertEqual(broken["failed"], 0)
         self.assertIn("it did not compile", broken["why"])
         skipped = ra.classify(self.root, "job-1", run(test(JIRA, "a", "SKIP", "config key x is not set")))
-        self.assertEqual(skipped["failed"], 0, "a skip is not a failure Cursor is asked to fix")
+        self.assertEqual(skipped["failed"], 0, "a skip is not a failure AI Agent is asked to fix")
 
     def test_the_jobs_own_suite_goes_to_that_jobs_ask_cursor(self):
         self.job("job-1")
@@ -141,7 +141,7 @@ class WhichWayApplies(Base):
     def test_one_converted_suite_goes_to_a_fix_brief(self):
         got = ra.classify(self.root, "runs", run(test(IMPORTED, "getSpend403Test"), suite="Suites/Amex_spend.xml"))
         self.assertEqual((got["kind"], got["suite"]), ("converted", "amex"))
-        self.assertIn("Fix with Cursor on the Failures tab", got["why"])
+        self.assertIn("Fix with AI Agent on the Failures tab", got["why"])
         self.assertIn("new job of its own", got["why"])
 
     def test_several_suites_or_a_mix_are_refused_with_what_to_do(self):
@@ -214,7 +214,7 @@ class TheRequest(Base):
         self.job("job-1", result=run(test(JIRA, "a")))
         with self.assertRaises(ValueError) as got:
             ra.preview(self.root, "job-1")
-        self.assertIn("nothing is sent to Cursor", str(got.exception))
+        self.assertIn("nothing is sent to AI Agent", str(got.exception))
 
     def test_a_converted_run_lists_at_most_what_one_fix_job_takes(self):
         self.job("runs", result=run(*[test(IMPORTED, f"t{n}Test") for n in range(12)], suite="Suites/Amex.xml"))
@@ -462,7 +462,7 @@ class Sending(Base):
         self.job("job-1", result=run(test(JIRA, "a")))
         with self.assertRaises(ValueError) as got:
             jobs.run_ask("job-1", "   ")
-        self.assertIn("write what Cursor should fix", str(got.exception))
+        self.assertIn("write what AI Agent should fix", str(got.exception))
         jobs.running_now = lambda: [("job-9", "mvn-test")]
         with self.assertRaises(ValueError) as got:
             jobs.run_ask("job-1", "Fix it.")

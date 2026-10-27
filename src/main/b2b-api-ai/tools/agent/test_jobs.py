@@ -495,10 +495,10 @@ class AMigrationRequest(unittest.TestCase):
         self.assertIn("not a migration request", jobs.migration_refusal("m1", "converter", ""))
 
     def test_what_is_refused(self):
-        for scope, suite, text, why in (("new-test", "", "x", "choose what Cursor may change"),
+        for scope, suite, text, why in (("new-test", "", "x", "choose what AI Agent may change"),
                                         ("converted", "", "x", "name the converted suite"),
                                         ("converted", "goal", "x", "not converted on this machine"),
-                                        ("converter", "", "  ", "write what Cursor should change")):
+                                        ("converter", "", "  ", "write what AI Agent should change")):
             with self.assertRaises(ValueError) as got:
                 jobs.migration_ask("m1", scope, suite, text)
             self.assertIn(why, str(got.exception))

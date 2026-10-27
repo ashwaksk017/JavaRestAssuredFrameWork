@@ -583,7 +583,7 @@ def review(job: str, agent=None, root: str = "") -> dict:
     state = run.get("state") or "none"
     if state not in REVIEWABLE:
         raise Refused(f"there is no change waiting for review in this job (it is "
-                      f"{state.upper()}). Run Cursor first; a change can be reviewed "
+                      f"{state.upper()}). Run AI Agent first; a change can be reviewed "
                       f"while it is PENDING REVIEW or VERIFY FAILED.")
     diff, diff_sha, too_long = read_diff(os.path.join(job_dir, "proposed.diff"))
     if not diff.strip():
@@ -618,8 +618,8 @@ def review(job: str, agent=None, root: str = "") -> dict:
         try:
             if loop.mock_cursor():
                 agent, by = loop.mock.cursor, "mock"
-                say("MOCK CURSOR: the findings below are a keyword match by the "
-                    "workbench's stand-in. Cursor is not called.")
+                say("MOCK AI AGENT: the findings below are a keyword match by the "
+                    "workbench's stand-in. AI Agent is not called.")
         except RuntimeError as e:
             raise Refused(str(e)) from None
     if agent is None:
@@ -629,11 +629,11 @@ def review(job: str, agent=None, root: str = "") -> dict:
         except RuntimeError as e:
             raise Refused(str(e)) from None
         if not secret:
-            raise Refused("no Cursor API key. Set CURSOR_API_KEY, or put it in "
+            raise Refused("no AI Agent API key. Set CURSOR_API_KEY, or put it in "
                           "tools/ra_converter/cursor_agent.json (gitignored).")
 
     clog = loop.CursorLog(job_dir, secret, list(private))
-    clog.write(f"===== code review{' (MOCK: Cursor is not called)' if by == 'mock' else ''}: "
+    clog.write(f"===== code review{' (MOCK: AI Agent is not called)' if by == 'mock' else ''}: "
                f"job {job}, {len(files)} file(s) =====")
     deadline = design.deadline_for("review")
     status, order = {}, []
@@ -667,7 +667,7 @@ def review(job: str, agent=None, root: str = "") -> dict:
                               + (f" ({run.get('suite')})" if run.get("suite") else ""),
                               brief, nonce)
         clog.block(f"prompt ({label})", prompt)
-        say(f" ..  asking Cursor to read {len(batch)} file(s), {label} "
+        say(f" ..  asking AI Agent to read {len(batch)} file(s), {label} "
             f"({len(prompt)} characters)")
 
         def followup(text: str):
@@ -696,7 +696,7 @@ def review(job: str, agent=None, root: str = "") -> dict:
             failures.append(f"{label}: {first[:200]}")
             say(f"WARN {failures[-1]}")
             for f in batch:
-                status[f["file"]]["why"] = "Cursor gave no usable answer for this part"
+                status[f["file"]]["why"] = "AI Agent gave no usable answer for this part"
             if getattr(e, "kind", "") in ("setup", "startup", "timeout"):
                 stop = "not asked: an earlier part failed in a way that would repeat"
             continue
@@ -724,7 +724,7 @@ def review(job: str, agent=None, root: str = "") -> dict:
             verdict, note = got["verdicts"][f["file"]]
             s["note"] = note
             if verdict == "cannot judge":
-                s["why"] = "Cursor said it cannot judge this file from the change alone"
+                s["why"] = "AI Agent said it cannot judge this file from the change alone"
             elif verdict == "no usable verdict":
                 s["why"] = "the reply named this file without saying ok, findings or cannot judge"
             elif f["unread_lines"]:
@@ -808,8 +808,8 @@ def report(r: dict) -> str:
     out = [f"# Code review of job `{r['job']}`", ""]
     if r["mock"]:
         out += ["> **MOCK.** These findings are a keyword match by the workbench's "
-                "stand-in for Cursor. This is not a review.", ""]
-    out += [f"- Reviewed: {r['at']}, by {'the MOCK stand-in' if r['mock'] else 'Cursor'}"
+                "stand-in for AI Agent. This is not a review.", ""]
+    out += [f"- Reviewed: {r['at']}, by {'the MOCK stand-in' if r['mock'] else 'AI Agent'}"
             + (f" ({_md(r['model'])})" if r["model"] and not r["mock"] else ""),
             f"- The change: run started {r['run_started'] or 'unknown'}, "
             f"state {r['run_state'].upper()}, {len(r['files'])} file(s), "
@@ -823,7 +823,7 @@ def report(r: dict) -> str:
     if unread or r["failures"]:
         out += ["## Not reviewed", ""]
         out += [f"- {_path(f['file'])} — {f['status']}: {_md(f['why'])}" for f in unread]
-        out += [f"- A question to Cursor failed — {_md(f)}" for f in r["failures"]]
+        out += [f"- A question to AI Agent failed — {_md(f)}" for f in r["failures"]]
         out += [""]
     if r.get("notes"):
         out += [f"- Note — {_md(x)}" for x in r["notes"]] + [""]

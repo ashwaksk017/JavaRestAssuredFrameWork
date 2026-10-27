@@ -717,7 +717,7 @@ class Mock(Base):
         with redirect_stdout(buf):
             r = mt.generate("j1", "Booking", "fast", None, self.root)
         self.assertEqual((r["by"], r["mock"], r["inventory"]["mock_jira"]), ("mock", True, True))
-        self.assertIn("MOCK CURSOR", buf.getvalue())
+        self.assertIn("MOCK AI AGENT", buf.getvalue())
         self.assertTrue(r["new_cases"][0]["title"].startswith("[MOCK]"))
         self.assertEqual(len(r["updates"]), 1)
         self.assertIn("**MOCK.**", self.read(mt.REPORT))

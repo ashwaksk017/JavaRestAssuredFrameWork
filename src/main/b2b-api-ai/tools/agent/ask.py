@@ -263,16 +263,16 @@ def ask(job: str, root: str = "", agent=None) -> int:
         return 1
     review = loop.read_review(job_dir)
     scope = review.get("scope") or "new-test"
-    say(" .. a question: Cursor reads and answers; no file is changed and the job's "
+    say(" .. a question: AI Agent reads and answers; no file is changed and the job's "
         "state is left as it is")
     prompt = build_prompt(question, facts(job_dir, root))
     if agent is None and loop.mock_cursor():
-        say("MOCK  Cursor is the stand-in (tools/agent/mock.json): it is not asked. What the "
-            "workbench knows about this job, which a real Cursor would answer from:")
+        say("MOCK  AI Agent is the stand-in (tools/agent/mock.json): it is not asked. What the "
+            "workbench knows about this job, which a real AI Agent would answer from:")
         for line in facts(job_dir, root).splitlines()[:40]:
             say("  " + line)
         return 0
-    loop.diag.step("Asking Cursor a question (it reads, nothing is changed)")
+    loop.diag.step("Asking AI Agent a question (it reads, nothing is changed)")
     try:
         before = (loop.dirty_paths(root), loop.head(root))
     except Exception:                                    # noqa: BLE001
@@ -303,7 +303,7 @@ def ask(job: str, root: str = "", agent=None) -> int:
         except loop.cursor_call.CursorCallError as e:
             msg = hide(e) + ("\n" + hide(e.details) if e.details else "")
             clog.write(f"question FAILED after {time.time() - started:.1f}s: {msg}")
-            say(f"FAIL Cursor could not be asked: {msg}")
+            say(f"FAIL AI Agent could not be asked: {msg}")
             return 1
         answer = hide(out.get("result") or "")
     clog.write(f"answered in {time.time() - started:.1f}s")
@@ -317,7 +317,7 @@ def ask(job: str, root: str = "", agent=None) -> int:
         if after != before:
             changed = sorted(p for p in set(before[0]) | set(after[0])
                              if before[0].get(p, "absent") != after[0].get(p, "absent"))
-            say("WARN files changed while the question was answered -- Cursor is not meant to "
+            say("WARN files changed while the question was answered -- AI Agent is not meant to "
                 "write in this mode, so check whether another run or you wrote them; nothing "
                 "was put back:")
             for p in changed[:30]:
@@ -325,10 +325,10 @@ def ask(job: str, root: str = "", agent=None) -> int:
             if after[1] != before[1]:
                 say(f"  HEAD moved: {before[1][1]} {before[1][0][:10]} -> {after[1][1]} {after[1][0][:10]}")
     if not answer.strip():
-        say("FAIL Cursor gave no answer. Ask again, or look at the Cursor log.")
+        say("FAIL AI Agent gave no answer. Ask again, or look at the AI Agent log.")
         return 1
     path = _answer_file(job_dir, question, answer)
-    say(" .. Cursor's answer:")
+    say(" .. AI Agent's answer:")
     for line in answer.strip().splitlines():
         say("   " + line)
     say(f" ok  answered in {time.time() - started:.0f}s; kept in "

@@ -370,12 +370,12 @@ def save(changes: dict, root: str = "", busy=None, project: str = "") -> dict:
     if changes.get("cursor_key_clear"):
         cur.pop("apiKey", None)
         cur.pop("api_key", None)
-        said.append("Cursor key removed")
+        said.append("AI Agent key removed")
     elif str(changes.get("cursor_key") or "").strip():
         cur.pop("api_key", None)
-        cur["apiKey"] = _token(changes["cursor_key"], "Cursor API")
-        said.append("Cursor key")
-    for field, key, what in (("cursor_model", "model", "Cursor model"),
+        cur["apiKey"] = _token(changes["cursor_key"], "AI Agent API")
+        said.append("AI Agent key")
+    for field, key, what in (("cursor_model", "model", "AI Agent model"),
                              ("cursor_design_model", "designModel", "design model")):
         if field in changes:
             v = str(changes.get(field) or "").strip()

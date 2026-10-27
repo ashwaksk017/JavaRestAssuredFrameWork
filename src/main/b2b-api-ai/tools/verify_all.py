@@ -233,7 +233,7 @@ CHECKS = [
           "diagnosis"),
     Check("agent-mock",
           [PY, "tools/agent/test_mock.py"],
-          "the stand-ins for Jira and Cursor answer like the services and "
+          "the stand-ins for Jira and AI Agent answer like the services and "
           "never pass for them: a switch that is neither true nor false is "
           "an error, every mock result says so, and what a mock agent wrote "
           "cannot be approved"),
@@ -271,11 +271,11 @@ CHECKS = [
           "keys kept, so the Agentic step writes them and Create in Xray creates nothing"),
     Check("agent-fixbrief",
           [PY, "tools/agent/test_fixbrief.py"],
-          "a failing converted case becomes a brief for Cursor from the recorded run, surefire, "
+          "a failing converted case becomes a brief for AI Agent from the recorded run, surefire, "
           "the per-row log and the converter's audit notes, redacted, one suite a job"),
     Check("agent-answerq",
           [PY, "tools/agent/test_answerq.py"],
-          "Cursor answers a design's open questions from the project, says where it found each "
+          "AI Agent answers a design's open questions from the project, says where it found each "
           "and drafts the rule to keep; a person's answer stands; nothing private comes back"),
     Check("agent-knowledge",
           [PY, "tools/agent/test_knowledge.py"],
@@ -348,7 +348,7 @@ CHECKS = [
           "matches those tests too instead of creating a second set"),
     Check("agent-ask",
           [PY, "tools/agent/test_ask.py"],
-          "a question to Cursor goes to the read-only path, not the code-writing "
+          "a question to AI Agent goes to the read-only path, not the code-writing "
           "run: it is asked in plan mode with the job's facts, the job's state "
           "and files are left as they are, and the page and the server tell a "
           "question from a change with the same words"),
@@ -365,7 +365,7 @@ CHECKS = [
     Check("agent-convertfix",
           [PY, "tools/agent/test_convertfix.py"],
           "after a convert: it is compiled, and each suite that does not compile is "
-          "fixed by Cursor in a job of its own, held for review only once it compiles"),
+          "fixed by AI Agent in a job of its own, held for review only once it compiles"),
     Check("agent-partest",
           [PY, "tools/agent/test_partest.py"],
           "the parallel test runner the slow workbench test files use: every "
@@ -492,7 +492,7 @@ CHECKS = [
           "committed code compiles after converting ANY single XML"),
     Check("skill-api",
           [PY, "tools/check_skill_api.py"],
-          "a Cursor skill never names a helper, class or path that does "
+          "an AI Agent skill never names a helper, class or path that does "
           "not exist -- an agent follows it literally"),
     Check("jira-fetch",
           [PY, "tools/jira/test_fetch.py"],
@@ -548,9 +548,9 @@ CHECKS = [
         ("xraytrace", "what the Xray listener did in a run"),
         ("devcode", "the check against the developer's change: refused addresses, "
                     "a token never in a URL, the gaps found"),
-        ("suitesuggest", "Cursor's suite suggestion reads only the cases and keeps the groups known"),
+        ("suitesuggest", "AI Agent's suite suggestion reads only the cases and keeps the groups known"),
         ("mvnrun", "compile and run from the page: suites, tests, groups, a broken JAVA_HOME"),
-        ("paste", "screenshots pasted for Cursor are read once and deleted"),
+        ("paste", "screenshots pasted for AI Agent are read once and deleted"),
         ("xrayupdate", "a test changed in Xray is never overwritten unless chosen"),
     )],
     Check("emitted-java",
@@ -601,7 +601,7 @@ GROUPS = (
     ("EMITTED TREE", "read the generated Java / CSV / XML a convert produced. "
                      "These are the checks a PARTIAL convert makes unreliable"),
     ("JIRA / XRAY", "the story-to-test tooling: fetching a story, extracting "
-                    "its request, matching it, and the brief handed to Cursor"),
+                    "its request, matching it, and the brief handed to AI Agent"),
     ("AUTOFIX LOOP", "the machinery that lets an agent propose a fix -- what "
                      "it may touch, what it may accept, what it must "
                      "re-verify"),

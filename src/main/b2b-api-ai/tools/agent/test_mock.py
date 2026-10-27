@@ -114,7 +114,7 @@ class TheSwitch(unittest.TestCase):
 
     def test_a_typo_never_quietly_selects_the_real_service(self):
         for text, word in (('{"jira": true, "cursur": true}', "cursur"),
-                           ('{"Jira": true, "Cursor": true}', "does not know"),
+                           ('{"Jira": true, "AI Agent": true}', "does not know"),
                            ('{"jira": true}', 'no "cursor" switch'),
                            ('{"jira": true, "cursor": true, "xray": true}', "xray"),
                            ('{"jira": true, "cursor": true, "Confluence": true}', "Confluence")):
@@ -238,7 +238,7 @@ class DefectsAgainstTheStandIns(Mocked):
 
         rc, out = self.run_main(defects.main, "suggest", "--job", "j1")
         self.assertEqual(rc, 0)
-        self.assertIn("MOCK CURSOR", out)
+        self.assertIn("MOCK AI AGENT", out)
         r = self.result("defects-result.json")
         by = {d["key"]: d for d in r["defects"]}
         self.assertTrue(r["mock_cursor"])
@@ -317,7 +317,7 @@ class DefectsAgainstTheStandIns(Mocked):
         with self.assertRaises(defects.Refused) as got:
             defects.cmd_apply("j1", "ABC-1", "Environment", "ABC-1", transport=real_jira,
                               cfg=cfg, conn=conn)
-        self.assertIn("MOCK Cursor", str(got.exception))
+        self.assertIn("MOCK AI Agent", str(got.exception))
         self.assertNotIn("PUT", sent)
         # A reason the person chose themselves is theirs to write.
         defects.cmd_apply("j1", "ABC-1", "Code defect", "ABC-1", transport=real_jira,
@@ -340,7 +340,7 @@ class DesignAgainstTheStandIn(Mocked):
 
     def test_a_design_is_produced_marked_mock_and_no_sdk_or_key_is_touched(self):
         saved = (loop.ensure_sdk, loop.cursor_config)
-        boom = lambda *a, **k: (_ for _ in ()).throw(AssertionError("Cursor must not be set up"))
+        boom = lambda *a, **k: (_ for _ in ()).throw(AssertionError("AI Agent must not be set up"))
         loop.ensure_sdk = loop.cursor_config = boom
         self.addCleanup(lambda: (setattr(loop, "ensure_sdk", saved[0]),
                                  setattr(loop, "cursor_config", saved[1])))
@@ -348,7 +348,7 @@ class DesignAgainstTheStandIn(Mocked):
         with redirect_stdout(out):
             rc = design.design("j1", swagger=json.dumps(self.SPEC), root=self.root, speed="fast")
         self.assertEqual(rc, 0)
-        self.assertIn("MOCK CURSOR", out.getvalue())
+        self.assertIn("MOCK AI AGENT", out.getvalue())
         d = self.result("design.json")
         self.assertTrue(d["mock"])
         self.assertEqual(len(d["test_cases"]), 6, "two per endpoint")
@@ -442,7 +442,7 @@ class TheAgentLoopAgainstTheStandIn(Mocked):
     def test_a_placeholder_is_written_held_for_review_and_can_only_be_discarded(self):
         rc, out = self.generate()
         self.assertEqual(rc, 0, out)
-        self.assertIn("MOCK CURSOR", out)
+        self.assertIn("MOCK AI AGENT", out)
         review = loop.read_review(self.job)
         self.assertEqual((review["state"], review["mock"]), ("pending-review", True))
         self.assertEqual(sorted(review["files"]["created"]), sorted([mock.SAMPLE_TEST, "Suites/jira/j1.xml"]),
@@ -516,7 +516,7 @@ class TheAgentLoopAgainstTheStandIn(Mocked):
         with redirect_stdout(out):
             rc = loop.cmd_setup(self.job, self.repo)
         self.assertEqual(rc, 0)
-        self.assertIn("MOCK CURSOR is switched on", out.getvalue())
+        self.assertIn("MOCK AI AGENT is switched on", out.getvalue())
 
 
 class SwitchedOff(Mocked):

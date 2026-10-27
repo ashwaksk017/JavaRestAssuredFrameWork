@@ -165,9 +165,9 @@ def blocked(root: str, job: str) -> str:
     review = _read_json(os.path.join(intake.job_dir(job, root), "review.json"))
     state = review.get("state")
     if state == "generating":
-        return f"a Cursor run of job {job} has not finished: wait for it, or Discard it on the Commit and push tab"
+        return f"an AI Agent run of job {job} has not finished: wait for it, or Discard it on the Commit and push tab"
     if state in WAITING and review.get("mock"):
-        return (f"the change waiting for job {job} was made by the stand-in (mock Cursor): Discard it on the "
+        return (f"the change waiting for job {job} was made by the stand-in (mock AI Agent): Discard it on the "
                 f"Commit and push tab first")
     if state in ("pushed", "approved-local"):
         return (f"job {job}'s change was already approved" + (f" and pushed as {review.get('branch')}"
@@ -341,7 +341,7 @@ def classify_compile(root: str, run_job: str, result: dict, errors: list) -> dic
                                  + (f" and in job {job}'s own files" if mine else "")
                                  + (f"; job {job}'s change failed its check on them, so the change is "
                                     f"what broke them" if broke else "")
-                                 + f". The request goes to job {job}'s Ask Me: Cursor changes what the job "
+                                 + f". The request goes to job {job}'s Ask Me: AI Agent changes what the job "
                                    f"changed so they compile again, and leaves the generated files alone."))
             before = (f" They failed before job {job}'s change too: its check compiled the tree before "
                       f"and after, so the change is not the cause. Until they compile, nothing on this "
@@ -359,7 +359,7 @@ def classify_compile(root: str, run_job: str, result: dict, errors: list) -> dic
                                  f"discard it on the Commit and push tab first" if len(waiting) == len(owned)
                                  else ""),
                         why=(f"the errors are in the converted files of suite {', '.join(owned)}, and no change "
-                             f"waiting for review caused them.{before} As after a convert, Cursor makes each "
+                             f"waiting for review caused them.{before} As after a convert, AI Agent makes each "
                              f"suite compile in a fix job of its own ({compile_fix_job(run_job, owned[0])}"
                              + (", ..." if len(owned) > 1 else "") + "), changing only that suite's converted "
                              f"files, and the fix waits for review only once the suite compiles. A suite's "
@@ -379,7 +379,7 @@ def classify_compile(root: str, run_job: str, result: dict, errors: list) -> dic
             where = sorted({own[f] for f in files})
             return dict(base, kind="job", job=job, blocked=blocked(root, job), why=(
                 f"the errors are in job {job}'s own files ({'; '.join(where)}). As Ask Me on the Automate "
-                f"Test Case tab does, the request goes to that job: Cursor changes the change waiting for "
+                f"Test Case tab does, the request goes to that job: AI Agent changes the change waiting for "
                 f"its review, or starts one when none is waiting; then it is checked and waits for your "
                 f"review on the Commit and push tab."))
     who = (f"job {candidates[0]}'s" if candidates else "the open job's")
@@ -418,7 +418,7 @@ def classify(root: str, run_job: str, result: dict) -> dict:
         return classify_compile(root, run_job, result, errors)
     if result.get("what") != "test":
         return {"kind": "none", "failed": 0, "why": "no tests have been run from this tab for this job yet: "
-                                                    "run them, then ask Cursor to fix what failed"}
+                                                    "run them, then ask AI Agent to fix what failed"}
     failed = failed_tests(result)
     if not failed:
         why = ("the last run had no failed test" if result.get("tests") is not None else
@@ -435,9 +435,9 @@ def classify(root: str, run_job: str, result: dict) -> dict:
             suite = next(iter(suites))
             return dict(base, kind="converted", suite=suite, why=(
                 f"the failing tests are converted ReadyAPI tests of suite {suite} ({IMPORTED}{suite}). "
-                f"As Fix with Cursor on the Failures tab does, a fix brief is written from this run -- for "
+                f"As Fix with AI Agent on the Failures tab does, a fix brief is written from this run -- for "
                 f"each case surefire's message, the last request and response, and what the converter "
-                f"noted -- in a new job of its own, and Cursor may change only that suite's converted files"
+                f"noted -- in a new job of its own, and AI Agent may change only that suite's converted files"
                 + (f". One job takes at most {MAX_CONVERTED} cases; the others are named in the brief"
                    if len(failed) > MAX_CONVERTED else "") + "."))
         return dict(base, kind="none", why=(
@@ -454,7 +454,7 @@ def classify(root: str, run_job: str, result: dict) -> dict:
             where = sorted({own[c] for c in classes})
             return dict(base, kind="job", job=job, blocked=blocked(root, job), why=(
                 f"the failing tests are job {job}'s own ({'; '.join(where)}). As Ask Me on the Automate "
-                f"Test Case tab does, the request goes to that job: Cursor changes the change waiting for "
+                f"Test Case tab does, the request goes to that job: AI Agent changes the change waiting for "
                 f"its review, or starts one when none is waiting; then it is checked and waits for your "
                 f"review on the Commit and push tab."))
     who = (f"job {candidates[0]}'s" if candidates else "the open job's")
@@ -509,7 +509,7 @@ def private(root: str) -> dict:
         return loop.private_config(root, strict=True)
     except ValueError as e:
         raise ValueError(f"the configuration file {e} cannot be read, so its private values could not "
-                         f"be hidden: nothing is sent to Cursor until it can be read") from None
+                         f"be hidden: nothing is sent to AI Agent until it can be read") from None
 
 
 def redact(text: str, values: dict) -> str:

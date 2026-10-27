@@ -168,9 +168,9 @@ def run(job: str, root: str = "", use_cursor: bool = True, runner=None, generate
         write_result(job_dir, result)
         return 1
     if not use_cursor:
-        say("NOTE Cursor is off for this convert: nothing was fixed. Turn Cursor assist on, "
+        say("NOTE AI Agent is off for this convert: nothing was fixed. Turn AI Agent assist on, "
             "or use Ask Me on the Migration tab with the suite.")
-        result["suites"] = {s: {"state": "not fixed (Cursor off)", "files": f} for s, f in by_suite.items()}
+        result["suites"] = {s: {"state": "not fixed (AI Agent off)", "files": f} for s, f in by_suite.items()}
         write_result(job_dir, result)
         return 1
     policy = loop.load_policy()
@@ -194,8 +194,8 @@ def run(job: str, root: str = "", use_cursor: bool = True, runner=None, generate
         for name in ("brief.md", "plan.md"):
             with io.open(os.path.join(sub_dir, name), "w", encoding="utf-8") as fh:
                 fh.write(text + "\n")
-        diag.step(f"Cursor is making suite {suite} compile")
-        say(f"==> {suite}: Cursor makes it compile (job {sub}); the change is held for review only "
+        diag.step(f"AI Agent is making suite {suite} compile")
+        say(f"==> {suite}: AI Agent makes it compile (job {sub}); the change is held for review only "
             f"once these {len(own)} file(s) compile")
         rc_g = gen(sub_dir, root, policy, "converted", suite, must_fix=own)
         state = loop.read_review(sub_dir).get("state") or "none"
@@ -203,8 +203,8 @@ def run(job: str, root: str = "", use_cursor: bool = True, runner=None, generate
         if state == "pending-review":
             say(f" ok  {suite} compiles: the fix is waiting for review (job {sub}, Commit and push tab)")
         else:
-            say(f"FAIL {suite} still does not compile after Cursor's attempts ({state}); "
-                f"job {sub} holds what it tried -- see its Cursor log")
+            say(f"FAIL {suite} still does not compile after AI Agent's attempts ({state}); "
+                f"job {sub} holds what it tried -- see its AI Agent log")
             all_ok = False
     write_result(job_dir, result)
     return 0 if all_ok else 1

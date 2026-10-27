@@ -20879,13 +20879,13 @@ def main():
     p.add_argument("--cursor-assist", action="store_true",
                    help="After convert, write a conversion-gap report and, if "
                         "the audit shows confusion (TODO/STUB/PARTIAL or HIGH "
-                        "preflight), call a Cursor agent to fix emit/helpers "
+                        "preflight), call an AI Agent to fix emit/helpers "
                         "(cursor_agent.json or CURSOR_API_KEY). Writes "
                         "_audit/cursor_assist_report.md then "
                         "_audit/cursor_assist_after.md. Overrides config "
                         "enabled=false.")
     p.add_argument("--no-cursor-assist", action="store_true",
-                   help="Do not call a Cursor agent even if cursor_agent.json "
+                   help="Do not call an AI Agent even if cursor_agent.json "
                         "has enabled=true.")
     p.add_argument("--cursor-config", default=None,
                    help="Path to cursor_agent.json (apiKey, model, enabled). "

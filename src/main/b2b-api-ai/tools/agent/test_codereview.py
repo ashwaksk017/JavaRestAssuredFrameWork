@@ -367,7 +367,7 @@ class Mock(Base):
         self.assertEqual((r["by"], r["mock"], r["whole"]), ("mock", True, True))
         self.assertEqual([(x["file"], x["line"]) for x in r["findings"]], [(GEN, 6), (NEW, 2)])
         self.assertTrue(all(x["title"].startswith("[MOCK]") for x in r["findings"]))
-        self.assertIn("MOCK CURSOR", out.getvalue())
+        self.assertIn("MOCK AI AGENT", out.getvalue())
         md = self.read(cr.REPORT)
         self.assertIn("**MOCK.**", md)
 

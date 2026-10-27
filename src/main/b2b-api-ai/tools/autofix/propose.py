@@ -201,7 +201,7 @@ def agent_cursor(prompt: str, workdir: str) -> dict:
     cfg = ca.load_config(None)
     if not cfg.api_key:
         return {"ok": False, "text": "",
-                "error": "no Cursor API key (set CURSOR_API_KEY or apiKey in "
+                "error": "no AI Agent API key (set CURSOR_API_KEY or apiKey in "
                          "tools/ra_converter/cursor_agent.json)"}
     cfg.cwd = cfg.cwd or ROOT
     try:

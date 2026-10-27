@@ -437,7 +437,7 @@ class Handler(BaseHTTPRequestHandler):
                 out = jobs.job_dir(body.get("job", ""))
                 text = str(body.get("text") or "")
                 if not text.strip():
-                    raise ValueError("write what Cursor should change")
+                    raise ValueError("write what AI Agent should change")
                 if len(text) > 20000:
                     raise ValueError("that is more than 20,000 characters; keep the ask short")
                 os.makedirs(out, exist_ok=True)
@@ -699,7 +699,7 @@ def main(argv=None) -> int:
     print(f"b2b agent UI on http://{args.host}:{args.port}")
     print(f"  repository: {ROOT}")
     print(f"  jobs:       .workbench/<job>/")
-    print("  checking Cursor (SDK, key, bridge) in the background; the page is up now")
+    print("  checking AI Agent (SDK, key, bridge) in the background; the page is up now")
 
     def check_cursor():
         # Up to 90 s on a cold machine (the SDK's first start under
@@ -710,14 +710,14 @@ def main(argv=None) -> int:
                 print(f"  {line}")
             if startup.get("ok"):
                 if startup.get("mock"):
-                    print("  Cursor: MOCK (tools/agent/mock.json)")
+                    print("  AI Agent: MOCK (tools/agent/mock.json)")
                 else:
-                    print(f"  Cursor: ready (model {startup.get('model') or '?'})")
+                    print(f"  AI Agent: ready (model {startup.get('model') or '?'})")
             else:
-                print("  Cursor: NOT READY — Design and Automate will fail until this is fixed "
-                      "(Settings → Cursor key, or tools/ra_converter/cursor_agent.json).")
+                print("  AI Agent: NOT READY — Design and Automate will fail until this is fixed "
+                      "(Settings → AI Agent key, or tools/ra_converter/cursor_agent.json).")
         except Exception as e:                           # noqa: BLE001
-            print(f"  Cursor: startup check failed ({type(e).__name__}: {e})")
+            print(f"  AI Agent: startup check failed ({type(e).__name__}: {e})")
     try:
         jobs.mark_cursor_checking(ROOT)
     except OSError:

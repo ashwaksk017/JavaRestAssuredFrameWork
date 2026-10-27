@@ -104,7 +104,7 @@ class AfterAConvert(unittest.TestCase):
         self.assertIn("waiting for review", said)
         self.assertEqual(os.environ["WORKBENCH_CURSOR_LOG_MIRROR"],
                          os.path.join(self.root, ".workbench", "conv1", "migration-cursor.log"),
-                         "the fix's conversation is also in the Convert tab's Cursor log")
+                         "the fix's conversation is also in the Convert tab's AI Agent log")
 
     def test_a_suite_cursor_could_not_fix_is_not_called_ready(self):
         code, said, result = self.run_it(err(AMEX), ends="verify-failed")
@@ -123,7 +123,7 @@ class AfterAConvert(unittest.TestCase):
         code, said, result = self.run_it(err(AMEX), use_cursor=False)
         self.assertEqual(code, 1)
         self.assertEqual(self.asked, [])
-        self.assertIn("Cursor is off", said)
+        self.assertIn("AI Agent is off", said)
 
     def test_a_fix_already_waiting_is_not_asked_again(self):
         sub = os.path.join(self.root, ".workbench", "conv1-fix-amex")

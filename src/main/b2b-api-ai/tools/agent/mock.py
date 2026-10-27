@@ -514,7 +514,7 @@ def _design_reply(prompt: str) -> str:
     return json.dumps({
         "service": "mock", "test_cases": cases[:limit],
         "summary": "MOCK DESIGN: these cases were produced by the workbench's stand-in "
-                   "for Cursor, two per endpoint, to show the flow. They are not a design.",
+                   "for AI Agent, two per endpoint, to show the flow. They are not a design.",
         "open_questions": ["This is mock output. Set \"cursor\": false in "
                            "tools/agent/mock.json for a real design."]})
 
@@ -670,8 +670,8 @@ SAMPLE_BODY = """package com.hi.api.tests.jira;
 import com.hi.api.tests.StoryTestBase;
 
 /**
- * MOCK. Written by the workbench's stand-in for Cursor (tools/agent/mock.py)
- * so that the checks, the review and Discard can be tried without Cursor.
+ * MOCK. Written by the workbench's stand-in for AI Agent (tools/agent/mock.py)
+ * so that the checks, the review and Discard can be tried without AI Agent.
  * It tests nothing and is never pushed: Approve refuses a mock run.
  * Discard removes it.
  *
@@ -704,13 +704,13 @@ def loop_agent(root: str):
             whose = ("an earlier mock run left it; delete it"
                      if there == SAMPLE_BODY else "it is not the mock's file")
             return {"result": f"MOCK AGENT: {SAMPLE_TEST} is already there ({whose}). "
-                              f"Nothing was written. Cursor was not called.",
+                              f"Nothing was written. AI Agent was not called.",
                     "status": "finished", "id": "mock", "model": "mock"}
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with io.open(path, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(SAMPLE_BODY)
         return {"result": f"MOCK AGENT: created {SAMPLE_TEST} (a placeholder that tests "
-                          f"nothing). Cursor was not called. This run cannot be approved; "
+                          f"nothing). AI Agent was not called. This run cannot be approved; "
                           f"use Discard.",
                 "status": "finished", "id": "mock", "model": "mock"}
     return agent
