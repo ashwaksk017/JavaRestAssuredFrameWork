@@ -257,6 +257,15 @@ def job_files(root: str, job: str) -> dict:
     return out
 
 
+def verified_error_files(review: dict) -> set:
+    """The files the change's own check (run_verify) found with errors."""
+    out = set()
+    for step in ((review.get("verify") or {}).get("steps") or []):
+        if isinstance(step, dict):
+            out |= {f for f in map(error_file, step.get("errors") or []) if f}
+    return out
+
+
 def classify_compile(root: str, run_job: str, result: dict, errors: list) -> dict:
     """classify() for a run whose compile failed: `failed` counts errors."""
     what = "Compile" if result.get("what") == "compile" else _what_ran(result)
@@ -269,15 +278,39 @@ def classify_compile(root: str, run_job: str, result: dict, errors: list) -> dic
                                            "stopped it")
     generated = [f for f in files if f.startswith(SUPPORT)]
     suites = sorted({s for s in (converted_suite(_dotted(f)) for f in files) if s})
+    candidates = _candidates(root, run_job, result)
     if generated or suites:
         where = ", ".join(([f"suite {', '.join(suites)}"] if suites else [])
                           + ([f"{len(generated)} generated support file(s)"] if generated else []))
+        theirs = set(generated) | {f for f in files if converted_suite(_dotted(f))}
+        before = ""
+        for job in candidates:
+            # A change waiting for review can break a converted suite it
+            # never wrote -- a shared helper it changed. Its own check
+            # compiled the tree before and after: when it failed on these
+            # files, or the job's own files fail too, the change is the fix.
+            review = _read_json(os.path.join(intake.job_dir(job, root), "review.json"))
+            if review.get("state") not in WAITING:
+                continue
+            own = job_files(root, job)
+            mine = [f for f in files if f in own]
+            broke = review.get("state") == "verify-failed" and theirs & verified_error_files(review)
+            if mine or broke:
+                return dict(base, kind="job", job=job, blocked=blocked(root, job), generated=sorted(theirs),
+                            why=(f"the errors are in files the converter writes ({where})"
+                                 + (f" and in job {job}'s own files" if mine else "")
+                                 + (f"; job {job}'s change failed its check on them, so the change is "
+                                    f"what broke them" if broke else "")
+                                 + f". The request goes to job {job}'s Ask Me: Cursor changes what the job "
+                                   f"changed so they compile again, and leaves the generated files alone."))
+            before = (f" They failed before job {job}'s change too: its check compiled the tree before "
+                      f"and after, so the change is not the cause. Until they compile, nothing on this "
+                      f"machine compiles or runs -- job {job}'s new tests included.")
         return dict(base, kind="none", why=(
             f"the errors are in files the converter writes ({where}); an edit there is lost on the next "
-            f"convert. Convert the suite again on the Migration from ReadyAPI tab -- a generated wrapper "
-            f"left from an older convert is removed on the next Compile by itself. If the errors stay, the "
-            f"converter needs the fix: the Migration tab's Ask Me, scope converter"))
-    candidates = _candidates(root, run_job, result)
+            f"convert.{before} Convert the suite again on the Migration from ReadyAPI tab -- a generated "
+            f"wrapper left from an older convert is removed on the next Compile by itself. If the errors "
+            f"stay, the converter needs the fix: the Migration tab's Ask Me, scope converter"))
     for job in candidates:
         own = job_files(root, job)
         if all(f in own for f in files):
@@ -304,6 +337,10 @@ def prefill_compile(info: dict, errors: list) -> str:
     L += [f"- {e[:400]}" for e in errors[:MAX_LISTED * 2]]
     L += ["", f"Make the project compile. Change only job {info['job']}'s files; where an error comes from "
               f"a class the job did not write, say so instead of changing that class."]
+    if info.get("generated"):
+        L += [f"Some errors are in files the converter writes ({', '.join(info['generated'][:5])}"
+              + (", ..." if len(info["generated"]) > 5 else "") + "). Do not edit those: change what this "
+              f"job changed (a helper, a shared class) so they compile again as they did before it."]
     return "\n".join(L)
 
 

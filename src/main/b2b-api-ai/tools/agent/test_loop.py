@@ -3117,6 +3117,17 @@ class ATreeThatAlreadyFails(unittest.TestCase):
             "src/test/java/com/hi/api/tests/manual/GoalShop.java",
             "src/test/java/com/hi/api/tests/jira/NewTest.java"})
 
+    def test_a_project_under_a_src_folder_names_its_files_from_the_project(self):
+        # This project sits under .../src/main/b2b-api-ai/: Maven's absolute
+        # path has an outer src/, and the file is read from the last one --
+        # else a change's own file never matched the errors and passed the check.
+        out = (b"[ERROR] /C:/work/Fw/src/main/b2b-api-ai/src/test/java/com/hi/api/tests/jira/NewTest.java:[3,1] x\n"
+               b"[ERROR] /C:/work/Fw/src/main/b2b-api-ai/src/main/java/com/hi/api/support/a/ASteps.java:[9,2] y\n")
+        self.assertEqual(loop.compile_error_files(out), {
+            "src/test/java/com/hi/api/tests/jira/NewTest.java", "src/main/java/com/hi/api/support/a/ASteps.java"})
+        self.assertEqual(loop.compile_errors(out)[0], "src/test/java/com/hi/api/tests/jira/NewTest.java:3: x")
+        self.assertEqual(loop.project_rel("tools/agent/x.java"), "tools/agent/x.java")
+
     def test_what_failed_before_does_not_fail_the_job(self):
         both = loop.compile_error_files(self.OUT)
         got = self.verify(both)

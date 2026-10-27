@@ -325,6 +325,42 @@ class CompileErrors(Base):
         self.assertEqual((got["kind"], got["job"]), ("job", "job-1"))
         self.assertIn("generated support file", ra.classify(self.root, "job-1", compiled(errors[1]))["why"])
 
+    BACKBOOK = "src/test/java/com/hi/api/tests/imported/amexbackbook/book/BookTest.java"
+    HELPER = "src/main/java/com/hi/api/rest/utilities/StayHelper.java"
+
+    def test_a_converted_suite_the_jobs_change_broke_goes_to_the_job(self):
+        # Automate changed a shared helper; its own check found the converted
+        # suite failing after it (verify-failed): the change is the fix.
+        self.job("job-3", review={"state": "verify-failed",
+                                  "files": {"created": [], "modified": [self.HELPER]},
+                                  "verify": {"ok": False, "steps": [{"name": "compile", "rc": 1, "errors": [
+                                      f"src/main/b2b-api-ai/{self.BACKBOOK}:12: cannot find symbol"]}]}})
+        self.job("job-3", result=compiled(f"{self.BACKBOOK}:12: cannot find symbol"))
+        got = ra.preview(self.root, "job-3")
+        self.assertEqual((got["kind"], got["job"], got["generated"]), ("job", "job-3", [self.BACKBOOK]))
+        self.assertIn("suite amexbackbook", got["why"])
+        self.assertIn("the change is what broke them", got["why"])
+        self.assertIn("Do not edit those", got["text"])
+
+    def test_the_jobs_own_errors_next_to_a_converted_suites_go_to_the_job(self):
+        new = "src/test/java/com/hi/api/tests/jira/NewTest.java"
+        self.job("job-3", review={"state": "pending-review", "files": {"created": [new], "modified": []},
+                                  "verify": {"ok": True, "steps": []}})
+        got = ra.classify(self.root, "job-3", compiled(f"{new}:3: x", f"{self.BACKBOOK}:12: y"))
+        self.assertEqual(got["kind"], "job")
+        self.assertIn("and in job job-3's own files", got["why"])
+
+    def test_a_converted_suite_broken_before_the_change_says_so(self):
+        # The change passed its check: these files failed before it too.
+        self.job("job-3", review={"state": "pending-review",
+                                  "files": {"created": ["src/test/java/com/hi/api/tests/jira/NewTest.java"]},
+                                  "verify": {"ok": True, "steps": []}})
+        got = ra.classify(self.root, "job-3", compiled(f"{self.BACKBOOK}:12: y"))
+        self.assertEqual(got["kind"], "none")
+        self.assertIn("failed before job job-3's change too", got["why"])
+        self.assertIn("job job-3's new tests included", got["why"])
+        self.assertIn("Convert the suite again", got["why"])
+
     def test_the_count_includes_the_errors_left_off_the_list(self):
         self.assertEqual(ra.error_count([f"{JIRA_FILE}:1: x", "... and 7 more error(s)"]), 8)
 

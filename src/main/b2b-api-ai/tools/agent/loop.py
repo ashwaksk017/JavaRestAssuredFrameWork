@@ -3082,10 +3082,20 @@ def gate_failures(root: str, out_json: str, runner=None, area: str = "converter"
 _JAVA_ERR_RX = re.compile(r"ERROR.*?((?:src|tools)[\\/][^\s:\[\]]+\.java)")
 
 
+def project_rel(path: str) -> str:
+    """A path the compile names, from the project folder. The patterns
+    read it from the first `src/` of the absolute path, and this project
+    may itself sit under a `src/` (.../src/main/b2b-api-ai/): what counts
+    is the last `src/main/java/` or `src/test/java/`."""
+    path = str(path or "").replace("\\", "/")
+    at = max(path.rfind("src/main/java/"), path.rfind("src/test/java/"))
+    return path[at:] if at > 0 else path
+
+
 def compile_error_files(output) -> set:
     """The .java files a failed compile names, as repo-relative paths."""
     text = output.decode("utf-8", errors="replace") if isinstance(output, bytes) else (output or "")
-    return {m.group(1).replace("\\", "/") for m in _JAVA_ERR_RX.finditer(text)}
+    return {project_rel(m.group(1)) for m in _JAVA_ERR_RX.finditer(text)}
 
 
 _JAVA_ERR_LINE_RX = re.compile(
@@ -3100,7 +3110,7 @@ def compile_errors(output) -> list:
     text = output.decode("utf-8", errors="replace") if isinstance(output, bytes) else (output or "")
     out, seen = [], set()
     for m in _JAVA_ERR_LINE_RX.finditer(text):
-        line = f"{m.group(1).replace(chr(92), '/')}:{m.group(2)}: {m.group(3).strip()}"
+        line = f"{project_rel(m.group(1))}:{m.group(2)}: {m.group(3).strip()}"
         if line not in seen:
             seen.add(line)
             out.append(line)
