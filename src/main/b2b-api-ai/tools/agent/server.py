@@ -425,7 +425,7 @@ class Handler(BaseHTTPRequestHandler):
                 # environment this job's commands use (jobs.set_project).
                 return self._json(jobs.set_project(body.get("job", ""), body.get("project", "")))
             if u.path == "/api/run-ask":
-                # "Ask Me to fix the failures" on the Run tests tab: the
+                # "Fix Failures" on the Run tests tab: the
                 # job's own tests to its Ask Me, a converted suite's to a
                 # fix brief in a new job (jobs.run_ask). The images go to the
                 # job the request goes to, so they are saved there, not here.

@@ -440,6 +440,71 @@ class TemplateDrift(unittest.TestCase):
         self.assertEqual(self.issues("old"), [])
 
 
+class TemplateValueDrift(unittest.TestCase):
+    """A hand-written body that sends a value no converted body of the same
+    call sends. Seen live: businessProfile.employeeCountRange 0 (copied
+    from a reference example that wrote every number as 0) -- the converted
+    bodies send 1 -- and every test was answered 400, code 31."""
+
+    BODY = {"name": "#n#", "address": {"city": "Memphis", "postalCode": "38125"},
+            "phone": {"phoneType": "mobile"},
+            "businessProfile": {"employeeCountRange": 1, "annualHotelSpend": 0, "travelAgencyInUse": True}}
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.st = loop.storytests
+        self.st._CONVERTED_SHAPES.pop(self.root, None)
+        self.addCleanup(self.st._CONVERTED_SHAPES.pop, self.root, None)
+        conv = os.path.join(self.root, "src", "main", "resources", "templates", "s")
+        os.makedirs(conv)
+        for i in range(4):
+            body = json.loads(json.dumps(self.BODY))
+            body["address"]["postalCode"] = f"3812{i}"                 # free text: differs per body
+            body["businessProfile"]["employeeCountRange"] = 1 if i < 3 else "501-1000"
+            body["businessProfile"]["travelAgencyInUse"] = i % 2 == 0   # a flag set both ways
+            write_json(os.path.join(conv, f"create{i}.json"), body)
+        self.manual = os.path.join(self.root, "src", "test", "resources", "templates", "manual")
+        os.makedirs(self.manual)
+
+    def issues(self, **changes):
+        body = json.loads(json.dumps(self.BODY))
+        for path, value in changes.items():
+            node = body
+            *parents, leaf = path.split("__")
+            for p in parents:
+                node = node[p]
+            node[leaf] = value
+        write_json(os.path.join(self.manual, "mine.json"), body)
+        return [i for i in self.st._template_drift_issues(
+            self.root, "X.java", 'ManualBody.render("templates/manual/mine.json"') if ": sends " in i]
+
+    def test_the_value_seen_live_is_said(self):
+        got = self.issues(businessProfile__employeeCountRange=0)
+        self.assertEqual(len(got), 1, got)
+        self.assertIn("sends businessProfile.employeeCountRange = 0", got[0])
+        self.assertIn("4 of them send 1 (3), \"501-1000\" (1)", got[0])
+        self.assertIn("#name#", got[0], "a test of a refused value on purpose has a way out")
+
+    def test_what_the_converted_bodies_send_is_fine(self):
+        self.assertEqual(self.issues(), [])
+        self.assertEqual(self.issues(businessProfile__employeeCountRange="501-1000"), [])
+
+    def test_a_flag_the_converted_bodies_set_both_ways_is_the_scenarios_choice(self):
+        self.assertEqual(self.issues(businessProfile__travelAgencyInUse=False), [])
+
+    def test_free_text_is_not_compared(self):
+        self.assertEqual(self.issues(address__postalCode="99999", address__city="Nashville"), [])
+
+    def test_an_enum_word_none_of_them_sends_is_said(self):
+        got = self.issues(phone__phoneType="pager")
+        self.assertEqual(len(got), 1, got)
+        self.assertIn("phone.phoneType = \"pager\"", got[0])
+
+    def test_a_placeholder_is_not_a_value(self):
+        self.assertEqual(self.issues(businessProfile__employeeCountRange="#employee_count_range#"), [])
+
+
 class ProjectsDoNotMix(Base):
     def test_a_test_whose_base_is_the_other_projects_fails_the_check(self):
         st = loop.storytests

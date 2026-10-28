@@ -73,6 +73,29 @@ class Scrubbing(unittest.TestCase):
         self.assertEqual(got["email"]["emailAddress"], "<text>")
         self.assertEqual(self.s.template("not json"), "(not JSON: its shape cannot be shown safely)")
 
+    def test_a_small_number_is_shown_as_the_converted_body_sends_it(self):
+        # Seen live: every number written as 0 was copied, and the server
+        # refused employeeCountRange 0 (the converted bodies send 1).
+        got = json.loads(self.s.template('{"employeeCountRange": 1, "spend": 0, "rate": 2.5, '
+                                         '"guestId": 1901102667, "phone": 9015551212}'))
+        self.assertEqual(got["employeeCountRange"], 1)
+        self.assertEqual(got["spend"], 0)
+        self.assertEqual(got["rate"], 2.5)
+        self.assertEqual(got["guestId"], "<number>", "an id is not shown")
+        self.assertEqual(got["phone"], "<number>")
+
+    def test_an_enum_word_is_shown_a_persons_field_is_not(self):
+        # Seen live: hidden as <text>, "none" was invented as "mandatory" and refused.
+        got = json.loads(self.s.template(
+            '{"travelPolicyEnforcement": "none", "businessModel": "retailStoreFront", "addressType": "business",'
+            ' "username": "jsmith", "firstName": "george", "city": "memphis", "propCode": "ZZQXW",'
+            ' "businessModelComments": "automated test", "groupName": "corpco"}'))
+        self.assertEqual(got["travelPolicyEnforcement"], "none")
+        self.assertEqual(got["businessModel"], "retailStoreFront")
+        self.assertEqual(got["addressType"], "business", "a ...Type field is an enum")
+        for hidden in ("username", "firstName", "city", "propCode", "businessModelComments", "groupName"):
+            self.assertEqual(got[hidden], "<text>", hidden)
+
     def test_the_scan_names_what_is_left_without_quoting_it(self):
         found = rx.leaks('see https://jira.corpco.test x@corpco.test XYZ-1 "ZZQXW" corpco s3cret-Value9',
                          self.PRIVATE)

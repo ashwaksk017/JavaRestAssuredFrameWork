@@ -2395,7 +2395,7 @@ async function showRunResult(j) {
   box.replaceChildren(...kids);
   await showRunAsk(j);
 }
-// ---- Ask Me to fix the failures (under a failed run) ------------------
+// ---- Fix Failures (under a failed run) ------------------
 // The server says which way the run's failures go (runask.py): the job's
 // own tests to that job's Ask Me, a converted suite's to a fix brief in
 // a new job. The request is prefilled once per run, then left to the person:

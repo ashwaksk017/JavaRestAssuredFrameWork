@@ -1717,7 +1717,7 @@ def _workbench_start(job: str, out: str, cur: dict, text: str) -> dict:
                 runnable="agent-generate", job=job)
 
 
-# ---- Ask Me to fix the failures (the Run tests tab) ----------------------
+# ---- Fix Failures (the Run tests tab) ----------------------
 AUTO_FIX_FILE = "run-ask-auto.json"     # what auto_fix did after the run it names
 
 

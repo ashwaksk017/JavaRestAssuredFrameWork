@@ -190,8 +190,37 @@ def _body_fields(text: str):
     return _json_fields(j) - {"_comment"} if isinstance(j, dict) else None
 
 
+_VALUE_PLACEHOLDER_RX = re.compile(r"#[^#\s]+#|\$\{[^}]+\}|<<[^<>]+>>|@[A-Za-z0-9_.]+@|%[A-Za-z0-9_.]+%")
+_MAX_ENUM_VALUES = 6       # a field whose converted bodies send more values than this is free text
+
+
+def _body_values(text: str) -> dict:
+    """{field path: the literal it sends} of a template's leaves -- numbers,
+    true/false, text; a placeholder ("#x#", @n@, <<x>>) is not a literal."""
+    import json as _json
+    try:
+        j = _json.loads(_NUMBER_PLACEHOLDER_RX.sub('"#n#"', text))
+    except ValueError:
+        return {}
+    out = {}
+
+    def walk(node, pre):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                walk(v, f"{pre}.{k}" if pre else k)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v, pre + "[]")
+        elif node is not None and pre and pre != "_comment":
+            if isinstance(node, str) and (not node.strip() or _VALUE_PLACEHOLDER_RX.search(node)):
+                return
+            out.setdefault(pre, node)
+    walk(j, "")
+    return out
+
+
 def _converted_shapes(root: str) -> list:
-    """(path, fields) of every converted request body
+    """(path, fields, values) of every converted request body
     (src/main/resources/templates/**), read once a run."""
     base = os.path.join(root, "src", "main", "resources", "templates")
     if root not in _CONVERTED_SHAPES:
@@ -200,11 +229,78 @@ def _converted_shapes(root: str) -> list:
             for f in files:
                 if f.endswith(".json"):
                     p = os.path.join(d, f)
-                    fields = _body_fields(_read(p, 400_000))
+                    text = _read(p, 400_000)
+                    fields = _body_fields(text)
                     if fields:
-                        shapes.append((os.path.relpath(p, base).replace(os.sep, "/"), fields))
+                        shapes.append((os.path.relpath(p, base).replace(os.sep, "/"), fields, _body_values(text)))
         _CONVERTED_SHAPES[root] = shapes
     return _CONVERTED_SHAPES[root]
+
+
+def _shown(v) -> str:
+    import json as _json
+    s = _json.dumps(v, ensure_ascii=False)
+    return s if len(s) <= 40 else s[:37] + '..."'
+
+
+# "business", "mobile", "individual", "PROGRAMACCOUNTS" -- not "Memphis" (a
+# name), not "TN" / "US" (a place), not "38103" or "a@b.c" (free text).
+_ENUM_WORD_RX = re.compile(r"^([a-z][A-Za-z_-]{0,30}|[A-Z][A-Z_]{2,30})$")
+
+
+def _checked_value(v) -> bool:
+    """A value the server checks against a set: a number, true/false, an
+    enum word. Free text -- a name, a street, a postal code, an e-mail
+    address -- differs from body to body and is not compared."""
+    return isinstance(v, (bool, int, float)) or (isinstance(v, str) and bool(_ENUM_WORD_RX.match(v)))
+
+
+def _converted_values(root: str) -> dict:
+    """{field path: every literal any converted body sends there}, as JSON."""
+    import json as _json
+    out: dict = {}
+    for _p, _f, vals in _converted_shapes(root):
+        for k, v in vals.items():
+            out.setdefault(k, set()).add(_json.dumps(v))
+    return out
+
+
+def _template_value_issues(root: str, tpl: str, mine: dict, alike: list) -> list:
+    """A field the template sends a fixed value for that no converted body
+    sends there, where the converted bodies of the same call agree on a few
+    values (an enum, a range code, a flag). Seen live: the story
+    create-account body sent businessProfile.employeeCountRange 0, copied
+    from a reference example that wrote every number as 0; 79 converted
+    bodies send 1, and the server answered 400 (code 31, Invalid JSON
+    Parameter Value) to every test. Not said: free text, fields fewer than
+    three of them send as a literal, fields they send more than six values
+    for, and a value any converted body sends there (a flag the bodies of a
+    call set both ways is the scenario's choice)."""
+    import json as _json
+    issues = []
+    anywhere = _converted_values(root)
+    for field, value in sorted(mine.items()):
+        if not _checked_value(value):
+            continue
+        theirs = [vals[field] for _p, _f, vals in alike if field in vals]
+        if len(theirs) < 3:                  # a range code "501-1000" among them is still an enum
+            continue
+        key = _json.dumps(value)
+        if key in anywhere.get(field, ()):
+            continue
+        counts: dict = {}
+        for v in theirs:
+            counts[_json.dumps(v)] = counts.get(_json.dumps(v), 0) + 1
+        if len(counts) > _MAX_ENUM_VALUES:
+            continue
+        ranked = sorted(counts.items(), key=lambda kv: -kv[1])
+        sends = ", ".join(f"{_shown(_json.loads(k))} ({n})" for k, n in ranked[:3])
+        example = next(p for p, _f, vals in alike if field in vals and _json.dumps(vals[field]) == ranked[0][0])
+        issues.append(f"{tpl}: sends {field} = {_shown(value)}, which no converted body of the same call "
+                      f"sends -- {len(theirs)} of them send {sends} (e.g. src/main/resources/templates/{example}); "
+                      "the server may refuse it (400, the field named). Send what they send; a test of a "
+                      "refused value on purpose reads it from its data sheet as \"#name#\"")
+    return issues
 
 
 def _template_drift_issues(root: str, norm: str, text: str) -> list:
@@ -220,14 +316,16 @@ def _template_drift_issues(root: str, norm: str, text: str) -> list:
     if not shapes:
         return issues
     for tpl in sorted(set(_MANUAL_BODY_TEMPLATE_RX.findall(text or ""))):
-        mine = _body_fields(_read(os.path.join(root, "src", "test", "resources", tpl.replace("/", os.sep)), 200_000))
+        body = _read(os.path.join(root, "src", "test", "resources", tpl.replace("/", os.sep)), 200_000)
+        mine = _body_fields(body)
         if not mine:
             continue
-        alike = [(p, f) for p, f in shapes if len(mine & f) / max(1, len(mine | f)) >= 0.5]
+        alike = [(p, f, v) for p, f, v in shapes if len(mine & f) / max(1, len(mine | f)) >= 0.5]
         if len(alike) < 3:
             continue
+        issues.extend(_template_value_issues(root, tpl, _body_values(body), alike))
         counts: dict = {}
-        for _p, f in alike:
+        for _p, f, _v in alike:
             for k in f:
                 counts[k] = counts.get(k, 0) + 1
         missing = sorted(k for k, n in counts.items() if k not in mine and n >= 0.9 * len(alike))
@@ -235,7 +333,7 @@ def _template_drift_issues(root: str, norm: str, text: str) -> list:
         missing = [k for k in missing if not any(k.startswith(m + ".") or k.startswith(m + "[]")
                                                  for m in missing if m != k)]
         if missing:
-            example = next(p for p, f in alike if all(m in f for m in missing[:1]))
+            example = next(p for p, f, _v in alike if all(m in f for m in missing[:1]))
             issues.append(f"{tpl}: leaves out {', '.join(missing[:8])}"
                           + (f" (and {len(missing) - 8} more)" if len(missing) > 8 else "")
                           + f" -- {len(alike)} converted bodies of the same call send "

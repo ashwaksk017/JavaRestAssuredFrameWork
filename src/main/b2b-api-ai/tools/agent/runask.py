@@ -551,9 +551,21 @@ def prefill(info: dict, result: dict, lines: dict) -> str:
     if info["kind"] == "converted":
         L.append("The brief adds, for each case, surefire's message and stack, the last request and "
                  "response, and what the converter noted about it.")
+    refused = sorted({f for t in shown for f in _REFUSED_FIELDS_RX.findall(str(t.get("message") or ""))})
+    if refused and info["kind"] != "converted":
+        # Seen live: employeeCountRange 0, copied from a reference example,
+        # refused by every test; the converted bodies of the call send 1.
+        L.append(f"The server refused the field(s) {', '.join(refused[:6])} of a request body. Take each "
+                 "one's value from the converted bodies of the same call (src/main/resources/templates/) -- "
+                 "not from the reference examples, whose values are placeholders -- in the body template "
+                 "the test sends.")
     L.append("Make these tests pass. Where a test or its data is wrong, correct it; where the API's answer "
              "is wrong, do not change the expected value to match it -- say so instead.")
     return "\n".join(L)
+
+
+# A 400's notification naming the fields it refused: "fields":["a.b"] / "fields" : [ "a.b" ]
+_REFUSED_FIELDS_RX = re.compile(r'"fields"\s*:\s*\[\s*"([A-Za-z0-9_.\[\]]+)"')
 
 
 def preview(root: str, run_job: str) -> dict:

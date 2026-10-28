@@ -195,6 +195,21 @@ class TheRequest(Base):
         self.assertNotIn("Create Stay", ra.preview(self.root, "job-1")["text"])
         self.assertTrue(os.path.isdir(d))
 
+    def test_a_refused_body_field_points_at_the_converted_bodies(self):
+        # Seen live: employeeCountRange 0 copied from a reference example;
+        # the server named the field, and the request did not say where its value is.
+        self.suite("job-1", JIRA)
+        refused = ('The following asserts failed: TC-001/SETUP: POST create program account status -- the '
+                   'server said: {"context":"PROGRAMACCOUNTS","code":998,"notifications":[{"code":"31",'
+                   '"fields":["businessProfile.employeeCountRange"],"message":"Invalid JSON Parameter Value"}]}')
+        self.job("job-1", result=run(test(JIRA, "a", message=refused)))
+        text = ra.preview(self.root, "job-1")["text"]
+        self.assertIn("refused the field(s) businessProfile.employeeCountRange", text)
+        self.assertIn("src/main/resources/templates/", text)
+        self.assertIn("not from the reference examples", text)
+        self.job("job-1", result=run(test(JIRA, "a", message="expected [200] but found [500]")))
+        self.assertNotIn("refused the field", ra.preview(self.root, "job-1")["text"])
+
     def test_nothing_private_is_in_it(self):
         self.suite("job-1", JIRA)
         self.job("job-1", result=run(test(

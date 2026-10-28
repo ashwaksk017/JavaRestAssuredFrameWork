@@ -926,10 +926,9 @@ python tools/agent/mvnrun.py test --job runs --suite Suites/jira/group-smoke.xml
 python tools/agent/mvnrun.py test --job runs --test FooTest --env stg --project goal
 ```
 
-#### Ask Me to fix the failures
+#### Fix Failures
 
-Under a run with failed tests the tab offers **Ask Me to fix the
-failures**. It says which of the two existing ways applies, and why
+Under a run with failed tests the tab offers **Fix Failures**. It says which of the two existing ways applies, and why
 (`runask.py`):
 
 | the failing tests are | the request goes |

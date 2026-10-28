@@ -226,7 +226,7 @@ def main() -> int:
         html = page.dom("failures")
         check("the Failures tab shows that result", "Recorded runs" in html)
 
-        # ---- Ask Me to fix the failures, under a failed run -------------
+        # ---- Fix Failures, under a failed run -------------
         # The run's result is put where mvnrun.py writes it; which way it
         # goes to Cursor is the server's answer (runask.py), shown as text.
         def run_result(cls, status="FAIL"):
@@ -246,7 +246,7 @@ def main() -> int:
                   code == 200 and ask.get("kind") == "converted" and ask.get("suite") == "amex"
                   and "SpendTest.getSpendTest [case ABC-1]" in (ask.get("text") or ""), str(ask)[:300])
             html = page.dom("run")
-            check("the Run tests tab offers Ask Me to fix the failures, and says which way and why",
+            check("the Run tests tab offers Fix Failures, and says which way and why",
                   re.search(r'id="run-ask-box"[^>]*hidden', html) is None
                   and 'id="run-ask-send"' in html and "A fix brief for suite amex, in a new job." in html
                   and "Fix with AI Agent on the Failures tab" in html, html[html.find('id="run-ask-box"'):][:400])
@@ -290,7 +290,7 @@ def main() -> int:
                   'id="agent-compile-auto"' in page.dom("agent"))
             run_result("com.hi.api.tests.jira.DemoStayTest", "PASS")
             code, body = page.call("/api/run-ask", {"job": JOB, "text": "Fix it."})
-            check("Ask Me to fix the failures is refused when no test failed",
+            check("Fix Failures is refused when no test failed",
                   code == 400 and "no failed test" in body.get("error", ""), str(body))
             html = page.dom("run")
             check("a run with no failed test does not offer to fix one",
