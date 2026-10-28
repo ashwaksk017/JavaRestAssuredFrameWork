@@ -926,6 +926,24 @@ python tools/agent/mvnrun.py test --job runs --suite Suites/jira/group-smoke.xml
 python tools/agent/mvnrun.py test --job runs --test FooTest --env stg --project goal
 ```
 
+#### The story helpers' own check
+
+Story tests call shared helpers (`StoryTestBase`, `GoalStoryTestBase`, `Db`,
+the token code) that only story tests run. The converted suites make the same
+calls their own way, so a helper broken against the real systems shows up
+first in a story, after AI Agent wrote it. That happened twice: on b2b-stg the
+one-time-code lookup bound a bigint id as text, and in GOAL the search left
+out `peakRooms`. Run each project's helpers once before a story meets them:
+
+| project | suite (Run tests tab, choose the suite) | what it makes |
+|---|---|---|
+| B2B | `src/test/resources/testng-helpers-b2b.xml` | two guests and a program account: enrol, create, owner code and confirm, activate, invite key, add, activate and promote a member |
+| GOAL | `src/test/resources/testng-helpers-goal.xml` | a group: search, create, pay, confirm (200) |
+
+Run it after a change to those files, a starter body (`templates/manual/`) or
+the configuration, and on a new environment. The first step that fails is
+named (`SMOKE/SETUP: ...`), and nothing after it runs.
+
 #### Fix Failures
 
 Under a run with failed tests the tab offers **Fix Failures**. It says which of the two existing ways applies, and why

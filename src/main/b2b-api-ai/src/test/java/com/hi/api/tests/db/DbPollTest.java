@@ -65,6 +65,21 @@ public class DbPollTest {
         Assert.assertEquals(Db.memberIdParam(null), "");
     }
 
+    @Test(groups = {"unit"})
+    @Story("Postgres types a bound String from its column")
+    @Description("Every story helper binds ids as Strings; b2b-stg's id columns are bigints. With "
+            + "stringtype=unspecified the server types the String, as it does a quoted literal.")
+    public void withUntypedStrings_onlyForPostgresAndOnlyOnce() {
+        Assert.assertEquals(Db.withUntypedStrings("jdbc:postgresql://h:5432/db"),
+                "jdbc:postgresql://h:5432/db?stringtype=unspecified");
+        Assert.assertEquals(Db.withUntypedStrings("jdbc:postgresql://h:5432/db?ssl=true"),
+                "jdbc:postgresql://h:5432/db?ssl=true&stringtype=unspecified");
+        Assert.assertEquals(Db.withUntypedStrings("jdbc:postgresql://h/db?stringType=varchar"),
+                "jdbc:postgresql://h/db?stringType=varchar", "what the URL already says stays");
+        Assert.assertEquals(Db.withUntypedStrings("jdbc:h2:mem:x"), "jdbc:h2:mem:x");
+        Assert.assertNull(Db.withUntypedStrings(null));
+    }
+
     @Test(groups = {"unit", "db", "h2"})
     @Story("pollMemberEmailOtp against a bigint column")
     @Description("The real table's shape: a numeric id reads its code, both the SQL and the jOOQ way.")

@@ -55,13 +55,13 @@ GroupsData calls send **no** token.
 |---|---|---|---|
 | Token | `tokenRequest` + Token | `goalToken()` | bearer for every call |
 | Property + dates with availability | `groovyScript_availPropertyAndDates` (AvailabilitySearch) | `Availability av = findAvailability(row, token, CASE)` | `av.propCode`, `av.arrivalDate`, `av.departureDate` (yyyy-MM-dd), `av.groupId`, `av.roomTypeCode`, `av.cacheExpiryTime`, `av.inventory` |
-| Shop quote again (as the act) | `GET_Groups_SingleProp` | `shop(av, token, CASE)` | the `Response` (unasserted) |
-| Create the group (room block) | `POST_Groups_SingleProp` | `createGroup(av, GROUP_BODY, token, CASE)` | true / false (asserted 200) |
-| Payment | `POST_Payment` | `payGroup(av, PAYMENT_BODY, token, CASE)` | true / false (asserted 200) |
-| Confirm | `POST_Confirm` | `Response r = confirmGroup(av, CONFIRM_BODY, token, CASE)` | asserted 200; `ratePlanCode`, `roomRates[0].roomTypeCode` for a rooming list |
+| Shop quote again (as the act) | `GET_Groups_SingleProp` | `shop(av, row.get("peak_rooms"), token, CASE)` | the `Response` (unasserted) |
+| Create the group (room block) | `POST_Groups_SingleProp` | `createGroup(av, row, GROUP_BODY, token, CASE)` | true / false (asserted 200) |
+| Payment | `POST_Payment` | `payGroup(av, row, PAYMENT_BODY, token, CASE)` | true / false (asserted 200) |
+| Confirm | `POST_Confirm` | `Response r = confirmGroup(av, row, CONFIRM_BODY, token, CASE)` | UNASSERTED: the test asserts the status its AC names (200, or 400 without payment); `ratePlanCode`, `roomRates[0].roomTypeCode` for a rooming list |
 
 `findAvailability` walks the candidate properties x day offsets, calls
-`GET /props/{p}/groups?arrivalDate&departureDate[&peakRooms]` for each, and
+`GET /props/{p}/groups?arrivalDate&departureDate&peakRooms` for each, and
 takes the first where one of the first 6 `roomRates[i].inventory` is above
 the threshold. Candidates come from the environment, never the source:
 `goal.availability.props` (comma list), `goal.availability.offsets`
@@ -77,8 +77,13 @@ failure: **stop** (`return;`).
 **Request bodies.** Start from the committed ones:
 `templates/manual/goal_create_group.json`, `goal_payment.json`,
 `goal_confirm.json`. They take `#propCode#`, `#arrivalDate#`,
-`#departureDate#`, `#groupId#`, `#roomTypeCode#` (filled from `av`) and
-`#peakRooms#` / `#inventoryCount#` (a row column, default 10). Never a
+`#departureDate#`, `#groupId#`, `#roomTypeCode#` (filled from `av`),
+`#peakRooms#` (the row's `peak_rooms`, else `goal.peak_rooms`, else 10 -- the
+same value the search shopped with: a shop without peakRooms is answered 400)
+and `#inventoryCount#` (the row's `inventory_count`, else the inventory the
+search found for that room, as the converted confirm sends it).
+`goal_confirm.json` is the room-block confirm the converted 200 cases send
+(the whole group again); a meeting-only confirm is a different body. Never a
 frozen date, property code or `groupId` in a body or a committed CSV cell.
 
 ---

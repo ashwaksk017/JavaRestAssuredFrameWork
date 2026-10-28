@@ -503,6 +503,12 @@ def _member_role_issues(root: str, norm: str, code: str, cls: str) -> list:
     sent = {v for v in sent if isinstance(v, str) and _checked_value(v)}
     if len(sent) < 2:
         return []
+    # An ADD (the body with an inviteKey) is made as employee or
+    # travelAdvisor in every converted suite; admin, owner, travelCoordinator
+    # are set after it, with the PUT (setMemberRole).
+    added = {v.get("role") for _p, f, v in _converted_shapes(root) if "inviteKey" in f}
+    added = {r for r in added if isinstance(r, str) and _checked_value(r)}
+    allowed = {"addMember": added if len(added) >= 1 else sent, "setMemberRole": sent}
     found = []                                   # (where, value)
     sheets = None
     for m in re.finditer(r"\b(addMember|setMemberRole)\s*\(", code):
@@ -514,21 +520,28 @@ def _member_role_issues(root: str, norm: str, code: str, cls: str) -> list:
         lit = re.fullmatch(r'"([^"\\]*)"', arg)
         col = re.search(r'(?:row\.get|[rR]owOrConfig\w*)\(\s*(?:row\s*,\s*)?"([A-Za-z0-9_]+)"', arg)
         if lit:
-            found.append((f"{norm}: {m.group(1)}(..., \"{lit.group(1)}\", ...)", lit.group(1)))
+            found.append((f"{norm}: {m.group(1)}(..., \"{lit.group(1)}\", ...)", lit.group(1), m.group(1)))
         elif col:
             sheets = _class_sheets(root, cls) if sheets is None else sheets
             for rel, rows in sheets:
                 for line, row in enumerate(rows, start=2):
                     v = str(row.get(col.group(1)) or "").strip()
                     if v and not _row_expects_refusal(row):
-                        found.append((f"{rel} line {line} (column {col.group(1)}, to {m.group(1)})", v))
+                        found.append((f"{rel} line {line} (column {col.group(1)}, to {m.group(1)})", v,
+                                      m.group(1)))
     issues, said = [], set()
-    for where, v in found:
-        if v in sent or not _checked_value(v) or v in said:
+    for where, v, helper in found:
+        ok = allowed[helper]
+        if v in ok or not _checked_value(v) or (helper, v) in said:
             continue
-        said.add(v)
+        said.add((helper, v))
+        if helper == "addMember" and v in sent:
+            issues.append(f"{where}: role \"{v}\" -- the converted suites add a member only as "
+                          f"{', '.join(sorted(ok))}, and give {v} after it with setMemberRole (the PUT). "
+                          f"Add as {sorted(ok)[0]}, activateMember, then setMemberRole(..., \"{v}\", ...)")
+            continue
         issues.append(f"{where}: role \"{v}\" -- no converted body sends it; they send "
-                      f"{', '.join(sorted(sent))}. The server may refuse it (400, role named); send one of "
+                      f"{', '.join(sorted(ok))}. The server may refuse it (400, role named); send one of "
                       f"those, or, to test a refused role on purpose, expect the 4xx")
     return issues
 

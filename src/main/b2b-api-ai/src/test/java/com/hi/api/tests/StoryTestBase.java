@@ -794,6 +794,11 @@ public abstract class StoryTestBase extends BaseApiTest implements IHookable {
         softAssert.assertTrue(present(accountId), tag + "/SETUP: the create response carries an accountId");
         softAssert.assertTrue(present(memberId),
                 tag + "/SETUP: the create response gives the owner's memberId (body or hilton-member-location)");
+        if (present(memberId)) {
+            // The owner IS a member of the account: owner.memberId is what a
+            // later owner route ({memberId}) or setMemberRole(owner, ...) reads.
+            owner.memberId = memberId.trim();
+        }
         return "200".equals(status) && present(accountId) && present(memberId)
                 ? new String[] {accountId.trim(), memberId} : null;
     }
@@ -854,7 +859,8 @@ public abstract class StoryTestBase extends BaseApiTest implements IHookable {
         String url = baseUrl() + route(ApiRoutes.BUSINESS_MEMBER_ACTIVATE,
                 "accountId", accountId, "memberId", memberId);
         Response res = step("activateAccountMember: POST " + ApiRoutes.BUSINESS_MEMBER_ACTIVATE,
-                () -> RestUtilities.getResponsePost("{}", url, apiHeaders(token)));
+                // No body, as the converted activateAccountMember sends it.
+                () -> RestUtilities.getResponsePost("", url, apiHeaders(token)));
         String status = RestUtilities.checkActualResponse(res);
         softAssert.assertEquals(status, "204", tag + "/SETUP: activate member status" + said(res));
         return "204".equals(status);

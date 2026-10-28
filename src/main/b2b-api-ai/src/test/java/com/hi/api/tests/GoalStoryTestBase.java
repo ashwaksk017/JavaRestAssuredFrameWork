@@ -134,13 +134,13 @@ public abstract class GoalStoryTestBase extends StoryTestBase {
     /**
      * Setup: a property and dates with availability, as the converted
      * AvailabilitySearch finds them -- each candidate property x each day
-     * offset, {@code GET /props/{p}/groups?arrivalDate&departureDate[&peakRooms]},
+     * offset, {@code GET /props/{p}/groups?arrivalDate&departureDate&peakRooms},
      * the first where one of the first 6 {@code roomRates[i].inventory} is
      * above the threshold. Candidates: {@code goal.availability.props}
      * (comma list, from the environment; skipped naming the key when unset),
      * {@code goal.availability.offsets} (default 32,52,62,66 days from
      * today), {@code goal.availability.min_inventory} (default 9). The row's
-     * {@code peak_rooms}, when filled, goes in the query. Null when none
+     * {@code peak_rooms} (else goal.peak_rooms, else 10) always goes in the query. Null when none
      * answers (a SETUP failure naming what was tried).
      */
     protected Availability findAvailability(Map<String, String> row, String token, String tag) {
@@ -160,7 +160,7 @@ public abstract class GoalStoryTestBase extends StoryTestBase {
             }
         }
         int min = intOr(Config.get("goal.availability.min_inventory", "9"), 9);
-        String peak = row == null ? null : row.get("peak_rooms");
+        String peak = peakRooms(row);
         String key = LocalDate.now() + "|" + props + "|" + offsets + "|" + min + "|" + peak;
         Object[] kept = FOUND.get(key);
         if (kept != null && System.currentTimeMillis() - (Long) kept[1] < FOUND_TTL_MS) {
@@ -189,7 +189,15 @@ public abstract class GoalStoryTestBase extends StoryTestBase {
             for (int days : offsets) {
                 String arrival = LocalDate.now().plusDays(days).toString();
                 String departure = LocalDate.now().plusDays(days + 1L).toString();
-                Response res = shopAt(p, arrival, departure, peak, token);
+                Response res;
+                try {
+                    res = shopAt(p, arrival, departure, peak, token);
+                } catch (RuntimeException e) {
+                    // One property or date that times out does not end the
+                    // search -- the converted search skips it too.
+                    tried.add(p + " " + arrival + " (" + e.getClass().getSimpleName() + ")");
+                    continue;
+                }
                 List<Object> inv = listAt(res, "roomRates.inventory");
                 List<Object> codes = listAt(res, "roomRates.roomTypeCode");
                 int best = -1;
@@ -217,7 +225,8 @@ public abstract class GoalStoryTestBase extends StoryTestBase {
 
     /** The shop quote of the availability found -- for a case whose act IS the shop read (unasserted). */
     protected Response shop(Availability av, String peakRooms, String token, String tag) {
-        Response res = shopAt(av.propCode, av.arrivalDate, av.departureDate, peakRooms, token);
+        Response res = shopAt(av.propCode, av.arrivalDate, av.departureDate,
+                peakRooms == null || peakRooms.isBlank() ? peakRooms(null) : peakRooms, token);
         RestUtilities.logResponseBody(tag, holder, RestUtilities.getResponseAsString(res));
         return res;
     }
@@ -311,12 +320,26 @@ public abstract class GoalStoryTestBase extends StoryTestBase {
                     : String.valueOf(av.inventory));
         }
         if (data.get("peakRooms") == null || data.get("peakRooms").isBlank()) {
-            data.put("peakRooms", row != null && row.get("peak_rooms") != null
-                    && !row.get("peak_rooms").isBlank() ? row.get("peak_rooms").trim() : "10");
+            data.put("peakRooms", peakRooms(row));          // what the search was shopped with
         }
         Map<String, String> known = new LinkedHashMap<>(ctx);  // the test's own values, the row and the search after
         known.putAll(data);
         return ManualBody.render(template, data, known);
+    }
+
+    /**
+     * The peak rooms a shop is made for and a group asks for: the row's
+     * {@code peak_rooms}, else {@code goal.peak_rooms}, else 10. Always sent:
+     * every converted shop sends peakRooms, and a shop without it is
+     * answered 400 -- measured on the converted probe, 460 of 500 searches
+     * (support/AvailabilitySearch), which read as "no availability".
+     */
+    protected static String peakRooms(Map<String, String> row) {
+        String v = row == null ? null : row.get("peak_rooms");
+        if (v == null || v.isBlank()) {
+            v = Config.get("goal.peak_rooms", "10");
+        }
+        return v == null || v.isBlank() ? "10" : v.trim();
     }
 
     private static List<String> list(String csv) {

@@ -585,6 +585,18 @@ class StoryChecksBeyondTheBody(unittest.TestCase):
         self.assertIn("admin, employee, owner, travelAdvisor", got[0])
         self.assertIn('line 2 (column member_role, to addMember): role "travelAgent"', got[1])
 
+    def test_a_member_is_added_as_the_converted_suites_add_one_and_promoted_after(self):
+        conv = os.path.join(self.root, "src", "main", "resources", "templates", "s")
+        for i, role in enumerate(("employee", "employee", "travelAdvisor")):
+            write_json(os.path.join(conv, f"add{i}.json"), {"emailAddress": "#e#", "role": role, "inviteKey": "#k#"})
+        self.st._CONVERTED_SHAPES.pop(self.root, None)
+        got = self.st._member_role_issues(self.root, "MTest.java",
+                                          'addMember(m, a, "admin", k, t, "AC1"); addMember(m, a, "employee", k, t, "AC2"); '
+                                          'setMemberRole(o, a, m, "admin", t, "AC3");', "MTest")
+        self.assertEqual(len(got), 1, got)
+        self.assertIn('addMember(..., "admin", ...)', got[0])
+        self.assertIn("setMemberRole", got[0], "admin is given with the PUT, after the add")
+
     def test_a_template_handed_to_a_helper_must_exist(self):
         rel = "src/test/java/com/hi/api/tests/jira/HTest.java"
         p = os.path.join(self.root, *rel.split("/"))

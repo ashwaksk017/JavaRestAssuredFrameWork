@@ -1,4 +1,28 @@
 {
+  "startDate": "#arrivalDate#",
+  "endDate": "#departureDate#",
+  "groupId": "#groupId#",
   "meetingFacilitiesRequired": false,
-  "roomBlockRequired": true
+  "roomBlockRequired": true,
+  "peakRooms": "#peakRooms#",
+  "ratePlanName": "#rate_plan_name#",
+  "housingMethod": "individual",
+  "termsAndConditionsLink": "#terms_and_conditions_link#",
+  "marketCategoryNew": "#market_category_new#",
+  "billingInformation": ["MYTESTING", "TESTING"],
+  "roomTypes": [
+    {
+      "roomTypeCode": "#roomTypeCode#",
+      "inventoryPeriods": [
+        { "startDate": "#arrivalDate#", "endDate": "#departureDate#", "inventoryCount": @inventoryCount@ }
+      ]
+    }
+  ],
+  "groupBookingContact": {
+    "firstName": "<<firstname>>",
+    "lastName": "<<lastname>>",
+    "address": { "addressLine1": "123 Main St", "city": "Memphis", "state": "TN",
+                 "postalCode": "38103", "country": "US", "company": "#group_contact_company#" },
+    "email": { "emailAddress": "group.contact@example.com", "emailType": "home" }
+  }
 }

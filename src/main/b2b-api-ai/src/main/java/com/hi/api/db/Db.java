@@ -1090,10 +1090,29 @@ public final class Db {
             }
         }
         announceOnce();
+        String connect = withUntypedStrings(url);
         if (user == null || user.isBlank()) {
-            return DriverManager.getConnection(url);
+            return DriverManager.getConnection(connect);
         }
-        return DriverManager.getConnection(url, user, pass == null ? "" : pass);
+        return DriverManager.getConnection(connect, user, pass == null ? "" : pass);
+    }
+
+    /**
+     * A Postgres URL with {@code stringtype=unspecified}: a String bound to
+     * {@code ?} is typed by the server from its column, as a quoted literal
+     * is. Without it every String is a varchar, and Postgres refuses
+     * {@code bigint = character varying} -- seen live on b2b-stg, where the
+     * story helpers bind ids as Strings and every id column is a bigint. The
+     * converted suites inline their values as quoted literals and never met
+     * it. A URL that already names a stringtype is left as it is; any other
+     * database's URL too.
+     */
+    public static String withUntypedStrings(String jdbcUrl) {
+        if (jdbcUrl == null || !jdbcUrl.startsWith("jdbc:postgresql:")
+                || jdbcUrl.toLowerCase(java.util.Locale.ROOT).contains("stringtype=")) {
+            return jdbcUrl;
+        }
+        return jdbcUrl + (jdbcUrl.contains("?") ? "&" : "?") + "stringtype=unspecified";
     }
 
     /** URLs already announced, so this says each target once per JVM. */

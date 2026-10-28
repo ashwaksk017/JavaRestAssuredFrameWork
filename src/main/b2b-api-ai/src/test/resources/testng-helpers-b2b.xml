@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">
+<!-- Every B2B story helper once, against the environment chosen on the Run
+     tests tab (project B2B): run it after a change to the story base class,
+     Db, the token code or the configuration, and on a new environment --
+     before a story meets a broken helper. It creates what a story does. -->
+<suite name="helpers-smoke-b2b" verbose="1">
+    <listeners>
+        <listener class-name="io.qameta.allure.testng.AllureTestNg"/>
+    </listeners>
+    <test name="helpers-smoke-b2b">
+        <classes>
+            <class name="com.hi.api.tests.helpers.B2bHelpersSmokeTest"/>
+        </classes>
+    </test>
+</suite>
