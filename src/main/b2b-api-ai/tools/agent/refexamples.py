@@ -47,6 +47,7 @@ INDEX = os.path.join(OUT, "index.json")
 SUPPORT = "src/main/java/com/hi/api/support"
 MAX_SPEC_LINES = 40
 SMALL_NUMBER = 10000                   # a body number below this is shown as it is
+_REFUSED_EXPECT_RX = re.compile(r"\.expect\(\s*([45]\d\d)\s*\)")   # a step the case expects to be refused
 
 # Not \b after the number: a key runs on into a case name ("ABC-105_post_...").
 _KEY_RX = re.compile(r"\b[A-Z][A-Z0-9]{1,9}-\d+(?![0-9])")
@@ -350,6 +351,13 @@ def build_one(root: str, pick: dict, private: list) -> tuple:
             if m:
                 verbs.append(f"{m.group(1).upper()} {m.group(2)}")
             out += ["```java", s.text(text), "```", ""]
+            # Seen in the picks: a case named for a happy path whose last step
+            # expects 403 or 400 -- a refusal the converted case tests on purpose.
+            refused = sorted(set(_REFUSED_EXPECT_RX.findall(text)))
+            if refused:
+                out += [f"**A refusal, on purpose:** this converted case expects {', '.join(refused)} here -- it "
+                        "tests that the server refuses. A story case expects what ITS acceptance criteria say; "
+                        "the same call made to succeed expects what the helpers assert (200, 204).", ""]
         t = templates.get(step)
         if t:
             out += ["Request body (`" + s.text(t.split("/")[-1]) + "`), its shape:", "", "```json",
@@ -364,9 +372,10 @@ def build_one(root: str, pick: dict, private: list) -> tuple:
                "(StoryTestBase)")
     out += ["## How a story test does the same", "",
             f"A story test (tests/jira/) makes the same calls with the helpers -- {helpers}, "
-            "`route(ApiRoutes.X, ...)`, `ManualBody.render(template, row, ctx)` -- in the same order, "
-            "with the same expected statuses and checks; its body templates keep every field the "
-            "converted bodies above send.", ""]
+            "`route(ApiRoutes.X, ...)`, `ManualBody.render(template, row, ctx)` -- in the same order. "
+            "Its expected statuses and checks are its acceptance criteria's: a status above is the "
+            "converted case's own, and one marked a refusal is not a success. Its body templates keep "
+            "every field the converted bodies above send, with the values they send.", ""]
     text = "\n".join(out)
     found = leaks(text, private)
     if found:

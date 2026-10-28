@@ -168,6 +168,20 @@ Start every body from the converted body of the same call (`src/main/resources/t
 and keep EVERY field it sends: a field left out is refused (an enrolment without `address.company` is
 answered 400). Keep harmless values as they are; make per-environment or company values `#name#`.
 
+The VALUES come from the converted bodies too, wherever you write them -- the template, a data-sheet
+cell a `#name#` reads, the role you hand `addMember` / `setMemberRole`: a number, flag or enum word no
+converted body of the call sends is refused (`employeeCountRange` 0 was answered 400; they send 1). The
+check compares each one. A row that sends a refused value on purpose expects the 4xx in its expected
+status column.
+
+A date a call is made FOR (arrival, departure, start, end, a meeting) is never written down -- not in
+Java, a template or a data sheet: it passes and the test fails from then on. Compute it
+(`LocalDate.now().plusDays(n)`, put in the row or `ctx`); GOAL takes it from `findAvailability`.
+
+Expected statuses are the case's acceptance criteria's. A reference step marked **a refusal, on
+purpose** expects a 4xx because that converted case tests a refusal -- not what the call answers when
+it succeeds.
+
 A body bigger than one field, or one that varies per row, goes in
 `src/test/resources/templates/manual/<job>_<step>.json` and is rendered with
 `ManualBody.render(template, row, ctx)` -- never `RestUtilities.mapJsonValues`

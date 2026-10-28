@@ -128,6 +128,109 @@ def _goal_issues(norm: str, code: str) -> list:
             "(GOAL_FLOWS.md section 4)"]
 
 
+# A date a call is made FOR (a stay, a meeting, a window): written down, it
+# passes and the test starts failing. The converted bodies hold such dates
+# (arrivalDate, startDate, meetingDate), and the data sheets their last-run
+# ones. Not a date that is history: a fiscal year start, a birth date, a
+# record's created/modified date.
+_DATE_VALUE_RX = re.compile(r"^(20\d\d-[01]\d-[0-3]\d)([T ][0-2]\d:[0-5]\d(:[0-5]\d)?\S*)?$")
+_DATED_FIELD_RX = re.compile(r"(?i)(date|start|end|from|until|arrival|departure|check_?in|check_?out)[^.]*$")
+_HISTORY_FIELD_RX = re.compile(r"(?i)fiscal|birth|dob|creat|modif|expir|issued|last|since|enrol")
+_STALE_AFTER_DAYS = 730          # an older date is history (a birth date), not one a call is made for
+
+
+def _date_of(value: str):
+    """The date `value` is, when it is one a call could be made for; None."""
+    from datetime import date, timedelta
+    m = _DATE_VALUE_RX.match(str(value or "").strip())
+    if not m:
+        return None
+    try:
+        d = date.fromisoformat(m.group(1))
+    except ValueError:
+        return None
+    return d if d >= date.today() - timedelta(days=_STALE_AFTER_DAYS) else None
+
+
+def _fixed_date_issues(root: str, norm: str, code: str, text: str, cls: str) -> list:
+    """A fixed stay/meeting/window date in a story test of any project: in
+    its Java (GOAL has its own message, _goal_issues), in a body template it
+    renders, or in a dated column of its data sheets."""
+    issues = []
+    goal = bool(_GOAL_TEST_RX.search(code))
+    fix = ("dates come from findAvailability (av.arrivalDate / av.departureDate) or LocalDate.now() "
+           "(GOAL_FLOWS.md section 4)" if goal else
+           "compute it in the test -- LocalDate.now().plusDays(n) -- and put it in the row (or ctx) "
+           "before the body is rendered, so a template sends it as \"#name#\"")
+    if not goal:
+        dates = sorted({d for d in _DATE_LITERAL_RX.findall(code) if _date_of(d)})
+        if dates:
+            issues.append(f"{norm}: a fixed date ({', '.join(dates[:3])}): it passes, and the test starts "
+                          f"failing then -- {fix}")
+    for tpl in sorted(set(_MANUAL_BODY_TEMPLATE_RX.findall(text or ""))):
+        body = _read(os.path.join(root, "src", "test", "resources", tpl.replace("/", os.sep)), 200_000)
+        fixed = sorted({f"{k} = {v}" for k, v in _body_values(body).items()
+                        if isinstance(v, str) and _date_of(v) and _DATED_FIELD_RX.search(k)
+                        and not _HISTORY_FIELD_RX.search(k)})
+        if fixed:
+            issues.append(f"{tpl}: a fixed date ({'; '.join(fixed[:3])}), copied from a converted body: it "
+                          f"passes, and every test that sends it starts failing then -- send \"#name#\" and {fix}")
+    # A GOAL row's arrival/departure are the search's (render puts av's over the row's).
+    searched = {"arrivalDate", "departureDate"} if goal else set()
+    for rel, rows in _class_sheets(root, cls):
+        cols = sorted({c for row in rows for c, v in row.items()
+                       if c and c not in searched and _DATED_FIELD_RX.search(c)
+                       and not _HISTORY_FIELD_RX.search(c) and _date_of(v)})
+        if cols:
+            issues.append(f"{rel}: a fixed date in column(s) {', '.join(cols[:4])}: a data sheet's dates "
+                          f"pass, and its rows start failing then -- leave the cell empty and {fix}")
+    return issues
+
+
+def _class_sheets(root: str, cls: str) -> list:
+    """[(rel, rows as dicts)] of a story test class's data sheets
+    (csv/manual/<cls>/*.csv)."""
+    import csv as _csv
+    out = []
+    if not cls:
+        return out
+    base = os.path.join(root, "src", "test", "resources", "csv", "manual", cls)
+    try:
+        names = sorted(n for n in os.listdir(base) if n.endswith(".csv"))
+    except OSError:
+        return out
+    for n in names:
+        sheet = _read(os.path.join(base, n), 400_000).lstrip("﻿")
+        head = sheet.split("\n", 1)[0]
+        delim = ";" if head.count(";") > head.count(",") else ","
+        try:
+            rows = [r for r in _csv.DictReader(io.StringIO(sheet), delimiter=delim)
+                    if any((v or "").strip() for v in r.values() if isinstance(v, str))]
+        except _csv.Error:
+            continue
+        out.append((f"src/test/resources/csv/manual/{cls}/{n}", rows))
+    return out
+
+
+_EXPECTED_STATUS_COL_RX = re.compile(r"(?i)^expected\w*status")
+
+
+def _row_expects_refusal(row: dict) -> bool:
+    """A row whose expected status is a 4xx: it sends a refused value on purpose."""
+    return any(_EXPECTED_STATUS_COL_RX.match(k or "") and str(v or "").strip()[:1] == "4"
+               for k, v in row.items())
+
+
+def _cell_value(cell: str):
+    """A data-sheet cell as the body sends it: a number, true/false, else text."""
+    s = str(cell or "").strip()
+    if re.fullmatch(r"-?\d{1,9}", s):
+        return int(s)
+    if s in ("true", "false"):
+        return s == "true"
+    return s
+
+
 def _jira_person_issues(norm: str, code: str) -> list:
     """A person logged in or identified from configuration (see _PERSON_KEY_RX)."""
     issues = []
@@ -219,6 +322,31 @@ def _body_values(text: str) -> dict:
     return out
 
 
+def _body_holes(text: str) -> dict:
+    """{field path: column} of a template's leaves that are one placeholder
+    and nothing else -- "#name#", or @name@ / %name% for a number."""
+    import json as _json
+    try:
+        j = _json.loads(re.sub(r"[@%]([A-Za-z0-9_.]+)[@%]", r'"#\1#"', text))
+    except ValueError:
+        return {}
+    out = {}
+
+    def walk(node, pre):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                walk(v, f"{pre}.{k}" if pre else k)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v, pre + "[]")
+        elif isinstance(node, str) and pre:
+            m = re.fullmatch(r"#([A-Za-z0-9_]+)#", node.strip())
+            if m:
+                out.setdefault(pre, m.group(1))
+    walk(j, "")
+    return out
+
+
 def _converted_shapes(root: str) -> list:
     """(path, fields, values) of every converted request body
     (src/main/resources/templates/**), read once a run."""
@@ -265,7 +393,12 @@ def _converted_values(root: str) -> dict:
     return out
 
 
-def _template_value_issues(root: str, tpl: str, mine: dict, alike: list) -> list:
+_ON_PURPOSE = "a test of a refused value on purpose reads it from its data sheet as \"#name#\""
+_ON_PURPOSE_ROW = ("a row that sends a refused value on purpose says so: its expected status column "
+                   "holds the 4xx the server answers")
+
+
+def _template_value_issues(root: str, tpl: str, mine: dict, alike: list, on_purpose: str = _ON_PURPOSE) -> list:
     """A field the template sends a fixed value for that no converted body
     sends there, where the converted bodies of the same call agree on a few
     values (an enum, a range code, a flag). Seen live: the story
@@ -298,8 +431,105 @@ def _template_value_issues(root: str, tpl: str, mine: dict, alike: list) -> list
         example = next(p for p, _f, vals in alike if field in vals and _json.dumps(vals[field]) == ranked[0][0])
         issues.append(f"{tpl}: sends {field} = {_shown(value)}, which no converted body of the same call "
                       f"sends -- {len(theirs)} of them send {sends} (e.g. src/main/resources/templates/{example}); "
-                      "the server may refuse it (400, the field named). Send what they send; a test of a "
-                      "refused value on purpose reads it from its data sheet as \"#name#\"")
+                      f"the server may refuse it (400, the field named). Send what they send; {on_purpose}")
+    return issues
+
+
+def _sheet_value_issues(root: str, cls: str, tpl: str, body: str, alike: list) -> list:
+    """The values a template's "#name#" fields take from the class's data
+    sheets, checked as a literal in the template is: moving a refused value
+    into a cell (as the check's own message suggests for a value tested on
+    purpose) must not move it out of sight. A row expecting a 4xx is that
+    test, and is left alone. One issue per sheet and field."""
+    holes = _body_holes(body)
+    issues, seen = [], set()
+    if not holes:
+        return issues
+    for rel, rows in _class_sheets(root, cls):
+        for line, row in enumerate(rows, start=2):
+            if _row_expects_refusal(row):
+                continue
+            cells = {path: _cell_value(row[col]) for path, col in holes.items()
+                     if str(row.get(col) or "").strip()}
+            cells = {p: v for p, v in cells.items() if (rel, p) not in seen}
+            for issue in _template_value_issues(root, f"{rel} line {line} (into {tpl})", cells, alike,
+                                                _ON_PURPOSE_ROW):
+                seen.add((rel, issue.split(" sends ", 1)[1].split(" = ", 1)[0]))
+                issues.append(issue)
+    return issues
+
+
+# addMember(member, accountId, ROLE, ...), setMemberRole(owner, accountId, member, ROLE, ...):
+# the helpers write the body themselves, so no template shows the role.
+_ROLE_ARG = {"addMember": 2, "setMemberRole": 3}
+
+
+def _call_args(code: str, start: int) -> list:
+    """The top-level arguments of the call whose "(" is at `start`."""
+    args, depth, cur, quote = [], 0, "", ""
+    for ch in code[start + 1:start + 2000]:
+        if quote:
+            cur += ch
+            if ch == quote and not cur.endswith("\\" + quote):
+                quote = ""
+            continue
+        if ch in "\"'":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            if depth == 0:
+                args.append(cur.strip())
+                return args
+            depth -= 1
+        elif ch == "," and depth == 0:
+            args.append(cur.strip())
+            cur = ""
+            continue
+        cur += ch
+    return args
+
+
+def _member_role_issues(root: str, norm: str, code: str, cls: str) -> list:
+    """The role a test hands addMember / setMemberRole -- written in the
+    test, or read from a data-sheet column -- checked against the roles the
+    converted bodies send (employee, travelAdvisor, admin, owner, ...): an
+    invented one ("travel_coordinator") compiles and the server refuses it."""
+    import json as _json
+    sent = set()
+    for k, vals in _converted_values(root).items():
+        if k == "role" or k.endswith(".role"):
+            sent |= {_json.loads(v) for v in vals}
+    sent = {v for v in sent if isinstance(v, str) and _checked_value(v)}
+    if len(sent) < 2:
+        return []
+    found = []                                   # (where, value)
+    sheets = None
+    for m in re.finditer(r"\b(addMember|setMemberRole)\s*\(", code):
+        args = _call_args(code, m.end() - 1)
+        i = _ROLE_ARG[m.group(1)]
+        if len(args) <= i:
+            continue
+        arg = args[i]
+        lit = re.fullmatch(r'"([^"\\]*)"', arg)
+        col = re.search(r'(?:row\.get|[rR]owOrConfig\w*)\(\s*(?:row\s*,\s*)?"([A-Za-z0-9_]+)"', arg)
+        if lit:
+            found.append((f"{norm}: {m.group(1)}(..., \"{lit.group(1)}\", ...)", lit.group(1)))
+        elif col:
+            sheets = _class_sheets(root, cls) if sheets is None else sheets
+            for rel, rows in sheets:
+                for line, row in enumerate(rows, start=2):
+                    v = str(row.get(col.group(1)) or "").strip()
+                    if v and not _row_expects_refusal(row):
+                        found.append((f"{rel} line {line} (column {col.group(1)}, to {m.group(1)})", v))
+    issues, said = [], set()
+    for where, v in found:
+        if v in sent or not _checked_value(v) or v in said:
+            continue
+        said.add(v)
+        issues.append(f"{where}: role \"{v}\" -- no converted body sends it; they send "
+                      f"{', '.join(sorted(sent))}. The server may refuse it (400, role named); send one of "
+                      f"those, or, to test a refused role on purpose, expect the 4xx")
     return issues
 
 
@@ -324,6 +554,7 @@ def _template_drift_issues(root: str, norm: str, text: str) -> list:
         if len(alike) < 3:
             continue
         issues.extend(_template_value_issues(root, tpl, _body_values(body), alike))
+        issues.extend(_sheet_value_issues(root, os.path.basename(norm)[:-5], tpl, body, alike))
         counts: dict = {}
         for _p, f, _v in alike:
             for k in f:
@@ -581,6 +812,20 @@ def _new_person_issues(root: str, norm: str, code: str) -> list:
     return [i for i in now if i not in had]
 
 
+_HEADERS_FILE_RX = re.compile(r'Headers\.fromJson\(\s*"headers/[^"]*"')
+
+
+def _new_headers_file_issues(root: str, norm: str, code: str) -> list:
+    """A fixed headers file (Headers.fromJson("headers/qa.json")): one
+    environment's demo headers sent to every environment. A test that
+    already had it when committed is not failed for it."""
+    if not _HEADERS_FILE_RX.search(code) or _HEADERS_FILE_RX.search(_strip_comments(_head_text(root, norm))):
+        return []
+    return [f"{norm}: reads a fixed headers file ({_HEADERS_FILE_RX.search(code).group(0)})): its "
+            "headers go to every environment -- use apiHeaders(token) (StoryTestBase), which builds them "
+            "for the environment the run is on"]
+
+
 def _project_base_issues(norm: str, code: str, project: str) -> list:
     """A GOAL job's test extends GoalStoryTestBase; a B2B job's does not --
     each skips under the other project's configuration, so the wrong base
@@ -623,20 +868,25 @@ def jira_parity_issues(root: str, rel_paths: list, project: str = "") -> list:
                 issues.append(f"{norm}: enroll setup must EXTRACT guestId from the enroll response "
                               "-- use StoryTestBase's enrollActor(row, template, CASE), which does")
         issues.extend(_jira_spend_detail_guest_id_issues(norm, text))
+        cls = os.path.basename(norm)[:-5]
         issues.extend(_new_person_issues(root, norm, code))
         issues.extend(_goal_issues(norm, code))
+        issues.extend(_fixed_date_issues(root, norm, code, text, cls))
         issues.extend(_project_base_issues(norm, code, project))
         issues.extend(_template_fixed_value_issues(root, norm, text))
         issues.extend(_template_drift_issues(root, norm, text))
+        issues.extend(_member_role_issues(root, norm, code, cls))
+        issues.extend(_new_headers_file_issues(root, norm, code))
         issues.extend(_new_shared_helper_issues(root, norm, text))
-        cls = os.path.basename(norm)[:-5]
         issues.extend(_jira_shape_issues(root, norm, text, cls))
         csv_cols = _csv_columns_for_jira_class(root, cls, text)
+        # Any template the test names -- handed to a helper (enrollActor,
+        # createGroup) as much as rendered here: a misspelt path compiles.
+        for tpl in sorted(set(_MANUAL_BODY_TEMPLATE_RX.findall(code))):
+            tpl_path = os.path.join(root, "src", "test", "resources", tpl.replace("/", os.sep))
+            if not os.path.isfile(tpl_path):
+                issues.append(f"{norm}: template missing on disk: src/test/resources/{tpl}")
         if "ManualBody.render" in text:
-            for tpl in _MANUAL_BODY_TEMPLATE_RX.findall(text):
-                tpl_path = os.path.join(root, "src", "test", "resources", tpl.replace("/", os.sep))
-                if not os.path.isfile(tpl_path):
-                    issues.append(f"{norm}: template missing on disk: src/test/resources/{tpl}")
             issues.extend(_jira_template_placeholder_issues(root, norm, text, csv_cols))
         if "PerMethodCsvDataProvider" not in text:
             continue

@@ -71,6 +71,8 @@ return PhaseSpec.phase("POST_Payment")
                     .build();
 ```
 
+**A refusal, on purpose:** this converted case expects 400 here -- it tests that the server refuses. A story case expects what ITS acceptance criteria say; the same call made to succeed expects what the helpers assert (200, 204).
+
 Request body (`post_payment_d6ea5a2ba3.json`), its shape:
 
 ```json
@@ -106,4 +108,4 @@ return PhaseSpec.hookOnly("Update_DataSink", Hooks1::hook17_Update_DataSink);
 
 ## How a story test does the same
 
-A story test (tests/jira/) makes the same calls with the helpers -- `goalToken`, `findAvailability`, `createGroup`, `payGroup`, `confirmGroup` (GoalStoryTestBase), `route(ApiRoutes.X, ...)`, `ManualBody.render(template, row, ctx)` -- in the same order, with the same expected statuses and checks; its body templates keep every field the converted bodies above send.
+A story test (tests/jira/) makes the same calls with the helpers -- `goalToken`, `findAvailability`, `createGroup`, `payGroup`, `confirmGroup` (GoalStoryTestBase), `route(ApiRoutes.X, ...)`, `ManualBody.render(template, row, ctx)` -- in the same order. Its expected statuses and checks are its acceptance criteria's: a status above is the converted case's own, and one marked a refusal is not a success. Its body templates keep every field the converted bodies above send, with the values they send.

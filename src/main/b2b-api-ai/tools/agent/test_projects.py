@@ -504,6 +504,104 @@ class TemplateValueDrift(unittest.TestCase):
     def test_a_placeholder_is_not_a_value(self):
         self.assertEqual(self.issues(businessProfile__employeeCountRange="#employee_count_range#"), [])
 
+    def sheet(self, cls, rows, header):
+        d = os.path.join(self.root, "src", "test", "resources", "csv", "manual", cls)
+        os.makedirs(d, exist_ok=True)
+        with io.open(os.path.join(d, "createTest.csv"), "w", encoding="utf-8") as fh:
+            fh.write(",".join(header) + "\n" + "".join(",".join(r) + "\n" for r in rows))
+
+    def test_a_value_moved_into_the_data_sheet_is_still_checked(self):
+        # The value check said "read it from its data sheet as #name#": a
+        # refused value moved there must not pass unseen.
+        self.issues(businessProfile__employeeCountRange="#ecr#")
+        self.sheet("XTest", [["c1", "0", "200"], ["c2", "1", "200"], ["c3", "0", "400"]],
+                   ["test_case_id", "ecr", "expected_status_code"])
+        got = [i for i in self.st._template_drift_issues(
+            self.root, "src/test/java/com/hi/api/tests/jira/XTest.java",
+            'ManualBody.render("templates/manual/mine.json"') if ": sends " in i]
+        self.assertEqual(len(got), 1, got)
+        self.assertIn("XTest/createTest.csv line 2 (into templates/manual/mine.json): sends "
+                      "businessProfile.employeeCountRange = 0", got[0])
+        self.assertIn("expected status column", got[0], "line 4 expects the 400: a refusal on purpose")
+
+
+class StoryChecksBeyondTheBody(unittest.TestCase):
+    """What a story test can still get wrong with a body that passes: a
+    date that goes stale, a role the server does not know, a template path
+    handed to a helper, a fixed headers file."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.st = loop.storytests
+        self.st._CONVERTED_SHAPES.pop(self.root, None)
+        self.addCleanup(self.st._CONVERTED_SHAPES.pop, self.root, None)
+        conv = os.path.join(self.root, "src", "main", "resources", "templates", "s")
+        for i, role in enumerate(("employee", "employee", "admin", "owner", "travelAdvisor")):
+            write_json(os.path.join(conv, f"member{i}.json"), {"emailAddress": "#e#", "role": role})
+        self.manual = os.path.join(self.root, "src", "test", "resources", "templates", "manual")
+
+    def sheet(self, cls, header, *rows):
+        d = os.path.join(self.root, "src", "test", "resources", "csv", "manual", cls)
+        os.makedirs(d, exist_ok=True)
+        with io.open(os.path.join(d, "aTest.csv"), "w", encoding="utf-8") as fh:
+            fh.write(",".join(header) + "\n" + "".join(",".join(r) + "\n" for r in rows))
+
+    def soon(self, days=30):
+        from datetime import date, timedelta
+        return (date.today() + timedelta(days=days)).isoformat()
+
+    def test_a_fixed_stay_date_is_said_in_java_a_template_and_a_sheet(self):
+        when = self.soon()
+        write_json(os.path.join(self.manual, "shop.json"),
+                   {"arrivalDate": when, "fiscalYearStart": when, "dateOfBirth": "1980-01-01", "x": "#x#"})
+        self.sheet("BTest", ["test_case_id", "startDate", "lastResModifyDate"], ["c1", when, when])
+        code = f'class BTest extends StoryTestBase {{ String d = "{when}"; String t = "templates/manual/shop.json"; }}'
+        got = self.st._fixed_date_issues(self.root, "BTest.java", code, code, "BTest")
+        self.assertEqual(len(got), 3, got)
+        self.assertIn("LocalDate.now().plusDays", got[0])
+        self.assertIn("arrivalDate", got[1])
+        self.assertNotIn("fiscalYearStart", got[1], "a fiscal year start is history, not a stay")
+        self.assertIn("column(s) startDate", got[2])
+        self.assertNotIn("lastResModifyDate", got[2])
+
+    def test_a_birth_date_or_a_goal_search_date_is_not_said(self):
+        code = 'class BTest extends StoryTestBase { String d = "1984-05-02"; }'
+        self.assertEqual(self.st._fixed_date_issues(self.root, "BTest.java", code, code, "BTest"), [])
+        self.sheet("GTest", ["test_case_id", "arrivalDate"], ["c1", self.soon()])
+        code = "class GTest extends GoalStoryTestBase {}"
+        self.assertEqual(self.st._fixed_date_issues(self.root, "GTest.java", code, code, "GTest"), [],
+                         "createGroup puts the search's dates over the row's")
+
+    def test_an_invented_role_is_said_written_or_from_a_sheet(self):
+        code = ('class MTest { void t() { addMember(m, acct, "travel_coordinator", key, tok, "AC1"); '
+                'setMemberRole(o, acct, m, "admin", tok, "AC2"); '
+                'addMember(m2, acct, row.get("member_role"), key, tok, "AC3"); } }')
+        self.sheet("MTest", ["test_case_id", "member_role", "expected_status_code"],
+                   ["c1", "travelAgent", "200"], ["c2", "superUser", "403"])
+        got = self.st._member_role_issues(self.root, "MTest.java", code, "MTest")
+        self.assertEqual(len(got), 2, got)
+        self.assertIn('role "travel_coordinator"', got[0])
+        self.assertIn("admin, employee, owner, travelAdvisor", got[0])
+        self.assertIn('line 2 (column member_role, to addMember): role "travelAgent"', got[1])
+
+    def test_a_template_handed_to_a_helper_must_exist(self):
+        rel = "src/test/java/com/hi/api/tests/jira/HTest.java"
+        p = os.path.join(self.root, *rel.split("/"))
+        os.makedirs(os.path.dirname(p))
+        with io.open(p, "w", encoding="utf-8") as fh:
+            fh.write('/** DATA_INVENTORY */ class HTest extends StoryTestBase { void t() { '
+                     'enrollActor(row, "templates/manual/no_such_enrol.json", "AC1"); } }')
+        got = self.st.jira_parity_issues(self.root, [rel], "b2b")
+        self.assertIn(f"{rel}: template missing on disk: src/test/resources/templates/manual/no_such_enrol.json", got)
+
+    def test_a_fixed_headers_file_in_a_new_test_is_said(self):
+        got = self.st._new_headers_file_issues(self.root, "NewTest.java",
+                                               'h = Headers.fromJson("headers/qa.json");')
+        self.assertEqual(len(got), 1)
+        self.assertIn("apiHeaders(token)", got[0])
+        self.assertEqual(self.st._new_headers_file_issues(self.root, "NewTest.java", "h = apiHeaders(t);"), [])
+
 
 class ProjectsDoNotMix(Base):
     def test_a_test_whose_base_is_the_other_projects_fails_the_check(self):

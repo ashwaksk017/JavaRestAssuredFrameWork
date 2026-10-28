@@ -280,4 +280,4 @@ return PhaseSpec.phase("get_member_spendetail")
 
 ## How a story test does the same
 
-A story test (tests/jira/) makes the same calls with the helpers -- `enrollActor`, `createAccountFor`, `activateAccount`, `addMember`, `setMemberRole` (StoryTestBase), `route(ApiRoutes.X, ...)`, `ManualBody.render(template, row, ctx)` -- in the same order, with the same expected statuses and checks; its body templates keep every field the converted bodies above send.
+A story test (tests/jira/) makes the same calls with the helpers -- `enrollActor`, `createAccountFor`, `activateAccount`, `addMember`, `setMemberRole` (StoryTestBase), `route(ApiRoutes.X, ...)`, `ManualBody.render(template, row, ctx)` -- in the same order. Its expected statuses and checks are its acceptance criteria's: a status above is the converted case's own, and one marked a refusal is not a success. Its body templates keep every field the converted bodies above send, with the values they send.
