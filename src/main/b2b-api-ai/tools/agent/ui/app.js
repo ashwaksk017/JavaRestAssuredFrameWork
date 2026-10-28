@@ -2371,6 +2371,9 @@ async function showRunResult(j) {
   if (r.what === "test") {
     const what = r.suite || (r.test ? `-Dtest=${r.test}` : `group ${r.group}`);
     if (r.project_warning) kids.push(banner("warn", `${r.project_warning}: its calls may have gone to the wrong services.`));
+    if (r.rerun) kids.push(banner(r.ok ? "ok" : "warn", `This run is the re-run after AI Agent's fix: ` +
+      `${r.rerun.tests ? `the ${r.rerun.tests} test(s) that failed` : "the same tests"}, run again by themselves.` +
+      (r.ok ? " The fix waits for your review on the Commit and push tab." : "")));
     if (r.tests) {
       const tile = (cls, n, label) => el("div", { class: `tile ${cls}` }, el("b", { text: String(n) }), el("small", { text: label }));
       kids.push(el("div", { class: "run-summary" },
@@ -2415,6 +2418,29 @@ function autoFixBanner(a) {
       `Untick "AI Agent fixes compile errors" to stop that.`);
 }
 function sentJob(r) { return (r.kind === "convert-fix" && (r.fix_jobs || [])[0]) || r.job; }
+// Once the fix passes its check, the server runs the failed tests again
+// (jobs.rerun_after_fix); this says that it will, or why it did not.
+function rerunBanner(x) {
+  if (!x || x.this_is_it) return null;
+  if (x.state === "waiting") return banner("ok", `When AI Agent's change passes its check, ` +
+    `${x.failed ? `the ${x.failed} failed test(s) run` : x.runnable === "mvn-compile" ? "the compile runs" : "the tests run"} again by themselves.`);
+  if (x.state === "skipped") return banner("warn", `Not run again: ${x.why}.`);
+  return null;
+}
+// The fix ended: follow the run it started, if it started one.
+async function followRerun(j) {
+  await showRunAsk(j);
+  for (const r of ["mvn-test", "mvn-compile"]) {
+    let st = null;
+    try { st = await api(`/api/status?job=${encodeURIComponent(j)}&runnable=${r}`); } catch { st = null; }
+    if (st && st.state === "running") {
+      runBusy(true);
+      $("run-result").replaceChildren();
+      follow(r, $("run-log"), $("run-state"), async () => { runBusy(false); await showRunResult(j); }, j);
+      return;
+    }
+  }
+}
 let runAskFollowing = "";          // the auto-sent run whose log the box follows
 async function showRunAsk(j, again) {
   const box = $("run-ask-box");
@@ -2433,7 +2459,7 @@ async function showRunAsk(j, again) {
   $("run-ask-which").replaceChildren(
     banner(usable || sent ? "ok" : "warn", `${p.compile ? `The compile failed: ${p.failed} error(s).`
       : `${p.failed} test(s) failed.`} ${how} Why: ${p.why}`),
-    p.blocked ? banner("bad", p.blocked) : null, autoFixBanner(p.auto));
+    p.blocked ? banner("bad", p.blocked) : null, autoFixBanner(p.auto), rerunBanner(p.rerun));
   const from = `${j}@${(p.run && p.run.at) || ""}`;
   if (again || (p.text && (runAskFrom !== from || !$("run-ask").value.trim()))) {
     $("run-ask").value = p.text || "";
@@ -2448,7 +2474,7 @@ async function showRunAsk(j, again) {
     runAskSent = sentJob(p.auto);
     $("run-ask-open").hidden = false;
     $("run-ask-open").textContent = `Open job ${runAskSent} to review it`;
-    follow(p.auto.runnable, $("run-ask-log"), $("run-ask-state"), () => {}, p.auto.job);
+    follow(p.auto.runnable, $("run-ask-log"), $("run-ask-state"), () => followRerun(j), p.auto.job);
   }
 }
 $("run-ask-again").onclick = () => showRunAsk(runJob(), true);
@@ -2471,7 +2497,8 @@ $("run-ask-send").onclick = async () => {
     runAskSent = sentJob(r);
     $("run-ask-open").hidden = false;
     $("run-ask-open").textContent = `Open job ${runAskSent} to review it`;
-    follow(r.runnable, $("run-ask-log"), $("run-ask-state"), () => {}, r.job);
+    follow(r.runnable, $("run-ask-log"), $("run-ask-state"), () => followRerun(j), r.job);
+    await showRunAsk(j);                   // says the tests run again once the fix is checked
   } catch (e) { setState($("run-ask-state"), "bad", e.message); }
 };
 // The change AI Agent makes is reviewed where every change is: the job's

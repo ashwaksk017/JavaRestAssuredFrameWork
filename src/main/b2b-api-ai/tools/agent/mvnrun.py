@@ -247,6 +247,92 @@ def with_threads(root: str, suite_rel: str, threads: int) -> str:
     return rel
 
 
+# Fix Failures re-runs what failed once AI Agent's change is checked
+# (jobs.rerun_after_fix): the tests are named here, beside the run.
+RERUN_FILE = "mvnrun-rerun.json"
+
+
+def only_failed(root: str, suite_rel: str, failed: list, threads: int = 0) -> str:
+    """A copy of the suite file that runs only the `failed` tests ([{class,
+    method, config}]), under target/run-suites/ -- its parameters, listeners
+    and groups kept, so the tests run as they did. A failed @Before/@After
+    method runs its whole class again. "" when a failed class cannot be
+    placed in the suite's <test>s (a <package> it does not name, a suite of
+    suite files): the caller runs the whole suite, and says so."""
+    import xml.etree.ElementTree as ET
+    path = os.path.join(root, suite_rel.replace("/", os.sep))
+    try:
+        suite = ET.parse(path).getroot()
+    except (OSError, ET.ParseError):
+        return ""
+    if suite.tag != "suite" or suite.find("suite-files") is not None:
+        return ""
+    want = {}                                    # class -> its failed methods, None: the whole class
+    for t in failed or []:
+        cls, method = str(t.get("class") or ""), str(t.get("method") or "")
+        if not cls:
+            continue
+        if t.get("config") or not method:
+            want[cls] = None
+        elif want.get(cls, set()) is not None:
+            want.setdefault(cls, set()).add(method)
+    if not want:
+        return ""
+    placed = set()
+
+    def narrowed(name: str):
+        cl = ET.Element("class", {"name": name})
+        if want[name]:
+            methods = ET.SubElement(cl, "methods")
+            for m in sorted(want[name]):
+                ET.SubElement(methods, "include", {"name": m})
+        return cl
+
+    for test in list(suite.findall("test")):
+        classes = test.find("classes")
+        names = [c.get("name", "") for c in classes.findall("class")] if classes is not None else []
+        packages = test.find("packages")
+        for p in (packages.findall("package") if packages is not None else []):
+            pkg = p.get("name", "").rstrip("*").rstrip(".")
+            names += [c for c in want if pkg and c.rsplit(".", 1)[0] == pkg
+                      or p.get("name", "").endswith(".*") and c.startswith(pkg + ".")]
+        mine = [n for n in dict.fromkeys(names) if n in want and n not in placed]
+        if packages is not None:
+            test.remove(packages)
+        if classes is None:
+            classes = ET.SubElement(test, "classes")
+        for c in list(classes):
+            classes.remove(c)
+        for n in mine:
+            classes.append(narrowed(n))
+            placed.add(n)
+        if not mine:
+            suite.remove(test)
+    if set(want) - placed:
+        return ""
+    if threads:
+        have = suite.get("parallel", "").strip()
+        mode = have if have not in ("", "none", "false") else "classes"
+        suite.set("parallel", "none" if threads == 1 else mode)
+        suite.set("thread-count", str(threads))
+    name = os.path.basename(suite_rel)[:-len(".xml")]
+    rel = f"{RUN_SUITES}/{name}.failed.xml"
+    out = os.path.join(root, rel.replace("/", os.sep))
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    ET.ElementTree(suite).write(out, encoding="utf-8", xml_declaration=True)
+    return rel
+
+
+def read_rerun(job_dir: str) -> dict:
+    """The tests Fix Failures asked to run again ({at, tests}), or {}."""
+    try:
+        with io.open(os.path.join(job_dir, RERUN_FILE), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) and isinstance(data.get("tests"), list) else {}
+
+
 def group_suite(root: str, group: str) -> str:
     """The suite file that runs one group (surefire ignores -Dgroups when a
     suite file is set, and the pom always sets one), or ""."""
@@ -518,10 +604,12 @@ def cmd_compile(job_dir: str, root: str, runner=None, auto_fix: bool = False) ->
 
 def cmd_test(job_dir: str, root: str, suite: str = "", test: str = "", group: str = "",
              env: str = "", compile_first: bool = False, runner=None, threads: int = 0,
-             project: str = "", auto_fix: bool = False) -> int:
+             project: str = "", auto_fix: bool = False, failed_only: bool = False) -> int:
     """Run one suite, class or group. `project`: the one chosen on the page
     (its configuration file, its run environment, -Dconfig.project); none
-    chosen, the command's own (WORKBENCH_PROJECT, set by the workbench)."""
+    chosen, the command's own (WORKBENCH_PROJECT, set by the workbench).
+    `failed_only`: of a suite or group, only the tests RERUN_FILE names --
+    the re-run after Fix Failures."""
     chosen = [w for w in (suite, test, group) if str(w or "").strip()]
     if len(chosen) != 1:
         say("FAIL choose one thing to run: a suite, a test class, or a group")
@@ -580,8 +668,22 @@ def cmd_test(job_dir: str, root: str, suite: str = "", test: str = "", group: st
     # Always named, B2B too: a CONFIG_PROJECT left in the machine's environment
     # must not move a B2B run to another file (Config.java reads it otherwise).
     args.append(f"-Dconfig.project={project}")
+    rerun = read_rerun(job_dir) if failed_only else {}
+    if failed_only:
+        result["rerun"] = {"of": str(rerun.get("at") or ""), "tests": len(rerun.get("tests") or [])}
+
+    def suite_file(rel: str) -> str:
+        if rerun.get("tests"):
+            narrowed = only_failed(root, rel, rerun["tests"], threads)
+            if narrowed:
+                say(f" ..  only the {len(rerun['tests'])} test(s) that failed: a copy of {rel} that names "
+                    f"them ({narrowed}); the suite file itself is not changed")
+                return narrowed
+            say(f" ..  the failed tests could not be named in a copy of {rel}: the whole suite runs again")
+        return _threaded(root, rel, threads)
+
     if suite:
-        args.append(f"-DsuiteXmlFile={_threaded(root, suite, threads)}")
+        args.append(f"-DsuiteXmlFile={suite_file(suite)}")
         what = suite
     elif test:
         args.append(f"-Dtest={test}")
@@ -592,8 +694,10 @@ def cmd_test(job_dir: str, root: str, suite: str = "", test: str = "", group: st
             say(f"FAIL the group {group.strip()} has no suite file ({loop.suitemap.suite_rel(group.strip())}): "
                 f"it is written when a job's cases are first mapped to the group")
             return 1
-        args.append(f"-DsuiteXmlFile={_threaded(root, rel, threads)}")
+        args.append(f"-DsuiteXmlFile={suite_file(rel)}")
         what = f"the group {group.strip()} ({rel})"
+    if rerun:
+        what += ", again after AI Agent's fix"
     results = os.path.join(root, RESULTS_XML)
     try:
         os.remove(results)                  # never read an earlier run's results as this one's
@@ -655,6 +759,7 @@ def main(argv=None) -> int:
     t.add_argument("--compile-first", action="store_true")
     t.add_argument("--threads", type=int, default=0)
     t.add_argument("--project", default="")
+    t.add_argument("--failed-only", action="store_true")
     a = ap.parse_args(argv)
     try:
         job_dir = loop.intake.job_dir(loop.intake.safe_job(a.job))
@@ -676,7 +781,7 @@ def main(argv=None) -> int:
         # The whole command reads the chosen project's file, not only Maven.
         os.environ["WORKBENCH_PROJECT"] = project
     return cmd_test(job_dir, ROOT, a.suite, a.test, a.group, a.env, a.compile_first, threads=a.threads,
-                    project=project, auto_fix=a.auto_fix)
+                    project=project, auto_fix=a.auto_fix, failed_only=a.failed_only)
 
 
 if __name__ == "__main__":

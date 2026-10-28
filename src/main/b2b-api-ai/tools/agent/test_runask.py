@@ -407,7 +407,7 @@ class Sending(Base):
     """jobs.run_ask: the two existing paths, and the refusals before them."""
 
     def setUp(self):
-        super().setUp()
+        Base.setUp(self)                   # shared with RunAgainAfterTheFix
         for owner in (jobs, jobs.intake):
             self.addCleanup(setattr, owner, "ROOT", owner.ROOT)
             owner.ROOT = self.root
@@ -559,6 +559,110 @@ class Sending(Base):
             jobs.run_ask("runs", "Fix it.")
         left = [n for n in os.listdir(os.path.join(self.root, ".workbench")) if n.startswith("fix-")]
         self.assertEqual(left, [])
+
+
+class RunAgainAfterTheFix(Base):
+    """jobs.rerun_after_fix: seen live -- Fix Failures made a change, its
+    check passed, and nothing ran the failed tests again; the person had to."""
+
+    setUp = Sending.setUp
+    read = Sending.read
+
+    def sent(self, job="job-1"):
+        self.suite(job, JIRA)
+        self.job(job, result=run(test(JIRA, "a"), test(JIRA, "b", "PASS"), test(JIRA, "setUp", config=True)))
+        jobs.run_ask(job, "Fix it.")
+        self.started.clear()
+
+    def record(self, job="job-1"):
+        return json.loads(self.read(job, jobs.RERUN_RECORD))
+
+    def test_a_checked_fix_runs_only_the_failed_tests_again(self):
+        self.sent()
+        self.assertEqual(self.record()["state"], "waiting")
+        self.assertIn("rerun", jobs.run_ask_preview("job-1"), "the page says the tests will run again")
+        self.job("job-1", review={"state": "pending-review"})
+        got = jobs.rerun_after_fix("job-1", "agent-followup", 0)
+        self.assertEqual(got["state"], "started")
+        self.assertEqual(self.started, [("job-1", "mvn-test", {
+            "--env": "stg", "--project": "b2b", "--suite": "Suites/jira/job-1.xml",
+            "--compile-first": True, "--failed-only": True})])
+        named = json.loads(self.read("job-1", "mvnrun-rerun.json"))
+        self.assertEqual(sorted((t["method"], t["config"]) for t in named["tests"]),
+                         [("a", False), ("setUp", True)], "the failed ones, a failed setup included")
+        self.assertNotIn("--auto-fix", self.started[0][2], "what still fails never loops back by itself")
+        self.assertEqual(jobs.rerun_after_fix("job-1", "agent-followup", 0), {}, "once")
+
+    def test_a_fix_that_failed_its_check_is_not_run_and_says_why(self):
+        self.sent()
+        self.job("job-1", review={"state": "verify-failed"})
+        got = jobs.rerun_after_fix("job-1", "agent-followup", 1)
+        self.assertEqual((got["state"], self.started), ("skipped", []))
+        self.assertIn("did not pass its check", got["why"])
+        self.assertIn("did not pass its check", jobs.run_ask_preview("job-1")["rerun"]["why"])
+
+    def test_a_run_made_by_hand_meanwhile_is_not_run_over(self):
+        self.sent()
+        self.job("job-1", result=run(test(JIRA, "a"), at="2026-10-28T08:00:00Z"),
+                 review={"state": "pending-review"})
+        got = jobs.rerun_after_fix("job-1", "agent-followup", 0)
+        self.assertEqual((got["state"], self.started), ("skipped", []))
+
+    def test_only_a_fix_fix_failures_started_runs_anything(self):
+        self.job("job-1", review={"state": "pending-review"})
+        self.assertEqual(jobs.rerun_after_fix("job-1", "agent-followup", 0), {})
+        self.sent()
+        self.assertEqual(jobs.rerun_after_fix("job-1", "agent-generate", 0), {}, "another command's end")
+        self.assertEqual(self.started, [])
+
+    def test_a_converted_suites_fix_runs_in_its_own_job_and_the_run_comes_back(self):
+        write(self.root, "src/test/java/com/hi/api/tests/imported/amex/spend/SpendTest.java", "class SpendTest {}\n")
+        write(self.root, "src/main/java/com/hi/api/support/amex/AmexSteps.java", "class AmexSteps {}\n")
+        self.job("runs", result=dict(run(test(IMPORTED, "getSpend403Test"), suite="Suites/Amex_spend.xml"),
+                                     threads=3))
+        r = jobs.run_ask("runs", "Fix it.")
+        self.started.clear()
+        self.job(r["job"], review={"state": "pending-review"})
+        jobs.rerun_after_fix(r["job"], "agent-generate", 0)
+        self.assertEqual(self.started, [("runs", "mvn-test", {
+            "--env": "stg", "--project": "b2b", "--suite": "Suites/Amex_spend.xml", "--threads": "3",
+            "--compile-first": True, "--failed-only": True})])
+
+    def test_a_compile_fix_compiles_again(self):
+        self.suite("job-1", JIRA)
+        self.job("job-1", result=compiled(f"{JIRA_FILE}:42: cannot find symbol"))
+        jobs.run_ask("job-1", "Fix the compile.")
+        self.started.clear()
+        self.job("job-1", review={"state": "pending-review"})
+        jobs.rerun_after_fix("job-1", "agent-followup", 0)
+        self.assertEqual(self.started, [("job-1", "mvn-compile", {})])
+
+    def test_a_refused_restart_is_said_not_raised(self):
+        self.sent()
+        self.job("job-1", review={"state": "pending-review"})
+
+        def refuse(job, runnable, options):
+            raise RuntimeError("convert is running for job 'x'")
+        jobs.start = refuse
+        got = jobs.rerun_after_fix("job-1", "agent-followup", 0)
+        self.assertEqual(got["state"], "skipped")
+        self.assertIn("convert is running", got["why"])
+
+    def test_a_fix_that_never_started_leaves_nothing_waiting(self):
+        self.suite("job-1", JIRA)
+        self.job("job-1", result=run(test(JIRA, "a")))
+
+        def refuse(job, runnable, options):
+            raise RuntimeError("busy")
+        jobs.start = refuse
+        with self.assertRaises(RuntimeError):
+            jobs.run_ask("job-1", "Fix it.")
+        self.assertFalse(os.path.exists(os.path.join(jobs.job_dir("job-1"), jobs.RERUN_RECORD)))
+        self.assertFalse(os.path.exists(os.path.join(jobs.job_dir("job-1"), jobs.RERUN_FROM)))
+
+    def test_the_rerun_flag_is_a_command_option(self):
+        self.assertIn("--failed-only", jobs.build_argv("mvn-test", {"--job": "j", "--suite": "S.xml",
+                                                                    "--failed-only": True}))
 
 
 if __name__ == "__main__":

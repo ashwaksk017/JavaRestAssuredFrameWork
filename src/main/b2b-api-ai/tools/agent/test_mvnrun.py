@@ -204,6 +204,80 @@ class ParallelThreads(Base):
             self.assertEqual(self.calls, [], "refused before any compile or run")
 
 
+class OnlyWhatFailed(ParallelThreads):
+    """The re-run after Fix Failures: a copy of the suite that names only
+    the failed tests, and keeps what the suite gives them."""
+
+    SUITE = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+             '<!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">\n'
+             '<suite name="Amex" parallel="classes" thread-count="3">\n'
+             '  <parameter name="testSuite" value="regression"/>\n'
+             '  <listeners><listener class-name="com.hi.api.reporting.ProgressLogListener"/></listeners>\n'
+             '  <test name="one"><groups><run><include name="jira"/></run></groups><classes>\n'
+             '    <class name="com.x.ATest"/><class name="com.x.BTest"/><class name="com.x.CTest"/>\n'
+             '  </classes></test>\n'
+             '  <test name="two"><packages><package name="com.y.*"/></packages></test>\n'
+             '  <test name="three"><classes><class name="com.z.ZTest"/></classes></test>\n'
+             '</suite>\n')
+
+    def failed(self, *tests):
+        write(self.root, "Suites/Amex/AmexSuite.xml", self.SUITE)
+        write(self.root, f".workbench/runs/{mr.RERUN_FILE}", json.dumps({"at": "T1", "tests": [
+            {"class": c, "method": m, "config": cfg} for c, m, cfg in tests]}))
+
+    def go(self, **kw):
+        return self.quiet(mr.cmd_test, self.job_dir, self.root, env="stg", runner=self.runner(rc=0),
+                          suite="Suites/Amex/AmexSuite.xml", failed_only=True, **kw)
+
+    def test_only_the_failed_tests_run_with_the_suites_parameters_listeners_and_groups(self):
+        self.failed(("com.x.ATest", "a1", False), ("com.x.ATest", "a2", False), ("com.x.CTest", "setUp", True),
+                    ("com.y.YTest", "y1", False))
+        rc, said = self.go()
+        rel, text = self.copy_of()
+        self.assertEqual(rel, "target/run-suites/AmexSuite.failed.xml")
+        import xml.etree.ElementTree as ET
+        suite = ET.fromstring(text.encode("utf-8"))
+        self.assertEqual(suite.find("parameter").get("value"), "regression")
+        self.assertIsNotNone(suite.find("listeners/listener"))
+        self.assertEqual([t.get("name") for t in suite.findall("test")], ["one", "two"], "a test with none is dropped")
+        one = suite.find("test")
+        self.assertIsNotNone(one.find("groups"), "the groups the suite runs stay")
+        classes = {c.get("name"): [i.get("name") for i in c.findall("methods/include")]
+                   for c in one.findall("classes/class")}
+        self.assertEqual(classes, {"com.x.ATest": ["a1", "a2"], "com.x.CTest": []},
+                         "a failed setup runs its whole class")
+        self.assertEqual([c.get("name") for c in suite.findall("test")[1].findall("classes/class")],
+                         ["com.y.YTest"], "a class of a <package> is named")
+        self.assertIn("only the 4 test(s) that failed", said)
+        self.assertEqual(self.result()["rerun"], {"of": "T1", "tests": 4})
+        with io.open(os.path.join(self.root, "Suites", "Amex", "AmexSuite.xml"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), self.SUITE, "the suite file is not changed")
+
+    def test_the_threads_chosen_still_apply(self):
+        self.failed(("com.x.BTest", "b", False))
+        self.go(threads=2)
+        self.assertIn('thread-count="2"', self.copy_of()[1])
+
+    def test_a_class_the_suite_does_not_name_runs_the_whole_suite(self):
+        self.failed(("com.q.QTest", "q", False))
+        rc, said = self.go()
+        self.assertIn("-DsuiteXmlFile=Suites/Amex/AmexSuite.xml", self.mvn_test_call())
+        self.assertIn("the whole suite runs again", said)
+
+    def test_without_the_flag_the_named_tests_are_not_read(self):
+        self.failed(("com.x.ATest", "a1", False))
+        self.quiet(mr.cmd_test, self.job_dir, self.root, env="stg", runner=self.runner(rc=0),
+                   suite="Suites/Amex/AmexSuite.xml")
+        self.assertIn("-DsuiteXmlFile=Suites/Amex/AmexSuite.xml", self.mvn_test_call())
+        self.assertNotIn("rerun", self.result())
+
+    # ParallelThreads' own tests run in that class.
+    test_a_suite_runs_as_a_copy_with_the_thread_count_and_its_own_parallel_mode = None
+    test_a_suite_with_no_parallel_mode_runs_classes_and_one_thread_runs_nothing_in_parallel = None
+    test_as_the_suite_says_hands_maven_the_suite_itself = None
+    test_what_is_refused_before_anything_runs = None
+
+
 class Targets(Base):
     def test_suites_groups_and_envs_are_listed_from_disk(self):
         paths = [s["path"] for s in mr.list_suites(self.root)]

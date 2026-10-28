@@ -947,6 +947,22 @@ Cursor run is going, or when the last run had no failed test. **Open the
 job to review it** takes you to the Commit and push tab of the job the
 request went to.
 
+**The run is made again by itself.** When the fix Fix Failures started ends
+and its change passed its check (waiting for review), the workbench runs
+the failed run again, in the server (`jobs.rerun_after_fix`), so the page
+may be closed. The re-run uses the same suite, test or group, environment,
+project and threads, with a clean build first. For a suite or a group, only
+the tests that failed run again: a copy of the suite file under
+`target/run-suites/<name>.failed.xml` names them (`mvnrun.py --failed-only`,
+`mvnrun-rerun.json`). The copy keeps the suite's parameters, listeners and
+groups. A failed `@Before`/`@After` runs its whole class again. A class the
+copy cannot place runs the whole suite instead, and the log says so. A failed
+compile is compiled again. The run is NOT made again when the change failed
+its check, when the fix was stopped, when someone ran the tests by hand
+while AI Agent worked, or when another run is going. The tab says why
+(`run-ask-rerun.json`). The re-run never carries `--auto-fix`. Whatever
+still fails waits for you and never goes back to AI Agent by itself.
+
 A **compile that failed** (Compile, a run's compile first, or a run that
 did not compile) offers the box too: no test ran, but each error names its
 file, and the files say whose they are.

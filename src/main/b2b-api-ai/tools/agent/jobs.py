@@ -420,7 +420,9 @@ RUNNABLES = {
         "options": {"--job": "text", "--suite": "text", "--test": "text", "--group": "text",
                     "--env": "text", "--compile-first": "flag", "--threads": "text", "--auto-fix": "flag",
                     # The project chosen on the tab (b2b, goal): its file is read.
-                    "--project": "text"},
+                    "--project": "text",
+                    # Only the tests Fix Failures fixed (jobs.rerun_after_fix).
+                    "--failed-only": "flag"},
     },
     # Tab 3. Fixed sub-commands of one script; the page chooses which,
     # names the job, and for `generate` picks a scope the script itself
@@ -1719,18 +1721,117 @@ def _workbench_start(job: str, out: str, cur: dict, text: str) -> dict:
 
 # ---- Fix Failures (the Run tests tab) ----------------------
 AUTO_FIX_FILE = "run-ask-auto.json"     # what auto_fix did after the run it names
+# The run Fix Failures fixed, and what came of re-running it: in the run's
+# job. RERUN_FROM, in the job the fix runs in, points back at that run.
+RERUN_RECORD = "run-ask-rerun.json"
+RERUN_FROM = "run-ask-from.json"
+RERUN_AFTER = ("agent-followup", "agent-generate", "convert-fix")
 
 
 def run_ask_preview(job: str) -> dict:
     """Which way the last run's failures go to Cursor, and the request
     for the person to edit (runask.py). Reads only. `auto`: what the
-    workbench sent by itself after THIS run, when it did (auto_fix)."""
+    workbench sent by itself after THIS run, when it did (auto_fix).
+    `rerun`: the re-run after the fix of the run before, while this run is
+    that re-run or the fix is still being made (rerun_after_fix)."""
     out = job_dir(job)                             # validates the id
     info = _tool("runask").preview(ROOT, job)
     auto = _read_json(os.path.join(out, AUTO_FIX_FILE))
     if auto and auto.get("at") and auto.get("at") == (info.get("run") or {}).get("at"):
         info["auto"] = auto
+    rerun = _read_json(os.path.join(out, RERUN_RECORD))
+    run_at = (info.get("run") or {}).get("at")
+    # Of THIS run: its fix is being made, or it was not run again (why) --
+    # or this run is the re-run itself.
+    again = (_tool("runask").read_result(out).get("rerun") or {}).get("of")
+    if rerun and rerun.get("at") and rerun.get("at") in (run_at, again):
+        info["rerun"] = dict(rerun, this_is_it=bool(again) and again == rerun.get("at"))
     return info
+
+
+def _rerun_note(run_job: str, fix_job: str, fix_runnable: str, result: dict) -> None:
+    """Fix Failures was sent: once the fix is checked, the run is made
+    again (rerun_after_fix). Written before the fix starts."""
+    tests = [{"class": t.get("class"), "method": t.get("method"), "config": bool(t.get("config"))}
+             for t in _tool("runask").failed_tests(result)]
+    options = {"--env": str(result.get("env") or ""), "--project": str(result.get("project") or "")}
+    if result.get("what") == "compile":
+        runnable, options = "mvn-compile", {}
+    else:
+        runnable = "mvn-test"
+        for k in ("suite", "test", "group"):
+            if result.get(k):
+                options[f"--{k}"] = str(result[k])
+        if result.get("threads"):
+            options["--threads"] = str(result["threads"])
+        # A clean build: Maven may keep the classes of a file the fix changed.
+        options["--compile-first"] = True
+        if tests and (result.get("suite") or result.get("group")):
+            options["--failed-only"] = True
+    _write(os.path.join(job_dir(run_job), RERUN_RECORD),
+           {"at": str(result.get("at") or ""), "state": "waiting", "fix_job": fix_job,
+            "fix_runnable": fix_runnable, "runnable": runnable,
+            "options": {k: v for k, v in options.items() if v != ""}, "tests": tests[:500],
+            "failed": len(tests) or None})
+    _write(os.path.join(job_dir(fix_job), RERUN_FROM), {"run_job": run_job, "runnable": fix_runnable})
+
+
+def _rerun_forget(run_job: str, fix_job: str) -> None:
+    """The fix did not start: no re-run is waiting for it."""
+    if _read_json(os.path.join(job_dir(run_job), RERUN_RECORD)).get("fix_job") == fix_job:
+        for path in (os.path.join(job_dir(run_job), RERUN_RECORD), os.path.join(job_dir(fix_job), RERUN_FROM)):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+def rerun_after_fix(fix_job: str, runnable: str, rc: int) -> dict:
+    """When the fix Fix Failures started ends: the failed run is made again
+    -- the failed tests only, of a suite or group -- once the change passed
+    its check; else the record says why not. No --auto-fix on the re-run:
+    what still fails waits for a person, never loops back to AI Agent.
+    {} when this fix was not one Fix Failures started."""
+    ptr_path = os.path.join(job_dir(fix_job), RERUN_FROM)
+    ptr = _read_json(ptr_path)
+    if not ptr or ptr.get("runnable") != runnable:
+        return {}
+    try:
+        os.remove(ptr_path)
+    except OSError:
+        pass
+    run_job = str(ptr.get("run_job") or "")
+    rec_path = os.path.join(job_dir(run_job), RERUN_RECORD)
+    rec = _read_json(rec_path)
+    if rec.get("state") != "waiting" or rec.get("fix_job") != fix_job:
+        return {}
+    ra = _tool("runask")
+    now = str(ra.read_result(job_dir(run_job)).get("at") or "")
+    why = ""
+    state = _read_json(os.path.join(job_dir(fix_job), "review.json")).get("state")
+    if rc != 0:
+        why = (f"AI Agent's change did not pass its check (job {fix_job}"
+               + (f", {state}" if state else "") + "): the tests were not run again. Look at the "
+               "change on the Commit and push tab, ask AI Agent again, or Discard it")
+    elif runnable != "convert-fix" and state != "pending-review":
+        why = f"job {fix_job}'s change is not waiting for review ({state or 'no change'}): nothing to run again"
+    elif now != rec.get("at"):
+        why = "the tests were run again by hand while AI Agent worked: that run is the one shown"
+    if not why:
+        options = dict(rec.get("options") or {})
+        if options.get("--failed-only"):
+            with io.open(os.path.join(job_dir(run_job), _tool("mvnrun").RERUN_FILE), "w",
+                         encoding="utf-8") as fh:
+                json.dump({"at": rec.get("at"), "tests": rec.get("tests") or []}, fh)
+        try:
+            start(run_job, rec["runnable"], options)
+        except Exception as e:                           # noqa: BLE001 -- said on the page
+            why = f"the tests could not be run again by themselves ({e}): run them from the Run tests tab"
+    rec.update(state="skipped" if why else "started", why=why, finished_fix=_now())
+    _write(rec_path, rec)
+    diag.job_note(run_job, "[jobs] after Fix Failures (job " + fix_job + "): "
+                  + (f"not run again -- {why}" if why else f"{rec['runnable']} started again"), ROOT)
+    return rec
 
 
 def auto_fix(job: str) -> dict:
@@ -1795,7 +1896,12 @@ def run_ask(job: str, text: str, images=None) -> dict:
         raise ValueError(f"{now[0][1]} is running (job {now[0][0]}): wait for it, or Stop it, then ask")
     if info["kind"] == "convert-fix":
         # convertfix.py writes each suite's brief from the compile itself.
-        started = start(job, "convert-fix", {"--job": job})
+        _rerun_note(job, job, "convert-fix", result)
+        try:
+            started = start(job, "convert-fix", {"--job": job})
+        except BaseException:
+            _rerun_forget(job, job)
+            raise
         return dict(started, runnable="convert-fix", job=job, kind="convert-fix",
                     suites=info["suites"], fix_jobs=info["fix_jobs"])
     text = ra.redact(text, ra.private(ROOT))
@@ -1820,9 +1926,11 @@ def run_ask(job: str, text: str, images=None) -> dict:
                     json.dump({"files": must_fix}, fh)
             elif os.path.exists(mustfix_path):
                 os.remove(mustfix_path)
+            _rerun_note(job, target, "agent-followup", result)
             started = start(target, "agent-followup", {"--job": target})
         except BaseException:
             paste.clear(out)
+            _rerun_forget(job, target)
             raise
         return dict(started, runnable="agent-followup", job=target, kind="job")
     suite = info["suite"]
@@ -1842,13 +1950,16 @@ def run_ask(job: str, text: str, images=None) -> dict:
                                 "suite": suite},
                            request=text)
         paste.save(out, images)
+        _rerun_note(job, target, "agent-generate", result)
         started = start(target, "agent-generate", {"--job": target, "--scope": "converted", "--suite": suite})
     except fixbrief.Refused as e:
         shutil.rmtree(out, ignore_errors=True)
+        _rerun_forget(job, target)
         raise ValueError(str(e)) from None
     except BaseException:
         # Nothing started: the new job would only be an empty brief in the list.
         shutil.rmtree(out, ignore_errors=True)
+        _rerun_forget(job, target)
         raise
     return dict(started, runnable="agent-generate", job=target, kind="converted", suite=suite,
                 cases=len(g["cases"]))
@@ -2120,6 +2231,14 @@ def start(job: str, runnable: str, options: dict) -> dict:
                 auto_fix(job)
             except Exception as e:                       # noqa: BLE001
                 diag.job_note(job, f"[jobs] auto_fix failed: {type(e).__name__}: {e}", ROOT)
+        if runnable in RERUN_AFTER:
+            # Before "done" too: the page that sees the fix end finds the
+            # run it started (or why none was).
+            try:
+                rerun_after_fix(job, runnable, rc)
+            except Exception as e:                       # noqa: BLE001
+                diag.job_note(job, f"[jobs] the re-run after Fix Failures failed: {type(e).__name__}: {e}",
+                              ROOT)
         done = dict(status)
         done.update({"state": "done" if rc == 0 else "failed",
                      "exit_code": rc, "finished": _now()})
