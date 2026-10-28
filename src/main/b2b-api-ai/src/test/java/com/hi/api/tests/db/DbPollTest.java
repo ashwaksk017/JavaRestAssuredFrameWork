@@ -55,6 +55,32 @@ public class DbPollTest {
         Assert.assertEquals(otp, "000042");
     }
 
+    @Test(groups = {"unit"})
+    @Story("a numeric account_member_id is bound as a number")
+    @Description("Seen live on b2b-stg: the column is a bigint and Postgres refuses bigint = varchar, so "
+            + "the story owner's one-time code was never found. A numeric id goes as a Long; any other as text.")
+    public void memberIdParam_bindsANumericIdAsANumber() {
+        Assert.assertEquals(Db.memberIdParam(" 417778 "), 417778L);
+        Assert.assertEquals(Db.memberIdParam("mem-1"), "mem-1");
+        Assert.assertEquals(Db.memberIdParam(null), "");
+    }
+
+    @Test(groups = {"unit", "db", "h2"})
+    @Story("pollMemberEmailOtp against a bigint column")
+    @Description("The real table's shape: a numeric id reads its code, both the SQL and the jOOQ way.")
+    public void pollMemberEmailOtp_readsABigintColumn() {
+        h2.executeStatement("CREATE SCHEMA IF NOT EXISTS \"segment\"");
+        h2.executeStatement("DROP TABLE IF EXISTS \"segment\".\"account_member_internal_security\"");
+        h2.executeStatement("CREATE TABLE \"segment\".\"account_member_internal_security\" ("
+                + "\"account_member_id\" BIGINT PRIMARY KEY, \"email_otp\" INT)");
+        h2.executeStatement("INSERT INTO \"segment\".\"account_member_internal_security\" "
+                + "(\"account_member_id\", \"email_otp\") VALUES (?, ?)", 417778L, 7);
+        Assert.assertEquals(h2.pollColumnUntilStable(
+                "SELECT \"email_otp\" FROM \"segment\".\"account_member_internal_security\" "
+                        + "WHERE \"account_member_id\" = ?", "email_otp", 2, 5L, Db.memberIdParam("417778")),
+                "000007");
+    }
+
     @Test(groups = {"unit", "db", "h2"})
     @Story("pollColumnUntilStable empty rows")
     @Description("Missing member id exhausts attempts and returns empty.")

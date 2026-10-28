@@ -850,7 +850,20 @@ public final class Db {
         }
         return pollColumnUntilStable(
                 EMAIL_OTP_SQL, "email_otp",
-                maxAttempts, sleepMs, accountMemberId);
+                maxAttempts, sleepMs, memberIdParam(accountMemberId));
+    }
+
+    /**
+     * The id as the column takes it. On b2b-stg account_member_id is a
+     * bigint, and Postgres refuses bigint = varchar (seen live: "operator
+     * does not exist: bigint = character varying" -- every story test's
+     * owner confirm failed). The converted suites never met it: they inline
+     * the id as a quoted literal, which Postgres casts. A numeric id is
+     * bound as a number; anything else (an H2 self-test's "mem-1") as text.
+     */
+    public static Object memberIdParam(String accountMemberId) {
+        String s = accountMemberId == null ? "" : accountMemberId.trim();
+        return s.matches("\\d{1,18}") ? (Object) Long.valueOf(s) : s;
     }
 
     private String pollEmailOtpJooq(String accountMemberId,
@@ -861,10 +874,16 @@ public final class Db {
                 AccountMemberInternalSecurity.ACCOUNT_MEMBER_INTERNAL_SECURITY;
         String last = "";
         String prev = null;
+        // The schema's field is text (the H2 self-tests); a numeric id is
+        // compared as a number, as memberIdParam binds it.
+        Object id = memberIdParam(accountMemberId);
+        org.jooq.Condition match = id instanceof Long
+                ? DSL.field(t.ACCOUNT_MEMBER_ID.getQualifiedName(), Long.class).eq((Long) id)
+                : t.ACCOUNT_MEMBER_ID.eq(accountMemberId);
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             Integer otp = withDsl(dsl -> dsl.select(t.EMAIL_OTP)
                     .from(t)
-                    .where(t.ACCOUNT_MEMBER_ID.eq(accountMemberId))
+                    .where(match)
                     .fetchOne(t.EMAIL_OTP));
             last = formatColumn("email_otp", otp);
             LOG.info(" .. jooq extract email_otp={}", last.isEmpty() ? "<empty>" : last);
