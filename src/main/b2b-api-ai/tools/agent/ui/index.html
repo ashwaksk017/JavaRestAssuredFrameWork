@@ -474,14 +474,14 @@ Expect 201.'></textarea>
     <button id="run-token">Audit token chain</button>
     <button id="run-verify" title="run the checks chosen in What to verify, now">Verify</button>
     <button id="run-flow-catalog" title="after a convert: the converted cases' ordered calls, by project, which AI Agent reuses for new cases (.cursor/skills/jira-to-restassured/flows/, committed)">Rebuild flow catalog</button>
-    <button id="run-convert-fix" title="compile what the convert wrote; with AI Agent assist on, AI Agent makes each suite that does not compile compile -- held for review only once it does">Check it compiles</button>
+    <button id="run-convert-fix" title="compile what the convert wrote (it also runs by itself after every convert); with AI Agent assist on, AI Agent makes each suite the convert wrote compile -- held for review only once it does">Check it compiles</button>
   </div>
   <div class="row center"><span id="convert-state" class="state"></span></div>
   <h3>Log</h3>
   <pre id="convert-log" class="log"></pre>
   <div id="convert-fix-block" hidden>
     <h3>Does it compile? <span id="convert-fix-state" class="state"></span>
-      <span class="hint">after every convert; with AI Agent assist on, AI Agent fixes each suite that does not -- its conversation is in the AI Agent log below</span></h3>
+      <span class="hint">started by itself after every convert, page open or not; names each suite the convert wrote and the XML to run it with. With AI Agent assist on, AI Agent fixes those suites when they do not compile (not other suites) -- its conversation is in the AI Agent log below</span></h3>
     <pre id="convert-fix-log" class="log"></pre>
     <div id="convert-fix-result" class="result"></div>
   </div>

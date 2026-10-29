@@ -665,5 +665,59 @@ class RunAgainAfterTheFix(Base):
                                                                     "--failed-only": True}))
 
 
+class CheckAfterAConvert(Base):
+    """jobs.check_after_convert: seen live (2026-10-29) -- the page started
+    the compile check when it saw the convert end, so a page reloaded during
+    the convert started none, and no log said which suite to compile."""
+
+    setUp = Sending.setUp
+    read = Sending.read
+
+    def converted(self, job="conv"):
+        self.job(job)
+        write(self.root, f".workbench/{job}/{jobs.CONVERT_SUITES}",
+              json.dumps({"suites": [{"suite": "amex", "xml": "Suites/Amex_Regression.xml"}]}))
+
+    def test_a_finished_convert_starts_its_compile_check_in_the_server(self):
+        self.converted()
+        got = jobs.check_after_convert("conv", {"--cursor-assist": True}, 0)
+        self.assertEqual(self.started, [("conv", "convert-fix", {"--job": "conv"})])
+        self.assertEqual((got["started"], got["suites"]), (True, ["amex"]))
+        self.assertTrue(json.loads(self.read("conv", jobs.CONVERT_CHECK))["started"])
+        said = self.read("conv", "convert.log")
+        self.assertIn("compiling amex now", said, "the convert's own log says what comes next")
+        self.assertIn("AI Agent fixes what this convert wrote", said)
+
+    def test_with_ai_agent_assist_off_it_is_only_checked(self):
+        self.converted()
+        jobs.check_after_convert("conv", {"--no-cursor-assist": True}, 0)
+        self.assertEqual(self.started, [("conv", "convert-fix", {"--job": "conv", "--no-cursor": True})])
+        self.assertIn("nothing is fixed by itself", self.read("conv", "convert.log"))
+
+    def test_a_failed_convert_is_not_compiled_and_says_why(self):
+        self.converted()
+        got = jobs.check_after_convert("conv", {"--cursor-assist": True}, 1)
+        self.assertEqual((got["started"], self.started), (False, []))
+        self.assertIn("did not finish (exit 1)", got["why"])
+        self.assertIn("did not finish (exit 1)", self.read("conv", "convert.log"))
+
+    def test_a_convert_that_writes_no_suite_starts_nothing(self):
+        self.job("conv")
+        for opt in ("--diagrams-only", "--bootstrap"):
+            got = jobs.check_after_convert("conv", {opt: True}, 0)
+            self.assertEqual((got["started"], self.started), (False, []), opt)
+            self.assertIn("wrote no suite", got["why"])
+
+    def test_a_check_that_cannot_start_says_to_press_the_button(self):
+        self.converted()
+        def busy(job, runnable, options):
+            raise RuntimeError("verify-all is running")
+        jobs.start = busy
+        got = jobs.check_after_convert("conv", {}, 0)
+        self.assertFalse(got["started"])
+        self.assertIn("verify-all is running", got["why"])
+        self.assertIn("press Check it compiles", self.read("conv", "convert.log"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

@@ -104,6 +104,11 @@ CHECKS = [
           "--input converts the suite it was given, not every sibling -- "
           "naming one XML in input/ used to convert all 29, which also made "
           "the ladder's cheap repro rung secretly run the whole tree"),
+    Check("next-step",
+          [PY, "tools/ra_converter/test_next_step.py"],
+          "a convert ends by naming each suite it wrote and the XML to run it "
+          "with -- its log used to end at the file list, and nothing said "
+          "which suite was now to be compiled"),
     Check("execute-flag",
           [PY, "tools/ra_converter/test_execute_flag_carryforward.py"],
           "a row switched off with execute=N survives the next convert -- "

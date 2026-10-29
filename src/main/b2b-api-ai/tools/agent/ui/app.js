@@ -2745,34 +2745,91 @@ $("run-flow-catalog").onclick = () => {
     .catch((e) => setState($("verify-state"), "bad", e.message));
 };
 
-// After a convert: compile; AI Agent fixes each suite that does not compile
-// (tools/agent/convertfix.py). Its AI Agent conversation is in the tab's AI Agent log.
-function runConvertFix(j, withCursor, then) {
+// After a convert: compile; AI Agent fixes each suite the convert wrote that
+// does not compile (tools/agent/convertfix.py). The server starts it when a
+// convert ends (jobs.check_after_convert); Check it compiles starts it again.
+// Its AI Agent conversation is in the tab's AI Agent log.
+function followConvertFix(j, then) {
   $("convert-fix-block").hidden = false;
   $("convert-fix-result").replaceChildren();
   if (typeof startArea === "function") watchCursorLog();
+  follow("convert-fix", $("convert-fix-log"), $("convert-fix-state"), async () => {
+    const r = await artifactJson(j, "convert-fix.json");
+    const kids = [];
+    const conv = (r && r.converted) || {};
+    const xmlOf = (suite) => conv[suite] ? `: run ${conv[suite]} on the Run tests tab` : "";
+    if (r && r.compiles) {
+      const names = Object.keys(conv).sort();
+      if (names.length) for (const suite of names) kids.push(banner("ok", `Suite ${suite} compiles${xmlOf(suite)}.`));
+      else kids.push(banner("ok", "It compiles: ready to review and run."));
+    } else if (r) {
+      for (const [suite, s] of Object.entries(r.suites || {})) {
+        kids.push(banner(s.state === "pending-review" ? "ok" : "bad",
+          s.state === "pending-review"
+            ? `${suite} compiles now: AI Agent's fix is waiting for review (job ${s.job}, Commit and push tab)`
+              + (conv[suite] ? `; once approved, run ${conv[suite]}.` : ".")
+            : `${suite} does not compile (${s.state})${s.job ? ` -- job ${s.job} holds what AI Agent tried` : ""}.`));
+      }
+      for (const suite of Object.keys(conv).sort()) {
+        if (!(r.suites || {})[suite]) kids.push(banner("ok", `Suite ${suite} has no errors of its own.`));
+      }
+      const others = Object.keys(r.others || {}).sort();
+      if (others.length) kids.push(banner("warn",
+        `Suite(s) ${others.join(", ")} do not compile either. This convert did not write them, so AI Agent ` +
+        "was not asked about them; nothing runs until the whole project compiles."));
+      if ((r.shared || []).length) kids.push(banner("warn",
+        `Errors in shared framework files, not a suite's to fix: ${r.shared.slice(0, 6).join(", ")}`));
+    }
+    $("convert-fix-result").replaceChildren(...kids);
+    if (then) then();
+  }, j);
+}
+function runConvertFix(j, withCursor, then) {
+  $("convert-fix-block").hidden = false;
+  $("convert-fix-result").replaceChildren();
   post("/api/start", { job: j, runnable: "convert-fix",
                        options: withCursor ? { "--job": j } : { "--job": j, "--no-cursor": true } })
-    .then(() => follow("convert-fix", $("convert-fix-log"), $("convert-fix-state"), async () => {
-      const r = await artifactJson(j, "convert-fix.json");
-      const kids = [];
-      if (r && r.compiles) kids.push(banner("ok", "It compiles: ready to review and run."));
-      else if (r) {
-        for (const [suite, s] of Object.entries(r.suites || {})) {
-          kids.push(banner(s.state === "pending-review" ? "ok" : "bad",
-            s.state === "pending-review"
-              ? `${suite} compiles now: AI Agent's fix is waiting for review (job ${s.job}, Commit and push tab).`
-              : `${suite} does not compile (${s.state})${s.job ? ` -- job ${s.job} holds what AI Agent tried` : ""}.`));
-        }
-        if ((r.shared || []).length) kids.push(banner("warn",
-          `Errors in shared framework files, not a suite's to fix: ${r.shared.slice(0, 6).join(", ")}`));
-      }
-      $("convert-fix-result").replaceChildren(...kids);
-      if (then) then();
-    }, j))
+    .then(() => followConvertFix(j, then))
     .catch((e) => { setState($("convert-fix-state"), "bad", e.message); if (then) then(); });
 }
 $("run-convert-fix").onclick = () => runConvertFix(convertJob(), chosen("cv-cursor") === "on");
+
+// When a convert ends: the compile check the server started is followed, or
+// why none was is said (convert-check.json) -- then verified, when ticked.
+async function afterConvert(j, st, verifyAfter) {
+  const c = await artifactJson(j, "convert-check.json");
+  if (c && c.started) {
+    followConvertFix(j, () => { if (verifyAfter) runVerifyAll(j); });
+    return;
+  }
+  $("convert-fix-block").hidden = false;
+  $("convert-fix-log").textContent = "";
+  $("convert-fix-result").replaceChildren(banner(st.state === "done" ? "warn" : "bad",
+    (c && c.why) || "The compile check was not started after this convert: press Check it compiles."));
+  setState($("convert-fix-state"), st.state === "done" ? "" : "bad", "not run");
+  if (!verifyAfter) return;
+  if (st.state === "done") { runVerifyAll(j); return; }
+  // Checking a tree a failed convert left half-written says nothing
+  // about either. Said, so the tick is not taken for a run.
+  $("verify-block").hidden = false;
+  $("verify-log").textContent = "";
+  stepsAbove($("verify-log")).replaceChildren();
+  setState($("verify-state"), "bad", "not run: the convert did not finish cleanly");
+}
+
+// A convert, or the compile check after it, started before this page was
+// opened (or reloaded) is followed again.
+onTab.convert = async () => {
+  const j = convertJob();
+  for (const r of ["convert", "convert-fix"]) {
+    let st = null;
+    try { st = await api(`/api/status?job=${encodeURIComponent(j)}&runnable=${r}`); } catch { st = null; }
+    if (!st || st.state !== "running") continue;
+    if (r === "convert") follow("convert", $("convert-log"), $("convert-state"), (s) => afterConvert(j, s, false), j);
+    else followConvertFix(j);
+    return;
+  }
+};
 
 $("run-convert").onclick = async () => {
   if (uploading) { setState($("convert-state"), "bad", "the files are still being copied"); return; }
@@ -2789,22 +2846,9 @@ $("run-convert").onclick = async () => {
   $("verify-block").hidden = true;
   try {
     await post("/api/start", { job: j, runnable: "convert", options: o });
-    follow("convert", $("convert-log"), $("convert-state"), (st) => {
-      // Nobody is handed a convert that does not compile: checked, and with
-      // AI Agent assist on, fixed -- then verified, when that was ticked.
-      if (st.state === "done") {
-        runConvertFix(j, chosen("cv-cursor") === "on", () => { if (verifyAfter) runVerifyAll(j); });
-        return;
-      }
-      if (!verifyAfter) return;
-      // Checking a tree a failed convert left half-written says nothing
-      // about either. Said, so the tick is not taken for a run.
-      $("verify-block").hidden = false;
-      $("verify-log").textContent = "";
-      stepsAbove($("verify-log")).replaceChildren();
-      setState($("verify-state"), "bad",
-               "not run: the convert did not finish cleanly");
-    });
+    // Nobody is handed a convert that does not compile: checked, and with
+    // AI Agent assist on, fixed -- then verified, when that was ticked.
+    follow("convert", $("convert-log"), $("convert-state"), (st) => afterConvert(j, st, verifyAfter), j);
   } catch (e) { setState($("convert-state"), "bad", e.message); }
 };
 

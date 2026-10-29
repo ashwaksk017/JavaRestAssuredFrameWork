@@ -1727,6 +1727,58 @@ RERUN_RECORD = "run-ask-rerun.json"
 RERUN_FROM = "run-ask-from.json"
 RERUN_AFTER = ("agent-followup", "agent-generate", "convert-fix")
 
+# ---- After a convert (the Convert tab) ----------------------
+# The suites the convert wrote, each with its TestNG XML: written by the
+# converter (WORKBENCH_CONVERT_SUITES), read by convertfix.py. And what was
+# started after the convert, or why nothing was.
+CONVERT_SUITES = "convert-suites.json"
+CONVERT_CHECK = "convert-check.json"
+
+
+def check_after_convert(job: str, options: dict, rc: int) -> dict:
+    """When a convert ends: its compile check (convert-fix) is started here,
+    in the server. It was the page's to start, so a page reloaded or closed
+    while the convert ran started none, and no log said so (2026-10-29).
+    AI Agent is asked only when the convert had AI Agent assist on. What was
+    done is kept in CONVERT_CHECK and said at the end of the convert's log."""
+    out = job_dir(job)
+    listed = _read_json(os.path.join(out, CONVERT_SUITES)).get("suites") or []
+    suites = [str(s.get("suite")) for s in listed if isinstance(s, dict) and s.get("suite")]
+    cursor = bool(options.get("--cursor-assist"))
+    record = {"started": False, "suites": suites, "cursor": cursor, "at": _now(), "why": ""}
+    if rc != 0:
+        record["why"] = (f"the convert did not finish (exit {rc}"
+                         + (", stopped" if (job, "convert") in _STOPPED else "")
+                         + "): the compile check was not started. Fix what the convert said "
+                           "above and convert again")
+    elif options.get("--diagrams-only") or options.get("--bootstrap"):
+        record["why"] = ("this convert wrote no suite (diagrams only, or the framework types only): "
+                         "nothing of its own to compile -- Check it compiles compiles the project")
+    else:
+        try:
+            start(job, "convert-fix", {"--job": job} if cursor else {"--job": job, "--no-cursor": True})
+            record["started"] = True
+        except Exception as e:                           # noqa: BLE001 -- said on the page
+            record["why"] = (f"the compile check could not be started by itself ({e}): "
+                             "press Check it compiles")
+    _write(os.path.join(out, CONVERT_CHECK), record)
+    lines = ["", "[workbench] after the convert:"]
+    if record["started"]:
+        lines.append("[workbench]   compiling " + (", ".join(suites) if suites else "the project")
+                     + " now (Does it compile?, below)"
+                     + ("; AI Agent fixes what this convert wrote that does not compile"
+                        if cursor else "; AI Agent assist is off, so nothing is fixed by itself"))
+    else:
+        lines.append("[workbench]   " + record["why"])
+    try:
+        with io.open(log_path(job, "convert"), "a", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+    except OSError:
+        pass
+    diag.job_note(job, "[jobs] after the convert: " + ("convert-fix started" if record["started"]
+                                                       else record["why"]), ROOT)
+    return record
+
 
 def run_ask_preview(job: str) -> dict:
     """Which way the last run's failures go to Cursor, and the request
@@ -2197,6 +2249,15 @@ def start(job: str, runnable: str, options: dict) -> dict:
             # The converter's Cursor conversation -- and the fixes after it --
             # in the file the Convert tab's Cursor log shows.
             env["WORKBENCH_CURSOR_LOG"] = log_path(job, "migration-cursor")
+        if runnable == "convert":
+            # The suites this convert writes, for the compile check after it
+            # (check_after_convert). The last convert's list is not this one's.
+            env["WORKBENCH_CONVERT_SUITES"] = os.path.join(out, CONVERT_SUITES)
+            for name in (CONVERT_SUITES, CONVERT_CHECK):
+                try:
+                    os.remove(os.path.join(out, name))
+                except OSError:
+                    pass
         proc = subprocess.Popen(safe_output(argv), cwd=ROOT, stdout=logf,
                                 stderr=subprocess.STDOUT, env=env, **NO_WINDOW)
     except Exception as e:
@@ -2239,6 +2300,14 @@ def start(job: str, runnable: str, options: dict) -> dict:
             except Exception as e:                       # noqa: BLE001
                 diag.job_note(job, f"[jobs] the re-run after Fix Failures failed: {type(e).__name__}: {e}",
                               ROOT)
+        if runnable == "convert":
+            # Before "done" too: the page that sees the convert end finds
+            # the compile check running (or why it is not).
+            try:
+                check_after_convert(job, options, rc)
+            except Exception as e:                       # noqa: BLE001
+                diag.job_note(job, f"[jobs] the compile check after the convert failed: "
+                              f"{type(e).__name__}: {e}", ROOT)
         done = dict(status)
         done.update({"state": "done" if rc == 0 else "failed",
                      "exit_code": rc, "finished": _now()})
@@ -2337,7 +2406,7 @@ def read_artifact(job: str, name: str) -> str:
                "devcode.json", "devcode.md", "suite-suggest.json", "mvnrun-result.json",
                # Read by the page; were missing, so it was refused and showed nothing.
                "xray-publish.json", "convert-fix.json", "story-keys.json",
-               "answer-suggestions.json"}
+               "answer-suggestions.json", "convert-check.json", "convert-suites.json"}
     if name not in allowed:
         raise ValueError(f"{name!r} is not a readable artifact. "
                          f"Known: {', '.join(sorted(allowed))}")

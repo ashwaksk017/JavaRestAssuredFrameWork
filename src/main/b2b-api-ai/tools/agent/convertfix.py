@@ -22,6 +22,13 @@ compile. Now the Convert tab runs this when a convert ends:
 
 The conversation with Cursor of every fix is also written to the convert
 job's Cursor log (WORKBENCH_CURSOR_LOG_MIRROR), which the Convert tab shows.
+
+Which suites are the convert's (2026-10-29): the converter lists the suites
+it wrote, each with its TestNG XML, in the job's convert-suites.json. The
+check names them first, and says the XML to run each with. Only those are
+sent to Cursor; a suite with errors that this convert did not write is
+named and left alone. Without the list (a compile from Fix Failures, or a
+convert from before it) every suite with errors is the check's, as before.
 """
 from __future__ import annotations
 
@@ -56,6 +63,7 @@ diag = _load("workbench_diag", os.path.join(os.path.dirname(HERE), "diag.py"))
 loop = _load("convertfix_loop", os.path.join(HERE, "loop.py"))
 ROOT = loop.ROOT
 RESULT = "convert-fix.json"
+CONVERTED = "convert-suites.json"       # written by the converter (jobs.CONVERT_SUITES)
 COMPILE = ["mvn", "-q", "-DskipTests", "test-compile"]
 
 # Where a converted suite's own files are (policy.json, scope "converted").
@@ -82,6 +90,20 @@ def suite_of(rel: str) -> str:
             # support/scenario/ holds the wrappers every suite shares: not a suite.
             return "" if m.group(1).lower() == "scenario" else m.group(1).lower()
     return ""
+
+
+def converted_suites(job_dir: str):
+    """{suite: its TestNG XML} the job's last convert wrote, or None when
+    the job has no such list (not a convert's job, or an older convert)."""
+    try:
+        with io.open(os.path.join(job_dir, CONVERTED), encoding="utf-8") as fh:
+            listed = json.load(fh).get("suites")
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not isinstance(listed, list):
+        return None
+    return {str(s["suite"]).lower(): str(s.get("xml") or "")
+            for s in listed if isinstance(s, dict) and s.get("suite")}
 
 
 def fix_job(job: str, suite: str) -> str:
@@ -133,14 +155,25 @@ def run(job: str, root: str = "", use_cursor: bool = True, runner=None, generate
     root = root or ROOT
     job_dir = loop.intake.job_dir(job, root)
     os.makedirs(job_dir, exist_ok=True)
-    result = {"kind": "convert-fix", "job": job, "compiles": False, "suites": {}, "shared": []}
+    converted = converted_suites(job_dir)
+    result = {"kind": "convert-fix", "job": job, "compiles": False, "suites": {}, "shared": [],
+              "converted": converted or {}, "others": {}}
     diag.step("Compiling the converted tree (mvn test-compile)")
-    say(" ..  compiling what the convert wrote (mvn test-compile, offline first)")
+    if converted:
+        say(f" ..  this convert wrote suite(s) {', '.join(sorted(converted))}: compiling the project "
+            "they are in (mvn test-compile, offline first)")
+    else:
+        say(" ..  compiling what the convert wrote (mvn test-compile, offline first)")
     rc, out = compile_tree(root, runner)
     if rc == 0:
         result["compiles"] = True
         write_result(job_dir, result)
-        say(" ok  the converted tree compiles: ready to review and run")
+        if converted:
+            for suite, xml in sorted(converted.items()):
+                say(f" ok  suite {suite} compiles: run "
+                    + (f"{xml} on the Run tests tab" if xml else "it on the Run tests tab"))
+        else:
+            say(" ok  the converted tree compiles: ready to review and run")
         return 0
     errors = loop.compile_errors(out)
     files = sorted(loop.compile_error_files(out))
@@ -164,6 +197,19 @@ def run(job: str, root: str = "", use_cursor: bool = True, runner=None, generate
         say("WARN errors in shared framework files are not a converted suite's to fix: "
             + ", ".join(shared[:8]) + " -- a person fixes those (or Ask Me, scope "
             "\"the converter\", on the Migration tab)")
+    if converted:
+        # Only what this convert wrote goes to AI Agent; the project still
+        # compiles as one, so the others are said.
+        others = {s: f for s, f in by_suite.items() if s not in converted}
+        by_suite = {s: f for s, f in by_suite.items() if s in converted}
+        result["others"] = others
+        if others:
+            say(f"WARN suite(s) {', '.join(sorted(others))} do not compile either. This convert did not "
+                "write them, so AI Agent is not asked about them: convert them again, or use Ask Me "
+                "on the Migration tab with the suite. Nothing runs until the whole project compiles")
+        for suite in sorted(set(converted) - set(by_suite)):
+            say(f" ok  suite {suite} has no errors of its own"
+                + (" -- it runs once the files above compile" if others or shared else ""))
     if not by_suite:
         write_result(job_dir, result)
         return 1
@@ -177,7 +223,7 @@ def run(job: str, root: str = "", use_cursor: bool = True, runner=None, generate
     mirror = os.environ.get("WORKBENCH_CURSOR_LOG") or os.path.join(job_dir, "migration-cursor.log")
     os.environ["WORKBENCH_CURSOR_LOG_MIRROR"] = mirror
     gen = generate or loop.cmd_generate
-    all_ok = not shared
+    all_ok = not shared and not result["others"]
     for suite, own in sorted(by_suite.items()):
         sub = fix_job(job, suite)
         sub_dir = loop.intake.job_dir(sub, root)
@@ -201,7 +247,9 @@ def run(job: str, root: str = "", use_cursor: bool = True, runner=None, generate
         state = loop.read_review(sub_dir).get("state") or "none"
         result["suites"][suite] = {"job": sub, "state": state, "files": own, "rc": rc_g}
         if state == "pending-review":
-            say(f" ok  {suite} compiles: the fix is waiting for review (job {sub}, Commit and push tab)")
+            xml = (converted or {}).get(suite)
+            say(f" ok  {suite} compiles: the fix is waiting for review (job {sub}, Commit and push tab)"
+                + (f"; once it is approved, run {xml} on the Run tests tab" if xml else ""))
         else:
             say(f"FAIL {suite} still does not compile after AI Agent's attempts ({state}); "
                 f"job {sub} holds what it tried -- see its AI Agent log")

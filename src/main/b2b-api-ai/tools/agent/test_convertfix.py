@@ -142,6 +142,11 @@ class AfterAConvert(unittest.TestCase):
         self.assertNotIn("not a readable", str(self._readable(jobs, "xray-publish.json")),
                          "Publish to Xray's result: the page reads it")
 
+    def test_the_records_after_a_convert_are_readable(self):
+        jobs = cf._load("convertfix_jobs", os.path.join(HERE, "jobs.py"))
+        for name in ("convert-check.json", "convert-suites.json"):
+            self.assertNotIn("not a readable", str(self._readable(jobs, name)), name)
+
     @staticmethod
     def _readable(jobs, name):
         try:
@@ -150,6 +155,58 @@ class AfterAConvert(unittest.TestCase):
             return str(e)
         except Exception:                                # noqa: BLE001
             return "readable"
+
+
+GOAL = "src/test/java/com/hi/api/tests/imported/goal/GoalTest.java"
+
+
+class TheConvertsOwnSuites(AfterAConvert):
+    """The convert lists the suites it wrote (convert-suites.json): the
+    check names them and the XML to run each with, and sends only them to
+    AI Agent -- another suite's errors are said, not fixed (2026-10-29)."""
+
+    # The fixture is borrowed; AfterAConvert's own tests run once, there.
+    test_a_convert_that_compiles_is_ready_and_cursor_is_not_asked = None
+    test_a_suite_that_does_not_compile_is_fixed_in_its_own_job_and_must_compile = None
+    test_a_suite_cursor_could_not_fix_is_not_called_ready = None
+    test_shared_framework_errors_are_said_and_left_to_a_person = None
+    test_with_cursor_off_it_is_only_checked = None
+    test_a_fix_already_waiting_is_not_asked_again = None
+    test_it_is_a_runnable_and_its_result_is_readable = None
+    test_the_records_after_a_convert_are_readable = None
+
+    def setUp(self):
+        super().setUp()
+        d = os.path.join(self.root, ".workbench", "conv1")
+        os.makedirs(d, exist_ok=True)
+        with io.open(os.path.join(d, cf.CONVERTED), "w", encoding="utf-8") as fh:
+            json.dump({"suites": [{"suite": "Amex", "xml": "Suites/Amex_Regression.xml"}]}, fh)
+
+    def test_it_names_the_suite_and_the_xml_to_run_it_with(self):
+        code, said, result = self.run_it("", rc=0)
+        self.assertEqual(code, 0)
+        self.assertIn("this convert wrote suite(s) amex", said)
+        self.assertIn("suite amex compiles: run Suites/Amex_Regression.xml", said)
+        self.assertEqual(result["converted"], {"amex": "Suites/Amex_Regression.xml"})
+
+    def test_only_the_converts_suite_goes_to_ai_agent(self):
+        code, said, result = self.run_it(err(AMEX) + err(GOAL))
+        self.assertEqual([a[2] for a in self.asked], ["amex"])
+        self.assertEqual(list(result["others"]), ["goal"])
+        self.assertIn("suite(s) goal do not compile either", said)
+        self.assertIn("once it is approved, run Suites/Amex_Regression.xml", said)
+        self.assertEqual(code, 1, "the project does not compile while goal does not")
+
+    def test_another_suites_errors_alone_ask_nobody(self):
+        code, said, result = self.run_it(err(GOAL))
+        self.assertEqual((code, self.asked), (1, []))
+        self.assertIn("suite amex has no errors of its own -- it runs once the files above compile", said)
+
+    def test_without_the_list_every_suite_is_the_checks_as_before(self):
+        os.remove(os.path.join(self.root, ".workbench", "conv1", cf.CONVERTED))
+        code, said, result = self.run_it(err(AMEX) + err(GOAL))
+        self.assertEqual(sorted(a[2] for a in self.asked), ["amex", "goal"])
+        self.assertEqual(result["others"], {})
 
 
 if __name__ == "__main__":

@@ -19662,6 +19662,10 @@ _SUITES_THIS_RUN: set = set()
 # suite -> the XML it is being converted from, for the impact report.
 _SUITE_XML_THIS_RUN: dict = {}
 
+# suite -> the Regression TestNG XML this run wrote for it (Suites/...), for
+# the closing NEXT block (_report_next_step).
+_SUITE_RUN_XML: dict = {}
+
 # suite -> (phase vocabulary, phase + verify vocabulary) its steps base was
 # written with. Read back by _assert_suite_vocab_is_complete.
 _SUITE_VOCAB_EMITTED: dict = {}
@@ -21221,7 +21225,50 @@ def _main_dispatch(args):
     # error -- if they differ, the convert wrote somewhere else.
     if rc == 0 and not getattr(args, "diagrams_only", False):
         _report_generated_tree(args)
+        if not getattr(args, "bootstrap", False):
+            _report_next_step()
     return rc
+
+
+def _report_next_step() -> None:
+    """Say what comes after the convert: each suite it wrote, the TestNG XML
+    to run it with, and that it is compiled first.
+
+    Asked for (2026-10-29): a convert's log ended with the files it wrote,
+    and nothing in it said which suite was now to be compiled and run.
+
+    The workbench (jobs.py) names a file in WORKBENCH_CONVERT_SUITES; the
+    same list is written there, and the compile check it starts after the
+    convert reads it to know which suites are this convert's. Never fails
+    the convert.
+    """
+    suites = sorted(_SUITES_THIS_RUN)
+    if not suites:
+        return
+    for_workbench = os.environ.get("WORKBENCH_CONVERT_SUITES") or ""
+    print()
+    print("[ra_converter] NEXT: compile what was converted, then run it")
+    for s in suites:
+        xml = _SUITE_RUN_XML.get(s) or ""
+        print(f"[ra_converter]   suite {s}: run "
+              + (xml or "(no suite XML was written for it)"))
+    if for_workbench:
+        print("[ra_converter]   the workbench compiles " + ", ".join(suites)
+              + " now (Does it compile?, below on the Convert tab), then"
+              " run the XML on the Run tests tab")
+    else:
+        print("[ra_converter]   compile: mvn -q -DskipTests test-compile,"
+              " then mvn test -DsuiteXmlFile=<the XML above>")
+    if not for_workbench:
+        return
+    try:
+        with open(_fs_path(for_workbench), "w", encoding="utf-8") as fh:
+            json.dump({"suites": [{"suite": s, "xml": _SUITE_RUN_XML.get(s) or ""}
+                                  for s in suites],
+                       "classic": _CLASSIC}, fh, indent=1)
+    except Exception as exc:        # a note must never fail the convert
+        print(f"[ra_converter] the converted suites were not written for "
+              f"the workbench ({exc}): its compile check checks every suite")
 
 
 def _reapply_agent_patches(args) -> None:
@@ -22668,6 +22715,8 @@ def _emit_imported_tests(prep: _PreparedSuite) -> int:
     for variant in ("Regression", "Smoke"):
         master_rel = emitter.emit_master_suite_xml(class_fqns, variant=variant)
         print(f"[ra_converter] emitted master suite: {master_rel}")
+        if variant == "Regression":
+            _SUITE_RUN_XML[suite_name] = master_rel
 
     # Flow diagram for visualizing shared setup.
     flow_rel = emitter.emit_flow_diagram(
