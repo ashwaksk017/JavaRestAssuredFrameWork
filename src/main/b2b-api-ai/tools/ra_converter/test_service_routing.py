@@ -310,6 +310,93 @@ def test_collect_service_bases_is_per_suite_not_global():
     assert set(R._collect_service_bases([a, b])) == {"alpha_v1", "beta_v1"}
 
 
+# ------------------------------- a machine-name step follows its service
+
+def _rest(service, path, original_uri, endpoint=""):
+    return R.RestStep(
+        step_name=path, service=service, method_name="m",
+        resource_path=path, http_method="GET", endpoint=endpoint,
+        original_uri=original_uri, media_type="application/json",
+        request_body="", headers={}, path_params={}, query_params={})
+
+
+def _route(*steps):
+    case = types.SimpleNamespace(steps=list(steps))
+    R._route_machine_hosts_by_service([("suite", [case])])
+    return steps
+
+
+def test_a_machine_name_step_takes_its_services_real_key():
+    """ReadyAPI sends every step of one service to one host.
+
+    The EAD Kafka run: the partition read was recorded on loopback with a
+    developer's machine as originalUri, so it got a key named after the
+    machine and, unset, went there -- UnknownHostException in 18 of 21
+    tests -- while the partition list of the SAME service passed.
+    """
+    listing, read = _route(
+        _rest("Topic API", "/topics/{t}/partitions",
+              "https://gw-s.example.test/internal-all/v2/topics/x/partitions"),
+        _rest("Topic API", "/topics/{t}/partitions/{p}",
+              "http://5978-B3X4N32/", "http://localhost:9006"))
+    assert R._service_key_for_step(read) == (
+        "internal_all_v2", "https://gw-s.example.test/internal-all/v2")
+    assert read.service_route[2] == "http://5978-B3X4N32"
+    assert listing.service_route == (), "a step with a real host is left alone"
+
+
+def test_a_service_with_several_real_keys_is_not_guessed():
+    _a, _b, read = _route(
+        _rest("Mixed", "/a", "https://h/alpha/v1/a"),
+        _rest("Mixed", "/b", "https://h/beta/v1/b"),
+        _rest("Mixed", "/c", "http://somepc/"))
+    assert read.service_route == ()
+    assert R._service_key_for_step(read) == ("somepc", "http://somepc")
+
+
+def test_a_machine_name_step_with_no_real_sibling_keeps_its_key():
+    (read,) = _route(_rest("Topic API", "/topics/{t}/partitions/{p}",
+                           "http://5978-B3X4N32/"))
+    assert read.service_route == ()
+    assert R._service_key_for_step(read)[0] == "5978_b3x4n32"
+
+
+def test_another_services_key_is_never_borrowed():
+    _other, read = _route(
+        _rest("Program Accounts API", "/x", "https://h/internal-all/v2/x"),
+        _rest("Topic API", "/topics/{t}", "http://somepc/"))
+    assert read.service_route == ()
+
+
+def test_parse_routes_the_machine_name_step():
+    """Wired into parse_test_suites, not only callable."""
+    import tempfile
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+<con:testSuite name="S" xmlns:con="http://eviware.com/soapui/config">
+ <con:testCase name="C">
+  <con:testStep type="restrequest" name="list">
+   <con:config service="Topic API" resourcePath="/topics/{t}/partitions" methodName="SearchPartitions">
+    <con:restRequest name="list"><con:originalUri>https://gw.example.test/internal-all/v2/topics/x/partitions</con:originalUri></con:restRequest>
+   </con:config>
+  </con:testStep>
+  <con:testStep type="restrequest" name="read">
+   <con:config service="Topic API" resourcePath="/topics/{t}/partitions/{p}" methodName="ReadPartition">
+    <con:restRequest name="read"><con:endpoint>http://localhost:9006</con:endpoint><con:originalUri>http://5978-B3X4N32/</con:originalUri></con:restRequest>
+   </con:config>
+  </con:testStep>
+ </con:testCase>
+</con:testSuite>"""
+    fd, path = tempfile.mkstemp(suffix=".xml")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(xml)
+        (_sn, cases), = R.parse_test_suites(path)
+    finally:
+        os.remove(path)
+    read = [s for s in cases[0].steps if s.step_name == "read"][0]
+    assert R._service_key_for_step(read)[0] == "internal_all_v2"
+
+
 # ----------------------------------------------- reporting, not routing
 
 def test_a_local_only_host_is_recognised():

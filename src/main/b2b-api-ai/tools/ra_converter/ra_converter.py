@@ -127,6 +127,12 @@ class RestStep:
     #   username/password/domain -- when Basic/NTLM/Kerberos
     #   oauth_token / oauth_client_id / oauth_client_secret -- when OAuth 2.0
     auth_profile: dict = field(default_factory=dict)
+    # (service_key, observed_base, machine_host) when this step's only
+    # real host is a bare machine name and another step of the SAME
+    # ReadyAPI service records a real one. Set by
+    # `_route_machine_hosts_by_service` after a project is parsed;
+    # empty otherwise. `_service_key_for_step` prefers it.
+    service_route: tuple = ()
     # File attachments (multipart/form-data uploads). Populated from
     # `<con:attachment>` elements on the REST request. Each entry is
     # a dict {name, content_type, part_name, data_ref}. Empty when the
@@ -1955,6 +1961,7 @@ def parse_test_suites(xml_path: str) -> list[tuple[str, list[TestCase]]]:
             print(f"    [step disabled]  {sn} / {cn} / {stn}")
         if len(_skipped_steps) > 20:
             print(f"    ... and {len(_skipped_steps) - 20} more step(s)")
+    _route_machine_hosts_by_service(out)
     return out
 
 
@@ -5947,12 +5954,72 @@ def _service_key_for_step(step) -> tuple:
     loopback in BOTH elements (a mock on :9006) -- genuinely no host to
     recover, and they fall back to the suite's baseUrl.
     """
+    route = getattr(step, "service_route", ()) or ()
+    if route:
+        return (route[0], route[1])
+    return _recorded_service_key(step)
+
+
+def _recorded_service_key(step) -> tuple:
+    """(service_key, observed_base) from the step's OWN recorded hosts."""
     for uri in (getattr(step, "original_uri", "") or "",
                 getattr(step, "endpoint", "") or ""):
         key, base = _service_key_for_uri(uri)
         if key:
             return (key, base)
     return ("", "")
+
+
+def _is_machine_base(base: str) -> bool:
+    """True for a bare machine name (no dot, not loopback, not an IP)."""
+    if not base or _is_loopback_base(base):
+        return False
+    try:
+        host = _urlsplit(base).hostname or ""
+    except Exception:
+        return False
+    return bool(host) and "." not in host and ":" not in host
+
+
+def _route_machine_hosts_by_service(suites) -> None:
+    """Route a step recorded on somebody's machine by its ReadyAPI service.
+
+    ReadyAPI sends every step of one service (`<con:config service=..>`)
+    to the same host. The converter picks a host per STEP, so a step
+    whose `<con:endpoint>` is loopback and whose `<con:originalUri>` is a
+    developer's machine name got a key of its own, named after that
+    machine. Unset, the call went to the machine: on one EAD Kafka run
+    `GET /topics/{topicName}/partitions/{partitionId}` died on
+    UnknownHostException in 18 of 21 tests, while its sibling
+    `GET /topics/{topicName}/partitions` -- same "Topic API" service --
+    passed on the real gateway key. 152 of 154 such steps across ten
+    input XMLs belong to a service with exactly one real key.
+
+    Only when that is unambiguous: the service's other steps name ONE
+    real key. Zero or several keys keep the old per-step behaviour, and
+    so does a step with nothing to borrow. Scoped to one parsed XML (a
+    ReadyAPI project names its own services), and stored on the step,
+    not in a module global, so one suite never routes another's.
+    """
+    steps = [s for _sn, cases in suites or [] for c in cases
+             for s in getattr(c, "steps", []) or []
+             if isinstance(s, RestStep) and s.service]
+    real: dict = {}
+    for s in steps:
+        key, base = _recorded_service_key(s)
+        if key and base and not _is_machine_base(base):
+            real.setdefault(s.service, {}).setdefault(key, {})
+            real[s.service][key][base] = real[s.service][key].get(base, 0) + 1
+    for s in steps:
+        key, base = _recorded_service_key(s)
+        if not key or not _is_machine_base(base):
+            continue
+        keys = real.get(s.service) or {}
+        if len(keys) != 1:
+            continue
+        (svc_key, bases), = keys.items()
+        svc_base = max(bases.items(), key=lambda kv: kv[1])[0]
+        s.service_route = (svc_key, svc_base, base)
 
 
 def _loopback_only_step(step) -> bool:
@@ -22879,7 +22946,27 @@ def _emit_imported_tests(prep: _PreparedSuite) -> int:
             f"{len(_loopback_steps)} distinct call(s) recorded only against "
             f"loopback; they follow baseUrl. Confirm the host is right.")
 
-    print(f"[ra_converter] audit ledger: {args.output}/_audit/{suite_name}/summary.md")
+    # Steps recorded on a developer's machine that now follow the key of
+    # their ReadyAPI service (see `_route_machine_hosts_by_service`).
+    # Named so the routing is a visible decision, not a silent one.
+    _routed = {}
+    for _case in cases_in_scope or []:
+        for _step in getattr(_case, "steps", []) or []:
+            _route = getattr(_step, "service_route", ()) if isinstance(_step, RestStep) else ()
+            if not _route:
+                continue
+            _sig = ((_step.http_method or "GET").upper(),
+                    _step.resource_path or "", _step.service, _route[0])
+            _routed[_sig] = _routed.get(_sig, 0) + 1
+    if _routed:
+        print(f"[ra_converter] machine-host steps: {sum(_routed.values())} "
+              f"step(s) recorded only on a developer's machine now use the "
+              f"service key of their ReadyAPI service, as ReadyAPI sends them:")
+        for (_verb, _path, _svc, _key) in sorted(_routed):
+            print(f"[ra_converter]     {_verb:6s} {_path}   "
+                  f"[service \"{_svc}\" -> services.{_key}]")
+
+    print(f"[ra_converter] audit ledger:{args.output}/_audit/{suite_name}/summary.md")
     # Same-call-different-data groups over the emitted tree -- the reuse
     # picture the user asked to see after every conversion.
     try:
