@@ -368,6 +368,68 @@ def test_another_services_key_is_never_borrowed():
     assert read.service_route == ()
 
 
+def test_a_loopback_only_step_takes_the_key_of_its_own_path():
+    """49 GOAL steps followed baseUrl while 119 of the same path used a key."""
+    _real, loop = _route(
+        _rest("Goal", "/props/{p}/groups", "https://gw.example.test/internal-all/v2/props/X/groups"),
+        _rest("Goal", "/props/{p}/groups", "http://localhost", "http://localhost:9006"))
+    assert R._service_key_for_step(loop) == (
+        "internal_all_v2", "https://gw.example.test/internal-all/v2")
+    assert loop.service_route[3] == "loopback"
+
+
+def test_a_loopback_only_step_with_no_keyed_sibling_on_its_path_keeps_baseUrl():
+    """Service-wide borrowing is for machine names only: a loopback step
+    names no host at all, so only the same path is evidence enough."""
+    _other, loop = _route(
+        _rest("Goal", "/groups", "https://gw.example.test/internal-all/v2/groups"),
+        _rest("Goal", "/groups/rateplan", "http://localhost"))
+    assert loop.service_route == ()
+    assert R._service_key_for_step(loop) == ("", "")
+
+
+def test_a_minority_key_on_shared_paths_follows_the_main_key():
+    """internal_ro_v2: 24 steps on an untiered host, on three paths that
+    ~1,500 steps of the same service send to internal_all_v2."""
+    main = [_rest("PA", "/businesses/{id}", "https://gw-s.example.test/internal-all/v2/businesses/1")
+            for _ in range(3)]
+    ro = _rest("PA", "/businesses/{id}", "https://untiered.example.test/internal-ro/v2/businesses/1")
+    _route(*main, ro)
+    assert ro.service_route[:2] == ("internal_all_v2", "https://gw-s.example.test/internal-all/v2")
+    assert ro.service_route[3] == "minority"
+    assert all(s.service_route == () for s in main)
+
+
+def test_a_second_key_with_a_path_of_its_own_is_a_real_service():
+    """If the second key serves any path the main key does not, it is a
+    service in its own right, not a recording leftover."""
+    main = [_rest("PA", "/x", "https://h.example.test/all/v2/x") for _ in range(3)]
+    ro_shared = _rest("PA", "/x", "https://h.example.test/ro/v2/x")
+    ro_own = _rest("PA", "/only-ro", "https://h.example.test/ro/v2/only-ro")
+    _route(*main, ro_shared, ro_own)
+    assert ro_shared.service_route == () and ro_own.service_route == ()
+
+
+def test_an_even_split_is_not_a_minority():
+    a = _rest("PA", "/x", "https://h.example.test/all/v2/x")
+    b = _rest("PA", "/x", "https://h.example.test/ro/v2/x")
+    _route(a, b)
+    assert a.service_route == () and b.service_route == ()
+
+
+def test_token_steps_are_never_service_routed():
+    """GOAL mints through partner in some suites and internal in others,
+    on the SAME path and service, on purpose."""
+    internal = [_rest("Goal", "/realms/applications/token",
+                      "https://gw.example.test/internal-all/v2/realms/applications/token")
+                for _ in range(3)]
+    partner = _rest("Goal", "/realms/applications/token",
+                    "https://pgw.example.test/partner/v2/realms/applications/token")
+    _route(*internal, partner)
+    assert partner.service_route == ()
+    assert R._service_key_for_step(partner)[0] == "partner_v2"
+
+
 def test_parse_routes_the_machine_name_step():
     """Wired into parse_test_suites, not only callable."""
     import tempfile
