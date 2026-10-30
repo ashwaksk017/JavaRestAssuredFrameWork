@@ -24,6 +24,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 
@@ -2341,9 +2342,34 @@ def stop(job: str, runnable: str) -> bool:
         subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **NO_WINDOW)
     else:
-        proc.terminate()
+        # The same on macOS/Linux: terminate() alone left Maven and the
+        # bridge running. Jobs share the server's process group (a group of
+        # their own would escape Stop workbench), so the tree is walked.
+        for pid in _descendants(proc.pid) + [proc.pid]:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
     diag.job_note(job, f"[jobs] {runnable} was told to stop (and what it started with it)", ROOT)
     return True
+
+
+def _descendants(pid: int) -> list:
+    """Every process under `pid`, deepest first, from `pgrep -P` (macOS and
+    Linux both have it). [] when pgrep is missing: the job alone is ended."""
+    out = []
+    try:
+        kids = subprocess.run(["pgrep", "-P", str(pid)], stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, timeout=10).stdout.split()
+    except (OSError, subprocess.SubprocessError):
+        return out
+    for k in kids:
+        try:
+            child = int(k)
+        except ValueError:
+            continue
+        out += _descendants(child) + [child]
+    return out
 
 
 def _write(path: str, payload: dict) -> None:

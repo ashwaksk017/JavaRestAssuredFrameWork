@@ -1141,7 +1141,13 @@ def auto_locate(job: str, root: str = "", run=None) -> int:
         return -1
     for line in text.splitlines():
         print("  " + line)
-    if rc == 1:
+    # A crash exits 1 as well. plan.md was removed above, so only a check that
+    # finished has one: without it, exit 1 was never a stop (2026-10-30, macOS:
+    # "see plan.md" was said of a plan that did not exist).
+    if rc == 1 and not os.path.isfile(os.path.join(out, "plan.md")):
+        print("  FAIL the check did not finish (exit 1, no plan.md was written): what it said is "
+              "above. Fix that, then press \"Then: is it already automated?\" to run it again")
+    elif rc == 1:
         print("  WARN a request stops here (UPSTREAM or CONFIRM): see plan.md -- Automate waits "
               "for it, or for \"go ahead anyway\"")
     elif rc not in (0,):

@@ -305,7 +305,34 @@ def url(p: int) -> str:
     return f"http://{HOST}:{p}/"
 
 
+LAUNCHERS = ("start-workbench.command", "stop-workbench.command")
+
+
+def ensure_launchers_run(root: str = "") -> list:
+    """macOS/Linux: the .command launchers keep their execute bit. git
+    keeps it, but a copy from a zip, AirDrop or Finder can drop it, and a
+    double-click then says "permission denied". This run came through
+    `bash start-workbench.command` or Python, so it can put it back. Only
+    the owner's bits are added; a file not ours is left alone. The names
+    fixed, nothing else touched."""
+    fixed = []
+    if os.name == "nt":
+        return fixed
+    for name in LAUNCHERS:
+        path = os.path.join(root or ROOT, name)
+        try:
+            mode = os.stat(path).st_mode
+            if not mode & 0o100:
+                os.chmod(path, mode | 0o100 | (0o011 if mode & 0o044 else 0))
+                fixed.append(name)
+        except OSError:
+            continue
+    return fixed
+
+
 def start(open_page: bool = True, wait: float = 20.0) -> int:
+    for name in ensure_launchers_run():
+        say(f"{name} could not be double-clicked (no execute permission); it can now.")
     p = port()
     there = who(p)
     if isinstance(there, dict):
@@ -397,7 +424,7 @@ def end(pid: int) -> bool:
             subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
         else:
-            os.kill(pid, signal.SIGTERM)
+            _signal_tree(pid, signal.SIGTERM)
     except (OSError, subprocess.SubprocessError):
         pass
     for _ in range(40):
@@ -406,11 +433,27 @@ def end(pid: int) -> bool:
         time.sleep(0.25)
     if os.name != "nt":
         try:
-            os.kill(pid, signal.SIGKILL)
+            _signal_tree(pid, signal.SIGKILL)
         except OSError:
             pass
         time.sleep(0.5)
     return not alive(pid)
+
+
+def _signal_tree(pid: int, sig) -> None:
+    """macOS/Linux's /T: the server is started in a session of its own
+    (start), so its process group is it and every job it started -- a
+    Maven run, the AI Agent bridge. Signalling only the pid left those
+    running and holding files. A pid that leads no group of its own gets
+    the signal alone."""
+    try:
+        own = os.getpgid(pid) == pid
+    except OSError:
+        own = False
+    if own:
+        os.killpg(pid, sig)
+    else:
+        os.kill(pid, sig)
 
 
 def alive(pid: int) -> bool:

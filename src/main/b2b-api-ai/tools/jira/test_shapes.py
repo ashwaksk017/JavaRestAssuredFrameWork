@@ -56,6 +56,27 @@ class RealClassesNotAShim(unittest.TestCase):
                          json.dumps(rc._rest_shape_sig(case), default=list))
 
 
+class LongPathsOnlyOnWindows(unittest.TestCase):
+    """macOS read `\\\\?\\/Users/.../case_to_method_mapping.csv` and the
+    shape index died on the first suite (2026-10-30)."""
+
+    def _as(self, name):
+        real = shapes.os.name
+        shapes.os.name = name
+        try:
+            return shapes._lp(os.path.join("_audit", "s", "x.csv"))
+        finally:
+            shapes.os.name = real
+
+    def test_no_prefix_off_windows(self):
+        self.assertFalse(self._as("posix").startswith(shapes.LONG))
+
+    def test_prefix_on_windows_once(self):
+        p = self._as("nt")
+        self.assertTrue(p.startswith(shapes.LONG))
+        self.assertFalse(p[len(shapes.LONG):].startswith(shapes.LONG))
+
+
 class WhatMustNotCollide(unittest.TestCase):
     """A wrong match is worse than no match."""
 

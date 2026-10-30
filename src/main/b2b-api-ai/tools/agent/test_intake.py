@@ -137,15 +137,17 @@ class AutoLocate(Base):
             io.open(os.path.join(self.out, name), "w").close()      # a reading before
         self.calls = []
 
-    def fake(self, rc, said="Plan: 1 create"):
+    def fake(self, rc, said="Plan: 1 create", plan=True):
         def run(argv):
             self.calls.append(argv)
+            if plan:                                    # a check that finished writes one
+                io.open(os.path.join(self.out, "plan.md"), "w").close()
             return types.SimpleNamespace(returncode=rc, stdout=said.encode())
         return run
 
     def test_it_runs_locate_for_the_job_and_shows_what_it_said(self):
         with contextlib.redirect_stdout(io.StringIO()) as out:
-            rc = intake.auto_locate("j", self.tmp, run=self.fake(0))
+            rc = intake.auto_locate("j", self.tmp, run=self.fake(0, plan=False))
         self.assertEqual(rc, 0)
         argv = self.calls[0]
         self.assertTrue(argv[2].endswith("locate.py"), argv)
@@ -161,6 +163,15 @@ class AutoLocate(Base):
             rc = intake.auto_locate("j", self.tmp, run=self.fake(1, "1 request(s) stop here"))
         self.assertEqual(rc, 1)
         self.assertIn("Automate waits", out.getvalue())
+
+    def test_a_crash_is_not_said_to_be_a_stop(self):
+        """A traceback exits 1 too; macOS saw "see plan.md" of a plan that
+        was never written (2026-10-30)."""
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            rc = intake.auto_locate("j", self.tmp, run=self.fake(1, "Traceback ...", plan=False))
+        self.assertEqual(rc, 1)
+        self.assertIn("did not finish", out.getvalue())
+        self.assertNotIn("Automate waits", out.getvalue())
 
     def test_a_reading_with_no_request_forgets_the_old_verdicts(self):
         intake.forget_locate(self.out)

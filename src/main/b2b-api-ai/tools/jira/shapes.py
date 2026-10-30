@@ -80,6 +80,15 @@ AUDIT_DIR = os.path.join(ROOT, "_audit")
 LONG = "\\\\?\\"          # Windows extended-length prefix; paths here exceed 260
 
 
+def _lp(path: str) -> str:
+    """Windows long-path form. Elsewhere the path unchanged: on macOS the
+    prefix made `\\\\?\\/Users/...`, a file that does not exist."""
+    ap = os.path.abspath(path)
+    if os.name == "nt" and not ap.startswith(LONG):
+        return LONG + ap
+    return ap
+
+
 # --- signatures -------------------------------------------------------
 def exact_sig(case) -> str:
     """The converter's own signature, as a stable string."""
@@ -243,7 +252,7 @@ def method_map() -> dict:
         p = os.path.join(AUDIT_DIR, suite, "case_to_method_mapping.csv")
         if not os.path.isfile(p):
             continue
-        with io.open(LONG + os.path.abspath(p), encoding="utf-8-sig",
+        with io.open(_lp(p), encoding="utf-8-sig",
                      newline="") as fh:
             for row in csv.DictReader(fh):
                 key = (suite, (row.get("soapui_case") or "").strip())
