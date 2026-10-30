@@ -60,6 +60,7 @@ RULES
 {{refine}}
 {{project}}
 {{dependencies}}
+{{devchange}}
 REPLY FORMAT
 Reply with ONE JSON object and nothing else: no prose before or after
 it, no code fence. Do not write a plan first: read what you need (WHERE

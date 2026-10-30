@@ -2119,6 +2119,8 @@ $("run-design").onclick = async () => {
       refine: pendingRefine || undefined,
       refine_ids: pendingRefine && pendingRefineIds.length ? pendingRefineIds : undefined,
       devgaps: pendingGaps || undefined,
+      // The Developer's change tab: read first by the design (devcode.py --read).
+      devcode: devcodeInputs(),
       images: pastedFor("design-notes", pendingRefine ? "refine-ask" : null),
     });
     clearPasted("design-notes", pendingRefine ? "refine-ask" : null);
@@ -2195,6 +2197,7 @@ const DEVCODE_KEY = "wb-devcode";
 })();
 const GAP_KIND = { endpoint: "endpoint", status: "status", validation: "validation", param: "parameter",
                    field: "field", "removed-field": "removed field", enum: "enum", "error-code": "error code",
+                   access: "access", "removed-endpoint": "removed endpoint", message: "message",
                    cursor: "AI Agent" };
 async function showDevcode(j) {
   j = j || job();
@@ -2207,7 +2210,8 @@ async function showDevcode(j) {
   const high = gaps.filter((g) => g.severity === "high").length;
   const kids = [banner(gaps.length ? (high ? "bad" : "warn") : "ok",
     `${gaps.length} gap(s)${high ? ` (${high} high)` : ""}, ${(r.covered || []).length} thing(s) covered — ` +
-    `${(r.commits || []).length} commit(s) on ${r.branch}${r.commit_mode === "ticket" ? ` naming ${r.ticket}` : ""}, ` +
+    `${(r.commits || []).length} commit(s) on ${r.branch}` +
+    `${String(r.commit_mode || "").startsWith("ticket") ? ` naming ${(r.keys || [r.ticket]).join(", ")}` : ""}, ` +
     `${(r.files || []).length} file(s), ${r.cases_checked} case(s) checked${r.mock ? " (AI Agent's part is a mock)" : ""}.`)];
   for (const n of r.notes || []) kids.push(banner("warn", n));
   if (r.cursor && r.cursor.asked && r.cursor.summary) kids.push(el("p", { class: "hint", text: `AI Agent: ${r.cursor.summary}` }));
@@ -2279,6 +2283,78 @@ $("devcode-add").onclick = () => {
 };
 showDevcode();
 $("job").addEventListener("change", () => showDevcode());
+
+// ---- the Developer's change tab: read on its own, or by Design first --------
+// What the tab holds, as the design request and the reading take it.
+function devcodeInputs() {
+  return { repo: $("devcode-repo").value.trim(), branch: $("devcode-branch").value.trim(),
+           ticket: $("devcode-ticket").value.trim(), base: $("devcode-base").value.trim() };
+}
+async function showDevRead(j) {
+  j = j || job();
+  const box = $("devread-result");
+  // The job's own branch first: opening a job shows what it was given.
+  const given = await artifactJson(j, "devcode-input.json");
+  if (j !== job()) return;
+  if (given) {
+    for (const k of ["repo", "branch", "ticket", "base"]) {
+      if (given[k] && !$(`devcode-${k}`).value.trim()) $(`devcode-${k}`).value = given[k];
+    }
+    markInputs();
+  }
+  const r = await artifactJson(j, "devchange.json");
+  if (j !== job()) return;
+  if (!r || !r.found) { box.replaceChildren(); return; }
+  const f = r.found;
+  const review = r.review && r.review.number
+    ? ` ${r.review.kind === "github" ? "Pull request #" : "Merge request !"}${r.review.number} (${r.review.state}): ${r.review.title}.` : "";
+  const how = { ticket: `naming ${(r.keys || []).join(", ")}`, "ticket-merged": `naming ${(r.keys || []).join(", ")}, already merged`,
+                branch: "of the branch (none names the story)" }[r.commit_mode] || "";
+  const kids = [banner((r.commits || []).length ? "ok" : "warn",
+    `Read at commit ${(r.tip || "").slice(0, 10) || "?"} of ${r.branch}: ${(r.commits || []).length} commit(s) ${how}. ` +
+    `${(f.endpoints || []).length} endpoint(s) new or changed, ${(f.removed_endpoints || []).length} removed, ` +
+    `${(f.access || []).length} access rule(s), ${(f.validations || []).length} validation rule(s), ` +
+    `${(f.fields || []).length} new field(s), ${(f.spec_changes || []).length} specification change(s).${review} ` +
+    "Design the tests takes it in.")];
+  for (const n of r.notes || []) kids.push(banner("warn", n));
+  const eps = (f.endpoints || []).map((e) => [e.how === "new" ? "new" : "changed", `${e.verb} ${e.path}`,
+    (e.access || []).join("; ") || "—"]).concat((f.removed_endpoints || []).map((e) => ["removed", `${e.verb} ${e.path}`, "—"]));
+  if (eps.length) kids.push(el("details", {}, el("summary", { text: `Endpoints (${eps.length})` }),
+    table(["", "Endpoint", "Access"], eps)));
+  if ((f.access || []).length) kids.push(el("details", {}, el("summary", { text: `Access rules (${f.access.length})` }),
+    table(["", "Rule", "Roles", "Endpoint"], f.access.map((a) => [a.change, a.rule, (a.roles || []).join(", "), a.endpoint || "—"]))));
+  box.replaceChildren(...kids);
+}
+$("devread-run").onclick = async () => {
+  const j = job();
+  const given = devcodeInputs();
+  if (!j || !given.repo || !given.branch) {
+    setState($("devread-state"), "bad", !j ? "name the job first" : "give the repository and the branch");
+    return;
+  }
+  const options = { "--job": j, "--repo": given.repo, "--branch": given.branch };
+  if (given.ticket) options["--ticket"] = given.ticket;
+  if (given.base) options["--base"] = given.base;
+  try { localStorage.setItem(DEVCODE_KEY, JSON.stringify({ repo: given.repo, base: given.base })); } catch { /* ok */ }
+  $("devread-run").disabled = true;
+  $("devread-log").hidden = false;
+  try {
+    await post("/api/start", { job: j, runnable: "devcode-read", options });
+    follow("devcode-read", $("devread-log"), $("devread-state"), async () => {
+      $("devread-run").disabled = false;
+      await showDevRead(j);
+    }, j);
+  } catch (e) { $("devread-run").disabled = false; setState($("devread-state"), "bad", e.message); }
+};
+$("devread-stop").onclick = () => post("/api/stop", { job: job(), runnable: "devcode-read" }).catch(() => {});
+showDevRead();
+$("job").addEventListener("change", () => {
+  // Another job's branch and ticket are not this one's (the repository and
+  // the branch it merges into usually are): the job's own are shown, if any.
+  $("devcode-branch").value = "";
+  $("devcode-ticket").value = "";
+  showDevRead();
+});
 
 // ---- the Run tests tab -------------------------------------------------------
 // Compile, or run a suite / class / group, against an environment. The

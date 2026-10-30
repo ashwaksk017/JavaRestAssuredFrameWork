@@ -400,6 +400,15 @@ RUNNABLES = {
         "options": {"--job": "text", "--repo": "text", "--branch": "text", "--ticket": "text",
                     "--base": "text", "--ask-cursor": "flag"},
     },
+    # The developer's change read on its own (the Developer's change tab's
+    # "Read the change"): devchange.json, which Design the tests takes in
+    # and the check above reuses while the branch has not moved.
+    "devcode-read": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "devcode.py"), "--read"],
+        "label": "Read the developer's change (repository, branch, the story's keys)",
+        "options": {"--job": "text", "--repo": "text", "--branch": "text", "--ticket": "text",
+                    "--base": "text"},
+    },
     # Cursor suggests the suites (TestNG groups) of each case; nothing is
     # decided until a person takes a suggestion on the review table.
     "suite-suggest": {
@@ -2430,6 +2439,7 @@ def read_artifact(job: str, name: str) -> str:
                "xray-update-plan.json", "xray-update.json",
                "publish-status.json", "publish.log",
                "devcode.json", "devcode.md", "suite-suggest.json", "mvnrun-result.json",
+               "devchange.json", "devcode-input.json",
                # Read by the page; were missing, so it was refused and showed nothing.
                "xray-publish.json", "convert-fix.json", "story-keys.json",
                "answer-suggestions.json", "convert-check.json", "convert-suites.json"}

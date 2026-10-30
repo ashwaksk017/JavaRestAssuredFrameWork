@@ -481,6 +481,9 @@ class Story(Base):
         self.assertEqual(r["story"]["key"], "ABC-1")
         self.assertEqual(r["story"]["summary"], "Add a business")
         self.assertTrue(r["story"]["acceptance_criteria"]["present"])
+        # Its sub-tasks are kept: the developer-change reading looks for
+        # commits naming them; linked stories and the parent are not.
+        self.assertEqual(r["story"]["subtasks"], ["ABC-4"])
         mine = [q for q in r["requests"] if q["verb"] == "POST"]
         self.assertEqual(mine[0]["raw_path"], "/guests/123/businesses")
         self.assertIn("jira ABC-1", mine[0]["provenance"])

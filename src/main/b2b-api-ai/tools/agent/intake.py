@@ -741,6 +741,10 @@ def build(job: str, text: str = "", links=None, root: str = "",
                 continue
             story = got["story"]
             around = got.pop("around", [])
+            # Developers often commit against a sub-task, not the story: the
+            # developer-change reading looks for these keys too (devcode.py).
+            story["subtasks"] = [str(a.get("key") or "").upper() for a in around
+                                 if str(a.get("how") or "").startswith("sub-task") and a.get("key")][:20]
             story_body = got.pop("own_text", "")
             # The Confluence pages the story itself points at are read too,
             # unasked: "Table updated to reflect such - [url]" is the page the

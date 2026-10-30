@@ -876,6 +876,9 @@ def main() -> int:
                   < panels[4] < html.find('id="devcode-repo"') < html.find('id="run-intake"'))
             check("the developer's change is still checked under the designed cases",
                   html.find('id="run-design"') < html.find('id="devcode-run"'))
+            check("the developer's change can be read from its own tab, before Design",
+                  panels[4] < html.find('id="devread-run"') < html.find('id="run-intake"')
+                  and 'id="devread-log" class="log" hidden' in html)
             check("a design can be cleared", 'id="clear-design"' in html)
             check("the review's steps can be edited in place", "stepEditor" in io.open(
                 os.path.join(HERE, "ui", "app.js"), encoding="utf-8").read())

@@ -557,6 +557,11 @@ class Handler(BaseHTTPRequestHandler):
                     fh.write(str(text))
             elif os.path.isfile(path):
                 os.remove(path)
+        # The Developer's change tab: kept with the job, so this design, a
+        # refinement and the check after it read the same branch. Emptied,
+        # it is forgotten (devchange.save_input).
+        if isinstance(body.get("devcode"), dict):
+            jobs._tool("devchange").save_input(out, body["devcode"])
         for field, option in (("service", "--service"), ("speed", "--speed"),
                               ("mode", "--mode")):
             if str(body.get(field) or "").strip():

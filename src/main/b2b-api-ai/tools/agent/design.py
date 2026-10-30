@@ -104,6 +104,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import threading
@@ -148,6 +149,7 @@ def _load(name: str, path: str):
 
 jsonfix = _load("design_jsonfix", os.path.join(HERE, "jsonfix.py"))
 loop = _load("design_loop", os.path.join(HERE, "loop.py"))
+devchange = _load("design_devchange", os.path.join(HERE, "devchange.py"))
 
 ROOT = loop.ROOT
 TEMPLATE = os.path.join(HERE, "prompts", "api_test_design.md")
@@ -1448,6 +1450,54 @@ def dependency_block(root: str, out_dir: str, spec, endpoints) -> str:
         return ""
 
 
+COVERAGE_LIMIT = 12_000       # "already automated?": 25 requests at most, but each may list matches
+DEVCHANGE_TIMEOUT = 1800      # the first read of a large repository fetches it whole (no file contents)
+
+
+def developer_change(out_dir: str, job: str, warnings: list) -> dict:
+    """The developer's change, read again first, when the job has one
+    given (the Developer's change tab: devcode-input.json). The reading is
+    devcode.py --read in a process of its own -- the fetch can take minutes
+    the first time, and Stop ends it with the design. A reading that fails
+    is said and the design goes on without it; one kept from an earlier
+    read of the same branch is used, and said to be."""
+    given = devchange.load_input(out_dir)
+    if not (given["repo"] and given["branch"]):
+        return {}
+    say("==> Reading the developer's change (the Developer's change tab)")
+    argv = [sys.executable, "-B", os.path.join(HERE, "devcode.py"), "--job", job, "--read",
+            "--repo", given["repo"], "--branch", given["branch"]]
+    for k in ("ticket", "base"):
+        if given[k]:
+            argv += [f"--{k}", given[k]]
+    rc, text = -1, ""
+    try:
+        got = subprocess.run(argv, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             timeout=DEVCHANGE_TIMEOUT, **loop.NO_WINDOW)
+        rc, text = got.returncode, got.stdout.decode("utf-8", "replace")
+    except (OSError, subprocess.SubprocessError) as e:
+        text = f"FAIL it could not be run ({type(e).__name__})"
+    for line in text.splitlines():
+        if line.strip():
+            say("  " + line)
+    reading = devchange.load(out_dir)
+    if reading and (reading.get("branch") != given["branch"] or not reading.get("commits")):
+        reading = {}
+    if rc != 0:
+        if reading:
+            warnings.append(f"the developer's change could not be read again (see the log): the reading of "
+                            f"commit {str(reading.get('tip') or '')[:10]} made before was used")
+        else:
+            warnings.append("the developer's change could not be read (see the log): the cases were "
+                            "designed without it")
+    elif not reading:
+        warnings.append("no commit of the developer's change was found (see the log): the cases were "
+                        "designed without it")
+    for n in (reading.get("notes") or [])[:3]:
+        warnings.append(f"developer's change: {n}")
+    return reading
+
+
 def coverage_block(out_dir: str) -> str:
     """What "Is it already automated?" (locate.json, run after the read)
     found for each request: covered by a converted test (UPSTREAM), by a
@@ -1674,6 +1724,9 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
 
     prefixes = base_paths(spec) if spec is not None else []
     unresolved_refs = set()
+    # The developer's change, when the job has one given: read before the
+    # focus is set, which its endpoints join.
+    dev_reading = developer_change(out_dir, job, warnings)
 
     # ---- a story: design what IT is about, not the whole API -------------
     # A large specification is otherwise cut into parts by size, each part
@@ -1701,6 +1754,15 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         about = "\n".join([str(told.get("story_text") or ""), pasted, requirements] + own)
         all_paths = [p for p in spec["paths"] if _path_item(spec, spec["paths"][p])]
         focus = story_paths(spec, about) if about.strip() and len(all_paths) > 2 else {}
+        # An endpoint the developer's change adds, changes or removes is part
+        # of the story even when the story's text does not name it.
+        dev_eps = devchange.endpoints(dev_reading)
+        if dev_eps and len(all_paths) > 2:
+            for p in all_paths:
+                verbs = [str(v).upper() for v in _path_item(spec, spec["paths"][p]) if str(v).lower() in VERBS]
+                if p not in focus and any(devchange.same_endpoint(v, p, dv, dp)
+                                          for v in verbs for dv, dp in dev_eps):
+                    focus[p] = "the developer's change touches it"
         if focus and (len(focus) > MAX_FOCUS_PATHS or len(focus) * 5 > len(all_paths) * 3):
             focus_note = (f"the story names {len(focus)} of the specification's "
                           f"{len(all_paths)} paths, which is most of it: the whole "
@@ -1934,6 +1996,8 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
     if near:
         dependencies = (dependencies + "\n\n" + near) if dependencies else near
     covered = coverage_block(out_dir)
+    if len(covered) > COVERAGE_LIMIT:
+        covered = _cut(covered, COVERAGE_LIMIT)
     if covered:
         dependencies = (covered + "\n\n" + dependencies) if dependencies else covered
     # What a tester answered to the open questions -- this job's, and those
@@ -1952,10 +2016,14 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
     for n, paths in enumerate(parts, 1):
         if len(parts) == 1:
             label, part_spec, part_listed, share = "", swagger_sent, listed, max_cases
+            # The whole reading for a whole design; only the focused
+            # endpoints' share when the design keeps to the story.
+            dev_wanted = [devchange.split_endpoint(e) for e in design_endpoints or []] if focus else None
         else:
             label = f"part {n} of {len(parts)}"
             sub = sub_spec(spec, paths, unresolved_refs)
             part_eps = endpoints_of(sub)
+            dev_wanted = [devchange.split_endpoint(e) for e in part_eps]
             part_spec, notes_ = spec_text(sub, SECTION_LIMITS["swagger"])
             warnings += [f"{label}: {x}" for x in notes_ if "entries were not sent" not in x]
             part_listed = (f"(this is {label} of the API; the other parts are "
@@ -1983,6 +2051,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
             "focus": FOCUS_RULE if focus else "",
             "project": project_guide(root, out_dir),
             "dependencies": dependencies,
+            "devchange": devchange.block(dev_reading, dev_wanted),
             "answers": answers_block,
             "max_cases": share,
             "endpoints": sections["endpoints"] or
@@ -2183,6 +2252,10 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         "previous": {k: carried[k] for k in ("kept", "changed", "new", "removed")} if previous else None,
         "open_questions": list(dict.fromkeys(questions)),
         "warnings": warnings,
+        # Which state of the developer's branch the cases were designed
+        # from: the check after the design says when it has moved since.
+        "devchange": ({k: dev_reading.get(k) for k in ("repo", "branch", "tip", "keys", "at")}
+                      if dev_reading else None),
     }
     write_outputs(out_dir, result)
     clog.write(f"design: {len(cases)} test case(s) written ({parsed})")

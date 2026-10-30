@@ -12,6 +12,7 @@ from __future__ import annotations
 import os as _os
 _os.environ["WORKBENCH_MOCK"] = "0"      # these tests are about the real paths
 
+import contextlib
 import csv
 import importlib.util
 import io
@@ -1971,6 +1972,103 @@ class DesigningForAStory(Run):
         self.assertTrue(seen["whole_spec"])
         design.main(["--job", "j1"])
         self.assertFalse(seen["whole_spec"])
+
+
+class DesigningWithTheDevelopersChange(unittest.TestCase):
+    """The Developer's change tab: its reading (devcode.py --read, stood in
+    for here) is a section of the request, its endpoints join the story's,
+    and the commit it was made at is kept with the design (2026-10-30)."""
+
+    MEMBERS = "/accounts/{accountId}/members"
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="designtest_dev_")
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        self.out = os.path.join(self.root, ".workbench", "j1")
+        os.makedirs(self.out)
+        with io.open(os.path.join(self.out, "intake.json"), "w", encoding="utf-8") as fh:
+            json.dump({"story": {"key": "ABC-1"},
+                       "story_text": "Travel coordinators get the same access as owners."}, fh)
+        self.prompts, self.reads = [], []
+        real = design.subprocess.run
+
+        def fake_run(argv, **kw):
+            if any(str(a).endswith("devcode.py") for a in argv):
+                self.reads.append(argv)
+                return types.SimpleNamespace(returncode=self.read_rc,
+                                             stdout=b"READ: commit dddddddddd of feature/x")
+            return real(argv, **kw)
+        self.read_rc = 0
+        design.subprocess.run = fake_run
+        self.addCleanup(setattr, design.subprocess, "run", real)
+
+    def given(self, tip="d" * 40):
+        design.devchange.save_input(self.out, {"repo": "https://gitlab.acme.test/t/svc.git",
+                                               "branch": "feature/x"})
+        design.devchange.write(self.out, {
+            "v": design.devchange.VERSION, "repo": "gitlab.acme.test/t/svc.git", "branch": "feature/x",
+            "tip": tip, "keys": ["ABC-1"], "commit_mode": "ticket", "commits": [{"sha": "a" * 40}],
+            "at": "2026-10-30T00:00:00Z", "notes": [],
+            "found": {"endpoints": [{"verb": "GET", "path": "/v2" + self.MEMBERS, "how": "changed",
+                                     "access": ["@PreAuthorize(\"hasAnyRole('OWNER','TRAVEL_COORDINATOR')\")"]}],
+                      "access": [{"rule": "hasAnyRole('OWNER','TRAVEL_COORDINATOR')",
+                                  "roles": ["OWNER", "TRAVEL_COORDINATOR"], "change": "added",
+                                  "endpoint": "GET /v2" + self.MEMBERS}]}})
+
+    def design(self, **kw):
+        def agent(prompt, followup):
+            self.prompts.append(prompt)
+            return {"result": reply(case(endpoint="GET " + self.MEMBERS, title="members")), "model": "fake"}
+        kw.setdefault("fresh", True)
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = design.design("j1", root=self.root, agent=agent, swagger=json.dumps(account_spec()), **kw)
+        with io.open(os.path.join(self.out, "design.json"), encoding="utf-8") as fh:
+            return rc, json.load(fh)
+
+    def test_the_change_is_read_first_and_is_a_section_of_the_request(self):
+        self.given()
+        rc, d = self.design()
+        self.assertEqual(rc, 0)
+        argv = self.reads[0]
+        self.assertIn("--read", argv)
+        self.assertEqual(argv[argv.index("--branch") + 1], "feature/x")
+        p = self.prompts[0]
+        self.assertIn("THE DEVELOPER'S CHANGE", p)
+        self.assertIn("do NOT write a case that expects what the code does", p)
+        self.assertIn("TRAVEL_COORDINATOR", p)
+        self.assertEqual(d["devchange"]["tip"], "d" * 40)
+
+    def test_its_endpoints_are_the_storys_when_the_story_names_none(self):
+        self.given()
+        _rc, d = self.design()
+        self.assertEqual([f["path"] for f in d["focus"]], [self.MEMBERS])
+        self.assertIn("the developer's change touches it", d["focus"][0]["why"])
+        listed = self.prompts[0].split("===== ENDPOINTS =====")[1].split("=====")[0]
+        self.assertIn("GET " + self.MEMBERS, listed)
+        self.assertNotIn("/accounts/{accountId}/other3", listed)
+
+    def test_a_reading_that_fails_is_said_and_the_design_goes_on(self):
+        design.devchange.save_input(self.out, {"repo": "https://gitlab.acme.test/t/svc.git", "branch": "feature/x"})
+        self.read_rc = 1
+        rc, d = self.design()
+        self.assertEqual(rc, 0)
+        self.assertNotIn("THE DEVELOPER'S CHANGE", self.prompts[0])
+        self.assertTrue(any("designed without it" in w for w in d["warnings"]))
+        self.assertIsNone(d["devchange"])
+
+    def test_without_the_tab_filled_nothing_is_read(self):
+        _rc, d = self.design()
+        self.assertEqual(self.reads, [])
+        self.assertIsNone(d["devchange"])
+
+    def test_a_new_commit_is_asked_again_not_answered_from_the_kept_reply(self):
+        self.given()
+        self.design(fresh=False)
+        self.design(fresh=False)
+        self.assertEqual(len(self.prompts), 1, "the same branch at the same commit: the kept reply")
+        self.given(tip="e" * 40)
+        self.design(fresh=False)
+        self.assertEqual(len(self.prompts), 2, "a new commit is a new request")
 
 
 if __name__ == "__main__":

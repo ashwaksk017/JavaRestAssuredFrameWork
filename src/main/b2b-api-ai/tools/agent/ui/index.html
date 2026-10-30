@@ -214,8 +214,11 @@ Expect 201.'></textarea>
   </div>
 
   <div id="in-dev" class="input-panel" role="tabpanel" aria-labelledby="in-tab-dev" hidden>
-  <p class="hint">The developer's branch for this story. Its commits that name the ticket are read by
-    <b>Check the cases against the change</b>, under the designed cases.</p>
+  <p class="hint">The developer's branch for this story. Its commits that name the story or one of its
+    sub-tasks are read -- endpoints, who may call them, validation, fields, status codes, messages, the
+    repository's own specification and the merge or pull request -- and <b>Design the tests</b> takes that
+    in: it reads the branch again first. <b>Check the cases against the change</b>, under the designed
+    cases, compares the cases with it. The first read of a large repository takes minutes.</p>
   <div class="form">
     <div class="field req">
       <label for="devcode-repo">Repository <span class="hint">GitLab or GitHub, https:// or git@ address</span></label>
@@ -234,6 +237,13 @@ Expect 201.'></textarea>
       <input id="devcode-base" type="text" spellcheck="false" placeholder="develop">
     </div>
   </div>
+  <div class="row">
+    <button id="devread-run" type="button" title="Reads the branch now, so Design the tests does not wait for it. Design reads it again anyway: a branch that has not moved is not read twice.">Read the change</button>
+    <button id="devread-stop" type="button">Stop</button>
+    <span id="devread-state" class="state"></span>
+  </div>
+  <div id="devread-result" class="result"></div>
+  <pre id="devread-log" class="log" hidden></pre>
   </div>
   </div>
 

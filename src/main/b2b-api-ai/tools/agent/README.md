@@ -838,32 +838,75 @@ pages, specifications and pasted text that went into the design, each with
 its size and when it was read. It is read from the job's `intake.json`,
 `brief.md` and `design.json`, so it is the same after a restart.
 
-#### Check against the developer's change
+#### The developer's change: read, designed from, checked against
 
-Under the review: a make-sure step. Give the repository (GitLab or GitHub,
-`https://` or `git@`), the developer's branch, the ticket (empty: the
-story key) and, if it is not the default branch, the branch it merges
-into. The workbench fetches the branch into
-`.workbench/devrepos/` (a bare, partial copy: nothing is checked out and
-nothing runs), takes the commits whose message names the ticket (all of the
-branch's own commits when none does), and reads their change: endpoints
-added or changed (Spring and JAX-RS annotations, OpenAPI files), status
-codes, validation annotations, new and removed fields, enum values, error
-codes, request parameters, configuration and the developer's own tests.
-Each is compared with the cases; what no case covers is a **gap**, with a
-severity. Tick **also ask Cursor** to send the change (cut to size, host
-names and private values removed) and the cases to Cursor in plan mode as
-well, for gaps the program's reading cannot see.
+The **Developer's change** tab (beside the story, at the top) takes the
+repository (GitLab or GitHub, `https://` or `git@`), the developer's
+branch, the ticket (empty: the story key) and, if it is not the default
+branch, the branch it merges into. They are kept with the job
+(`devcode-input.json`).
+
+**Reading it** (`devcode.py --read`, or **Read the change** on the tab):
+the workbench fetches the branch into `.workbench/devrepos/` -- a bare,
+blobless copy: nothing is checked out and nothing runs, and a file's
+content is fetched the first time it is read and kept -- one fetch at a
+time per repository. It takes the commits whose message names the story
+**or one of its sub-tasks** (whole keys: ABC-12 is not ABC-123); when the
+branch has already been merged, those commits where they now are; when
+none names a key, all of the branch's own commits. A branch deleted after
+its merge is read from its merge request (GitLab) or pull request (GitHub),
+which the host keeps. From the change it reads: endpoints added, changed
+or **removed** (Spring and JAX-RS annotations, OpenAPI YAML or JSON);
+**who may call them** (`@PreAuthorize`, `@Secured`, `@RolesAllowed`,
+`hasRole`/`hasAuthority`, role enums); status codes; validation; new and
+removed fields; enum values; error codes and **messages**; parameters; the
+repository's own specification before and after; the developer's own
+tests. Around it, within a budget of files read whole at the branch's end:
+the endpoints a changed request or response class is used by, and the
+whole rules of the classes the changed endpoints take and give. The
+merge or pull request's title and description come too. The reading is
+`devchange.json`; a branch still at the same commit is not read again.
+
+**Design the tests** reads the branch again first (only what is new is
+fetched) and puts the reading in the request as a section of names and
+numbers -- never the diff -- with the rule that the code shows what was
+built and the story what is wanted: where they disagree the difference is
+an open question, never a case that expects what the code does. Its
+endpoints join the story's focus. `design.json` keeps the commit it was
+designed from. A reading that fails is said, and the design goes on
+without it. Only Java, Kotlin and OpenAPI files are read for behaviour; a
+change in another language is said so.
+
+**Check the cases against the change**, under the review, is the
+make-sure step after the design: the same reading is compared with the
+cases; what no case covers is a **gap**, with a severity (an access rule
+no case calls as its roles, or with no case expecting 403, is one). It
+says when the branch has moved since the design. Tick **also ask Cursor**
+to send the change (cut to size, host names and private values removed)
+and the cases to Cursor in plan mode as well, for gaps the program's
+reading cannot see.
 
 When `devcode_config.base_urls` is set in `program_configuration.json`,
 only those hosts are read. git's own credential helper answers for the
 host; `devcode_config.token` there, when set, is sent instead -- as a
-header, never in a URL, and never shown. **Add cases for the chosen gaps** is a refinement of the
-design that keeps every existing case and adds cases for the gaps ticked.
-The result is `devcode.json` / `devcode.md` in the job.
+header, never in a URL, and never shown -- and also to look up the merge
+or pull request. github.com and a host with "gitlab" in its name are
+known; any other host is named in `devcode_config.hosts`:
+
+```json
+"devcode_config": {
+  "hosts": {"git.example.com": {"kind": "gitlab", "api": "https://git.example.com/api/v4"}}
+}
+```
+
+(GitHub Enterprise: `"kind": "github", "api": "https://host/api/v3"`.)
+**Add cases for the chosen gaps** is a refinement of the design that keeps
+every existing case and adds cases for the gaps ticked. The result is
+`devcode.json` / `devcode.md` in the job. On Windows a project in a very
+deep folder can be too deep for git: move it to a shorter path.
 
 ```
-python tools/agent/devcode.py --job <job> --repo <url> --branch <branch> [--ticket ABC-123] [--base develop] [--ask-cursor]
+python tools/agent/devcode.py --job <job> --repo <url> --branch <branch> [--ticket ABC-123] [--base develop] [--read | --ask-cursor]
 ```
 
 #### Refining one case, some, or all
