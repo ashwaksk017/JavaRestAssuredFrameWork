@@ -85,6 +85,44 @@ class Saving(Base):
         self.assertEqual(self.doc()["stg"]["jira_config"]["pat"], "old-token-123", "nothing written")
 
 
+class TheDevelopersRepository(Base):
+    """devcode_config on the Settings tab, not by hand in the JSON (2026-10-30)."""
+
+    def test_hosts_token_and_kinds_go_where_devcode_reads_them_and_the_token_is_never_read_back(self):
+        r = st.save({"devcode_base_urls": "https://gitlab.acme.test/, https://code.acme.test",
+                     "devcode_token": "glpat-abcdef123456",
+                     "devcode_hosts": "code.acme.test github https://code.acme.test/api/v3\n\n"},
+                    root=self.root)
+        self.assertTrue(r["saved"], r)
+        dev = self.doc()["stg"]["devcode_config"]
+        self.assertEqual(dev["base_urls"], ["https://gitlab.acme.test", "https://code.acme.test"])
+        self.assertEqual(dev["token"], "glpat-abcdef123456")
+        self.assertEqual(dev["hosts"], {"code.acme.test": {"kind": "github", "api": "https://code.acme.test/api/v3"}})
+        shown = st.status(self.root)["devcode"]
+        self.assertNotIn("glpat", json.dumps(shown))
+        self.assertTrue(shown["token"].startswith("set"))
+        self.assertEqual(shown["hosts"], "code.acme.test github https://code.acme.test/api/v3")
+
+    def test_an_empty_token_box_keeps_it_and_remove_clears_it(self):
+        st.save({"devcode_base_urls": "https://gitlab.acme.test", "devcode_token": "glpat-abcdef123456"},
+                root=self.root)
+        st.save({"devcode_base_urls": "https://gitlab.acme.test", "devcode_token": ""}, root=self.root)
+        self.assertEqual(self.doc()["stg"]["devcode_config"]["token"], "glpat-abcdef123456")
+        st.save({"devcode_token_clear": True}, root=self.root)
+        self.assertNotIn("token", self.doc()["stg"]["devcode_config"])
+
+    def test_a_host_line_is_checked(self):
+        for bad in ("https://git.acme.test gitlab", "git.acme.test bitbucket", "git.acme.test gitlab http://x"):
+            with self.assertRaises(ValueError, msg=bad):
+                st.save({"devcode_hosts": bad}, root=self.root)
+        self.assertEqual(st._devcode_hosts("git.acme.test gitlab"), {"git.acme.test": {"kind": "gitlab"}})
+
+    def test_a_page_saved_with_the_section_empty_adds_no_section(self):
+        st.save({"devcode_base_urls": "", "devcode_token": "", "devcode_hosts": "",
+                 "jira_base_urls": "https://jira.example.test"}, root=self.root)
+        self.assertNotIn("devcode_config", self.doc()["stg"])
+
+
 class CursorSettings(Base):
     def cursor_file(self):
         with io.open(os.path.join(self.root, *st.CURSOR_REL.split("/")), encoding="utf-8") as fh:

@@ -7,6 +7,8 @@ readers already look:
     <env>.confluence_config.base_urls / .pat
     <env>.xray.baseUrl / .token / .projectKey / .enabled
     <env>.xray.regressionKey      (the Test Set or Test Plan regression cases join)
+    <env>.devcode_config.base_urls / .token / .hosts
+                                  (the developer's repository: devcode.py)
 
 A token is never read back: the page is told "set, N characters" or "not
 set". A token field left empty leaves the token as it is; `clear` removes
@@ -197,6 +199,8 @@ def status(root: str = "", project: str = "") -> dict:
     jira = block.get("jira_config") if isinstance(block.get("jira_config"), dict) else {}
     conf = block.get("confluence_config") if isinstance(block.get("confluence_config"), dict) else {}
     xray = block.get("xray") if isinstance(block.get("xray"), dict) else {}
+    dev = block.get("devcode_config") if isinstance(block.get("devcode_config"), dict) else {}
+    dev_hosts = dev.get("hosts") if isinstance(dev.get("hosts"), dict) else {}
     publish = jira.get("publish") if isinstance(jira.get("publish"), dict) else {}
     wb = workbench_settings(root)
     sm = _suitemap()
@@ -218,6 +222,10 @@ def status(root: str = "", project: str = "") -> dict:
                  "pat": _token_state(jira.get("pat"))},
         "confluence": {"base_urls": [str(u) for u in conf.get("base_urls") or []],
                        "pat": _token_state(conf.get("pat"))},
+        "devcode": {"base_urls": [str(u) for u in dev.get("base_urls") or []],
+                    "token": _token_state(dev.get("token")),
+                    "hosts": "\n".join(f"{h} {v.get('kind', '')}" + (f" {v['api']}" if v.get("api") else "")
+                                       for h, v in dev_hosts.items() if isinstance(v, dict))},
         "cursor": {"key": _token_state(cur.get("apiKey") or cur.get("api_key")),
                    "key_from_env": bool((os.environ.get("CURSOR_API_KEY") or "").strip()),
                    "model": str(cur.get("model") or ""), "design_model": str(cur.get("designModel") or ""),
@@ -242,6 +250,34 @@ def _urls(value) -> list:
             raise ValueError(f"{u!r} is not an https:// address of a server")
         if u not in out:
             out.append(u)
+    return out
+
+
+_HOST_RX = re.compile(r"^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$")
+
+
+def _devcode_hosts(text) -> dict:
+    """`host kind [api]` a line -> {host: {kind, api}}, as devcode.forge_of
+    reads it. Only for a host that is neither github.com nor named "gitlab":
+    those are known without it. kind is gitlab or github; api, when left
+    out, is https://<host>/api/v4 (GitLab) or /api/v3 (GitHub Enterprise)."""
+    out = {}
+    for n, line in enumerate(str(text or "").splitlines(), 1):
+        parts = line.split()
+        if not parts:
+            continue
+        host = parts[0].lower()
+        kind = parts[1].lower() if len(parts) > 1 else ""
+        if not _HOST_RX.match(host):
+            raise ValueError(f"line {n}: {parts[0]!r} is not a host name (no https://, no path)")
+        if kind not in ("gitlab", "github") or len(parts) > 3:
+            raise ValueError(f"line {n}: write it as `host gitlab|github [https://api address]`")
+        entry = {"kind": kind}
+        if len(parts) == 3:
+            if not _URL_RX.match(parts[2].rstrip("/")):
+                raise ValueError(f"line {n}: {parts[2]!r} is not an https:// address")
+            entry["api"] = parts[2].rstrip("/")
+        out[host] = entry
     return out
 
 
@@ -276,7 +312,9 @@ def save(changes: dict, root: str = "", busy=None, project: str = "") -> dict:
     jira = block.setdefault("jira_config", {})
     conf = block.setdefault("confluence_config", {})
     xray = block.setdefault("xray", {})
-    for sec, name in ((jira, "jira_config"), (conf, "confluence_config"), (xray, "xray")):
+    dev = block.setdefault("devcode_config", {})
+    for sec, name in ((jira, "jira_config"), (conf, "confluence_config"), (xray, "xray"),
+                      (dev, "devcode_config")):
         if not isinstance(sec, dict):
             raise ValueError(f"`{env}.{name}` in {CONFIG_REL} is not an object")
     said = []
@@ -298,6 +336,29 @@ def save(changes: dict, root: str = "", busy=None, project: str = "") -> dict:
     elif str(changes.get("confluence_pat") or "").strip():
         conf["pat"] = _token(changes["confluence_pat"], "Confluence")
         said.append("Confluence token")
+    # The developer's repository (devcode.py): the hosts that may be read --
+    # the token goes only to these -- the token, and how a host that is not
+    # github.com or a "gitlab" one answers for merge/pull requests.
+    if "devcode_base_urls" in changes:
+        u = _urls(changes["devcode_base_urls"])
+        if u:
+            dev["base_urls"] = u
+        else:
+            dev.pop("base_urls", None)
+        said.append("repository hosts")
+    if changes.get("devcode_token_clear"):
+        dev.pop("token", None)
+        said.append("repository token removed")
+    elif str(changes.get("devcode_token") or "").strip():
+        dev["token"] = _token(changes["devcode_token"], "repository")
+        said.append("repository token")
+    if "devcode_hosts" in changes:
+        hosts = _devcode_hosts(changes["devcode_hosts"])
+        if hosts:
+            dev["hosts"] = hosts
+        else:
+            dev.pop("hosts", None)
+        said.append("repository host kinds")
     if "xray_base_url" in changes:
         u = _urls(changes["xray_base_url"])
         if len(u) > 1:
@@ -436,7 +497,7 @@ def save(changes: dict, root: str = "", busy=None, project: str = "") -> dict:
                       "always": always, "rules": rules}
         said.append("suite mapping")
     # The sections made above only to be written into: dropped when left empty
-    for name in ("jira_config", "confluence_config", "xray"):
+    for name in ("jira_config", "confluence_config", "xray", "devcode_config"):
         if name not in had and block.get(name) == {}:
             block.pop(name)
     if not had_block and block == {}:
@@ -480,7 +541,8 @@ _COVERED = {("jira_config", "base_urls"), ("jira_config", "pat"),
             ("xray", "baseUrl"), ("xray", "token"), ("xray", "projectKey"),
             ("xray", "regressionKey"), ("xray", "enabled"),
             ("jira_config", "publish", "create_tests"), ("jira_config", "publish", "projects"),
-            ("jira_config", "publish", "test_issue_type"), ("jira_config", "publish", "test_link_type")}
+            ("jira_config", "publish", "test_issue_type"), ("jira_config", "publish", "test_link_type"),
+            ("devcode_config", "base_urls"), ("devcode_config", "token"), ("devcode_config", "hosts")}
 # By the key's own name: `token_end_point`, `token_route`, `token_service`
 # and `testExecutionKey` are not secrets; `token`, `access_token`, `pat`,
 # `client_id` and `ui_username` are (as projectconfig.SECRET_HINTS: a user

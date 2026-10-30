@@ -3509,6 +3509,12 @@ async function showSettings() {
     (s.exists ? "" : " -- not there yet: Save makes it")));
   $("set-jira-urls").value = (s.jira.base_urls || []).join(", ");
   $("set-conf-urls").value = (s.confluence.base_urls || []).join(", ");
+  const dev = s.devcode || {};
+  $("set-dev-urls").value = (dev.base_urls || []).join(", ");
+  $("set-dev-hosts").value = dev.hosts || "";
+  $("set-dev-token-state").textContent = dev.token || "";
+  $("set-dev-token").value = "";
+  $("set-dev-token-clear").checked = false;
   $("set-xray-url").value = s.xray.base_url || "";
   $("set-xray-project").value = s.xray.project_key || "";
   $("set-xray-regression").value = s.xray.regression_key || "";
@@ -3720,6 +3726,10 @@ $("settings-save").onclick = async (where) => {
     xray_token: $("set-xray-same").checked ? "" : $("set-xray-token").value,
     jira_pat_clear: $("set-jira-pat-clear").checked,
     confluence_pat_clear: $("set-conf-pat-clear").checked,
+    devcode_base_urls: $("set-dev-urls").value,
+    devcode_token: $("set-dev-token").value,
+    devcode_token_clear: $("set-dev-token-clear").checked,
+    devcode_hosts: $("set-dev-hosts").value,
     xray_token_clear: $("set-xray-token-clear").checked,
     xray_create_on: $("set-xc-on").checked,
     xray_create_projects: $("set-xc-projects").value,
@@ -3744,7 +3754,7 @@ $("settings-save").onclick = async (where) => {
     setState(state, r.saved ? "ok" : "", r.saved ? `saved: ${r.said}` : r.said);
   } catch (e) { setState(state, "bad", e.message); }
   // The token boxes are emptied either way: nothing typed stays on the page.
-  for (const id of ["set-jira-pat", "set-conf-pat", "set-xray-token", "set-cursor-key"]) $(id).value = "";
+  for (const id of ["set-jira-pat", "set-conf-pat", "set-xray-token", "set-cursor-key", "set-dev-token"]) $(id).value = "";
   showSettings();
 };
 $("settings-check").onclick = async () => {

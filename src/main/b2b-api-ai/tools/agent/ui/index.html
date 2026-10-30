@@ -1085,6 +1085,15 @@ Expect 201.'></textarea>
       <input id="set-conf-pat" type="password" autocomplete="new-password" spellcheck="false" placeholder="leave empty to keep it">
       <label class="inline"><input type="checkbox" id="set-conf-pat-clear"> remove the saved token</label>
     </fieldset>
+    <fieldset class="field choice wide"><legend>Developer's repository (GitLab / GitHub)</legend>
+      <label for="set-dev-urls">Hosts <span class="hint">https://..., several separated by commas: only these repositories are read, and only these get the token</span></label>
+      <input id="set-dev-urls" type="text" spellcheck="false" placeholder="https://gitlab.example.com">
+      <label for="set-dev-token">Access token <span class="hint" id="set-dev-token-state"></span></label>
+      <input id="set-dev-token" type="password" autocomplete="new-password" spellcheck="false" placeholder="leave empty to keep it; empty and none saved: git's own credentials">
+      <label class="inline"><input type="checkbox" id="set-dev-token-clear"> remove the saved token</label>
+      <label for="set-dev-hosts">Other hosts' kind <span class="hint">only for a host that is not github.com and has no "gitlab" in its name: one a line, <code>host gitlab|github [https://api address]</code></span></label>
+      <textarea id="set-dev-hosts" rows="2" spellcheck="false" placeholder="git.example.com gitlab"></textarea>
+    </fieldset>
     <fieldset class="field choice wide"><legend>Create in Xray (workflow: push the cases to Xray)</legend>
       <label class="inline"><input type="checkbox" id="set-xc-on"> allow creating Test issues in Jira from the approved cases</label>
       <label for="set-xc-projects">Projects <span class="hint">the only projects tests may be created in, separated by commas; empty: any the token can write to</span></label>

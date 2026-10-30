@@ -1070,6 +1070,11 @@ def main() -> int:
             set_tab = mocked.dom("settings")
             check("the Settings tab takes the tokens, as password boxes, and shows none back",
                   'id="set-jira-pat"' in set_tab and 'type="password"' in set_tab and 'id="settings-save"' in set_tab)
+            check("the Settings tab takes the developer's repository: its hosts, its token (a password box, "
+                  "empty) and other hosts' kind",
+                  bool(re.search(r'id="set-dev-token" type="password"', set_tab))
+                  and 'id="set-dev-urls"' in set_tab and 'id="set-dev-hosts"' in set_tab
+                  and not re.search(r'id="set-dev-token"[^>]*value="[^"]', set_tab))
             check("the Settings tab takes the AI Agent key (a password box) and its models",
                   'id="set-cursor-key"' in set_tab and 'id="set-cursor-model"' in set_tab
                   and 'id="set-cursor-design-model"' in set_tab)
