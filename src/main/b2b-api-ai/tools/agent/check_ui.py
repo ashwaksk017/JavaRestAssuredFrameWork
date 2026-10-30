@@ -986,6 +986,8 @@ def main() -> int:
                   rc == 0 and html.count('class="bar"') == 3
                   and html.find("Release 1.0") < html.find("Release 2.0")
                   and "stand-in Jira" in html and "The numbers" in html, f"rc={rc}")
+            check("a release's name is whole on hover, and a bug in two releases is said to count twice",
+                  "<title>Release 1.0</title>" in html and "counted in both" in html)
             check("the loaded defects are kept apart from the chart's counts",
                   "ABC-101" in html, "the trend run cleared the loaded table")
             code, rc = press("defects-suggest", {})

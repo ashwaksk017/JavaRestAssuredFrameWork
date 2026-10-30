@@ -1689,14 +1689,18 @@ there -- and this tab helps fill it in and keep it consistent.
 - **Suggest reasons** — AI Agent proposes a reason for the loaded bugs from
   your team's list, with one or two sentences of why and a phrase quoted
   from the ticket. *At most, to AI Agent* caps how many are sent (50 by
-  default, 200 at most); those without a reason yet go first. The page
-  asks before sending. A suggestion is marked
+  default, 200 at most): those not yet reviewed first, and among them
+  those without a reason yet. Pressing it again goes on to the next ones
+  instead of sending the same again. The page asks before sending. A suggestion is marked
   **DIFFERS from the current reason**, *agrees*, or *no reason yet*.
 - **Write to Jira** — on a row, with the reason chosen in the box beside
   it. This button exists only when writing is switched on (below).
 - **Defects per release** — a bar a release for the project's last N
   releases (8 unless you say, 20 at most; archived ones left out), oldest
-  on the left, counted by Fix Version. A switch splits each bar by
+  on the left, counted by Fix Version. A bug with two fix versions is
+  counted in both. A release planned ahead -- not released and with no
+  defect yet -- is passed over for the next older one (10 at most), and
+  the chart says which were. A switch splits each bar by
   **open / closed** (Jira's status category), **priority**, or **failure
   reason**; a reason or priority keeps its colour from bar to bar, and
   past eight reasons (five priorities) the rest fold into *Other*. Hover

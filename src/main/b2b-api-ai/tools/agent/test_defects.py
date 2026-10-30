@@ -698,6 +698,11 @@ class SuggestingFromAWholeRelease(Base):
         self.assertEqual(len(sent), 6, sent)
         self.assertTrue(all(int(k.split("-")[1]) % 2 == 0 for k in sent), "the ones without a reason first")
         self.assertIn("6 of the 20", out.getvalue())
+        self.assertIn("press Suggest again", out.getvalue())
+        again = defects.cmd_suggest("j1", None, agent=agent, root=self.root, limit=6)
+        second = [d["key"] for d in again["defects"] if d.get("suggested")]
+        self.assertEqual(len(second), 12, "a second press goes on to the next six")
+        self.assertTrue(set(sent) < set(second))
         with self.assertRaises(defects.Refused):
             defects.cmd_suggest("j1", None, agent=agent, root=self.root, limit=0)
 
@@ -741,22 +746,44 @@ class DefectsPerRelease(Base):
         })
 
     def test_each_release_is_counted_three_ways_oldest_first(self):
-        r = self.trend(self.jira())
+        jira = self.jira()
+        jira.by_release["3.0"] = [issue(6, "f")]
+        r = self.trend(jira)
         self.assertEqual([x["name"] for x in r["releases"]], ["1.0", "2.0", "3.0"])
         one, two, three = r["releases"]
         self.assertEqual((one["total"], one["open"], one["closed"]), (2, 1, 1))
         self.assertEqual(one["reason"], {"Code defect": 1, "Test data": 1})
         self.assertEqual(two["priority"], {"Highest": 1, "none": 1, "High": 1})
         self.assertEqual(two["reason"], {"no reason yet": 2, "Environment": 1})
-        self.assertEqual(three["total"], 0)
+        self.assertEqual(three["total"], 1, "an unreleased release with a defect is a bar")
         self.assertFalse(three["released"])
         self.assertEqual(r["priorities"], ["Highest", "High", "none"], "Jira's order, none last")
         self.assertEqual(r["reasons"], ["Code defect", "Test data", "Environment", "no reason yet"],
                          "the team's order, no reason last")
 
     def test_the_last_n_releases_and_archived_ones_never(self):
-        r = self.trend(self.jira(), releases=2)
+        jira = self.jira()
+        jira.by_release["3.0"] = [issue(6, "f")]
+        r = self.trend(jira, releases=2)
         self.assertEqual([x["name"] for x in r["releases"]], ["2.0", "3.0"])
+
+    def test_an_empty_planned_release_is_passed_over_for_an_older_one(self):
+        r = self.trend(self.jira(), releases=2)
+        self.assertEqual([x["name"] for x in r["releases"]], ["1.0", "2.0"])
+        self.assertEqual(r["skipped"], ["3.0"])
+        with self.assertRaises(defects.Refused):
+            self.trend(ReleasesJira({"3.0": []}))
+
+    def test_another_defects_command_running_keeps_the_chart(self):
+        os.makedirs(os.path.join(self.root, ".workbench", "j1"), exist_ok=True)
+        kept = os.path.join(self.root, ".workbench", "j1", defects.TREND)
+        with io.open(kept, "w", encoding="utf-8") as fh:
+            fh.write('{"kind": "trend"}')
+        with defects.JobLock("j1", "suggest"), redirect_stdout(io.StringIO()):
+            rc = defects.main(["trend", "--job", "j1", "--project", "ABC"])
+        self.assertNotEqual(rc, 0)
+        with io.open(kept, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["kind"], "trend", "the chart shown stays")
 
     def test_it_is_kept_apart_from_the_loaded_table_and_asks_only_counts(self):
         self.load(Jira([issue(9, "loaded")]))

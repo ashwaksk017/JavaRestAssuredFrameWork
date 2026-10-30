@@ -148,6 +148,7 @@ TREND = "defects-trend.json"  # defects per release (trend), apart from the load
 TREND_RELEASES = 8            # the last N releases
 TREND_RELEASES_MAX = 20
 TREND_PER_RELEASE = 1000      # bugs counted for one release
+TREND_SKIP_MAX = 10           # unreleased, empty releases passed over, at most
 PRIORITY_ORDER = ("Blocker", "Highest", "Critical", "High", "Major", "Medium", "Minor", "Low",
                   "Lowest", "Trivial")
 NO_REASON = "no reason yet"
@@ -659,9 +660,8 @@ def cmd_trend(job: str, project: str, releases: int = TREND_RELEASES, transport=
     conn = conn or search.connect()
     opts = settings(cfg, mocked=bool(conn.get("mock")))
     key = search.project_key(project)
-    listed = search.list_versions(conn, key, False, transport=transport)
-    chosen = list(reversed(listed[:releases]))                 # newest first -> oldest first
-    if not chosen:
+    listed = search.list_versions(conn, key, False, transport=transport)   # newest first
+    if not listed:
         raise Refused(f"{key} has no releases (fix versions) that are not archived")
     warnings, fid, field_name = [], "", ""
     try:
@@ -671,8 +671,10 @@ def cmd_trend(job: str, project: str, releases: int = TREND_RELEASES, transport=
         warnings.append(f"the failure reason field could not be found ({str(e)[:160]}): "
                         f"the split by reason is not available")
     fields = ["status", "priority"] + ([fid] if fid else [])
-    rows = []
-    for v in chosen:
+    rows, skipped = [], []
+    for v in listed:
+        if len(rows) >= releases:
+            break
         name = str(v.get("name") or "")
         jql = (f"project = {key} AND issuetype = {search.jql_quote(opts['issue_type'])} "
                f"AND fixVersion = {search.jql_quote(name)}")
@@ -682,10 +684,20 @@ def cmd_trend(job: str, project: str, releases: int = TREND_RELEASES, transport=
                "read": found.get("read", len(found["issues"])), "total_in_jira": found.get("total"),
                "limited": bool(found.get("limited"))}
         row.update(_counted(found["issues"], fid))
+        # A release planned ahead and not out yet, with no bug, is not a
+        # bar: kept, five empty future releases would push real ones off
+        # the chart. Passed over, the next older one is counted instead.
+        if not row["released"] and not row["total"] and len(skipped) < TREND_SKIP_MAX:
+            skipped.append(name)
+            continue
         if row["limited"]:
             warnings.append(f"{name}: only the first {TREND_PER_RELEASE} of its "
                             f"{found.get('total')} defects were counted")
         rows.append(row)
+    if not rows:
+        raise Refused(f"none of {key}'s releases has a {opts['issue_type']} yet"
+                      + (f" ({len(skipped)} unreleased one(s) with none were passed over)" if skipped else ""))
+    rows.reverse()                                             # oldest first
     seen_p = {p for r in rows for p in r["priority"]}
     priorities = [p for p in PRIORITY_ORDER if p in seen_p] + sorted(seen_p - set(PRIORITY_ORDER) - {NO_PRIORITY})
     if NO_PRIORITY in seen_p:
@@ -697,6 +709,7 @@ def cmd_trend(job: str, project: str, releases: int = TREND_RELEASES, transport=
               "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
               "issue_type": opts["issue_type"], "field": field_name, "releases": rows,
               "priorities": priorities, "reasons": reasons, "warnings": warnings,
+              "skipped": list(reversed(skipped)),
               "mock_jira": bool(conn.get("mock"))}
     _write_json(os.path.join(job_dir(job), TREND), result)
     return result
@@ -794,9 +807,15 @@ def cmd_suggest(job: str, keys: list = None, agent=None, root: str = "",
     if not wanted:
         raise Refused("none of those keys is among the loaded defects")
     if len(wanted) > limit:
-        wanted = sorted(wanted, key=lambda d: bool(d.get("current")))[:limit]
-        say(f" ..  {limit} of the {len(state['defects'])} loaded defect(s) are sent, those without a "
-            f"reason first; tick others, or raise At most (200 at most), for the rest")
+        # Not yet reviewed first, then those without a reason: a second
+        # press goes on to the next ones rather than paying for the same
+        # again (a suggestion does not fill the reason, 2026-10-30).
+        wanted = sorted(wanted, key=lambda d: (bool(d.get("reviewed")), bool(d.get("current"))))[:limit]
+        left = sum(1 for d in state["defects"] if not d.get("reviewed")) - \
+            sum(1 for d in wanted if not d.get("reviewed"))
+        say(f" ..  {limit} of the {len(state['defects'])} loaded defect(s) are sent: those not yet "
+            f"reviewed first, those without a reason before those with one."
+            + (f" {left} are left: press Suggest again for the next ones." if left > 0 else ""))
     private = loop.private_config(root)
     secret = ""
     by = "cursor"
@@ -1062,20 +1081,28 @@ def main(argv=None, transport=None, agent=None) -> int:
     if a.cmd == "trend":
         # Its own file: counting the releases must not take the loaded
         # table (defects-result.json) off the page, nor its refusal either.
-        try:
-            os.remove(os.path.join(job_dir(a.job), TREND))
-        except (OSError, Refused):
-            pass
+        locked = False
         try:
             with JobLock(a.job, a.cmd):
+                locked = True
+                # Removed under the lock: refused because another defects
+                # command is running, the chart shown stays.
+                try:
+                    os.remove(os.path.join(job_dir(a.job), TREND))
+                except (OSError, Refused):
+                    pass
                 r = cmd_trend(a.job, a.project, a.releases, transport)
             for w in r["warnings"]:
                 say(f" ..  {w}")
             say(f" ok  {sum(x['total'] for x in r['releases'])} defect(s) in {len(r['releases'])} release(s) "
                 f"of {r['project']}: " + ", ".join(f"{x['name']} {x['total']}" for x in r["releases"]))
+            if r["skipped"]:
+                say(f" ..  passed over, not released and with no defect: {', '.join(r['skipped'])}")
             return 0
         except (Refused, search.Refused, search.JiraError) as e:
             say(f"refused: {e}" if not isinstance(e, search.JiraError) else f"FAIL {e}")
+            if not locked:
+                return 2                          # another defects command: its chart stays
             try:
                 _write_json(os.path.join(job_dir(a.job), TREND),
                             {"kind": "error", "message": str(e), "mock_jira": bool(search._MOCKED)})

@@ -4964,8 +4964,11 @@ $("defects-suggest").onclick = () => {
   const max = atMost($("defects-max"), $("defects-state"));
   if (max === null) return;
   const sent = Math.min(n, max || 50);
+  // Those not yet reviewed go first (defects.cmd_suggest), so a second
+  // press goes on to the next ones.
+  const fresh = (defectsShown.defects || []).filter((d) => !d.reviewed).length;
   if (!confirm(`Send the text of ${sent} of the ${n} loaded defect(s) to AI Agent for a suggested reason` +
-               `${sent < n ? " (those without a reason first)" : ""}?\n\n` +
+               `${sent < n ? ` (${Math.min(sent, fresh)} not yet reviewed, those without a reason first)` : ""}?\n\n` +
                "Summaries, descriptions and recent comments are sent, with host names and the " +
                "private configuration's values removed. Nothing is written to Jira.")) return;
   runTool("defects-suggest", max ? { "--max": max } : {}, defectUi);
@@ -5018,17 +5021,37 @@ function svg(tag, attrs, ...kids) {
   for (const kid of kids.flat()) if (kid) n.append(kid);
   return n;
 }
+// The axis top: four whole, round steps (0 10 20 30 40), never 12.5.
 function niceMax(v) {
-  if (v <= 4) return 4;
-  const p = Math.pow(10, Math.floor(Math.log10(v)));
-  for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p;
-  return 10 * p;
+  const raw = Math.max(1, v / 4);
+  const p = Math.pow(10, Math.floor(Math.log10(raw)));
+  for (const m of [1, 2, 5, 10]) if (m * p >= raw) return 4 * m * p;
+  return 40 * p;
+}
+// What the names share in front ("Platform Release 2026.") says nothing
+// about which bar is which: the axis shows the rest, the hint the prefix.
+function sharedPrefix(names) {
+  if (names.length < 2) return "";
+  let pre = names[0];
+  for (const n of names) while (!n.startsWith(pre)) pre = pre.slice(0, -1);
+  const cut = Math.max(pre.lastIndexOf(" "), pre.lastIndexOf("."), pre.lastIndexOf("-"), pre.lastIndexOf("_"));
+  pre = cut >= 0 ? pre.slice(0, cut + 1) : "";
+  return pre.length >= 3 && names.every((n) => n.length > pre.length) ? pre : "";
 }
 // A bar's rounded data-end: the top segment's top corners only, anchored
 // to the baseline at the bottom (marks spec: 4px ends, square at the axis).
 function topRounded(x, y, w, h, r) {
   r = Math.min(r, h, w / 2);
   return `M${x},${y + h} V${y + r} Q${x},${y} ${x + r},${y} H${x + w - r} Q${x + w},${y} ${x + w},${y + r} V${y + h} Z`;
+}
+function fitLabel(text, width) {
+  const room = Math.max(3, Math.floor((width - 6) / 6.5));
+  return text.length <= room ? text : text.slice(0, room - 1) + "…";
+}
+// "2026-10-30T22:40:18Z" -> this machine's time, as the rest of the page reads.
+function whenLocal(iso) {
+  const d = new Date(iso || "");
+  return isNaN(d) ? String(iso || "") : d.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
 }
 let trendShown = null;
 function renderTrend(r) {
@@ -5047,7 +5070,9 @@ function renderTrend(r) {
   if (r.mock_jira) kids.push(banner("warn", "These are the stand-in Jira's sample releases, not your project's."));
   for (const w of r.warnings || []) kids.push(banner("warn", w));
   kids.push(el("p", { class: "hint", text: `${r.project}: ${rows.reduce((t, x) => t + x.total, 0)} ${r.issue_type || "Bug"}(s) ` +
-    `in the last ${rows.length} release(s), counted ${r.at}` + (split === "reason" && r.field ? ` -- by ${r.field}` : "") }));
+    `in the last ${rows.length} release(s), counted ${whenLocal(r.at)}` + (split === "reason" && r.field ? ` -- by ${r.field}` : "") +
+    ". A bug with two fix versions is counted in both." +
+    ((r.skipped || []).length ? ` Passed over, not released and with no defect yet: ${r.skipped.join(", ")}.` : "") }));
   // Legend: always, for two series or more; text in ink, the swatch carries the colour.
   kids.push(el("div", { class: "trend-legend" }, ...series.map((s) =>
     el("span", {}, el("i", { style: `background:${s.color}` }), s.name))));
@@ -5057,6 +5082,8 @@ function renderTrend(r) {
   const y = (v) => T + plotH - (v / max) * plotH;
   const slot = plotW / Math.max(rows.length, 1);
   const bw = Math.min(56, slot * 0.6);
+  const prefix = sharedPrefix(rows.map((x) => x.name));
+  if (prefix) kids.push(el("p", { class: "hint", text: `Every release's name starts "${prefix.trim()}": the axis shows the rest.` }));
   const chart = svg("svg", { viewBox: `0 0 ${W} ${H}`, role: "img",
     "aria-label": `Defects per release, split by ${split}` });
   for (let i = 0; i <= 4; i++) {                        // recessive grid, four steps
@@ -5067,6 +5094,7 @@ function renderTrend(r) {
   const tip = el("div", { class: "trend-tip", hidden: "" });
   rows.forEach((x, i) => {
     const cx = L + slot * i + slot / 2;
+    const when = x.released ? (x.release_date || "released") : "not released";
     const g = svg("g", { class: "bar", tabindex: "0", role: "button",
       "aria-label": `${x.name}: ${x.total} defect(s). Open its defects.` });
     // The hit target is the whole column, bigger than the bar.
@@ -5083,11 +5111,14 @@ function renderTrend(r) {
       base += p.v;
     });
     g.append(svg("text", { class: "total-label", x: cx, y: y(x.total) - 6, "text-anchor": "middle", text: String(x.total) }),
-      svg("text", { class: "axis-label", x: cx, y: H - B + 16, "text-anchor": "middle", text: x.name }),
-      svg("text", { class: "axis-label", x: cx, y: H - B + 30, "text-anchor": "middle",
-                    text: x.released ? (x.release_date || "released") : "not released" }));
+      // A label fits its column (about 6.5px a character at 11px): longer
+      // names are cut, whole in the tooltip, the table and the bar's name.
+      svg("text", { class: "axis-label", x: cx, y: H - B + 16, "text-anchor": "middle", text: fitLabel(x.name.slice(prefix.length), slot) },
+          svg("title", { text: x.name })),
+      fitLabel(when, slot) === when
+        ? svg("text", { class: "axis-label", x: cx, y: H - B + 30, "text-anchor": "middle", text: when }) : null);
     const show = (ev) => {
-      tip.replaceChildren(el("b", { text: `${x.name} -- ${x.total} defect(s)` }),
+      tip.replaceChildren(el("b", { text: `${x.name} -- ${x.total} defect(s)` }), el("div", { class: "hint", text: when }),
         ...parts.slice().reverse().map((p) => el("div", {}, el("span", { class: "row-swatch", style: `background:${p.s.color}` }),
           `${p.s.name}: ${p.v} (${Math.round((p.v / x.total) * 100)}%)`)),
         el("div", { class: "hint", text: "click: open this release's defects" }));
@@ -5102,6 +5133,16 @@ function renderTrend(r) {
     g.addEventListener("mouseleave", () => { tip.hidden = true; });
     g.addEventListener("blur", () => { tip.hidden = true; });
     const open = () => {
+      if ($("defects-load").disabled) {
+        setState($("defects-trend-state"), "warn", "a defects command is running: wait for it, then click the bar");
+        return;
+      }
+      // Load replaces the table: suggestions not written to Jira cost an
+      // AI Agent call each, so a stray click on the chart asks first.
+      const unsaved = defectsShown && defectsShown.kind === "defects"
+        ? (defectsShown.defects || []).filter((d) => d.suggested && !(d.applied && d.applied.ok)).length : 0;
+      if (unsaved && !confirm(`Load ${x.name}'s defects?\n\nThe table now holds ${unsaved} suggestion(s) ` +
+                              "not written to Jira; loading replaces them.")) return;
       $("defects-text").value = "";
       $("defects-project").value = r.project;
       $("defects-version").value = x.name;
