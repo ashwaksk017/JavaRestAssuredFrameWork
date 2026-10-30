@@ -296,6 +296,8 @@ Expect 201.'></textarea>
   </div>
   </details>
   <p class="hint">The API specification and the requirements are given in their tabs at the top, beside the story.</p>
+  <label for="design-notes">Notes for the designer <span class="hint">what to focus on, what to leave out</span></label>
+  <textarea id="design-notes" rows="2" spellcheck="false"></textarea>
   <div class="row design-go">
     <button id="run-design" class="go">Design the tests</button>
     <label class="inline" title="A design request that has not changed reuses the reply kept from last time instead of paying for it again. Tick this to forget every reply kept for this job and ask AI Agent."><input type="checkbox" id="design-fresh"> Ask again</label>
@@ -307,8 +309,6 @@ Expect 201.'></textarea>
     <a id="dl-xray" class="dl" hidden>xray.csv</a>
     <span id="design-state" class="state"></span>
   </div>
-  <label for="design-notes">Notes for the designer <span class="hint">what to focus on, what to leave out</span></label>
-  <textarea id="design-notes" rows="2" spellcheck="false"></textarea>
   <details class="area-logs" id="design-logs">
     <summary>Logs <span class="hint">of Design the tests (and Take the story's Xray tests): the command, and its conversation with AI Agent</span></summary>
     <div class="split">
@@ -319,16 +319,17 @@ Expect 201.'></textarea>
 
   <h3>Review the designed cases <span class="hint">tick Approve for the cases that stand, Automate for the ones AI Agent should write; a title can be corrected in place. Create in Xray and Automate take approved cases only</span></h3>
   <div id="design-review" class="result"></div>
-  <div class="row">
-    <button id="suite-suggest" type="button" title="AI Agent reads each case and proposes the suites (TestNG groups) its test belongs in -- regression, smoke, negative... -- with a reason. Nothing changes until you Use a suggestion; the Suites box stays yours to edit.">Suggest suites with AI Agent</button>
-    <button id="suite-suggest-all" type="button" disabled title="put every suggestion into its case's Suites box">Use every suggestion</button>
-    <span id="suite-suggest-state" class="state"></span>
+  <!-- What is done with the designed cases, one tab each: they act on cases
+       that exist, so they sit under the review, not above Design (2026-10-30). -->
+  <div id="case-tools" class="inputs">
+  <div class="input-tabs" role="tablist" aria-label="Work on the designed cases">
+    <button type="button" role="tab" id="ct-tab-refine" aria-controls="ct-refine" aria-selected="true">Refine with AI Agent</button>
+    <button type="button" role="tab" id="ct-tab-suites" aria-controls="ct-suites" aria-selected="false" tabindex="-1">Suggest suites</button>
+    <button type="button" role="tab" id="ct-tab-devcode" aria-controls="ct-devcode" aria-selected="false" tabindex="-1">Check against the developer's change</button>
+    <button type="button" role="tab" id="ct-tab-doc" aria-controls="ct-doc" aria-selected="false" tabindex="-1">design.md</button>
   </div>
-  <div class="row">
-    <button id="wf-finalize" type="button" title="freeze the approved cases: Create in Xray and Automate take only finalized cases; an edit after it reopens them">Finalize the cases</button>
-    <span id="wf-final-state" class="state"></span>
-  </div>
-  <label for="refine-ask">Refine with AI Agent <span class="hint">how the cases should change -- tick cases in the Select column to refine only those (the rest are kept exactly as they are), or none to refine the whole list. Cases it leaves alone keep your decisions</span></label>
+  <div id="ct-refine" class="input-panel" role="tabpanel" aria-labelledby="ct-tab-refine">
+  <label for="refine-ask">How the cases should change <span class="hint">tick cases in the Select column to refine only those (the rest are kept exactly as they are), or none to refine the whole list. Cases it leaves alone keep your decisions</span></label>
   <textarea id="refine-ask" rows="2" spellcheck="false"
     placeholder="e.g. Split TC-004 into a 403 and a 404 case, and drop the duplicate paging cases."></textarea>
   <div class="row">
@@ -343,8 +344,19 @@ Expect 201.'></textarea>
       <div><h3>AI Agent log</h3><pre id="refine-cursor-log" class="log cursor"></pre></div>
     </div>
   </details>
+  </div>
 
-  <h3 id="devcode-part">Check against the developer's change <span class="hint">a make-sure step: the commits on the developer's branch that name the ticket are read, and what they change (endpoints, status codes, validation, new fields) is compared with the cases above. The repository and branch are given in the Developer's change tab at the top</span></h3>
+  <div id="ct-suites" class="input-panel" role="tabpanel" aria-labelledby="ct-tab-suites" hidden>
+  <p class="hint">AI Agent reads each case and proposes the suites (TestNG groups) its test belongs in, with a reason. Nothing changes until you take a suggestion; each case's Suites box in the review stays yours to edit.</p>
+  <div class="row">
+    <button id="suite-suggest" type="button" title="AI Agent reads each case and proposes the suites (TestNG groups) its test belongs in -- regression, smoke, negative... -- with a reason. Nothing changes until you Use a suggestion; the Suites box stays yours to edit.">Suggest suites with AI Agent</button>
+    <button id="suite-suggest-all" type="button" disabled title="put every suggestion into its case's Suites box">Use every suggestion</button>
+    <span id="suite-suggest-state" class="state"></span>
+  </div>
+  </div>
+
+  <div id="ct-devcode" class="input-panel" role="tabpanel" aria-labelledby="ct-tab-devcode" hidden>
+  <p class="hint" id="devcode-part">A make-sure step: the developer's change (the Developer's change tab at the top) is compared with the cases above -- endpoints, who may call them, status codes, validation, fields. What no case covers is a gap.</p>
   <div class="row">
     <button id="devcode-run" class="go" type="button">Check the cases against the change</button>
     <label class="inline" title="Also send the change (the diff, cut to size, host names and private values removed) and the cases to AI Agent in plan mode, for gaps the program's own reading cannot see. Slower; costs an AI Agent call."><input type="checkbox" id="devcode-cursor"> also ask AI Agent</label>
@@ -354,10 +366,27 @@ Expect 201.'></textarea>
   </div>
   <div id="devcode-result" class="result"></div>
   <pre id="devcode-log" class="log" hidden></pre>
-  <h3>design.md</h3>
-  <pre id="design-doc" class="doc">—</pre>
+  </div>
 
-  <h3>Create in Xray <span class="hint">one Jira Test issue a case, with its steps, linked to the story; the keys then go into the rows the Automate step writes</span></h3>
+  <div id="ct-doc" class="input-panel" role="tabpanel" aria-labelledby="ct-tab-doc" hidden>
+  <pre id="design-doc" class="doc">—</pre>
+  </div>
+  </div>
+
+  <div class="row">
+    <button id="wf-finalize" type="button" title="freeze the approved cases: Create in Xray and Automate take only finalized cases; an edit after it reopens them">Finalize the cases</button>
+    <span id="wf-final-state" class="state"></span>
+  </div>
+
+  <h3>Xray <span class="hint">the finalized cases as Jira Test issues, linked to the story</span></h3>
+  <div id="xray-tools" class="inputs">
+  <div class="input-tabs" role="tablist" aria-label="The cases in Xray">
+    <button type="button" role="tab" id="xt-tab-create" aria-controls="xt-create" aria-selected="true">Create in Xray</button>
+    <button type="button" role="tab" id="xt-tab-keys" aria-controls="xt-keys" aria-selected="false" tabindex="-1">Keys from earlier jobs</button>
+    <button type="button" role="tab" id="xt-tab-update" aria-controls="xt-update" aria-selected="false" tabindex="-1">Update in Xray</button>
+  </div>
+  <div id="xt-create" class="input-panel" role="tabpanel" aria-labelledby="xt-tab-create">
+  <p class="hint">One Jira Test issue a case, with its steps, linked to the story; the keys then go into the rows the Automate step writes.</p>
   <div class="row">
     <input id="xray-design-story" type="text" spellcheck="false" placeholder="story key, e.g. ABC-12">
     <button id="xray-design-create" disabled>Create in Xray as Jira test cases</button>
@@ -365,8 +394,10 @@ Expect 201.'></textarea>
   </div>
   <div id="xray-design-result" class="result"></div>
   <pre id="xray-design-log" class="log" hidden></pre>
+  </div>
 
-  <h3>Keys from this story's earlier jobs <span class="hint">another job of the same story may already have created these cases' Xray tests: the same title or the same steps is the same test, and its key is taken into this job -- nothing is sent to Jira. A title that only looks alike waits for you</span></h3>
+  <div id="xt-keys" class="input-panel" role="tabpanel" aria-labelledby="xt-tab-keys" hidden>
+  <p class="hint">Another job of the same story may already have created these cases' Xray tests: the same title or the same steps is the same test, and its key is taken into this job -- nothing is sent to Jira. A title that only looks alike waits for you.</p>
   <div class="row">
     <button id="story-keys-check">Look in earlier jobs</button>
     <button id="story-keys-take" disabled>Take the matching keys</button>
@@ -374,8 +405,10 @@ Expect 201.'></textarea>
   </div>
   <div id="story-keys-result" class="result"></div>
   <pre id="story-keys-log" class="log" hidden></pre>
+  </div>
 
-  <h3>Update in Xray <span class="hint">the cases' steps to the Xray tests they have: compared first (ours, Xray now, last synced); a test changed in Xray is never overwritten unless you choose it</span></h3>
+  <div id="xt-update" class="input-panel" role="tabpanel" aria-labelledby="xt-tab-update" hidden>
+  <p class="hint">The cases' steps to the Xray tests they have: compared first (ours, Xray now, last synced); a test changed in Xray is never overwritten unless you choose it.</p>
   <div class="row">
     <button id="xray-update-preview" type="button">Update in Xray: preview</button>
     <button id="xray-update-send" type="button" disabled>Send the chosen</button>
@@ -383,6 +416,9 @@ Expect 201.'></textarea>
   </div>
   <div id="xray-update-result" class="result"></div>
   <pre id="xray-update-log" class="log" hidden></pre>
+  </div>
+  </div>
+
 
   <h2 class="part" id="automate-part">Automate the cases <span class="hint">AI Agent writes REST Assured tests for the approved cases</span></h2>
   <p class="lede">

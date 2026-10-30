@@ -610,9 +610,9 @@ async function showSources(j) {
   }
   kids.push(group("Read around it", (s.around || []).map((a) => chip(a.ok ? (a.cut ? "cut" : "ok") : "bad", a.key,
     a.ok ? `${a.how}: ${a.summary || ""}${a.cut ? ` (${a.cut} chars cut)` : ""}` : `${a.how}: NOT read — ${a.reason}`))));
-  // "KEY (how): why" -- left out on purpose: not related to the story.
-  kids.push(group("Linked, not related (not read)", (st.linked_not_read || []).map((p) =>
-    chip("cut", p.split(" ")[0], `left out: ${p.slice(p.indexOf(" ") + 1)}`))));
+  // The issues left out on purpose (tests, bugs, other projects linked to
+  // the story) are not shown: a list of what was NOT used read as noise
+  // (asked 2026-10-30). brief.md still names them.
   kids.push(group("Confluence pages", (s.pages || []).map((p) => chip(p.cut ? "cut" : "ok",
     p.pasted ? "pasted" : (p.link.length > 60 ? p.link.slice(0, 57) + "…" : p.link),
     `${k(p.chars)}${p.cut ? `, ${p.cut} cut` : ""}${p.from_story ? ` — linked from ${p.from_story}` : ""}`, p.link))));
@@ -1003,12 +1003,26 @@ function requirementsGiven() {
 // requirements, the developer's change -- one tab each above Read it, so
 // none is scrolled past to reach another. A tab shows a dot while
 // something is given in it, counted as the steps that read it count it.
-function showInput(name) {
-  for (const b of document.querySelectorAll(".input-tabs [role=tab]")) {
-    const on = b.dataset.in === name;
+// Every strip of tabs inside tab 1 works the same way: the inputs above
+// Read it, the tools under the review, Xray. A button opens the panel it
+// controls and closes its own strip's others.
+function selectTab(button) {
+  if (!button) return;
+  for (const b of button.closest("[role=tablist]").querySelectorAll("[role=tab]")) {
+    const on = b === button;
     b.setAttribute("aria-selected", String(on));
     b.tabIndex = on ? 0 : -1;
-    $(`in-${b.dataset.in}`).hidden = !on;
+    const panel = $(b.getAttribute("aria-controls"));
+    if (panel) panel.hidden = !on;
+  }
+}
+function showInput(name) {
+  selectTab($(`in-tab-${name}`));
+}
+// A step that points at something in a closed tab opens that tab first.
+function revealPanel(el) {
+  for (let p = el && el.closest(".input-panel"); p; p = p.parentElement && p.parentElement.closest(".input-panel")) {
+    if (p.hidden) selectTab(document.querySelector(`[role=tab][aria-controls="${p.id}"]`));
   }
 }
 function markInputs() {
@@ -1027,13 +1041,13 @@ function markInputs() {
   }
 }
 for (const b of document.querySelectorAll(".input-tabs [role=tab]")) {
-  b.onclick = () => showInput(b.dataset.in);
+  b.onclick = () => selectTab(b);
   b.onkeydown = (e) => {                   // arrows move along the tabs, as a tablist does
-    const tabs = [...document.querySelectorAll(".input-tabs [role=tab]")];
+    const tabs = [...b.closest("[role=tablist]").querySelectorAll("[role=tab]")];
     const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
     if (!step) return;
     const next = tabs[(tabs.indexOf(b) + step + tabs.length) % tabs.length];
-    showInput(next.dataset.in);
+    selectTab(next);
     next.focus();
     e.preventDefault();
   };
@@ -1708,6 +1722,7 @@ function goToStep(tab, target) {
   if (button && button.getAttribute("aria-selected") !== "true") button.click();
   const there = $(target);
   if (!there) return;
+  revealPanel(there);
   there.scrollIntoView({ behavior: "smooth", block: "center" });
   // A moment's highlight, so the eye lands on it.
   there.classList.add("here");

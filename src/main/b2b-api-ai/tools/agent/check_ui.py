@@ -876,6 +876,27 @@ def main() -> int:
                   < panels[4] < html.find('id="devcode-repo"') < html.find('id="run-intake"'))
             check("the developer's change is still checked under the designed cases",
                   html.find('id="run-design"') < html.find('id="devcode-run"'))
+            # Asked for 2026-10-30: under the review, the tools on the cases
+            # are tabs, then Finalize, then Xray as tabs; the notes go above
+            # the Design button; what was left out of the read is not listed.
+            at = {k: html.find(f'id="{k}"') for k in (
+                "design-notes", "run-design", "design-review", "case-tools", "ct-refine", "ct-suites",
+                "ct-devcode", "ct-doc", "wf-finalize", "xray-tools", "xt-create", "xt-keys", "xt-update",
+                "automate-part")}
+            check("the notes are given above the Design button",
+                  0 < at["design-notes"] < at["run-design"])
+            check("under the review: the tools on the cases as tabs, then Finalize, then Xray as tabs",
+                  all(v > 0 for v in at.values())
+                  and at["run-design"] < at["design-review"] < at["case-tools"] < at["ct-refine"] < at["ct-suites"]
+                  < at["ct-devcode"] < at["ct-doc"] < at["wf-finalize"] < at["xray-tools"] < at["xt-create"]
+                  < at["xt-keys"] < at["xt-update"] < at["automate-part"]
+                  and 'id="ct-refine" class="input-panel" role="tabpanel" aria-labelledby="ct-tab-refine">' in html
+                  and 'id="xt-create" class="input-panel" role="tabpanel" aria-labelledby="xt-tab-create">' in html
+                  and all(f'id="{p}" class="input-panel" role="tabpanel" aria-labelledby="{p[:2]}-tab-{p[3:]}" hidden'
+                          in html for p in ("ct-suites", "ct-devcode", "ct-doc", "xt-keys", "xt-update")))
+            app_js = io.open(os.path.join(HERE, "ui", "app.js"), encoding="utf-8").read()
+            check("the sources do not list what was left out", "Linked, not related" not in app_js
+                  and "revealPanel(there)" in app_js)
             check("the developer's change can be read from its own tab, before Design",
                   panels[4] < html.find('id="devread-run"') < html.find('id="run-intake"')
                   and 'id="devread-log" class="log" hidden' in html)
