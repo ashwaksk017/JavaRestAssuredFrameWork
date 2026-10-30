@@ -248,6 +248,11 @@ class Refusing(unittest.TestCase):
         self.assertIn("protocol.allow=never", joined)
 
 
+def commit_in(args):
+    """The commit a `git show` names: after it may come `--` and pathspecs."""
+    return next((a for a in args if len(a) == 40 and all(c in "0123456789abcdef" for c in a)), "")
+
+
 def fake_git(log_out, by_sha):
     calls = []
 
@@ -264,7 +269,7 @@ def fake_git(log_out, by_sha):
             if args[1].startswith("refs/remotes/origin/feature/x:"):
                 path = args[1].split(":", 1)[1]
                 return (0, TIPS[path]) if path in TIPS else (128, "fatal: no such path")
-            sha = args[-1]
+            sha = commit_in(args)
             if "--numstat" in args:
                 return 0, "".join(f"3\t1\t{p}\n" for p in TIPS)
             return 0, by_sha.get(sha, "")
@@ -544,7 +549,7 @@ def git_with(log_out, by_sha, *, branch_missing=False, tip=TIP_SHA):
                 return (0, TIPS[path]) if path in TIPS else (128, "fatal: no such path")
             if "--numstat" in args:
                 return 0, "".join(f"3\t1\t{p}\n" for p in TIPS)
-            return 0, by_sha.get(args[-1], "")
+            return 0, by_sha.get(commit_in(args), "")
         return 1, f"unexpected {args}"
     return runner, calls
 
@@ -715,6 +720,164 @@ class ComparingMore(unittest.TestCase):
                   "endpoint": "DELETE /bookings/{id}", "state": "", "text": "cancel"}]
         gaps, _ = dc.compare(found, cases)
         self.assertEqual((gaps[0]["kind"], gaps[0]["severity"]), ("removed-endpoint", "high"))
+
+
+# ---- 2026-10-30, second review: what the first reading got wrong -----------------
+
+ACCESS_WAS = ACCESS_TIP.replace("'OWNER','ADMIN','TRAVEL_COORDINATOR'", "'OWNER','ADMIN'")
+
+
+def created(path, text):
+    """A new file, as git shows one: from /dev/null."""
+    lines = text.splitlines()
+    return (f"diff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n"
+            f"@@ -0,0 +1,{len(lines)} @@\n" + "".join(f"+{l}\n" for l in lines))
+
+
+def deleted(path, text):
+    lines = text.splitlines()
+    return (f"diff --git a/{path} b/{path}\ndeleted file mode 100644\n--- a/{path}\n+++ /dev/null\n"
+            f"@@ -1,{len(lines)} +0,0 @@\n" + "".join(f"-{l}\n" for l in lines))
+
+
+class SecondReview(unittest.TestCase):
+    def read_tc(self):
+        return dc.analyse(ACCESS_DIFF, lambda p: ACCESS_TIP, lambda p: ACCESS_WAS)
+
+    def test_the_role_a_rule_gains_is_named_and_the_rule_it_replaced_keeps_its_endpoint(self):
+        f = self.read_tc()
+        self.assertEqual(f["access_changes"], [{"endpoint": "GET /v1/bookings/{id}", "gained": ["TRAVEL_COORDINATOR"],
+                                                "lost": [], "evidence": f["access_changes"][0]["evidence"]}])
+        removed = [a for a in f["access"] if a["change"] == "removed"]
+        self.assertEqual(removed[0]["endpoint"], "GET /v1/bookings/{id}")
+
+    def test_a_role_gained_is_not_tested_by_another_roles_case(self):
+        f = self.read_tc()
+        owner = [{"id": "TC-001", "title": "owner reads", "type": "positive", "verb": "GET", "path": "/bookings/{id}",
+                  "endpoint": "GET /bookings/{id}", "state": "", "text": "owner reads the booking; a guest gets 403"}]
+        gaps, _ = dc.compare(f, owner)
+        self.assertTrue(any(g["kind"] == "access" and g["severity"] == "high" and "TRAVEL_COORDINATOR" in g["title"]
+                            for g in gaps), [g["title"] for g in gaps])
+        tc = owner + [{"id": "TC-002", "title": "travel coordinator reads", "type": "positive", "verb": "GET",
+                       "path": "/bookings/{id}", "endpoint": "GET /bookings/{id}", "state": "",
+                       "text": "a travel coordinator reads the booking 200"}]
+        gaps, covered = dc.compare(f, tc)
+        self.assertFalse([g for g in gaps if g["kind"] == "access"], [g["title"] for g in gaps])
+        self.assertTrue(any("TRAVEL_COORDINATOR may now call" in c["what"] for c in covered))
+
+    def test_a_role_lost_needs_a_case_showing_it_refused(self):
+        f = dc.analyse(ACCESS_DIFF.replace("+    @PreAuthorize(\"hasAnyRole('OWNER','ADMIN','TRAVEL_COORDINATOR')\")",
+                                           "+    @PreAuthorize(\"hasAnyRole('OWNER')\")"),
+                       lambda p: ACCESS_TIP.replace("'OWNER','ADMIN','TRAVEL_COORDINATOR'", "'OWNER'"),
+                       lambda p: ACCESS_WAS)
+        self.assertEqual(f["access_changes"][0]["lost"], ["ADMIN"])
+        gaps, _ = dc.compare(f, [])
+        self.assertTrue(any("ADMIN may no longer call" in g["title"] for g in gaps))
+        self.assertIn("may no longer be called by ADMIN", dc.devchange.block({"found": f, "commits": [1]}))
+
+    def test_a_moved_controller_is_neither_removed_nor_new_and_its_edit_still_counts(self):
+        old, new = "src/main/java/a/BookingController.java", "src/main/java/b/BookingController.java"
+        edited = ACCESS_TIP.replace("return ResponseEntity.ok(service.get(id));",
+                                    "return ResponseEntity.ok(service.find(id));")
+        d = deleted(old, ACCESS_TIP) + created(new, edited)
+        f = dc.analyse(d, lambda p: edited if p == new else "", lambda p: ACCESS_TIP if p == old else "")
+        self.assertEqual(f["removed_endpoints"], [])
+        self.assertEqual([(e["how"], e["path"]) for e in f["endpoints"]], [("changed", "/v1/bookings/{id}")])
+        self.assertEqual(f["access"], [], "the rule moved with the file: not a change")
+
+    def test_only_the_files_read_are_diffed(self):
+        runner, calls = fake_git(lambda g: "", {SHA: DIFF})
+        dc.patches(dc.Git("x", "", runner), [SHA])
+        body = next(c for c in calls if c[0] == "show" and "--numstat" not in c)
+        specs = body[body.index("--") + 1:]
+        self.assertIn("*.java", specs)
+        self.assertIn(":(exclude)*/node_modules/*", specs)
+        self.assertIn(":(exclude)*/package-lock.json", specs)
+        numstat = next(c for c in calls if "--numstat" in c)
+        self.assertNotIn("--", numstat, "the file list still names every file")
+
+    def test_one_huge_file_cannot_starve_the_code_of_a_later_commit(self):
+        big = "src/main/resources/vectorstore.json"
+        first = "b" * 40
+        huge = diff_of(big, added=["x" * 200] * 2000)                  # ~400,000 characters
+        runner, _ = fake_git(lambda g: "", {first: huge, SHA: DIFF})
+        text, _files, cut = dc.patches(dc.Git("x", "", runner), [SHA, first])   # newest first, as log gives
+        self.assertEqual([c["path"] for c in cut], [big])
+        self.assertLess(text.index(CONTROLLER), text.index(big), "code comes first")
+        f = dc.analyse(text, lambda p: TIPS.get(p, ""))
+        self.assertTrue(any(e["verb"] == "POST" for e in f["endpoints"]))
+
+    def test_kotlin_fields_and_its_field_validation(self):
+        path = "src/main/kotlin/com/acme/dto/TravelerRequest.kt"
+        tip = 'data class TravelerRequest(\n    @field:Size(max = 50)\n    val guestId: String,\n    val role: String?\n)\n'
+        f = dc.analyse(diff_of(path, added=["    @field:Size(max = 50)", "    val guestId: String,"], start=2),
+                       lambda p: tip)
+        self.assertEqual([(v["rule"], v["field"]) for v in f["validations"]], [("@Size(max = 50)", "guestId")])
+        self.assertIn("guestId", [x["name"] for x in f["fields"]])
+        rules, fields = dc._class_rules(tip)
+        self.assertEqual(fields, ["guestId", "role"])
+
+    def test_the_controllers_nearest_the_change_are_read_first(self):
+        far = "aaa/src/main/java/z/TravelerController.java"
+        near = "src/main/java/com/acme/TravelerController.java"
+        read = []
+
+        def tip(p):
+            read.append(p)
+            return {near: CONTROLLER_TIP, DTO: TIPS[DTO]}.get(p, "")
+        was = dc.MAX_CONTEXT_FILES
+        dc.MAX_CONTEXT_FILES = 1
+        try:
+            f = dc.analyse(diff_of(DTO, added=["    @Size(max = 50)", "    private String guestId;"], start=8),
+                           tip, None, lambda: [far, near, DTO])
+        finally:
+            dc.MAX_CONTEXT_FILES = was
+        self.assertIn(near, read)
+        self.assertNotIn(far, read)
+        self.assertTrue(any(e["verb"] == "POST" for e in f["endpoints"]))
+
+    def test_of_two_classes_of_one_name_the_nearest_is_read(self):
+        ctrl = "src/main/java/com/acme/TravelerController.java"
+        other = "legacy/src/main/java/old/dto/TravelerFilterRequest.java"
+        texts = {ctrl: CONTROLLER_TIP, DTO: TIPS[DTO], other: "public class TravelerFilterRequest {\n"
+                                                                 "    @NotNull private String legacyOnly;\n}\n"}
+        f = dc.analyse(diff_of(ctrl, added=['    @PostMapping("/{memberId}/travelers")'], start=16),
+                       lambda p: texts.get(p, ""), None, lambda: [other, ctrl, DTO])
+        c = next(x for x in f["contract"] if x["endpoint"].startswith("POST"))
+        self.assertNotIn("legacyOnly", [r["field"] for r in c["rules"]])
+
+    def test_a_one_segment_path_does_not_match_the_end_of_a_longer_one(self):
+        self.assertFalse(dc.same_endpoint("GET", "/{id}", "GET", "/accounts/{accountId}"))
+        self.assertTrue(dc.same_endpoint("GET", "/{id}", "GET", "/{x}"))
+        self.assertTrue(dc.same_endpoint("GET", "/v1/a/{id}", "GET", "/a/{x}"))
+
+    def test_the_token_goes_only_to_a_host_the_configuration_names(self):
+        gl, gh = dc.parse_repo("https://gitlab.acme.test/t/s.git"), dc.parse_repo("https://github.com/o/r.git")
+        self.assertEqual(dc.token_for(gl, {"token": "t", "base_urls": ["https://gitlab.acme.test"]}), "t")
+        self.assertEqual(dc.token_for(gh, {"token": "t", "base_urls": ["https://gitlab.acme.test"]}), "")
+        self.assertEqual(dc.token_for(gh, {"token": "t", "hosts": {"github.com": {"kind": "github"}}}), "t")
+        self.assertEqual(dc.token_for(gl, {"token": "t"}), "", "named nowhere: sent nowhere")
+
+
+class SecondReviewRuns(ReadingAChange):
+    """(ReadingAChange's own tests run again with these; they take a second.)"""
+
+    def test_with_the_stand_ins_on_the_real_repository_is_not_read(self):
+        real = dc.loop.mock.on
+        dc.loop.mock.on = lambda service: service == "jira"
+        try:
+            with self.assertRaises(dc.Refused) as ctx:
+                dc.read_change(self.job, "https://gitlab.acme.test/t/svc.git", "feature/x", root=self.root)
+        finally:
+            dc.loop.mock.on = real
+        self.assertIn("stand-ins are on", str(ctx.exception))
+
+    def test_a_reused_reading_says_this_runs_notes_too(self):
+        runner, _ = git_with(lambda g, a: f"{SHA}\x1fD\x1f2026-10-01T10:00:00+00:00\x1fABC-77 x\x1e", {SHA: DIFF})
+        self.read(runner)
+        (reading, _), _ = self.read(runner, transport=lambda u, h: (401, None))
+        self.assertTrue(reading["reused"])
+        self.assertTrue(any("token was refused" in n for n in reading["notes"]), reading["notes"])
 
 
 if __name__ == "__main__":

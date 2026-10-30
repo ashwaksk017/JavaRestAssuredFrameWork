@@ -840,5 +840,50 @@ class PuttingAnOutcomeAway(unittest.TestCase):
             jobs.dismiss_review("../x")
 
 
+class TheDevelopersChange(unittest.TestCase):
+    """The Developer's change tab: read on its own, and kept with the job by
+    a design request (2026-10-30)."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="jobs_dev_")
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        for owner in (jobs, jobs.intake):
+            self.addCleanup(setattr, owner, "ROOT", owner.ROOT)
+            owner.ROOT = self.root
+
+    def test_reading_it_is_devcode_read_with_the_tabs_fields(self):
+        r = jobs.RUNNABLES["devcode-read"]
+        self.assertTrue(r["argv"][2].endswith("devcode.py"))
+        self.assertIn("--read", r["argv"])
+        self.assertEqual(set(r["options"]), {"--job", "--repo", "--branch", "--ticket", "--base"})
+
+    def test_the_page_may_read_the_reading_and_the_kept_fields(self):
+        out = jobs.job_dir("j1")
+        os.makedirs(out)
+        for name in ("devchange.json", "devcode-input.json"):
+            with io.open(os.path.join(out, name), "w", encoding="utf-8") as fh:
+                fh.write("{}")
+            self.assertEqual(jobs.read_artifact("j1", name), "{}")
+
+    def test_a_design_request_keeps_the_tab_and_an_emptied_tab_forgets_it(self):
+        spec = importlib.util.spec_from_file_location("server_under_test", os.path.join(HERE, "server.py"))
+        server = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(server)
+        started = []
+        self.addCleanup(setattr, server.jobs, "start", server.jobs.start)
+        self.addCleanup(setattr, server.jobs, "ROOT", server.jobs.ROOT)
+        server.jobs.ROOT = self.root
+        server.jobs.start = lambda job, runnable, options: started.append(runnable) or {"started": True}
+        kept = os.path.join(server.jobs.job_dir("j1"), "devcode-input.json")
+        server.Handler._design(None, {"job": "j1", "devcode": {"repo": "https://git.example.test/t/s.git",
+                                                               "branch": "feature/x", "ticket": "", "base": ""}})
+        with io.open(kept, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)["branch"], "feature/x")
+        server.Handler._design(None, {"job": "j1", "devcode": {"repo": "https://git.example.test/t/s.git",
+                                                               "branch": "", "ticket": "", "base": ""}})
+        self.assertFalse(os.path.exists(kept), "an emptied tab is not read from the last one")
+        self.assertEqual(started, ["agent-design", "agent-design"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

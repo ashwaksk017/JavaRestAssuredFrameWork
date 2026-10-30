@@ -45,6 +45,10 @@ def same_endpoint(a_verb: str, a_path: str, b_verb: str, b_path: str) -> bool:
     a, b = norm_path(a_path), norm_path(b_path)
     if not a or not b:
         return False
+    # A one-segment path (`/{id}`, `/search`) says too little to match the
+    # end of a longer one: every path ending in a parameter would.
+    if min(len(a), len(b)) < 2 and len(a) != len(b):
+        return False
     n = min(len(a), len(b))
     # A class prefix (/v1, /api) may be on one side only: the ends must agree.
     return a[-n:] == b[-n:] and n >= max(1, min(len(a), len(b)))
@@ -169,6 +173,13 @@ def block(reading: dict, wanted=None, limit: int = LIMIT) -> str:
         if _kept(key, wanted):
             eps.append(f"- REMOVED {key}")
     part("Endpoints:", eps)
+    part("Who may call what, CHANGED (each role gained needs a case calling as it; each role lost a "
+         "case showing it refused):",
+         [f"- {d['endpoint']}:"
+          + (f" may now be called by {', '.join(d['gained'])}" if d.get("gained") else "")
+          + ("; " if d.get("gained") and d.get("lost") else "")
+          + (f" may no longer be called by {', '.join(d['lost'])}" if d.get("lost") else "")
+          for d in f.get("access_changes") or [] if _kept(d.get("endpoint", ""), wanted)])
     part("Access rules (who may call what):",
          [f"- {a.get('change', 'added')}: {_one(a.get('rule'), 200)}"
           + (f" -- roles {', '.join(a.get('roles') or [])}" if a.get("roles") else "")

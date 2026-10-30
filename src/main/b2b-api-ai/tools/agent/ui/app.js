@@ -2131,6 +2131,7 @@ $("run-design").onclick = async () => {
       stopCursorLog();
       showDesign(j, true);
       showSources(j);
+      showDevRead(j);                        // the design read the branch again first
       // One run. Left ticked, every later click would pay again in silence.
       $("design-fresh").checked = false;
       button.disabled = false;
@@ -2297,11 +2298,11 @@ async function showDevRead(j) {
   const given = await artifactJson(j, "devcode-input.json");
   if (j !== job()) return;
   if (given) {
-    for (const k of ["repo", "branch", "ticket", "base"]) {
-      if (given[k] && !$(`devcode-${k}`).value.trim()) $(`devcode-${k}`).value = given[k];
-    }
-    markInputs();
+    // What the job kept wins over what the browser remembers from another
+    // job: this job's branch was read from this job's repository.
+    for (const k of ["repo", "branch", "ticket", "base"]) $(`devcode-${k}`).value = given[k] || "";
   }
+  markInputs();
   const r = await artifactJson(j, "devchange.json");
   if (j !== job()) return;
   if (!r || !r.found) { box.replaceChildren(); return; }
@@ -2353,6 +2354,8 @@ $("job").addEventListener("change", () => {
   // the branch it merges into usually are): the job's own are shown, if any.
   $("devcode-branch").value = "";
   $("devcode-ticket").value = "";
+  $("devread-result").replaceChildren();
+  markInputs();
   showDevRead();
 });
 

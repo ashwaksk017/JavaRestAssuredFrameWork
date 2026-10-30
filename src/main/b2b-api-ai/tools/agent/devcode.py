@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import collections
 import contextlib
 import hashlib
 import importlib.util
@@ -132,6 +133,10 @@ DTO_NAME_RX = re.compile(r"(Request|Response|Dto|DTO|Payload|Resource|Model|Body
 FIELD_RX = re.compile(r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:private|protected|public)\s+(?!static\b|class\b|enum\b|"
                       r"interface\b|record\b|abstract\b)(?:final\s+)?[\w<>\[\],.? ]+?\s+([a-z_]\w*)\s*(?:=[^;]*)?;")
 RECORD_RX = re.compile(r"^\s*(?:public\s+)?record\s+\w+\s*\(([^)]*)\)")
+# Kotlin: `val name: String,` in a data class or a body; validation is
+# written `@field:Size(max = 50)` (or get:/param:) as well as `@Size`.
+KOTLIN_FIELD_RX = re.compile(r"\b(?:val|var)\s+([a-z_]\w*)\s*:")
+VALIDATION_RX = re.compile(r"@(?:field:|get:|param:)?(" + "|".join(VALIDATIONS) + r")\b(\([^)]*\))?")
 JSONPROP_RX = re.compile(r'@JsonProperty\(\s*(?:value\s*=\s*)?"([^"]+)"')
 ENUM_CONST_RX = re.compile(r"^\s*([A-Z][A-Z0-9_]{1,60})\s*(?:\(.*\))?\s*[,;]?\s*(?://.*)?$")
 ERROR_CODE_RX = re.compile(r'"([A-Z][A-Z0-9]{1,15}[_-][A-Z0-9_-]{2,40})"')
@@ -188,6 +193,22 @@ def settings() -> dict:
         return sec if isinstance(sec, dict) else {}
     except Exception:                                    # noqa: BLE001
         return {}
+
+
+def _hosts(urls) -> set:
+    return {(urlparse(a if "://" in a else "https://" + a).hostname or "").lower()
+            for a in urls or [] if str(a).strip()} - {""}
+
+
+def token_for(repo: dict, cfg: dict) -> str:
+    """devcode_config.token, for a host the configuration names (in
+    base_urls or hosts) -- never for any other: one token sent to whatever
+    address a person types would hand a GitLab token to github.com."""
+    token = str((cfg or {}).get("token") or "").strip()
+    named = _hosts((cfg or {}).get("base_urls") or [])
+    if isinstance((cfg or {}).get("hosts"), dict):
+        named |= {str(h).lower() for h in cfg["hosts"]}
+    return token if token and repo["host"] in named else ""
 
 
 def parse_repo(url: str, allowed=None) -> dict:
@@ -410,9 +431,34 @@ def ticket_keys(job_dir: str, ticket: str = "") -> list:
     return out[:20]
 
 
+# What the reading reads, and nothing else: the 600,000 characters a change
+# gets were spent on lock files, built assets and test data before the
+# code (a real branch of two commits filled them, 2026-10-30). The file
+# list (numstat) is not narrowed: it says what else changed.
+READ_FILES = ("*.java", "*.kt", "*.yaml", "*.yml", "*.json", "*.properties")
+SKIP_DIRS = ("node_modules", "target", "build", "dist", "generated", "src/test/resources", ".mvn", ".gradle")
+SKIP_FILES = ("package-lock.json", "yarn.lock", "pnpm-lock.yaml", "composer.lock", "tsconfig.json")
+
+
+def read_pathspecs() -> list:
+    out = list(READ_FILES)
+    for d in SKIP_DIRS:
+        out += [f":(exclude){d}/*", f":(exclude)*/{d}/*"]
+    for f in SKIP_FILES:
+        out += [f":(exclude){f}", f":(exclude)*/{f}"]
+    return out
+
+
+PER_FILE_PATCH = 80_000      # characters of one file's diff in one commit
+
+
 def patches(git, shas: list) -> tuple:
-    """(unified diff of the commits, oldest first; [file stats])."""
-    text, stats, seen = [], {}, 0
+    """(unified diff of the commits, of the files the reading reads; [file
+    stats] of every file; [files whose diff was cut]). One file gets at most
+    PER_FILE_PATCH characters a commit, and code (Java, Kotlin) comes before
+    the rest: a 5 MB data file in resources/ took a real branch's whole
+    budget, and the Java of its next commit was never read (2026-10-30)."""
+    code, other, stats, cut = [], [], {}, []
     for sha in reversed(shas):
         num = git("show", "--format=", "--numstat", "--no-renames", sha)
         for line in num.splitlines():
@@ -423,11 +469,24 @@ def patches(git, shas: list) -> tuple:
                 s["added"] += int(a) if a.isdigit() else 0
                 s["removed"] += int(r) if r.isdigit() else 0
                 s["commits"] += 1
-        if seen < MAX_PATCH:
-            body = git("show", "--format=", "-U3", "--no-color", "--no-renames", sha)
-            text.append(body[:MAX_PATCH - seen])
-            seen += len(text[-1])
-    return "\n".join(text), sorted(stats.values(), key=lambda s: s["path"])
+        body = git("show", "--format=", "-U3", "--no-color", "--no-renames", sha, "--", *read_pathspecs())
+        for section in re.split(r"(?m)^(?=diff --git )", body):
+            if not section.strip():
+                continue
+            head = section.split("\n", 1)[0]
+            m = re.match(r"diff --git a/(\S+) b/(\S+)", head)
+            path = m.group(2) if m else head[11:]
+            if len(section) > PER_FILE_PATCH:
+                cut.append({"path": path, "chars": len(section)})
+                section = section[:PER_FILE_PATCH].rsplit("\n", 1)[0] + "\n"
+            (code if path.lower().endswith((".java", ".kt")) else other).append(section)
+    text, seen = [], 0
+    for section in code + other:
+        if seen >= MAX_PATCH:
+            break
+        text.append(section[:MAX_PATCH - seen])
+        seen += len(text[-1])
+    return "".join(text), sorted(stats.values(), key=lambda s: s["path"]), cut
 
 
 def file_at(git, ref: str, path: str) -> str:
@@ -579,8 +638,8 @@ def find_review(repo: dict, branch: str, token: str, cfg: dict, transport=None) 
 
 def split_diff(diff: str) -> list:
     """[{path, added: [(line no, text)], removed: [(old line no, text)], touched: [new line no],
-    deleted}] One entry a file per commit, in order. A deleted file keeps its
-    old path, `deleted` true: what it served is gone."""
+    deleted, created}] One entry a file per commit, in order. A deleted file
+    keeps its old path, `deleted` true: what it served is gone."""
     out, cur, new_no, old_no, old_path = [], None, 0, 0, ""
     for line in (diff or "").splitlines():
         if line.startswith("diff --git "):
@@ -596,7 +655,8 @@ def split_diff(diff: str) -> list:
             deleted = path == "/dev/null"
             if deleted:
                 path = old_path
-            cur = {"path": path, "added": [], "removed": [], "touched": [], "deleted": deleted}
+            cur = {"path": path, "added": [], "removed": [], "touched": [], "deleted": deleted,
+                   "created": old_path == "/dev/null"}
             if path and path != "/dev/null":
                 out.append(cur)
             continue
@@ -760,13 +820,26 @@ def _enclosing(endpoints: list, line_no: int):
     return best
 
 
+def _field_name(line: str, plain: bool = False) -> str:
+    """The field a line declares: its JSON name when @JsonProperty gives
+    one (unless `plain`), else the Java or Kotlin name; "" when none."""
+    jp = None if plain else JSONPROP_RX.search(line)
+    if jp:
+        return jp.group(1)
+    m = FIELD_RX.match(line) or KOTLIN_FIELD_RX.search(line)
+    return m.group(1) if m else ""
+
+
 def _field_after(lines: list, idx: int) -> str:
     """The name declared on line idx (0-based) or the next code line."""
     for j in range(idx, min(idx + 4, len(lines))):
         s = lines[j].strip()
         if not s or (s.startswith("@") and j != idx and not re.search(r"\)\s*\w", s)):
             continue
-        s = re.sub(r"@\w+(\([^)]*\))?", " ", s)
+        s = re.sub(r"@[\w:]+(\([^)]*\))?", " ", s)
+        k = KOTLIN_FIELD_RX.search(s)
+        if k:
+            return k.group(1)
         m = re.search(r"([A-Za-z_]\w*)\s*(?:=[^;]*)?(?:;|,|\)\s*[,{)]?)\s*$", s) or \
             re.search(r"\b([a-z_]\w*)\s*[,)]", s)
         if m and m.group(1) not in ("final", "String", "Integer", "Long", "int", "long", "boolean"):
@@ -855,13 +928,11 @@ def _class_rules(text: str) -> tuple:
     lines = text.splitlines()
     rules, fields = [], []
     for i, t in enumerate(lines):
-        for v in re.finditer(r"@(" + "|".join(VALIDATIONS) + r")\b(\([^)]*\))?", t):
+        for v in VALIDATION_RX.finditer(t):
             rule = {"field": _field_after(lines, i), "rule": "@" + v.group(1) + (v.group(2) or "")}
             if rule not in rules:
                 rules.append(rule)
-        jp = JSONPROP_RX.search(t)
-        m = FIELD_RX.match(t)
-        name = jp.group(1) if jp else (m.group(1) if m else "")
+        name = _field_name(t)
         r = RECORD_RX.match(t)
         names = [name] if name else []
         if r:
@@ -870,6 +941,51 @@ def _class_rules(text: str) -> tuple:
             if re.fullmatch(r"[A-Za-z_][\w-]*", nm) and nm.lower() not in COMMON_FIELDS and nm not in fields:
                 fields.append(nm)
     return rules[:40], fields[:40]
+
+
+def _nearness(a: str, b: str) -> int:
+    """How many leading folders two paths share."""
+    n = 0
+    for x, y in zip(a.split("/")[:-1], b.split("/")[:-1]):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def _pair_moves(entries: list) -> None:
+    """A file moved to another package comes as a deletion and a creation
+    (--no-renames). Paired by name, the lines the move kept are taken out of
+    both -- they are not a change; what the developer also edited stays.
+    Without this a moved controller read as every endpoint removed and
+    added, and a moved request class as every field and rule new."""
+    gone = {}
+    for f in entries:
+        if f.get("deleted"):
+            gone.setdefault(os.path.basename(f["path"]), []).append(f)
+    for f in entries:
+        olds = gone.get(os.path.basename(f["path"])) if f.get("created") else None
+        if not olds:
+            continue
+        old = olds.pop(0)
+        was = collections.Counter(t.strip() for _n, t in old["removed"])
+        now = collections.Counter(t.strip() for _n, t in f["added"])
+        kept_added, kept_removed = [], []
+        left = dict(was)
+        for n, t in f["added"]:
+            if left.get(t.strip(), 0) > 0:
+                left[t.strip()] -= 1
+            else:
+                kept_added.append((n, t))
+        left = dict(now)
+        for n, t in old["removed"]:
+            if left.get(t.strip(), 0) > 0:
+                left[t.strip()] -= 1
+            else:
+                kept_removed.append((n, t))
+        f["added"], f["touched"] = kept_added, [n for n, _t in kept_added]
+        old["removed"] = kept_removed
+        f["moved_from"], old["moved_to"] = old["path"], f["path"]
 
 
 def analyse(diff: str, tip=None, before=None, listing=None) -> dict:
@@ -883,7 +999,8 @@ def analyse(diff: str, tip=None, before=None, listing=None) -> dict:
     before = before or (lambda path: "")
     found = {"endpoints": {}, "statuses": [], "validations": [], "fields": [], "removed_fields": [],
              "enums": [], "error_codes": [], "params": [], "config": [], "dev_tests": [],
-             "access": [], "removed_endpoints": [], "messages": [], "spec_changes": [], "contract": []}
+             "access": [], "removed_endpoints": [], "messages": [], "spec_changes": [], "contract": [],
+             "access_changes": []}
     tip_cache = {}
     budget = {"context": MAX_CONTEXT_FILES}
     listed = []
@@ -943,7 +1060,11 @@ def analyse(diff: str, tip=None, before=None, listing=None) -> dict:
         enc = enclosing_at(eps, line_no)
         return f"{enc[1]} {enc[2]}" if enc else ""
 
-    for f in split_diff(diff):
+    entries = split_diff(diff)
+    _pair_moves(entries)
+    tip_eps_all = set()                          # (VERB, path) every changed file serves at the end
+    class_path = {}                              # a changed request/response class -> its file
+    for f in entries:
         path = f["path"]
         low = path.lower()
         added_text = "\n".join(t for _n, t in f["added"])
@@ -960,9 +1081,13 @@ def analyse(diff: str, tip=None, before=None, listing=None) -> dict:
             eps = java_endpoints(text) if text else []
             cls = os.path.basename(path).rsplit(".", 1)[0]
             is_dto = bool(DTO_PATH_RX.search("/" + path) or DTO_NAME_RX.search(path)
-                          or re.search(r"@(Data|Value|Getter|Builder|JsonProperty|Schema)\b", text or added_text))
+                          or re.search(r"@(Data|Value|Getter|Builder|JsonProperty|Schema)\b|\bdata\s+class\b",
+                                    text or added_text))
             is_enum = bool(re.search(r"\benum\s+\w+", text or added_text
                                      or "\n".join(t for _n, t in f["removed"])))
+            tip_eps_all.update((v, tuple(norm_path(p))) for _a, v, p in eps)
+            if is_dto:
+                class_path.setdefault(cls, path)
             added_lines = {n for n, _t in f["added"]}
             for at, verb, ep_path in eps:
                 if at in added_lines:
@@ -971,28 +1096,27 @@ def analyse(diff: str, tip=None, before=None, listing=None) -> dict:
                 enc = enclosing_at(eps, n)
                 if enc:
                     add_ep(enc[1], enc[2], "changed", f"{path}:{n}", (path, enc[0]), _access_near(lines, enc[0]))
-            # What the change took away: the endpoints the file served before
-            # and does not now (read only when a mapping was removed).
-            if f.get("deleted") or any(MAPPING_RX.search(t) or JAXRS_VERB_RX.search(t) for _n, t in f["removed"]):
+            # The file as it was: for the endpoints the change took away, and
+            # for the handler a removed access rule stood over. Read only when
+            # a mapping or an access rule was removed (or the file deleted).
+            old_eps = []
+            removed_mapping = any(MAPPING_RX.search(t) or JAXRS_VERB_RX.search(t) for _n, t in f["removed"])
+            if f.get("deleted") or removed_mapping or any(_is_access(t) for _n, t in f["removed"]):
                 was = before(path) or ""
-                if was and (text or f.get("deleted")):
-                    for at, verb, ep_path in java_endpoints(was):
+                old_eps = java_endpoints(was) if was else []
+                if old_eps and (text or f.get("deleted")) and (f.get("deleted") or removed_mapping):
+                    for at, verb, ep_path in old_eps:
                         if not any(verb == v2 and norm_path(ep_path) == norm_path(p2) for _a, v2, p2 in eps):
                             item = {"verb": verb, "path": ep_path, "evidence": f"{path} (was line {at})"}
                             if item not in found["removed_endpoints"]:
                                 found["removed_endpoints"].append(item)
-                    old_eps = java_endpoints(was)
-                else:
-                    old_eps = []
-            else:
-                old_eps = []
             for n, t in f["added"]:
                 enc = enclosing_at(eps, n) if eps else None
                 where = f"{enc[1]} {enc[2]}" if enc else ""
                 for code, how in _status_hits(t):
                     found["statuses"].append({"code": code, "how": how, "evidence": f"{path}:{n}",
                                               "endpoint": where})
-                for v in re.finditer(r"@(" + "|".join(VALIDATIONS) + r")\b(\([^)]*\))?", t):
+                for v in VALIDATION_RX.finditer(t):
                     idx = (n - 1) if text else [x for x, _y in f["added"]].index(n)
                     name = _field_after(lines, idx) if lines else ""
                     found["validations"].append({"rule": "@" + v.group(1) + (v.group(2) or ""),
@@ -1020,9 +1144,7 @@ def analyse(diff: str, tip=None, before=None, listing=None) -> dict:
                                             "evidence": f"{path} (was line {n})"})
             if is_dto:
                 for n, t in f["added"]:
-                    jp = JSONPROP_RX.search(t)
-                    m = FIELD_RX.match(t)
-                    name = jp.group(1) if jp else (m.group(1) if m else "")
+                    name = _field_name(t)
                     if name and name.lower() not in COMMON_FIELDS:
                         found["fields"].append({"name": name, "evidence": f"{path}:{n}", "class": cls})
                     r = RECORD_RX.match(t)
@@ -1031,13 +1153,12 @@ def analyse(diff: str, tip=None, before=None, listing=None) -> dict:
                             nm = comp.strip().split()[-1] if comp.strip() else ""
                             if re.fullmatch(r"[a-z_]\w*", nm or "") and nm.lower() not in COMMON_FIELDS:
                                 found["fields"].append({"name": nm, "evidence": f"{path}:{n}", "class": cls})
-                kept = {FIELD_RX.match(a).group(1) for _k, a in f["added"] if FIELD_RX.match(a)}
+                kept = {_field_name(a, plain=True) for _k, a in f["added"]} - {""}
                 for n, t in f["removed"]:
-                    m = FIELD_RX.match(t)
-                    if m and m.group(1).lower() not in COMMON_FIELDS:
-                        if m.group(1) not in kept:
-                            found["removed_fields"].append({"name": m.group(1), "evidence": f"{path} (was line {n})",
-                                                            "class": cls})
+                    name = _field_name(t, plain=True)
+                    if name and name.lower() not in COMMON_FIELDS and name not in kept:
+                        found["removed_fields"].append({"name": name, "evidence": f"{path} (was line {n})",
+                                                        "class": cls})
             if is_enum:
                 role_enum = bool(ROLE_FILE_RX.search(path))
                 for n, t in f["added"]:
@@ -1097,16 +1218,40 @@ def analyse(diff: str, tip=None, before=None, listing=None) -> dict:
                     found["access"].append({"rule": t.strip()[:200], "roles": _roles(t), "change": "added",
                                             "endpoint": "", "evidence": f"{path}:{n}"})
 
+    # An endpoint is removed only when no changed file serves it at the
+    # end: one in a file moved to another package was moved, not removed.
+    found["removed_endpoints"] = [r for r in found["removed_endpoints"]
+                                  if (r["verb"], tuple(norm_path(r["path"]))) not in tip_eps_all]
+
+    # Who may call what, before and after, endpoint by endpoint: the roles
+    # a changed rule GAINS and LOSES are what a test must show -- a role
+    # added beside two others is covered by none of the others' cases.
+    by_ep = {}
+    for a in found["access"]:
+        if a.get("endpoint"):
+            d = by_ep.setdefault(a["endpoint"], {"added": set(), "removed": set(), "evidence": []})
+            d["added" if a.get("change") != "removed" else "removed"].update(a.get("roles") or [])
+            d["evidence"].append(a["evidence"])
+    for ep, d in by_ep.items():
+        gained, lost = sorted(d["added"] - d["removed"]), sorted(d["removed"] - d["added"])
+        if gained or lost:
+            found["access_changes"].append({"endpoint": ep, "gained": gained, "lost": lost,
+                                            "evidence": d["evidence"][:4]})
+
     # ---- around the change: the endpoints a changed request or response
     # class is used by, and the whole rules of the classes the changed
     # endpoints take and give. Files are read whole, at the branch's end,
-    # within a budget; a blobless mirror fetches each once.
+    # within a budget -- the ones nearest the change first; a blobless
+    # mirror fetches each once.
     orphan = {x["class"] for key in ("fields", "validations", "removed_fields")
               for x in found[key] if x.get("class") and not x.get("endpoint")}
     if orphan and listing is not None:
         uses = {}
-        controllers = [p for p in files() if CONTROLLER_FILE_RX.search(p)
-                       and "/src/test/" not in "/" + p.lower()][:MAX_CONTEXT_FILES]
+        near = [class_path[k] for k in orphan if k in class_path]
+        controllers = sorted((p for p in files() if CONTROLLER_FILE_RX.search(p)
+                              and "/src/test/" not in "/" + p.lower()),
+                             key=lambda p: (-max((_nearness(p, q) for q in near), default=0), p))
+        controllers = controllers[:MAX_CONTEXT_FILES]
         for c in controllers:
             text = context_text(c)
             if not text or not any(k in text for k in orphan):
@@ -1131,7 +1276,12 @@ def analyse(diff: str, tip=None, before=None, listing=None) -> dict:
         for p in files():
             base = os.path.basename(p)
             if base.endswith((".java", ".kt")) and "/src/test/" not in "/" + p.lower():
-                by_name.setdefault(base.rsplit(".", 1)[0], p)
+                by_name.setdefault(base.rsplit(".", 1)[0], []).append(p)
+
+        def nearest(name: str, to: str) -> str:
+            """Two modules may each have a BookingRequest: the one nearest
+            the controller that names it."""
+            return max(by_name[name], key=lambda q: (_nearness(q, to), -len(q)))
         for ep in list(found["endpoints"].values())[:20]:
             src = ep.get("_src")
             if not src:
@@ -1145,10 +1295,10 @@ def analyse(diff: str, tip=None, before=None, listing=None) -> dict:
                      "response": "", "response_fields": []}
             if req and req.group(1) in by_name:
                 entry["request"] = req.group(1)
-                entry["rules"], _fields = _class_rules(context_text(by_name[req.group(1)]))
+                entry["rules"], _fields = _class_rules(context_text(nearest(req.group(1), src[0])))
             if resp and resp.group(1) in by_name and resp.group(1) not in ("Void", "Object", "String"):
                 entry["response"] = resp.group(1)
-                _rules, entry["response_fields"] = _class_rules(context_text(by_name[resp.group(1)]))
+                _rules, entry["response_fields"] = _class_rules(context_text(nearest(resp.group(1), src[0])))
             if entry["request"] or entry["response"]:
                 found["contract"].append(entry)
     # One of each: the same status at the same place reads once.
@@ -1310,7 +1460,40 @@ def compare(found: dict, cases: list) -> tuple:
             gap("error-code", "medium", f"Error code {e['code']} is not expected by any case",
                 f"the change writes the error code {e['code']}; no case checks for it", e["evidence"])
     denied_words = ("403", "forbidden", "not allowed", "denied", "unauthori", "no access", "cannot access")
+    # Endpoint by endpoint: each role a rule GAINS needs a case that calls it
+    # as that role, each role it LOSES a case that shows it refused. A role
+    # added beside OWNER is not tested by OWNER's case (2026-10-30).
+    asked_refusal, delta_eps = set(), set()
+    for d in found.get("access_changes") or []:
+        ep = d["endpoint"]
+        delta_eps.add(ep)
+        scope = _on(cases, ep) or cases
+        for role in d.get("gained") or []:
+            hit = [c["id"] for c in scope if _mentions([c], word_forms(role))]
+            if hit:
+                covered.append({"what": f"{role} may now call {ep}", "by": hit})
+            else:
+                gap("access", "high", f"{role} may now call {ep}: no case calls it as {role}",
+                    f"the change lets {role} call {ep}; no case calls it as {role} and checks it is "
+                    f"allowed", d["evidence"], ep)
+        for role in d.get("lost") or []:
+            hit = [c["id"] for c in scope if _mentions([c], word_forms(role))
+                   and any(w in c["text"] for w in denied_words)]
+            if hit:
+                covered.append({"what": f"{role} may no longer call {ep}", "by": hit})
+            else:
+                gap("access", "high", f"{role} may no longer call {ep}: no case checks it is refused",
+                    f"the change takes {ep} away from {role}; no case calls it as {role} and expects 403",
+                    d["evidence"], ep)
+        if d.get("gained") and ep not in asked_refusal \
+                and not any(any(w in c["text"] for w in denied_words) for c in scope):
+            asked_refusal.add(ep)
+            gap("access", "medium", f"No case checks that a caller without access is refused on {ep}",
+                f"the change sets who may call {ep}; a case calling it as a role it does not allow "
+                f"should expect 403", d["evidence"], ep)
     for a in found.get("access") or []:
+        if a.get("endpoint") in delta_eps:
+            continue                       # said above, as the roles it gains and loses
         roles = [r for r in a.get("roles") or [] if r.lower() not in ("permitall", "denyall")]
         scope = _on(cases, a.get("endpoint", "")) or cases
         where = f" on {a['endpoint']}" if a.get("endpoint") else ""
@@ -1521,6 +1704,16 @@ def read_change(job: str, repo_url: str, branch: str, ticket: str = "", base: st
     job_dir = loop.intake.job_dir(job, root)
     os.makedirs(job_dir, exist_ok=True)
     started = time.time()
+    if runner is None and transport is None:
+        # The stand-ins (tools/agent/mock.json) stand for the company's own
+        # systems: with them on, the real repository is not read either.
+        try:
+            stood_in = loop.mock.on("jira")
+        except Exception:                                # noqa: BLE001 -- a bad file is said by the stand-ins
+            stood_in = False
+        if stood_in:
+            raise Refused("the stand-ins are on (tools/agent/mock.json): the developer's real repository "
+                          "is not read. Switch them off to read it")
     cfg = settings()
     repo = parse_repo(repo_url, cfg.get("base_urls") or [])
     branch = check_ref(branch, "branch")
@@ -1530,8 +1723,11 @@ def read_change(job: str, repo_url: str, branch: str, ticket: str = "", base: st
         raise Refused(f"{ticket!r} is not a ticket key like ABC-123")
     keys = ticket_keys(job_dir, ticket)
     devchange.save_input(job_dir, {"repo": repo_url, "branch": branch, "ticket": ticket, "base": base})
-    token = str(cfg.get("token") or "").strip()
     notes, review = [], {}
+    token = token_for(repo, cfg)
+    if str(cfg.get("token") or "").strip() and not token:
+        notes.append(f"devcode_config.token was not sent to {repo['host']}: it goes only to the hosts named in "
+                     f"devcode_config.base_urls or devcode_config.hosts. git's own credentials were used")
     with mirror_lock(root, repo, runner):
         try:
             git, branch_ref, base_ref, base = fetch(root, repo, branch, base, token, runner)
@@ -1573,7 +1769,11 @@ def read_change(job: str, repo_url: str, branch: str, ticket: str = "", base: st
                 and old.get("base") == base and old.get("keys") == keys)
         if same:
             say(f" ok  the branch is still at {tip[:10]}: the reading made then is used")
-            reading = dict(old, review=_review_kept(review) or old.get("review") or {}, reused=True)
+            # This run's notes (a lookup that failed now, a token not sent)
+            # are said with the kept reading's.
+            kept_notes = list(dict.fromkeys(list(old.get("notes") or []) + notes))
+            reading = dict(old, review=_review_kept(review) or old.get("review") or {}, reused=True,
+                           notes=kept_notes)
             devchange.write(job_dir, reading)
             diff = patches(git, [c["sha"] for c in reading.get("commits") or []])[0] if need_diff else ""
             return reading, diff
@@ -1590,7 +1790,11 @@ def read_change(job: str, repo_url: str, branch: str, ticket: str = "", base: st
             say(f" ok  {len(found_commits)} commit(s) on {branch}"
                 + (f" naming {', '.join(keys)}" if mode.startswith("ticket") else f" not on {base}"))
             diag.step(f"Reading the change of {len(found_commits)} commit(s)")
-            diff, files = patches(git, [c["sha"] for c in found_commits])
+            diff, files, cut = patches(git, [c["sha"] for c in found_commits])
+            if cut:
+                notes.append(f"{len(cut)} file(s) changed by more than {PER_FILE_PATCH:,} characters were read "
+                             f"only in part: " + ", ".join(f"{os.path.basename(c['path'])} "
+                                                           f"({c['chars']:,})" for c in cut[:5]))
             oldest = found_commits[-1]["sha"]
             diag.step("Reading what the change does: endpoints, access, validation, fields, codes, "
                       "and the code around it")

@@ -855,7 +855,12 @@ time per repository. It takes the commits whose message names the story
 branch has already been merged, those commits where they now are; when
 none names a key, all of the branch's own commits. A branch deleted after
 its merge is read from its merge request (GitLab) or pull request (GitHub),
-which the host keeps. From the change it reads: endpoints added, changed
+which the host keeps. Only Java, Kotlin, YAML, JSON and properties files
+are diffed (not lock files, build output, generated code or test data),
+Java and Kotlin first, at most 80,000 characters of one file a commit --
+a file cut is named; a file moved to another package is a move, not a
+removal and an addition. With the stand-ins on (`mock.json`) the real
+repository is not read. From the change it reads: endpoints added, changed
 or **removed** (Spring and JAX-RS annotations, OpenAPI YAML or JSON);
 **who may call them** (`@PreAuthorize`, `@Secured`, `@RolesAllowed`,
 `hasRole`/`hasAuthority`, role enums); status codes; validation; new and
@@ -879,8 +884,10 @@ change in another language is said so.
 
 **Check the cases against the change**, under the review, is the
 make-sure step after the design: the same reading is compared with the
-cases; what no case covers is a **gap**, with a severity (an access rule
-no case calls as its roles, or with no case expecting 403, is one). It
+cases; what no case covers is a **gap**, with a severity. Access is
+compared before and after, endpoint by endpoint: each role a rule gains
+needs a case calling as that role, each role it loses a case showing it
+refused (403) -- a role added beside OWNER is not tested by OWNER's case. It
 says when the branch has moved since the design. Tick **also ask Cursor**
 to send the change (cut to size, host names and private values removed)
 and the cases to Cursor in plan mode as well, for gaps the program's
@@ -890,8 +897,12 @@ When `devcode_config.base_urls` is set in `program_configuration.json`,
 only those hosts are read. git's own credential helper answers for the
 host; `devcode_config.token` there, when set, is sent instead -- as a
 header, never in a URL, and never shown -- and also to look up the merge
-or pull request. github.com and a host with "gitlab" in its name are
-known; any other host is named in `devcode_config.hosts`:
+or pull request, **but only to a host named in `devcode_config.base_urls`
+or `devcode_config.hosts`**: one token sent to whatever address is typed
+would hand a GitLab token to github.com. For any other host the reading
+says the token was not sent, and git's own credentials are used.
+github.com and a host with "gitlab" in its name are known; any other host
+is named in `devcode_config.hosts`:
 
 ```json
 "devcode_config": {
