@@ -56,12 +56,8 @@
     <span class="name">Jira</span><span class="what">stories, releases, tests</span></button>
   <button role="tab" aria-selected="false" data-tab="defects">
     <span class="name">Defects</span><span class="what">why each bug happened</span></button>
-  <button role="tab" aria-selected="false" data-tab="failures">
-    <span class="name">Failures</span><span class="what">this run against the last</span></button>
-  <button role="tab" aria-selected="false" data-tab="publish">
-    <span class="name">Publish</span><span class="what">to a Jira issue, a Confluence page</span></button>
   <button role="tab" aria-selected="false" data-tab="logs">
-    <span class="name">Logs</span><span class="what">what ran, and what went wrong</span></button>
+    <span class="name">Update WorkBench</span><span class="what">change it with AI Agent; what ran</span></button>
   <button role="tab" aria-selected="false" data-tab="settings">
     <span class="name">Settings</span><span class="what">Jira, Confluence and Xray tokens</span></button>
 </nav>
@@ -659,6 +655,7 @@ Expect 201.'></textarea>
       <button id="agent-dismiss" disabled title="put the last outcome away; nothing in the working tree changes">Dismiss</button>
       <button id="agent-review" disabled>Review the change</button>
       <button id="agent-commit-stop" title="stop the review, discard or approve running for this job">Stop</button>
+      <button id="agent-take-merged" type="button" hidden title="once the change's branch is merged into main (its pull request): checks every file is in main as the change made it, then puts this copy's files back and pulls, fast-forward only. Nothing is touched when it is not merged yet">Take the merged change</button>
     </div>
     <div id="wf-regression-result" class="result"></div>
     <div id="agent-run-result" class="result"></div>
@@ -673,10 +670,47 @@ Expect 201.'></textarea>
     <div><h3>Files</h3><pre id="agent-files" class="doc">—</pre></div>
     <div><h3>Verify</h3><pre id="agent-verify" class="doc">—</pre></div>
   </div>
+  <details class="more" id="agent-screens" hidden>
+    <summary>The page after this change <span class="hint">each tab as the change left it, pictured with the stand-ins on -- the page checks read the HTML, these show it; look before Approve</span></summary>
+    <div id="agent-screens-list" class="screens"></div>
+  </details>
   <h3>proposed.diff</h3>
   <pre id="agent-diff" class="log diff">—</pre>
   <h3>Command log <span class="hint">Approve, Discard, the code review</span></h3>
   <pre id="agent-log" class="log"></pre>
+  <!-- The Publish tab, folded in (2026-10-30). -->
+  <details class="more" id="publish-part">
+    <summary>Publish to Jira or Confluence <span class="hint">attach a file to a Jira issue, or create a Confluence page -- both off until switched on in program_configuration.json</span></summary>
+    <p class="hint"><strong>This writes to Jira and Confluence</strong>, where other people see it and from where it
+      cannot be taken back here. Each asks you to type the target again before it writes.</p>
+  <div class="row">
+    <button id="publish-refresh">Check what can be published</button>
+    <span id="publish-state" class="state"></span>
+  </div>
+  <div id="publish-status" class="result"></div>
+
+  <h3>Attach a file to a Jira issue <span class="hint">adds one file; never removes or replaces</span></h3>
+  <div class="row">
+    <select id="publish-file"></select>
+    <input id="publish-key" type="text" spellcheck="false" placeholder="issue key, e.g. ABC-12">
+    <button id="publish-attach" disabled>Attach to the issue</button>
+  </div>
+
+  <h3>Create a Confluence page <span class="hint">creates one new page; never edits one</span></h3>
+  <div class="row">
+    <select id="publish-what"></select>
+    <input id="publish-space" type="text" spellcheck="false" placeholder="space key, e.g. QA">
+    <input id="publish-parent" type="text" spellcheck="false" placeholder="parent page id (numbers)">
+    <input id="publish-title" type="text" spellcheck="false" class="grow" placeholder="title of the new page">
+    <button id="publish-page" disabled>Create the page</button>
+  </div>
+
+  <div id="publish-result" class="result"></div>
+  <h3>Record of writes <span class="hint">every write attempted from this job, before and after</span></h3>
+  <pre id="publish-record" class="doc">—</pre>
+  <h3>Command log</h3>
+  <pre id="publish-log" class="log"></pre>
+  </details>
 </section>
 
 <!-- ───────────────────────────── run tests ───────────────────────────── -->
@@ -763,6 +797,20 @@ Expect 201.'></textarea>
     </div>
     <pre id="run-ask-log" class="log"></pre>
   </div>
+  <!-- The Failures tab, folded in (2026-10-30): every run is recorded by
+       itself (jobs.py) and compared with the run before. -->
+  <details class="more" id="run-history">
+    <summary>Compared with earlier runs <span class="hint">recorded by itself after every run: what is new since the run before, what fails differently, and whether a way of failing was seen before (kept in .failure-history/, gitignored)</span></summary>
+    <div class="row">
+      <input id="fail-label" type="text" spellcheck="false" placeholder="a few words about the last run (optional)">
+      <button id="fail-record" data-fail type="button" title="record target/failure-digest.txt now -- for a run made outside the workbench, or to add the words on the left">Record the last run again</button>
+      <button id="fail-list" data-fail type="button">Recorded runs</button>
+      <span id="fail-state" class="state"></span>
+    </div>
+    <div id="fail-result" class="result"></div>
+    <div id="fail-detail" class="result"></div>
+    <pre id="fail-log" class="log"></pre>
+  </details>
   <h3>Log</h3>
   <pre id="run-log" class="log tall"></pre>
 </section>
@@ -937,65 +985,7 @@ Expect 201.'></textarea>
 </section>
 
 <!-- ───────────────────────────── tab 5 ───────────────────────────── -->
-<section id="tab-failures" class="tab" role="tabpanel" hidden>
-  <p class="lede">
-    After a test run: what is <strong>new</strong> since the run before,
-    what fails <strong>differently</strong>, and whether this way of failing
-    has been seen before. Reads <code>target/failure-digest.txt</code>;
-    keeps one small snapshot per run in <code>.failure-history/</code>,
-    which git ignores.
-  </p>
-  <label for="fail-label">A few words about this run <span class="hint">optional — shown beside it in the list of runs</span></label>
-  <input id="fail-label" type="text" spellcheck="false" placeholder="after the token fix">
-  <div class="row">
-    <button id="fail-record" class="go" data-fail>Record the last run and compare</button>
-    <button id="fail-list" data-fail>Recorded runs</button>
-    <span id="fail-state" class="state"></span>
-  </div>
 
-  <div id="fail-result" class="result"></div>
-  <div id="fail-detail" class="result"></div>
-  <h3>Log</h3>
-  <pre id="fail-log" class="log"></pre>
-</section>
-
-<!-- ───────────────────────────── publish ───────────────────────────── -->
-<section id="tab-publish" class="tab" role="tabpanel" hidden>
-  <p class="lede">
-    Puts this job's results where the team works. <strong>This tab writes
-    to Jira and Confluence</strong>, where other people see it and from
-    where it cannot be taken back here. Both are off until switched on in
-    <code>program_configuration.json</code>; each asks you to type the
-    target again before it writes.
-  </p>
-  <div class="row">
-    <button id="publish-refresh">Check what can be published</button>
-    <span id="publish-state" class="state"></span>
-  </div>
-  <div id="publish-status" class="result"></div>
-
-  <h3>Attach a file to a Jira issue <span class="hint">adds one file; never removes or replaces</span></h3>
-  <div class="row">
-    <select id="publish-file"></select>
-    <input id="publish-key" type="text" spellcheck="false" placeholder="issue key, e.g. ABC-12">
-    <button id="publish-attach" disabled>Attach to the issue</button>
-  </div>
-
-  <h3>Create a Confluence page <span class="hint">creates one new page; never edits one</span></h3>
-  <div class="row">
-    <select id="publish-what"></select>
-    <input id="publish-space" type="text" spellcheck="false" placeholder="space key, e.g. QA">
-    <input id="publish-parent" type="text" spellcheck="false" placeholder="parent page id (numbers)">
-    <input id="publish-title" type="text" spellcheck="false" class="grow" placeholder="title of the new page">
-    <button id="publish-page" disabled>Create the page</button>
-  </div>
-
-  <div id="publish-result" class="result"></div>
-  <h3>Record of writes <span class="hint">every write attempted from this job, before and after</span></h3>
-  <pre id="publish-record" class="doc">—</pre>
-  <h3>Command log</h3>
-  <pre id="publish-log" class="log"></pre>
-</section>
 
 <!-- ────────────────────────────── logs ────────────────────────────── -->
 <section id="tab-logs" class="tab" role="tabpanel" hidden>
@@ -1093,6 +1083,10 @@ Expect 201.'></textarea>
       <label class="inline"><input type="checkbox" id="set-dev-token-clear"> remove the saved token</label>
       <label for="set-dev-hosts">Other hosts' kind <span class="hint">only for a host that is not github.com and has no "gitlab" in its name: one a line, <code>host gitlab|github [https://api address]</code></span></label>
       <textarea id="set-dev-hosts" rows="2" spellcheck="false" placeholder="git.example.com gitlab"></textarea>
+    </fieldset>
+    <fieldset class="field choice wide"><legend>Never push (this machine)</legend>
+      <label for="set-push-guard">Words <span class="hint">one a line -- company and product names, internal host names; <code>re:</code> starts a pattern. A change that carries one is not pushed (Approve), nor one with a Jira key of a project read on this machine. Kept in .workbench/push-guard.txt, which git ignores</span></label>
+      <textarea id="set-push-guard" rows="3" spellcheck="false" placeholder="ExampleCorp&#10;re:internal\.example\.com"></textarea>
     </fieldset>
     <fieldset class="field choice wide"><legend>Create in Xray (workflow: push the cases to Xray)</legend>
       <label class="inline"><input type="checkbox" id="set-xc-on"> allow creating Test issues in Jira from the approved cases</label>

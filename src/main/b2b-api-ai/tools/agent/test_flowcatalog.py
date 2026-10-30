@@ -31,12 +31,12 @@ class Base(unittest.TestCase):
 class Building(Base):
     def test_projects_order_and_what_is_left_out(self):
         self.suite("programaccountregression", [
-            "__setup__,B2B-8920_create_account_200,tokenRequest,REST,POST,"
+            "__setup__,ABC-8920_create_account_200,tokenRequest,REST,POST,"
             "https://api.example.test/realms/applications/token,FULL,\n",
-            "p,B2B-8920_create_account_200,enroll,REST,POST,/realms/guests/enroll,FULL,\n",
-            "p,B2B-8920_create_account_200,dbstatus,JDBC,-,UPDATE account SET status='A' WHERE web_site='x.com',FULL,\n",
-            "p,B2B-8920_create_account_200,create,REST,POST,/guests/{guestId}/businesses?x=1,FULL,\n",
-            "p,B2B-8920_create_account_200,groovy,GROOVY,-,-,FULL,\n"])
+            "p,ABC-8920_create_account_200,enroll,REST,POST,/realms/guests/enroll,FULL,\n",
+            "p,ABC-8920_create_account_200,dbstatus,JDBC,-,UPDATE account SET status='A' WHERE web_site='x.com',FULL,\n",
+            "p,ABC-8920_create_account_200,create,REST,POST,/guests/{guestId}/businesses?x=1,FULL,\n",
+            "p,ABC-8920_create_account_200,groovy,GROOVY,-,-,FULL,\n"])
         self.suite("roomingliststage", [
             "p,goal55_rooming_PROPX,shop,REST,GET,/props/{propCode}/groups,FULL,\n",
             "p,goal55_rooming_PROPX,list,REST,POST,/props/{propCode}/roomingList,FULL,\n"])
@@ -48,7 +48,7 @@ class Building(Base):
         self.assertEqual(first["case"], "#1", "a number, never the case's name")
         for project in ("b2b", "goal"):
             text = io.open(os.path.join(self.root, fc.OUT_DIR, project + ".json"), encoding="utf-8").read()
-            for leak in ("B2B-8920", "create_account", "goal55", "PROPX", "api.example.test",
+            for leak in ("ABC-8920", "create_account", "goal55", "PROPX", "api.example.test",
                          "UPDATE", "x.com", "?x=1"):
                 self.assertNotIn(leak, text, project)
         self.assertNotIn("POST /realms/applications/token", b2b["by_endpoint"], "the token is no reference")

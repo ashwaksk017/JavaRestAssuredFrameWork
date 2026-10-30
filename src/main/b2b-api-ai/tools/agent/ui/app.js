@@ -899,7 +899,7 @@ $("story-check").onclick = async () => {
       $("story-check").disabled = false;
       const r = await artifactJson(j, "story-check.json");
       const box = $("story-check-result");
-      if (!r) { box.replaceChildren(banner("bad", "no answer; the Logs tab has the reason")); return; }
+      if (!r) { box.replaceChildren(banner("bad", "no answer; the Update WorkBench tab has the reason")); return; }
       const kids = [banner(!r.ok ? "bad" : r.changed ? "warn" : "ok", r.message || "")];
       if (r.changed) {
         if (r.at_stake && r.at_stake.length) {
@@ -1906,7 +1906,7 @@ function askXray(what, j) {
         xrayStatus[what] = null;
         $(`xray-${what}-create`).disabled = true;
         showXrayKeys(what, null);
-        setState(st0, "bad", "what can be created could not be found out; the Logs tab has the reason");
+        setState(st0, "bad", "what can be created could not be found out; the Update WorkBench tab has the reason");
       }
     }, j))
     .catch((e) => setState(st0, "bad", e.message));
@@ -2504,6 +2504,7 @@ async function allureLink(allure) {
     el("small", { text: `  (${a.url}, this run only)` }));
 }
 async function showRunResult(j) {
+  showRunHistory(j);                       // beside it: this run against the one before
   const r = await artifactJson(j, "mvnrun-result.json");
   const box = $("run-result");
   if (!r) { box.replaceChildren(); $("run-ask-box").hidden = true; return; }
@@ -3357,7 +3358,7 @@ function refreshPublish(afterWrite) {
       if (!fresh) {
         $("publish-status").replaceChildren(banner("bad", "What is switched on could not be " +
           "found out just now (the check did not finish). Nothing can be published until it " +
-          "has. The Logs tab has the reason."));
+          "has. The Update WorkBench tab has the reason."));
       }
       showPublishResult(j);
     }, j))
@@ -3433,7 +3434,9 @@ $("publish-page").onclick = () => {
                                "--title": title, "--confirm-title": again.trim(),
                                "--expect": mocked ? "mock" : "real" });
 };
-onTab.publish = () => refreshPublish(false);
+// The Publish tab, folded into Commit and push (2026-10-30): what can be
+// published is asked when that tab opens, as it was when Publish did
+// (onTab.agent) -- its section is drawn, folded or not.
 
 // ---- logs --------------------------------------------------------------
 // The diagnostics kept by tools/diag.py: this job's record, and the web
@@ -3515,6 +3518,7 @@ async function showSettings() {
   $("set-dev-token-state").textContent = dev.token || "";
   $("set-dev-token").value = "";
   $("set-dev-token-clear").checked = false;
+  $("set-push-guard").value = s.push_guard || "";
   $("set-xray-url").value = s.xray.base_url || "";
   $("set-xray-project").value = s.xray.project_key || "";
   $("set-xray-regression").value = s.xray.regression_key || "";
@@ -3730,6 +3734,7 @@ $("settings-save").onclick = async (where) => {
     devcode_token: $("set-dev-token").value,
     devcode_token_clear: $("set-dev-token-clear").checked,
     devcode_hosts: $("set-dev-hosts").value,
+    push_guard: $("set-push-guard").value,
     xray_token_clear: $("set-xray-token-clear").checked,
     xray_create_on: $("set-xc-on").checked,
     xray_create_projects: $("set-xc-projects").value,
@@ -3800,6 +3805,28 @@ const REVIEW_TEXT = {
   "push-failed": "Committed locally, but the push failed. Approve again to retry.",
   "discarded": "Discarded.",
   "committed-outside": "Committed outside the workbench.",
+  "merged": "Merged and taken: the change is part of this copy's branch, committed. Restart the workbench.",
+};
+// A change to the workbench, pictured as it left the page (screens.py),
+// for the review: each tab opens full size.
+async function showScreens(j, review) {
+  const box = $("agent-screens-list");
+  const r = review && review.scope === "workbench" ? await artifactJson(j, "screens.json") : null;
+  if (j !== job()) return;
+  const tabs = (r && r.tabs) || [];
+  $("agent-screens").hidden = !tabs.length;
+  box.replaceChildren(...tabs.map((t) => {
+    const src = `/api/screen?job=${encodeURIComponent(j)}&tab=${encodeURIComponent(t.tab)}&at=${encodeURIComponent(r.at || "")}`;
+    return el("a", { href: src, target: "_blank", rel: "noopener", class: "screen" },
+      el("img", { src, alt: `the ${t.name} tab`, loading: "lazy" }), el("small", { text: t.name }));
+  }));
+}
+$("agent-take-merged").onclick = () => {
+  if (!sameJobOrRefresh($("agent-take-merged"))) return;
+  if (!confirm("Has the change's branch been merged into main (its pull request)?\n\nThis checks every file " +
+               "is in main as the change made it; only then are this copy's files put back and main " +
+               "pulled. Nothing is touched when it is not merged yet.")) return;
+  runAgent("agent-take-merged", { "--job": job() });
 };
 
 async function refreshReview() {
@@ -3869,7 +3896,10 @@ async function refreshReview() {
     !(state === "pending-review" || state === "verify-failed" ||
       state === "generating");   // a stopped run: discard puts it all back
   // An outcome with nothing left in the tree can be put away.
-  $("agent-dismiss").disabled = !(["rejected", "discarded", "pushed", "approved-local"].includes(state)
+  $("agent-take-merged").hidden = !(review.scope === "workbench" && state === "pushed");
+  $("agent-take-merged").dataset.job = shown;
+  showScreens(shown, review);
+  $("agent-dismiss").disabled = !(["rejected", "discarded", "pushed", "approved-local", "merged"].includes(state)
                                   && !review.needs_discard);
   $("agent-dismiss").dataset.job = shown;
 
@@ -4597,8 +4627,8 @@ $("agent-push").onclick = () => {
   if (pushes) { options["--base"] = base; if ($("agent-branch").value.trim()) options["--branch"] = branch; }
   runAgent("agent-approve", options);
 };
-onTab.agent = () => { showRepo(); focusUnfinishedWorkbench(); };
-// The Logs tab's Ask Me refuses while a workbench run stopped with
+onTab.agent = () => { showRepo(); focusUnfinishedWorkbench(); refreshPublish(false); };
+// The Update WorkBench tab's Ask Me refuses while a workbench run stopped with
 // edits still uncommitted, and tells the person to Discard on THIS tab.
 // This tab shows the job in the box. When that job has nothing to
 // discard, open the unfinished workbench job so Discard is enabled.
@@ -5151,6 +5181,7 @@ function renderFailures(r) {
     return;
   }
   if (r.kind !== "record") return;
+  $("run-history").open = (r.failing || 0) > 0;   // folded away when nothing failed
   detail.replaceChildren(r.noted ? banner("ok", `Noted for [${r.noted}].`) : "");
   const kids = [heading(`Suite ${r.suite}`),
     el("div", { class: "meta", text:
@@ -5181,19 +5212,27 @@ function renderFailures(r) {
   for (const s of r.signatures || []) kids.push(signatureCard(s));
   main.replaceChildren(...kids);
 }
-// Opening the tab, or changing the job, shows THAT job's last result --
-// and nothing, comparison included, when it has none.
-onTab.failures = async () => {
-  const j = job();
-  const data = await showResult(j, failUi);
-  if (j === job() && !(data && data.kind === "record")) $("fail-result").replaceChildren();
-};
+// The Failures tab, folded into Run tests (2026-10-30): every run is
+// recorded by the server when it ends (jobs.py), and its comparison with
+// the run before is shown under the run -- open when something failed.
+// The run's job, not the job box's: the Run tests tab follows its own.
+async function showRunHistory(j) {
+  const r = await artifactJson(j, "failures-result.json");
+  if (j !== runJob()) return;
+  if (!r || r.kind !== "record") {
+    $("fail-result").replaceChildren();
+    $("fail-detail").replaceChildren();
+    $("run-history").open = false;
+    return;
+  }
+  renderFailures(r);
+}
 
 showMockBanner();
 
 // Whatever tab the address names, open it -- after every tab above has
 // said what it does when opened.
-// ---- Change the workbench (the Logs tab) --------------------------------
+// ---- Change the workbench (the Update WorkBench tab) --------------------------------
 // AI Agent changing the workbench itself, in a job of its own (workbench-...),
 // only while nothing else runs. Its conversation is workbench-cursor.log.
 let wbJob = "";
@@ -5311,8 +5350,11 @@ api("/api/jobs").then((list) => {
   box.replaceChildren(...rows.map((r) => el("option", { value: r.job, text: `${r.job}  (${r.modified})` })));
 }).catch(() => { /* no list: the box still takes a typed id */ });
 (function openTabFromAddress() {
-  const name = (location.hash || "").replace(/^#/, "");
-  const b = name && document.querySelector(`.tabs button[data-tab="${name.replace(/[^a-z]/g, "")}"]`);
+  // Addresses kept from before the Failures and Publish tabs were folded in.
+  const moved = { failures: "run", publish: "agent" };
+  const asked = (location.hash || "").replace(/^#/, "").replace(/[^a-z]/g, "");
+  const name = moved[asked] || asked;
+  const b = name && document.querySelector(`.tabs button[data-tab="${name}"]`);
   if (b) b.click();
 })();
 $("job").addEventListener("change", () => {

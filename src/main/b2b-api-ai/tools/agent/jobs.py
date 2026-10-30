@@ -518,13 +518,21 @@ RUNNABLES = {
         "label": "Discard what the agent wrote",
         "options": {"--job": "text"},
     },
+    # A pushed change to the workbench, once merged (its pull request): the
+    # uncommitted copy Approve left is checked against the merged branch,
+    # put back and the branch pulled, fast-forward only (loop.py take-merged).
+    "agent-take-merged": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "loop.py"), "take-merged"],
+        "label": "Take the merged change: check it is merged, then pull",
+        "options": {"--job": "text"},
+    },
 }
 
 # Runnables that write the working tree or judge it by what changed. A
 # convert during an agent run would look like the agent rewriting every
 # suite; an agent run during a convert would "put back" half-written
 # files.
-EXCLUSIVE = {"convert", "convert-fix", "agent-generate", "agent-followup", "agent-automate", "agent-run-tests", "agent-approve", "agent-discard",
+EXCLUSIVE = {"convert", "convert-fix", "agent-generate", "agent-followup", "agent-automate", "agent-run-tests", "agent-approve", "agent-discard", "agent-take-merged",
              "agent-reapply", "verify-all", "mvn-compile", "mvn-test",
              # Writes a committed file and reads _audit/: never beside a run or a convert.
              "flow-catalog"}
@@ -1342,9 +1350,9 @@ def log_path(job: str, runnable: str) -> str:
 # so can be put away from the page. pending-review / verify-failed /
 # generating hold files: Discard first. A rejection that still needs a
 # Discard says so (needs_discard) and is kept until it has had one.
-DISMISSABLE = ("rejected", "discarded", "pushed", "approved-local")
+DISMISSABLE = ("rejected", "discarded", "pushed", "approved-local", "merged")
 AGENT_RUNNABLES = ("agent-generate", "agent-followup", "agent-automate", "agent-run-tests", "agent-approve",
-                   "agent-discard", "agent-reapply")
+                   "agent-discard", "agent-reapply", "agent-take-merged")
 # What reads or writes a job's design and its Cursor change while it runs.
 JOB_WRITERS = AGENT_RUNNABLES + ("agent-design", "xray-import")
 
@@ -1848,6 +1856,45 @@ def _rerun_forget(run_job: str, fix_job: str) -> None:
                 pass
 
 
+FAILURE_DIGEST = os.path.join("target", "failure-digest.txt")
+
+
+def record_failures(job: str, since: float, runner=None) -> str:
+    """When a test run ends: its failures are recorded and compared with
+    the run before (failure_history.py record), as the Failures tab's button
+    did -- the tab is folded into Run tests, and nobody has to remember to
+    press it (2026-10-30). Only a digest THIS run wrote is recorded; without
+    one the job's last comparison goes, so an earlier run's is not shown as
+    this run's. Says what was done, for the job's note."""
+    result = os.path.join(job_dir(job), "failures-result.json")
+    try:
+        fresh = os.path.getmtime(os.path.join(ROOT, FAILURE_DIGEST)) >= since - 1
+    except OSError:
+        fresh = False
+    if not fresh:
+        try:
+            os.remove(result)
+        except OSError:
+            pass
+        return "this run wrote no failure digest: nothing to compare"
+    argv = [PY, "-B", os.path.join("tools", "failure_history.py"), "record", "--job", job]
+    run = runner or (lambda a: subprocess.run(a, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                              timeout=120, **NO_WINDOW).returncode)
+    return f"its failures recorded and compared with the run before (exit {run(argv)})"
+
+
+def take_pictures(job: str, runner=None) -> str:
+    """After an AI Agent change to the workbench passed its checks: each tab
+    of the page as the change left it, for the review (screens.py). Its own
+    process, so a browser that hangs ends with its timeout, not the server."""
+    argv = [PY, "-B", os.path.join("tools", "agent", "screens.py"), "--job", job]
+    run = runner or (lambda a: subprocess.run(a, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                              timeout=900, **NO_WINDOW))
+    got = run(argv)
+    said = got.stdout.decode("utf-8", "replace").strip() if hasattr(got, "stdout") else str(got)
+    return (said.splitlines() or ["no answer"])[-1]
+
+
 def rerun_after_fix(fix_job: str, runnable: str, rc: int) -> dict:
     """When the fix Fix Failures started ends: the failed run is made again
     -- the failed tests only, of a suite or group -- once the change passed
@@ -2198,7 +2245,7 @@ def start(job: str, runnable: str, options: dict) -> dict:
     project = run_project(job, options) if runnable == "mvn-test" else intake.job_project(out)
     wb = is_workbench_job(job)
     if runnable == "agent-generate" and ((options.get("--scope") == "workbench") != wb):
-        raise ValueError("a change to the workbench is made from the Logs tab (Change the "
+        raise ValueError("a change to the workbench is made from the Update WorkBench tab (Change the "
                          "workbench), in a workbench job of its own -- and only there")
     if runnable == "agent-generate" and options.get("--scope") in MIGRATION_SCOPES:
         why = migration_refusal(job, options["--scope"], str(options.get("--suite") or ""))
@@ -2232,7 +2279,7 @@ def start(job: str, runnable: str, options: dict) -> dict:
         if not wb and any(is_workbench_job(j) for j, _r in alive):
             raise RuntimeError("AI Agent is changing the workbench itself: nothing else starts "
                                "until that run has finished. Wait for it, or Stop it on the "
-                               "Logs tab.")
+                               "Update WorkBench tab.")
         # The slot is taken now, inside the lock: two requests at the same
         # moment must not both pass the checks above.
         _RUNNING[key] = _Starting()
@@ -2288,6 +2335,7 @@ def start(job: str, runnable: str, options: dict) -> dict:
         raise
     with _LOCK:
         _RUNNING[key] = proc
+    started_at = time.time()
 
     def wait():
         rc = proc.wait()
@@ -2295,6 +2343,19 @@ def start(job: str, runnable: str, options: dict) -> dict:
             logf.close()
         except Exception:
             pass
+        if runnable == "mvn-test":
+            # Before "done": the page that sees the run end finds it compared.
+            try:
+                diag.job_note(job, "[jobs] after the run: " + record_failures(job, started_at), ROOT)
+            except Exception as e:                       # noqa: BLE001
+                diag.job_note(job, f"[jobs] recording the run's failures failed: {type(e).__name__}: {e}", ROOT)
+        if runnable in ("agent-generate", "agent-followup") and rc == 0 and is_workbench_job(job):
+            # Before "done": the review shows the page as the change left it
+            # (screens.py; nothing when the page was not touched).
+            try:
+                diag.job_note(job, "[jobs] after the change: " + take_pictures(job), ROOT)
+            except Exception as e:                       # noqa: BLE001
+                diag.job_note(job, f"[jobs] the pictures of the page failed: {type(e).__name__}: {e}", ROOT)
         if runnable in ("mvn-compile", "mvn-test") and rc != 0:
             # Before "done" is written: the page that sees the run end sees
             # what was sent with it.
@@ -2439,7 +2500,7 @@ def read_artifact(job: str, name: str) -> str:
                "xray-update-plan.json", "xray-update.json",
                "publish-status.json", "publish.log",
                "devcode.json", "devcode.md", "suite-suggest.json", "mvnrun-result.json",
-               "devchange.json", "devcode-input.json",
+               "devchange.json", "devcode-input.json", "screens.json",
                # Read by the page; were missing, so it was refused and showed nothing.
                "xray-publish.json", "convert-fix.json", "story-keys.json",
                "answer-suggestions.json", "convert-check.json", "convert-suites.json"}

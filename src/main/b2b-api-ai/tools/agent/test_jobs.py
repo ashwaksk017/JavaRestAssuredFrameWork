@@ -840,6 +840,49 @@ class PuttingAnOutcomeAway(unittest.TestCase):
             jobs.dismiss_review("../x")
 
 
+class EveryRunIsCompared(unittest.TestCase):
+    """The Failures tab, folded into Run tests: a test run that ends is
+    recorded and compared by itself (2026-10-30)."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="jobs_fail_")
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        for owner in (jobs, jobs.intake):
+            self.addCleanup(setattr, owner, "ROOT", owner.ROOT)
+            owner.ROOT = self.root
+        self.out = jobs.job_dir("j1")
+        os.makedirs(self.out)
+        self.result = os.path.join(self.out, "failures-result.json")
+        with io.open(self.result, "w", encoding="utf-8") as fh:
+            fh.write('{"kind": "record", "at": "an earlier run"}')
+        self.digest = os.path.join(self.root, jobs.FAILURE_DIGEST)
+        os.makedirs(os.path.dirname(self.digest))
+        self.asked = []
+
+    def runner(self, argv):
+        self.asked.append(argv)
+        return 0
+
+    def test_a_digest_this_run_wrote_is_recorded_for_the_job(self):
+        started = __import__("time").time()
+        with io.open(self.digest, "w", encoding="utf-8") as fh:
+            fh.write("x")
+        said = jobs.record_failures("j1", started, self.runner)
+        self.assertIn("recorded", said)
+        argv = self.asked[0]
+        self.assertTrue(argv[2].endswith("failure_history.py"))
+        self.assertEqual(argv[3:], ["record", "--job", "j1"])
+
+    def test_without_one_nothing_is_recorded_and_the_last_comparison_goes(self):
+        with io.open(self.digest, "w", encoding="utf-8") as fh:
+            fh.write("x")
+        os.utime(self.digest, (1_000_000, 1_000_000))          # left over from long ago
+        said = jobs.record_failures("j1", __import__("time").time(), self.runner)
+        self.assertEqual(self.asked, [])
+        self.assertIn("no failure digest", said)
+        self.assertFalse(os.path.exists(self.result), "an earlier run's comparison is not shown as this one's")
+
+
 class TheDevelopersChange(unittest.TestCase):
     """The Developer's change tab: read on its own, and kept with the job by
     a design request (2026-10-30)."""

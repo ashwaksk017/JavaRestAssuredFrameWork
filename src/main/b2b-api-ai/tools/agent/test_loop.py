@@ -1416,9 +1416,9 @@ class JiraParity(unittest.TestCase):
 
 
 class PatchKeepsRowsTheJobDidNotWrite(unittest.TestCase):
-    """Seen live: a run of story B2B-99454 gave its TC-001's Xray key and
+    """Seen live: a run of story ABC-99454 gave its TC-001's Xray key and
     story to the TC-001 rows of two OTHER tests' sheets (tests its change
-    had edited), and Xray recorded one of their passes as B2B-99802's."""
+    had edited), and Xray recorded one of their passes as ABC-99802's."""
     OTHER = "src/test/resources/csv/manual/GuestProgramAccountTest/create_200.csv"
     JAVA = "src/test/java/com/hi/api/tests/jira/GuestProgramAccountTest.java"
 
@@ -1427,9 +1427,9 @@ class PatchKeepsRowsTheJobDidNotWrite(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
         self.job = os.path.join(self.root, ".workbench", "job1")
         os.makedirs(self.job)
-        write(self.root, ".workbench/job1/intake.json", json.dumps({"story": {"key": "B2B-99454"}}))
+        write(self.root, ".workbench/job1/intake.json", json.dumps({"story": {"key": "ABC-99454"}}))
         write(self.root, ".workbench/job1/xray-tests.json",
-              json.dumps({"tests": {"design:TC-001": {"key": "B2B-99802"}}}))
+              json.dumps({"tests": {"design:TC-001": {"key": "ABC-99802"}}}))
         write(self.root, ".gitignore", ".workbench/\n")
         write(self.root, self.OTHER, "description,test_case_id,execute\nprogram account,TC-001,Y\n")
         write(self.root, self.JAVA, "class GuestProgramAccountTest {}\n")
@@ -1458,17 +1458,17 @@ class PatchKeepsRowsTheJobDidNotWrite(unittest.TestCase):
         self.assertEqual(touched, [self.OTHER])
         old, new = self.rows(self.OTHER)
         self.assertEqual((old["jira_xray_id"], old["jira_issue"]), ("", ""))
-        self.assertEqual((new["jira_xray_id"], new["jira_issue"]), ("B2B-99802", "B2B-99454"))
+        self.assertEqual((new["jira_xray_id"], new["jira_issue"]), ("ABC-99802", "ABC-99454"))
 
     def test_a_key_the_sheet_already_held_is_not_written_over(self):
         write(self.root, self.OTHER, "description,test_case_id,execute,jira_xray_id\n"
-                                     "program account,TC-001,Y,B2B-55555\n")
+                                     "program account,TC-001,Y,ABC-55555\n")
         loop.git(self.root, "commit", "-qam", "keyed")
         # The job edits that row (its description), so the row is "changed".
         write(self.root, self.OTHER, "description,test_case_id,execute,jira_xray_id\n"
-                                     "program account v2,TC-001,Y,B2B-55555\n")
+                                     "program account v2,TC-001,Y,ABC-55555\n")
         loop.ensure_manual_csv_xray(self.root, self.job, [self.OTHER], mocked=False)
-        self.assertEqual(self.rows(self.OTHER)[0]["jira_xray_id"], "B2B-55555")
+        self.assertEqual(self.rows(self.OTHER)[0]["jira_xray_id"], "ABC-55555")
 
     def test_an_uncommitted_sheet_is_compared_with_the_jobs_copy_of_it(self):
         # Uncommitted at the first run: pre/ holds it, pre-state.json says so.
@@ -1483,7 +1483,7 @@ class PatchKeepsRowsTheJobDidNotWrite(unittest.TestCase):
         rel = "src/test/resources/csv/manual/B2b99454Test/filter_200.csv"
         write(self.root, rel, "description,test_case_id,execute\ntraveler filter,TC-001,Y\n")
         self.assertEqual(loop.ensure_manual_csv_xray(self.root, self.job, [rel]), [rel])
-        self.assertEqual(self.rows(rel)[0]["jira_xray_id"], "B2B-99802")
+        self.assertEqual(self.rows(rel)[0]["jira_xray_id"], "ABC-99802")
 
     def test_the_prompt_asks_for_the_story_key_only_on_the_jobs_own_rows(self):
         block = loop.story_key_block(self.job, {"name": "new-test"})
@@ -1498,7 +1498,7 @@ class PatchManualCsvXray(unittest.TestCase):
         self.job = os.path.join(self.root, ".workbench", "job1")
         os.makedirs(self.job)
         write(self.root, ".workbench/job1/intake.json",
-              json.dumps({"story": {"key": "B2B-99454"}}))
+              json.dumps({"story": {"key": "ABC-99454"}}))
         write(self.root, ".workbench/job1/xray-tests.json", json.dumps({
             "tests": {
                 "design:TC-001": {"key": "B2B-99771"},
@@ -1506,7 +1506,7 @@ class PatchManualCsvXray(unittest.TestCase):
                 "design:TC-024": {"key": "B2B-99801"},
             }}))
         write(self.root, ".workbench/job1/intake.json",
-              json.dumps({"story": {"key": "B2B-99454"}}))
+              json.dumps({"story": {"key": "ABC-99454"}}))
 
     def test_patch_adds_jira_xray_id_and_jira_issue_by_test_case_id(self):
         rel = "src/test/resources/csv/manual/GuestTest/createGuest_200.csv"
@@ -1516,14 +1516,14 @@ class PatchManualCsvXray(unittest.TestCase):
               "other,TC-002,Y\n")
         self.assertTrue(loop.patch_one_manual_csv(
             os.path.join(self.root, rel.replace("/", os.sep)),
-            story="B2B-99454",
+            story="ABC-99454",
             keys_by_case={"TC-001": "B2B-99771", "TC-002": "B2B-99772"}))
         with io.open(os.path.join(self.root, rel.replace("/", os.sep)), encoding="utf-8") as fh:
             text = fh.read()
         self.assertIn("jira_xray_id", text.splitlines()[0])
         self.assertIn("jira_issue", text.splitlines()[0])
         self.assertIn("B2B-99771", text)
-        self.assertIn("B2B-99454", text)
+        self.assertIn("ABC-99454", text)
 
     def test_patch_by_case_id_finds_an_existing_sheet(self):
         rel = "src/test/resources/csv/manual/SpendTest/missingDate_400.csv"
@@ -1538,7 +1538,7 @@ class PatchManualCsvXray(unittest.TestCase):
         with io.open(os.path.join(self.root, rel.replace("/", os.sep)), encoding="utf-8") as fh:
             body = fh.read()
         self.assertIn("B2B-99801", body)
-        self.assertIn("B2B-99454", body)
+        self.assertIn("ABC-99454", body)
 
     def test_ensure_patches_all_csvs_under_a_changed_jira_test_class(self):
         java = "src/test/java/com/hi/api/tests/jira/SpendDetailTest.java"
@@ -1567,10 +1567,10 @@ class PatchManualCsvXray(unittest.TestCase):
                               "mine,TC-001,job1\nother job,TC-002,job-20261001-101010\n")
         path = os.path.join(self.root, rel.replace("/", os.sep))
         self.assertTrue(loop.patch_one_manual_csv(
-            path, story="B2B-99454", keys_by_case={"TC-001": "B2B-99771", "TC-002": "B2B-99772"},
+            path, story="ABC-99454", keys_by_case={"TC-001": "B2B-99771", "TC-002": "B2B-99772"},
             job_id="job1"))
         rows = self.sheet(rel)
-        self.assertEqual(rows[0]["jira_issue"], "B2B-99454")
+        self.assertEqual(rows[0]["jira_issue"], "ABC-99454")
         self.assertEqual(rows[1]["jira_issue"], "job-20261001-101010")
         self.assertEqual(rows[1]["jira_xray_id"], "")
 
@@ -1579,9 +1579,9 @@ class PatchManualCsvXray(unittest.TestCase):
         write(self.root, rel, "description,test_case_id,jira_issue\n"
                               "new,TC-001,\nowned,TC-002,B2B-11111\n")
         path = os.path.join(self.root, rel.replace("/", os.sep))
-        self.assertTrue(loop.patch_one_manual_csv(path, story="B2B-99454", case_ids=set(), job_id="job1"))
+        self.assertTrue(loop.patch_one_manual_csv(path, story="ABC-99454", case_ids=set(), job_id="job1"))
         rows = self.sheet(rel)
-        self.assertEqual(rows[0]["jira_issue"], "B2B-99454")
+        self.assertEqual(rows[0]["jira_issue"], "ABC-99454")
         self.assertEqual(rows[1]["jira_issue"], "B2B-11111")
 
     def test_with_no_story_a_row_owned_elsewhere_gets_no_key(self):
@@ -1624,13 +1624,13 @@ class PatchManualCsvXray(unittest.TestCase):
               "no id,,,,Y\n")
         details = []
         self.assertTrue(loop.patch_one_manual_csv(
-            os.path.join(self.root, rel.replace("/", os.sep)), story="B2B-99454",
+            os.path.join(self.root, rel.replace("/", os.sep)), story="ABC-99454",
             keys_by_case={"TC-001": "B2B-99771", "TC-002": "B2B-99772", "TC-024": "B2B-99801"},
             details=details))
         with io.open(os.path.join(self.root, rel.replace("/", os.sep)), encoding="utf-8") as fh:
             rows = {r["description"]: r for r in csv.DictReader(fh)}
-        self.assertEqual((rows["mine"]["jira_issue"], rows["mine"]["jira_xray_id"]), ("B2B-99454", "B2B-99771"))
-        self.assertEqual(rows["placeholder"]["jira_issue"], "B2B-99454", "a job-id placeholder is filled")
+        self.assertEqual((rows["mine"]["jira_issue"], rows["mine"]["jira_xray_id"]), ("ABC-99454", "B2B-99771"))
+        self.assertEqual(rows["placeholder"]["jira_issue"], "ABC-99454", "a job-id placeholder is filled")
         self.assertEqual((rows["another story's"]["jira_issue"], rows["another story's"]["jira_xray_id"]),
                          ("B2B-11111", "B2B-22222"), "another story's row is never rewritten")
         self.assertEqual(rows["not a case of this job"]["jira_issue"], "", "no single-key stamping")
@@ -3525,6 +3525,125 @@ class WhatApprovePublishes(Push):
         write(self.root, ".git/hooks/pre-push", "#!/bin/sh\nexit 1\n")
         write(self.root, ".git/hooks/pre-commit", "#!/bin/sh\nexit 1\n")
         self.assertEqual(self.push(), 0)
+
+
+class TakingAMergedChange(unittest.TestCase):
+    """A pushed workbench change, merged on the remote: this copy's
+    uncommitted edits are checked against it, put back, and the branch
+    pulled -- and nothing is touched when it is not merged (2026-10-30)."""
+
+    def g(self, cwd, *args):
+        r = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.test", *args], cwd=cwd,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.assertEqual(r.returncode, 0, r.stdout.decode(errors="replace"))
+        return r.stdout.decode(errors="replace")
+
+    def write(self, base, rel, text):
+        path = os.path.join(base, *rel.split("/"))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with io.open(path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+
+    def setUp(self):
+        top = tempfile.mkdtemp(prefix="take-")
+        self.addCleanup(shutil.rmtree, top, True)
+        self.remote, self.here, self.other = (os.path.join(top, n) for n in ("remote.git", "here", "other"))
+        self.g(top, "init", "--bare", "-q", "-b", "main", self.remote)
+        self.g(top, "clone", "-q", self.remote, self.here)
+        self.write(self.here, "tools/agent/a.py", "one\n")
+        self.g(self.here, "add", "-A")
+        self.g(self.here, "commit", "-q", "-m", "base")
+        self.g(self.here, "push", "-q", "origin", "main")
+        self.g(top, "clone", "-q", self.remote, self.other)
+        # What Approve leaves here: the change, uncommitted.
+        self.write(self.here, "tools/agent/a.py", "two\n")
+        self.write(self.here, "tools/agent/b.py", "new\n")
+        self.job_dir = os.path.join(self.here, ".workbench", "wb1")
+        os.makedirs(self.job_dir)
+        loop.write_review(self.job_dir, {"scope": "workbench", "state": "pushed", "branch": "feature_wb1",
+                                         "files": {"modified": ["tools/agent/a.py"],
+                                                   "created": ["tools/agent/b.py"], "deleted": []}})
+        with io.open(os.path.join(self.here, ".git", "info", "exclude"), "a", encoding="utf-8") as fh:
+            fh.write(".workbench/\n")
+
+    def merge_on_the_remote(self, a_text="two\n"):
+        self.write(self.other, "tools/agent/a.py", a_text)
+        self.write(self.other, "tools/agent/b.py", "new\n")
+        self.g(self.other, "add", "-A")
+        self.g(self.other, "commit", "-q", "-m", "merged change")
+        self.g(self.other, "push", "-q", "origin", "main")
+
+    def take(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = loop.cmd_take_merged(self.job_dir, self.here, {"remote": "origin"})
+        return rc, buf.getvalue()
+
+    def test_a_merged_change_is_pulled_and_the_copy_is_clean(self):
+        self.merge_on_the_remote()
+        rc, said = self.take()
+        self.assertEqual(rc, 0, said)
+        self.assertEqual(self.g(self.here, "status", "--porcelain", "--", "tools"), "")
+        self.assertIn("merged change", self.g(self.here, "log", "-1", "--format=%s"))
+        self.assertEqual(loop.read_review(self.job_dir)["state"], "merged")
+
+    def test_not_merged_yet_or_merged_otherwise_touches_nothing(self):
+        rc, said = self.take()
+        self.assertEqual(rc, 1)
+        self.assertIn("not merged yet", said)
+        self.merge_on_the_remote(a_text="two, then edited in review\n")
+        rc, said = self.take()
+        self.assertEqual(rc, 1)
+        with io.open(os.path.join(self.here, "tools", "agent", "a.py"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "two\n", "this copy's change is left as it was")
+        self.assertEqual(loop.read_review(self.job_dir)["state"], "pushed")
+
+    def test_only_a_pushed_workbench_change(self):
+        loop.write_review(self.job_dir, {"scope": "new-test", "state": "pushed"})
+        self.assertEqual(self.take()[0], 1)
+
+
+class WhatMustNeverBePushed(unittest.TestCase):
+    """A company name or a real Jira key is no credential, and the repository
+    is public: this machine's list and the stories read here refuse them
+    (2026-10-30)."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="guard-")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        os.makedirs(os.path.join(self.root, ".workbench", "job1"))
+        with io.open(os.path.join(self.root, ".workbench", "job1", "intake.json"), "w", encoding="utf-8") as fh:
+            json.dump({"story": {"key": "ZED-10458", "subtasks": ["QQ-7", "ABC-3"]}}, fh)
+
+    def guard(self, text=None):
+        if text is not None:
+            with io.open(os.path.join(self.root, loop.PUSH_GUARD), "w", encoding="utf-8") as fh:
+                fh.write(text)
+        return loop.guard_terms(self.root)
+
+    def found(self, line, terms):
+        return [w for _l, w in loop.scan_guard("+" + line + "\n", terms)]
+
+    def test_the_keys_of_projects_read_here_are_refused_but_not_placeholders(self):
+        terms = self.guard()
+        self.assertTrue(self.found("# seen live in story ZED-99454", terms))
+        self.assertTrue(self.found('key = "QQ-12"', terms))
+        self.assertFalse(self.found('key = "ABC-123"', terms), "the placeholder stays usable")
+        self.assertFalse(self.found("ZED-1", terms), "one digit is not a key")
+        self.assertFalse(self.found("AZED-99454", terms))
+
+    def test_this_machines_words_and_patterns_whole_words_any_case(self):
+        terms = self.guard("# company\nAcmeHotels\nre:internal\\.acme\\.example\n\n")
+        self.assertTrue(self.found("// from the acmehotels team", terms))
+        self.assertTrue(self.found("host = internal.acme.example", terms))
+        self.assertFalse(self.found("// AcmeHotelsX is another thing", terms))
+
+    def test_only_added_lines_count_and_the_word_is_not_repeated(self):
+        terms = self.guard("AcmeHotels\n")
+        self.assertEqual(loop.scan_guard("-was AcmeHotels\n AcmeHotels context\n", terms), [])
+        line, why = loop.scan_guard("+said AcmeHotels\n", terms)[0]
+        self.assertNotIn("AcmeHotels", line)
+        self.assertIn("never-push word", why)
 
 
 class TheSecretScan(unittest.TestCase):

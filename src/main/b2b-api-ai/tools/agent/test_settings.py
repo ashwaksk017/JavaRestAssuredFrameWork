@@ -123,6 +123,25 @@ class TheDevelopersRepository(Base):
         self.assertNotIn("devcode_config", self.doc()["stg"])
 
 
+class TheNeverPushList(Base):
+    """What a push from this machine must never carry: kept in .workbench,
+    where loop.guard_terms reads it (2026-10-30)."""
+
+    def test_it_is_saved_where_approve_reads_it_and_shown_back(self):
+        r = st.save({"push_guard": " AcmeHotels \nre:internal\\.acme\\.example\n"}, root=self.root)
+        self.assertTrue(r["saved"], r)
+        with io.open(os.path.join(self.root, ".workbench", "push-guard.txt"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "AcmeHotels\nre:internal\\.acme\\.example\n")
+        self.assertIn("AcmeHotels", st.status(self.root)["push_guard"])
+        self.assertNotIn("push", json.dumps(self.doc()), "not in the configuration file")
+
+    def test_the_same_list_again_is_nothing_to_save_and_a_bad_pattern_is_refused(self):
+        st.save({"push_guard": "AcmeHotels"}, root=self.root)
+        self.assertFalse(st.save({"push_guard": "AcmeHotels\n"}, root=self.root)["saved"])
+        with self.assertRaises(ValueError):
+            st.save({"push_guard": "re:([unclosed"}, root=self.root)
+
+
 class CursorSettings(Base):
     def cursor_file(self):
         with io.open(os.path.join(self.root, *st.CURSOR_REL.split("/")), encoding="utf-8") as fh:

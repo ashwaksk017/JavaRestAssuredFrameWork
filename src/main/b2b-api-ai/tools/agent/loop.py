@@ -68,6 +68,7 @@ from __future__ import annotations
 import argparse
 import csv
 import difflib
+import glob
 import hashlib
 import importlib
 import importlib.util
@@ -286,7 +287,9 @@ DEFAULT_POLICY = {
 
 STATES = ("none", "generating", "rejected", "verify-failed",
           "pending-review", "pushed", "push-failed", "approved-local",
-          "discarded")
+          "discarded",
+          # a pushed change to the workbench, merged and pulled (take-merged)
+          "merged")
 _SUITE_RX = re.compile(r"^[a-z0-9_]{1,80}$")
 
 
@@ -365,7 +368,7 @@ def cursor_log_name(scope_name) -> str:
     """The file a run's conversation with Cursor goes to: cursor.log for new
     tests (the Automate Test Case tab), migration-cursor.log for a converted
     suite or the converter (the Migration tab), workbench-cursor.log for a
-    change to the workbench (the Logs tab) -- so no tab shows another's."""
+    change to the workbench (the Update WorkBench tab) -- so no tab shows another's."""
     if scope_name == "workbench":
         return "workbench-cursor.log"
     return "migration-cursor.log" if scope_name in ("converted", "converter") else "cursor.log"
@@ -378,7 +381,11 @@ WORKBENCH_RULE_FILES = ("jobs.py", "loop.py", "workflow.py", "execution.py", "xr
 WORKBENCH_MAP = """WHERE THINGS ARE IN THE WORKBENCH (tools/agent):
 
   ui/index.html, ui/app.js, ui/app.css   the page: one section a tab (Automate Test Case,
-                                         Migration from ReadyAPI, Commit and push, ...)
+                                         Migration from ReadyAPI, Run tests, Commit and push,
+                                         Manual tests, Jira, Defects, Update WorkBench,
+                                         Settings); inside a tab, strips of sub-tabs
+                                         (.input-tabs, selectTab) and folded sections
+  launch.py                              start / stop the workbench (start-/stop-workbench)
   server.py                              the HTTP server: every /api/... route
   jobs.py                                what a button may start (RUNNABLES), job folders,
                                          start/stop, status and logs
@@ -387,11 +394,17 @@ WORKBENCH_MAP = """WHERE THINGS ARE IN THE WORKBENCH (tools/agent):
   cursor_call.py                         one call to AI Agent through cursor-sdk
   design.py, casereview.py, suitemap.py  designing and reviewing test cases
   intake.py, xraytests.py, xrayimport.py reading a story; Xray tests
+  devcode.py, devchange.py               the developer's change: read from git, into Design,
+                                         checked against the cases
+  settings.py                            the Settings tab (program_configuration.json)
   manualtests.py, defects.py, codereview.py, publish.py, fixbrief.py, ...  the other tabs
   test_*.py                              unit tests (python tools/agent/test_<name>.py)
   check_ui.py                            the page checks: a headless browser against the server
-  check_workbench.py                     what this run is verified with
+  check_workbench.py                     what this run is verified with (it also runs the
+                                         tests of what you changed: test_loop.py for loop.py)
   README.md                              what a person reads about each tab
+  ../jira/ (shapes.py, ...), ../failure_history.py, ../ra_converter/   used by the workbench,
+                                         each with its test_*.py beside it
 """
 
 
@@ -1279,9 +1292,20 @@ _SCOPE_BRIEFING = {
         "and its Python server and commands (tools/agent/*.py, standard library only). "
         "Text from Jira, Confluence, AI Agent or a test run reaches the page only as "
         "TEXT (el(..., {text}) / textContent), never as HTML. Keep the page's look "
-        "and wording. Add or extend a test for what you change: test_*.py for Python, "
-        "check_ui.py for the page. The person restarts the workbench to use the "
-        "change."),
+        "and wording, unless the request is to change them; when a section moves, "
+        "keep its element ids, so the code and the page checks still find it. "
+        "On the page and in every message a person reads, the agent is called "
+        "\"AI Agent\", never \"Cursor\" (file, folder and setting names keep theirs). "
+        "THE REPOSITORY IS PUBLIC: never write a company or product name, a real "
+        "Jira key, a host name, an e-mail address or a token into any file -- code, "
+        "comment, test or README -- use ABC-123, example.test and the like. "
+        "The workbench runs on Windows and macOS: guard what only one has "
+        "(os.name), as the code around it does. Add or extend a test for what you "
+        "change: test_*.py for Python, check_ui.py for the page; a file outside "
+        "tools/agent (tools/jira, the converter) has its tests beside it, and they "
+        "are run too. The page checks are run once more when they fail: a page "
+        "check of a tab you did not touch that fails is timing, not a reason to "
+        "change that check. The person restarts the workbench to use the change."),
     "new-test": (
         "You are writing an API test in this repository's own framework "
         "(Java 17, REST Assured, TestNG). Read CreateTestCase.md for how a "
@@ -1881,7 +1905,7 @@ def sheet_before(root: str, job_dir: str, rel: str):
     None when it did not exist then (every row in it is the job's).
 
     From the job's own copy when the file was uncommitted work at the time
-    (pre/), else from the last commit. Seen live: a run of story B2B-99454
+    (pre/), else from the last commit. Seen live: a run of story ABC-99454
     gave its case TC-001's Xray key and story to TC-001 rows of two OTHER
     tests' sheets -- tests it had edited -- because a row was claimed by
     its case id alone, and every story numbers its cases from TC-001."""
@@ -3638,6 +3662,69 @@ def scan_secrets(diff: str, known: dict = None) -> list:
     return findings
 
 
+# ---- what must never be pushed ------------------------------------------
+# The secret scan finds credentials and the configured hosts and values. A
+# company or product name, or a real Jira key in a comment ("seen live in
+# story ..."), is neither -- and the repository is public. This machine's
+# list (gitignored, set on the Settings tab) and the key prefixes of every
+# story read here refuse such a line too (2026-10-30).
+
+PUSH_GUARD = os.path.join(".workbench", "push-guard.txt")
+PLACEHOLDER_PREFIXES = {"ABC", "XYZ", "TEST", "PROJ", "KEY"}
+
+
+def guard_terms(root: str) -> list:
+    """[(compiled pattern, why)]: the lines of .workbench/push-guard.txt (a
+    word or phrase; `re:` a pattern; `#` a comment), then `<PREFIX>-<number>`
+    for the Jira project of every story read on this machine."""
+    out = []
+    try:
+        with io.open(os.path.join(root, PUSH_GUARD), encoding="utf-8-sig") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        lines = []
+    for n, line in enumerate(lines, 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("re:"):
+            try:
+                out.append((re.compile(line[3:].strip(), re.I), f"never-push pattern (line {n})"))
+            except re.error:
+                out.append((re.compile(re.escape(line[3:].strip()), re.I), f"never-push word (line {n})"))
+        else:
+            out.append((re.compile(r"(?<![A-Za-z0-9])" + re.escape(line) + r"(?![A-Za-z0-9])", re.I),
+                        f"never-push word (line {n})"))
+    prefixes = set()
+    for intake_path in glob.glob(os.path.join(root, ".workbench", "*", "intake.json")):
+        try:
+            with io.open(intake_path, encoding="utf-8") as fh:
+                story = (json.load(fh) or {}).get("story") or {}
+        except (OSError, ValueError, AttributeError):
+            continue
+        for key in [story.get("key")] + list(story.get("subtasks") or []):
+            m = re.match(r"^([A-Z][A-Z0-9_]{1,30})-\d+$", str(key or ""))
+            if m and m.group(1) not in PLACEHOLDER_PREFIXES:
+                prefixes.add(m.group(1))
+    for p in sorted(prefixes):
+        out.append((re.compile(r"(?<![A-Za-z0-9])" + re.escape(p) + r"-\d{2,}(?!\d)"),
+                    f"a Jira key of {p}, a project read on this machine"))
+    return out
+
+
+def scan_guard(diff: str, terms: list) -> list:
+    """Findings of the never-push terms in the ADDED lines: [(line, why)]."""
+    findings = []
+    for raw in diff.splitlines():
+        if not raw.startswith("+") or raw.startswith("+++"):
+            continue
+        line = raw[1:]
+        for rx, why in terms:
+            if rx.search(line):
+                findings.append((rx.sub("<never-push>", line.strip())[:120], why))
+    return findings
+
+
 # ---- commands --------------------------------------------------------
 
 def cursor_setup_check(root: str) -> dict:
@@ -5049,6 +5136,82 @@ def repeat_discard(policy: dict) -> bool:
     return policy.get("repeat_discard") is True
 
 
+def cmd_take_merged(job_dir: str, root: str, policy: dict) -> int:
+    """After a pushed change to the workbench was merged into the branch this
+    copy runs from (on GitHub: its pull request): this copy takes it from
+    there. Approve pushed the change to a branch of its own and left it here
+    as uncommitted edits, which the workbench runs from -- and which a plain
+    `git pull` then refuses to overwrite (2026-10-30).
+
+    Nothing is touched unless every file the change made is in the merged
+    branch exactly as it made it, and this copy has no commit that branch
+    lacks. Then those files are put back as the last commit had them (new
+    ones removed) and the branch is pulled, fast-forward only."""
+    review = read_review(job_dir)
+    if review.get("scope") != "workbench" or review.get("state") != "pushed":
+        say("FAIL only a change to the workbench that was pushed is taken back from the merged branch "
+            f"(this job's is {review.get('scope') or 'none'}, {review.get('state') or 'not reviewed'})")
+        return 1
+    remote = policy.get("remote") or "origin"
+    rc, base = git(root, "rev-parse", "--abbrev-ref", "HEAD")
+    base = base.strip()
+    if rc != 0 or not base or base == "HEAD":
+        say("FAIL this copy is not on a branch: check out the branch it runs from, then try again")
+        return 1
+    diag.step(f"Fetching {remote}/{base}")
+    rc, out = git(root, "fetch", "--quiet", remote, base)
+    if rc != 0:
+        say(f"FAIL {remote}/{base} could not be fetched: {out.strip()[-300:]}")
+        return 1
+    upstream = f"{remote}/{base}"
+    if git(root, "merge-base", "--is-ancestor", "HEAD", upstream)[0] != 0:
+        say(f"FAIL this copy has commits {upstream} does not: nothing was changed. Push or "
+            f"drop them first; a fast-forward pull is the only kind made here")
+        return 1
+    files = review.get("files") or {}
+    made = list(files.get("modified") or []) + list(files.get("created") or [])
+    gone = list(files.get("deleted") or [])
+    differ = []
+    for rel in made:
+        rc, merged = git(root, "show", f"{upstream}:./{rel}")
+        try:
+            with io.open(os.path.join(root, *rel.split("/")), encoding="utf-8", newline="") as fh:
+                here = fh.read()
+        except OSError:
+            here = None
+        if rc != 0 or here is None or here.replace("\r\n", "\n") != merged.replace("\r\n", "\n"):
+            differ.append(rel)
+    for rel in gone:
+        if git(root, "cat-file", "-e", f"{upstream}:./{rel}")[0] == 0:
+            differ.append(rel)
+    if differ:
+        say(f"FAIL {upstream} does not have this change as it was made -- not merged yet, or "
+            f"changed since: {', '.join(differ[:8])}{' ...' if len(differ) > 8 else ''}. Nothing was "
+            f"changed. Merge the branch {review.get('branch') or ''} first.")
+        return 1
+    diag.step("Putting the change's files back as the last commit had them")
+    tracked = [rel for rel in list(files.get("modified") or []) + gone]
+    if tracked:
+        rc, out = git(root, "checkout", "--", *tracked)
+        if rc != 0:
+            say(f"FAIL the files could not be put back: {out.strip()[-300:]}")
+            return 1
+    for rel in files.get("created") or []:
+        try:
+            os.remove(os.path.join(root, *rel.split("/")))
+        except OSError:
+            pass
+    rc, out = git(root, "pull", "--ff-only", "--quiet", remote, base)
+    if rc != 0:
+        say(f"FAIL the pull was refused: {out.strip()[-400:]}. The change is in {upstream}; "
+            f"pull it by hand once the files git names are dealt with.")
+        return 1
+    write_review(job_dir, dict(review, state="merged", merged=_now()))
+    say(f" ok  {upstream} pulled: the change is now part of this copy's {base}, committed.")
+    say("RESTART the workbench (Stop, then Start) if its server changed; refresh the page.")
+    return 0
+
+
 def cmd_discard(job_dir: str, root: str, policy: dict = None) -> int:
     review = read_review(job_dir)
     try:
@@ -5425,7 +5588,8 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
     message = "".join("+" + l + "\n" for l in (subject + "\n" + body).splitlines())
     known = config_secrets(config_path) if config_path else private_config(root)
     findings, seen = [], set()
-    for item in scan_secrets(pushed_diff + "\n" + message, known):
+    for item in scan_secrets(pushed_diff + "\n" + message, known) \
+            + scan_guard(pushed_diff + "\n" + message, guard_terms(root)):
         if item not in seen:
             seen.add(item)
             findings.append(item)
@@ -5728,7 +5892,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("command",
                     choices=("setup", "generate", "followup", "automate", "approve", "push", "discard",
-                             "reapply", "run"))
+                             "reapply", "run", "take-merged"))
     ap.add_argument("--env", default="", help="run: the environment (default: the policy's run_env)")
     ap.add_argument("--cases", default="", help="automate: the case ids, comma-separated")
     ap.add_argument("--past-stops", action="store_true",
@@ -5777,6 +5941,8 @@ def main(argv=None) -> int:
         return cmd_run(job_dir, ROOT, policy, args.env)
     if args.command == "discard":
         return cmd_discard(job_dir, ROOT, policy)
+    if args.command == "take-merged":
+        return cmd_take_merged(job_dir, ROOT, policy)
     if args.command == "reapply":
         return patches.main(["reapply", "--suite", args.suite])
     return cmd_approve(job_dir, ROOT, policy, intake.safe_job(args.job),

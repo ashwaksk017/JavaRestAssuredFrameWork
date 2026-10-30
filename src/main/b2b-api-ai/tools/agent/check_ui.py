@@ -229,8 +229,14 @@ def main() -> int:
                   page.headers(path).get("cache-control") == "no-store")
         check("server -> command -> result file", code == 200 and state.get("exit_code") == 0
               and json.loads(text or "{}").get("kind") == "runs", str(state))
-        html = page.dom("failures")
+        html = page.dom("run")
         check("the Failures tab shows that result", "Recorded runs" in html)
+        check("Failures and Publish are no tabs of their own: Run tests and Commit and push hold them",
+              top_tabs(html) == 9 and 'data-tab="failures"' not in html and 'data-tab="publish"' not in html
+              # each inside its new tab: before the next tab's section starts
+              and all(0 < html.find(f'id="{tab}"') < html.find(f'id="{part}"')
+                      < html.find('<section id="tab-', html.find(f'id="{tab}"') + 1)
+                      for tab, part in (("tab-run", "run-history"), ("tab-agent", "publish-part"))))
 
         # ---- Fix Failures, under a failed run -------------
         # The run's result is put where mvnrun.py writes it; which way it
@@ -406,7 +412,7 @@ def main() -> int:
                     label="after the fix", written=1_767_312_000)
         shutil.copy(os.path.join(scratch, ".workbench", JOB, failure_history.JOB_RESULT),
                     os.path.join(job_dir, failure_history.JOB_RESULT))
-        html = page.dom("failures")
+        html = page.dom("run")
         check("a recorded run exits 0", rc == 0)
         for needle in ("Suite Demo", "after the fix", "Compared with the run of",
                        "New — not failing before", "D.new",
@@ -585,7 +591,7 @@ def main() -> int:
         check("another job's Jira tab is empty",
               "Only in 6.02" not in other and "Refused —" not in other
               and 'id="jira-result" class="result"></div>' in other)
-        other = page.dom("failures", job="check-ui-no-such-job")
+        other = page.dom("run", job="check-ui-no-such-job")
         check("another job's Failures tab is empty",
               "Suite Demo" not in other and "Signatures in this run" not in other)
 
@@ -1075,6 +1081,17 @@ def main() -> int:
                   bool(re.search(r'id="set-dev-token" type="password"', set_tab))
                   and 'id="set-dev-urls"' in set_tab and 'id="set-dev-hosts"' in set_tab
                   and not re.search(r'id="set-dev-token"[^>]*value="[^"]', set_tab))
+            check("the Settings tab keeps this machine's never-push list",
+                  'id="set-push-guard"' in set_tab)
+            agent_tab = mocked.dom("agent")
+            check("a pushed workbench change can be taken from main once merged, and its pictures shown "
+                  "(both hidden until there is one)",
+                  bool(re.search(r'id="agent-take-merged"[^>]*hidden', agent_tab))
+                  and bool(re.search(r'id="agent-screens"[^>]*hidden', agent_tab)))
+            code, _body = mocked.call("/api/screen?job=check-ui-throwaway&tab=new")
+            code2, _b2 = mocked.call("/api/screen?job=check-ui-throwaway&tab=..%2Freview")
+            check("a picture that is not there is a 404, and a path is never one", code == 404 and code2 == 404,
+                  f"{code} {code2}")
             check("the Settings tab takes the AI Agent key (a password box) and its models",
                   'id="set-cursor-key"' in set_tab and 'id="set-cursor-model"' in set_tab
                   and 'id="set-cursor-design-model"' in set_tab)
@@ -1340,7 +1357,7 @@ def main() -> int:
             check("the Manual tests tab lists the file and where it was put",
                   "Booking Rules.md" in html
                   and f".workbench/{JOB}/docs/Booking Rules.md" in html
-                  and top_tabs(html) == 11)
+                  and top_tabs(html) == 9)
             code, rc = press("manual-inventory", {"--project": "ABC"})
             html = mocked.dom("manual")
             check("mock mode: Read existing tests, with their steps, and says it is sample data",
@@ -1382,24 +1399,24 @@ def main() -> int:
                 os.remove(conf_store)
             try:
                 code, rc = press("publish-status", {})
-                html = mocked.dom("publish")
+                html = mocked.dom("agent")
                 check("the Publish tab says what is switched on, and that these are stand-ins",
                       rc == 0 and "Attaching to Jira is ON" in html
                       and "Creating Confluence pages is ON for space(s) QA" in html
-                      and "contacts nobody" in html and top_tabs(html) == 11, f"rc={rc}")
+                      and "contacts nobody" in html and top_tabs(html) == 9, f"rc={rc}")
                 check("only this job's own results are offered, by name",
                       '<option value="manual-tests.md">' in html
                       and '<option value="manual">Manual test cases</option>' in html
-                      and "cursor.log" not in html[html.index('id="tab-publish"'):])
+                      and "cursor.log" not in html[html.index('id="publish-part"'):])
                 code, rc = press("publish-attach", {"--key": "ABC-12", "--file": "manual-tests.md",
                                                     "--confirm-key": "ABC-12"})
-                html = mocked.dom("publish")
+                html = mocked.dom("agent")
                 check("mock mode: Attach to the issue changes a file on this machine and says so",
                       rc == 0 and f"{JOB}-manual-tests.md is attached to ABC-12" in html
                       and "Nothing left this machine." in html, f"rc={rc}")
                 code, rc = press("publish-attach", {"--key": "ABC-12", "--file": "manual-tests.md",
                                                     "--confirm-key": "ABC-13"})
-                html = mocked.dom("publish")
+                html = mocked.dom("agent")
                 check("a key that is not typed the same twice writes nothing",
                       rc == 2 and "Refused — nothing was written." in html
                       and "given twice" in html, f"rc={rc}")
@@ -1408,7 +1425,7 @@ def main() -> int:
                 check("a file that is not one of the results cannot be named", rc == 2)
                 code, rc = press("publish-attach", {"--key": "ABC-77", "--file": "manual-tests.md",
                                                     "--confirm-key": "ABC-77", "--expect": "real"})
-                html = mocked.dom("publish")
+                html = mocked.dom("agent")
                 check("when the page said real and it is a stand-in (or the reverse), nothing is written",
                       rc == 2 and "Nothing was written" in html, f"rc={rc}")
                 check("the record of writes is on the page, and asking what is on does not erase the last outcome",
@@ -1420,12 +1437,12 @@ def main() -> int:
                 page_opts = {"--what": "manual", "--space": "QA", "--parent": "4242",
                              "--title": "Check UI page", "--confirm-title": "Check UI page"}
                 code, rc = press("publish-page", page_opts)
-                html = mocked.dom("publish")
+                html = mocked.dom("agent")
                 check("mock mode: Create the page",
                       rc == 0 and "was created in QA" in html
                       and "Nothing left this machine." in html, f"rc={rc}")
                 code, rc = press("publish-page", page_opts)
-                html = mocked.dom("publish")
+                html = mocked.dom("agent")
                 check("a page with a title the space already has is not created again",
                       rc == 2 and "never edits" in html, f"rc={rc}")
                 code, rc = press("publish-page", dict(page_opts, **{"--space": "DEV",

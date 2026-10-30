@@ -38,6 +38,9 @@ _KEY_RX = re.compile(r"^[A-Z][A-Z0-9_]{0,19}-[0-9]{1,9}$")
 
 
 WORKBENCH_FILE = os.path.join(".workbench", "workbench-settings.json")
+# What a push from this machine must never carry (loop.guard_terms reads it):
+# a word or phrase a line, `re:` a pattern. Gitignored: it names the company.
+PUSH_GUARD_FILE = os.path.join(".workbench", "push-guard.txt")
 # Cursor's key and models (gitignored), shared by the workbench and the
 # converter: tools/cursor_agent.json, or the converter's old place when only
 # that one exists. CURSOR_API_KEY, when set, wins over the file's key.
@@ -222,6 +225,7 @@ def status(root: str = "", project: str = "") -> dict:
                  "pat": _token_state(jira.get("pat"))},
         "confluence": {"base_urls": [str(u) for u in conf.get("base_urls") or []],
                        "pat": _token_state(conf.get("pat"))},
+        "push_guard": _push_guard_read(root),
         "devcode": {"base_urls": [str(u) for u in dev.get("base_urls") or []],
                     "token": _token_state(dev.get("token")),
                     "hosts": "\n".join(f"{h} {v.get('kind', '')}" + (f" {v['api']}" if v.get("api") else "")
@@ -251,6 +255,31 @@ def _urls(value) -> list:
         if u not in out:
             out.append(u)
     return out
+
+
+def _push_guard_read(root: str = "") -> str:
+    try:
+        with io.open(os.path.join(root or ROOT, PUSH_GUARD_FILE), encoding="utf-8-sig") as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def _push_guard_text(text) -> str:
+    """The list as written to the file: trimmed lines, each `re:` line a
+    pattern that compiles."""
+    lines = []
+    for n, line in enumerate(str(text or "").splitlines(), 1):
+        line = line.strip()
+        if line.startswith("re:"):
+            try:
+                re.compile(line[3:].strip())
+            except re.error as e:
+                raise ValueError(f"never-push line {n}: {line[3:].strip()!r} is not a pattern ({e})") from None
+        if len(line) > 300:
+            raise ValueError(f"never-push line {n} is longer than 300 characters")
+        lines.append(line)
+    return "\n".join(lines).strip() + ("\n" if any(lines) else "")
 
 
 _HOST_RX = re.compile(r"^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$")
@@ -448,6 +477,14 @@ def save(changes: dict, root: str = "", busy=None, project: str = "") -> dict:
                 cur.pop(key, None)
             said.append(what)
     cur_changed = json.dumps(cur, sort_keys=True) != cur_before
+    # What a push must never carry: this machine's file, not the config.
+    guard_text = None
+    if "push_guard" in changes:
+        guard_text = _push_guard_text(changes["push_guard"])
+        if guard_text == _push_guard_read(root):
+            guard_text = None
+        else:
+            said.append("never-push list")
     # Stage 7: running the tests -- this machine's, in .workbench/ (no secret)
     wb = workbench_settings(root)
     wb_changed = False
@@ -506,8 +543,14 @@ def save(changes: dict, root: str = "", busy=None, project: str = "") -> dict:
     if "config" in changes:
         said.extend(_save_config(changes["config"], doc, root, project, CONFIG_REL))
     unchanged = json.dumps(doc, sort_keys=True) == json.dumps(_read(root, project), sort_keys=True)
-    if not said or (unchanged and not wb_changed and map_change is None and not cur_changed):
+    if not said or (unchanged and not wb_changed and map_change is None and not cur_changed
+                    and guard_text is None):
         return {"saved": False, "said": "nothing to change", "status": status(root, project)}
+    if guard_text is not None:
+        p = os.path.join(root or ROOT, PUSH_GUARD_FILE)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with io.open(p, "w", encoding="utf-8") as fh:
+            fh.write(guard_text)
     if not unchanged:
         _write(doc, root, project)
     if cur_changed:

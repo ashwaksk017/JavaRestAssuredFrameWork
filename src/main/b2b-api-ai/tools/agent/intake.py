@@ -731,7 +731,7 @@ def build(job: str, text: str = "", links=None, root: str = "",
                 # links are still read: one source must not lose the job.
                 got = {"link": link, "kind": JIRA, "ok": False,
                        "reason": f"the story could not be read ({type(e).__name__}); "
-                                 f"the Logs tab has the detail"}
+                                 f"the Update WorkBench tab has the detail"}
             extra_texts = got.pop("_extra_texts", [])
             gathered.append(got)
             if not got.get("ok"):

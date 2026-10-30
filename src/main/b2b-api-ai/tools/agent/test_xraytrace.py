@@ -60,7 +60,7 @@ class XrayTrace(unittest.TestCase):
         with io.open(os.path.join(csv_dir, "createGuestProgramAccount_createAndReadBack_200.csv"),
                      "w", encoding="utf-8") as fh:
             fh.write("description,test_case_id,jira_xray_id,jira_issue,execute\n"
-                     "row,TC-001,B2B-99771,B2B-99454,Y\n")
+                     "row,TC-001,B2B-99771,ABC-99454,Y\n")
         res = os.path.join(self.root, xt.RESULTS_REL)
         with io.open(res, "w", encoding="utf-8") as fh:
             fh.write('<?xml version="1.0"?><testng-results total="1">'

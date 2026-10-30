@@ -307,6 +307,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(out)
             if u.path == "/api/download":
                 return self._download(q.get("job", ""), q.get("name", ""))
+            if u.path == "/api/screen":
+                # A picture of a tab after a workbench change (screens.py):
+                # named by its tab, read from the job's own folder only.
+                body = jobs._tool("screens").picture(jobs.job_dir(q.get("job", "")), q.get("tab", ""))
+                if not body:
+                    return self._json({"error": "no such picture"}, 404)
+                return self._send(200, body, "image/png")
             return self._json({"error": "no such route"}, 404)
         except PermissionError as e:
             return self._fail(e, 403)

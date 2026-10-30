@@ -173,7 +173,7 @@ While a switch is on:
 **Not simulated**, whatever the switches say: Confluence links on the
 Automate Test Case tab are fetched for real; `tools/jira/fetch.py` and
 `run.py` (a single story, from a console) use the real Jira; the
-converter and its own Cursor assist; the tests and the Failures tab;
+converter and its own Cursor assist; the tests and how each run compares with the last;
 and git. As shipped both switches are `true`, so a fresh copy is safe to
 click through. **Switch a service to `false` when you are ready to use
 the real one**, and load again: what was loaded from the sample data is
@@ -1010,7 +1010,7 @@ Under a run with failed tests the tab offers **Fix Failures**. It says which of 
 | the failing tests are | the request goes |
 |---|---|
 | the job's own: its `Suites/jira/<job>.xml` was run, or every failing class is in that suite or in the change waiting for its review | to that job's **Ask Me** (`agent-followup.txt`, `loop.py followup`): Cursor changes the waiting change, or starts one |
-| one converted suite's (`com.hi.api.tests.imported.<suite>.`) | to a **fix brief** -- what Fix with Cursor on the Failures tab writes (`fixbrief.py`), from THIS run's failures -- in a new job `fix-<suite>-<time>`, run as the Migration tab runs one (scope `converted`) |
+| one converted suite's (`com.hi.api.tests.imported.<suite>.`) | to a **fix brief** -- what Fix with Cursor under Compared with earlier runs (Run tests) writes (`fixbrief.py`), from THIS run's failures -- in a new job `fix-<suite>-<time>`, run as the Migration tab runs one (scope `converted`) |
 | anything else (another job's tests, several suites, a mix) | nowhere: the tab says what to do instead |
 
 The box is prefilled with each failed test, its case id, why it failed and
@@ -1145,7 +1145,7 @@ Java (kept on this machine, re-applied after every reconvert of the
 suite) or the converter itself (committed and pushed). A job's first
 request becomes its brief and plan; a request while a change is waiting
 adds to it. A job that holds a story or a design is refused: a migration
-request is its own job. Fix with Cursor on the Failures tab writes the
+request is its own job. Fix with Cursor under Compared with earlier runs (Run tests) writes the
 request for you -- leave the box empty and press Ask Me. The change
 waits on the Commit and push tab.
 
@@ -1757,6 +1757,12 @@ a live Jira or the real Cursor service.
 
 ### Failures
 
+Not a tab of its own any more (2026-10-30): every test run started from the
+workbench is recorded by itself when it ends, and compared with the run before,
+under **Compared with earlier runs** on the Run tests tab -- open when something
+failed. **Record the last run again** is there for a run made outside the
+workbench. Everything below happens in that section.
+
 #### Fix with Cursor
 
 A signature card has two buttons. **Fix with Cursor (this suite's
@@ -1918,6 +1924,10 @@ this machine, and those keys are never handed to a real agent run.
 
 ### Publish
 
+Not a tab of its own any more (2026-10-30): it is the **Publish to Jira or
+Confluence** section at the end of the Commit and push tab, folded away;
+opening it asks what can be published.
+
 Puts a job's results where the team works: a file attached to a Jira
 issue, or a new Confluence page. **This is the tab that writes to Jira
 and Confluence.** What it writes is seen by other people and cannot be
@@ -1996,9 +2006,11 @@ python tools/agent/publish.py attach --job <job> --key ABC-12 --file manual-test
 python tools/agent/publish.py page   --job <job> --what manual --space QA --parent 12345                                      --title "Booking: manual tests" --confirm "Booking: manual tests"
 ```
 
-### Logs
+### Update WorkBench (was: Logs)
 
-For finding out what went wrong. Everywhere else the page shows an
+At its bottom, **Change the workbench**: the AI Agent changes the
+workbench itself (below). Above it, the logs -- for finding out what went
+wrong. Everywhere else the page shows an
 unexpected error only by its kind -- an error's text can quote what was
 being read, and that output is served to the page. The rest is kept here.
 
@@ -2070,17 +2082,22 @@ logs under `target/`.
 
 ### Linking to a tab
 
-The tab is in the address: `http://127.0.0.1:8787/#jira`, `#failures`,
-`#agent`, `#convert`, `#new`. `?job=<name>` opens the page on a job:
-`http://127.0.0.1:8787/?job=release-6#jira`. The Jira, Defects and Failures tabs show
+The tab is in the address: `http://127.0.0.1:8787/#jira`, `#run` (`#failures`
+still opens it), `#agent`, `#convert`, `#new`. `?job=<name>` opens the page on a job:
+`http://127.0.0.1:8787/?job=release-6#jira`. The Jira and Defects tabs, and Run tests, show
 the last result of that job when they are opened.
 
 #### Change the workbench
 
-At the bottom of the Logs tab, Cursor can change the workbench itself: this
-page, its server and their tests (`tools/agent/`, the "workbench" scope of
+At the bottom of the Update WorkBench tab, the AI Agent can change the
+workbench itself: this page, its server and their tests (`tools/agent/`,
+and what they use under `tools/` -- the "workbench" scope of
 `policy.json`). It never changes `policy.json` or `mock.json` -- the rule
-book it is held to; an edit there is put back and the run rejected.
+book it is held to; an edit there is put back and the run rejected. It is
+told the house rules: the page says "AI Agent", never "Cursor"; the
+repository is public, so no company or product name, real Jira key, host,
+e-mail address or token goes into any file; moved sections keep their ids;
+what only Windows or only macOS has is guarded.
 
 - Its own job, `workbench-<date>-<time>`, one change at a time; a request
   while a change waits is added to it.
@@ -2093,11 +2110,37 @@ book it is held to; an edit there is put back and the run rejected.
   review: read those parts closely.
 - Before review the change must pass `python tools/agent/check_workbench.py`:
   every Python file compiles, `ui/app.js` parses, the workbench's quick tests
-  and the page checks pass. (`test_loop.py`, about two minutes, is not run: run
-  it yourself before approving a change to `loop.py` or `cursor_call.py`.)
-- **Review it** opens the change on the Commit and push tab. After Approve &
-  push, Stop and Start the workbench to run the changed server; refresh the
-  page for the changed page.
+  and the page checks pass -- and the tests of what it touched:
+  `test_loop.py` when `loop.py` or `cursor_call.py` changed, a changed or
+  new test itself, and for a file outside `tools/agent` its `test_<name>.py`
+  (else the tests beside it that name it). The page checks are run once
+  more when they fail: a page read before it finished drawing fails for no
+  reason; failing twice fails.
+- When the change touched the page, each tab is pictured as it now looks
+  (`screens.py`: a headless browser, the stand-ins on) and the pictures are
+  in the review -- the page checks read the HTML, nobody else looks at it.
+- **Review it** opens the change on the Commit and push tab. **Approve &
+  push** scans the change for secrets and refuses it when it carries a word
+  of this machine's never-push list (Settings: company and product names,
+  internal host patterns) or a Jira key of a project read on this machine.
+  It pushes the change to a branch of its own (`feature_<job>`), never to
+  `main`, and leaves it here uncommitted, so the workbench keeps running it.
+  Stop and Start the workbench to run a changed server; refresh the page for
+  a changed page.
+
+The routine with a pushed change (one machine runs the workbench, another
+may change the code as well):
+
+1. Merge the change's branch into `main` on GitHub (its pull request).
+2. On the machine that pushed it: **Take the merged change** on the Commit
+   and push tab (`loop.py take-merged`). It checks that every file the
+   change made is in `main` exactly as it made it and that this copy has no
+   commit `main` lacks; only then does it put the files back and pull,
+   fast-forward only. Not merged yet, or edited in review: nothing is
+   touched, and it says which file differs.
+3. Restart the workbench.
+4. Anywhere else this repository is worked on: `git pull` before changing
+   anything, so two copies never change the same file apart.
 - The files on disk change as soon as Cursor writes them, so a broken page
   can stop you from pressing Discard. From a terminal:
 
@@ -2201,7 +2244,7 @@ Everything is under `.workbench/<job>/`:
   defects.json           the Defects tab: the loaded bugs, their text, the suggestions
   defects-result.json    the Defects tab: the same without the ticket text, as the page shows it
   defects-applied.log    the Defects tab: every write to Jira made from this job
-  failures-result.json   the Failures tab: the last failure-history command's result
+  failures-result.json   Run tests, Compared with earlier runs: the last failure-history command's result
   cursor.log             the conversation with Cursor (design and the Agentic Test Creation tab), appended across runs
   review.json            the Agentic Test Creation tab: state, scope, the files changed, verify result
   proposed.diff          the Agentic Test Creation tab: what is waiting for review
@@ -2217,7 +2260,7 @@ The page polls the log by byte offset, so a long convert streams and a
 refresh picks up where it left off. The UI will only read back
 `brief.md`, `plan.md`, `intake.json`, `locate.json`, `review.json`,
 `proposed.diff`, the four design files and the two result files of
-the Jira and Failures tabs — a job directory
+the Jira tab and of Compared with earlier runs (Run tests) — a job directory
 cannot be used to read arbitrary files through the API.
 
 ## What it is allowed to run

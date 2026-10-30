@@ -160,7 +160,7 @@ def after_maven(root: str, started_before: float) -> dict:
     if log_m < started_before - 1.0:
         return {
             "warn": "target/b2b-full-run.log was not refreshed by this run (timestamp unchanged). "
-                    "Open the Logs tab → Maven test run log for why.",
+                    "Open the Update WorkBench tab → Maven test run log for why.",
         }
     return {}
 
