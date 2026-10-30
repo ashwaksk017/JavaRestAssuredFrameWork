@@ -283,6 +283,27 @@ input[type=file] { padding: .45rem; border: 1px dashed var(--line-strong); borde
 .specsrc .grow { flex: 1 1 22rem; }
 .specsrc label.inline { min-width: 11rem; margin: 0; }
 
+/* What a job is given, one tab each, on tab 1 (#inputs). */
+.inputs { margin: 1rem 0 .8rem; border: 1px solid var(--line); border-radius: 8px;
+          background: var(--panel); }
+.input-tabs { display: flex; flex-wrap: wrap; gap: .2rem; padding: .35rem .5rem 0;
+              border-bottom: 1px solid var(--line); background: var(--panel-2);
+              border-radius: 8px 8px 0 0; }
+.input-tabs button { display: inline-flex; align-items: center; gap: .4rem; margin: 0 0 -1px;
+                     padding: .5rem .9rem; border: 1px solid transparent; border-bottom: 0;
+                     border-radius: 6px 6px 0 0; background: none; color: var(--dim);
+                     font: inherit; font-weight: 600; cursor: pointer; }
+.input-tabs button .hint { font-weight: 400; }
+.input-tabs button:hover { color: var(--ink); }
+.input-tabs button[aria-selected="true"] { color: var(--ink); background: var(--panel);
+                                           border-color: var(--line); }
+.input-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.input-tabs .filled { width: .5rem; height: .5rem; border-radius: 50%; background: var(--accent); }
+.input-tabs .filled[hidden] { display: none; }
+.input-panel { padding: .2rem 1rem .8rem; }
+.input-panel > fieldset.choice:first-child { margin-top: .7rem; }
+@media (max-width: 720px) { .input-tabs button { padding: .45rem .6rem; } .input-tabs button .hint { display: none; } }
+
 /* The Manual tests tab. */
 #tab-manual .row .grow { flex: 1 1 18rem; }
 .result ol { margin: 0; padding-left: 1.2rem; }

@@ -100,6 +100,12 @@ def _load_module(name: str, path: str):
     return mod
 
 
+def top_tabs(html: str) -> int:
+    """The page's own tabs: those of the top <nav>, not a strip inside a tab
+    (tab 1's inputs are a tablist of their own)."""
+    return html.split('<nav class="tabs"', 1)[-1].split("</nav>", 1)[0].count('role="tab"')
+
+
 def free_port() -> int:
     import socket
     with socket.socket() as s:
@@ -854,8 +860,22 @@ def main() -> int:
                   and 'id="spec-from-confluence" hidden' in html and 'id="spec-from-upload" hidden' not in html)
             check("the Jira token is not a button of its own on this tab (Read it checks it)",
                   'id="run-jira-verify"' not in html)
-            check("Design the tests comes after the specification, before the requirements",
-                  html.find('name="spec-from"') < html.find('id="run-design"') < html.find('id="design-requirements"'))
+            # Asked for 2026-10-30: the inputs side by side as tabs, not one
+            # under another to scroll past.
+            panels = [html.find(f'id="in-{n}"') for n in ("story", "pages", "spec", "req", "dev")]
+            check("what a job is given is five tabs, the story's open, the rest closed, above Read it",
+                  all(p > 0 for p in panels) and panels == sorted(panels)
+                  and panels[-1] < html.find('id="run-intake"') < html.find('id="run-design"')
+                  and 'id="in-story" class="input-panel" role="tabpanel" aria-labelledby="in-tab-story">' in html
+                  and all(f'id="in-{n}" class="input-panel" role="tabpanel" aria-labelledby="in-tab-{n}" hidden' in html
+                          for n in ("pages", "spec", "req", "dev"))
+                  and 'id="in-tab-story" data-in="story" aria-controls="in-story" aria-selected="true"' in html)
+            check("each input is in its own tab",
+                  panels[0] < html.find('id="story"') < panels[1] < html.find('id="links"') < panels[2]
+                  < html.find('id="design-swagger"') < panels[3] < html.find('id="design-requirements"')
+                  < panels[4] < html.find('id="devcode-repo"') < html.find('id="run-intake"'))
+            check("the developer's change is still checked under the designed cases",
+                  html.find('id="run-design"') < html.find('id="devcode-run"'))
             check("a design can be cleared", 'id="clear-design"' in html)
             check("the review's steps can be edited in place", "stepEditor" in io.open(
                 os.path.join(HERE, "ui", "app.js"), encoding="utf-8").read())
@@ -1289,7 +1309,7 @@ def main() -> int:
             check("the Manual tests tab lists the file and where it was put",
                   "Booking Rules.md" in html
                   and f".workbench/{JOB}/docs/Booking Rules.md" in html
-                  and html.count('role="tab"') == 11)
+                  and top_tabs(html) == 11)
             code, rc = press("manual-inventory", {"--project": "ABC"})
             html = mocked.dom("manual")
             check("mock mode: Read existing tests, with their steps, and says it is sample data",
@@ -1335,7 +1355,7 @@ def main() -> int:
                 check("the Publish tab says what is switched on, and that these are stand-ins",
                       rc == 0 and "Attaching to Jira is ON" in html
                       and "Creating Confluence pages is ON for space(s) QA" in html
-                      and "contacts nobody" in html and html.count('role="tab"') == 11, f"rc={rc}")
+                      and "contacts nobody" in html and top_tabs(html) == 11, f"rc={rc}")
                 check("only this job's own results are offered, by name",
                       '<option value="manual-tests.md">' in html
                       and '<option value="manual">Manual test cases</option>' in html

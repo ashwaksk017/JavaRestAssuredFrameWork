@@ -540,6 +540,7 @@ $("run-intake").onclick = async () => {
     const links = given.links;
     const stories = storiesNamed(story);
     if (!story && !links.length && !given.text.trim() && !given.pages.trim()) {
+      showInput("story");
       setState($("new-state"), "bad", chosen("story-from") === "paste"
         ? "paste the story, or give a Confluence link"
         : "give a Jira story's link or key, or a Confluence link");
@@ -858,6 +859,8 @@ $("release-list").onclick = async () => {
       if (radio) { radio.checked = true; radio.dispatchEvent(new Event("change")); }
     }
     $("story").value = keys.join("\n");
+    showInput("story");
+    markInputs();
     setState($("release-state"), "ok", `${keys.length} story key(s) put in the box: press Read it`);
     $("story").scrollIntoView({ block: "center" });
   } } }, "Use the ticked stories");
@@ -983,6 +986,7 @@ $("design-requirements-file").onchange = async () => {
   requirementsFile = { name: f.name, text: await f.text(), job: job() };
   setState($("design-requirements-loaded"), "ok",
            `${f.name}: ${requirementsFile.text.length.toLocaleString()} characters read`);
+  markInputs();
 };
 // Another job: the file read for the last one is not this one's.
 $("job").addEventListener("change", () => {
@@ -994,6 +998,50 @@ function requirementsGiven() {
   if (chosen("req-from") === "paste") return $("design-requirements").value;
   return requirementsFile && requirementsFile.job === job() ? requirementsFile.text : "";
 }
+
+// What the job is given -- the story, the pages, the specification, the
+// requirements, the developer's change -- one tab each above Read it, so
+// none is scrolled past to reach another. A tab shows a dot while
+// something is given in it, counted as the steps that read it count it.
+function showInput(name) {
+  for (const b of document.querySelectorAll(".input-tabs [role=tab]")) {
+    const on = b.dataset.in === name;
+    b.setAttribute("aria-selected", String(on));
+    b.tabIndex = on ? 0 : -1;
+    $(`in-${b.dataset.in}`).hidden = !on;
+  }
+}
+function markInputs() {
+  const given = storyInputs();
+  const has = {
+    story: given.story || given.text.trim(),
+    pages: given.links.length || given.pages.trim(),
+    spec: (chosen("spec-from") === "paste" && $("design-swagger").value.trim())
+      || $("design-spec").querySelector(".file"),
+    req: requirementsGiven().trim(),
+    dev: $("devcode-repo").value.trim() && $("devcode-branch").value.trim(),
+  };
+  for (const [name, on] of Object.entries(has)) {
+    const dot = document.querySelector(`#in-tab-${name} .filled`);
+    if (dot) dot.hidden = !on;
+  }
+}
+for (const b of document.querySelectorAll(".input-tabs [role=tab]")) {
+  b.onclick = () => showInput(b.dataset.in);
+  b.onkeydown = (e) => {                   // arrows move along the tabs, as a tablist does
+    const tabs = [...document.querySelectorAll(".input-tabs [role=tab]")];
+    const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
+    if (!step) return;
+    const next = tabs[(tabs.indexOf(b) + step + tabs.length) % tabs.length];
+    showInput(next.dataset.in);
+    next.focus();
+    e.preventDefault();
+  };
+}
+$("inputs").addEventListener("input", markInputs);
+$("inputs").addEventListener("change", markInputs);
+$("job").addEventListener("change", markInputs);
+markInputs();
 
 // The specification is different: it is kept as a FILE for the job, under
 // .workbench/<job>/spec/, whether it was chosen here or taken from a
@@ -1026,6 +1074,7 @@ async function showSpec(j, note) {
     } } }, "Remove"));
   }
   box.replaceChildren(...kids);
+  markInputs();
 }
 
 $("design-swagger-file").onchange = async () => {
@@ -2043,6 +2092,7 @@ $("run-design").onclick = async () => {
   button.disabled = true;
   let stopCursorLog = () => {};
   if (chosen("req-from") === "upload" && $("design-requirements-file").files.length && !requirementsGiven()) {
+    showInput("req");
     setState($("design-state"), "bad", "the requirements file is still being read, or could not be; choose it again");
     button.disabled = false;
     return;
@@ -2198,6 +2248,7 @@ $("devcode-run").onclick = async () => {
   const j = job();
   const repo = $("devcode-repo").value.trim();
   const branch = $("devcode-branch").value.trim();
+  if (j && (!repo || !branch)) showInput("dev");
   if (!j || !repo || !branch) { setState($("devcode-state"), "bad", !j ? "name the job first" : "give the repository and the branch"); return; }
   const options = { "--job": j, "--repo": repo, "--branch": branch };
   if ($("devcode-ticket").value.trim()) options["--ticket"] = $("devcode-ticket").value.trim();
