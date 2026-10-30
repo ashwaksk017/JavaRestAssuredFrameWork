@@ -205,7 +205,12 @@ def _issue(project: str, n: int, kind: str, summary: str, version: str, status: 
            reason: str = "", description: str = "", component: str = "Booking") -> dict:
     return {"key": f"{project}-{n}", "id": str(10000 + n), "fields": {
         "summary": f"[MOCK] {summary}", "description": description,
-        "status": {"name": status}, "issuetype": {"name": kind},
+        # statusCategory, as Jira sends it: the Defects per release chart
+        # counts open/closed by it, never by the status's own name.
+        "status": {"name": status, "statusCategory": {
+            "key": "done" if status in ("Done", "Closed", "Resolved") else
+                   ("indeterminate" if status == "In Progress" else "new")}},
+        "issuetype": {"name": kind},
         "priority": {"name": "Medium"}, "components": [{"name": component}],
         "labels": ["mock", "api"], "fixVersions": [{"name": version}] if version else [],
         "resolution": None, "updated": "2026-01-01T00:00:00.000+0000",

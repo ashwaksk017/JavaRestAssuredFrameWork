@@ -968,13 +968,15 @@ Expect 201.'></textarea>
       <small>Used when nothing is pasted: the project's bugs.</small>
     </div>
     <div class="field">
-      <label for="defects-version">Fix version</label>
-      <input id="defects-version" type="text" spellcheck="false" placeholder="6.02">
+      <label for="defects-version">Fix version <span class="hint">the release</span></label>
+      <input id="defects-version" type="text" spellcheck="false" placeholder="6.02" list="defects-releases">
+      <datalist id="defects-releases"></datalist>
+      <small><button id="defects-releases-load" type="button">Load releases</button> <span id="defects-releases-state" class="state"></span></small>
     </div>
     <div class="field">
-      <label for="defects-max">At most</label>
+      <label for="defects-max">At most, to AI Agent</label>
       <input id="defects-max" type="text" spellcheck="false" placeholder="50">
-      <small>Each bug's text is sent to AI Agent when you ask for suggestions. 200 at the very most.</small>
+      <small>Load reads every defect of the release (1000 at most). Suggest sends at most this many to AI Agent, those without a reason first -- 200 at the very most.</small>
     </div>
   </div>
   <div class="row">
@@ -982,6 +984,22 @@ Expect 201.'></textarea>
     <button id="defects-suggest" data-defects>Suggest reasons</button>
     <span id="defects-state" class="state"></span>
   </div>
+
+  <h3>Defects per release <span class="hint">the project's last releases (fix version), counted -- a bar opens that release's defects below</span></h3>
+  <div class="row" style="justify-content:flex-start">
+    <label class="inline" for="defects-trend-n">Last</label>
+    <input id="defects-trend-n" type="text" spellcheck="false" size="3" value="8" aria-label="how many releases" style="width:4rem;flex:none">
+    <span class="hint">releases</span>
+    <button id="defects-trend-run" type="button" data-defects>Count releases</button>
+    <span id="defects-trend-state" class="state"></span>
+  </div>
+  <fieldset class="choice" id="defects-split">
+    <legend>Split by</legend>
+    <label class="inline"><input type="radio" name="defects-split" value="status" checked> Open / closed</label>
+    <label class="inline"><input type="radio" name="defects-split" value="priority"> Priority</label>
+    <label class="inline"><input type="radio" name="defects-split" value="reason"> Failure reason</label>
+  </fieldset>
+  <div id="defects-trend" class="trend"></div>
 
   <div id="defects-result" class="result"></div>
   <h3>Log</h3>

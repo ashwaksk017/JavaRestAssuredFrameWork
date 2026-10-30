@@ -198,7 +198,7 @@ def main() -> int:
         declared = page.call("/api/runnables")[1]
         wanted = ("jira-verify", "jira-versions", "jira-release", "jira-tests", "jira-paste",
                   "failures-record", "failures-list", "failures-show", "failures-note",
-                  "defects-load", "defects-suggest", "defects-apply")
+                  "defects-load", "defects-suggest", "defects-apply", "defect-trend")
         check("every command behind the Jira, Defects and Failures tabs is declared",
               all(r in declared for r in wanted), str([r for r in wanted if r not in declared]))
 
@@ -976,6 +976,18 @@ def main() -> int:
             html = mocked.dom("defects")
             check("mock mode: Load defects", rc == 0 and "ABC-101" in html and "ABC-150" in html
                   and "the defects are sample data" in html)
+            html = mocked.dom("defects")
+            check("the Defects tab has a release picker and a three-way split for the chart",
+                  'id="defects-releases"' in html and 'id="defects-trend-run"' in html
+                  and all(f'value="{v}"' in html for v in ("status", "priority", "reason")))
+            code, rc = press("defect-trend", {"--project": "ABC", "--releases": "8"})
+            html = mocked.dom("defects")
+            check("mock mode: Defects per release draws a bar a release, oldest first",
+                  rc == 0 and html.count('class="bar"') == 3
+                  and html.find("Release 1.0") < html.find("Release 2.0")
+                  and "stand-in Jira" in html and "The numbers" in html, f"rc={rc}")
+            check("the loaded defects are kept apart from the chart's counts",
+                  "ABC-101" in html, "the trend run cleared the loaded table")
             code, rc = press("defects-suggest", {})
             html = mocked.dom("defects")
             check("mock mode: Suggest reasons, without AI Agent",

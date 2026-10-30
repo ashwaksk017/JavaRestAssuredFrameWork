@@ -141,8 +141,17 @@ ROOT = search.ROOT
 STATE = "defects.json"
 RESULT = "defects-result.json"
 APPLIED_LOG = "defects-applied.log"
-DEFAULT_MAX = 50              # each bug is text sent to a model
-HARD_MAX = 200
+DEFAULT_MAX = 50              # bugs sent to a model in one Suggest (each is text)
+HARD_MAX = 200                # ... at the very most
+LOAD_MAX = 1000               # bugs one Load reads: a release's every bug, not a sample
+TREND = "defects-trend.json"  # defects per release (trend), apart from the loaded table
+TREND_RELEASES = 8            # the last N releases
+TREND_RELEASES_MAX = 20
+TREND_PER_RELEASE = 1000      # bugs counted for one release
+PRIORITY_ORDER = ("Blocker", "Highest", "Critical", "High", "Major", "Medium", "Minor", "Low",
+                  "Lowest", "Trivial")
+NO_REASON = "no reason yet"
+NO_PRIORITY = "none"
 PRECEDENT_POOL = 300          # earlier bugs with a reason, read for comparison
 PRECEDENTS_SHOWN = 3
 SIMILAR_AT = 0.30
@@ -512,13 +521,15 @@ def find_precedents(defects: list, pool: list) -> None:
 
 
 def cmd_load(job: str, text: str = "", project: str = "", version: str = "",
-             limit: int = DEFAULT_MAX, transport=None, cfg: dict = None,
+             limit: int = LOAD_MAX, transport=None, cfg: dict = None,
              conn: dict = None) -> dict:
+    """A release's (or a query's) every bug, up to LOAD_MAX -- reading is
+    not sending: what goes to a model is capped by Suggest (2026-10-30)."""
     conn = conn or search.connect()
     opts = settings(cfg, mocked=bool(conn.get("mock")))
     if int(limit) < 1:
         raise Refused("the limit must be at least 1")
-    limit = min(int(limit), HARD_MAX)
+    limit = min(int(limit), LOAD_MAX)
     if text.strip():
         what = pasted.parse(text)
         if what["hosts"] and not conn.get("mock"):
@@ -615,6 +626,82 @@ def cmd_load(job: str, text: str = "", project: str = "", version: str = "",
     return state
 
 
+# ---- defects per release -------------------------------------------------------
+# How many bugs each of a project's last releases has (fixVersion), split
+# three ways the page switches between: open or closed (Jira's status
+# category), priority, and the team's failure reason. One read a release,
+# counted here; no bug's text is kept or sent anywhere (2026-10-30).
+
+def _counted(issues: list, fid: str) -> dict:
+    out = {"total": len(issues), "open": 0, "closed": 0, "priority": {}, "reason": {}}
+    for i in issues:
+        f = (i or {}).get("fields") or {}
+        cat = (((f.get("status") or {}).get("statusCategory") or {}).get("key") or "").lower()
+        out["closed" if cat == "done" else "open"] += 1
+        p = str((f.get("priority") or {}).get("name") or "").strip() or NO_PRIORITY
+        out["priority"][p] = out["priority"].get(p, 0) + 1
+        r = reason_of(f.get(fid)) if fid else ""
+        r = r or NO_REASON
+        out["reason"][r] = out["reason"].get(r, 0) + 1
+    return out
+
+
+def cmd_trend(job: str, project: str, releases: int = TREND_RELEASES, transport=None,
+              cfg: dict = None, conn: dict = None) -> dict:
+    """{project, releases: [{name, released, release_date, total, read, limited,
+    open, closed, priority, reason}] oldest first, priorities, reasons, ...},
+    kept as defects-trend.json -- apart from the loaded table."""
+    if not str(project or "").strip():
+        raise Refused("give the project key, e.g. ABC")
+    if int(releases) < 1:
+        raise Refused("at least one release")
+    releases = min(int(releases), TREND_RELEASES_MAX)
+    conn = conn or search.connect()
+    opts = settings(cfg, mocked=bool(conn.get("mock")))
+    key = search.project_key(project)
+    listed = search.list_versions(conn, key, False, transport=transport)
+    chosen = list(reversed(listed[:releases]))                 # newest first -> oldest first
+    if not chosen:
+        raise Refused(f"{key} has no releases (fix versions) that are not archived")
+    warnings, fid, field_name = [], "", ""
+    try:
+        field = resolve_field(conn, opts["field"], transport)
+        fid, field_name = field["id"], field["name"]
+    except (Refused, search.JiraError) as e:
+        warnings.append(f"the failure reason field could not be found ({str(e)[:160]}): "
+                        f"the split by reason is not available")
+    fields = ["status", "priority"] + ([fid] if fid else [])
+    rows = []
+    for v in chosen:
+        name = str(v.get("name") or "")
+        jql = (f"project = {key} AND issuetype = {search.jql_quote(opts['issue_type'])} "
+               f"AND fixVersion = {search.jql_quote(name)}")
+        found = search.search(conn, jql, fields=fields, max_results=TREND_PER_RELEASE, transport=transport)
+        row = {"name": name, "released": bool(v.get("released")),
+               "release_date": str(v.get("release_date") or v.get("releaseDate") or ""),
+               "read": found.get("read", len(found["issues"])), "total_in_jira": found.get("total"),
+               "limited": bool(found.get("limited"))}
+        row.update(_counted(found["issues"], fid))
+        if row["limited"]:
+            warnings.append(f"{name}: only the first {TREND_PER_RELEASE} of its "
+                            f"{found.get('total')} defects were counted")
+        rows.append(row)
+    seen_p = {p for r in rows for p in r["priority"]}
+    priorities = [p for p in PRIORITY_ORDER if p in seen_p] + sorted(seen_p - set(PRIORITY_ORDER) - {NO_PRIORITY})
+    if NO_PRIORITY in seen_p:
+        priorities.append(NO_PRIORITY)
+    seen_r = {r_ for r in rows for r_ in r["reason"]}
+    reasons = [r for r in opts["reasons"] if r in seen_r] \
+        + sorted(seen_r - set(opts["reasons"]) - {NO_REASON}) + ([NO_REASON] if NO_REASON in seen_r else [])
+    result = {"kind": "trend", "job": job, "project": key,
+              "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "issue_type": opts["issue_type"], "field": field_name, "releases": rows,
+              "priorities": priorities, "reasons": reasons, "warnings": warnings,
+              "mock_jira": bool(conn.get("mock"))}
+    _write_json(os.path.join(job_dir(job), TREND), result)
+    return result
+
+
 # ---- suggesting --------------------------------------------------------------
 
 def batches(defects: list) -> list:
@@ -688,7 +775,11 @@ def take_reply(batch: list, data, reasons: list, by: str = "cursor") -> None:
             d["flag"] = "DIFFERS from the current reason"
 
 
-def cmd_suggest(job: str, keys: list = None, agent=None, root: str = "") -> dict:
+def cmd_suggest(job: str, keys: list = None, agent=None, root: str = "",
+                limit: int = DEFAULT_MAX) -> dict:
+    """At most `limit` (HARD_MAX at most) of the loaded bugs go to the
+    model: those without a reason first. Load reads a release's every bug,
+    so the cap lives here."""
     root = root or ROOT
     state = read_state(job)
     same_jira(state, search.mock_jira())
@@ -696,9 +787,16 @@ def cmd_suggest(job: str, keys: list = None, agent=None, root: str = "") -> dict
     if not reasons:
         raise Refused("there is no list of reasons to choose from. Set "
                       "jira_config.defects.reasons, then load again.")
+    if int(limit) < 1:
+        raise Refused("the limit must be at least 1")
+    limit = min(int(limit), HARD_MAX)
     wanted = [d for d in state["defects"] if not keys or d["key"] in set(keys)]
     if not wanted:
         raise Refused("none of those keys is among the loaded defects")
+    if len(wanted) > limit:
+        wanted = sorted(wanted, key=lambda d: bool(d.get("current")))[:limit]
+        say(f" ..  {limit} of the {len(state['defects'])} loaded defect(s) are sent, those without a "
+            f"reason first; tick others, or raise At most (200 at most), for the rest")
     private = loop.private_config(root)
     secret = ""
     by = "cursor"
@@ -938,10 +1036,16 @@ def main(argv=None, transport=None, agent=None) -> int:
     p.add_argument("--text", default="", help="keys, a query, or a Jira address")
     p.add_argument("--project", default="")
     p.add_argument("--version", default="")
-    p.add_argument("--max", type=int, default=DEFAULT_MAX)
+    p.add_argument("--max", type=int, default=LOAD_MAX)
     p.add_argument("--job", required=True)
     p = sub.add_parser("suggest", help="have AI Agent propose a reason for each")
     p.add_argument("--keys", default="", help="only these, comma separated")
+    p.add_argument("--max", type=int, default=DEFAULT_MAX,
+                   help=f"at most this many go to AI Agent (at most {HARD_MAX}); those without a reason first")
+    p.add_argument("--job", required=True)
+    p = sub.add_parser("trend", help="defects per release: the project's last releases, counted")
+    p.add_argument("--project", required=True)
+    p.add_argument("--releases", type=int, default=TREND_RELEASES)
     p.add_argument("--job", required=True)
     p = sub.add_parser("apply", help="write one reason to one defect in Jira")
     p.add_argument("--key", required=True)
@@ -955,6 +1059,29 @@ def main(argv=None, transport=None, agent=None) -> int:
             stream.reconfigure(errors="replace")
         except (AttributeError, ValueError):
             pass
+    if a.cmd == "trend":
+        # Its own file: counting the releases must not take the loaded
+        # table (defects-result.json) off the page, nor its refusal either.
+        try:
+            os.remove(os.path.join(job_dir(a.job), TREND))
+        except (OSError, Refused):
+            pass
+        try:
+            with JobLock(a.job, a.cmd):
+                r = cmd_trend(a.job, a.project, a.releases, transport)
+            for w in r["warnings"]:
+                say(f" ..  {w}")
+            say(f" ok  {sum(x['total'] for x in r['releases'])} defect(s) in {len(r['releases'])} release(s) "
+                f"of {r['project']}: " + ", ".join(f"{x['name']} {x['total']}" for x in r["releases"]))
+            return 0
+        except (Refused, search.Refused, search.JiraError) as e:
+            say(f"refused: {e}" if not isinstance(e, search.JiraError) else f"FAIL {e}")
+            try:
+                _write_json(os.path.join(job_dir(a.job), TREND),
+                            {"kind": "error", "message": str(e), "mock_jira": bool(search._MOCKED)})
+            except (OSError, Refused):
+                pass
+            return 2 if not isinstance(e, search.JiraError) else 1
     try:
         job_dir(a.job)
         try:
@@ -969,7 +1096,7 @@ def main(argv=None, transport=None, agent=None) -> int:
                 return 0 if ok else 1
             if a.cmd == "suggest":
                 keys = [k.strip().upper() for k in a.keys.split(",") if k.strip()]
-                state = cmd_suggest(a.job, keys, agent)
+                state = cmd_suggest(a.job, keys, agent, limit=a.max)
                 _summary(state)
                 for f in state.get("suggest_failures") or []:
                     say(f"  FAILED {f}")

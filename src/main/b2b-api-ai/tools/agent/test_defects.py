@@ -14,6 +14,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -230,7 +231,11 @@ class Loading(Base):
         state = self.load(jira, limit=10)
         self.assertEqual((len(state["defects"]), state["source"]["limited"]), (10, True))
         state = self.load(Jira([issue(1, "x")]), limit=10**6)
-        self.assertEqual(state["source"]["limit"], defects.HARD_MAX)
+        # A release's every bug is read (2026-10-30); what goes to AI Agent
+        # is capped by Suggest instead.
+        self.assertEqual(state["source"]["limit"], defects.LOAD_MAX)
+        state = self.load(Jira([issue(n, f"bug {n}") for n in range(300)]))
+        self.assertEqual((len(state["defects"]), state["source"]["limited"]), (300, False))
         with self.assertRaises(defects.Refused):
             self.load(Jira([issue(1, "x")]), limit=0)
 
@@ -674,6 +679,104 @@ class TheCommand(Base):
         self.assertEqual(rc, 1)
         self.assertIn("FAIL Jira returned 401", out)
         self.assertIs(self.result()["refused"], False)
+
+
+class SuggestingFromAWholeRelease(Base):
+    """A whole release is loaded; at most N go to AI Agent, those without a
+    reason first (2026-10-30)."""
+
+    def test_at_most_n_are_sent_without_a_reason_first(self):
+        bugs = [issue(n, f"bug {n}", reason=("Code defect" if n % 2 else None)) for n in range(1, 21)]
+        self.load(Jira(bugs))
+
+        def agent(prompt, followup):
+            keys = dict.fromkeys(re.findall(r"ABC-\d+", prompt))
+            return answer(*[(k, "Code defect", "high") for k in keys])
+        with redirect_stdout(io.StringIO()) as out:
+            state = defects.cmd_suggest("j1", None, agent=agent, root=self.root, limit=6)
+        sent = [d["key"] for d in state["defects"] if d.get("suggested")]
+        self.assertEqual(len(sent), 6, sent)
+        self.assertTrue(all(int(k.split("-")[1]) % 2 == 0 for k in sent), "the ones without a reason first")
+        self.assertIn("6 of the 20", out.getvalue())
+        with self.assertRaises(defects.Refused):
+            defects.cmd_suggest("j1", None, agent=agent, root=self.root, limit=0)
+
+
+class ReleasesJira(Jira):
+    """The fake Jira, with releases: each bug is in the release its
+    fixVersion names."""
+
+    def __init__(self, by_release, **kw):
+        super().__init__([b for bs in by_release.values() for b in bs], **kw)
+        self.by_release = by_release
+
+    def __call__(self, method, url, token, timeout, body=None):
+        path = url.split("/rest/api/2", 1)[1]
+        if method == "GET" and path == "/project/ABC/versions":
+            self.calls.append((method, url, body))
+            return [{"name": n, "released": n != "3.0", "releaseDate": f"2026-0{i + 1}-01"}
+                    for i, n in enumerate(self.by_release)] + [{"name": "0.9", "archived": True}]
+        if method == "POST" and path == "/search" and "fixVersion" in body["jql"]:
+            self.calls.append((method, url, body))
+            name = re.search(r'fixVersion = "([^"]+)"', body["jql"]).group(1)
+            pool = self.by_release.get(name, [])
+            return {"issues": pool[body["startAt"]:body["startAt"] + body["maxResults"]], "total": len(pool)}
+        return super().__call__(method, url, token, timeout, body)
+
+
+def done(**over):
+    return dict({"status": {"name": "Closed", "statusCategory": {"key": "done"}}}, **over)
+
+
+class DefectsPerRelease(Base):
+    def trend(self, jira, **kw):
+        return defects.cmd_trend("j1", "abc", transport=jira, cfg=cfg(), conn=dict(CONN), **kw)
+
+    def jira(self):
+        return ReleasesJira({
+            "1.0": [issue(1, "a", reason="Code defect", **done()), issue(2, "b", reason="Test data")],
+            "2.0": [issue(3, "c", priority={"name": "Highest"}, **done()), issue(4, "d", priority=None),
+                    issue(5, "e", reason="Environment")],
+            "3.0": [],
+        })
+
+    def test_each_release_is_counted_three_ways_oldest_first(self):
+        r = self.trend(self.jira())
+        self.assertEqual([x["name"] for x in r["releases"]], ["1.0", "2.0", "3.0"])
+        one, two, three = r["releases"]
+        self.assertEqual((one["total"], one["open"], one["closed"]), (2, 1, 1))
+        self.assertEqual(one["reason"], {"Code defect": 1, "Test data": 1})
+        self.assertEqual(two["priority"], {"Highest": 1, "none": 1, "High": 1})
+        self.assertEqual(two["reason"], {"no reason yet": 2, "Environment": 1})
+        self.assertEqual(three["total"], 0)
+        self.assertFalse(three["released"])
+        self.assertEqual(r["priorities"], ["Highest", "High", "none"], "Jira's order, none last")
+        self.assertEqual(r["reasons"], ["Code defect", "Test data", "Environment", "no reason yet"],
+                         "the team's order, no reason last")
+
+    def test_the_last_n_releases_and_archived_ones_never(self):
+        r = self.trend(self.jira(), releases=2)
+        self.assertEqual([x["name"] for x in r["releases"]], ["2.0", "3.0"])
+
+    def test_it_is_kept_apart_from_the_loaded_table_and_asks_only_counts(self):
+        self.load(Jira([issue(9, "loaded")]))
+        jira = self.jira()
+        self.trend(jira)
+        with io.open(os.path.join(self.root, ".workbench", "j1", defects.TREND), encoding="utf-8") as fh:
+            kept = json.load(fh)
+        self.assertEqual(kept["kind"], "trend")
+        self.assertEqual(self.result()["defects"][0]["key"], "ABC-9", "the loaded table stays")
+        asked = [c[2]["fields"] for c in jira.calls if c[0] == "POST" and "fixVersion" in c[2]["jql"]]
+        self.assertTrue(asked and all("description" not in f and "summary" not in f for f in asked),
+                        "no bug's text is read for the chart")
+
+    def test_no_project_or_no_release_is_refused(self):
+        with self.assertRaises(defects.Refused):
+            self.trend(self.jira(), releases=0)
+        with self.assertRaises(defects.Refused):
+            defects.cmd_trend("j1", "", transport=self.jira(), cfg=cfg(), conn=dict(CONN))
+        with self.assertRaises(defects.Refused):
+            self.trend(ReleasesJira({}))
 
 
 if __name__ == "__main__":

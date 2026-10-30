@@ -337,7 +337,15 @@ RUNNABLES = {
     "defects-suggest": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "defects.py"), "suggest"],
         "label": "AI Agent proposes a reason for each loaded defect",
-        "options": {"--job": "text", "--keys": "text"},
+        "options": {"--job": "text", "--keys": "text", "--max": "text"},
+    },
+    # Defects per release: the project's last releases, counted (status,
+    # priority, failure reason) for the Defects tab's chart. Named apart
+    # from "defects-" so starting it never clears the loaded table.
+    "defect-trend": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "defects.py"), "trend"],
+        "label": "Count the defects of the project's last releases",
+        "options": {"--job": "text", "--project": "text", "--releases": "text"},
     },
     "defects-apply": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "defects.py"), "apply"],
@@ -2504,7 +2512,7 @@ def read_artifact(job: str, name: str) -> str:
                "xray-update-plan.json", "xray-update.json",
                "publish-status.json", "publish.log",
                "devcode.json", "devcode.md", "suite-suggest.json", "mvnrun-result.json",
-               "devchange.json", "devcode-input.json", "screens.json",
+               "devchange.json", "devcode-input.json", "screens.json", "defects-trend.json",
                # Read by the page; were missing, so it was refused and showed nothing.
                "xray-publish.json", "convert-fix.json", "story-keys.json",
                "answer-suggestions.json", "convert-check.json", "convert-suites.json"}

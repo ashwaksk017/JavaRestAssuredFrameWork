@@ -39,7 +39,7 @@ QUICK_TESTS = ("test_jobs.py", "test_casereview.py", "test_suitemap.py", "test_i
                "test_partest.py", "test_convertfix.py", "test_ask.py", "test_runask.py",
                "test_storykeys.py", "test_projects.py",
                "test_flowcatalog.py", "test_safe_output.py", "test_release.py", "test_cursorignore.py",
-               "test_refexamples.py", "test_check_workbench.py", "test_screens.py")
+               "test_refexamples.py", "test_check_workbench.py", "test_screens.py", "test_defects.py")
 
 
 PROJECT = os.path.dirname(os.path.dirname(HERE))

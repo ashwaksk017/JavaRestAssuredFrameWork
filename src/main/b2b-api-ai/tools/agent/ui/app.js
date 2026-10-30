@@ -4954,18 +4954,186 @@ $("defects-load").onclick = () => {
     o["--project"] = project;
     if ($("defects-version").value.trim()) o["--version"] = $("defects-version").value.trim();
   } else { setState($("defects-state"), "bad", "paste keys or a query, or give a project"); return; }
-  const max = atMost($("defects-max"), $("defects-state"));
-  if (max === null) return;
-  if (max) o["--max"] = max;
+  // Every defect of the release is read (1000 at most); At most caps what
+  // Suggest sends to AI Agent, not what is loaded (2026-10-30).
   runTool("defects-load", o, defectUi);
 };
 $("defects-suggest").onclick = () => {
   const n = defectsShown && defectsShown.kind === "defects" ? (defectsShown.defects || []).length : 0;
   if (!n) { setState($("defects-state"), "bad", "load some defects first"); return; }
-  if (!confirm(`Send the text of ${n} defect(s) to AI Agent for a suggested reason?\n\n` +
+  const max = atMost($("defects-max"), $("defects-state"));
+  if (max === null) return;
+  const sent = Math.min(n, max || 50);
+  if (!confirm(`Send the text of ${sent} of the ${n} loaded defect(s) to AI Agent for a suggested reason` +
+               `${sent < n ? " (those without a reason first)" : ""}?\n\n` +
                "Summaries, descriptions and recent comments are sent, with host names and the " +
                "private configuration's values removed. Nothing is written to Jira.")) return;
-  runTool("defects-suggest", {}, defectUi);
+  runTool("defects-suggest", max ? { "--max": max } : {}, defectUi);
+};
+
+// ---- the Defects tab: releases, and defects per release ------------------------
+$("defects-releases-load").onclick = async () => {
+  const k = $("defects-project").value.trim();
+  if (!k) { setState($("defects-releases-state"), "bad", "give the project key first"); return; }
+  setState($("defects-releases-state"), "run", `reading ${k}'s releases…`);
+  try {
+    const r = await api(`/api/release/versions?project_key=${encodeURIComponent(k)}&project=${encodeURIComponent(pageProject())}`);
+    const list = r.versions || [];
+    $("defects-releases").replaceChildren(...list.map((v) => el("option", {
+      value: v.name, text: (v.released ? "released" : "not released") + (v.release_date ? ` ${v.release_date}` : "") })));
+    setState($("defects-releases-state"), list.length ? "ok" : "warn",
+             list.length ? `${list.length} release(s): pick one in Fix version` : "no releases");
+  } catch (e) { setState($("defects-releases-state"), "bad", e.message); }
+};
+
+// Each split's series, in a FIXED order -- a colour follows its entity
+// (a reason keeps its colour from release to release), never its rank.
+function trendSeries(r, split) {
+  if (split === "status") {
+    return [{ key: "open", name: "Open", color: "var(--viz-2)", of: (x) => x.open || 0 },
+            { key: "closed", name: "Closed", color: "var(--viz-1)", of: (x) => x.closed || 0 }];
+  }
+  const fold = (names, palette, none, noneLabel) => {
+    const named = names.filter((n) => n !== none);
+    const shown = named.slice(0, palette.length);
+    const folded = named.slice(palette.length);
+    const field = split === "priority" ? "priority" : "reason";
+    const out = shown.map((n, i) => ({ key: n, name: n, color: palette[i], of: (x) => (x[field] || {})[n] || 0 }));
+    if (folded.length) out.push({ key: "__other", name: `Other (${folded.length})`, color: "var(--viz-other)",
+      of: (x) => folded.reduce((t, n) => t + ((x[field] || {})[n] || 0), 0) });
+    if (names.includes(none)) out.push({ key: none, name: noneLabel, color: "var(--viz-none)",
+      of: (x) => (x[field] || {})[none] || 0 });
+    return out;
+  };
+  if (split === "priority") {
+    return fold(r.priorities || [], [1, 2, 3, 4, 5].map((i) => `var(--viz-p${i})`), "none", "No priority");
+  }
+  return fold(r.reasons || [], [1, 2, 3, 4, 5, 6, 7, 8].map((i) => `var(--viz-${i})`), "no reason yet", "No reason yet");
+}
+function svg(tag, attrs, ...kids) {
+  const n = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "text") n.textContent = v; else n.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid) n.append(kid);
+  return n;
+}
+function niceMax(v) {
+  if (v <= 4) return 4;
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p;
+  return 10 * p;
+}
+// A bar's rounded data-end: the top segment's top corners only, anchored
+// to the baseline at the bottom (marks spec: 4px ends, square at the axis).
+function topRounded(x, y, w, h, r) {
+  r = Math.min(r, h, w / 2);
+  return `M${x},${y + h} V${y + r} Q${x},${y} ${x + r},${y} H${x + w - r} Q${x + w},${y} ${x + w},${y + r} V${y + h} Z`;
+}
+let trendShown = null;
+function renderTrend(r) {
+  trendShown = r;
+  const box = $("defects-trend");
+  if (!r || !r.kind) { box.replaceChildren(); return; }
+  if (r.kind === "error") { box.replaceChildren(banner("bad", `Refused — ${r.message || ""}`)); return; }
+  if (r.kind !== "trend") return;
+  let split = "status";
+  try { split = localStorage.getItem("wb-defects-split") || "status"; } catch { /* the default */ }
+  if (split === "reason" && !(r.reasons || []).length) split = "status";
+  for (const b of document.querySelectorAll('input[name="defects-split"]')) b.checked = b.value === split;
+  const series = trendSeries(r, split);
+  const rows = r.releases || [];
+  const kids = [];
+  if (r.mock_jira) kids.push(banner("warn", "These are the stand-in Jira's sample releases, not your project's."));
+  for (const w of r.warnings || []) kids.push(banner("warn", w));
+  kids.push(el("p", { class: "hint", text: `${r.project}: ${rows.reduce((t, x) => t + x.total, 0)} ${r.issue_type || "Bug"}(s) ` +
+    `in the last ${rows.length} release(s), counted ${r.at}` + (split === "reason" && r.field ? ` -- by ${r.field}` : "") }));
+  // Legend: always, for two series or more; text in ink, the swatch carries the colour.
+  kids.push(el("div", { class: "trend-legend" }, ...series.map((s) =>
+    el("span", {}, el("i", { style: `background:${s.color}` }), s.name))));
+  const W = 900, H = 300, L = 40, R = 10, T = 22, B = 46;
+  const plotW = W - L - R, plotH = H - T - B;
+  const max = niceMax(Math.max(1, ...rows.map((x) => x.total)));
+  const y = (v) => T + plotH - (v / max) * plotH;
+  const slot = plotW / Math.max(rows.length, 1);
+  const bw = Math.min(56, slot * 0.6);
+  const chart = svg("svg", { viewBox: `0 0 ${W} ${H}`, role: "img",
+    "aria-label": `Defects per release, split by ${split}` });
+  for (let i = 0; i <= 4; i++) {                        // recessive grid, four steps
+    const v = (max / 4) * i;
+    chart.append(svg("line", { class: "grid", x1: L, x2: W - R, y1: y(v), y2: y(v) }),
+      svg("text", { class: "axis-label", x: L - 6, y: y(v) + 4, "text-anchor": "end", text: String(Math.round(v)) }));
+  }
+  const tip = el("div", { class: "trend-tip", hidden: "" });
+  rows.forEach((x, i) => {
+    const cx = L + slot * i + slot / 2;
+    const g = svg("g", { class: "bar", tabindex: "0", role: "button",
+      "aria-label": `${x.name}: ${x.total} defect(s). Open its defects.` });
+    // The hit target is the whole column, bigger than the bar.
+    g.append(svg("rect", { class: "hit", x: cx - slot / 2 + 2, y: T, width: slot - 4, height: plotH }));
+    let base = 0;
+    const parts = series.map((s) => ({ s, v: s.of(x) })).filter((p) => p.v > 0);
+    parts.forEach((p, k) => {
+      const y0 = y(base), y1 = y(base + p.v);
+      const h = Math.max(0, y0 - y1 - (k < parts.length - 1 ? 2 : 0));   // 2px surface gap between fills
+      const seg = k === parts.length - 1
+        ? svg("path", { class: "seg", d: topRounded(cx - bw / 2, y1, bw, h, 4), style: `fill:${p.s.color}` })
+        : svg("rect", { class: "seg", x: cx - bw / 2, y: y1 + 2, width: bw, height: h, style: `fill:${p.s.color}` });
+      g.append(seg);
+      base += p.v;
+    });
+    g.append(svg("text", { class: "total-label", x: cx, y: y(x.total) - 6, "text-anchor": "middle", text: String(x.total) }),
+      svg("text", { class: "axis-label", x: cx, y: H - B + 16, "text-anchor": "middle", text: x.name }),
+      svg("text", { class: "axis-label", x: cx, y: H - B + 30, "text-anchor": "middle",
+                    text: x.released ? (x.release_date || "released") : "not released" }));
+    const show = (ev) => {
+      tip.replaceChildren(el("b", { text: `${x.name} -- ${x.total} defect(s)` }),
+        ...parts.slice().reverse().map((p) => el("div", {}, el("span", { class: "row-swatch", style: `background:${p.s.color}` }),
+          `${p.s.name}: ${p.v} (${Math.round((p.v / x.total) * 100)}%)`)),
+        el("div", { class: "hint", text: "click: open this release's defects" }));
+      tip.hidden = false;
+      const rect = tip.parentNode.getBoundingClientRect();   // the plot, not the legend above it
+      const px = ev && ev.clientX ? ev.clientX - rect.left : (cx / W) * rect.width;
+      tip.style.left = `${Math.min(px + 12, rect.width - 220)}px`;
+      tip.style.top = `${Math.max(0, (y(x.total) / H) * rect.height - 10)}px`;
+    };
+    g.addEventListener("mousemove", show);
+    g.addEventListener("focus", () => show(null));
+    g.addEventListener("mouseleave", () => { tip.hidden = true; });
+    g.addEventListener("blur", () => { tip.hidden = true; });
+    const open = () => {
+      $("defects-text").value = "";
+      $("defects-project").value = r.project;
+      $("defects-version").value = x.name;
+      $("defects-load").click();
+    };
+    g.addEventListener("click", open);
+    g.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+    chart.append(g);
+  });
+  chart.append(svg("line", { class: "grid", x1: L, x2: W - R, y1: y(0), y2: y(0), style: "stroke:var(--line-strong)" }));
+  kids.push(el("div", { class: "trend-plot" }, chart, tip));
+  // The same numbers as a table: the chart is never the only way to read them.
+  kids.push(el("details", {}, el("summary", { text: "The numbers" }),
+    table(["Release", ...series.map((s) => s.name), "Total"],
+          rows.map((x) => [x.name, ...series.map((s) => String(s.of(x))), String(x.total)]))));
+  box.replaceChildren(...kids);
+}
+for (const b of document.querySelectorAll('input[name="defects-split"]')) {
+  b.onchange = () => {
+    try { localStorage.setItem("wb-defects-split", b.value); } catch { /* this view only */ }
+    if (trendShown) renderTrend(trendShown);
+  };
+}
+const trendUi = { buttons: "[data-defects]", log: $("defects-log"), state: $("defects-trend-state"),
+                  artifact: "defects-trend.json", render: renderTrend,
+                  clear: () => { $("defects-trend").replaceChildren(); trendShown = null; } };
+$("defects-trend-run").onclick = () => {
+  const project = $("defects-project").value.trim();
+  if (!project) { setState($("defects-trend-state"), "bad", "give the project key first"); return; }
+  const n = parseInt($("defects-trend-n").value, 10);
+  if (!(n >= 1 && n <= 20)) { setState($("defects-trend-state"), "bad", "1 to 20 releases"); return; }
+  runTool("defect-trend", { "--project": project, "--releases": String(n) }, trendUi);
 };
 
 function flagClass(flag) {
@@ -5052,7 +5220,7 @@ function renderDefects(r) {
     table(["Key", "Summary", "Current reason", "Suggested", "Why", "Similar earlier defects",
            "Jira"], (r.defects || []).map((d) => defectRow(d, r))));
 }
-onTab.defects = () => showResult(job(), defectUi);
+onTab.defects = () => { showResult(job(), defectUi); showResult(job(), trendUi); };
 
 // ---- tab 5: Failures -----------------------------------------------------
 // Saving a note does not record a run: the command answers with the

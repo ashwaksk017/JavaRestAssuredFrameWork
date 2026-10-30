@@ -1678,18 +1678,33 @@ bugs for that -- a failure reason, a root cause, whatever it is called
 there -- and this tab helps fill it in and keep it consistent.
 
 - **Load defects** — paste bug keys, a Jira search address or a query,
-  or give a project (and a fix version) to take its bugs. Each bug is
+  or give a project (and a fix version) to take its bugs -- every bug
+  of the release, 1,000 at most. **Releases** next to *Fix version*
+  lists the project's releases to pick from. Each bug is
   shown with the reason it has now, and with the most similar *earlier*
   bugs that already have a reason, and what that reason was. Similar is
   counted, not guessed: the words of the summary, exception names,
   status codes, paths, components and labels two bugs share, and the row
   says which.
-- **Suggest reasons** — Cursor proposes a reason for each loaded bug from
+- **Suggest reasons** — AI Agent proposes a reason for the loaded bugs from
   your team's list, with one or two sentences of why and a phrase quoted
-  from the ticket. The page asks before sending. A suggestion is marked
+  from the ticket. *At most, to AI Agent* caps how many are sent (50 by
+  default, 200 at most); those without a reason yet go first. The page
+  asks before sending. A suggestion is marked
   **DIFFERS from the current reason**, *agrees*, or *no reason yet*.
 - **Write to Jira** — on a row, with the reason chosen in the box beside
   it. This button exists only when writing is switched on (below).
+- **Defects per release** — a bar a release for the project's last N
+  releases (8 unless you say, 20 at most; archived ones left out), oldest
+  on the left, counted by Fix Version. A switch splits each bar by
+  **open / closed** (Jira's status category), **priority**, or **failure
+  reason**; a reason or priority keeps its colour from bar to bar, and
+  past eight reasons (five priorities) the rest fold into *Other*. Hover
+  a bar for its numbers; click it to load that release's bugs into the
+  table. *The numbers* under the chart is the same as a table. Only the
+  status, priority and reason of each bug are read -- no summaries or
+  descriptions -- and the counts are kept in `defects-trend.json`, apart
+  from the loaded table.
 
 What is checked rather than trusted:
 
@@ -1750,8 +1765,9 @@ One defects command runs at a time for a job: a write is refused while
 suggestions are still being fetched.
 
 From a console: `python tools/agent/defects.py load|suggest|apply --job
-<job> ...`. Loading again replaces the list, suggestions included. At
-most 200 bugs are loaded (50 unless *At most* says otherwise); up to 300
+<job> ...` (and `defects.py trend --job <job> --project ABC --releases 8`).
+Loading again replaces the list, suggestions included. At
+most 1,000 bugs are loaded; up to 300
 earlier bugs are read for comparison. None of this has been run against
 a live Jira or the real Cursor service.
 
@@ -2246,6 +2262,7 @@ Everything is under `.workbench/<job>/`:
   defects.json           the Defects tab: the loaded bugs, their text, the suggestions
   defects-result.json    the Defects tab: the same without the ticket text, as the page shows it
   defects-applied.log    the Defects tab: every write to Jira made from this job
+  defects-trend.json     the Defects tab: defects per release, as the chart shows them
   failures-result.json   Run tests, Compared with earlier runs: the last failure-history command's result
   cursor.log             the conversation with Cursor (design and the Agentic Test Creation tab), appended across runs
   review.json            the Agentic Test Creation tab: state, scope, the files changed, verify result
@@ -2283,6 +2300,7 @@ The API never accepts a command *string*. Every runnable is named in
 | `defects-load` | read defects from Jira, with the reason each has |
 | `defects-suggest` | Cursor proposes a reason for each loaded defect |
 | `defects-apply` | write one reason to one defect in Jira (off unless switched on) |
+| `defect-trend` | count the defects of each of a project's last releases (the chart) |
 | `failures-record` | keep the last run's failures and compare with the run before |
 | `failures-list` | the runs recorded so far |
 | `failures-show` | every run a failure signature appeared in |
