@@ -47,9 +47,12 @@ RULE_FILES = ("tools/agent/loop.py", "tools/agent/cursor_call.py")
 
 
 def _run(argv, timeout=900) -> tuple:
+    # A test run: its throwaway jobs stay out of the real run log and
+    # activity.log (diag._throwaway).
+    env = dict(os.environ, WORKBENCH_TEST_RUN="1")
     try:
         r = subprocess.run(argv, cwd=PROJECT, stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT, timeout=timeout)
+                           stderr=subprocess.STDOUT, timeout=timeout, env=env)
         return r.returncode, r.stdout.decode("utf-8", "replace")
     except subprocess.TimeoutExpired:
         return 124, f"timed out after {timeout}s"

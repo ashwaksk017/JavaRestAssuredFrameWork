@@ -811,6 +811,10 @@ Expect 201.'></textarea>
     <div id="fail-detail" class="result"></div>
     <pre id="fail-log" class="log"></pre>
   </details>
+  <details class="more" id="run-xray">
+    <summary>Why Xray was or was not updated <span class="hint">after the last run: publishing on or off, the suite's listener, the Xray keys the rows carry</span></summary>
+    <pre id="run-xray-trace" class="log">—</pre>
+  </details>
   <h3>Log</h3>
   <pre id="run-log" class="log tall"></pre>
 </section>
@@ -1006,9 +1010,8 @@ Expect 201.'></textarea>
   <pre id="logs-job" class="log tall">—</pre>
   <h3>The web server <span class="hint">.workbench/server.log — failed requests, everything that starts or changes something, errors in this page</span></h3>
   <pre id="logs-server" class="log tall">—</pre>
-
-  <h3>Maven test run log <span class="hint" id="logs-run-path">target/b2b-full-run.log — written when Surefire starts TestNG; Run the tests uses -Dlog.level=debug</span></h3>
-  <pre id="logs-run" class="log tall">—</pre>
+  <p class="hint">The Maven test run log (<code>target/b2b-full-run.log</code>) is not shown here; why a run
+    did or did not update Xray is under each run on the Run tests tab.</p>
 
   <h2 class="part" id="workbench-part">Change the workbench <span class="hint">AI Agent changes this page, its server and their tests (tools/agent)</span></h2>
   <p class="lede">

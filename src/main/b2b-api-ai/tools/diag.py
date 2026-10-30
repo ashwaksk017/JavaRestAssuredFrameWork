@@ -356,7 +356,11 @@ _THROWAWAY_RX = re.compile(r"^check-ui", re.I)
 
 
 def _throwaway() -> bool:
-    return bool(_THROWAWAY_RX.match(str(_STATE.get("job") or "")))
+    # WORKBENCH_TEST_RUN=1: a run of the workbench's own tests
+    # (check_workbench.py). Their jobs (j1, job1...) fail on purpose too, and
+    # filled the real run log with WORKBENCH FAIL lines (2026-10-30).
+    return (os.environ.get("WORKBENCH_TEST_RUN") == "1"
+            or bool(_THROWAWAY_RX.match(str(_STATE.get("job") or ""))))
 
 
 def activity_log(root: str = "") -> str:

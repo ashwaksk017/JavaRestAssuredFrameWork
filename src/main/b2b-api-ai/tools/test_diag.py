@@ -14,6 +14,10 @@ import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# These tests ARE about what is written: a run of the workbench's checks
+# (WORKBENCH_TEST_RUN=1, which keeps tests out of the real logs) must not
+# turn the writing off under them.
+os.environ.pop("WORKBENCH_TEST_RUN", None)
 _spec = importlib.util.spec_from_file_location("diag_under_test", os.path.join(HERE, "diag.py"))
 diag = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(diag)
@@ -57,6 +61,22 @@ class Base(unittest.TestCase):
 
     def run_cmd(self, main, argv=("--job", "j1", "--speed", "fast"), module="demo"):
         return diag.run(module, main, list(argv), self.root)
+
+
+class ATestRunStaysOutOfTheRealLogs(Base):
+    """check_workbench.py marks its runs WORKBENCH_TEST_RUN=1: their
+    throwaway jobs' failures are on purpose (2026-10-30)."""
+
+    def test_marked_nothing_reaches_the_run_log_or_activity(self):
+        os.environ["WORKBENCH_TEST_RUN"] = "1"
+        self.addCleanup(os.environ.pop, "WORKBENCH_TEST_RUN", None)
+        diag.run_log_failure("locate", "exit 1", self.root)
+        diag.activity("locate", "START", self.root)
+        self.assertFalse(os.path.exists(os.path.join(self.root, diag.RUN_LOG_REL)))
+        self.assertFalse(os.path.exists(diag.activity_log(self.root)))
+        os.environ.pop("WORKBENCH_TEST_RUN")
+        diag.run_log_failure("locate", "exit 1", self.root)
+        self.assertTrue(os.path.exists(os.path.join(self.root, diag.RUN_LOG_REL)))
 
 
 class TheFullRunLog(Base):

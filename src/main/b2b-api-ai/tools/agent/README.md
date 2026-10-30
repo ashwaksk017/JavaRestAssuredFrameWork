@@ -2026,7 +2026,9 @@ being read, and that output is served to the page. The rest is kept here.
   reason, tracebacks of faults in the server, and errors in the page's
   own script (a button that "does nothing" usually left one here).
   What the page asks for over and over while it waits is left out.
-- **Maven test run log** -- `target/b2b-full-run.log`, with a short
+- **Maven test run log** -- `target/b2b-full-run.log`, read in an editor:
+  it is no longer on the page (2026-10-30); why a run did or did not update
+  Xray is under each run on the Run tests tab. With a short
   diagnosis when its timestamp is older than the last Surefire results
   (or Surefire never ran). Log4j writes it only when TestNG starts inside
   Surefire; `Run the tests` passes `-Dlog.level=debug`. For a manual run:

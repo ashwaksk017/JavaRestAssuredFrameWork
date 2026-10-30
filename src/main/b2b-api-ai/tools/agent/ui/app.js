@@ -2503,8 +2503,17 @@ async function allureLink(allure) {
   return el("p", {}, el("a", { href: a.url, target: "_blank", rel: "noopener", text: "Open the Allure report" }),
     el("small", { text: `  (${a.url}, this run only)` }));
 }
+// Why the last run did or did not update Xray (xraytrace.py) -- the part of
+// the Maven run log worth reading; the log itself is no longer on the page.
+async function showRunXray() {
+  let text = "";
+  try { text = (await api("/api/diag?which=xray")).text || ""; }
+  catch (e) { text = `(${e.message})`; }
+  $("run-xray-trace").textContent = text || "—";
+}
 async function showRunResult(j) {
   showRunHistory(j);                       // beside it: this run against the one before
+  showRunXray();
   const r = await artifactJson(j, "mvnrun-result.json");
   const box = $("run-result");
   if (!r) { box.replaceChildren(); $("run-ask-box").hidden = true; return; }
@@ -3464,16 +3473,11 @@ async function showLogs() {
   }
   try { server = (await api(`/api/diag?which=server`)).text || ""; }
   catch (e) { server = `(${e.message})`; }
-  let run = "";
-  try { run = (await api("/api/diag?which=run")).text || ""; }
-  catch (e) { run = `(${e.message})`; }
   if (j !== job()) return;
   for (const [id, text] of [["logs-job", mine], ["logs-server", server]]) {
     $(id).textContent = filter(text);
     $(id).scrollTop = $(id).scrollHeight;
   }
-  $("logs-run").textContent = run || "—";
-  $("logs-run").scrollTop = $("logs-run").scrollHeight;
   setState($("logs-state"), "", `read at ${new Date().toLocaleTimeString()}`);
 }
 $("logs-refresh").onclick = showLogs;

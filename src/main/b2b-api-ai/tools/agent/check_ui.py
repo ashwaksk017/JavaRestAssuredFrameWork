@@ -1487,8 +1487,18 @@ def main() -> int:
                       "[publish] START" in html and "POST /api/start" in html
                       and "&lt;img src=x onerror=alert(1)&gt;" in html and "<img src=x" not in html
                       and f".workbench/{JOB}/diagnostics.log" in html)
-                check("the Logs tab includes the Maven test run log section",
-                      "Maven test run log" in html and "b2b-full-run.log" in html)
+                # Asked 2026-10-30: the whole Maven log is overhead on the
+                # Update WorkBench tab; why Xray was or was not updated is
+                # shown under the run instead.
+                check("the Update WorkBench tab no longer shows the Maven test run log",
+                      'id="logs-run"' not in html and "Maven test run log</h3>" not in html)
+                code, got = mocked.call("/api/diag?which=xray")
+                check("why Xray was or was not updated is answered on its own",
+                      code == 200 and "XRAY TRACE" in (got.get("text") or "")
+                      and "b2b-full-run.log" not in (got.get("text") or ""))
+                run_tab = mocked.dom("run")
+                check("the Run tests tab shows it under the run",
+                      'id="run-xray"' in run_tab and "XRAY TRACE" in run_tab)
             finally:
                 try:
                     os.remove(conf_store)

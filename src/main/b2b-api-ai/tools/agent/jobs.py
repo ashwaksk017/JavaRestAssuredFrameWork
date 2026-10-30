@@ -632,8 +632,12 @@ def read_diag(job: str, which: str = "job", lines: int = 400) -> str:
             sys.modules["jobs_runlog"] = mod
             spec.loader.exec_module(mod)
         return sys.modules["jobs_runlog"].text_for_page(ROOT, lines)
+    if which == "xray":
+        # Why the last run did or did not update Xray -- shown under the
+        # run on Run tests (the whole Maven log is no longer on the page).
+        return _tool("xraytrace").text_section(ROOT).strip()
     if which != "job":
-        raise ValueError("which is `job`, `server`, or `run`")
+        raise ValueError("which is `job`, `server`, `run` or `xray`")
     return diag.tail(os.path.join(job_dir(job), diag.JOB_LOG), lines)
 
 
