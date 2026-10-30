@@ -155,7 +155,7 @@ def run(job: str, root: str = "", story: str = "", conn=None, transport=None, cf
                       "Xray tests (the review decisions and Xray keys stay)")
     story = (story or story_of(job_dir)).strip().upper()
     if not _KEY_RX.match(story):
-        raise Refused("no story for this job: Read it with the story's link or key first (or give --story)")
+        raise Refused("no story for this job: press Read with the story's link or key first (or give --story)")
     conn = conn or search.connect()
     mocked = bool(conn.get("mock"))
     if mocked and transport is None:

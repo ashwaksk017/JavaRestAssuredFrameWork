@@ -844,7 +844,11 @@ The **Developer's change** tab (beside the story, at the top) takes the
 repository (GitLab or GitHub, `https://` or `git@`), the developer's
 branch, the ticket (empty: the story key) and, if it is not the default
 branch, the branch it merges into. They are kept with the job
-(`devcode-input.json`).
+(`devcode-input.json`). The branch and the one it is compared with may be
+tags as well: to read one release, give the release branch (or tag) and,
+as **Compared with**, the PREVIOUS release's tag -- only the commits after
+it are read, and the merged-branch fallback (which would read past it) is
+not used.
 
 **Reading it** (`devcode.py --read`, or **Read the change** on the tab):
 the workbench fetches the branch into `.workbench/devrepos/` -- a bare,

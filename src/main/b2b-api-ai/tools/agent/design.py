@@ -1718,7 +1718,7 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
             f"alone: no specification, no request")
     if not (swagger.strip() or requirements.strip() or endpoints or has_story):
         say("FAIL nothing to design from. Give a specification or "
-            "requirements here, or run 'Read it' first with a Jira story or "
+            "requirements here, or press Read first with a Jira story or "
             "a request.")
         return 1
 

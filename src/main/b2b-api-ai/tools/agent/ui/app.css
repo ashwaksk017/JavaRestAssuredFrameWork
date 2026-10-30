@@ -559,6 +559,13 @@ pre.desc-text { white-space: pre-wrap; max-width: 34rem; min-width: 18rem; font-
 .row.sm-rule input[type=text] { flex: 1 1 10rem; min-width: 0; }
 /* Every row of buttons is centred on the page (asked for, 2026-10-21). */
 .row:has(> button) { justify-content: center; }
+/* The Automate Test Case tab's main steps -- Read, Design, Check, Automate
+   -- are one word, one width, each on a line of its own in the middle, so
+   they line up down the tab; the row's other controls follow on the line
+   under it (2026-10-30). Its margins fill the line, which makes the rest
+   wrap. Named one by one: other tabs' main buttons keep their longer words. */
+#run-intake, #run-design, #devcode-run, #auto-selected {
+  order: -1; flex: 0 0 9rem; width: 9rem; margin-inline: calc((100% - 9rem) / 2); }
 .row.sm-rule { justify-content: flex-start; }
 .repo { justify-content: center; }
 #repo-where { flex-basis: 100%; }

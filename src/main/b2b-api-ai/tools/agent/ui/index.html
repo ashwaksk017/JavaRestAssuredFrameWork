@@ -85,7 +85,7 @@
     (and so which Jira, services and run environment) every step of this job uses.</p>
 
   <!-- What the job is given, one tab each: no scrolling past the others.
-       Read it takes the story and the pages; Design the tests takes all four. -->
+       Read takes the story and the pages; Design takes all four. -->
   <div id="inputs" class="inputs">
   <div class="input-tabs" role="tablist" aria-label="What this job is given">
     <button type="button" role="tab" id="in-tab-story" data-in="story" aria-controls="in-story" aria-selected="true">Jira story <span class="filled" title="something is given here" hidden></span></button>
@@ -102,7 +102,7 @@
     <label class="inline"><input type="radio" name="story-from" value="xray"> Use the story's Xray tests</label>
   </fieldset>
   <div id="story-from-link">
-  <p class="hint" id="story-xray-note" hidden>The story is read by its link or key, as usual. <b>Design the tests</b>
+  <p class="hint" id="story-xray-note" hidden>The story is read by its link or key, as usual. <b>Design</b>
     then takes the Xray tests already linked to it -- with their steps -- as the cases, instead of
     AI Agent proposing new ones; review and Automate them as any others.</p>
   <label for="story">Jira story <span class="hint">a link to it, or its key — the story, its comments, its parent, its attachments and the Confluence pages it points at are read for you. Several keys (one a line, or separated by commas) make one job per story, named by its key</span></label>
@@ -111,7 +111,7 @@
   <details class="more" id="release-pick">
     <summary>…or pick stories from a release</summary>
     <p class="hint">Reads only that release's stories — <code>project = KEY AND fixVersion = "release" AND issuetype = Story</code> —
-      not every story of the Jira project. Tick the ones to work on: their keys go into the box above, and <b>Read it</b>
+      not every story of the Jira project. Tick the ones to work on: their keys go into the box above, and <b>Read</b>
       makes one job a story (up to 10 at a time). The Jira is the one of the project chosen above.
       Give the story you are working on in <b>Related to</b> and each story says why it goes with it — linked to it,
       the same epic, a component or a label in common — related ones first.</p>
@@ -169,7 +169,7 @@ Expect 201.'></textarea>
 
   <div id="in-spec" class="input-panel" role="tabpanel" aria-labelledby="in-tab-spec" hidden>
   <fieldset class="choice" id="spec-from">
-    <legend>API specification <span class="hint">OpenAPI / Swagger, JSON or YAML -- used by Design the tests</span></legend>
+    <legend>API specification <span class="hint">OpenAPI / Swagger, JSON or YAML -- used by Design</span></legend>
     <label class="inline"><input type="radio" name="spec-from" value="upload" checked> Upload a file</label>
     <label class="inline"><input type="radio" name="spec-from" value="paste"> Paste it</label>
     <label class="inline"><input type="radio" name="spec-from" value="confluence"> From a Confluence page</label>
@@ -197,7 +197,7 @@ Expect 201.'></textarea>
 
   <div id="in-req" class="input-panel" role="tabpanel" aria-labelledby="in-tab-req" hidden>
   <fieldset class="choice" id="req-from">
-    <legend>Requirements <span class="hint">BRD text, acceptance criteria -- used by Design the tests</span></legend>
+    <legend>Requirements <span class="hint">BRD text, acceptance criteria -- used by Design</span></legend>
     <label class="inline"><input type="radio" name="req-from" value="upload" checked> Upload a file</label>
     <label class="inline"><input type="radio" name="req-from" value="paste"> Paste them</label>
   </fieldset>
@@ -216,8 +216,8 @@ Expect 201.'></textarea>
   <div id="in-dev" class="input-panel" role="tabpanel" aria-labelledby="in-tab-dev" hidden>
   <p class="hint">The developer's branch for this story. Its commits that name the story or one of its
     sub-tasks are read -- endpoints, who may call them, validation, fields, status codes, messages, the
-    repository's own specification and the merge or pull request -- and <b>Design the tests</b> takes that
-    in: it reads the branch again first. <b>Check the cases against the change</b>, under the designed
+    repository's own specification and the merge or pull request -- and <b>Design</b> takes that
+    in: it reads the branch again first. <b>Check</b>, under the designed
     cases, compares the cases with it. The first read of a large repository takes minutes.</p>
   <div class="form">
     <div class="field req">
@@ -225,20 +225,20 @@ Expect 201.'></textarea>
       <input id="devcode-repo" type="text" spellcheck="false" placeholder="https://gitlab.example.com/team/service.git">
     </div>
     <div class="field req">
-      <label for="devcode-branch">Branch</label>
-      <input id="devcode-branch" type="text" spellcheck="false" placeholder="feature/ABC-123-traveler-filter">
+      <label for="devcode-branch">Branch <span class="hint">or tag: the developer's branch, or a release branch or tag</span></label>
+      <input id="devcode-branch" type="text" spellcheck="false" placeholder="feature/ABC-123-traveler-filter  or  release/2026.11">
     </div>
     <div class="field">
       <label for="devcode-ticket">Ticket <span class="hint">empty: this job's story key</span></label>
       <input id="devcode-ticket" type="text" spellcheck="false" placeholder="ABC-123">
     </div>
     <div class="field">
-      <label for="devcode-base">Compared with <span class="hint">the branch it merges into; empty: the repository's default</span></label>
-      <input id="devcode-base" type="text" spellcheck="false" placeholder="develop">
+      <label for="devcode-base">Compared with <span class="hint">the branch it merges into, or the PREVIOUS release's tag to read only this release's commits; empty: the repository's default branch</span></label>
+      <input id="devcode-base" type="text" spellcheck="false" placeholder="develop  or  v2026.10">
     </div>
   </div>
   <div class="row">
-    <button id="devread-run" type="button" title="Reads the branch now, so Design the tests does not wait for it. Design reads it again anyway: a branch that has not moved is not read twice.">Read the change</button>
+    <button id="devread-run" type="button" title="Reads the branch now, so Design does not wait for it. Design reads it again anyway: a branch that has not moved is not read twice.">Read the change</button>
     <button id="devread-stop" type="button">Stop</button>
     <span id="devread-state" class="state"></span>
   </div>
@@ -248,7 +248,7 @@ Expect 201.'></textarea>
   </div>
 
   <div class="row">
-    <button id="run-intake" class="go">Read it</button>
+    <button id="run-intake" class="go" title="Read the story, the Confluence pages and what was pasted, and plan the job">Read</button>
     <button id="run-locate">Then: is it already automated?</button>
     <label class="inline" title="The create / update verdict is made against target/shape-index.json, a snapshot of what was converted when it was built. After a convert it is out of date: tick this to rebuild it first (minutes for many suites)."><input type="checkbox" id="locate-rebuild"> rebuild the shape index first <span class="hint" id="locate-rebuild-why"></span></label>
     <span id="new-state" class="state"></span>
@@ -299,7 +299,7 @@ Expect 201.'></textarea>
   <label for="design-notes">Notes for the designer <span class="hint">what to focus on, what to leave out</span></label>
   <textarea id="design-notes" rows="2" spellcheck="false"></textarea>
   <div class="row design-go">
-    <button id="run-design" class="go">Design the tests</button>
+    <button id="run-design" class="go" title="AI Agent designs the test cases from the story, the specification, the requirements and the developer's change">Design</button>
     <label class="inline" title="A design request that has not changed reuses the reply kept from last time instead of paying for it again. Tick this to forget every reply kept for this job and ask AI Agent."><input type="checkbox" id="design-fresh"> Ask again</label>
     <label class="inline" title="When the job has a story, the tests are designed for the endpoints the story names, and the result says which those were. Tick this to design every endpoint of the specification instead."><input type="checkbox" id="design-whole"> Design the whole specification, not only what the story touches</label>
     <button id="stop-design">Stop</button>
@@ -310,7 +310,7 @@ Expect 201.'></textarea>
     <span id="design-state" class="state"></span>
   </div>
   <details class="area-logs" id="design-logs">
-    <summary>Logs <span class="hint">of Design the tests (and Take the story's Xray tests): the command, and its conversation with AI Agent</span></summary>
+    <summary>Logs <span class="hint">of Design (and Take the story's Xray tests): the command, and its conversation with AI Agent</span></summary>
     <div class="split">
       <div><h3>Command log</h3><pre id="design-log" class="log"></pre></div>
       <div><h3>AI Agent log</h3><pre id="design-cursor-log" class="log cursor"></pre></div>
@@ -358,7 +358,7 @@ Expect 201.'></textarea>
   <div id="ct-devcode" class="input-panel" role="tabpanel" aria-labelledby="ct-tab-devcode" hidden>
   <p class="hint" id="devcode-part">A make-sure step: the developer's change (the Developer's change tab at the top) is compared with the cases above -- endpoints, who may call them, status codes, validation, fields. What no case covers is a gap.</p>
   <div class="row">
-    <button id="devcode-run" class="go" type="button">Check the cases against the change</button>
+    <button id="devcode-run" class="go" type="button" title="Compare the designed cases with the developer's change">Check</button>
     <label class="inline" title="Also send the change (the diff, cut to size, host names and private values removed) and the cases to AI Agent in plan mode, for gaps the program's own reading cannot see. Slower; costs an AI Agent call."><input type="checkbox" id="devcode-cursor"> also ask AI Agent</label>
     <button id="devcode-stop" type="button">Stop</button>
     <button id="devcode-add" type="button" disabled title="AI Agent adds cases for the chosen gaps -- a refinement that keeps every existing case as it is">Add cases for the chosen gaps</button>
@@ -427,7 +427,7 @@ Expect 201.'></textarea>
     the run starts. Review the change and push it on the Commit and push tab.
   </p>
   <div class="row">
-    <button id="auto-selected" class="go">Automate the approved cases</button>
+    <button id="auto-selected" class="go" title="AI Agent writes REST Assured tests for the approved cases">Automate</button>
     <label class="inline" title="Automate waits when &quot;Is it already automated?&quot; stopped a request: UPSTREAM (a converted test already covers it -- the change belongs in the ReadyAPI XML) or CONFIRM (matched loosely). Tick to write the tests anyway; the log says so, for the reviewer."><input type="checkbox" id="auto-past-stops"> go ahead anyway, although a request is already covered</label>
     <button id="agent-stop">Stop</button>
     <span id="auto-state" class="state"></span>

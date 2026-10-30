@@ -151,8 +151,9 @@ def block(reading: dict, wanted=None, limit: int = LIMIT) -> str:
     how = {"ticket": f"naming {keys}", "ticket-merged": f"naming {keys}, already merged",
            "branch": "of the branch (none names the ticket)"}.get(mode, "")
     lines = ["", "===== THE DEVELOPER'S CHANGE (material: read by a program from the code) =====",
-             f"Branch {reading.get('branch')}, at commit {str(reading.get('tip') or '')[:10] or '?'}; "
-             f"{len(reading.get('commits') or [])} commit(s) {how}.", RULE, ""]
+             f"Branch {reading.get('branch')}, at commit {str(reading.get('tip') or '')[:10] or '?'}"
+             + (f", compared with {reading['base']}" if reading.get("base") else "")
+             + f"; {len(reading.get('commits') or [])} commit(s) {how}.", RULE, ""]
 
     def part(title, items):
         if items:

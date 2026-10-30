@@ -1163,7 +1163,7 @@ def refine_listing(job: str, request: str, ids=None, cap: int = 4000) -> str:
     design = _read_json(os.path.join(out, "design.json"))
     cases = [c for c in design.get("test_cases") or [] if isinstance(c, dict) and c.get("id")]
     if not cases:
-        raise ValueError("there are no cases to refine yet: Design the tests first")
+        raise ValueError("there are no cases to refine yet: Design first")
     chosen = {str(i) for i in ids or []}
     unknown = sorted(chosen - {str(c["id"]) for c in cases})
     if unknown:

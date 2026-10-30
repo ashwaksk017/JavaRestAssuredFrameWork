@@ -248,6 +248,16 @@ class Refusing(unittest.TestCase):
         self.assertIn("protocol.allow=never", joined)
 
 
+def remote_refs(args, missing=()):
+    """What `git ls-remote` answers: the default branch for --symref HEAD;
+    else the asked refs that exist -- branches feature/x and develop, the
+    tag v2026.10 (a previous release)."""
+    if "--symref" in args:
+        return "ref: refs/heads/develop\tHEAD\n"
+    there = {"refs/heads/feature/x", "refs/heads/develop", "refs/tags/v2026.10"} - set(missing)
+    return "".join(f"{'c' * 40}\t{a}\n" for a in args if a in there)
+
+
 def commit_in(args):
     """The commit a `git show` names: after it may come `--` and pathspecs."""
     return next((a for a in args if len(a) == 40 and all(c in "0123456789abcdef" for c in a)), "")
@@ -259,7 +269,7 @@ def fake_git(log_out, by_sha):
     def runner(args):
         calls.append(args)
         if args[0] == "ls-remote":
-            return 0, "ref: refs/heads/develop\tHEAD\n"
+            return 0, remote_refs(args)
         if args[0] == "fetch":
             return 0, ""
         if args[0] == "log":
@@ -531,7 +541,7 @@ def git_with(log_out, by_sha, *, branch_missing=False, tip=TIP_SHA):
     def runner(args):
         calls.append(args)
         if args[0] == "ls-remote":
-            return 0, "ref: refs/heads/develop\tHEAD\n"
+            return 0, remote_refs(args, missing=("refs/heads/feature/x",) if branch_missing else ())
         if args[0] == "fetch":
             if branch_missing and any("refs/heads/feature/x" in a for a in args):
                 return 128, "fatal: couldn't find remote ref refs/heads/feature/x"
@@ -871,6 +881,35 @@ class SecondReviewRuns(ReadingAChange):
         finally:
             dc.loop.mock.on = real
         self.assertIn("stand-ins are on", str(ctx.exception))
+
+    def test_a_release_is_read_from_the_previous_releases_tag(self):
+        """Compared with the previous release's tag: only the commits after
+        it, and never the merged-branch fallback, which would read past it."""
+        logs = []
+
+        def log_out(greps, args):
+            logs.append(args)
+            return ""                                   # nothing after the tag names the story
+        runner, calls = git_with(log_out, {SHA: DIFF})
+        (reading, _), _ = self.read(runner, base="v2026.10")
+        fetch = next(c for c in calls if c[0] == "fetch")
+        self.assertIn("+refs/tags/v2026.10:refs/tags/v2026.10", fetch)
+        self.assertTrue(all("^refs/tags/v2026.10" in a for a in logs), "every read stops at the tag")
+        self.assertNotEqual(reading["commit_mode"], "ticket-merged")
+        self.assertTrue(any("after the tag v2026.10" in n for n in reading["notes"]))
+        self.assertIn("compared with v2026.10", dc.devchange.block(dict(reading, found={"endpoints": [
+            {"verb": "GET", "path": "/x/{id}", "how": "changed"}]})))
+
+    def test_a_release_tag_can_be_the_branch_and_an_unknown_base_is_said(self):
+        runner, calls = git_with(lambda g, a: f"{SHA}\x1fD\x1f2026-10-01T10:00:00+00:00\x1fABC-77 x\x1e", {SHA: DIFF})
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            got = dc.read_change(self.job, "https://gitlab.acme.test/t/svc.git", "v2026.10", base="no-such",
+                                 root=self.root, runner=runner, transport=lambda u, h: (200, []))
+        fetch = next(c for c in calls if c[0] == "fetch")
+        self.assertIn("+refs/tags/v2026.10:refs/tags/v2026.10", fetch)
+        self.assertEqual(got[0]["base"], "")
+        self.assertIn("neither a branch nor a tag", buf.getvalue())
 
     def test_a_reused_reading_says_this_runs_notes_too(self):
         runner, _ = git_with(lambda g, a: f"{SHA}\x1fD\x1f2026-10-01T10:00:00+00:00\x1fABC-77 x\x1e", {SHA: DIFF})

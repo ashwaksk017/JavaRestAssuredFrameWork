@@ -209,7 +209,7 @@ class WhatIsRefused(Base):
         os.remove(os.path.join(self.job, "intake.json"))
         with self.assertRaises(xi.Refused) as got:
             self.run_it()
-        self.assertIn("Read it", str(got.exception))
+        self.assertIn("press Read", str(got.exception))      # the button, by its one-word name
         self.jira.links = []
         with self.assertRaises(xi.Refused) as got:
             self.run_it(story="ABC-1")

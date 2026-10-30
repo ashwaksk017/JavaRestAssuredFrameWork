@@ -109,7 +109,7 @@ def at_stake(job_dir: str) -> list:
         out.append(f"an automated change ({agent['state']}) -- ask AI Agent to change it with "
                    f"what changed, or run again after a new design")
     if os.path.isfile(os.path.join(job_dir, "plan.md")):
-        out.append("a plan -- run 'is it automated?' again after Read it")
+        out.append("a plan -- run 'is it automated?' again after Read")
     return out
 
 

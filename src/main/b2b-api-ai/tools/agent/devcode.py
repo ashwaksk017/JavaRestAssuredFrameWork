@@ -332,37 +332,37 @@ def fetch(root: str, repo: dict, branch: str, base: str, token: str = "", runner
         head = git("ls-remote", "--symref", "origin", "HEAD", timeout=FETCH_TIMEOUT, check=False)
         m = re.search(r"ref:\s+refs/heads/(\S+)\s+HEAD", head)
         base = m.group(1) if m else ""
-    specs = [f"+refs/heads/{branch}:refs/remotes/origin/{branch}"]
-    if base and base != branch:
-        specs.append(f"+refs/heads/{base}:refs/remotes/origin/{base}")
-    diag.step(f"Fetching {branch}" + (f" and {base}" if base and base != branch else "")
-              + f" from {repo['shown']} (only what is new is fetched)")
-    def missing(err) -> bool:
-        return "couldn't find remote ref" in str(err).lower() or "not found" in str(err).lower()
+    # Each name is a branch or a TAG: a release is read as the release branch
+    # (or tag) compared with the previous release's tag -- only the commits
+    # made for this release (2026-10-30). One question tells which it is.
+    names = [n for n in dict.fromkeys((branch, base)) if n]
+    listed = git("ls-remote", "origin", *[f"refs/{kind}/{n}" for n in names for kind in ("heads", "tags")],
+                 timeout=FETCH_TIMEOUT)
+    have = {line.split("\t", 1)[1].strip() for line in listed.splitlines() if "\t" in line}
 
-    try:
-        git("fetch", "--quiet", "--no-tags", "--filter=blob:none", "origin", *specs, timeout=FETCH_TIMEOUT)
-    except Refused as e:
-        if not missing(e):
-            raise
-        if len(specs) > 1:
-            # The base may not exist by that name; the branch alone is still
-            # worth reading. When the branch alone is not there either, it is
-            # the branch that is missing (read_change then asks for its
-            # merge or pull request).
-            try:
-                git("fetch", "--quiet", "--no-tags", "--filter=blob:none", "origin", specs[0],
-                    timeout=FETCH_TIMEOUT)
-            except Refused as e2:
-                if missing(e2):
-                    raise Refused(f"the branch {branch!r} is not in {repo['shown']}") from None
-                raise
-            say(f" ..  the branch {base!r} was not found there: commits are found by the ticket alone")
-            base = ""
+    def where(name: str) -> tuple:
+        """(fetch spec, local ref) of a branch or a tag; ("", "") when neither."""
+        if f"refs/heads/{name}" in have:
+            return f"+refs/heads/{name}:refs/remotes/origin/{name}", f"refs/remotes/origin/{name}"
+        if f"refs/tags/{name}" in have:
+            return f"+refs/tags/{name}:refs/tags/{name}", f"refs/tags/{name}"
+        return "", ""
+
+    branch_spec, branch_ref = where(branch)
+    if not branch_spec:
+        # read_change then asks for its merge or pull request.
+        raise Refused(f"the branch {branch!r} is not in {repo['shown']}")
+    specs, base_ref = [branch_spec], ""
+    if base and base != branch:
+        base_spec, base_ref = where(base)
+        if base_spec:
+            specs.append(base_spec)
         else:
-            raise Refused(f"the branch {branch!r} is not in {repo['shown']}") from None
-    branch_ref = f"refs/remotes/origin/{branch}"
-    base_ref = f"refs/remotes/origin/{base}" if base and base != branch else ""
+            say(f" ..  {base!r} is neither a branch nor a tag there: commits are found by the ticket alone")
+            base = ""
+    diag.step(f"Fetching {branch}" + (f" and {base}" if base_ref else "")
+              + f" from {repo['shown']} (only what is new is fetched)")
+    git("fetch", "--quiet", "--no-tags", "--filter=blob:none", "origin", *specs, timeout=FETCH_TIMEOUT)
     return git, branch_ref, base_ref, base
 
 
@@ -397,9 +397,11 @@ def commits(git, branch_ref: str, base_ref: str, ticket) -> tuple:
     named = read(greps) if keys else []
     if named:
         return named, "ticket"
-    if keys and base_ref:
+    if keys and base_ref and not base_ref.startswith("refs/tags/"):
         # Nothing the base lacks names a key: the branch may be merged, its
-        # commits now on the base too. They are still on the branch.
+        # commits now on the base too. They are still on the branch. Not
+        # when the base is a TAG: a tag is the previous release, and a
+        # commit before it belongs to that release, not this one.
         merged = read(greps, [branch_ref])
         if merged:
             return merged, "ticket-merged"
@@ -1779,6 +1781,8 @@ def read_change(job: str, repo_url: str, branch: str, ticket: str = "", base: st
             return reading, diff
         diag.step("Finding the commits that name " + (", ".join(keys) if keys else "the ticket"))
         found_commits, mode = commits(git, branch_ref, base_ref, keys)
+        if base_ref.startswith("refs/tags/"):
+            notes.append(f"only the commits after the tag {base} (the previous release) were read")
         if mode == "ticket-merged":
             notes.append(f"the commits naming {', '.join(keys)} are already on {base}: the branch has been "
                          f"merged, and they were read where they are")
@@ -1862,7 +1866,7 @@ def run(job: str, repo_url: str, branch: str, ticket: str = "", base: str = "",
     cases = case_list(job_dir)
     if not cases:
         notes.append("this job has no designed cases yet (or every one is rejected): every behaviour "
-                     "of the change is listed as a gap. Design the tests first for a real comparison")
+                     "of the change is listed as a gap. Design first for a real comparison")
     designed = (_read_json(os.path.join(job_dir, "design.json")).get("devchange") or {})
     if designed.get("tip") and reading.get("tip") and designed["tip"] != reading["tip"]:
         notes.append(f"the branch has moved since the cases were designed (from {designed['tip'][:10]} to "
@@ -1923,7 +1927,7 @@ def read_only(job: str, repo_url: str, branch: str, ticket: str = "", base: str 
         say("WARN nothing was read: no commit was found (above). Design runs without the developer's change")
         return 0
     say(f"READ: commit {str(reading.get('tip') or '')[:10]} of {reading['branch']}, "
-        f"{len(reading['commits'])} commit(s); {summary_line(reading)}. Design the tests takes it in.")
+        f"{len(reading['commits'])} commit(s); {summary_line(reading)}. Design takes it in.")
     return 0
 
 

@@ -510,8 +510,10 @@ function showChosen(name) {
     const xray = pick === "xray";
     if ($("story-xray-note")) $("story-xray-note").hidden = !xray;
     if ($("run-design")) {
-      $("run-design").textContent = xray ? "Design from the Xray tests" : "Design the tests";
-      $("run-design").title = xray ? "the Xray tests linked to the story, with their steps, become the cases; AI Agent is not asked" : "";
+      $("run-design").textContent = "Design";              // one word, either way: the title says which
+      $("run-design").title = xray
+        ? "Design from the Xray tests: those linked to the story, with their steps, become the cases; AI Agent is not asked"
+        : "AI Agent designs the test cases from the story, the specification, the requirements and the developer's change";
     }
   }
 }
@@ -861,7 +863,7 @@ $("release-list").onclick = async () => {
     $("story").value = keys.join("\n");
     showInput("story");
     markInputs();
-    setState($("release-state"), "ok", `${keys.length} story key(s) put in the box: press Read it`);
+    setState($("release-state"), "ok", `${keys.length} story key(s) put in the box: press Read`);
     $("story").scrollIntoView({ block: "center" });
   } } }, "Use the ticked stories");
   const all = (on) => el("button", { type: "button", on: { click: () => boxes.forEach((b) => { b.checked = on; }) } },
@@ -920,9 +922,9 @@ $("story-check").onclick = async () => {
         };
         kids.push(el("div", { class: "row" }, [again]));
         if (!r.diff) kids.push(el("small", { text: "Only Jira's revision moved -- a field, a comment or an " +
-          "attachment; the story's text is as it was. Read it again to pick that up; if the brief comes back " +
+          "attachment; the story's text is as it was. Read again to pick that up; if the brief comes back " +
           "the same, the design, the review and the tests stand as they are." }));
-        else kids.push(el("small", { text: "To take the change in: Read it again (the button above reuses what " +
+        else kids.push(el("small", { text: "To take the change in: Read again (the button above reuses what " +
           "this job was given), then Design again (cases that say the same thing keep their id, their " +
           "review and their Xray test; a changed case is a new case), review the new ones, Create in Xray " +
           "for them (an earlier case's test stays in Jira until closed by hand), and ask AI Agent to change " +
@@ -2331,7 +2333,7 @@ async function showDevRead(j) {
     `${(f.endpoints || []).length} endpoint(s) new or changed, ${(f.removed_endpoints || []).length} removed, ` +
     `${(f.access || []).length} access rule(s), ${(f.validations || []).length} validation rule(s), ` +
     `${(f.fields || []).length} new field(s), ${(f.spec_changes || []).length} specification change(s).${review} ` +
-    "Design the tests takes it in.")];
+    "Design takes it in.")];
   for (const n of r.notes || []) kids.push(banner("warn", n));
   const eps = (f.endpoints || []).map((e) => [e.how === "new" ? "new" : "changed", `${e.verb} ${e.path}`,
     (e.access || []).join("; ") || "—"]).concat((f.removed_endpoints || []).map((e) => ["removed", `${e.verb} ${e.path}`, "—"]));
