@@ -414,8 +414,18 @@ column that fills it is `datasource_200_accountStatus`. Check every path
 against a recorded response under `reference/` before using it. A path the
 response does not have never matches: the poll runs to its deadline on every
 run (16 GETs, 15 seconds), and a contains-assertion then passes on a body
-search, so the mistake does not fail the test. Poll only when the value can
-really still change; a state the previous call has already set is read once.
+search, so the mistake does not fail the test.
+
+**When the story or a case says to wait until a state is reached, poll for
+it** -- e.g. "poll until the account is `rejected`": a bounded
+`Poller.untilJsonEquals(call, "status", "rejected", timeoutMs)` on the
+response's real field. The poller does not fail when its deadline passes; it
+returns the last answer. So right after the poll, assert that field EQUALS
+the state (`softAssert.assertEquals(RestUtilities.safeJsonExtract(res,
+"status"), "rejected", ...)`), never a contains-check over the body. A state
+that was not reached in time then fails the test, naming the value it had.
+With no such requirement, a state the previous call has already set is read
+once, not polled.
 
 **Stay in `tests/jira/` for a new-test job.** The workbench may allow writing
 anywhere, but a jira story test belongs under
