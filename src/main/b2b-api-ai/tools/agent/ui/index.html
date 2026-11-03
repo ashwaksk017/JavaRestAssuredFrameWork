@@ -97,6 +97,9 @@
     <label class="inline"><input type="radio" name="story-from" value="paste"> Paste the story</label>
     <label class="inline"><input type="radio" name="story-from" value="xray"> Use the story's Xray tests</label>
   </fieldset>
+  <p class="hint" id="story-template-line">Writing the story? The <a href="/api-story-template.md" download="api-story-template.md">API story template</a>
+    says where each value comes from and what to capture -- what tests fail on most.
+    <button type="button" id="story-template-fill" class="linkish">Put it in the paste box</button></p>
   <div id="story-from-link">
   <p class="hint" id="story-xray-note" hidden>The story is read by its link or key, as usual. <b>Design</b>
     then takes the Xray tests already linked to it -- with their steps -- as the cases, instead of
@@ -245,8 +248,6 @@ Expect 201.'></textarea>
 
   <div class="row">
     <button id="run-intake" class="go" title="Read the story, the Confluence pages and what was pasted, and plan the job">Read</button>
-    <button id="run-locate">Then: is it already automated?</button>
-    <label class="inline" title="The create / update verdict is made against target/shape-index.json, a snapshot of what was converted when it was built. After a convert it is out of date: tick this to rebuild it first (minutes for many suites)."><input type="checkbox" id="locate-rebuild"> rebuild the shape index first <span class="hint" id="locate-rebuild-why"></span></label>
     <span id="new-state" class="state"></span>
   </div>
 
@@ -267,7 +268,10 @@ Expect 201.'></textarea>
     private configuration's values are taken out of what is sent. Read
     the result before the cases are automated (Automate the cases, below).
   </p>
-  <details class="more" id="design-options">
+  <!-- Hidden for now (2026-11-02): the defaults (Balanced, Plan, the
+       specification's title) are what every design uses. Remove `hidden`
+       to offer the choices again; the page still reads these fields. -->
+  <details class="more" id="design-options" hidden>
   <summary>Options <span class="hint">service name, how many cases, how AI Agent is run -- the defaults suit most designs</span></summary>
   <div class="form">
     <div class="field">
@@ -291,18 +295,21 @@ Expect 201.'></textarea>
     </div>
   </div>
   </details>
+  <!-- Hidden for now (2026-11-02), with Options above: the notes go to
+       Design empty. Remove `hidden` to offer them again; the screenshot
+       strip Ctrl+V fills is placed inside, after the box. -->
+  <div id="design-notes-part" hidden>
   <p class="hint">The API specification and the requirements are given in their tabs at the top, beside the story.</p>
   <label for="design-notes">Notes for the designer <span class="hint">what to focus on, what to leave out</span></label>
   <textarea id="design-notes" rows="2" spellcheck="false"></textarea>
+  </div>
   <div class="row design-go">
     <button id="run-design" class="go" title="AI Agent designs the test cases from the story, the specification, the requirements and the developer's change">Design</button>
-    <label class="inline" title="A design request that has not changed reuses the reply kept from last time instead of paying for it again. Tick this to forget every reply kept for this job and ask AI Agent."><input type="checkbox" id="design-fresh"> Ask again</label>
-    <label class="inline" title="When the job has a story, the tests are designed for the endpoints the story names, and the result says which those were. Tick this to design every endpoint of the specification instead."><input type="checkbox" id="design-whole"> Design the whole specification, not only what the story touches</label>
+    <label class="inline" hidden title="A design request that has not changed reuses the reply kept from last time instead of paying for it again. Tick this to forget every reply kept for this job and ask AI Agent."><input type="checkbox" id="design-fresh"> Ask again</label>
+    <label class="inline" hidden title="When the job has a story, the tests are designed for the endpoints the story names, and the result says which those were. Tick this to design every endpoint of the specification instead."><input type="checkbox" id="design-whole"> Design the whole specification, not only what the story touches</label>
     <button id="stop-design">Stop</button>
     <button id="clear-design" type="button" title="takes this job's design and the kept AI Agent replies out, so the next design asks AI Agent afresh; review decisions and Xray keys stay">Clear the design</button>
     <a id="dl-design" class="dl" hidden>design.md</a>
-    <a id="dl-cases" class="dl" hidden>test-cases.csv</a>
-    <a id="dl-xray" class="dl" hidden>xray.csv</a>
     <span id="design-state" class="state"></span>
   </div>
   <details class="area-logs" id="design-logs">
@@ -318,14 +325,19 @@ Expect 201.'></textarea>
   <!-- What is done with the designed cases, one tab each: they act on cases
        that exist, so they sit under the review, not above Design (2026-10-30). -->
   <div id="case-tools" class="inputs">
-  <div class="input-tabs" role="tablist" aria-label="Work on the designed cases">
+  <!-- Only Refine is offered (2026-11-02): Suggest suites, Check against
+       the developer's change and design.md are hidden -- Design reads the
+       developer's change itself, and design.md is the download link. With
+       one tab left the strip itself is hidden. Remove `hidden` from a tab
+       to offer it again; its panel and code are kept. -->
+  <div class="input-tabs" role="tablist" aria-label="Work on the designed cases" hidden>
     <button type="button" role="tab" id="ct-tab-refine" aria-controls="ct-refine" aria-selected="true">Refine with AI Agent</button>
-    <button type="button" role="tab" id="ct-tab-suites" aria-controls="ct-suites" aria-selected="false" tabindex="-1">Suggest suites</button>
-    <button type="button" role="tab" id="ct-tab-devcode" aria-controls="ct-devcode" aria-selected="false" tabindex="-1">Check against the developer's change</button>
-    <button type="button" role="tab" id="ct-tab-doc" aria-controls="ct-doc" aria-selected="false" tabindex="-1">design.md</button>
+    <button type="button" role="tab" id="ct-tab-suites" aria-controls="ct-suites" aria-selected="false" tabindex="-1" hidden>Suggest suites</button>
+    <button type="button" role="tab" id="ct-tab-devcode" aria-controls="ct-devcode" aria-selected="false" tabindex="-1" hidden>Check against the developer's change</button>
+    <button type="button" role="tab" id="ct-tab-doc" aria-controls="ct-doc" aria-selected="false" tabindex="-1" hidden>design.md</button>
   </div>
   <div id="ct-refine" class="input-panel" role="tabpanel" aria-labelledby="ct-tab-refine">
-  <label for="refine-ask">How the cases should change <span class="hint">tick cases in the Select column to refine only those (the rest are kept exactly as they are), or none to refine the whole list. Cases it leaves alone keep your decisions</span></label>
+  <label for="refine-ask">How the cases should change <span class="hint">name the cases to change in your words (e.g. TC-004); cases it leaves alone keep your decisions</span></label>
   <textarea id="refine-ask" rows="2" spellcheck="false"
     placeholder="e.g. Split TC-004 into a 403 and a 404 case, and drop the duplicate paging cases."></textarea>
   <div class="row">
@@ -343,7 +355,7 @@ Expect 201.'></textarea>
   </div>
 
   <div id="ct-suites" class="input-panel" role="tabpanel" aria-labelledby="ct-tab-suites" hidden>
-  <p class="hint">AI Agent reads each case and proposes the suites (TestNG groups) its test belongs in, with a reason. Nothing changes until you take a suggestion; each case's Suites box in the review stays yours to edit.</p>
+  <p class="hint">AI Agent reads each test case and proposes suites.</p>
   <div class="row">
     <button id="suite-suggest" type="button" title="AI Agent reads each case and proposes the suites (TestNG groups) its test belongs in -- regression, smoke, negative... -- with a reason. Nothing changes until you Use a suggestion; the Suites box stays yours to edit.">Suggest suites with AI Agent</button>
     <button id="suite-suggest-all" type="button" disabled title="put every suggestion into its case's Suites box">Use every suggestion</button>
@@ -369,6 +381,15 @@ Expect 201.'></textarea>
   </div>
   </div>
 
+  <!-- The cases' downloads sit above Finalize, where the reviewed cases
+       are (2026-11-02); Ask again and "the whole specification" are hidden
+       above, unticked: a design reuses its kept reply and keeps to what
+       the story touches. Remove `hidden` to offer them again. -->
+  <div class="row dl-row" id="dl-case-row" hidden>
+    <span class="hint">Download the cases:</span>
+    <a id="dl-cases" class="dl" hidden>test-cases.csv</a>
+    <a id="dl-xray" class="dl" hidden>xray.csv</a>
+  </div>
   <div class="row">
     <button id="wf-finalize" type="button" title="freeze the approved cases: Create in Xray and Automate take only finalized cases; an edit after it reopens them">Finalize the cases</button>
     <span id="wf-final-state" class="state"></span>
@@ -422,6 +443,18 @@ Expect 201.'></textarea>
     Automate at once. Each run adds to the job's one change; the AI Agent setup is checked as
     the run starts. Review the change and push it on the Commit and push tab.
   </p>
+  <!-- The issue branch (2026-11-02): made on GitLab from develop, then
+       checked out here, BEFORE Automate, so the change goes into it. -->
+  <div class="row" id="issue-row">
+    <label class="inline" for="issue-prefix">Issue branch</label>
+    <select id="issue-prefix" aria-label="branch prefix">
+      <option value="issue/" selected>issue/</option>
+      <option value="feature/">feature/</option>
+    </select>
+    <span id="issue-name" class="hint">the story's key</span>
+    <button id="issue-create" type="button" title="creates the branch on GitLab from develop (or takes it when it is there), then fetches it and switches this working tree to it -- on a clean tree only">Create the issue branch</button>
+    <span id="issue-state" class="state"></span>
+  </div>
   <div class="row">
     <button id="auto-selected" class="go" title="AI Agent writes REST Assured tests for the approved cases">Automate</button>
     <label class="inline" title="Automate waits when &quot;Is it already automated?&quot; stopped a request: UPSTREAM (a converted test already covers it -- the change belongs in the ReadyAPI XML) or CONFIRM (matched loosely). Tick to write the tests anyway; the log says so, for the reviewer."><input type="checkbox" id="auto-past-stops"> go ahead anyway, although a request is already covered</label>
@@ -440,7 +473,7 @@ Expect 201.'></textarea>
       </fieldset><pre id="cursor-log" class="log cursor"></pre></div>
     </div>
   </details>
-  <label for="agent-ask">Ask Me <span class="hint">in your words: a question about this job -- answered in the command log, nothing changed -- or a change: what should be different in the change waiting (AI Agent works on the same files and it waits for your review again), or something new when none is waiting</span></label>
+  <label for="agent-ask">Ask AI Agent <span class="hint">in your words: a question about this job -- answered in the command log, nothing changed -- or a change: what should be different in the change waiting (AI Agent works on the same files and it waits for your review again), or something new when none is waiting</span></label>
   <textarea id="agent-ask" rows="3" spellcheck="false"
     placeholder="e.g. Which suite file runs this job's tests?  or  Use the member's email from the CSV instead of a fixed one."></textarea>
   <fieldset class="choice" id="ask-kind">
@@ -449,7 +482,7 @@ Expect 201.'></textarea>
     <label><input type="radio" name="ask-kind" value="change" checked> A change <span class="hint">AI Agent writes code, then it is checked and waits for your review</span></label>
   </fieldset>
   <div class="row">
-    <button id="agent-ask-send">Ask Me</button>
+    <button id="agent-ask-send">Ask AI Agent</button>
     <span id="ask-state" class="state"></span>
   </div>
   <details class="area-logs" id="ask-logs">
@@ -559,13 +592,13 @@ Expect 201.'></textarea>
     <pre id="verify-log" class="log"></pre>
   </div>
 
-  <h2 class="part" id="migration-ask-part">Ask Me <span class="hint">change a converted suite's Java, or the converter itself</span></h2>
+  <h2 class="part" id="migration-ask-part">Ask AI Agent <span class="hint">change a converted suite's Java, or the converter itself</span></h2>
   <p class="lede">
     Say what should be different. AI Agent is held to what you choose below; the change waits
     on the Commit and push tab. A converted suite's change is kept on this machine and put
     back after every convert of the suite; a change to the converter is committed and pushed.
     A request while a change is waiting adds to it. From the Failures tab, Fix with AI Agent
-    writes the request for you: leave the box empty and press Ask Me.
+    writes the request for you: leave the box empty and press Ask AI Agent.
   </p>
   <div class="form">
     <div class="field req">
@@ -598,7 +631,7 @@ Expect 201.'></textarea>
   <textarea id="mig-ask" rows="4" spellcheck="false"
     placeholder="e.g. The getSpend403 case sends the admin's token; the employee's token from the CSV is the one the case means."></textarea>
   <div class="row">
-    <button id="mig-run" class="go">Ask Me</button>
+    <button id="mig-run" class="go">Ask AI Agent</button>
     <button id="mig-stop">Stop</button>
     <span id="mig-state" class="state"></span>
   </div>
@@ -660,6 +693,10 @@ Expect 201.'></textarea>
     <div id="wf-regression-result" class="result"></div>
     <div id="agent-run-result" class="result"></div>
     <div id="agent-xray-result" class="result"></div>
+    <div class="row" id="issue-mr-row" hidden>
+      <button id="issue-mr" type="button" disabled title="from the job's issue branch to develop; opens once the change is pushed there with every test passing">Raise MR to develop</button>
+      <span id="issue-mr-state" class="state"></span>
+    </div>
   </div>
 
   <h3>Code review <span class="hint">AI Agent reads the change and lists what looks wrong — advice, it does not block Approve</span>
@@ -742,7 +779,7 @@ Expect 201.'></textarea>
   <div class="row run-line" id="run-what-suite">
     <span class="run-label">Suite file</span>
     <select id="run-suite" aria-label="suite file"></select>
-    <button id="run-suites-refresh" type="button" title="read the suite files again">↻</button>
+    <button id="run-suites-refresh" class="icon" type="button" title="read the suite files again">↻</button>
   </div>
   <div class="row run-line" id="run-what-test" hidden>
     <span class="run-label">Class or method</span>
@@ -766,7 +803,8 @@ Expect 201.'></textarea>
     <label class="run-label" for="run-env">Environment</label>
     <select id="run-env" aria-label="environment"></select>
     <label class="inline" title="delete what Maven built and the last run's reports (target/classes, test-classes, surefire-reports, allure-results...), then mvn test-compile. Uploaded suites, the failure digest and Jira fetches in target/ are kept"><input type="checkbox" id="run-compile-first" checked> clean build first</label>
-    <label class="inline" title="when a compile here fails, the errors go to AI Agent without a click, from the workbench itself (the page may be closed): the job's own files, or a helper its change broke, to the job's Ask Me; converted suites, each to a fix job of its own. The fix still waits for your review"><input type="checkbox" id="run-ask-auto" checked> AI Agent fixes compile errors</label>
+    <label class="inline" title="when a compile here fails, the errors go to AI Agent without a click, from the workbench itself (the page may be closed): the job's own files, or a helper its change broke, to the job's Ask AI Agent; converted suites, each to a fix job of its own. The fix still waits for your review"><input type="checkbox" id="run-ask-auto" checked> AI Agent fixes compile errors</label>
+    <label class="inline" title="unticked, the run leaves Xray alone. Ticked, the suite's listener updates the Test Execution in Xray with this run's results -- when Xray is switched on in the Settings tab. A re-run after Fix Failures does the same as the run it repeats"><input type="checkbox" id="run-xray"> Update the Test Execution in Xray</label>
   </div>
   <div class="row run-line" id="run-threads-line">
     <label class="run-label" for="run-threads">Parallel threads</label>
@@ -798,8 +836,11 @@ Expect 201.'></textarea>
     <pre id="run-ask-log" class="log"></pre>
   </div>
   <!-- The Failures tab, folded in (2026-10-30): every run is recorded by
-       itself (jobs.py) and compared with the run before. -->
-  <details class="more" id="run-history">
+       itself (jobs.py) and compared with the run before.
+       Both sections below are hidden for now (2026-11-02): runs are still
+       recorded and the Xray trace still filled in. Remove `hidden` to show
+       them again. -->
+  <details class="more" id="run-history" hidden>
     <summary>Compared with earlier runs <span class="hint">recorded by itself after every run: what is new since the run before, what fails differently, and whether a way of failing was seen before (kept in .failure-history/, gitignored)</span></summary>
     <div class="row">
       <input id="fail-label" type="text" spellcheck="false" placeholder="a few words about the last run (optional)">
@@ -811,7 +852,7 @@ Expect 201.'></textarea>
     <div id="fail-detail" class="result"></div>
     <pre id="fail-log" class="log"></pre>
   </details>
-  <details class="more" id="run-xray">
+  <details class="more" id="run-xray-part" hidden>
     <summary>Why Xray was or was not updated <span class="hint">after the last run: publishing on or off, the suite's listener, the Xray keys the rows carry</span></summary>
     <pre id="run-xray-trace" class="log">—</pre>
   </details>
@@ -1045,7 +1086,7 @@ Expect 201.'></textarea>
   <textarea id="wb-ask" rows="4" spellcheck="false"
     placeholder="e.g. Show the number of approved cases beside the Automate the approved cases button."></textarea>
   <div class="row">
-    <button id="wb-run" class="go">Ask Me</button>
+    <button id="wb-run" class="go">Ask AI Agent</button>
     <button id="wb-stop">Stop</button>
     <button id="wb-review">Review it</button>
     <span id="wb-state" class="state"></span>
@@ -1076,7 +1117,7 @@ Expect 201.'></textarea>
       <label for="set-cursor-key">API key <span class="hint" id="set-cursor-key-state"></span></label>
       <input id="set-cursor-key" type="password" autocomplete="new-password" spellcheck="false" placeholder="leave empty to keep it">
       <label class="inline"><input type="checkbox" id="set-cursor-key-clear"> remove the saved key</label>
-      <label for="set-cursor-model">Model <span class="hint">writes and changes the tests (Automate, Ask Me); default composer-2.5</span></label>
+      <label for="set-cursor-model">Model <span class="hint">writes and changes the tests (Automate, Ask AI Agent); default composer-2.5</span></label>
       <input id="set-cursor-model" type="text" spellcheck="false" list="cursor-models" placeholder="composer-2.5">
       <label for="set-cursor-design-model">Design model <span class="hint">designs, refines and reviews (JSON answers); empty: the model above. A faster one helps here</span></label>
       <input id="set-cursor-design-model" type="text" spellcheck="false" list="cursor-models" placeholder="the model above">
@@ -1104,6 +1145,17 @@ Expect 201.'></textarea>
       <label class="inline"><input type="checkbox" id="set-dev-token-clear"> remove the saved token</label>
       <label for="set-dev-hosts">Other hosts' kind <span class="hint">only for a host that is not github.com and has no "gitlab" in its name: one a line, <code>host gitlab|github [https://api address]</code></span></label>
       <textarea id="set-dev-hosts" rows="2" spellcheck="false" placeholder="git.example.com gitlab"></textarea>
+    </fieldset>
+    <fieldset class="field choice wide"><legend>Test repository (GitLab): issue branches and merge requests</legend>
+      <label for="set-tr-url">Address <span class="hint">https://... -- the token goes to this address only</span></label>
+      <input id="set-tr-url" type="text" spellcheck="false" placeholder="https://gitlab.example.com">
+      <label for="set-tr-project">Project <span class="hint">its path on GitLab, group/project</span></label>
+      <input id="set-tr-project" type="text" spellcheck="false" placeholder="qa/api-tests">
+      <label for="set-tr-target">Branch from and merge into</label>
+      <input id="set-tr-target" type="text" spellcheck="false" placeholder="develop">
+      <label for="set-tr-token">Personal access token <span class="hint" id="set-tr-token-state"></span> <span class="hint">api scope</span></label>
+      <input id="set-tr-token" type="password" autocomplete="new-password" spellcheck="false" placeholder="leave empty to keep it">
+      <label class="inline"><input type="checkbox" id="set-tr-token-clear"> remove the saved token</label>
     </fieldset>
     <fieldset class="field choice wide"><legend>Never push (this machine)</legend>
       <label for="set-push-guard">Words <span class="hint">one a line -- company and product names, internal host names; <code>re:</code> starts a pattern. A change that carries one is not pushed (Approve), nor one with a Jira key of a project read on this machine. Kept in .workbench/push-guard.txt, which git ignores</span></label>

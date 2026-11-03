@@ -566,13 +566,8 @@ pre.desc-text { white-space: pre-wrap; max-width: 34rem; min-width: 18rem; font-
 .row.sm-rule input[type=text] { flex: 1 1 10rem; min-width: 0; }
 /* Every row of buttons is centred on the page (asked for, 2026-10-21). */
 .row:has(> button) { justify-content: center; }
-/* The Automate Test Case tab's main steps -- Read, Design, Check, Automate
-   -- are one word, one width, each on a line of its own in the middle, so
-   they line up down the tab; the row's other controls follow on the line
-   under it (2026-10-30). Its margins fill the line, which makes the rest
-   wrap. Named one by one: other tabs' main buttons keep their longer words. */
-#run-intake, #run-design, #devcode-run, #auto-selected {
-  order: -1; flex: 0 0 9rem; width: 9rem; margin-inline: calc((100% - 9rem) / 2); }
+/* Read, Design, Check, Automate were one word, 9rem, centred (2026-10-30);
+   every action button is now the full width, as Finalize (the block at the end). */
 .row.sm-rule { justify-content: flex-start; }
 .repo { justify-content: center; }
 #repo-where { flex-basis: 100%; }
@@ -626,3 +621,47 @@ html[data-theme="light"] {
              font-size: .82rem; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,.25); z-index: 2; }
 .trend-tip b { display: block; margin-bottom: .15rem; }
 .trend-tip .row-swatch { display: inline-block; width: .6rem; height: .6rem; border-radius: 2px; margin-right: .35rem; }
+
+/* ---- Every action button as Finalize the cases (asked 2026-11-02) --------
+   A tab's action rows: each button the full width, one size, blue; Stop,
+   Discard, Clear and Reject the same size in red, under the button they
+   stop; what a row says (its state, hints, ticks, links) under them all.
+   Buttons inside tables and results (Remove step, Write to Jira...) and
+   the tab strips keep their own size. */
+section.tab .row > button, section.tab .repo > button,
+section.tab .review > .row > button {
+  flex: 1 1 100%; padding: .85rem 1rem; font-size: 1rem; font-weight: 600;
+  background: var(--accent); color: var(--on-accent); border: 1px solid transparent;
+}
+section.tab .row > button:hover:not(:disabled), section.tab .repo > button:hover:not(:disabled),
+section.tab .review > .row > button:hover:not(:disabled) { background: var(--accent-hover); }
+section.tab .row > button:disabled, section.tab .repo > button:disabled,
+section.tab .review > .row > button:disabled { background: var(--accent); border-style: solid; opacity: .45; }
+section.tab .row > button.danger, section.tab .row > button[id*="stop"],
+section.tab .row > button[id*="discard"], section.tab .row > button[id*="clear"] {
+  background: var(--bad); color: #fff; order: 1;
+}
+section.tab .row > button.danger:hover:not(:disabled), section.tab .row > button[id*="stop"]:hover:not(:disabled),
+section.tab .row > button[id*="discard"]:hover:not(:disabled), section.tab .row > button[id*="clear"]:hover:not(:disabled) {
+  background: var(--bad); filter: brightness(1.1);
+}
+section.tab .row > button.danger:disabled, section.tab .row > button[id*="stop"]:disabled,
+section.tab .row > button[id*="discard"]:disabled, section.tab .row > button[id*="clear"]:disabled { background: var(--bad); }
+/* Only what a row SAYS goes under its buttons: its state, its links, its
+   ticks. A label or hint that belongs to a box ("Last [8] releases") stays. */
+section.tab :is(.row, .repo) > :is(.state, small, a, label.inline:has(input[type=checkbox])) { order: 2; }
+section.tab .result .row > button:not(.review > .row > button) {
+  flex: initial; padding: .5rem .9rem; font-size: inherit; font-weight: inherit;
+  background: var(--btn); color: var(--ink); border: 1px solid var(--line); order: 0;
+}
+section.tab .result .row > button:not(.review > .row > button):hover:not(:disabled) { background: var(--btn-hover); }
+/* An icon that belongs to the box beside it (refresh the suite list) keeps its size. */
+section.tab .row > button.icon { flex: initial; padding: .5rem .9rem; font-size: inherit;
+  background: var(--btn); color: var(--ink); border: 1px solid var(--line); }
+/* A rule's own row in an editor (Settings: Regression mapping): its remove
+   button stays small, in red. */
+section.tab .row.sm-rule > button { flex: initial; padding: .4rem .8rem; font-size: inherit; font-weight: inherit;
+  background: transparent; color: var(--bad); border: 1px solid var(--danger-line); }
+/* A row of buttons inside a form grid (Settings) spans the whole grid, so its
+   buttons are as wide as everywhere else. */
+section.tab .row:has(> button) { grid-column: 1 / -1; width: 100%; }

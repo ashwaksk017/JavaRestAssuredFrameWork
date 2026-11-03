@@ -524,7 +524,8 @@ the match.
 
 #### How it decides whether a test already exists
 
-*Then: is it already automated?* answers one question per request of
+*Is it already automated?* -- run by itself after every **Read**, with no
+button of its own -- answers one question per request of
 the story, and writes the answer and its evidence to `plan.md` (and, for
 programs, `locate.json`). No model is asked: it is a comparison against
 what is in this folder.
@@ -926,12 +927,10 @@ python tools/agent/devcode.py --job <job> --repo <url> --branch <branch> [--tick
 
 #### Refining one case, some, or all
 
-Every row of the review has a tick in its first column (the header's tick
-selects them all). With cases ticked, **Approve selected**, **Reject
-selected** and **Refine selected** act on those only; a refinement then
-names the ticked cases to Cursor as the ones to change and keeps the rest
-exactly as they are. With none ticked a refinement is of the whole list,
-as before. A single case is refined by ticking only it.
+Each row of the review has two ticks, **Approve** and **Automate**; above
+the table, **Approve** and **Reject** decide every case at once. A
+refinement is of the whole list: name the cases to change in the request
+(e.g. "split TC-004"), and the cases it leaves alone keep your decisions.
 
 ### Run tests
 
@@ -1009,7 +1008,7 @@ Under a run with failed tests the tab offers **Fix Failures**. It says which of 
 
 | the failing tests are | the request goes |
 |---|---|
-| the job's own: its `Suites/jira/<job>.xml` was run, or every failing class is in that suite or in the change waiting for its review | to that job's **Ask Me** (`agent-followup.txt`, `loop.py followup`): Cursor changes the waiting change, or starts one |
+| the job's own: its `Suites/jira/<job>.xml` was run, or every failing class is in that suite or in the change waiting for its review | to that job's **Ask AI Agent** (`agent-followup.txt`, `loop.py followup`): Cursor changes the waiting change, or starts one |
 | one converted suite's (`com.hi.api.tests.imported.<suite>.`) | to a **fix brief** -- what Fix with Cursor under Compared with earlier runs (Run tests) writes (`fixbrief.py`), from THIS run's failures -- in a new job `fix-<suite>-<time>`, run as the Migration tab runs one (scope `converted`) |
 | anything else (another job's tests, several suites, a mix) | nowhere: the tab says what to do instead |
 
@@ -1027,7 +1026,7 @@ request went to.
 and its change passed its check (waiting for review), the workbench runs
 the failed run again, in the server (`jobs.rerun_after_fix`), so the page
 may be closed. The re-run uses the same suite, test or group, environment,
-project and threads, with a clean build first. For a suite or a group, only
+project, threads and Xray choice, with a clean build first. For a suite or a group, only
 the tests that failed run again: a copy of the suite file under
 `target/run-suites/<name>.failed.xml` names them (`mvnrun.py --failed-only`,
 `mvnrun-rerun.json`). The copy keeps the suite's parameters, listeners and
@@ -1045,8 +1044,8 @@ file, and the files say whose they are.
 
 | the errors are in | the request goes |
 |---|---|
-| the job's own files: its suite's classes, or any Java file of the change waiting for its review (a helper under `src/main` too) | to that job's **Ask Me**, prefilled with the errors (`file:line: message`) |
-| files the converter writes (`com.hi.api.support`, a converted suite's tests), and the open job's waiting change broke them -- its own check failed on them (`verify-failed`), or the job's own files fail too | to that job's **Ask Me**: Cursor changes what the job changed (a shared helper) so they compile again, and leaves the generated files alone |
+| the job's own files: its suite's classes, or any Java file of the change waiting for its review (a helper under `src/main` too) | to that job's **Ask AI Agent**, prefilled with the errors (`file:line: message`) |
+| files the converter writes (`com.hi.api.support`, a converted suite's tests), and the open job's waiting change broke them -- its own check failed on them (`verify-failed`), or the job's own files fail too | to that job's **Ask AI Agent**: Cursor changes what the job changed (a shared helper) so they compile again, and leaves the generated files alone |
 | a converted suite's own files (`imported/<suite>/`, `support/<suite>/`, its client, its templates), and no waiting change broke them | to **convert-fix**, what runs after a convert (`convertfix.py`): Cursor makes each suite compile in a fix job of its own (`<job>-fix-<suite>`, scope `converted`). Each fix waits for review only once its suite compiles. A suite whose fix job is already waiting is not asked again. The fix is lost on the suite's next convert: when the converter is the cause, fix the converter |
 | shared generated files (`support/*.java`, `support/scenario/`) | nowhere: the tab says to convert again (a stale generated wrapper is removed on the next Compile by itself) or to fix the converter |
 | anything else (another job's files, a mix, no file named) | nowhere: the tab says what to do instead |
@@ -1139,14 +1138,14 @@ python tools/agent/manualtests.py generate  --job <job> --app "Group booking"
 ### Migration from ReadyAPI
 
 *(Was "Convert ReadyAPI".)* Converts ReadyAPI project files into this
-project, and below the converter, **Ask Me**: say what should be
+project, and below the converter, **Ask AI Agent**: say what should be
 different, and choose what Cursor may change -- this suite's converted
 Java (kept on this machine, re-applied after every reconvert of the
 suite) or the converter itself (committed and pushed). A job's first
 request becomes its brief and plan; a request while a change is waiting
 adds to it. A job that holds a story or a design is refused: a migration
 request is its own job. Fix with Cursor under Compared with earlier runs (Run tests) writes the
-request for you -- leave the box empty and press Ask Me. The change
+request for you -- leave the box empty and press Ask AI Agent. The change
 waits on the Commit and push tab.
 
 The converter itself: The page shows the
@@ -1205,7 +1204,7 @@ problem rather than a missing path, which is why the form says so.
 *(Was "Agentic Test Creation". Cursor is now run where the work starts:
 **Automate the cases** at the bottom of the Automate Test Case tab --
 a case's own Automate button, or every approved case at once -- and
-**Ask Me** on the Migration from ReadyAPI tab. All of a job's runs
+**Ask AI Agent** on the Migration from ReadyAPI tab. All of a job's runs
 make one change; this tab is where it is reviewed and pushed. The
 Cursor setup is checked as every run starts; there is no button for it.
 What this section says about running Cursor, its log and the follow-up
@@ -1239,7 +1238,7 @@ does every such case in one run. Cursor is handed only those cases. When
 a change is already waiting, the run adds to it -- the cases written
 before stay -- so a job has one change however many runs it took. Each
 row then says what its last run came to (written, does not compile,
-rejected). **Ask Me to change it** sits beside, for anything the
+rejected). **Ask AI Agent to change it** sits beside, for anything the
 cases do not say.
 
 **The repository, and where the branch goes.** The strip at the top of
@@ -1262,7 +1261,7 @@ the way. When another tracked file is changed the strip names it and
 the button says so: commit, stash or discard that file first.
 
 **Asking Cursor to change what it wrote.** Under the review controls,
-*Ask Me to change it* takes your words -- "use the member's email
+*Ask AI Agent to change it* takes your words -- "use the member's email
 from the CSV instead of a fixed one" -- and runs Cursor again on the
 same job: same scope, same paths, with your ask and the diff so far in
 front of it. The result is verified and waits for your review again as
@@ -1847,7 +1846,7 @@ cases stand. Under the design on the Automate Test Case tab, and under
 the cases on the Manual tests tab, each case has **Approve** (ticked:
 approved; unticked after a tick: rejected), **Automate** (design only:
 Cursor should write this one), a **title** that can be corrected in
-place, and a **note**. *Approve all* and *Reject all* do the lot. Each
+place, and a **note**. *Approve* and *Reject* above the table do the lot. Each
 decision is saved as it is made, in the job's `case-review.json`.
 
 What the decision does:
@@ -2125,7 +2124,7 @@ what only Windows or only macOS has is guarded.
   while a change waits is added to it.
 - It runs only while nothing else runs, and nothing else starts until it has
   finished: every other command is started by, or reads, the files it
-  changes. A workbench job runs only Ask Me, Review, Approve and Discard.
+  changes. A workbench job runs only Ask AI Agent, Review, Approve and Discard.
 - It never changes `policy.json`, `mock.json` or `check_workbench.py` (the
   checker it is verified by). A change to the files that decide what later
   runs may do -- jobs.py, loop.py, workflow.py, the tests -- is named at
@@ -2174,7 +2173,7 @@ python tools/agent/loop.py discard --job workbench-<date>-<time>
 
 Every box whose words go to Cursor takes a pasted image as well: Ctrl+V a
 screenshot into Refine with Cursor, the design notes, the manual tests'
-notes, Ask Me, the Migration tab's request, the Run tests tab's Ask Me
+notes, Ask AI Agent, the Migration tab's request, the Run tests tab's Ask AI Agent
 to fix the failures, or Change the workbench. Up
 to 4 images of 5 MB each (PNG, JPEG, GIF, WebP -- read from the bytes, not
 the name). They go with that request's first message to Cursor, as images
@@ -2184,23 +2183,73 @@ starts and deletes their files at once (`paste.py`, under
 start removes them. A design asked with images is never answered from the
 kept replies, which never saw them.
 
+**Xray is updated only when asked.** A run on the Run tests tab leaves
+Xray alone unless *Update the Test Execution in Xray* is ticked beside it
+(the run passes `-Dxray.enabled=false`, which beats every configuration
+file); ticked, the suite's listener updates the Test Execution when Xray
+is switched on in the Settings tab. The Commit and push tab's run never
+updates Xray itself: **Publish to Xray** does.
+
 ### The workflow, stage by stage
 
 The strip at the top of the Automate Test Case tab is the job's workflow:
 
     Read it -> Generate -> Review -> Finalize -> Xray tests -> Automate
-    -> Regression -> Run on stg -> Push -> Publish
+    -> Execution -> Publish -> Push
 
 Each stage is a link to where it is done, and the server holds the gates
 (`workflow.py`, `jobs.workflow_gate`), whatever the page does:
 
 | Stage | Done when | It unlocks |
 |---|---|---|
-| Finalize | **Finalize the cases** (under the review): the approved cases -- titles, steps, suites, Automate -- frozen. An edit afterwards reopens it. | For a job with designed cases: Create in Xray, Automate, Ask Me, a follow-up, Run the tests and Approve |
-| Regression | **Confirm the regression cases** (Commit and push tab): the automated cases in the `regression` group, for the change as it is now -- a follow-up or another Automate needs it again. Publish adds exactly these to the regression Test Set / Plan. | Run the tests |
-| Run on stg | **Run the tests**, on the environment chosen beside it (the Settings tab's by default): every test passed (a row switched off in its sheet aside; an attempt retried to a pass is not a skip). It can be run again after the change is approved or pushed; only a run while it waits for review opens the push. **Compile** beside it compiles the project and lists the errors in the change's own files first. | Approve & push -- for a run on the Settings tab's environment, of exactly these files |
-| Push | **Approve & push** to `feature_<story key>` (`feature_<job>` without one; `feature_<key>_<job>` when the story's branch exists already). | Publish to Xray |
+| Finalize | **Finalize the cases** (under the review): the approved cases -- titles, steps, suites, Automate -- frozen. An edit afterwards reopens it. | For a job with designed cases: Create in Xray, Automate, Ask AI Agent, a follow-up, Run the tests and Approve |
+| Execution | **Confirm the regression cases** (Commit and push tab: the automated cases in the `regression` group, for the change as it is now -- a follow-up or another Automate needs it again; Publish adds exactly these to the regression Test Set / Plan), then **Run the tests** beside it, on the environment chosen there (the Settings tab's by default): every test passed (a row switched off in its sheet aside; an attempt retried to a pass is not a skip). It can be run again after the change is approved or pushed; only a run while it waits for review opens the push. The run leaves Xray alone -- Publish does that. **Compile** beside it compiles the project and lists the errors in the change's own files first. | Approve & push -- for a run on the Settings tab's environment, of exactly these files |
 | Publish | **Publish to Xray**: any run, passed or not -- a failure is a result Xray should hold too (the push still needs a green run; publishing does not). A new Test Execution with the run's results (publishing the same run again as a new one is refused), or, with a key in the box beside the button, the results put into that **existing** Test Execution (its summary, description and plan left as they are; it must be a Test Execution). Once the change is pushed, the confirmed regression cases are added to the regression Test Set / Plan (Settings tab); before that they are not -- publish again after the push. If adding them fails, the execution is still on record. | -- |
+| Push | **Approve & push** to `feature_<story key>` (`feature_<job>` without one; `feature_<key>_<job>` when the story's branch exists already). | Publish to Xray |
+
+### The issue branch and its merge request (GitLab)
+
+The team works in issue branches. Before **Automate**, the Automate Test
+Case tab's **Create the issue branch** (`issuebranch.py start`):
+
+1. makes `issue/<story key>` -- or `feature/<story key>`, chosen beside
+   the button -- from `develop` **on GitLab**, or takes it when it is
+   there already (the story's jobs collect in one branch);
+2. fetches it and switches this working tree to it -- on a clean tree
+   only, with no job running (as **Switch to it**). Refused here, the
+   branch on GitLab still stands and the change is still pushed to it.
+
+**Approve & push** then commits the job's change on top of
+`origin/issue/<key>` and pushes to it, not to a `feature_...` branch of
+its own. It refuses when the local branch has commits GitLab does not
+have, or is checked out and behind GitLab (pull it first).
+
+**Raise MR to develop** on the Commit and push tab (`issuebranch.py mr`)
+opens once the change is pushed to the issue branch with every test
+passing. Title: the story key and summary; description: the run and the
+files. An open merge request for the same branches is shown, not made
+again.
+
+Settings tab, **Test repository (GitLab)**: its address, the project's
+path (`group/project`), the branch to start from and merge into
+(`develop`), and a personal access token with **api** scope. Kept in
+`<env>.testrepo_config` of the project's configuration file (gitignored);
+the token is sent to that address only.
+
+### Writing a story: the API story template
+
+Tests fail most often because the code did not capture a value from a
+response, or left a template's placeholder unfilled. Two things answer
+that:
+
+* **The API story template** (`ui/api-story-template.md`, linked beside
+  the Jira story; *Put it in the paste box* fills the box with it) asks
+  the product owner or tester for each value's source and what to capture
+  from each response.
+* **Every design asks** under *Open questions* where each path parameter,
+  captured value and template placeholder comes from, when its cases do
+  not say (`design.dataflow_questions`, at most 12). Answered, they go to
+  Automate and to later designs.
 
 ### Settings
 

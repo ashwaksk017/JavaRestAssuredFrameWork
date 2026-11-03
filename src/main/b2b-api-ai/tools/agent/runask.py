@@ -8,7 +8,7 @@ and writes the request the person reads and edits before it is sent:
 * **The job's own tests** -- the run was the job's suite
   (`Suites/jira/<job>.xml`), or every failing class is in that suite or
   in the change waiting for the job's review. The request goes where the
-  Automate tab's "Ask Me" sends a change: the job's
+  Automate tab's "Ask AI Agent" sends a change: the job's
   `agent-followup.txt`, run by `loop.py followup` (cmd_ask), which works
   on the waiting change or starts one.
 * **A converted suite's tests** -- every failing class is under
@@ -341,7 +341,7 @@ def classify_compile(root: str, run_job: str, result: dict, errors: list) -> dic
                                  + (f" and in job {job}'s own files" if mine else "")
                                  + (f"; job {job}'s change failed its check on them, so the change is "
                                     f"what broke them" if broke else "")
-                                 + f". The request goes to job {job}'s Ask Me: AI Agent changes what the job "
+                                 + f". The request goes to job {job}'s Ask AI Agent: AI Agent changes what the job "
                                    f"changed so they compile again, and leaves the generated files alone."))
             before = (f" They failed before job {job}'s change too: its check compiled the tree before "
                       f"and after, so the change is not the cause. Until they compile, nothing on this "
@@ -364,7 +364,7 @@ def classify_compile(root: str, run_job: str, result: dict, errors: list) -> dic
                              + (", ..." if len(owned) > 1 else "") + "), changing only that suite's converted "
                              f"files, and the fix waits for review only once the suite compiles. A suite's "
                              f"fix is lost on its next convert: when the converter is the cause, fix it on the "
-                             f"Migration tab (Ask Me, scope converter)"
+                             f"Migration tab (Ask AI Agent, scope converter)"
                              + (f". {len(shared)} other file(s) with errors are not a suite's "
                                 f"({', '.join(f.rsplit('/', 1)[-1] for f in shared[:4])}): a person fixes "
                                 f"those" if shared else "")))
@@ -372,13 +372,13 @@ def classify_compile(root: str, run_job: str, result: dict, errors: list) -> dic
             f"the errors are in files the converter writes ({where}); an edit there is lost on the next "
             f"convert.{before} Convert the suite again on the Migration from ReadyAPI tab -- a generated "
             f"wrapper left from an older convert is removed on the next Compile by itself. If the errors "
-            f"stay, the converter needs the fix: the Migration tab's Ask Me, scope converter"))
+            f"stay, the converter needs the fix: the Migration tab's Ask AI Agent, scope converter"))
     for job in candidates:
         own = job_files(root, job)
         if all(f in own for f in files):
             where = sorted({own[f] for f in files})
             return dict(base, kind="job", job=job, blocked=blocked(root, job), why=(
-                f"the errors are in job {job}'s own files ({'; '.join(where)}). As Ask Me on the Automate "
+                f"the errors are in job {job}'s own files ({'; '.join(where)}). As Ask AI Agent on the Automate "
                 f"Test Case tab does, the request goes to that job: AI Agent changes the change waiting for "
                 f"its review, or starts one when none is waiting; then it is checked and waits for your "
                 f"review on the Commit and push tab."))
@@ -453,7 +453,7 @@ def classify(root: str, run_job: str, result: dict) -> dict:
         if all(c in own for c in classes):
             where = sorted({own[c] for c in classes})
             return dict(base, kind="job", job=job, blocked=blocked(root, job), why=(
-                f"the failing tests are job {job}'s own ({'; '.join(where)}). As Ask Me on the Automate "
+                f"the failing tests are job {job}'s own ({'; '.join(where)}). As Ask AI Agent on the Automate "
                 f"Test Case tab does, the request goes to that job: AI Agent changes the change waiting for "
                 f"its review, or starts one when none is waiting; then it is checked and waits for your "
                 f"review on the Commit and push tab."))

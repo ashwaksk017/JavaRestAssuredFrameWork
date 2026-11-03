@@ -195,7 +195,7 @@ def run(job: str, root: str = "", use_cursor: bool = True, runner=None, generate
         say("    " + e[:300])
     if shared:
         say("WARN errors in shared framework files are not a converted suite's to fix: "
-            + ", ".join(shared[:8]) + " -- a person fixes those (or Ask Me, scope "
+            + ", ".join(shared[:8]) + " -- a person fixes those (or Ask AI Agent, scope "
             "\"the converter\", on the Migration tab)")
     if converted:
         # Only what this convert wrote goes to AI Agent; the project still
@@ -205,7 +205,7 @@ def run(job: str, root: str = "", use_cursor: bool = True, runner=None, generate
         result["others"] = others
         if others:
             say(f"WARN suite(s) {', '.join(sorted(others))} do not compile either. This convert did not "
-                "write them, so AI Agent is not asked about them: convert them again, or use Ask Me "
+                "write them, so AI Agent is not asked about them: convert them again, or use Ask AI Agent "
                 "on the Migration tab with the suite. Nothing runs until the whole project compiles")
         for suite in sorted(set(converted) - set(by_suite)):
             say(f" ok  suite {suite} has no errors of its own"
@@ -215,7 +215,7 @@ def run(job: str, root: str = "", use_cursor: bool = True, runner=None, generate
         return 1
     if not use_cursor:
         say("NOTE AI Agent is off for this convert: nothing was fixed. Turn AI Agent assist on, "
-            "or use Ask Me on the Migration tab with the suite.")
+            "or use Ask AI Agent on the Migration tab with the suite.")
         result["suites"] = {s: {"state": "not fixed (AI Agent off)", "files": f} for s, f in by_suite.items()}
         write_result(job_dir, result)
         return 1

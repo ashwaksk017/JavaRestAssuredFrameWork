@@ -9,6 +9,9 @@ readers already look:
     <env>.xray.regressionKey      (the Test Set or Test Plan regression cases join)
     <env>.devcode_config.base_urls / .token / .hosts
                                   (the developer's repository: devcode.py)
+    <env>.testrepo_config.base_url / .project / .target / .token
+                                  (the test repository on GitLab: the issue
+                                  branch and its merge request, issuebranch.py)
 
 A token is never read back: the page is told "set, N characters" or "not
 set". A token field left empty leaves the token as it is; `clear` removes
@@ -204,6 +207,7 @@ def status(root: str = "", project: str = "") -> dict:
     xray = block.get("xray") if isinstance(block.get("xray"), dict) else {}
     dev = block.get("devcode_config") if isinstance(block.get("devcode_config"), dict) else {}
     dev_hosts = dev.get("hosts") if isinstance(dev.get("hosts"), dict) else {}
+    trepo = block.get("testrepo_config") if isinstance(block.get("testrepo_config"), dict) else {}
     publish = jira.get("publish") if isinstance(jira.get("publish"), dict) else {}
     wb = workbench_settings(root)
     sm = _suitemap()
@@ -226,6 +230,8 @@ def status(root: str = "", project: str = "") -> dict:
         "confluence": {"base_urls": [str(u) for u in conf.get("base_urls") or []],
                        "pat": _token_state(conf.get("pat"))},
         "push_guard": _push_guard_read(root),
+        "testrepo": {"base_url": str(trepo.get("base_url") or ""), "project": str(trepo.get("project") or ""),
+                     "target": str(trepo.get("target") or "develop"), "token": _token_state(trepo.get("token"))},
         "devcode": {"base_urls": [str(u) for u in dev.get("base_urls") or []],
                     "token": _token_state(dev.get("token")),
                     "hosts": "\n".join(f"{h} {v.get('kind', '')}" + (f" {v['api']}" if v.get("api") else "")
@@ -342,8 +348,9 @@ def save(changes: dict, root: str = "", busy=None, project: str = "") -> dict:
     conf = block.setdefault("confluence_config", {})
     xray = block.setdefault("xray", {})
     dev = block.setdefault("devcode_config", {})
+    trepo = block.setdefault("testrepo_config", {})
     for sec, name in ((jira, "jira_config"), (conf, "confluence_config"), (xray, "xray"),
-                      (dev, "devcode_config")):
+                      (dev, "devcode_config"), (trepo, "testrepo_config")):
         if not isinstance(sec, dict):
             raise ValueError(f"`{env}.{name}` in {CONFIG_REL} is not an object")
     said = []
@@ -388,6 +395,41 @@ def save(changes: dict, root: str = "", busy=None, project: str = "") -> dict:
         else:
             dev.pop("hosts", None)
         said.append("repository host kinds")
+    # The test repository on GitLab (issuebranch.py): where the issue branch
+    # is made and its merge request raised. The token goes to this address only.
+    if "testrepo_base_url" in changes:
+        u = _urls(changes["testrepo_base_url"])
+        if len(u) > 1:
+            raise ValueError("the test repository has one address")
+        if u:
+            trepo["base_url"] = u[0]
+        else:
+            trepo.pop("base_url", None)
+        said.append("test repository address")
+    if "testrepo_project" in changes:
+        p = str(changes["testrepo_project"] or "").strip().strip("/")
+        if p and not re.match(r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+$|^[0-9]+$", p):
+            raise ValueError(f"{p!r} is not a GitLab project path (group/project) or id")
+        if p:
+            trepo["project"] = p
+        else:
+            trepo.pop("project", None)
+        said.append("test repository project")
+    if "testrepo_target" in changes:
+        t = str(changes["testrepo_target"] or "").strip()
+        if t and not re.match(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$", t):
+            raise ValueError(f"{t!r} is not a branch name")
+        if t and t != "develop":
+            trepo["target"] = t
+        else:
+            trepo.pop("target", None)
+        said.append("merge request target")
+    if changes.get("testrepo_token_clear"):
+        trepo.pop("token", None)
+        said.append("test repository token removed")
+    elif str(changes.get("testrepo_token") or "").strip():
+        trepo["token"] = _token(changes["testrepo_token"], "test repository")
+        said.append("test repository token")
     if "xray_base_url" in changes:
         u = _urls(changes["xray_base_url"])
         if len(u) > 1:
@@ -534,7 +576,7 @@ def save(changes: dict, root: str = "", busy=None, project: str = "") -> dict:
                       "always": always, "rules": rules}
         said.append("suite mapping")
     # The sections made above only to be written into: dropped when left empty
-    for name in ("jira_config", "confluence_config", "xray", "devcode_config"):
+    for name in ("jira_config", "confluence_config", "xray", "devcode_config", "testrepo_config"):
         if name not in had and block.get(name) == {}:
             block.pop(name)
     if not had_block and block == {}:
@@ -585,7 +627,9 @@ _COVERED = {("jira_config", "base_urls"), ("jira_config", "pat"),
             ("xray", "regressionKey"), ("xray", "enabled"),
             ("jira_config", "publish", "create_tests"), ("jira_config", "publish", "projects"),
             ("jira_config", "publish", "test_issue_type"), ("jira_config", "publish", "test_link_type"),
-            ("devcode_config", "base_urls"), ("devcode_config", "token"), ("devcode_config", "hosts")}
+            ("devcode_config", "base_urls"), ("devcode_config", "token"), ("devcode_config", "hosts"),
+            ("testrepo_config", "base_url"), ("testrepo_config", "project"), ("testrepo_config", "target"),
+            ("testrepo_config", "token")}
 # By the key's own name: `token_end_point`, `token_route`, `token_service`
 # and `testExecutionKey` are not secrets; `token`, `access_token`, `pat`,
 # `client_id` and `ui_username` are (as projectconfig.SECRET_HINTS: a user

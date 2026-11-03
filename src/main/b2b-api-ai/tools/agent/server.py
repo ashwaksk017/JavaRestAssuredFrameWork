@@ -204,6 +204,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._file("app.js", "text/javascript; charset=utf-8")
             if u.path == "/app.css":
                 return self._file("app.css", "text/css; charset=utf-8")
+            if u.path == "/api-story-template.md":
+                # For product owners and testers writing a story (2026-11-02).
+                return self._file("api-story-template.md", "text/markdown; charset=utf-8")
             if u.path == "/api/allure":
                 port = REPORT_PORT[0]
                 return self._json({"ready": jobs.buildsteps.report_ready(ROOT), "port": port,
@@ -433,7 +436,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(jobs.set_project(body.get("job", ""), body.get("project", "")))
             if u.path == "/api/run-ask":
                 # "Fix Failures" on the Run tests tab: the
-                # job's own tests to its Ask Me, a converted suite's to a
+                # job's own tests to its Ask AI Agent, a converted suite's to a
                 # fix brief in a new job (jobs.run_ask). The images go to the
                 # job the request goes to, so they are saved there, not here.
                 return self._json(jobs.run_ask(body.get("job", ""), body.get("text", ""),

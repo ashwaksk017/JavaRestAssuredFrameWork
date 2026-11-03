@@ -1086,7 +1086,7 @@ def head_forbidden(base_commit: str, base_branch: str, commit_now: str, branch_n
 
 
 def unfinished_run_refusal(prior: dict, job_name: str) -> str:
-    """Why Ask Me / generate cannot start while the last run did not finish."""
+    """Why Ask AI Agent / generate cannot start while the last run did not finish."""
     if (prior.get("scope") or "") == "workbench":
         return (f"a change to the workbench did not finish (job {job_name}): "
                 f"Discard it on the Commit and push tab first")
@@ -2724,7 +2724,7 @@ def _abstract(path: str) -> bool:
     return bool(re.search(r"\babstract\s+class\b", _read(path, 200_000)))
 
 
-def write_job_suite(root: str, job_dir: str, scope: dict) -> str:
+def write_job_suite(root: str, job_dir: str, scope: dict, before: dict = None) -> str:
     """A TestNG suite of the test classes this job wrote, so that the
     story's tests run on their own:
 
@@ -2740,9 +2740,15 @@ def write_job_suite(root: str, job_dir: str, scope: dict) -> str:
     job = os.path.basename(job_dir.rstrip("/\\"))
     rel = JOB_SUITES + job + ".xml"
     path = os.path.join(root, rel.replace("/", os.sep))
+    # THIS job's test classes only: those whose bytes are not what they were
+    # before its first run (`before`). An earlier job's pushed tests stay in
+    # the working tree uncommitted (Approve does not switch the checkout);
+    # taken as "dirty", they were run and published with this job's
+    # (seen 2026-11-02: one case automated, two tests in the Test Execution).
     found = {p[len("src/test/java/"):-len(".java")].replace("/", ".")
              for p, h in dirty_paths(root).items()
              if h is not None and p.startswith(_JIRA_TESTS) and p.endswith("Test.java")
+             and (before is None or before.get(p, "<absent>") != h)
              and not _abstract(os.path.join(root, p.replace("/", os.sep)))}
     # The classes an earlier version of this suite named, if still there:
     # a later run must not drop the tests a pushed run wrote.
@@ -3919,7 +3925,7 @@ def cmd_automate(job_dir: str, root: str, policy: dict, ids, agent=None, verifie
                  past_stops: bool = False) -> int:
     """Cursor writes the tests of some of the approved cases (one row's
     Automate, or the ticked ones). All of a job's runs make ONE change: a
-    run when a change is already waiting adds to it, as Ask Me to
+    run when a change is already waiting adds to it, as Ask AI Agent to
     change it does; otherwise it starts the change. What each case's run
     came to is kept for the page (automated-cases.json)."""
     global _AUTOMATE_ONLY
@@ -4011,13 +4017,13 @@ def cmd_automate(job_dir: str, root: str, policy: dict, ids, agent=None, verifie
 FOLLOWUP_FILE = "agent-followup.txt"
 MUSTFIX_FILE = "agent-mustfix.json"     # {"files": [...]}: a compile fix's files (jobs.run_ask)
 MAX_FOLLOWUP = 20000
-# What a person typed in "Ask Me" when no change was waiting: the request
+# What a person typed in "Ask AI Agent" when no change was waiting: the request
 # of a new change, said in the prompt (build_prompt). Kept in the process.
 _REQUEST = {"text": ""}
 
 ASK_PLAN = """# Plan: as the person asks
 
-Written by Ask Me: no plan was made for this job. The request is the
+Written by Ask AI Agent: no plan was made for this job. The request is the
 person's own words, under THE PERSON ASKS below. Do what it asks within
 the paths you may write; if it is a question, answer it in your reply and
 change nothing.
@@ -4025,7 +4031,7 @@ change nothing.
 
 
 def cmd_ask(job_dir: str, root: str, policy: dict, agent=None, verifier=None) -> int:
-    """"Ask Me" on the Automate Test Case tab, whatever the job's state.
+    """"Ask AI Agent" on the Automate Test Case tab, whatever the job's state.
     A change waiting for review: Cursor changes it (cmd_followup). None:
     the request starts a change of its own. A question is answered: when
     Cursor changes no file, its answer is said, not taken for a failure."""
@@ -4075,7 +4081,7 @@ def cmd_followup(job_dir: str, root: str, policy: dict, agent=None, verifier=Non
         # Sent from a failed compile (the Run tests tab): the files with
         # errors. The baseline is taken from the tree WITH the change in it,
         # so without this they were "already broken before" and a fix that
-        # fixed nothing passed its check. Read once: a later Ask Me is not one.
+        # fixed nothing passed its check. Read once: a later Ask AI Agent is not one.
         path = os.path.join(job_dir, MUSTFIX_FILE)
         try:
             with io.open(path, encoding="utf-8") as fh:
@@ -4673,7 +4679,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
         else:
             say(" .. AI Agent finished; checking what it changed")
 
-        suite_rel = write_job_suite(root, job_dir, scope)
+        suite_rel = write_job_suite(root, job_dir, scope, before)
         if suite_rel:
             say(f" .. the suite of this job's tests: {suite_rel}")
             clog.write(f"suite written: {suite_rel}")
@@ -4864,7 +4870,7 @@ def _generate(job_dir: str, root: str, policy: dict, scope_name: str,
                         clog.write(f"  audit {i} ({audited[i]['file']}): {len(audited[i]['lines'])} line(s)")
                 if missing:
                     say(f"WARN no Audit comment for {', '.join(missing)}: the Description shows "
-                        f"only the plan. Ask Me: add the Audit comment to the test of "
+                        f"only the plan. Ask AI Agent: add the Audit comment to the test of "
                         f"{', '.join(missing)}.")
                 if unknown:
                     say(f"WARN the Audit comment of {', '.join(unknown)} names a method defined "
@@ -5333,7 +5339,7 @@ def case_check_refusal(job_dir: str) -> str:
     if high:
         return (f"the review found {len(high)} test(s) that do not do what their case says: "
                 + "; ".join(f"{f.get('file', '')}: {f.get('title', '')}" for f in high[:3])
-                + ". Ask Me to fix them (or correct the case's steps), then review again.")
+                + ". Ask AI Agent to fix them (or correct the case's steps), then review again.")
     return ""
 
 
@@ -5397,7 +5403,7 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
             return 1
         if not ran.get("ok"):
             say(f"FAIL the last run, on {ran.get('env')}, did not pass: {ran.get('why')}. Fix it "
-                f"(Ask Me) and run the tests again.")
+                f"(Ask AI Agent) and run the tests again.")
             return 1
         now_hashes = {p: _sha(os.path.join(root, p)) for p in paths}
         if now_hashes != (ran.get("hashes") or {}):
@@ -5450,6 +5456,14 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
             f"{entry} and will be put back after every convert of `{suite}`.")
         return 0
 
+    # The job's issue branch (issuebranch.py, made on GitLab before
+    # Automate): the commit goes on top of origin/<it> and is pushed to it --
+    # the story's jobs collect there, and its merge request goes to develop.
+    # The page always sends Build on (the branch checked out), so only a
+    # branch the person typed overrides the issue branch.
+    issue = _load("loop_issuebranch", os.path.join(HERE, "issuebranch.py")).issue_branch(job_dir)
+    if issue and not (branch_wanted or "").strip():
+        branch_wanted = base_wanted = issue
     # feature_<story key>; a job without a story key: feature_<job>.
     branch = policy["branch_prefix"] + (story_key_of(job_dir) or job)
     if not (branch_wanted or "").strip() and story_key_of(job_dir):
@@ -5469,7 +5483,7 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
         if not _BRANCH_NAME_RX.match(branch):
             say(f"FAIL {branch!r} is not a branch name this will push to.")
             return 1
-        if not branch.startswith(policy["branch_prefix"]):
+        if not branch.startswith(policy["branch_prefix"]) and not (issue and branch == issue):
             say(f"FAIL the branch must start with `{policy['branch_prefix']}`: that is what "
                 f"marks it as the agent's, and keeps it off anyone's main line.")
             return 1
@@ -5491,8 +5505,19 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
     nohooks = os.path.join(job_dir, "no-hooks")
     os.makedirs(nohooks, exist_ok=True)
     ref = f"refs/heads/{branch}"
+    adding = bool(issue) and branch == issue and base == issue
+    if adding:
+        # Built on what GitLab has NOW: a teammate's push since the last
+        # fetch would otherwise make this push a rejected non-fast-forward.
+        rc, out = git(root, "fetch", "--no-tags", remote,
+                      f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}")
+        if rc != 0:
+            say(f"FAIL could not fetch {branch} from {remote}: {_URL_RX.sub('<the remote>', out.strip())[-300:]}")
+            return 1
 
-    if review.get("state") == "push-failed" and review.get("branch") == branch:
+    if review.get("state") == "push-failed" and review.get("branch") == branch and not adding:
+        # (Adding to the issue branch is built again instead: the commit
+        # was made on a tip that may have moved; nothing local was moved.)
         # The commit already exists on the local branch; only the push is owed.
         rc, out = git(root, "-c", f"core.hooksPath={nohooks}", "push", "--no-verify",
                       remote, f"{ref}:{ref}")
@@ -5527,7 +5552,28 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
             return 1
         say(f" .. `{base}` is {ahead} commit(s) ahead of {remote}; the job's "
             f"branch is built on {remote}/{base} and does NOT include them")
-    if git(root, "rev-parse", "--verify", "-q", ref)[0] == 0:
+    old_local, checked_out = "", False
+    if adding:
+        # Adding to the issue branch: the commit goes on top of what GitLab
+        # has. The local branch, when there is one, must hold nothing GitLab
+        # does not (it would be left behind), and, checked out, must BE
+        # GitLab's: moving a checked-out branch forward over others' commits
+        # would show their changes as undone in the working tree.
+        rc, here = git(root, "rev-parse", "--verify", "-q", ref)
+        if rc == 0:
+            old_local = here.strip()
+            _, up_sha = git(root, "rev-parse", upstream)
+            if git(root, "merge-base", "--is-ancestor", old_local, up_sha.strip())[0] != 0:
+                say(f"FAIL the local {branch} has commits that are not on {remote}: push or drop them "
+                    f"first, then approve again.")
+                return 1
+            _, current = git(root, "symbolic-ref", "-q", "HEAD")
+            checked_out = current.strip() == ref
+            if checked_out and old_local != up_sha.strip():
+                say(f"FAIL {branch} is checked out here and is behind {remote}/{branch}: pull it "
+                    f"(git pull --ff-only), then approve again.")
+                return 1
+    elif git(root, "rev-parse", "--verify", "-q", ref)[0] == 0:
         say(f"FAIL branch {branch} already exists. If it is left from an "
             f"earlier job, delete it or use a new job id.")
         return 1
@@ -5606,13 +5652,40 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
     say(f" ok  secret scan clean ({len(known)} configured value(s) checked); "
         f"{len(names.split())} file(s) in the commit")
 
-    rc, out = git(root, "update-ref", ref, sha)
+    if adding:
+        # Adding to the issue branch: pushed FIRST, the local branch moved
+        # only once GitLab took it. A rejected push (someone pushed meanwhile)
+        # leaves nothing here to undo: approve again builds on the new tip.
+        rc, out = git(root, "-c", f"core.hooksPath={nohooks}", "push", "--no-verify",
+                      remote, f"{sha}:{ref}")
+        if rc != 0:
+            said = _URL_RX.sub("<the remote>", out.strip())[-400:]
+            write_review(job_dir, dict(review, state="push-failed", branch=branch, reason=said))
+            clog.write(f"push FAILED to {branch}; nothing moved here")
+            say(f"FAIL push to {branch} failed; nothing was changed here -- approve again to build "
+                f"on what {remote} has now:\n{said}")
+            return 1
+    # Adding to the issue branch: moved only from the value read above (or
+    # made, when there was none here).
+    rc, out = git(root, "update-ref", ref, sha, *([old_local] if adding and old_local else []))
     if rc != 0:
-        say(f"FAIL could not create branch {branch}: {out.strip()[:200]}")
-        return 1
+        if adding:
+            say(f"WARN pushed {sha[:8]} to {remote}/{branch}, but the local {branch} could not be moved "
+                f"({out.strip()[:200]}): pull it (git pull --ff-only)")
+        else:
+            say(f"FAIL could not create branch {branch}: {out.strip()[:200]}")
+            return 1
+    elif adding and checked_out:
+        # The checked-out branch moved under the index: read the index from
+        # the new commit (no file of the working tree is touched -- the job's
+        # files there ARE the commit's), or git shows them deleted and untracked.
+        rc, out = git(root, "reset", "-q", "--mixed", "HEAD")
+        if rc != 0:
+            say(f" .. NOTE the index could not be re-read ({out.strip()[:200]}): run `git reset` "
+                f"once; the commit and the files are fine")
     say(f" ok  committed {sha[:8]} on {branch} (based on {remote}/{base})")
-    rc, out = git(root, "-c", f"core.hooksPath={nohooks}", "push", "--no-verify",
-                  remote, f"{ref}:{ref}")
+    rc, out = (0, "") if adding else git(root, "-c", f"core.hooksPath={nohooks}", "push", "--no-verify",
+                                         remote, f"{ref}:{ref}")
     if rc != 0:
         said = _URL_RX.sub("<the remote>", out.strip())[-400:]
         write_review(job_dir, dict(review, state="push-failed", branch=branch,
@@ -5624,10 +5697,14 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
     write_review(job_dir, dict(review, state="pushed", branch=branch,
                                commit=sha, pushed=_now()))
     clog.write(f"APPROVED and PUSHED {branch} ({sha[:8]})")
-    say(f"PUSHED {branch} to {remote}. Open a pull request from it; nothing "
-        f"was pushed to {base}. Your checkout was not switched, so the files "
-        f"are still in your working tree as uncommitted changes -- they come "
-        f"back through the pull request.")
+    if adding:
+        say(f"PUSHED {branch} to {remote}, on top of what it held. Raise the merge request to "
+            f"develop on this tab once the run is green.")
+    else:
+        say(f"PUSHED {branch} to {remote}. Open a pull request from it; nothing "
+            f"was pushed to {base}. Your checkout was not switched, so the files "
+            f"are still in your working tree as uncommitted changes -- they come "
+            f"back through the pull request.")
     if review.get("scope") == "workbench":
         say("RESTART the workbench (Stop, then Start) to run the changed server; refresh "
             "the page for the changed page.")
@@ -5740,7 +5817,11 @@ def cmd_run(job_dir: str, root: str, policy: dict, env: str = "", runner=None) -
     log_flag = runlog.log_level_flag(wb)
     args = ["test", f"-DsuiteXmlFile={suite}", f"-Denv={env}", "-DfailIfNoTests=false", log_flag]
     args.append(f"-Dconfig.project={project}")         # always: Config.java loads that project's file
-    say(f" .. framework logs go to target/b2b-full-run.log ({log_flag})")
+    # Xray is updated by Publish to Xray on this tab, never by the run
+    # itself (2026-11-02): -D beats xray.enabled in every configuration file.
+    args.append("-Dxray.enabled=false")
+    say(f" .. framework logs go to target/b2b-full-run.log ({log_flag}); Xray is not updated by the run "
+        "-- Publish to Xray does that")
     run_started = time.time()
     rc, text, _how = maven(args)
     if rc == 127 and runner is None:

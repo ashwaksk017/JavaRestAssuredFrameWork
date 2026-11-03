@@ -73,7 +73,7 @@ def _loop_module():
     return mod
 
 
-# Question or change, for an "Ask Me" message that does not say (ask.py).
+# Question or change, for an "Ask AI Agent" message that does not say (ask.py).
 _aspec = importlib.util.spec_from_file_location("jobs_ask", os.path.join(HERE, "ask.py"))
 ask = importlib.util.module_from_spec(_aspec)
 _aspec.loader.exec_module(ask)
@@ -411,6 +411,19 @@ RUNNABLES = {
     # The developer's change read on its own (the Developer's change tab's
     # "Read the change"): devchange.json, which Design the tests takes in
     # and the check above reuses while the branch has not moved.
+    # The issue branch on GitLab (issuebranch.py): made from develop before
+    # Automate, then checked out here; the merge request to develop after a
+    # green run of the pushed change. The prefix is one of two words.
+    "issue-branch": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "issuebranch.py"), "start"],
+        "label": "Create the job's issue branch on GitLab from develop, then switch to it here",
+        "options": {"--job": "text", "--prefix": "text"},
+    },
+    "issue-mr": {
+        "argv": [PY, "-B", os.path.join("tools", "agent", "issuebranch.py"), "mr"],
+        "label": "Raise the merge request from the job's issue branch to develop",
+        "options": {"--job": "text"},
+    },
     "devcode-read": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "devcode.py"), "--read"],
         "label": "Read the developer's change (repository, branch, the story's keys)",
@@ -440,7 +453,10 @@ RUNNABLES = {
                     # The project chosen on the tab (b2b, goal): its file is read.
                     "--project": "text",
                     # Only the tests Fix Failures fixed (jobs.rerun_after_fix).
-                    "--failed-only": "flag"},
+                    "--failed-only": "flag",
+                    # Ticked on the tab: the suite's listener updates Xray.
+                    # Kept in the run's options, so a re-run does the same.
+                    "--xray": "flag"},
     },
     # Tab 3. Fixed sub-commands of one script; the page chooses which,
     # names the job, and for `generate` picks a scope the script itself
@@ -543,7 +559,9 @@ RUNNABLES = {
 EXCLUSIVE = {"convert", "convert-fix", "agent-generate", "agent-followup", "agent-automate", "agent-run-tests", "agent-approve", "agent-discard", "agent-take-merged",
              "agent-reapply", "verify-all", "mvn-compile", "mvn-test",
              # Writes a committed file and reads _audit/: never beside a run or a convert.
-             "flow-catalog"}
+             "flow-catalog",
+             # Switches the working tree to the issue branch: never under a run or a convert.
+             "issue-branch"}
 
 def suite_project(suite_rel: str) -> str:
     """The project of a converted suite file (Suites/<Suite>_*.xml): GOAL when
@@ -1212,7 +1230,7 @@ def workflow_gate(job: str, runnable: str, options: dict) -> str:
     if is_workbench_job(job):
         # A workbench job makes a change to the workbench, and nothing else.
         if runnable not in WORKBENCH_RUNNABLES:
-            return ("this is a job for changing the workbench itself: only Ask Me, Review, "
+            return ("this is a job for changing the workbench itself: only Ask AI Agent, Review, "
                     "Approve and Discard run in it -- use a story's job for the workflow")
         return ""
     out = job_dir(job)
@@ -1220,7 +1238,7 @@ def workflow_gate(job: str, runnable: str, options: dict) -> str:
     designed = bool(_read_json(os.path.join(out, "design.json")).get("test_cases"))
     # A job with designed cases: no code is written, run or pushed for it
     # until its cases are final -- whichever button started it (Automate,
-    # Ask Me, a follow-up, Run, Approve).
+    # Ask AI Agent, a follow-up, Run, Approve).
     finalize_first = runnable in ("agent-automate", "agent-followup", "agent-run-tests", "agent-approve") \
         or (runnable == "agent-generate" and (options.get("--scope") or "new-test") == "new-test") \
         or (runnable == "xray-create" and options.get("--what") == "design")
@@ -1474,7 +1492,7 @@ def plan_scope(job: str) -> tuple:
 
 def migration_refusal(job: str, scope: str, suite: str) -> str:
     """Why a migration run (Cursor on a converted suite or the converter)
-    cannot start for this job, or "". The page's empty-box Ask Me
+    cannot start for this job, or "". The page's empty-box Ask AI Agent
     starts agent-generate directly, so start() asks this too."""
     held = migration_held(job)
     if held:
@@ -1534,7 +1552,7 @@ def migration_ask(job: str, scope: str, suite: str, text: str) -> dict:
             raise ValueError("this job's plan is not a migration request; name a new job (top right)")
         if kind == "fix":
             raise ValueError("this job holds the brief Fix with AI Agent wrote: leave the box empty and "
-                             "press Ask Me to run it, or name a new job for a request of your own")
+                             "press Ask AI Agent to run it, or name a new job for a request of your own")
     os.makedirs(out, exist_ok=True)
     if waiting:
         with io.open(os.path.join(out, "agent-followup.txt"), "w", encoding="utf-8") as fh:
@@ -1578,7 +1596,7 @@ _LOOP = None
 
 
 def _agent_loop():
-    """loop.py, loaded once. Ask Me reads git status from it."""
+    """loop.py, loaded once. Ask AI Agent reads git status from it."""
     global _LOOP
     if _LOOP is None:
         spec = importlib.util.spec_from_file_location(
@@ -1616,7 +1634,7 @@ def _git_left(job_name: str):
 
 def _settle_committed(name: str, review: dict) -> None:
     """The run stopped in `generating`, and git status no longer has its
-    edits. Record that, so Ask Me is not held and Discard is not
+    edits. Record that, so Ask AI Agent is not held and Discard is not
     offered — Discard would restore the copies from before the commit."""
     now = _now()
     settled = dict(review)
@@ -1651,7 +1669,7 @@ def workbench_unfinished() -> str:
     those edits from the command line. That is read from git status, not
     from the review file alone: a clean status (or dirt that matches the
     snapshot taken before the run) is recorded as committed outside the
-    workbench, and Ask Me starts.
+    workbench, and Ask AI Agent starts.
     """
     base = os.path.join(ROOT, ".workbench")
     try:
@@ -1846,6 +1864,9 @@ def _rerun_note(run_job: str, fix_job: str, fix_runnable: str, result: dict) -> 
                 options[f"--{k}"] = str(result[k])
         if result.get("threads"):
             options["--threads"] = str(result["threads"])
+        # Xray as the run it repeats: ticked, the re-run updates it too.
+        if result.get("xray"):
+            options["--xray"] = True
         # A clean build: Maven may keep the classes of a file the fix changed.
         options["--compile-first"] = True
         if tests and (result.get("suite") or result.get("group")):
@@ -1959,7 +1980,7 @@ def auto_fix(job: str) -> dict:
     """After a Compile or a run started with --auto-fix: a failed compile
     goes to Cursor the way the Run tests tab would send it, without a
     click -- in the server, so it happens whether a page is open or not.
-    Only what Ask Me may send (the job's Ask Me, a converted suite's
+    Only what Ask AI Agent may send (the job's Ask AI Agent, a converted suite's
     compile fix); anything else is left in the box with its reason.
     What was done is kept beside the run (AUTO_FIX_FILE); {} when nothing."""
     ra = _tool("runask")
@@ -1993,7 +2014,7 @@ def auto_fix(job: str) -> dict:
 def run_ask(job: str, text: str, images=None) -> dict:
     """Send the person's request about the failed tests of the run in
     `job`, the way that applies to them: the job's own tests to that job's
-    Ask Me (agent-followup); a converted suite's to a fix brief in a
+    Ask AI Agent (agent-followup); a converted suite's to a fix brief in a
     new job, run as the Migration tab runs one (agent-generate, scope
     converted); converted suites that do not compile to convert-fix.
     Decided again here, not taken from the page; everything that can
@@ -2501,6 +2522,7 @@ def read_artifact(job: str, name: str) -> str:
     directory cannot be used to read arbitrary files through the API.
     """
     allowed = {"brief.md", "plan.md", "intake.json", "locate.json", "automated-cases.json",
+               "issue-branch.json", "issue-mr.json",
                "proposed.diff", "review.json",
                "design.json", "design.md", "test-cases.csv", "xray.csv",
                "jira-result.json", "failures-result.json", "defects-result.json",

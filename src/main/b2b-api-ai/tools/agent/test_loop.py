@@ -184,6 +184,18 @@ class Repo(unittest.TestCase):
 
 
 class InsideThePaths(Repo):
+    def test_the_jobs_suite_names_only_its_own_tests_not_an_earlier_jobs_left_in_the_tree(self):
+        """Seen 2026-11-02: one case automated, two tests run and published --
+        an earlier job's pushed test was still uncommitted in the tree."""
+        write(self.root, JIRA + "EarlierStoryTest.java", "class EarlierStoryTest {}\n")
+        def agent(_prompt):
+            write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
+            return {"result": "created NewTest"}
+        self.assertEqual(self.generate(agent), 0)
+        suite = io.open(os.path.join(self.root, "Suites", "jira", "job1.xml"), encoding="utf-8").read()
+        self.assertIn("NewTest", suite)
+        self.assertNotIn("EarlierStoryTest", suite)
+
     def test_a_new_test_is_held_for_review_and_nothing_is_committed(self):
         def agent(_prompt):
             write(self.root, JIRA + "NewTest.java", "class NewTest {}\n")
@@ -933,7 +945,7 @@ class AskingForMore(Repo):
         with redirect_stdout(io.StringIO()):
             self.assertEqual(self.ask("rename a test", again, verifier=None), 0)
         self.assertEqual(len(seen["before"]), 2)
-        self.assertEqual(seen["before"][-1], {broken, helper, other}, "a later Ask Me is not a compile fix")
+        self.assertEqual(seen["before"][-1], {broken, helper, other}, "a later Ask AI Agent is not a compile fix")
 
     def test_a_second_follow_up_is_kept_in_order(self):
         self.first_run()
@@ -2416,6 +2428,72 @@ class Push(Repo):
         self.assertEqual(sh(self.root, "rev-parse", "--abbrev-ref", "HEAD"), "main",
                          "the checkout returns to where it was")
 
+    # ---- the issue branch (issuebranch.py, 2026-11-02) ----------------------------
+    def issue_branch(self, name="issue/B2B-9", others_commit=False):
+        """The branch as GitLab would have made it from the base, fetched here;
+        with a commit of someone else's on it when asked."""
+        sh(self.root, "push", "-q", "origin", f"main:refs/heads/{name}")
+        if others_commit:
+            other = tempfile.mkdtemp(prefix="looptest_other_")
+            self.addCleanup(shutil.rmtree, other, ignore_errors=True)
+            sh(other, "clone", "-q", "-b", name, self.remote, ".")
+            sh(other, "config", "user.email", "o@example.com")
+            sh(other, "config", "user.name", "o")
+            write(other, "OTHER.md", "someone else's\n")
+            sh(other, "add", "OTHER.md")
+            sh(other, "commit", "-q", "-m", "other")
+            sh(other, "push", "-q", "origin", name)
+        sh(self.root, "fetch", "-q", "origin")
+        write(self.root, ".workbench/job1/issue-branch.json", json.dumps({"branch": name}))
+
+    def test_a_job_with_an_issue_branch_adds_to_it_on_top_of_what_gitlab_has(self):
+        self.issue_branch(others_commit=True)
+        tip = sh(self.remote, "rev-parse", "issue/B2B-9")
+        self.pending()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(self.push(), 0, out.getvalue())
+        self.assertEqual(sh(self.remote, "rev-parse", "issue/B2B-9^"), tip, "on top of what it held")
+        files = sh(self.remote, "show", "--name-only", "--format=", "issue/B2B-9").splitlines()
+        self.assertIn(JIRA + "NewTest.java", files)
+        self.assertEqual(self.state()["branch"], "issue/B2B-9")
+        self.assertNotIn("agent/job1", sh(self.remote, "branch", "--list"), "no branch of its own")
+        self.assertIn("Raise the merge request", out.getvalue())
+
+    def test_the_page_sending_build_on_still_adds_to_the_issue_branch(self):
+        """The page always sends --base (the branch checked out): only a typed
+        branch name overrides the job's issue branch."""
+        self.issue_branch()
+        self.pending()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = loop.cmd_approve(self.job, self.root, self.policy, "job1", "job1",
+                                  config_path=os.path.join(self.root, "none.json"), base="main")
+        self.assertEqual(rc, 0, out.getvalue())
+        self.assertEqual(self.state()["branch"], "issue/B2B-9")
+
+    def test_a_checked_out_issue_branch_behind_gitlab_is_not_moved(self):
+        self.issue_branch()
+        sh(self.root, "checkout", "-q", "-b", "issue/B2B-9", "--track", "origin/issue/B2B-9")
+        self.pending()
+        sh(self.root, "stash", "-q", "-u")                     # someone pushes meanwhile
+        self.issue_branch(others_commit=True)
+        sh(self.root, "stash", "pop", "-q")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(self.push(), 1)
+        self.assertIn("is behind origin/issue/B2B-9: pull it", out.getvalue())
+
+    def test_a_checked_out_issue_branch_in_step_with_gitlab_takes_the_commit_and_the_tree_is_clean(self):
+        self.issue_branch()
+        sh(self.root, "checkout", "-q", "-b", "issue/B2B-9", "--track", "origin/issue/B2B-9")
+        self.pending()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(self.push(), 0, out.getvalue())
+        self.assertEqual(sh(self.root, "rev-parse", "issue/B2B-9"), sh(self.remote, "rev-parse", "issue/B2B-9"))
+        self.assertNotIn(JIRA + "NewTest.java", self.status(), "the files are in the commit now")
+
     def test_answers_kept_for_later_designs_are_pushed_with_the_job_as_it_left_them(self):
         self.pending()
         kn = loop._load("test_loop_knowledge", os.path.join(HERE, "knowledge.py"))
@@ -2583,9 +2661,15 @@ class Push(Repo):
         write(self.root, JIRA + "Mine.java", "class Mine {}\n")
         called = []
         out = io.StringIO()
+        # Job 2 writes a test of its own: its suite names only its own tests
+        # (write_job_suite), so job 1's NewTest no longer stands in for one.
+        def agent(_prompt):
+            called.append(1)
+            write(self.root, JIRA + "Job2Test.java", "class Job2Test {}\n")
+            return {"result": ""}
         with redirect_stdout(out):
             rc = loop.cmd_generate(job2, self.root, self.policy, "new-test", "",
-                                   agent=lambda p: called.append(1) or {"result": ""}, verifier=OK)
+                                   agent=agent, verifier=OK)
         self.assertEqual(called, [1], "uncommitted work does not block the run")
         said = out.getvalue()
         self.assertIn(JIRA + "NewTest.java  -- job job1's change (pending-review): Approve & push or "

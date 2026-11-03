@@ -117,6 +117,17 @@ class ChosenProject(Base):
         self.assertNotIn("project_warning", self.result())
         self.assertNotIn("WARN", said)
 
+    def test_xray_is_left_alone_unless_the_run_asks(self):
+        self.quiet(mr.cmd_test, self.job_dir, self.root, suite=self.GOAL_SUITE, env="goalstg",
+                   project="GOAL", runner=self.runner(rc=0))
+        self.assertIn("-Dxray.enabled=false", self.mvn_test_call())
+        self.assertFalse(self.result()["xray"])
+        self.calls.clear()
+        self.quiet(mr.cmd_test, self.job_dir, self.root, suite=self.GOAL_SUITE, env="goalstg",
+                   project="GOAL", runner=self.runner(rc=0), xray=True)
+        self.assertNotIn("-Dxray.enabled=false", self.mvn_test_call())
+        self.assertTrue(self.result()["xray"])
+
     def test_the_chosen_project_is_preflighted_not_the_commands(self):
         rc, said = self.quiet(mr.cmd_test, self.job_dir, self.root, test="FooTest", env="stg",
                               project="goal", runner=self.runner())

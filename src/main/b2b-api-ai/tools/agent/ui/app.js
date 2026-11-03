@@ -4,6 +4,16 @@
 // from the CLI with the same arguments.
 
 const $ = (id) => document.getElementById(id);
+// The page passes null for "nothing to show here" (cond ? banner(...) : null),
+// as el() accepts. replaceChildren printed each one as the text "null" --
+// "nullnullnull" under Fix Failures (2026-11-02). Skipped here, once, for
+// every one of the page's calls rather than fixed call by call.
+{
+  const replace = Element.prototype.replaceChildren;
+  Element.prototype.replaceChildren = function (...kids) {
+    return replace.apply(this, kids.flat().filter((k) => k !== null && k !== undefined && k !== false));
+  };
+}
 const job = () => $("job").value.trim();
 // `?job=name` in the address opens the page on that job, so a result can
 // be linked to: http://127.0.0.1:8787/?job=release-6#jira
@@ -521,6 +531,20 @@ for (const name of ["story-from", "pages-from", "spec-from", "req-from"]) {
   for (const r of document.querySelectorAll(`input[name="${name}"]`)) r.onchange = () => showChosen(name);
   showChosen(name);
 }
+// The API story template, for writing a story here: "Paste the story" with
+// the template in the box (asks before replacing what is there).
+$("story-template-fill").onclick = async () => {
+  const box = $("text");
+  if (box.value.trim() && !confirm("Replace what is in the paste box with the API story template?")) return;
+  try {
+    const r = await fetch("/api-story-template.md");
+    if (!r.ok) throw new Error(`the template could not be read (${r.status})`);
+    const paste = document.querySelector('input[name="story-from"][value="paste"]');
+    if (paste) { paste.checked = true; showChosen("story-from"); }
+    box.value = await r.text();
+    box.focus();
+  } catch (e) { setState($("new-state"), "bad", e.message); }
+};
 // What Read it is given: the story by link or pasted, the pages by link or
 // pasted -- whichever each choice shows.
 function storyInputs() {
@@ -868,6 +892,7 @@ $("release-list").onclick = async () => {
   } } }, "Use the ticked stories");
   const all = (on) => el("button", { type: "button", on: { click: () => boxes.forEach((b) => { b.checked = on; }) } },
     on ? "Tick all" : "Tick none");
+  // replaceChildren prints a null as the text "null": only real parts go in.
   box.replaceChildren(heading(`${type || "Issues"} in ${k} ${v}`, issues.length), ...facts,
     issues.length ? table(["", "Key", "Status", "Summary", ...(ranked ? ["Related because"] : []), "Fix versions", "Job here"],
       issues.map((i, n) =>
@@ -876,7 +901,7 @@ $("release-list").onclick = async () => {
        jobs.has(i.key.toUpperCase()) ? `has a job (${jobs.get(i.key.toUpperCase())})` : ""])) : banner("warn",
       onlyRelated && (r.issues || []).length ? `nothing in ${v} is related to ${r.related_to}: untick "only related" to see all`
                                              : `no ${type || "issue"} is in ${v}`),
-    issues.length ? el("div", { class: "row" }, use, all(true), all(false)) : null);
+    ...(issues.length ? [el("div", { class: "row" }, use, all(true), all(false))] : []));
   setState($("release-state"), issues.length ? "ok" : "warn",
     issues.length ? `${issues.length} in ${v}: tick the ones to work on` : `nothing of type ${type || "any"} in ${v}`);
 };
@@ -943,31 +968,9 @@ $("story-check").onclick = async () => {
   if (/^[a-z][a-z-]{0,40}$/.test(name) && job()) follow(name, $("new-log"), $("new-state"));
 })();
 
-$("run-locate").onclick = async () => {
-  try {
-    const options = { "--job": job() };
-    // The verdict is made against a snapshot of what was converted; after
-    // a convert that snapshot is out of date until it is rebuilt.
-    if ($("locate-rebuild").checked) options["--rebuild-index"] = true;
-    await post("/api/start", { job: job(), runnable: "locate", options });
-    follow("locate", $("new-log"), $("new-state"), async (st) => {
-      $("locate-rebuild").checked = false;
-      await showArtifact("plan.md", $("plan"));
-      // locate exits 1 when a request STOPS -- upstream, or needs a
-      // human. That is the stage working, not failing, and painting it
-      // red teaches people to ignore the colour.
-      if (st.exit_code === 1) {
-        try {
-          const r = await api(
-            `/api/artifact?job=${encodeURIComponent(job())}&name=locate.json`);
-          const n = (JSON.parse(r.text || "{}").stops || []).length;
-          if (n) setState($("new-state"), "warn",
-                          `${n} request(s) need a decision — see the plan`);
-        } catch { /* leave the generic state */ }
-      }
-    });
-  } catch (e) { setState($("new-state"), "bad", e.message); }
-};
+// "Then: is it already automated?" had a button of its own; every Read
+// runs it (intake.auto_locate, the shape index rebuilt when stale), so
+// the button went (2026-11-02).
 
 // ---- tab 1, second half: design the API tests ------------------------
 // Requirements come from a file or from the paste box, whichever is
@@ -1009,7 +1012,9 @@ function requirementsGiven() {
 // Read it, the tools under the review, Xray. A button opens the panel it
 // controls and closes its own strip's others.
 function selectTab(button) {
-  if (!button) return;
+  // A hidden tab is one not offered (the review's Suggest suites...): a
+  // step pointing into its panel must not open it again.
+  if (!button || button.hidden) return;
   for (const b of button.closest("[role=tablist]").querySelectorAll("[role=tab]")) {
     const on = b === button;
     b.setAttribute("aria-selected", String(on));
@@ -1178,6 +1183,7 @@ async function showDesign(j, fresh) {
     $(id).hidden = !have;
     $(id).href = `/api/download?job=${encodeURIComponent(j)}&name=${name}`;
   }
+  $("dl-case-row").hidden = !have;               // above Finalize: shown with a design
   if (j === job()) { refreshXray("design", fresh); showReview("design"); }
   // The last look in the story's earlier jobs, if it was for this job.
   showStoryKeys(null);
@@ -1238,7 +1244,7 @@ function answersPanel(j) {
     const rows = qs.map((q) => {
       const s = sug[q.question];
       const ans = el("textarea", { rows: "2", spellcheck: "true", class: "answer",
-                                   placeholder: "your answer (Design again uses it) -- or Ask Me" });
+                                   placeholder: "your answer (Design again uses it) -- or Ask AI Agent" });
       ans.value = q.answer || (s && s.suggested ? s.answer : "");
       const keep = el("input", { type: "checkbox" });
       keep.checked = Boolean(q.keep);
@@ -1261,7 +1267,7 @@ function answersPanel(j) {
       row.dataset.evidence = JSON.stringify(evidence);
       return row;
     });
-    const ask = el("button", { type: "button", text: "Ask Me to answer",
+    const ask = el("button", { type: "button", text: "Ask AI",
                                title: "AI Agent looks for the answers in this project (converted tests, their database steps, the flow guide...) and drafts the rule to keep for each. Nothing is kept until you save." });
     ask.onclick = async () => {
       ask.disabled = true;
@@ -1300,10 +1306,11 @@ function answersPanel(j) {
         }
       } catch (e) { setState(st, "bad", e.message); }
     };
+    // replaceChildren prints a null as the text "null": the diff is shown only when there is one.
     box.replaceChildren(heading("Open questions of the design", qs.length), ...rows,
       el("div", { class: "row" }, ask, save, st),
-      a.diff ? el("details", {}, el("summary", { text: `${a.path}: pushed with this job's change` }),
-                  el("pre", { class: "log diff", text: a.diff })) : null);
+      ...(a.diff ? [el("details", {}, el("summary", { text: `${a.path}: pushed with this job's change` }),
+                    el("pre", { class: "log diff", text: a.diff }))] : []));
   };
   api(`/api/answers?job=${encodeURIComponent(j)}`).then(draw).catch(() => {});
   return box;
@@ -1330,57 +1337,25 @@ function reviewTable(j, what, cases, entries, after, done, change, suites, descs
   const counts = { approved: 0, rejected: 0, proposed: 0 };
   for (const c of cases) counts[stateOf(c)] += 1;
   const design = what === "design";
-  const selected = design ? selectedFor(j) : new Set();
-  for (const id of [...selected]) if (!cases.some((c) => c.id === id)) selected.delete(id);
+  // Two ticks a row -- Approve and Automate -- and two buttons, for every
+  // case: the Select column and its "... selected" buttons went
+  // (2026-11-02). Refine with AI Agent is of the whole list.
+  selectedFor(j).clear();
+  showRefineScope();
   const bulk = (fields) => async () => {
     if (await decide(j, what, cases.map((c) => c.id), fields, st)) after();
   };
-  const onSelected = (fields) => async () => {
-    const ids = [...selected];
-    if (!ids.length) { setState(st, "bad", "tick cases in the Select column first"); return; }
-    if (await decide(j, what, ids, fields, st)) after();
-  };
-  const selCount = el("small", { text: "" });
-  const drawSel = () => {
-    selCount.textContent = selected.size ? `${selected.size} selected` : "";
-    for (const b of box.querySelectorAll("button[data-sel]")) b.disabled = !selected.size;
-    showRefineScope();
-  };
-  const selAll = el("input", { type: "checkbox", title: "select every case", "aria-label": "select every case" });
-  selAll.checked = design && cases.length > 0 && cases.every((c) => selected.has(c.id));
-  selAll.onchange = () => {
-    for (const c of cases) { if (selAll.checked) selected.add(c.id); else selected.delete(c.id); }
-    for (const cb of box.querySelectorAll("input[data-select]")) {
-      cb.checked = selAll.checked;
-      cb.closest("tr").classList.toggle("selected", selAll.checked);
-    }
-    drawSel();
-  };
   box.append(el("div", { class: "row" },
-    el("button", { type: "button", on: { click: bulk({ state: "approved" }) } }, "Approve all"),
-    el("button", { type: "button", on: { click: bulk({ state: "rejected" }) } }, "Reject all"),
-    design ? el("button", { type: "button", "data-sel": "1", title: "approve the ticked cases",
-                            on: { click: onSelected({ state: "approved" }) } }, "Approve selected") : null,
-    design ? el("button", { type: "button", "data-sel": "1", title: "reject the ticked cases",
-                            on: { click: onSelected({ state: "rejected" }) } }, "Reject selected") : null,
-    design ? el("button", { type: "button", "data-sel": "1", title: "refine only the ticked cases with AI Agent",
-                            on: { click: () => goToStep("new", "refine-ask") } }, "Refine selected…") : null,
+    el("button", { type: "button", title: "approve every case", on: { click: bulk({ state: "approved" }) } }, "Approve"),
+    el("button", { type: "button", class: "danger", title: "reject every case", on: { click: bulk({ state: "rejected" }) } }, "Reject"),
     el("small", { text: `${counts.approved} approved, ${counts.rejected} rejected, ${counts.proposed} not yet decided` }),
-    selCount, st));
-  const headers = design ? ["Select", "Approve", "Automate", "Case", "Title", "Endpoint", "Suites", "Steps",
+    st));
+  const headers = design ? ["Approve", "Automate", "Case", "Title", "Endpoint", "Suites", "Steps",
                             "Description", "Note", "Write it"]
                          : ["Approve", "Case", "Title", "Steps", "Note"];
   const drawn = table(headers, cases.map((c) => {
     const e = entryOf(c);
     const state = stateOf(c);
-    const pickBox = el("input", { type: "checkbox", "data-select": c.id, "aria-label": `select ${c.id}` });
-    pickBox.checked = selected.has(c.id);
-    pickBox.onchange = () => {
-      if (pickBox.checked) selected.add(c.id); else selected.delete(c.id);
-      pickBox.closest("tr").classList.toggle("selected", pickBox.checked);
-      selAll.checked = cases.every((x) => selected.has(x.id));
-      drawSel();
-    };
     const approve = el("input", { type: "checkbox" });
     approve.checked = state === "approved";
     approve.onchange = async () => {
@@ -1404,7 +1379,7 @@ function reviewTable(j, what, cases, entries, after, done, change, suites, descs
       el("small", { class: `flag ${state === "rejected" ? "differs" : ""}`, text: state }),
       e.title && e.title !== c.title ? el("small", { text: "title changed" }) : null,
       e.steps ? el("small", { text: "steps changed" }) : null);
-    const row = design ? [pickBox, approve] : [approve];
+    const row = [approve];
     if (what === "design") row.push(automate);
     row.push(cell, el("div", {}, title));
     if (what === "design") row.push(el("code", { class: "endpoint" },
@@ -1456,15 +1431,7 @@ function reviewTable(j, what, cases, entries, after, done, change, suites, descs
     }
     return row;
   }));
-  if (design) {
-    const th = drawn.querySelector("thead th");
-    if (th) th.replaceChildren(selAll);
-    drawn.querySelectorAll("input[data-select]").forEach((cb) => {
-      if (cb.checked) cb.closest("tr").classList.add("selected");
-    });
-  }
   box.append(drawn);
-  drawSel();
   return box;
 }
 
@@ -1653,8 +1620,8 @@ async function showReview(what) {
 const STAGE_AT = {
   "Read it": ["new", "story"], "Generate": ["new", "run-design"], "Review": ["new", "design-review"],
   "Finalize": ["new", "wf-finalize"], "Xray tests": ["new", "xray-design-create"],
-  "Automate": ["new", "auto-selected"], "Regression": ["agent", "wf-regression"],
-  "Run on stg": ["agent", "agent-run"], "Push": ["agent", "agent-push"], "Publish": ["agent", "agent-xray"],
+  "Automate": ["new", "auto-selected"], "Execution": ["agent", "wf-regression"],
+  "Publish": ["agent", "agent-xray"], "Push": ["agent", "agent-push"],
 };
 async function showFlow() {
   const j = job();
@@ -2557,7 +2524,7 @@ async function showRunResult(j) {
 }
 // ---- Fix Failures (under a failed run) ------------------
 // The server says which way the run's failures go (runask.py): the job's
-// own tests to that job's Ask Me, a converted suite's to a fix brief in
+// own tests to that job's Ask AI Agent, a converted suite's to a fix brief in
 // a new job. The request is prefilled once per run, then left to the person:
 // a refresh must not throw away what they wrote.
 let runAskShown = null;            // the server's last answer for the box
@@ -2571,7 +2538,7 @@ function autoFixBanner(a) {
   return banner("ok", a.kind === "convert-fix"
     ? `Sent to AI Agent without a click: each converted suite is made to compile in a fix job of its own ` +
       `(${(a.fix_jobs || []).join(", ")}). Untick "AI Agent fixes compile errors" to stop that.`
-    : `Sent to AI Agent without a click: job ${a.job}'s Ask Me is fixing the compile errors. ` +
+    : `Sent to AI Agent without a click: job ${a.job}'s Ask AI Agent is fixing the compile errors. ` +
       `Untick "AI Agent fixes compile errors" to stop that.`);
 }
 function sentJob(r) { return (r.kind === "convert-fix" && (r.fix_jobs || [])[0]) || r.job; }
@@ -2609,7 +2576,7 @@ async function showRunAsk(j, again) {
   box.hidden = false;
   const sent = !!(p.auto && p.auto.sent);
   const usable = ["job", "converted", "convert-fix"].includes(p.kind) && !p.blocked && !sent;
-  const how = p.kind === "job" ? `Goes to job ${p.job}'s Ask Me.`
+  const how = p.kind === "job" ? `Goes to job ${p.job}'s Ask AI Agent.`
     : p.kind === "converted" ? `A fix brief for suite ${p.suite}, in a new job.`
     : p.kind === "convert-fix" ? `AI Agent makes suite ${p.suites.join(", ")} compile, each in a fix job of its own.`
     : "Not sent from here.";
@@ -2684,6 +2651,7 @@ $("mvn-test").onclick = () => {
   // The chosen project, always named: the run must not fall back to a guess.
   const options = { "--env": $("run-env").value, "--project": runProject() };
   if ($("run-compile-first").checked) options["--compile-first"] = true;
+  if ($("run-xray").checked) options["--xray"] = true;    // else the run leaves Xray alone
   if ($("run-threads").value && what !== "test") options["--threads"] = $("run-threads").value;
   if (what === "job") options["--suite"] = jobSuite();
   if (what === "suite") options["--suite"] = $("run-suite").value;
@@ -3522,6 +3490,13 @@ async function showSettings() {
   $("set-dev-token-state").textContent = dev.token || "";
   $("set-dev-token").value = "";
   $("set-dev-token-clear").checked = false;
+  const tr = s.testrepo || {};
+  $("set-tr-url").value = tr.base_url || "";
+  $("set-tr-project").value = tr.project || "";
+  $("set-tr-target").value = tr.target || "develop";
+  $("set-tr-token-state").textContent = tr.token || "";
+  $("set-tr-token").value = "";
+  $("set-tr-token-clear").checked = false;
   $("set-push-guard").value = s.push_guard || "";
   $("set-xray-url").value = s.xray.base_url || "";
   $("set-xray-project").value = s.xray.project_key || "";
@@ -3738,6 +3713,11 @@ $("settings-save").onclick = async (where) => {
     devcode_token: $("set-dev-token").value,
     devcode_token_clear: $("set-dev-token-clear").checked,
     devcode_hosts: $("set-dev-hosts").value,
+    testrepo_base_url: $("set-tr-url").value,
+    testrepo_project: $("set-tr-project").value,
+    testrepo_target: $("set-tr-target").value,
+    testrepo_token: $("set-tr-token").value,
+    testrepo_token_clear: $("set-tr-token-clear").checked,
     push_guard: $("set-push-guard").value,
     xray_token_clear: $("set-xray-token-clear").checked,
     xray_create_on: $("set-xc-on").checked,
@@ -3763,7 +3743,8 @@ $("settings-save").onclick = async (where) => {
     setState(state, r.saved ? "ok" : "", r.saved ? `saved: ${r.said}` : r.said);
   } catch (e) { setState(state, "bad", e.message); }
   // The token boxes are emptied either way: nothing typed stays on the page.
-  for (const id of ["set-jira-pat", "set-conf-pat", "set-xray-token", "set-cursor-key", "set-dev-token"]) $(id).value = "";
+  for (const id of ["set-jira-pat", "set-conf-pat", "set-xray-token", "set-cursor-key", "set-dev-token",
+                    "set-tr-token"]) $(id).value = "";
   showSettings();
 };
 $("settings-check").onclick = async () => {
@@ -3833,6 +3814,64 @@ $("agent-take-merged").onclick = () => {
   runAgent("agent-take-merged", { "--job": job() });
 };
 
+// ---- the issue branch on GitLab, and its merge request (issuebranch.py) ----------
+// Made before Automate from the Automate tab; the MR from Commit and push,
+// once the change is pushed to the branch with every test passing.
+let issueShown = { job: "", branch: "" };     // the job's issue branch, for Approve's question
+async function showIssue(j, review) {
+  j = j || job();
+  if (!j) return;
+  const [ib, mr, rv, intake] = await Promise.all([artifactJson(j, "issue-branch.json"),
+    artifactJson(j, "issue-mr.json"),
+    review ? Promise.resolve(review) : artifactJson(j, "review.json"),
+    artifactJson(j, "intake.json")]);
+  if (j !== job()) return;
+  issueShown = { job: j, branch: (ib && ib.branch) || "" };
+  const key = String((intake && intake.story && intake.story.key) || "").toUpperCase();
+  $("issue-name").textContent = ib && ib.branch ? `${ib.branch}${ib.local ? " (checked out here)" : ""}`
+    : key ? `${$("issue-prefix").value}${key}` : "read the story by its key first";
+  // Another job's words never stay: this job's branch, or nothing.
+  if (ib && ib.branch) {
+    setState($("issue-state"), ib.local ? "ok" : "warn", ib.local
+      ? `the job's change goes into ${ib.branch}` : `on GitLab, not switched here: ${ib.local_note || ""}`);
+  } else setState($("issue-state"), "", "");
+  const pushed = rv && rv.state === "pushed" && ib && rv.branch === ib.branch;
+  const green = rv && rv.execution && rv.execution.ok;
+  $("issue-mr-row").hidden = !(ib && ib.branch);
+  $("issue-mr").disabled = !(pushed && green);
+  $("issue-mr").title = !(ib && ib.branch) ? "no issue branch for this job"
+    : !pushed ? `Approve & push to ${ib.branch} first` : !green ? "Run the tests: every test passing" : "";
+  // A refusal said by the last press stays until there is a merge request to show.
+  if (mr && mr.url) {
+    $("issue-mr-state").replaceChildren(
+      el("a", { href: mr.url, target: "_blank", rel: "noopener", text: `merge request !${mr.iid || ""}` }),
+      ` ${mr.source} -> ${mr.target}`);
+  }
+}
+$("issue-prefix").onchange = () => showIssue();
+$("issue-create").onclick = async () => {
+  const j = job();
+  if (!j) { setState($("issue-state"), "bad", "name the job first"); return; }
+  try {
+    await post("/api/start", { job: j, runnable: "issue-branch",
+                               options: { "--job": j, "--prefix": $("issue-prefix").value } });
+    // Its own log (not Automate's pane, which a running Automate writes);
+    // a refusal stays in the state line.
+    follow("issue-branch", document.createElement("pre"), $("issue-state"),
+           (st) => { if (!st || st.exit_code === 0) showIssue(j); showRepo(); });
+  } catch (e) { setState($("issue-state"), "bad", e.message); }
+};
+$("issue-mr").onclick = async () => {
+  const j = job();
+  try {
+    await post("/api/start", { job: j, runnable: "issue-mr", options: { "--job": j } });
+    follow("issue-mr", document.createElement("pre"), $("issue-mr-state"),
+           (st) => { if (!st || st.exit_code === 0) showIssue(j); });
+  } catch (e) { setState($("issue-mr-state"), "bad", e.message); }
+};
+$("job").addEventListener("change", () => showIssue());
+showIssue();
+
 async function refreshReview() {
   let review = { state: "none" };
   const shown = job();
@@ -3857,6 +3896,7 @@ async function refreshReview() {
     if (r.text) review = JSON.parse(r.text);
   } catch { /* no review yet */ }
   const state = review.state || "none";
+  showIssue(shown, review);
   $("review-box").hidden = false;
   const badge = $("review-badge");
   badge.textContent = state.replace("-", " ");
@@ -3869,7 +3909,7 @@ async function refreshReview() {
   else if (state === "rejected" && review.why === "call")
     detail = "Rejected — the AI Agent call failed.";
   else if (state === "rejected" && review.why === "answered")
-    detail = "AI Agent answered and changed nothing — its answer is in the command log under Ask Me.";
+    detail = "AI Agent answered and changed nothing — its answer is in the command log under Ask AI Agent.";
   if (review.mock) detail = "MOCK RUN — written by the stand-in for AI Agent; it cannot be " +
                             "approved, only discarded. " + detail;
   if (review.reason) detail += " " + review.reason;
@@ -3925,7 +3965,7 @@ async function refreshReview() {
     if (a && a.diff) $("agent-diff").textContent += `\n\n# with this push: ${a.path} (answers kept for later designs)\n` + a.diff;
   } catch { /* no answers */ }
   $("agent-review").disabled = !(state === "pending-review" || state === "verify-failed");
-  // Ask Me works in any state but these: it changes a change waiting,
+  // Ask AI Agent works in any state but these: it changes a change waiting,
   // starts one when none is, and answers a question. Where it cannot, the
   // button says why instead of only being grey.
   const askBlocked = review.mock && ["pending-review", "verify-failed"].includes(state)
@@ -4071,7 +4111,7 @@ async function showCodeReview(j, run) {
 }
 
 // AI Agent's conversations are files of the job, appended to across runs:
-// cursor.log for the code it writes (Automate, Ask Me), design-cursor.log
+// cursor.log for the code it writes (Automate, Ask AI Agent), design-cursor.log
 // for the design and its refinements, migration-cursor.log for the
 // Migration tab. Each area shows ITS conversation in the Logs block under
 // its own button -- Design under the design, Refine under Refine, Automate
@@ -4394,7 +4434,7 @@ function scopeChanged() {
 $("agent-scope").onchange = scopeChanged;
 scopeChanged();
 
-// ---- Ask Me (the Migration from ReadyAPI tab) -------------------------
+// ---- Ask AI Agent (the Migration from ReadyAPI tab) -------------------------
 // A request in the box becomes the job's brief and plan (or is added to the
 // change waiting). An empty box runs on the brief already written -- by Fix
 // with AI Agent on the Failures tab.
@@ -4619,7 +4659,12 @@ $("agent-push").onclick = () => {
   const branch = $("agent-branch").value.trim() || "feature_<the story's key>";
   const remote = (repoInfo && repoInfo.remote) || "origin";
   if (pushes && !base) { setState($("agent-state"), "bad", `no branch of ${remote} to build on; fetch first`); return; }
-  const msg = pushes
+  const issue = issueShown.job === j && issueShown.branch && !$("agent-branch").value.trim()
+    ? issueShown.branch : "";
+  const msg = pushes && issue
+    ? `Approve and push?\n\nThis commits the reviewed files on top of ${remote}/${issue} and ` +
+      `pushes them to ${issue}, the job's issue branch. The repository is public.`
+    : pushes
     ? `Approve and push?\n\nThis commits the reviewed files to branch ${branch}, built on ` +
       `${remote}/${base}, and pushes that branch to ${remote}. The repository is public. ` +
       `${base} itself is not touched.`
@@ -4632,7 +4677,7 @@ $("agent-push").onclick = () => {
   runAgent("agent-approve", options);
 };
 onTab.agent = () => { showRepo(); focusUnfinishedWorkbench(); refreshPublish(false); };
-// The Update WorkBench tab's Ask Me refuses while a workbench run stopped with
+// The Update WorkBench tab's Ask AI Agent refuses while a workbench run stopped with
 // edits still uncommitted, and tells the person to Discard on THIS tab.
 // This tab shows the job in the box. When that job has nothing to
 // discard, open the unfinished workbench job so Discard is enabled.
@@ -4664,8 +4709,8 @@ async function focusUnfinishedWorkbench() {
   $("job").dispatchEvent(new Event("change"));
   watchCursorLog();
 }
-// The review state drives buttons on three tabs (Ask Me to change it,
-// the Migration tab's Ask Me, Commit and push): read it when any of
+// The review state drives buttons on three tabs (Ask AI Agent to change it,
+// the Migration tab's Ask AI Agent, Commit and push): read it when any of
 // them is opened, and once at load.
 for (const tab of ["new", "convert"]) {
   const b = document.querySelector(`.tabs button[data-tab="${tab}"]`);
@@ -5292,12 +5337,12 @@ async function fixWithCursor(sid, scope) {
         if (/name the suite/i.test(why)) {
           fixNeedsSuite.add(sid);
           $("fail-detail").replaceChildren(banner("warn", why +
-            " Type it in the Suite box of the Migration from ReadyAPI tab (Ask Me), then click again."));
+            " Type it in the Suite box of the Migration from ReadyAPI tab (Ask AI Agent), then click again."));
         } else $("fail-detail").replaceChildren(banner("bad", why));
         return;
       }
       $("fail-detail").replaceChildren(banner("ok", `Brief written for ${r.cases.length} case(s)` +
-        (r.suite ? ` of suite ${r.suite}` : "") + `. On the Migration from ReadyAPI tab, press Ask Me ` +
+        (r.suite ? ` of suite ${r.suite}` : "") + `. On the Migration from ReadyAPI tab, press Ask AI Agent ` +
         `with the box empty to run on it.`));
       $("agent-scope").value = r.scope;
       $("agent-scope").dispatchEvent(new Event("change"));
@@ -5352,7 +5397,7 @@ function signatureCard(s) {
   // the run left behind, and the Agentic tab opens on the right scope.
   card.append(el("div", { class: "noterow" },
     el("button", { "data-fail": "", class: "go", text: "Fix with AI Agent (this suite's Java)",
-                   title: "writes the brief for this signature; then Ask Me on the Migration from ReadyAPI tab",
+                   title: "writes the brief for this signature; then Ask AI Agent on the Migration from ReadyAPI tab",
                    on: { click: () => fixWithCursor(s.id, "converted") } }),
     el("button", { "data-fail": "", text: "Fix the converter with AI Agent",
                    title: "the same brief, for the emitter: scope The converter itself",

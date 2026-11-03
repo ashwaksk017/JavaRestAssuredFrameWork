@@ -198,7 +198,8 @@ def main() -> int:
         declared = page.call("/api/runnables")[1]
         wanted = ("jira-verify", "jira-versions", "jira-release", "jira-tests", "jira-paste",
                   "failures-record", "failures-list", "failures-show", "failures-note",
-                  "defects-load", "defects-suggest", "defects-apply", "defect-trend")
+                  "defects-load", "defects-suggest", "defects-apply", "defect-trend",
+                  "issue-branch", "issue-mr")
         check("every command behind the Jira, Defects and Failures tabs is declared",
               all(r in declared for r in wanted), str([r for r in wanted if r not in declared]))
 
@@ -231,6 +232,8 @@ def main() -> int:
               and json.loads(text or "{}").get("kind") == "runs", str(state))
         html = page.dom("run")
         check("the Failures tab shows that result", "Recorded runs" in html)
+        check("earlier runs and the Xray trace are hidden on Run tests for now, still filled in",
+              'id="run-history" hidden=""' in html and 'id="run-xray-part" hidden=""' in html)
         check("Failures and Publish are no tabs of their own: Run tests and Commit and push hold them",
               top_tabs(html) == 9 and 'data-tab="failures"' not in html and 'data-tab="publish"' not in html
               # each inside its new tab: before the next tab's section starts
@@ -271,17 +274,21 @@ def main() -> int:
                     "created": ["src/test/java/com/hi/api/tests/jira/DemoStayTest.java"]}}, fh)
             run_result("com.hi.api.tests.jira.DemoStayTest")
             code, ask = page.call(f"/api/run-ask?job={JOB}")
-            check("a failed test of the job's waiting change goes to the job's Ask Me",
+            check("a failed test of the job's waiting change goes to the job's Ask AI Agent",
                   code == 200 and ask.get("kind") == "job" and ask.get("job") == JOB, str(ask)[:300])
             html = page.dom("run")
-            check("the Run tests tab says the request goes to the job's Ask Me",
-                  f"Goes to job {JOB}'s Ask Me." in html)
+            check("the Run tests tab says the request goes to the job's Ask AI Agent",
+                  f"Goes to job {JOB}'s Ask AI Agent." in html)
+            which = html[html.find('id="run-ask-which"'):]
+            which = which[:which.find('id="run-ask"')]
+            check("Fix Failures never says null for a part it has nothing for (was nullnullnull)",
+                  "Goes to job" in which and "null" not in which, which[:400])
             with io.open(os.path.join(job_dir, "mvnrun-result.json"), "w", encoding="utf-8") as fh:
                 json.dump({"kind": "mvnrun", "what": "compile", "at": "2026-10-20T10:05:00Z", "ok": False,
                            "compile": {"ok": False, "how": "offline", "seconds": 4, "errors": [
                                "src/test/java/com/hi/api/tests/jira/DemoStayTest.java:5: error: ';' expected"]}}, fh)
             code, ask = page.call(f"/api/run-ask?job={JOB}")
-            check("a failed compile of the job's own file goes to the job's Ask Me",
+            check("a failed compile of the job's own file goes to the job's Ask AI Agent",
                   code == 200 and ask.get("compile") and ask.get("kind") == "job", str(ask)[:300])
             html = page.dom("run")
             check("a failed compile shown on opening the tab is offered, never sent by itself",
@@ -295,7 +302,7 @@ def main() -> int:
                            "runnable": "agent-followup", "fix_jobs": []}, fh)
             html = page.dom("run")
             check("the Run tests tab says what was sent to AI Agent by itself, and does not offer it again",
-                  f"Sent to AI Agent without a click: job {JOB}'s Ask Me" in html
+                  f"Sent to AI Agent without a click: job {JOB}'s Ask AI Agent" in html
                   and re.search(r'id="run-ask-send"[^>]*disabled', html) is not None,
                   html[html.find('id="run-ask-box"'):][:600])
             check("the Commit and push tab's Compile can send its errors to AI Agent too",
@@ -642,7 +649,7 @@ def main() -> int:
             html = page.dom("convert")
             # Only the Convert tab's own part of the page: another tab's
             # help text names some of these options.
-            # The converter's form: the Migration tab up to its Ask Me part.
+            # The converter's form: the Migration tab up to its Ask AI Agent part.
             html = html[html.index('id="tab-convert"'):html.index('id="migration-ask-part"')]
             check("the Convert tab lists what was chosen, with where it was put",
                   "Check Ui Suite.xml" in html
@@ -900,6 +907,40 @@ def main() -> int:
                   and 'id="xt-create" class="input-panel" role="tabpanel" aria-labelledby="xt-tab-create">' in html
                   and all(f'id="{p}" class="input-panel" role="tabpanel" aria-labelledby="{p[:2]}-tab-{p[3:]}" hidden'
                           in html for p in ("ct-suites", "ct-devcode", "ct-doc", "xt-keys", "xt-update")))
+            check("under the review only Refine is offered: the tab strip and the other tabs are hidden",
+                  'aria-label="Work on the designed cases" hidden=""' in html
+                  and all(f'id="ct-tab-{t}" aria-controls="ct-{t}" aria-selected="false" tabindex="-1" hidden=""'
+                          in html for t in ("suites", "devcode", "doc")))
+            check("Ask again and the whole specification are hidden; the cases' downloads sit above Finalize",
+                  re.search(r'<label class="inline" hidden=""[^>]*><input type="checkbox" id="design-fresh"', html)
+                  and re.search(r'<label class="inline" hidden=""[^>]*><input type="checkbox" id="design-whole"', html)
+                  and html.find('id="run-design"') < html.find('id="dl-cases"') < html.find('id="wf-finalize"')
+                  and html.find('id="dl-xray"') < html.find('id="wf-finalize"'))
+            check("the notes for the designer are hidden with the Options",
+                  'id="design-notes-part" hidden=""' in html
+                  and html.find('id="design-notes-part"') < html.find('id="design-notes-pasted"') < html.find('id="run-design"'))
+            check("the review has no Select column and no \"... selected\" buttons",
+                  "Approve all" not in html and "selected</button>" not in html and "data-select" not in html)
+            check("the strip ends Automate, Execution, Publish, Push -- no Regression or Run on stg",
+                  all(f">{n}" in html for n in ("Execution", "Publish", "Push"))
+                  and ">Regression<" not in html and "Run on stg" not in html
+                  and html.find(">Execution") < html.find(">Publish") < html.find(">Push"))
+            run_html = mocked.dom("run")
+            check("Run tests updates Xray only when its box is ticked, unticked by default",
+                  re.search(r'<input type="checkbox" id="run-xray">', run_html) is not None
+                  and "Update the Test Execution in Xray" in run_html)
+            check("the issue branch is made before Automate, the MR raised from Commit and push",
+                  'id="issue-create"' in html and html.find('id="issue-create"') < html.find('id="auto-selected"')
+                  and 'value="issue/" selected' in html and 'value="feature/"' in html)
+            agent_html = mocked.dom("agent")
+            check("Raise MR to develop is on Commit and push, closed until a green run is pushed",
+                  'id="issue-mr"' in agent_html and 'id="issue-mr-row" hidden=""' in agent_html)
+            check("the API story template is offered beside the story, and served",
+                  'href="/api-story-template.md"' in html and 'id="story-template-fill"' in html
+                  and "Where each value comes from" in mocked.call("/api-story-template.md", raw=True)[1])
+            check("is it already automated has no button: every Read runs it",
+                  'id="run-locate"' not in html and 'id="locate-rebuild"' not in html)
+            check("Ask Me is called Ask AI Agent", "Ask Me" not in html and "Ask AI Agent" in html)
             app_js = io.open(os.path.join(HERE, "ui", "app.js"), encoding="utf-8").read()
             check("the sources do not list what was left out", "Linked, not related" not in app_js
                   and "revealPanel(there)" in app_js)
@@ -916,8 +957,8 @@ def main() -> int:
             code, info = mocked.call("/api/repo")
             check("the page is never sent the remote's address", "remote_url" not in info and "has_remote" in info,
                   str(sorted(info))[:200])
-            check("the design's options are folded away, closed, their defaults kept",
-                  '<details class="more" id="design-options">' in html
+            check("the design's options are hidden, their defaults kept",
+                  '<details class="more" id="design-options" hidden="">' in html
                   and 'value="balanced" selected' in html and 'value="plan" selected' in html)
             check("the story's existing Xray tests are a choice of the Jira story, not a button of their own",
                   'name="story-from" value="xray"' in html and 'id="run-xray-import"' not in html
@@ -1036,11 +1077,12 @@ def main() -> int:
                   str(body))
             html = mocked.dom("new")
             check("the Automate Test Case tab shows the review table and where the job is",
-                  'id="design-review"' in html and "Approve all" in html and 'id="flow"' in html
+                  'id="design-review"' in html and ">Approve</button>" in html and ">Reject</button>" in html
+                  and 'id="flow"' in html
                   and "Review (1 approved)" in html, html[html.find('id="flow"'):][:400])
             strip = html[html.find('id="flow"'):html.find("</ol>", html.find('id="flow"'))]
             check("each step of the strip is a link to where it is done",
-                  strip.count('class="step-link"') == 10
+                  strip.count('class="step-link"') == 9          # Read it + 8 stages (2026-11-02)
                   and 'data-tab="new" data-target="auto-selected"' in strip
                   and 'data-tab="agent" data-target="agent-push"' in strip
                   and 'data-tab="new" data-target="design-review"' in strip, strip[:400])
@@ -1075,8 +1117,8 @@ def main() -> int:
             check("each AI Agent pane reads its own file, from its own place in it",
                   "runnable=${CURSOR_FILES[p.src]}&offset=${p.offset}" in agent_js
                   and "runnable=${CURSOR_FILES[p.src]}&end=1" in agent_js)
-            check("Ask Me is one box for a change, a new request or a question",
-                  '>Ask Me</button>' in html and 'id="agent-ask-send" disabled' not in tab_new)
+            check("Ask AI Agent is one box for a change, a new request or a question",
+                  '>Ask AI Agent</button>' in html and 'id="agent-ask-send" disabled' not in tab_new)
             logs_tab = mocked.dom("logs")
             check("the Logs tab can ask AI Agent to change the workbench itself",
                   'id="wb-run"' in logs_tab and 'id="wb-cursor-log"' in logs_tab and 'id="wb-review"' in logs_tab)
@@ -1196,7 +1238,8 @@ def main() -> int:
                   rc == 0 and st.get("keys", {}).get("design") == {"TC-001": "ABC-9001"}, str(st)[:300])
             html = mocked.dom("new")
             check("the Automate Test Case tab shows the case's Xray key",
-                  "ABC-9001" in html and "Already in the mock Xray" in html)
+                  "ABC-9001" in html and "Already in the mock Xray" in html,
+                  html[html.find('id="xray-design-result"'):][:500])
 
             spec = json.dumps({"openapi": "3.0.1", "paths": {
                 "/groups/{id}/rates": {"get": {"summary": "List"}, "post": {"summary": "Create"}}}})
@@ -1308,13 +1351,13 @@ def main() -> int:
             with io.open(os.path.join(job_dir, "review.json"), "w", encoding="utf-8") as fh:
                 json.dump({"state": "generating", "scope": "new-test"}, fh)
             html = mocked.dom("agent")
-            check("a story job that did not finish does not mention the workbench on Ask Me",
+            check("a story job that did not finish does not mention the workbench on Ask AI Agent",
                   "change to the workbench did not finish" not in html
                   and "A run of this job did not finish" in html)
             with io.open(os.path.join(job_dir, "review.json"), "w", encoding="utf-8") as fh:
                 json.dump({"state": "generating", "scope": "workbench"}, fh)
             html = mocked.dom("agent")
-            check("a workbench change that did not finish says so on Ask Me",
+            check("a workbench change that did not finish says so on Ask AI Agent",
                   "change to the workbench did not finish" in html)
             with io.open(os.path.join(job_dir, "review.json"), "w", encoding="utf-8") as fh:
                 json.dump({"state": "rejected", "scope": "new-test", "why": "timeout", "undone": True,
@@ -1512,7 +1555,7 @@ def main() -> int:
                       and "b2b-full-run.log" not in (got.get("text") or ""))
                 run_tab = mocked.dom("run")
                 check("the Run tests tab shows it under the run",
-                      'id="run-xray"' in run_tab and "XRAY TRACE" in run_tab)
+                      'id="run-xray-part"' in run_tab and "XRAY TRACE" in run_tab)
             finally:
                 try:
                     os.remove(conf_store)

@@ -303,13 +303,34 @@ class AConfluenceThatIsNotAtTheTopOfItsHost(unittest.TestCase):
                                    ["https://wiki.example.com/"]), "https://wiki.example.com")
 
     def test_a_link_outside_the_context_path_does_not_get_it(self):
+        """The allowlist's `/confluence` is not applied to a different prefix.
+        The link's own prefix is kept: that is where its API lives."""
         allow = ["https://jira.example.com/confluence"]
         self.assertEqual(self.base("https://jira.example.com/confluenceX/x/AbCd", allow),
-                         "https://jira.example.com")
+                         "https://jira.example.com/confluenceX")
         self.assertEqual(self.base("https://jira.example.com/x/AbCd", allow),
                          "https://jira.example.com")
         self.assertEqual(self.base("https://other.example.com/confluence/x/AbCd", allow),
-                         "https://other.example.com")
+                         "https://other.example.com/confluence")
+
+    def test_a_host_only_allowlist_keeps_the_context_the_link_is_under(self):
+        """Seen: base_urls was `https://jira.example.com` and the page link
+        was `https://jira.example.com/confluence/spaces/...`. The request
+        went to Jira's `/rest/api/...` and came back as the Jira sign-in page."""
+        allow = ["https://jira.example.com"]
+        for link in ("https://jira.example.com/confluence/pages/viewpage.action?pageId=7",
+                     "https://jira.example.com/confluence/display/ABC/Some+Page",
+                     "https://jira.example.com/confluence/x/AbCd",
+                     "https://jira.example.com/confluence/spaces/ABC/pages/7/T",
+                     "https://jira.example.com/wiki/spaces/ABC/pages/7/T"):
+            prefix = "/wiki" if "/wiki/" in link else "/confluence"
+            self.assertEqual(self.base(link, allow).lower(),
+                             "https://jira.example.com" + prefix, link)
+        self.assertEqual(self.base("https://jira.example.com/pages/viewpage.action?pageId=7",
+                                   allow), "https://jira.example.com")
+        self.assertEqual(self.base(
+            "https://jira.example.com/confluence/pages/viewpage.action?pageId=7",
+            allow, "/confluence/rest/api/content"), "https://jira.example.com")
 
     def test_an_api_path_that_already_carries_it_is_not_doubled(self):
         allow = ["https://jira.example.com/confluence"]

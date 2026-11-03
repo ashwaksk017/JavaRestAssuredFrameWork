@@ -604,7 +604,8 @@ def cmd_compile(job_dir: str, root: str, runner=None, auto_fix: bool = False) ->
 
 def cmd_test(job_dir: str, root: str, suite: str = "", test: str = "", group: str = "",
              env: str = "", compile_first: bool = False, runner=None, threads: int = 0,
-             project: str = "", auto_fix: bool = False, failed_only: bool = False) -> int:
+             project: str = "", auto_fix: bool = False, failed_only: bool = False,
+             xray: bool = False) -> int:
     """Run one suite, class or group. `project`: the one chosen on the page
     (its configuration file, its run environment, -Dconfig.project); none
     chosen, the command's own (WORKBENCH_PROJECT, set by the workbench).
@@ -668,6 +669,16 @@ def cmd_test(job_dir: str, root: str, suite: str = "", test: str = "", group: st
     # Always named, B2B too: a CONFIG_PROJECT left in the machine's environment
     # must not move a B2B run to another file (Config.java reads it otherwise).
     args.append(f"-Dconfig.project={project}")
+    # The suite's listener reports to Xray only when the Run tests tab's
+    # "Update the Test Execution in Xray" is ticked (2026-11-02): -D beats
+    # every configuration file (Config.get). Ticked, xray.enabled in the
+    # configuration (Settings tab) still decides.
+    result["xray"] = bool(xray)
+    if not xray:
+        args.append("-Dxray.enabled=false")
+        say(" ..  Xray is not updated by this run (tick \"Update the Test Execution in Xray\" for that)")
+    else:
+        say(" ..  Xray: the suite's listener updates the Test Execution, if xray.enabled is on (Settings tab)")
     rerun = read_rerun(job_dir) if failed_only else {}
     if failed_only:
         result["rerun"] = {"of": str(rerun.get("at") or ""), "tests": len(rerun.get("tests") or [])}
@@ -760,6 +771,7 @@ def main(argv=None) -> int:
     t.add_argument("--threads", type=int, default=0)
     t.add_argument("--project", default="")
     t.add_argument("--failed-only", action="store_true")
+    t.add_argument("--xray", action="store_true", help="let the suite's listener update Xray")
     a = ap.parse_args(argv)
     try:
         job_dir = loop.intake.job_dir(loop.intake.safe_job(a.job))
@@ -781,7 +793,7 @@ def main(argv=None) -> int:
         # The whole command reads the chosen project's file, not only Maven.
         os.environ["WORKBENCH_PROJECT"] = project
     return cmd_test(job_dir, ROOT, a.suite, a.test, a.group, a.env, a.compile_first, threads=a.threads,
-                    project=project, auto_fix=a.auto_fix, failed_only=a.failed_only)
+                    project=project, auto_fix=a.auto_fix, failed_only=a.failed_only, xray=a.xray)
 
 
 if __name__ == "__main__":

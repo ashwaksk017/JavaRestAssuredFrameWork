@@ -854,6 +854,80 @@ def _steps(case: dict) -> list:
     return out
 
 
+# ---- where a value comes from -------------------------------------------------
+# Tests failed most often (2026-11-02) because the code did not capture a
+# value from a response, or left a template's placeholder unfilled: the
+# design said "guestId captured" or "a valid enroll template" and nothing
+# said from where. Every such value whose source the case does not give is
+# asked about under the design's open questions -- answered, it goes to
+# Automate and to later designs (knowledge.py).
+
+DATAFLOW_MAX = 12
+_PATH_PARAM = re.compile(r"\{([A-Za-z_][\w-]*)\}")
+_PLACEHOLDER = re.compile(r"\$\{([A-Za-z_][\w.-]*)\}|\{\{\s*([A-Za-z_][\w.-]*)\s*\}\}")
+# A source said: a JSON path, a CSV column, an arrow to where it comes
+# from, or a configuration value.
+_SOURCE = re.compile(r"\$\.[A-Za-z_\[]|\bcolumn\b|<-|\bconfiguration\b|\bconfig(?:uration)? key\b", re.I)
+_CAPTURE = re.compile(r"\bcaptur(?:e|ed|es|ing)\b", re.I)
+_CAPTURED_NAME = re.compile(r"\b([A-Za-z_]\w*)\s+(?:is\s+)?captured\b|\bcaptur\w*\s+(?:the\s+)?([A-Za-z_]\w*)", re.I)
+_TEMPLATE = re.compile(r"\btemplate\b", re.I)
+# Words next to "captured" that are not the value's name ("the response is
+# captured", "the token was captured"): no question is made of them.
+_NOT_A_NAME = {"value", "values", "it", "they", "them", "this", "that", "these", "the", "a", "an",
+               "is", "was", "are", "were", "be", "been", "being", "then", "and", "also", "not",
+               "response", "body", "result", "data", "field", "fields", "from", "in", "and"}
+
+
+def _says_source(text: str, name: str = "") -> bool:
+    """Whether the text gives a source -- for `name`, when one is given."""
+    if not name:
+        return bool(_SOURCE.search(text))
+    for line in re.split(r"[;\n]", text):
+        if re.search(rf"\b{re.escape(name)}\b", line) and _SOURCE.search(line):
+            return True
+    return False
+
+
+def dataflow_questions(cases: list) -> list:
+    """Questions about where values come from, at most DATAFLOW_MAX:
+    each path parameter of an endpoint (once per endpoint), each value a
+    step captures, each template or placeholder, whose source no step of
+    the case gives."""
+    params, captures, templates = {}, [], []
+    for c in cases or []:
+        cid = str(c.get("id") or "a case")
+        steps = c.get("steps") or []
+        text = "\n".join(f"{s.get('action', '')}\n{s.get('data', '')}\n{s.get('expected', '')}"
+                         for s in steps) + "\n" + str(c.get("preconditions") or "")
+        endpoint = str(c.get("endpoint") or "")
+        for p in _PATH_PARAM.findall(endpoint):
+            if not _says_source(text, p):
+                params.setdefault((endpoint, p), []).append(cid)
+        for n, s in enumerate(steps, 1):
+            here = f"{s.get('action', '')} {s.get('data', '')} {s.get('expected', '')}"
+            for m in _CAPTURED_NAME.finditer(here):
+                name = m.group(1) or m.group(2)
+                if name and name.lower() not in _NOT_A_NAME and not _says_source(here, name):
+                    captures.append(f"{cid} step {n} captures {name}: at which field of the response "
+                                    f"(a JSON path, e.g. $.{name}), and which later step uses it?")
+                    break
+            for m in _PLACEHOLDER.finditer(f"{s.get('action', '')} {s.get('data', '')}"):
+                name = m.group(1) or m.group(2)
+                if not _says_source(here, name):
+                    templates.append(f"Which value fills the placeholder {name} ({cid} step {n}): a CSV "
+                                     f"column (which), a field of an earlier response (which JSON path), "
+                                     f"or the configuration?")
+            if _TEMPLATE.search(here) and not _PLACEHOLDER.search(here) and not _says_source(here):
+                templates.append(f"{cid} step {n} uses a template ({here.strip()[:80]}): which placeholders "
+                                 f"does it have, and where does each value come from -- a CSV column, a "
+                                 f"field of an earlier response, or the configuration?")
+    out = [f"Where does {{{p}}} in {ep} come from ({', '.join(ids[:4])}{' ...' if len(ids) > 4 else ''}): "
+           f"a field of an earlier response (which, e.g. $.{p}), a CSV column (which), or the configuration?"
+           for (ep, p), ids in params.items()]
+    out += captures + templates
+    return list(dict.fromkeys(out))[:DATAFLOW_MAX]
+
+
 def normalise(raw_cases, known_endpoints=(), max_cases: int = 0) -> tuple:
     """(cases, warnings). Accepts the shape the prompt asks for and the
     column-named shape of the tool this came from."""
@@ -2250,7 +2324,9 @@ def design(job: str, service: str = "", swagger: str = "", requirements: str = "
         "uncovered_endpoints": missing,
         "test_cases": cases,
         "previous": {k: carried[k] for k in ("kept", "changed", "new", "removed")} if previous else None,
-        "open_questions": list(dict.fromkeys(questions)),
+        # The designer's own, then where each carried or templated value
+        # comes from, wherever the cases do not say (dataflow_questions).
+        "open_questions": list(dict.fromkeys(questions + dataflow_questions(cases))),
         "warnings": warnings,
         # Which state of the developer's branch the cases were designed
         # from: the check after the design says when it has moved since.

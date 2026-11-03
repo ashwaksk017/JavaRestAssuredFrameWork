@@ -2071,6 +2071,54 @@ class DesigningWithTheDevelopersChange(unittest.TestCase):
         self.assertEqual(len(self.prompts), 2, "a new commit is a new request")
 
 
+class WhereAValueComesFrom(unittest.TestCase):
+    """Tests failed when the code did not capture a value or left a
+    template's placeholder unfilled: the design asks where each comes
+    from, wherever its cases do not say (2026-11-02)."""
+
+    def case(self, endpoint, *steps, cid="TC-001"):
+        return {"id": cid, "endpoint": endpoint, "preconditions": "",
+                "steps": [dict(zip(("action", "data", "expected"), s)) for s in steps]}
+
+    def test_the_screenshot_case_is_asked_about(self):
+        qs = design.dataflow_questions([self.case(
+            "GET /guests/{guestId}/businesses/{accountId}/members/{memberId}/stays",
+            ("Enroll account owner guest", "enrollActor() with a valid enroll template",
+             "HTTP 200; guestId captured for owner"),
+            ("Get the stays", "the owner's ids", "200"))])
+        text = "\n".join(qs)
+        for p in ("{guestId}", "{accountId}", "{memberId}"):
+            self.assertIn(f"Where does {p}", text)
+        self.assertIn("TC-001 step 1 captures guestId", text)
+        self.assertIn("uses a template", text)
+
+    def test_a_source_said_is_not_asked(self):
+        qs = design.dataflow_questions([self.case(
+            "GET /guests/{guestId}",
+            ("Enroll", "enrollActor(); {{memberId}} <- CSV column member_id",
+             "200; guestId captured from $.guestId"),
+            ("Get", "guestId <- step 1 response $.guestId", "200"))])
+        self.assertEqual(qs, [])
+
+    def test_a_placeholder_without_a_source_is_asked_once_per_endpoint_param(self):
+        qs = design.dataflow_questions([
+            self.case("GET /a/{id}", ("Send", "body with ${memberId}", "200"), cid="TC-001"),
+            self.case("GET /a/{id}", ("Send", "", "200"), cid="TC-002")])
+        self.assertEqual(sum(q.startswith("Where does {id}") for q in qs), 1)
+        self.assertIn("TC-001, TC-002", qs[0])
+        self.assertTrue(any("placeholder memberId" in q for q in qs))
+
+    def test_words_beside_captured_that_are_not_a_name_ask_nothing(self):
+        qs = design.dataflow_questions([self.case(
+            "GET /a", ("Send", "", "200; the response is captured"),
+            ("Send", "", "200; the token was captured"))])
+        self.assertEqual([q for q in qs if "captures" in q], [], qs)
+
+    def test_at_most_twelve(self):
+        cases = [self.case(f"GET /x{n}/{{id}}", ("Send", "", "200"), cid=f"TC-{n:03}") for n in range(30)]
+        self.assertEqual(len(design.dataflow_questions(cases)), design.DATAFLOW_MAX)
+
+
 if __name__ == "__main__":
     import partest
     partest.main(__file__)

@@ -1120,8 +1120,8 @@ def forget_locate(out: str) -> None:
 
 
 def auto_locate(job: str, root: str = "", run=None) -> int:
-    """tools/agent/locate.py for this job, as the "Is it already automated?"
-    button runs it, its words in this log. Its exit 1 is a request that
+    """tools/agent/locate.py for this job -- "Is it already automated?",
+    which has no button of its own: every Read runs it, its words in this log. Its exit 1 is a request that
     STOPS (upstream, or a person decides) -- the stage working. Never the
     reason the read fails. Returns its exit code (-1: it could not run)."""
     out = job_dir(job, root)
@@ -1140,8 +1140,7 @@ def auto_locate(job: str, root: str = "", run=None) -> int:
         text = got.stdout.decode("utf-8", "replace") if isinstance(got.stdout, bytes) else (got.stdout or "")
         rc = got.returncode
     except (OSError, subprocess.SubprocessError) as e:
-        print(f"  note: it could not be run ({type(e).__name__}: {e}); press \"Then: is it "
-              "already automated?\" to run it")
+        print(f"  note: it could not be run ({type(e).__name__}: {e}); press Read again to run it")
         return -1
     for line in text.splitlines():
         print("  " + line)
@@ -1150,12 +1149,12 @@ def auto_locate(job: str, root: str = "", run=None) -> int:
     # "see plan.md" was said of a plan that did not exist).
     if rc == 1 and not os.path.isfile(os.path.join(out, "plan.md")):
         print("  FAIL the check did not finish (exit 1, no plan.md was written): what it said is "
-              "above. Fix that, then press \"Then: is it already automated?\" to run it again")
+              "above. Fix that, then press Read again to run it again")
     elif rc == 1:
         print("  WARN a request stops here (UPSTREAM or CONFIRM): see plan.md -- Automate waits "
               "for it, or for \"go ahead anyway\"")
     elif rc not in (0,):
-        print(f"  note: it ended with exit {rc}; press \"Then: is it already automated?\" to run it again")
+        print(f"  note: it ended with exit {rc}; press Read again to run it again")
     return rc
 
 

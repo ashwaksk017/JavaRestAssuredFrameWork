@@ -40,6 +40,17 @@ RULES
 - A step that changes state (activate, a role, a status) is followed by a
   step that reads the object back and checks the new value: a status code
   alone does not show the change happened.
+- Every value a step takes from somewhere else is written with WHERE it
+  comes from, in `data`: a path parameter or a field taken from an
+  earlier step's response (`guestId <- step 2 response $.guestId`), a
+  placeholder of a request template filled from the test data
+  (`${memberId} <- CSV column member_id`), or a value of the
+  configuration (`<- configuration: the client id`). A step that captures
+  a value names the response field it is read from (`guestId captured
+  from $.guestId`). Where the material does not say which field or which
+  column, add an `open_questions` entry naming the case, the step and the
+  value. A test fails when a value is not captured or a placeholder is
+  left unfilled: say the source, do not leave it to the code.
 - Each step says its `source`: `spec` when its request and its check are
   taken from the API specification, `story` when from the story or the
   requirements, `notes` when from the tester's notes, `flow` when from the

@@ -124,10 +124,10 @@ class TheGatesHold(Base):
 
 
 class TheStrip(Base):
-    def test_nine_stages_in_order(self):
+    def test_eight_stages_in_order(self):
         names = [s["name"] for s in wf.stages(self.job, cr, sm)]
-        self.assertEqual(names, ["Generate", "Review", "Finalize", "Xray tests", "Automate", "Regression",
-                                 "Run on stg", "Push", "Publish"])
+        self.assertEqual(names, ["Generate", "Review", "Finalize", "Xray tests", "Automate", "Execution",
+                                 "Publish", "Push"])
 
 
 if __name__ == "__main__":

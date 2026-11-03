@@ -144,13 +144,16 @@ def stages(job_dir: str, casereview, suitemap) -> list:
         {"name": "Xray tests", "done": bool(keys), "detail": f"{len(keys)} in Xray" if keys else ""},
         {"name": "Automate", "done": state in ("pending-review", "pushed", "approved-local"),
          "detail": state if state != "none" else ""},
-        {"name": "Regression", "done": reg, "detail": reg_why if reg else ""},
-        {"name": "Run on stg", "done": bool(ran.get("ok")),
-         "detail": (f"{ran.get('passed')} passed, {ran.get('failed')} failed" if ran else "")},
-        {"name": "Push", "done": state == "pushed", "detail": review.get("branch") or ""},
+        # Execution: the change's tests run (the regression cases confirmed
+        # first, on the same row of the Commit and push tab). "Regression"
+        # and "Run on stg" were two stages of it until 2026-11-02.
+        {"name": "Execution", "done": bool(ran.get("ok")),
+         "detail": (f"{ran.get('passed')} passed, {ran.get('failed')} failed" if ran
+                    else ("" if reg else "confirm the regression cases first"))},
         # Done when nothing is left: a publish before the push still owes
         # the regression add.
         {"name": "Publish", "done": bool(pub.get("ok")) and not (pub.get("regression") or {}).get("pending"),
          "detail": (pub.get("execution") or "")
                    + (" (regression after the push)" if (pub.get("regression") or {}).get("pending") else "")},
+        {"name": "Push", "done": state == "pushed", "detail": review.get("branch") or ""},
     ]

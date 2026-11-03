@@ -102,7 +102,7 @@ class WhichWayApplies(Base):
         got = ra.classify(self.root, "runs", run(test(JIRA, "staysTest", message="expected [200] but found [500]")))
         self.assertEqual((got["kind"], got["job"], got["failed"]), ("job", "job-1", 1))
         self.assertIn("Suites/jira/job-1.xml", got["why"])
-        self.assertIn("Ask Me", got["why"])
+        self.assertIn("Ask AI Agent", got["why"])
         self.assertEqual(got["blocked"], "")
 
     def test_the_change_waiting_for_review_makes_a_class_the_jobs_whatever_was_run(self):
@@ -271,7 +271,7 @@ def compiled(*errors, what="compile"):
 class CompileErrors(Base):
     """A compile that failed: no test ran, but the errors name their files."""
 
-    def test_the_jobs_own_file_goes_to_its_ask_me_with_the_errors(self):
+    def test_the_jobs_own_file_goes_to_its_ask_ai_agent_with_the_errors(self):
         self.suite("job-1", JIRA)
         self.job("job-1", result=compiled(f"{JIRA_FILE}:42: cannot find symbol",
                                           f"{JIRA_FILE}:50: ';' expected"))
@@ -393,7 +393,7 @@ class CompileErrors(Base):
         self.assertEqual((got["kind"], got["suites"]), ("convert-fix", ["amexbackbook"]))
         self.assertIn("failed before job job-3's change too", got["why"])
         self.assertIn("job job-3's new tests included", got["why"])
-        self.assertIn("Migration tab (Ask Me, scope converter)", got["why"])
+        self.assertIn("Migration tab (Ask AI Agent, scope converter)", got["why"])
 
     def test_the_count_includes_the_errors_left_off_the_list(self):
         self.assertEqual(ra.error_count([f"{JIRA_FILE}:1: x", "... and 7 more error(s)"]), 8)
@@ -490,7 +490,7 @@ class Sending(Base):
         self.assertEqual(self.started, [])
         self.assertFalse(os.path.exists(os.path.join(jobs.job_dir("job-1"), "agent-followup.txt")))
 
-    def test_compile_errors_in_the_jobs_files_go_to_its_ask_me(self):
+    def test_compile_errors_in_the_jobs_files_go_to_its_ask_ai_agent(self):
         self.suite("job-1", JIRA)
         self.job("job-1", result=compiled(f"{JIRA_FILE}:42: cannot find symbol"))
         r = jobs.run_ask("job-1", "Fix the compile.")
@@ -592,6 +592,15 @@ class RunAgainAfterTheFix(Base):
                          [("a", False), ("setUp", True)], "the failed ones, a failed setup included")
         self.assertNotIn("--auto-fix", self.started[0][2], "what still fails never loops back by itself")
         self.assertEqual(jobs.rerun_after_fix("job-1", "agent-followup", 0), {}, "once")
+
+    def test_a_run_that_updated_xray_is_run_again_updating_it_too(self):
+        self.suite("job-1", JIRA)
+        self.job("job-1", result=dict(run(test(JIRA, "a")), xray=True))
+        jobs.run_ask("job-1", "Fix it.")
+        self.started.clear()
+        self.job("job-1", review={"state": "pending-review"})
+        jobs.rerun_after_fix("job-1", "agent-followup", 0)
+        self.assertTrue(self.started[0][2].get("--xray"), "the tick on Run tests is kept")
 
     def test_a_fix_that_failed_its_check_is_not_run_and_says_why(self):
         self.sent()

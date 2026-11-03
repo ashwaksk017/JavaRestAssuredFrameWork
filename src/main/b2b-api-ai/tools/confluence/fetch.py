@@ -115,6 +115,33 @@ def host_allowed(base_url: str, allowlist: list) -> tuple[bool, str]:
 
 
 _NOT_A_CONTEXT = re.compile(r"(?i)/(pages|display|spaces|x|rest|download)/|\.action/")
+# The prefix of a page link, up to the part that is the page itself.
+# `/confluence/pages/...` -> `/confluence`. A page at the host root
+# (`/pages/...`) has no prefix.
+_LINK_CONTEXT = re.compile(
+    r"(?i)^(.*?)/(?:pages|display|spaces|x|rest|download)(?:/|$)")
+
+
+def link_context(raw: str) -> str:
+    """The context path the page link is already under, or "".
+
+    `https://host/confluence/spaces/...` says the API is at
+    `https://host/confluence/rest/...`. A host-only allowlist used to drop
+    that prefix and ask `https://host/rest/...`. On a host shared with
+    Jira that is Jira, which answers with its sign-in page, and a valid
+    Confluence token looks rejected.
+    """
+    path = urllib.parse.urlparse(raw or "").path or ""
+    m = _LINK_CONTEXT.match(path)
+    if not m:
+        return ""
+    ctx = (m.group(1) or "").rstrip("/")
+    parts = [p for p in ctx.split("/") if p]
+    if not parts or any(p in (".", "..") for p in parts):
+        return ""
+    if _NOT_A_CONTEXT.search(ctx + "/"):
+        return ""
+    return ctx
 
 
 def base_for(ref, allowlist: list, api_path: str = "") -> str:
@@ -123,11 +150,10 @@ def base_for(ref, allowlist: list, api_path: str = "") -> str:
     A link gives a scheme and a host. A Confluence that is not at the top
     of its host -- `https://host/confluence/pages/...`, which is how one
     that shares a host with Jira is set up -- also has a CONTEXT PATH, and
-    the API lives under it: `https://host/confluence/rest/api/...`. The
-    link does not say where the context ends; the configuration does. So
-    when an approved base url has a path, and the link is under it, that
-    base url is the address. Without this every request went to
-    `https://host/rest/api/...` and came back 404.
+    the API lives under it: `https://host/confluence/rest/api/...`. An
+    approved base url that already names that path wins. Otherwise the
+    link's own prefix is kept. Without either, every request went to
+    `https://host/rest/api/...` and came back as Jira's sign-in page.
 
     An `--api-path` that already begins with the context path is left to
     do the job it was being used for.
@@ -163,6 +189,13 @@ def base_for(ref, allowlist: list, api_path: str = "") -> str:
             continue
         if len(ctx) > len(best):
             best = ctx
+    if not best:
+        inferred = link_context(getattr(ref, "raw", "") or "")
+        # An `--api-path` that already begins with the context does the
+        # job; prefixing the host as well would ask `/confluence` twice.
+        if inferred and not (api_path and (api_path == inferred
+                                           or api_path.startswith(inferred + "/"))):
+            best = inferred
     return host + best
 
 
