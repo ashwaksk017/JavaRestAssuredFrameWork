@@ -2628,6 +2628,12 @@ $("run-ask-send").onclick = async () => {
         "in a fix job per suite. Nothing is committed. Continue?"
       : `AI Agent will change job "${p.job}"'s tests as the request asks, and the change waits for your ` +
         "review. Nothing is committed. Continue?")) return;
+  // A second send starts clean: the last fix's log and its label go now,
+  // and a poller still on that fix stops writing into the pane.
+  for (const el of [$("run-ask-log"), $("run-ask-state")]) el.followedBy = {};
+  $("run-ask-log").textContent = "";
+  setState($("run-ask-state"), "", "");
+  $("run-ask-open").hidden = true;
   try {
     const r = await post("/api/run-ask", { job: j, text, images: pastedFor("run-ask") });
     clearPasted("run-ask");

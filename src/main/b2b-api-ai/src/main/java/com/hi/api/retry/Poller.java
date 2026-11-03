@@ -93,13 +93,33 @@ public final class Poller {
                                            String jsonPath, String expected,
                                            long timeoutMs) {
         String want = expected == null ? "" : expected;
-        return until(call, res -> {
+        Response last = until(call, res -> {
             if (res == null) {
                 return false;
             }
             String actual = RestUtilities.safeJsonExtract(res, jsonPath);
             return want.equals(actual == null ? "" : actual);
         }, timeoutMs, DEFAULT_INTERVAL_MS, jsonPath + "=" + want);
+        warnIfNoSuchField(last, jsonPath, want);
+        return last;
+    }
+
+    /**
+     * A poll on a field the response does not have runs to its deadline and
+     * can never match (a story test polled {@code accountStatus} where the
+     * account says {@code status}: 16 GETs, 15s, then passed on a body
+     * search). Says so, naming the field, so the wrong path is found from
+     * the log instead of from the run time.
+     */
+    private static void warnIfNoSuchField(Response last, String jsonPath, String want) {
+        if (last == null) {
+            return;
+        }
+        String actual = RestUtilities.safeJsonExtract(last, jsonPath);
+        if (actual == null || actual.isEmpty()) {
+            LOG.warn(" .. [poller] {}={} never matched: the response has no field '{}' -- "
+                    + "check the path against the response body", jsonPath, want, jsonPath);
+        }
     }
 
     /**
@@ -162,7 +182,11 @@ public final class Poller {
             attempts++;
             last = call.get();
         }
-        if (attempts > 1) {
+        if (!ok.test(last) && (settled == null || !settled.test(last))) {
+            // "finished" read as a match: say the deadline ended it, not the value.
+            LOG.warn(" .. [poller] {} gave up after {} attempt(s) / {}ms -- never matched; "
+                    + "the step carries on with the last answer", label, attempts, timeout);
+        } else if (attempts > 1) {
             LOG.info(" .. [poller] {} finished after {} attempt(s)", label, attempts);
         }
         return last;

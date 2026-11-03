@@ -407,6 +407,16 @@ cannot be waived.
 **No `Thread.sleep`.** If the story needs an eventual outcome, poll with a
 bounded deadline and assert the condition, not the wait.
 
+**A poll or assertion path is the field name in the RESPONSE body**, not a
+data column, a ReadyAPI property or a word from the story. The account's
+state is `status` (`"status": "limited"`), even though the converted data
+column that fills it is `datasource_200_accountStatus`. Check every path
+against a recorded response under `reference/` before using it. A path the
+response does not have never matches: the poll runs to its deadline on every
+run (16 GETs, 15 seconds), and a contains-assertion then passes on a body
+search, so the mistake does not fail the test. Poll only when the value can
+really still change; a state the previous call has already set is read once.
+
 **Stay in `tests/jira/` for a new-test job.** The workbench may allow writing
 anywhere, but a jira story test belongs under
 `src/test/java/com/hi/api/tests/jira/` plus its templates/schemas. Do not

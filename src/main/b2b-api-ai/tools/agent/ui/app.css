@@ -649,10 +649,18 @@ section.tab .row > button#run-xray-publish:hover:not(:disabled) { filter: bright
 section.tab .row > button#repo-switch, section.tab .row > button#repo-switch:disabled { background: var(--ok); color: var(--on-warn); }
 section.tab .row > button#agent-refresh, section.tab .row > button#agent-refresh:disabled { background: var(--viz-7); color: #fff; }
 section.tab .row > :is(#repo-switch, #agent-refresh):hover:not(:disabled) { filter: brightness(1.1); }
-/* Red for Stop only; what throws work away (Clear, Discard, Reject) in amber. */
-section.tab .row > button[id*="stop"] { background: var(--bad); color: #fff; order: 1; }
-section.tab .row > button[id*="stop"]:hover:not(:disabled) { background: var(--bad); filter: brightness(1.1); }
-section.tab .row > button[id*="stop"]:disabled { background: var(--bad); }
+/* The designed cases: Refine (violet), Finalize (blue), Create in Xray (green). */
+section.tab .row > button#refine-run, section.tab .row > button#refine-run:disabled { background: var(--viz-7); color: #fff; }
+section.tab .row > :is(#xray-design-create, #xray-manual-create),
+section.tab .row > :is(#xray-design-create, #xray-manual-create):disabled { background: var(--ok); color: var(--on-warn); }
+section.tab .row > :is(#refine-run, #xray-design-create, #xray-manual-create):hover:not(:disabled) { filter: brightness(1.1); }
+/* Red for Stop only, a muted red (the full --bad was too loud as a fill,
+   2026-11-03); what throws work away (Clear, Discard, Reject) in amber. */
+:root, html[data-theme="dark"], html[data-theme="blue"] { --stop: #b5615d; }
+html[data-theme="light"] { --stop: #c0645c; }
+section.tab .row > button[id*="stop"] { background: var(--stop); color: #fff; order: 1; }
+section.tab .row > button[id*="stop"]:hover:not(:disabled) { background: var(--stop); filter: brightness(1.1); }
+section.tab .row > button[id*="stop"]:disabled { background: var(--stop); }
 section.tab .row > button.danger, section.tab .row > button[id*="discard"],
 section.tab .row > button[id*="clear"] { background: var(--warn); color: var(--on-warn); order: 1; }
 section.tab .row > button.danger:hover:not(:disabled), section.tab .row > button[id*="discard"]:hover:not(:disabled),
