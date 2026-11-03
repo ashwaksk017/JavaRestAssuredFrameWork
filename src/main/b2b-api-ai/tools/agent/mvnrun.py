@@ -676,7 +676,7 @@ def cmd_test(job_dir: str, root: str, suite: str = "", test: str = "", group: st
     result["xray"] = bool(xray)
     if not xray:
         args.append("-Dxray.enabled=false")
-        say(" ..  Xray is not updated by this run (tick \"Update the Test Execution in Xray\" for that)")
+        say(" ..  Xray is not updated by this run (Update Xray sends its results once it has finished)")
     else:
         say(" ..  Xray: the suite's listener updates the Test Execution, if xray.enabled is on (Settings tab)")
     rerun = read_rerun(job_dir) if failed_only else {}
@@ -749,6 +749,46 @@ def cmd_test(job_dir: str, root: str, suite: str = "", test: str = "", group: st
                    "tests": res["tests"][:2000]})
     result["allure"] = allure_report(root, runner)
     _write(job_dir, result)
+    # A whole run of the job's own suite is the run of its change waiting
+    # for review: Approve & push and Publish to Xray read it (2026-11-03;
+    # the Commit and push tab's Run the tests went). A re-run of only the
+    # failed tests is not the whole change, so it does not count.
+    job = os.path.basename(job_dir.rstrip("/\\"))
+    review = loop.read_review(job_dir)
+    counted = (suite == loop.JOB_SUITES + job + ".xml" and not rerun
+               and review.get("state") in loop.RUNNABLE_STATES and not review.get("mock")
+               and (review.get("scope") or "new-test") == "new-test")
+    # Only what Approve would accept: the job's own project, a clean build
+    # (what compiles here compiles there), and the environment Approve wants.
+    why_not = ""
+    if counted:
+        job_project = loop.intake.job_project(job_dir)
+        wanted_env = loop.run_env_for(root, loop.load_policy(), job_project)
+        if project != job_project:
+            why_not = f"it ran with {project.upper()}'s configuration; the job is {job_project.upper()}"
+        elif not compile_first:
+            why_not = "\"clean build first\" was not ticked"
+        elif env != wanted_env:
+            why_not = f"it ran on {env}; Approve wants a run on {wanted_env} (Settings tab)"
+    if why_not:
+        result["counts_for_approve"] = False
+        result["why_not_counted"] = why_not
+        _write(job_dir, result)
+        say(f"WARN not recorded as the run of the change waiting for review: {why_not}")
+    elif counted:
+        # Reported by the run itself only when asked AND Xray is on (Settings):
+        # Publish then makes no second Test Execution.
+        try:
+            auto = bool(xray) and bool(_load("mvnrun_settings", os.path.join(HERE, "settings.py"))
+                                       .status(root).get("xray", {}).get("enabled"))
+        except Exception:                                # noqa: BLE001
+            auto = False
+        loop.record_execution(job_dir, root, review, results, res, ok, why, env=env,
+                              rc=rc, suite=suite, auto=auto, allure=result["allure"])
+        result["counts_for_approve"] = True
+        _write(job_dir, result)
+        say(f" ..  recorded as the run of the change waiting for review: Approve & push "
+            f"{'can go ahead' if ok else 'waits for a run that passes'}")
     say(f"{'PASSED' if ok else 'FAILED'}: {why} -- {res['passed']} passed, {res['failed']} failed, "
         f"{res['skipped']} skipped, in {result['seconds']:.0f}s")
     return 0 if ok else 1

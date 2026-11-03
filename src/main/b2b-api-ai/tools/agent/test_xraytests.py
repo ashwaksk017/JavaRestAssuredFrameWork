@@ -322,6 +322,9 @@ class Creating(Base):
         self.assertEqual([c["id"] for c in r["created"]], ["TC-001"])
         self.assertEqual(r["created"][0]["key"], "ABC-903")
         self.assertIn("GONE ABC-901", self.read("xray-tests.log"))
+        # ...and the page is told, not only the log (asked 2026-11-03).
+        self.assertIn("deleted in Jira", r["created"][0]["note"])
+        self.assertIn("created again, deleted in Jira since: ABC-901 -> ABC-903", r["message"])
 
     def test_a_case_that_changed_since_is_said_not_updated(self):
         self.create()

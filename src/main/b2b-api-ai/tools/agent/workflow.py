@@ -144,16 +144,25 @@ def stages(job_dir: str, casereview, suitemap) -> list:
         {"name": "Xray tests", "done": bool(keys), "detail": f"{len(keys)} in Xray" if keys else ""},
         {"name": "Automate", "done": state in ("pending-review", "pushed", "approved-local"),
          "detail": state if state != "none" else ""},
-        # Execution: the change's tests run (the regression cases confirmed
-        # first, on the same row of the Commit and push tab). "Regression"
-        # and "Run on stg" were two stages of it until 2026-11-02.
+        # Execution: the change's tests run -- "This job's new tests" on the
+        # Execute Tests tab (2026-11-03; the regression confirmation is no
+        # gate any more). "Regression" and "Run on stg" were two stages of
+        # it until 2026-11-02.
         {"name": "Execution", "done": bool(ran.get("ok")),
          "detail": (f"{ran.get('passed')} passed, {ran.get('failed')} failed" if ran
-                    else ("" if reg else "confirm the regression cases first"))},
+                    else "run the job's tests on the Execute Tests tab")},
         # Done when nothing is left: a publish before the push still owes
         # the regression add.
-        {"name": "Publish", "done": bool(pub.get("ok")) and not (pub.get("regression") or {}).get("pending"),
-         "detail": (pub.get("execution") or "")
-                   + (" (regression after the push)" if (pub.get("regression") or {}).get("pending") else "")},
+        # Done by Update Xray on the Execute Tests tab (xray-publish.json),
+        # or -- an older run -- the suite's listener reported the run itself.
+        # The CHANGE's run, sent: a publish of another suite's run, or of an
+        # earlier run of this change, is not it.
+        {"name": "Publish", "done": bool(ran.get("reported_by_run"))
+                                    or (bool(pub.get("ok")) and pub.get("change_run", True) is not False
+                                        and bool(ran) and pub.get("run_at") == ran.get("at")
+                                        and not (pub.get("regression") or {}).get("pending")),
+         "detail": ("reported by the run" if ran.get("reported_by_run") and not pub.get("ok")
+                    else (pub.get("execution") or "")
+                    + (" (regression after the push)" if (pub.get("regression") or {}).get("pending") else ""))},
         {"name": "Push", "done": state == "pushed", "detail": review.get("branch") or ""},
     ]

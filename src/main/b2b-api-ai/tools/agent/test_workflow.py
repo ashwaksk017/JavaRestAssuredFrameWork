@@ -129,6 +129,25 @@ class TheStrip(Base):
         self.assertEqual(names, ["Generate", "Review", "Finalize", "Xray tests", "Automate", "Execution",
                                  "Publish", "Push"])
 
+    def test_a_run_that_reported_to_xray_itself_is_published(self):
+        # A run whose suite listener reported itself counts as published.
+        publish = lambda: [s for s in wf.stages(self.job, cr, sm) if s["name"] == "Publish"][0]
+        self.write("review.json", {"state": "pending-review", "execution": {"ok": True, "reported_by_run": False}})
+        self.assertFalse(publish()["done"])
+        self.write("review.json", {"state": "pending-review", "execution": {"ok": True, "reported_by_run": True}})
+        self.assertTrue(publish()["done"])
+        self.assertEqual(publish()["detail"], "reported by the run")
+
+    def test_publish_is_done_only_for_the_changes_own_run(self):
+        publish = lambda: [s for s in wf.stages(self.job, cr, sm) if s["name"] == "Publish"][0]
+        self.write("review.json", {"state": "pending-review", "execution": {"ok": True, "at": "t2"}})
+        self.write("xray-publish.json", {"ok": True, "run_at": "t9", "change_run": False, "execution": "ABC-1"})
+        self.assertFalse(publish()["done"], "another suite's run")
+        self.write("xray-publish.json", {"ok": True, "run_at": "t1", "change_run": True, "execution": "ABC-1"})
+        self.assertFalse(publish()["done"], "an earlier run of the change")
+        self.write("xray-publish.json", {"ok": True, "run_at": "t2", "change_run": True, "execution": "ABC-1"})
+        self.assertTrue(publish()["done"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

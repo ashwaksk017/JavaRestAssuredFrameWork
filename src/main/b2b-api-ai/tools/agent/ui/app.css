@@ -559,7 +559,7 @@ pre.desc-text { white-space: pre-wrap; max-width: 34rem; min-width: 18rem; font-
 #agent-xray-exec { flex: 0 1 17rem; }
 /* Finalize the cases: the step that opens Create in Xray and Automate, as
    wide as the boxes below it; what it says goes underneath. */
-#wf-finalize { flex: 1 1 100%; padding: .85rem 1rem; font-size: 1rem; font-weight: 600; }
+#wf-finalize { flex: 0 1 27rem; padding: .85rem 1rem; font-size: 1rem; font-weight: 600; }
 #wf-finalize:not(:disabled) { background: var(--accent); color: var(--on-accent); border-color: transparent; }
 #wf-finalize:not(:disabled):hover { background: var(--accent-hover); }
 .row.sm-rule { flex-wrap: nowrap; }
@@ -623,33 +623,52 @@ html[data-theme="light"] {
 .trend-tip .row-swatch { display: inline-block; width: .6rem; height: .6rem; border-radius: 2px; margin-right: .35rem; }
 
 /* ---- Every action button as Finalize the cases (asked 2026-11-02) --------
-   A tab's action rows: each button the full width, one size, blue; Stop,
-   Discard, Clear and Reject the same size in red, under the button they
-   stop; what a row says (its state, hints, ticks, links) under them all.
+   A tab's action rows: one size -- Design's, a third of the page -- blue,
+   side by side and centred (asked 2026-11-03); Stop the same size in red,
+   Discard, Clear and Reject in amber, after the button they act on; what a
+   row says (its state, hints, ticks, links) on its own line ABOVE them.
    Buttons inside tables and results (Remove step, Write to Jira...) and
    the tab strips keep their own size. */
 section.tab .row > button, section.tab .repo > button,
 section.tab .review > .row > button {
-  flex: 1 1 100%; padding: .85rem 1rem; font-size: 1rem; font-weight: 600;
+  flex: 0 1 27rem; min-width: 10rem; padding: .85rem 1rem; font-size: 1rem; font-weight: 600;
   background: var(--accent); color: var(--on-accent); border: 1px solid transparent;
 }
 section.tab .row > button:hover:not(:disabled), section.tab .repo > button:hover:not(:disabled),
 section.tab .review > .row > button:hover:not(:disabled) { background: var(--accent-hover); }
 section.tab .row > button:disabled, section.tab .repo > button:disabled,
 section.tab .review > .row > button:disabled { background: var(--accent); border-style: solid; opacity: .45; }
-section.tab .row > button.danger, section.tab .row > button[id*="stop"],
-section.tab .row > button[id*="discard"], section.tab .row > button[id*="clear"] {
-  background: var(--bad); color: #fff; order: 1;
-}
-section.tab .row > button.danger:hover:not(:disabled), section.tab .row > button[id*="stop"]:hover:not(:disabled),
-section.tab .row > button[id*="discard"]:hover:not(:disabled), section.tab .row > button[id*="clear"]:hover:not(:disabled) {
-  background: var(--bad); filter: brightness(1.1);
-}
-section.tab .row > button.danger:disabled, section.tab .row > button[id*="stop"]:disabled,
-section.tab .row > button[id*="discard"]:disabled, section.tab .row > button[id*="clear"]:disabled { background: var(--bad); }
-/* Only what a row SAYS goes under its buttons: its state, its links, its
-   ticks. A label or hint that belongs to a box ("Last [8] releases") stays. */
-section.tab :is(.row, .repo) > :is(.state, small, a, label.inline:has(input[type=checkbox])) { order: 2; }
+/* Create the issue branch beside Automate and Stop, in its own colour. */
+section.tab .row > button#issue-create { background: var(--ok); color: var(--on-warn); }
+section.tab .row > button#issue-create:hover:not(:disabled) { background: var(--ok); filter: brightness(1.1); }
+section.tab .row > button#issue-create:disabled { background: var(--ok); }
+/* Execute Tests: Run (blue), Update Xray (green), Stop (red). */
+section.tab .row > button#run-xray-publish, section.tab .row > button#run-xray-publish:disabled { background: var(--ok); color: var(--on-warn); }
+section.tab .row > button#run-xray-publish:hover:not(:disabled) { filter: brightness(1.1); }
+/* Commit and push: Fetch (blue), Switch (green), Refresh (violet). */
+section.tab .row > button#repo-switch, section.tab .row > button#repo-switch:disabled { background: var(--ok); color: var(--on-warn); }
+section.tab .row > button#agent-refresh, section.tab .row > button#agent-refresh:disabled { background: var(--viz-7); color: #fff; }
+section.tab .row > :is(#repo-switch, #agent-refresh):hover:not(:disabled) { filter: brightness(1.1); }
+/* Red for Stop only; what throws work away (Clear, Discard, Reject) in amber. */
+section.tab .row > button[id*="stop"] { background: var(--bad); color: #fff; order: 1; }
+section.tab .row > button[id*="stop"]:hover:not(:disabled) { background: var(--bad); filter: brightness(1.1); }
+section.tab .row > button[id*="stop"]:disabled { background: var(--bad); }
+section.tab .row > button.danger, section.tab .row > button[id*="discard"],
+section.tab .row > button[id*="clear"] { background: var(--warn); color: var(--on-warn); order: 1; }
+section.tab .row > button.danger:hover:not(:disabled), section.tab .row > button[id*="discard"]:hover:not(:disabled),
+section.tab .row > button[id*="clear"]:hover:not(:disabled) { background: var(--warn); filter: brightness(1.1); }
+section.tab .row > button.danger:disabled, section.tab .row > button[id*="discard"]:disabled,
+section.tab .row > button[id*="clear"]:disabled { background: var(--warn); }
+/* Only what a row SAYS about its buttons goes above them, centred: its
+   state, its hints, and Automate's "go ahead anyway". An option tick or a
+   download link that belongs to the boxes beside it ("include archived",
+   test-cases.csv) stays where it is. */
+section.tab :is(.row, .repo):has(> button) > :is(.state, small, label.inline:has(#auto-past-stops)) {
+  order: -1; flex-basis: 100%; text-align: center; justify-content: center; }
+section.tab :is(.row, .repo):has(> button) > .state:empty { display: none; }
+/* The issue branch's box and what it says, centred over its buttons. */
+#issue-row { justify-content: center; }
+#issue-row input[type=text] { width: auto; flex: 0 1 18rem; }
 section.tab .result .row > button:not(.review > .row > button) {
   flex: initial; padding: .5rem .9rem; font-size: inherit; font-weight: inherit;
   background: var(--btn); color: var(--ink); border: 1px solid var(--line); order: 0;

@@ -115,6 +115,17 @@ class Start(Base):
         self.assertTrue(all(c[2] == CFG["token"] for c in gl.calls))
         self.assertIn("created on GitLab from develop", said)
 
+    def test_a_typed_name_takes_a_sub_task_key(self):
+        gl = GitLab()
+        rec, said = self.quiet(ib.cmd_start, "j1", "issue/", self.root, transport=gl,
+                               local=lambda root, name: "on it", name="feature/b2b-1235")
+        self.assertEqual(rec["branch"], "feature/B2B-1235")
+        self.assertIn("feature/B2B-1235", gl.branches)
+        for bad in ("B2B-1235", "hotfix/B2B-1235", "issue/not-a-key", "issue/develop"):
+            with self.assertRaises(ib.Refused):
+                self.quiet(ib.cmd_start, "j1", "issue/", self.root, transport=gl,
+                           local=lambda root, name: "", name=bad)
+
     def test_an_existing_branch_is_reused(self):
         gl = GitLab(branches=("develop", "issue/B2B-1234"))
         rec, said = self.quiet(ib.cmd_start, "j1", "issue/", self.root, transport=gl,

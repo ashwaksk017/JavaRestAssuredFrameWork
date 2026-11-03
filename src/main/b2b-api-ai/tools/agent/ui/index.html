@@ -47,7 +47,7 @@
   <button role="tab" aria-selected="false" data-tab="convert">
     <span class="name">Migration from ReadyAPI</span><span class="what">convert, then ask AI Agent</span></button>
   <button role="tab" aria-selected="false" data-tab="run">
-    <span class="name">Run tests</span><span class="what">compile, run a suite, see results</span></button>
+    <span class="name">Execute Tests and Publish Results</span><span class="what">run a suite, see and publish results</span></button>
   <button role="tab" aria-selected="false" data-tab="agent">
     <span class="name">Commit and push</span><span class="what">review the change, push it</span></button>
   <button role="tab" aria-selected="false" data-tab="manual">
@@ -320,7 +320,7 @@ Expect 201.'></textarea>
     </div>
   </details>
 
-  <h3>Review the designed cases <span class="hint">tick Approve for the cases that stand, Automate for the ones AI Agent should write; a title can be corrected in place. Create in Xray and Automate take approved cases only</span></h3>
+  <h3>Review the designed cases <span class="hint">tick the cases, then press Approve or Reject above the table; Automate for the ones AI Agent should write; a title can be corrected in place. Create in Xray and Automate take approved cases only</span></h3>
   <div id="design-review" class="result"></div>
   <!-- What is done with the designed cases, one tab each: they act on cases
        that exist, so they sit under the review, not above Design (2026-10-30). -->
@@ -342,7 +342,7 @@ Expect 201.'></textarea>
     placeholder="e.g. Split TC-004 into a 403 and a 404 case, and drop the duplicate paging cases."></textarea>
   <div class="row">
     <button id="refine-run" type="button">Refine with AI Agent</button>
-    <span id="refine-scope" class="hint">the whole list</span>
+    <span id="refine-scope" class="hint"></span>
     <span id="refine-state" class="state"></span>
   </div>
   <details class="area-logs" id="refine-logs">
@@ -404,8 +404,8 @@ Expect 201.'></textarea>
   </div>
   <div id="xt-create" class="input-panel" role="tabpanel" aria-labelledby="xt-tab-create">
   <p class="hint">One Jira Test issue a case, with its steps, linked to the story; the keys then go into the rows the Automate step writes.</p>
+  <input id="xray-design-story" type="text" spellcheck="false" placeholder="story key, e.g. ABC-12">
   <div class="row">
-    <input id="xray-design-story" type="text" spellcheck="false" placeholder="story key, e.g. ABC-12">
     <button id="xray-design-create" disabled>Create in Xray as Jira test cases</button>
     <span id="xray-design-state" class="state"></span>
   </div>
@@ -446,16 +446,17 @@ Expect 201.'></textarea>
   <!-- The issue branch (2026-11-02): made on GitLab from develop, then
        checked out here, BEFORE Automate, so the change goes into it. -->
   <div class="row" id="issue-row">
-    <label class="inline" for="issue-prefix">Issue branch</label>
-    <select id="issue-prefix" aria-label="branch prefix">
-      <option value="issue/" selected>issue/</option>
-      <option value="feature/">feature/</option>
-    </select>
+    <!-- A text box, not a choice of prefix (2026-11-03): filled with
+         issue/<story key>; a sub-task's key, or feature/, can be typed. -->
+    <label class="inline" for="issue-branch">Issue branch</label>
+    <input id="issue-branch" type="text" spellcheck="false" placeholder="issue/B2B-1234"
+           title="issue/ or feature/ and a Jira key -- the story's, or one of its sub-tasks'">
     <span id="issue-name" class="hint">the story's key</span>
-    <button id="issue-create" type="button" title="creates the branch on GitLab from develop (or takes it when it is there), then fetches it and switches this working tree to it -- on a clean tree only">Create the issue branch</button>
     <span id="issue-state" class="state"></span>
   </div>
+  <!-- Create the issue branch, Automate and Stop on one row, each its own colour (2026-11-03). -->
   <div class="row">
+    <button id="issue-create" type="button" title="creates the branch on GitLab from develop (or takes it when it is there), then fetches it and switches this working tree to it -- on a clean tree only">Create the issue branch</button>
     <button id="auto-selected" class="go" title="AI Agent writes REST Assured tests for the approved cases">Automate</button>
     <label class="inline" title="Automate waits when &quot;Is it already automated?&quot; stopped a request: UPSTREAM (a converted test already covers it -- the change belongs in the ReadyAPI XML) or CONFIRM (matched loosely). Tick to write the tests anyway; the log says so, for the reviewer."><input type="checkbox" id="auto-past-stops"> go ahead anyway, although a request is already covered</label>
     <button id="agent-stop">Stop</button>
@@ -653,12 +654,13 @@ Expect 201.'></textarea>
   <div id="repo" class="repo">
     <span id="repo-where">reading the repository…</span>
     <select id="repo-branches" aria-label="branches"></select>
-    <button id="repo-switch" type="button" disabled>Switch to it</button>
-    <button id="repo-fetch" type="button" title="git fetch --prune origin: branches pushed from elsewhere show up; no file changes">Fetch branches</button>
     <span id="repo-state" class="state"></span>
   </div>
 
-  <div class="row">
+  <!-- Fetch, then Switch, then Refresh: one row, a colour each (2026-11-03). -->
+  <div class="row" id="repo-actions">
+    <button id="repo-fetch" type="button" title="git fetch --prune origin: branches pushed from elsewhere show up; no file changes">Fetch branches</button>
+    <button id="repo-switch" type="button" disabled>Switch to it</button>
     <button id="agent-refresh">Refresh</button>
     <span id="agent-state" class="state"></span>
   </div>
@@ -672,31 +674,38 @@ Expect 201.'></textarea>
       <label class="inline" for="agent-branch">Push as</label>
       <input id="agent-branch" type="text" spellcheck="false" placeholder="feature_<story key>">
     </div>
-    <div class="row">
-      <button id="wf-regression" title="confirm which automated cases are regression cases; the tests run only after it">Confirm the regression cases</button>
+    <!-- Compile and Run the tests are on the Execute Tests tab (its run of
+         "This job's new tests" is the change's run, which Approve waits
+         for); the regression confirmation is no gate any more. Hidden, not
+         removed, 2026-11-03. Create Merge Request takes their place. -->
+    <div class="row" hidden>
+      <button id="wf-regression" title="confirm which automated cases are regression cases">Confirm the regression cases</button>
       <button id="agent-compile" title="compile the project; the errors in this change's files are listed first">Compile</button>
       <label class="inline" title="when the compile fails in this change's files (or files it broke), or in converted suites, the errors go to AI Agent without a click; the fix still waits for review"><input type="checkbox" id="agent-compile-auto" checked> AI Agent fixes compile errors</label>
       <select id="agent-run-env" aria-label="environment to run against"></select>
       <button id="agent-run" title="run this change's tests; while it waits for review, Approve &amp; push opens only when they all pass">Run the tests</button>
     </div>
-    <div class="row">
+    <!-- Approve & push first, then Create Merge Request from what it pushed
+         (2026-11-03: one row, in the order they are pressed). -->
+    <div class="row" id="issue-mr-row">
       <button id="agent-push" class="go" disabled>Approve</button>
-      <button id="agent-xray" disabled title="the last run's results, passed or not, to Xray; and, once pushed, the regression tests to the regression Test Set or Plan (Settings tab)">Publish to Xray</button>
-      <input id="agent-xray-exec" type="text" size="12" spellcheck="false" autocomplete="off" aria-label="existing Test Execution key"
+      <button id="issue-mr" type="button" disabled title="from the job's issue branch (Automate Test Case tab) to develop; opens once Approve &amp; push has pushed the change there with every test passing">Create Merge Request</button>
+      <span id="issue-mr-state" class="state"></span>
+      <!-- Publish to Xray (and its box), Dismiss, Review the change and Stop
+           are hidden (2026-11-03): Update Xray on the Execute Tests tab
+           sends the last run's results. Remove `hidden` to offer them again. -->
+      <button id="agent-xray" hidden disabled title="the last run's results, passed or not, to Xray; and, once pushed, the regression tests to the regression Test Set or Plan (Settings tab)">Publish to Xray</button>
+      <input id="agent-xray-exec" hidden type="text" size="12" spellcheck="false" autocomplete="off" aria-label="existing Test Execution key"
         placeholder="into Test Execution (optional)" title="empty: a new Test Execution. A key (ABC-123): the results go into that existing Test Execution">
       <button id="agent-discard" disabled>Discard</button>
-      <button id="agent-dismiss" disabled title="put the last outcome away; nothing in the working tree changes">Dismiss</button>
-      <button id="agent-review" disabled>Review the change</button>
-      <button id="agent-commit-stop" title="stop the review, discard or approve running for this job">Stop</button>
+      <button id="agent-dismiss" hidden disabled title="put the last outcome away; nothing in the working tree changes">Dismiss</button>
+      <button id="agent-review" hidden disabled>Review the change</button>
+      <button id="agent-commit-stop" hidden title="stop the review, discard or approve running for this job">Stop</button>
       <button id="agent-take-merged" type="button" hidden title="once the change's branch is merged into main (its pull request): checks every file is in main as the change made it, then puts this copy's files back and pulls, fast-forward only. Nothing is touched when it is not merged yet">Take the merged change</button>
     </div>
-    <div id="wf-regression-result" class="result"></div>
+    <div id="wf-regression-result" class="result" hidden></div>
     <div id="agent-run-result" class="result"></div>
     <div id="agent-xray-result" class="result"></div>
-    <div class="row" id="issue-mr-row" hidden>
-      <button id="issue-mr" type="button" disabled title="from the job's issue branch to develop; opens once the change is pushed there with every test passing">Raise MR to develop</button>
-      <span id="issue-mr-state" class="state"></span>
-    </div>
   </div>
 
   <h3>Code review <span class="hint">AI Agent reads the change and lists what looks wrong — advice, it does not block Approve</span>
@@ -759,7 +768,9 @@ Expect 201.'></textarea>
     when something is missing; a <code>JAVA_HOME</code> that points at nothing is replaced by a JDK found
     on this machine, and the log says which. One run at a time, and not while AI Agent is writing a change.
   </p>
-  <div class="row">
+  <!-- Compile is hidden for now (2026-11-03): Run the tests compiles first.
+       Remove `hidden` to offer it again. -->
+  <div class="row" id="mvn-compile-row" hidden>
     <button id="mvn-compile" class="go" type="button">Compile</button>
     <span class="hint">mvn test-compile: the main and test code, nothing run</span>
   </div>
@@ -804,7 +815,9 @@ Expect 201.'></textarea>
     <select id="run-env" aria-label="environment"></select>
     <label class="inline" title="delete what Maven built and the last run's reports (target/classes, test-classes, surefire-reports, allure-results...), then mvn test-compile. Uploaded suites, the failure digest and Jira fetches in target/ are kept"><input type="checkbox" id="run-compile-first" checked> clean build first</label>
     <label class="inline" title="when a compile here fails, the errors go to AI Agent without a click, from the workbench itself (the page may be closed): the job's own files, or a helper its change broke, to the job's Ask AI Agent; converted suites, each to a fix job of its own. The fix still waits for your review"><input type="checkbox" id="run-ask-auto" checked> AI Agent fixes compile errors</label>
-    <label class="inline" title="unticked, the run leaves Xray alone. Ticked, the suite's listener updates the Test Execution in Xray with this run's results -- when Xray is switched on in the Settings tab. A re-run after Fix Failures does the same as the run it repeats"><input type="checkbox" id="run-xray"> Update the Test Execution in Xray</label>
+    <!-- Hidden and never ticked (2026-11-03): a run leaves Xray alone, and
+         Update Xray sends the last run's results without running again. -->
+    <label class="inline" hidden><input type="checkbox" id="run-xray"> Update the Test Execution in Xray</label>
   </div>
   <div class="row run-line" id="run-threads-line">
     <label class="run-label" for="run-threads">Parallel threads</label>
@@ -816,8 +829,16 @@ Expect 201.'></textarea>
     </select>
     <span class="hint" id="run-threads-hint">a copy of the suite is run with this thread-count; the suite file is not changed</span>
   </div>
+  <!-- Update Xray's target (2026-11-03): empty, a new Test Execution; a
+       key, the results go into that existing one. -->
+  <div class="row run-line">
+    <label class="run-label" for="run-xray-exec">Test Execution</label>
+    <input id="run-xray-exec" type="text" spellcheck="false" autocomplete="off" placeholder="ABC-123 (optional)">
+    <span class="hint">for Update Xray: empty makes a new Test Execution; a key puts the results into that existing one</span>
+  </div>
   <div class="row actions">
-    <button id="mvn-test" class="go" type="button">Run the tests</button>
+    <button id="mvn-test" class="go" type="button" title="run the tests; Xray is left alone">Run the tests</button>
+    <button id="run-xray-publish" type="button" disabled title="sends the last finished run's results to Xray -- a new Test Execution, or the one named in the Test Execution box -- nothing is run again. Each test needs its Xray key (jira_xray_id in its row, or @XrayTest); one without is listed, never guessed">Update Xray</button>
     <button id="mvn-stop" type="button">Stop</button>
     <span id="run-state" class="state"></span>
   </div>
@@ -916,12 +937,12 @@ Expect 201.'></textarea>
   </div>
   <div class="row center"><span id="manual-state" class="state"></span></div>
   <div id="manual-result" class="result"></div>
-  <h3>Review the manual cases <span class="hint">tick Approve for the cases that stand; a title can be corrected in place. Create in Xray takes approved cases only</span></h3>
+  <h3>Review the manual cases <span class="hint">tick the cases, then press Approve or Reject above the table; a title can be corrected in place. Create in Xray takes approved cases only</span></h3>
   <div id="manual-review" class="result"></div>
 
   <h3>Create in Xray <span class="hint">one Jira Test issue a case, with its steps, linked to the story; the keys then go into the rows the Automate step writes</span></h3>
+  <input id="xray-manual-story" type="text" spellcheck="false" placeholder="story key, e.g. ABC-12">
   <div class="row">
-    <input id="xray-manual-story" type="text" spellcheck="false" placeholder="story key, e.g. ABC-12">
     <button id="xray-manual-create" disabled>Create in Xray as Jira test cases</button>
     <span id="xray-manual-state" class="state"></span>
   </div>
@@ -1070,7 +1091,7 @@ Expect 201.'></textarea>
   <h3>The web server <span class="hint">.workbench/server.log — failed requests, everything that starts or changes something, errors in this page</span></h3>
   <pre id="logs-server" class="log tall">—</pre>
   <p class="hint">The Maven test run log (<code>target/b2b-full-run.log</code>) is not shown here; why a run
-    did or did not update Xray is under each run on the Run tests tab.</p>
+    did or did not update Xray is under each run on the Execute Tests and Publish Results tab.</p>
 
   <h2 class="part" id="workbench-part">Change the workbench <span class="hint">AI Agent changes this page, its server and their tests (tools/agent)</span></h2>
   <p class="lede">

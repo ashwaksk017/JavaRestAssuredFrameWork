@@ -2523,7 +2523,7 @@ class Push(Repo):
         out = io.StringIO()
         with redirect_stdout(out):
             self.assertEqual(self.push(), 1)
-        self.assertIn("Review the change first", out.getvalue())
+        self.assertIn("AI Agent has not reviewed this change yet", out.getvalue())
         with io.open(os.path.join(self.job, "proposed.diff"), "rb") as fh:
             sha = hashlib.sha256(fh.read()).hexdigest()
         finding = {"category": "case", "severity": "high", "file": JIRA + "NewTest.java",

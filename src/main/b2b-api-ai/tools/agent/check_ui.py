@@ -931,10 +931,21 @@ def main() -> int:
                   and "Update the Test Execution in Xray" in run_html)
             check("the issue branch is made before Automate, the MR raised from Commit and push",
                   'id="issue-create"' in html and html.find('id="issue-create"') < html.find('id="auto-selected"')
-                  and 'value="issue/" selected' in html and 'value="feature/"' in html)
+                  and 'id="issue-branch"' in html and 'placeholder="issue/B2B-1234"' in html
+                  and 'id="issue-prefix"' not in html)
             agent_html = mocked.dom("agent")
-            check("Raise MR to develop is on Commit and push, closed until a green run is pushed",
-                  'id="issue-mr"' in agent_html and 'id="issue-mr-row" hidden=""' in agent_html)
+            check("Create Merge Request comes right after Approve & push, closed until a green run is pushed",
+                  re.search(r'<button id="issue-mr"[^>]*disabled', agent_html) is not None
+                  and ">Create Merge Request</button>" in agent_html
+                  and 'id="issue-mr-row" hidden' not in agent_html
+                  and 0 < agent_html.find('id="agent-push"') < agent_html.find('id="issue-mr"'))
+            check("Publish to Xray, Dismiss, Review the change and Stop are hidden on Commit and push",
+                  all(re.search(rf'<(button|input) id="{i}"[^>]*hidden', agent_html)
+                      for i in ("agent-xray", "agent-xray-exec", "agent-dismiss", "agent-review", "agent-commit-stop")))
+            check("Execute Tests is three buttons: Run the tests, Update Xray (sends the last run, runs nothing), Stop",
+                  'id="run-xray-publish"' in run_html and ">Update Xray</button>" in run_html
+                  and 'id="run-xray-exec"' in run_html
+                  and 'id="mvn-compile-row" hidden' in run_html)
             check("the API story template is offered beside the story, and served",
                   'href="/api-story-template.md"' in html and 'id="story-template-fill"' in html
                   and "Where each value comes from" in mocked.call("/api-story-template.md", raw=True)[1])
@@ -1267,10 +1278,15 @@ def main() -> int:
                          "+    @Test(enabled = false)\n+    public void nothing() { }\n+}\n")
             waiting("2026-10-10T10:00:00Z")
             html = mocked.dom("agent")
+            # Hidden since 2026-11-03, the button still follows the change:
+            # its tag is read whole, whatever order its attributes are in.
+            def tag(page, ident):
+                m = re.search(rf'<(?:button|input) id="{ident}"[^>]*>', page)
+                return m.group(0) if m else ""
             check("Review the change is offered for a change that is waiting",
                   ">Review the change</button>" in html
-                  and 'id="agent-review" disabled' not in html
-                  and f'id="agent-review" data-job="{JOB}"' in html,
+                  and " disabled" not in tag(html, "agent-review")
+                  and f'data-job="{JOB}"' in tag(html, "agent-review"),
                   "the button is off or missing")
             code, rc = press("agent-review", {})
             html = mocked.dom("agent")
@@ -1338,7 +1354,7 @@ def main() -> int:
             html = mocked.dom("agent")
             check("after Discard the review says the change is no longer waiting",
                   "no longer waiting (the job is DISCARDED)" in html
-                  and 'id="agent-review" disabled' in html)
+                  and " disabled" in tag(html, "agent-review"))
             # ---- an old outcome: worded by what happened, and put away ---------
             with io.open(os.path.join(job_dir, "review.json"), "w", encoding="utf-8") as fh:
                 json.dump({"state": "rejected", "scope": "new-test", "why": "timeout", "undone": True,
@@ -1365,7 +1381,7 @@ def main() -> int:
                            "updated": "2026-10-10T12:00:00Z"}, fh)
             html = mocked.dom("agent")
             check("an outcome with nothing in the tree offers Dismiss",
-                  'id="agent-dismiss" title=' in html and 'id="agent-dismiss" disabled' not in html)
+                  "title=" in tag(html, "agent-dismiss") and " disabled" not in tag(html, "agent-dismiss"))
             with io.open(os.path.join(job_dir, "cursor.log"), "w", encoding="utf-8") as fh:
                 fh.write("2026-10-10 12:00:00  an old conversation with AI Agent\n")
             with io.open(os.path.join(job_dir, "agent-generate.log"), "w", encoding="utf-8") as fh:
@@ -1389,7 +1405,7 @@ def main() -> int:
             code, got = mocked.call("/api/agent-dismiss", {"job": JOB})
             check("a change waiting for review cannot be dismissed, only discarded or approved",
                   code >= 400 and "Use Discard" in json.dumps(got), f"{code} {got}")
-            check("Dismiss is disabled while a change waits", 'id="agent-dismiss" disabled' in mocked.dom("agent"))
+            check("Dismiss is disabled while a change waits", " disabled" in tag(mocked.dom("agent"), "agent-dismiss"))
             # ---- manual tests: documents, existing tests, the delta ------------
             def send_doc(name, data, ctype="application/octet-stream"):
                 req = urllib.request.Request(

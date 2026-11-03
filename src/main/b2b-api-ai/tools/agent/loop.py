@@ -5333,8 +5333,9 @@ def case_check_refusal(job_dir: str) -> str:
     except (OSError, ValueError):
         got = {}
     if got.get("diff_sha256") != now:
-        return ("Review the change first (Commit and push tab): AI Agent checks each test against the "
-                "steps of its case and the tester's answers before it is pushed.")
+        return ("AI Agent has not reviewed this change yet: press Approve & push on the Commit and push "
+                "tab -- it runs the review first. AI Agent checks each test against the steps of its "
+                "case and the tester's answers before it is pushed.")
     high = [f for f in got.get("findings") or [] if f.get("category") == "case" and f.get("severity") == "high"]
     if high:
         return (f"the review found {len(high)} test(s) that do not do what their case says: "
@@ -5398,8 +5399,8 @@ def _approve(job_dir: str, root: str, policy: dict, job: str, confirm: str,
         # Pushed only when the tests of THIS code ran, and all passed.
         ran = review.get("execution") or {}
         if not ran:
-            say(f"FAIL run the tests first (Run the tests, on {policy.get('run_env') or 'stg'}): "
-                f"only a change whose tests all passed is pushed.")
+            say(f"FAIL run the tests first (This job's new tests, on the Execute Tests tab, on "
+                f"{policy.get('run_env') or 'stg'}): only a change whose tests all passed is pushed.")
             return 1
         if not ran.get("ok"):
             say(f"FAIL the last run, on {ran.get('env')}, did not pass: {ran.get('why')}. Fix it "
@@ -5743,6 +5744,32 @@ def _stream(root: str, argv: list, timeout: float) -> tuple:
 RUNNABLE_STATES = ("pending-review", "approved-local", "pushed")
 
 
+def record_execution(job_dir: str, root: str, review: dict, results: str, res: dict, ok: bool,
+                     why: str, env: str, rc: int, suite: str, auto: bool, allure) -> dict:
+    """A run of the change's tests, as Approve and Publish to Xray read it:
+    a copy of TestNG's results in the job, execution.json, and its summary
+    in review.json with the files' hashes -- so Approve can tell the run was
+    of THIS code. Used by cmd_run and by the Execute Tests tab's run of the
+    job's suite (mvnrun.py, 2026-11-03)."""
+    files = review.get("files") or {}
+    paths = list(files.get("created") or []) + list(files.get("modified") or [])
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    kept = f"testng-results-{stamp}.xml"
+    try:
+        shutil.copy2(results, os.path.join(job_dir, kept))
+    except OSError:
+        kept = ""
+    record = {"at": _now(), "env": env, "rc": rc, "ok": ok, "why": why, "suite": suite,
+              "reported_by_run": auto, "allure": allure,
+              "passed": res["passed"], "failed": res["failed"], "skipped": res["skipped"],
+              "switched_off": res["switched_off"], "results_file": kept,
+              "hashes": {p: _sha(os.path.join(root, p)) for p in paths}}
+    with io.open(os.path.join(job_dir, "execution.json"), "w", encoding="utf-8") as fh:
+        json.dump(dict(record, tests=res["tests"]), fh, indent=1)
+    write_review(job_dir, dict(review, execution=record))
+    return record
+
+
 def cmd_run(job_dir: str, root: str, policy: dict, env: str = "", runner=None) -> int:
     """Run the tests of the change waiting for review, against an
     environment (the policy's run_env, stg), and record what came of it:
@@ -5839,12 +5866,6 @@ def cmd_run(job_dir: str, root: str, policy: dict, env: str = "", runner=None) -
             say("    " + line[:300])
         return 1
     ok, why = execution.verdict(res)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    kept = f"testng-results-{stamp}.xml"
-    try:
-        shutil.copy2(results, os.path.join(job_dir, kept))
-    except OSError:
-        kept = ""
     # The suite's own listener reported the results to Xray when xray.enabled
     # was on: Publish then makes no second Test Execution.
     try:
@@ -5872,14 +5893,8 @@ def cmd_run(job_dir: str, root: str, policy: dict, env: str = "", runner=None) -
             "(its Test Execution is in the Maven output above)")
     mvnrun_ = _load("loop_mvnrun", os.path.join(HERE, "mvnrun.py"))
     allure = mvnrun_.allure_report(root, runner, run=maven)
-    record = {"at": _now(), "env": env, "rc": rc, "ok": ok, "why": why, "suite": suite,
-              "reported_by_run": auto, "allure": allure,
-              "passed": res["passed"], "failed": res["failed"], "skipped": res["skipped"],
-              "switched_off": res["switched_off"], "results_file": kept,
-              "hashes": {p: _sha(os.path.join(root, p)) for p in paths}}
-    with io.open(os.path.join(job_dir, "execution.json"), "w", encoding="utf-8") as fh:
-        json.dump(dict(record, tests=res["tests"]), fh, indent=1)
-    write_review(job_dir, dict(review, execution=record))
+    record_execution(job_dir, root, review, results, res, ok, why, env=env, rc=rc, suite=suite,
+                     auto=auto, allure=allure)
     for test in res["tests"]:
         line = f"{test['status']:<4} {test['class'].rsplit('.', 1)[-1]}.{test['method']}"
         say(("  ok  " if test["status"] == "PASS" else "  ..  ") + line

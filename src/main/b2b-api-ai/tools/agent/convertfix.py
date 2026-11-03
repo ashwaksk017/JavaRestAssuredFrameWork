@@ -171,7 +171,7 @@ def run(job: str, root: str = "", use_cursor: bool = True, runner=None, generate
         if converted:
             for suite, xml in sorted(converted.items()):
                 say(f" ok  suite {suite} compiles: run "
-                    + (f"{xml} on the Run tests tab" if xml else "it on the Run tests tab"))
+                    + (f"{xml} on the Execute Tests tab" if xml else "it on the Execute Tests tab"))
         else:
             say(" ok  the converted tree compiles: ready to review and run")
         return 0
@@ -249,7 +249,7 @@ def run(job: str, root: str = "", use_cursor: bool = True, runner=None, generate
         if state == "pending-review":
             xml = (converted or {}).get(suite)
             say(f" ok  {suite} compiles: the fix is waiting for review (job {sub}, Commit and push tab)"
-                + (f"; once it is approved, run {xml} on the Run tests tab" if xml else ""))
+                + (f"; once it is approved, run {xml} on the Execute Tests tab" if xml else ""))
         else:
             say(f"FAIL {suite} still does not compile after AI Agent's attempts ({state}); "
                 f"job {sub} holds what it tried -- see its AI Agent log")

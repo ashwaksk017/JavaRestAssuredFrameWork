@@ -140,21 +140,57 @@ def _issue_type(xconn: dict, key: str, transport) -> str:
     return str(((issue or {}).get("fields") or {}).get("issuetype", {}).get("name") or "")
 
 
+RUN_TAB_RESULT = "mvnrun-result.json"      # mvnrun.RESULT: the Execute Tests tab's last run
+
+
+def last_run_tab_run(job_dir: str) -> dict:
+    """The Execute Tests tab's last finished run, as a run to publish
+    (Update Xray, 2026-11-03: the results sent, nothing run again). A run of
+    the job's own suite was recorded as execution.json too, with the files'
+    hashes: that record is the one read then."""
+    try:
+        with io.open(os.path.join(job_dir, RUN_TAB_RESULT), encoding="utf-8") as fh:
+            r = json.load(fh)
+    except (OSError, ValueError):
+        r = None
+    if not isinstance(r, dict) or r.get("what") != "test" or not r.get("tests"):
+        raise Refused("there is no finished run with test results to send: Run the tests first "
+                      "(a run going now, or one that did not compile, has none)")
+    if r.get("counts_for_approve"):
+        try:
+            with io.open(os.path.join(job_dir, "execution.json"), encoding="utf-8") as fh:
+                ran = json.load(fh)
+            # The record of THIS run only -- not one written by another run since.
+            if isinstance(ran, dict) and str(ran.get("suite") or "") == str(r.get("suite") or ""):
+                return dict(ran, change_run=True)
+        except (OSError, ValueError):
+            pass
+    return {"at": r.get("at"), "env": r.get("env"), "ok": bool(r.get("ok")), "why": r.get("verdict"),
+            "passed": r.get("passed"), "failed": r.get("failed"), "skipped": r.get("skipped"),
+            "tests": r.get("tests") or [], "reported_by_run": False,
+            "suite": r.get("suite") or r.get("test") or r.get("group") or ""}
+
+
 def run(job: str, root: str = "", transport=None, conf: dict = None, mocked: bool = None,
-        execution: str = "") -> dict:
+        execution: str = "", last_run: bool = False) -> dict:
     """`execution`: an existing Test Execution's key to put the results in;
-    empty for a new one."""
+    empty for a new one. `last_run`: the Execute Tests tab's last run, not
+    the change's run (execution.json)."""
     root = root or ROOT
     job_dir = loop.intake.job_dir(job, root)
     execution = str(execution or "").strip().upper()
     if execution and not _KEY_RX.match(execution):
         raise Refused(f"{execution!r} is not a Jira issue key (like ABC-123)")
     diag.step("Reading the job's last run")
-    try:
-        with io.open(os.path.join(job_dir, "execution.json"), encoding="utf-8") as fh:
-            ran = json.load(fh)
-    except (OSError, ValueError):
-        raise Refused("this job has no run to publish: Run the tests first (Commit and push tab)")
+    if last_run:
+        ran = last_run_tab_run(job_dir)
+    else:
+        try:
+            with io.open(os.path.join(job_dir, "execution.json"), encoding="utf-8") as fh:
+                ran = json.load(fh)
+        except (OSError, ValueError):
+            raise Refused("this job has no run to publish: run This job's new tests first "
+                          "(Execute Tests tab)")
     diag.step(f"Run on {ran.get('env')} at {ran.get('at')}: "
               f"{ran.get('passed')} passed, {ran.get('failed')} failed")
     try:
@@ -205,9 +241,12 @@ def run(job: str, root: str = "", transport=None, conf: dict = None, mocked: boo
                             + ("" if pushed else " The tests' change is not pushed yet.")),
             "project": conf.get("project") or "MOCK", "testEnvironments": [str(ran.get("env") or "")]}
     out = {"kind": "xray-publish", "at": _now(), "job": job, "mock": bool(mocked),
-           "run_at": ran.get("at"), "run_ok": bool(ran.get("ok")), "change": change,
+           "run_at": ran.get("at"), "change_run": not last_run or bool(ran.get("change_run")), "run_ok": bool(ran.get("ok")), "change": change,
            "existing": bool(execution), "published": by_key, "not_published": unkeyed}
-    in_regression = set(_regression_keys(root, ran, job_dir, mocked))
+    # Only the change's own run adds to the regression Test Set / Plan: a
+    # run of another suite (a group of every team's tests, say) never does.
+    change_run = not last_run or bool(ran.get("change_run"))
+    in_regression = set(_regression_keys(root, ran, job_dir, mocked)) if change_run else set()
     regression_keys = sorted(k for k in by_key if k in in_regression)
     # Pressed again for a run already made a new Test Execution: no second
     # one. What may be left is the regression add, once the change is pushed.
@@ -293,7 +332,7 @@ def run(job: str, root: str = "", transport=None, conf: dict = None, mocked: boo
     elif regression_keys and not pushed:
         out["regression"] = {"key": "", "added": [], "pending": True,
                              "note": "the regression tests are added once the change is pushed "
-                                     "(press Publish again after Approve & push: no second "
+                                     "(press Update Xray again after Approve & push: no second "
                                      "Test Execution is made)"}
     elif regression_keys:
         out["regression"] = {"key": "", "added": [],
@@ -328,9 +367,11 @@ def main(argv=None) -> int:
     ap.add_argument("--job", required=True)
     ap.add_argument("--execution", default="",
                     help="an existing Test Execution's key: the results go into it, not a new one")
+    ap.add_argument("--last-run", action="store_true",
+                    help="the Execute Tests tab's last run (any suite, class or group), not run again")
     args = ap.parse_args(argv)
     try:
-        r = run(loop.intake.safe_job(args.job), execution=args.execution)
+        r = run(loop.intake.safe_job(args.job), execution=args.execution, last_run=args.last_run)
     except (Refused, search.Refused) as e:
         print(f"FAIL {e}")
         return 1

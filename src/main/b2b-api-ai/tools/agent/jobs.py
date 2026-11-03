@@ -417,7 +417,7 @@ RUNNABLES = {
     "issue-branch": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "issuebranch.py"), "start"],
         "label": "Create the job's issue branch on GitLab from develop, then switch to it here",
-        "options": {"--job": "text", "--prefix": "text"},
+        "options": {"--job": "text", "--prefix": "text", "--name": "text"},
     },
     "issue-mr": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "issuebranch.py"), "mr"],
@@ -484,7 +484,8 @@ RUNNABLES = {
     "xray-publish": {
         "argv": [PY, "-B", os.path.join("tools", "agent", "xraypublish.py")],
         "label": "Publish the last run's results to Xray, and the regression tests",
-        "options": {"--job": "text", "--execution": "text"},
+        # --last-run: the Execute Tests tab's last run (its Update Xray, 2026-11-03).
+        "options": {"--job": "text", "--execution": "text", "--last-run": "flag"},
     },
     # The change's tests, run against an environment; what came of it is
     # what Approve & push is gated on.
@@ -1252,8 +1253,14 @@ def workflow_gate(job: str, runnable: str, options: dict) -> str:
     if runnable == "xray-publish":
         # Any run, passed or not: a failure is a result Xray should hold too.
         # (The push needs a green run; publishing does not.)
-        if not os.path.isfile(os.path.join(out, "execution.json")):
-            return "run the tests first (Run the tests): there is no run to publish"
+        if options.get("--last-run"):
+            # Update Xray on the Execute Tests tab: its last finished run --
+            # never one going now (its result file is removed as it starts).
+            if not os.path.isfile(os.path.join(out, "mvnrun-result.json")):
+                return "run the tests first (Run the tests): there is no finished run to send to Xray"
+        elif not os.path.isfile(os.path.join(out, "execution.json")):
+            return ("run the tests first (This job's new tests, on the Execute Tests tab): "
+                    "there is no run to publish")
     return ""
 
 
@@ -1968,7 +1975,7 @@ def rerun_after_fix(fix_job: str, runnable: str, rc: int) -> dict:
         try:
             start(run_job, rec["runnable"], options)
         except Exception as e:                           # noqa: BLE001 -- said on the page
-            why = f"the tests could not be run again by themselves ({e}): run them from the Run tests tab"
+            why = f"the tests could not be run again by themselves ({e}): run them from the Execute Tests tab"
     rec.update(state="skipped" if why else "started", why=why, finished_fix=_now())
     _write(rec_path, rec)
     diag.job_note(run_job, "[jobs] after Fix Failures (job " + fix_job + "): "
@@ -2276,6 +2283,12 @@ def start(job: str, runnable: str, options: dict) -> dict:
     # Checked before the slot is taken: a project that is not one is refused
     # with nothing started.
     project = run_project(job, options) if runnable == "mvn-test" else intake.job_project(out)
+    if runnable == "xray-publish" and options.get("--last-run"):
+        # Update Xray sends the run to the Xray of the project the RUN used
+        # (chosen on the Execute Tests tab), not the open job's: a GOAL run
+        # must not go to B2B's Xray project with B2B's token.
+        ran = _read_json(os.path.join(out, "mvnrun-result.json"))
+        project = run_project(job, {"--project": ran.get("project") or ""}) if ran.get("project") else project
     wb = is_workbench_job(job)
     if runnable == "agent-generate" and ((options.get("--scope") == "workbench") != wb):
         raise ValueError("a change to the workbench is made from the Update WorkBench tab (Change the "

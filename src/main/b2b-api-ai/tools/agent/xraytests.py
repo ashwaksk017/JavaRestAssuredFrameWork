@@ -681,7 +681,7 @@ def create(job: str, what: str, story: str, confirm: str, root: str = "", conn=N
             kept["tests"].pop(was, None)
     if moved_any:
         write_keys(job_dir, kept)
-    todo = []
+    todo, gone = [], {}
     for case in cases:
         ident = f"{what}:{case['id']}"
         entry = assigned.get(ident, (None, None))[1]
@@ -708,6 +708,7 @@ def create(job: str, what: str, story: str, confirm: str, root: str = "", conn=N
                     done["kept"].append(row)
                 continue
             _log(job_dir, f"GONE {key} ({ident}) is no longer in Jira; it will be created again")
+            gone[case["id"]] = key
         todo.append(case)
     if todo:
         todo = _not_what_the_story_has(job_dir, what, story, todo, fields, opts, conn, transport,
@@ -748,6 +749,9 @@ def create(job: str, what: str, story: str, confirm: str, root: str = "", conn=N
             break
         row = {"id": case["id"], "key": key, "title": case["title"], "steps": 0,
                "steps_of": len(case["steps"]), "linked": False}
+        if case["id"] in gone:
+            row["was"] = gone[case["id"]]
+            row["note"] = f"{gone[case['id']]} was deleted in Jira, so the test was created again"
         kept["tests"][ident] = {"key": key, "title": case["title"], "fingerprint": fingerprint(case),
                                 "story": story, "mock": mocked, "at": _now(),
                                 "described": case.get("described", ""),
@@ -797,6 +801,9 @@ def create(job: str, what: str, story: str, confirm: str, root: str = "", conn=N
     if done["failed"]:
         done["ok"] = False
     bits = [f"{made_n} test(s) created in {project} for {story}"]
+    again = [f"{r['was']} -> {r['key']}" for r in done["created"] if r.get("was")]
+    if again:
+        bits.append(f"{len(again)} of them created again, deleted in Jira since: {', '.join(again)}")
     if done["kept"]:
         bits.append(f"{len(done['kept'])} already there and unchanged")
     if done["changed"]:

@@ -254,7 +254,72 @@ class WhatIsRefused(Base):
         os.remove(os.path.join(self.job, "execution.json"))
         with self.assertRaises(xp.Refused) as got:
             xp.run("j1", self.root, transport=Xray(), conf=dict(CONF), mocked=False)
-        self.assertIn("Run the tests first", str(got.exception))
+        self.assertIn("This job's new tests first", str(got.exception))
+
+
+class UpdateXrayFromTheLastRun(Base):
+    """Update Xray on the Execute Tests tab (2026-11-03): the last finished
+    run's results are sent; nothing is run again."""
+
+    def last(self, **over):
+        r = dict({"kind": "mvnrun", "what": "test", "at": "2026-11-03T09:00:00Z", "env": "stg",
+                  "suite": "Suites/jira/group-regression.xml", "ok": False, "verdict": "1 failed",
+                  "passed": 3, "failed": 1, "skipped": 0, "tests": self.ran["tests"]}, **over)
+        with io.open(os.path.join(self.job, xp.RUN_TAB_RESULT), "w", encoding="utf-8") as fh:
+            json.dump(r, fh)
+
+    def test_any_suites_last_run_is_sent_and_not_twice(self):
+        os.remove(os.path.join(self.job, "execution.json"))          # not a run of the job's suite
+        self.last()
+        x = Xray()
+        r = xp.run("j1", self.root, transport=x, conf=dict(CONF), mocked=False, last_run=True)
+        self.assertEqual((r["execution"], r["run_at"]), ("ABC-901", "2026-11-03T09:00:00Z"))
+        self.assertEqual(r["published"], {"ABC-11": "PASS", "ABC-12": "FAIL"})
+        self.change("none")                                            # nothing left to add afterwards
+        with self.assertRaises(xp.Refused) as got:
+            xp.run("j1", self.root, transport=Xray(), conf=dict(CONF), mocked=False, last_run=True)
+        self.assertIn("published already", str(got.exception))
+
+    def test_the_last_run_goes_into_an_existing_test_execution(self):
+        self.last()
+        x = Xray()
+        r = xp.run("j1", self.root, transport=x, conf=dict(CONF), mocked=False, last_run=True,
+                   execution="abc-777")
+        self.assertEqual((r["execution"], r["existing"]), ("ABC-777", True))
+        post = [c for c in x.calls if c[1].endswith("/import/execution")][0]
+        self.assertEqual(post[2]["testExecutionKey"], "ABC-777")
+        self.assertNotIn("info", post[2], "its summary and description are left as they are")
+        with self.assertRaises(xp.Refused) as got:
+            xp.run("j1", self.root, transport=Xray(), conf=dict(CONF), mocked=False, last_run=True,
+                   execution="ABC-778")
+        self.assertIn("not a Test Execution", str(got.exception))
+
+    def test_no_finished_run_nothing_sent(self):
+        with self.assertRaises(xp.Refused) as got:
+            xp.run("j1", self.root, transport=Xray(), conf=dict(CONF), mocked=False, last_run=True)
+        self.assertIn("no finished run", str(got.exception))
+        self.last(tests=[], ok=False, verdict="it did not compile")
+        with self.assertRaises(xp.Refused):
+            xp.run("j1", self.root, transport=Xray(), conf=dict(CONF), mocked=False, last_run=True)
+
+    def test_a_run_of_the_jobs_suite_is_read_with_its_hashes(self):
+        with io.open(os.path.join(self.job, "execution.json"), "w", encoding="utf-8") as fh:
+            json.dump(dict(self.ran, suite="Suites/jira/j1.xml"), fh)
+        self.last(counts_for_approve=True, at="2026-11-03T10:00:00Z", suite="Suites/jira/j1.xml")
+        x = Xray()
+        r = xp.run("j1", self.root, transport=x, conf=dict(CONF), mocked=False, last_run=True)
+        self.assertEqual(r["run_at"], self.ran["at"], "execution.json, the change's own record")
+        self.assertTrue(r["change_run"])
+        self.assertEqual(r["regression"]["added"], ["ABC-11", "ABC-12"], "the change's run, pushed: added")
+
+    def test_another_suites_run_never_adds_to_the_regression_set(self):
+        os.remove(os.path.join(self.job, "execution.json"))
+        self.last()                                                    # group-regression.xml, job pushed
+        x = Xray()
+        r = xp.run("j1", self.root, transport=x, conf=dict(CONF), mocked=False, last_run=True)
+        self.assertFalse(r["change_run"])
+        self.assertFalse(any("/api/testset/" in c[1] for c in x.calls), "no regression add")
+        self.assertNotIn("regression", r)
 
 
 if __name__ == "__main__":

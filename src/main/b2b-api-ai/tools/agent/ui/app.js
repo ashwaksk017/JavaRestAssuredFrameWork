@@ -1226,7 +1226,7 @@ function showRefineScope() {
   const ids = [...selectedFor(job())].sort();
   if ($("refine-scope")) $("refine-scope").textContent = ids.length
     ? `only ${ids.length === 1 ? "this case" : `these ${ids.length} cases`}: ${ids.join(", ")} (the rest are kept as they are)`
-    : "the whole list";
+    : "";
 }
 // AI Agent's suite suggestion for the job's cases (suite-suggest.json), by id.
 let suiteSuggest = { job: "", byId: {} };
@@ -1337,17 +1337,23 @@ function reviewTable(j, what, cases, entries, after, done, change, suites, descs
   const counts = { approved: 0, rejected: 0, proposed: 0 };
   for (const c of cases) counts[stateOf(c)] += 1;
   const design = what === "design";
-  // Two ticks a row -- Approve and Automate -- and two buttons, for every
-  // case: the Select column and its "... selected" buttons went
-  // (2026-11-02). Refine with AI Agent is of the whole list.
+  // Two ticks a row -- Approve and Automate -- and two buttons (2026-11-02).
+  // The Approve tick only picks a case, and starts empty: Approve and Reject
+  // act on what was ticked now, never on all of them, nor on cases approved
+  // before (a Reject of one must not take every approved case with it,
+  // 2026-11-03). The case's state is said in its Case cell. Refine with AI
+  // Agent is of the whole list.
   selectedFor(j).clear();
   showRefineScope();
+  const ticks = [];
   const bulk = (fields) => async () => {
-    if (await decide(j, what, cases.map((c) => c.id), fields, st)) after();
+    const ids = ticks.filter((t) => t.box.checked).map((t) => t.id);
+    if (!ids.length) { setState(st, "warn", "tick the cases first"); return; }
+    if (await decide(j, what, ids, fields, st)) after();
   };
   box.append(el("div", { class: "row" },
-    el("button", { type: "button", title: "approve every case", on: { click: bulk({ state: "approved" }) } }, "Approve"),
-    el("button", { type: "button", class: "danger", title: "reject every case", on: { click: bulk({ state: "rejected" }) } }, "Reject"),
+    el("button", { type: "button", title: "approve the ticked cases", on: { click: bulk({ state: "approved" }) } }, "Approve"),
+    el("button", { type: "button", class: "danger", title: "reject the ticked cases", on: { click: bulk({ state: "rejected" }) } }, "Reject"),
     el("small", { text: `${counts.approved} approved, ${counts.rejected} rejected, ${counts.proposed} not yet decided` }),
     st));
   const headers = design ? ["Approve", "Automate", "Case", "Title", "Endpoint", "Suites", "Steps",
@@ -1357,10 +1363,8 @@ function reviewTable(j, what, cases, entries, after, done, change, suites, descs
     const e = entryOf(c);
     const state = stateOf(c);
     const approve = el("input", { type: "checkbox" });
-    approve.checked = state === "approved";
-    approve.onchange = async () => {
-      if (await decide(j, what, [c.id], { state: approve.checked ? "approved" : "rejected" }, st)) after();
-    };
+    approve.title = `${state} now: tick, then press Approve or Reject above the table`;
+    ticks.push({ id: c.id, box: approve });
     const automate = el("input", { type: "checkbox" });
     automate.checked = e.automate !== false;
     automate.onchange = async () => {
@@ -1620,8 +1624,8 @@ async function showReview(what) {
 const STAGE_AT = {
   "Read it": ["new", "story"], "Generate": ["new", "run-design"], "Review": ["new", "design-review"],
   "Finalize": ["new", "wf-finalize"], "Xray tests": ["new", "xray-design-create"],
-  "Automate": ["new", "auto-selected"], "Execution": ["agent", "wf-regression"],
-  "Publish": ["agent", "agent-xray"], "Push": ["agent", "agent-push"],
+  "Automate": ["new", "auto-selected"], "Execution": ["run", "mvn-test"],
+  "Publish": ["run", "run-xray-publish"], "Push": ["agent", "agent-push"],
 };
 async function showFlow() {
   const j = job();
@@ -1822,7 +1826,10 @@ function settleXray(what, st) {
   const have = Object.keys((st.keys || {})[what] || {}).length;
   if (!(st.cases || {})[what]) setState(st0, "", `no ${what} cases in this job yet`);
   else if (!approved) setState(st0, "warn", `${st.cases[what]} case(s), none approved yet: review them above first`);
-  else setState(st0, "", `${approved} of ${st.cases[what]} case(s) approved; ${have} already in Xray`);
+  // `have` is the keys this job kept, not asked of Jira: a test deleted
+  // there since is created again by Create, and said so.
+  else setState(st0, "", `${approved} of ${st.cases[what]} case(s) approved; ${have} created in Xray before` +
+                         (have ? " (if any of those was deleted in Jira since, Create makes it again)" : ""));
 }
 
 // `fresh`: ask the server again now. Otherwise the last answer kept for
@@ -1926,7 +1933,8 @@ function startXrayCreate(what, extra) {
       (st.mock_jira ? "MOCK: this changes a file on this machine. No Jira is contacted.\n\n"
                     : "This CREATES ISSUES IN JIRA now, and they cannot be deleted from here.\n\n") +
       `From job ${j}: up to ${Math.max(0, n - have)} new Test issue(s) in the project of ${story}, one an approved case, ` +
-      `each linked to ${story}.${have ? ` ${have} case(s) already have a test and are not created again.` : ""}\n\n` +
+      `each linked to ${story}.${have ? ` ${have} case(s) were created before and are not created again, ` +
+        "unless their test was deleted in Jira since." : ""}\n\n` +
       "Type the story key again to go ahead:");
     if (again === null) return;
     if (!again.trim()) { setState($(`xray-${what}-state`), "bad", "nothing was typed, so nothing was written"); return; }
@@ -2458,7 +2466,10 @@ for (const r of document.querySelectorAll('input[name="run-what"]')) {
   r.onchange = () => { runWhatTouched = true; runProjectTouched = false; showRunWhat(); followRunProject(); };
 }
 $("run-suites-refresh").onclick = async () => { await loadRunTargets(); await followRunProject(); };
-function runBusy(on) { for (const id of ["mvn-compile", "mvn-test"]) $(id).disabled = on; }
+function runBusy(on) {
+  for (const id of ["mvn-compile", "mvn-test"]) $(id).disabled = on;
+  if (on) $("run-xray-publish").disabled = true;          // opened again by the run's result
+}
 // The Allure report of the last run: served by the workbench on a port of
 // its own (another origin: the report shows text from the APIs tested).
 async function allureLink(allure) {
@@ -2483,6 +2494,8 @@ async function showRunResult(j) {
   showRunXray();
   const r = await artifactJson(j, "mvnrun-result.json");
   const box = $("run-result");
+  // Update Xray: for a finished run with test results only.
+  $("run-xray-publish").disabled = !(r && r.what === "test" && r.tests && r.tests.length);
   if (!r) { box.replaceChildren(); $("run-ask-box").hidden = true; return; }
   const kids = [];
   const report = await allureLink(r.allure);
@@ -2646,12 +2659,14 @@ async function startRun(runnable, options) {
   } catch (e) { runBusy(false); setState($("run-state"), "bad", e.message); }
 }
 $("mvn-compile").onclick = () => startRun("mvn-compile", {});
+// Run the tests leaves Xray alone; Update Xray then sends the last run's
+// results, nothing run again (2026-11-03).
 $("mvn-test").onclick = () => {
   const what = chosen("run-what");
   // The chosen project, always named: the run must not fall back to a guess.
   const options = { "--env": $("run-env").value, "--project": runProject() };
   if ($("run-compile-first").checked) options["--compile-first"] = true;
-  if ($("run-xray").checked) options["--xray"] = true;    // else the run leaves Xray alone
+  if ($("run-xray").checked) options["--xray"] = true;    // hidden, never ticked: Xray left alone
   if ($("run-threads").value && what !== "test") options["--threads"] = $("run-threads").value;
   if (what === "job") options["--suite"] = jobSuite();
   if (what === "suite") options["--suite"] = $("run-suite").value;
@@ -2660,6 +2675,34 @@ $("mvn-test").onclick = () => {
   const named = options["--suite"] || options["--test"] || options["--group"];
   if (!named) { setState($("run-state"), "bad", `name the ${what} to run`); return; }
   startRun("mvn-test", options);
+};
+$("run-xray-publish").onclick = async () => {
+  const j = runJob();
+  const r = await artifactJson(j, "mvnrun-result.json");
+  if (!r || r.what !== "test" || !r.tests) { setState($("run-state"), "bad", "there is no finished run to send"); return; }
+  const what = r.suite || (r.test ? `-Dtest=${r.test}` : `group ${r.group}`);
+  const exec = $("run-xray-exec").value.trim().toUpperCase();
+  if (exec && !/^[A-Z][A-Z0-9_]{0,19}-[0-9]{1,9}$/.test(exec)) {
+    setState($("run-state"), "bad", `${exec} is not a Jira issue key (like ABC-123)`); return;
+  }
+  if (!confirm(`Send the last run's results to Xray ${exec ? `into the existing Test Execution ${exec}` : "as a new Test Execution"}?` +
+               `\n\n${what} on ${r.env}: ${r.passed} passed, ${r.failed} failed, ${r.skipped} skipped. Nothing is run again.`)) return;
+  $("run-xray-publish").disabled = true;
+  const options = { "--job": j, "--last-run": true };
+  if (exec) options["--execution"] = exec;
+  try {
+    await post("/api/start", { job: j, runnable: "xray-publish", options });
+    // Its own log, not the run's: the run's log stays on screen.
+    follow("xray-publish", document.createElement("pre"), $("run-state"), async (st) => {
+      // Another job opened meanwhile: its tab is not this send's to write on.
+      if (j !== runJob()) return;
+      const pub = await artifactJson(j, "xray-publish.json");
+      $("run-xray-publish").disabled = $("mvn-test").disabled;   // a run started meanwhile keeps it off
+      // Only this press's outcome: an earlier publish's file is not shown as it.
+      if (pub && st && st.exit_code === 0) $("run-result").prepend(banner(pub.ok ? "ok" : "bad", xrayPublished(pub)));
+      if (typeof showFlow === "function") showFlow();
+    }, j);
+  } catch (e) { $("run-xray-publish").disabled = false; setState($("run-state"), "bad", e.message); }
 };
 $("mvn-stop").onclick = async () => {
   const j = runJob();
@@ -2882,7 +2925,7 @@ function followConvertFix(j, then) {
     const r = await artifactJson(j, "convert-fix.json");
     const kids = [];
     const conv = (r && r.converted) || {};
-    const xmlOf = (suite) => conv[suite] ? `: run ${conv[suite]} on the Run tests tab` : "";
+    const xmlOf = (suite) => conv[suite] ? `: run ${conv[suite]} on the Execute Tests tab` : "";
     if (r && r.compiles) {
       const names = Object.keys(conv).sort();
       if (names.length) for (const suite of names) kids.push(banner("ok", `Suite ${suite} compiles${xmlOf(suite)}.`));
@@ -3828,8 +3871,15 @@ async function showIssue(j, review) {
   if (j !== job()) return;
   issueShown = { job: j, branch: (ib && ib.branch) || "" };
   const key = String((intake && intake.story && intake.story.key) || "").toUpperCase();
-  $("issue-name").textContent = ib && ib.branch ? `${ib.branch}${ib.local ? " (checked out here)" : ""}`
-    : key ? `${$("issue-prefix").value}${key}` : "read the story by its key first";
+  // The box: the job's branch when it has one, else issue/<story key> --
+  // what was typed for this job is kept.
+  const box = $("issue-branch");
+  if (box.dataset.job !== j || !box.value.trim()) {
+    box.value = (ib && ib.branch) || (key ? `issue/${key}` : "");
+    box.dataset.job = j;
+  }
+  $("issue-name").textContent = ib && ib.branch ? (ib.local ? "checked out here" : "")
+    : key ? "or a sub-task's key; feature/ also works" : "read the story by its key first";
   // Another job's words never stay: this job's branch, or nothing.
   if (ib && ib.branch) {
     setState($("issue-state"), ib.local ? "ok" : "warn", ib.local
@@ -3837,9 +3887,8 @@ async function showIssue(j, review) {
   } else setState($("issue-state"), "", "");
   const pushed = rv && rv.state === "pushed" && ib && rv.branch === ib.branch;
   const green = rv && rv.execution && rv.execution.ok;
-  $("issue-mr-row").hidden = !(ib && ib.branch);
   $("issue-mr").disabled = !(pushed && green);
-  $("issue-mr").title = !(ib && ib.branch) ? "no issue branch for this job"
+  $("issue-mr").title = !(ib && ib.branch) ? "no issue branch for this job: create it on the Automate Test Case tab first"
     : !pushed ? `Approve & push to ${ib.branch} first` : !green ? "Run the tests: every test passing" : "";
   // A refusal said by the last press stays until there is a merge request to show.
   if (mr && mr.url) {
@@ -3848,13 +3897,16 @@ async function showIssue(j, review) {
       ` ${mr.source} -> ${mr.target}`);
   }
 }
-$("issue-prefix").onchange = () => showIssue();
 $("issue-create").onclick = async () => {
   const j = job();
   if (!j) { setState($("issue-state"), "bad", "name the job first"); return; }
+  const name = $("issue-branch").value.trim();
+  if (!/^(issue|feature)\/[A-Za-z][A-Za-z0-9_]*-[0-9]+$/.test(name)) {
+    setState($("issue-state"), "bad", "name the branch as issue/B2B-1234 or feature/B2B-1234"); return;
+  }
   try {
     await post("/api/start", { job: j, runnable: "issue-branch",
-                               options: { "--job": j, "--prefix": $("issue-prefix").value } });
+                               options: { "--job": j, "--name": name } });
     // Its own log (not Automate's pane, which a running Automate writes);
     // a refusal stays in the state line.
     follow("issue-branch", document.createElement("pre"), $("issue-state"),
@@ -3989,7 +4041,7 @@ async function refreshReview() {
   $("agent-compile").disabled = !(["pending-review", "verify-failed", "approved-local", "pushed"].includes(state));
   // Any run is published, passed or not; the push still needs a green one.
   $("agent-xray").disabled = !ran;
-  $("agent-xray").title = ran ? "" : "run the tests first: there is no run to publish";
+  $("agent-xray").title = ran ? "" : "run This job's new tests on the Execute Tests tab first: there is no run to publish";
   artifactJson(shown, "xray-publish.json").then((r) => {
     const box = $("agent-xray-result");
     box.replaceChildren();
@@ -3997,7 +4049,7 @@ async function refreshReview() {
   });
   if (state === "pending-review" && newTests && !review.mock && (!ran || !ran.ok)) {
     $("agent-push").disabled = true;
-    $("agent-push").title = ran ? `the last run on ${ran.env} did not pass: ${ran.why}` : "run the tests first: only a change whose tests all passed is pushed";
+    $("agent-push").title = ran ? `the last run on ${ran.env} did not pass: ${ran.why}` : "run This job's new tests on the Execute Tests tab first: only a change whose tests all passed is pushed";
   }
   const runBox = $("agent-run-result");
   if (runBox) {
@@ -4651,7 +4703,33 @@ function sameJobOrRefresh(btn) {
   refreshReview();
   return false;
 }
-$("agent-push").onclick = () => {
+// Approve needs AI Agent's review of exactly this change (policy
+// require_case_check). Review the change is hidden (2026-11-03): Approve runs
+// the review first when this diff has none, then approves -- the server
+// still refuses a review with a serious finding, and says which.
+async function reviewIsOfThisDiff(j) {
+  try {
+    const got = await api(`/api/artifact?job=${encodeURIComponent(j)}&name=code-review.json`);
+    const r = got.text ? JSON.parse(got.text) : null;
+    return Boolean(r && r.kind === "code-review" && got.diff_sha256 && r.diff_sha256 === got.diff_sha256);
+  } catch { return false; }
+}
+function reviewThenApprove(j, options) {
+  setState($("agent-state"), "run", "AI Agent reviews the change against its cases first; Approve follows");
+  agentRunning = "agent-review";
+  post("/api/start", { job: j, runnable: "agent-review", options: { "--job": j } })
+    .then(() => follow("agent-review", $("agent-log"), $("agent-state"), async (st) => {
+      refreshReview();
+      if (j !== job()) return;
+      if (st && st.exit_code !== 0 || !(await reviewIsOfThisDiff(j))) {
+        setState($("agent-state"), "bad", "the review did not finish, so nothing was approved or pushed: the log says why");
+        return;
+      }
+      runAgent("agent-approve", options);
+    }, j))
+    .catch((e) => setState($("agent-state"), "bad", e.message));
+}
+$("agent-push").onclick = async () => {
   if (!sameJobOrRefresh($("agent-push"))) return;
   const j = job();
   const pushes = $("agent-push").dataset.pushable !== "false";
@@ -4674,6 +4752,9 @@ $("agent-push").onclick = () => {
   if (!confirm(msg)) return;
   const options = { "--job": j, "--confirm": j };
   if (pushes) { options["--base"] = base; if ($("agent-branch").value.trim()) options["--branch"] = branch; }
+  const waiting = await artifactJson(j, "review.json");
+  const newTests = pushes && waiting && (waiting.scope || "new-test") === "new-test" && !waiting.mock;
+  if (newTests && !(await reviewIsOfThisDiff(j))) { reviewThenApprove(j, options); return; }
   runAgent("agent-approve", options);
 };
 onTab.agent = () => { showRepo(); focusUnfinishedWorkbench(); refreshPublish(false); };

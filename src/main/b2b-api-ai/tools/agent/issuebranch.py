@@ -1,6 +1,6 @@
 """The job's issue branch on GitLab, and its merge request.
 
-    python tools/agent/issuebranch.py start --job J [--prefix issue/]
+    python tools/agent/issuebranch.py start --job J [--prefix issue/ | --name issue/B2B-1235]
     python tools/agent/issuebranch.py mr --job J
 
 The team works in issue branches: before Automate, `issue/<story key>`
@@ -9,7 +9,9 @@ and checked out here, so the job's change -- and every later change of the
 same story -- goes into it. Approve & push then commits on top of
 `origin/issue/<key>` and pushes to it (loop.cmd_approve). Once the change
 is pushed there with a green run, `mr` raises the merge request from the
-issue branch to `develop` (asked for 2026-11-02).
+issue branch to `develop` (asked for 2026-11-02). The page names the
+branch in a text box, filled with `issue/<story key>`, so a sub-task's key
+can be used instead (`--name`, 2026-11-03).
 
 `testrepo_config` in the project's program_configuration.json (Settings
 tab, "Test repository (GitLab)"):
@@ -211,12 +213,21 @@ def ensure_branch(cfg: dict, name: str, transport=None) -> dict:
 
 # ---- start: the issue branch, on GitLab then here ------------------------------------
 
-def cmd_start(job: str, prefix: str = "issue/", root: str = "", transport=None, local=None) -> dict:
+def cmd_start(job: str, prefix: str = "issue/", root: str = "", transport=None, local=None,
+              name: str = "") -> dict:
+    """`name`: the branch as typed on the page (issue/B2B-1235 -- a sub-task's
+    key, say); without it, `prefix` + the story's key."""
     root = root or ROOT
     intake = _tool("intake")
     jd = intake.job_dir(intake.safe_job(job), root)
-    key = _tool("loop").story_key_of(jd)
-    name = branch_name(prefix, key)
+    if (name or "").strip():
+        head, slash, key = name.strip().partition("/")
+        if not slash or not _KEY_RX.match(key.strip().upper()):
+            raise Refused(f"name the branch as {' or '.join(p + 'B2B-1234' for p in PREFIXES)}, "
+                          f"not {name.strip()!r}")
+        name = branch_name(head + "/", key)
+    else:
+        name = branch_name(prefix, _tool("loop").story_key_of(jd))
     cfg = config(root, intake.job_project(jd))
     say(f" ..  {name} on GitLab ({cfg['project']}), from {cfg['target']} when it is not there yet")
     got = ensure_branch(cfg, name, transport)
@@ -293,8 +304,8 @@ def cmd_mr(job: str, root: str = "", transport=None) -> dict:
         raise Refused(f"the change is not pushed to {branch} yet: Approve & push first")
     ran = review.get("execution") or {}
     if not ran.get("ok"):
-        raise Refused("the merge request waits for a green run of the pushed change: Run the tests, "
-                      "every test passing")
+        raise Refused("the merge request waits for a green run of the pushed change: run This "
+                      "job's new tests on the Execute Tests tab, every test passing")
     cfg = config(root, intake.job_project(jd))
     key = _tool("loop").story_key_of(jd)
     status, data = call(cfg, "GET", "/merge_requests?state=opened&source_branch="
@@ -327,12 +338,13 @@ def main(argv=None) -> int:
     s = sub.add_parser("start")
     s.add_argument("--job", required=True)
     s.add_argument("--prefix", default="issue/")
+    s.add_argument("--name", default="", help="the whole branch name, e.g. issue/B2B-1235 (a sub-task)")
     m = sub.add_parser("mr")
     m.add_argument("--job", required=True)
     a = ap.parse_args(argv)
     try:
         if a.cmd == "start":
-            cmd_start(a.job, a.prefix)
+            cmd_start(a.job, a.prefix, name=a.name)
         else:
             cmd_mr(a.job)
         return 0

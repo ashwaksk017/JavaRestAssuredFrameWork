@@ -927,8 +927,11 @@ python tools/agent/devcode.py --job <job> --repo <url> --branch <branch> [--tick
 
 #### Refining one case, some, or all
 
-Each row of the review has two ticks, **Approve** and **Automate**; above
-the table, **Approve** and **Reject** decide every case at once. A
+Each row of the review has two ticks, **Approve** and **Automate**. The
+Approve tick picks the case and starts empty (the case's state --
+approved, rejected, proposed -- is in its Case cell); **Approve** and
+**Reject** above the table then decide the cases ticked now, and only
+those. A
 refinement is of the whole list: name the cases to change in the request
 (e.g. "split TC-004"), and the cases it leaves alone keep your decisions.
 
@@ -1583,9 +1586,12 @@ write paths there.
 #### Review the change
 
 **Review the change** asks Cursor to read what it just proposed and list
-what looks wrong, before you approve. It is on whenever a change is
-waiting (PENDING REVIEW or VERIFY FAILED). You give it nothing: it reads
-the job's `proposed.diff`, the same text shown under it.
+what looks wrong, before you approve. Its button is hidden since
+2026-11-03: **Approve & push** runs it first whenever this exact diff has
+no review yet (policy `require_case_check`), then approves -- a serious
+`case` finding still stops the push and is listed in the Code review
+section. You give it nothing: it reads the job's `proposed.diff`, the
+same text shown under it.
 
 What comes back is a table -- severity, file and line, what is wrong and
 why, the line itself, a suggested change -- and `code-review.md`, the
@@ -1843,10 +1849,11 @@ run. A saved digest from somewhere else can be recorded from a console
 
 Between a proposal and anything that acts on it, a person says which
 cases stand. Under the design on the Automate Test Case tab, and under
-the cases on the Manual tests tab, each case has **Approve** (ticked:
-approved; unticked after a tick: rejected), **Automate** (design only:
+the cases on the Manual tests tab, each case has an **Approve** tick
+(it picks the case; empty to start with -- the state is in the Case cell), **Automate** (design only:
 Cursor should write this one), a **title** that can be corrected in
-place, and a **note**. *Approve* and *Reject* above the table do the lot. Each
+place, and a **note**. *Approve* and *Reject* above the table decide the
+ticked cases only. Each
 decision is saved as it is made, in the job's `case-review.json`.
 
 What the decision does:
@@ -2183,12 +2190,21 @@ starts and deletes their files at once (`paste.py`, under
 start removes them. A design asked with images is never answered from the
 kept replies, which never saw them.
 
-**Xray is updated only when asked.** A run on the Run tests tab leaves
-Xray alone unless *Update the Test Execution in Xray* is ticked beside it
-(the run passes `-Dxray.enabled=false`, which beats every configuration
-file); ticked, the suite's listener updates the Test Execution when Xray
-is switched on in the Settings tab. The Commit and push tab's run never
-updates Xray itself: **Publish to Xray** does.
+**Xray is updated only when asked.** On the Execute Tests tab, **Run the
+tests** leaves Xray alone (the run passes `-Dxray.enabled=false`, which
+beats every configuration file). **Update Xray** then sends the last
+finished run's results -- any suite, class or group -- as a new Test
+Execution, or into the existing one named in the **Test Execution** box
+above the buttons (its summary, description and plan left as they are; it
+must be a Test Execution), without running anything again
+(`xraypublish.py --last-run [--execution KEY]`):
+each test by its Xray key (`jira_xray_id` in its row, else `@XrayTest`),
+one without a key listed, never guessed; the same run is never sent twice.
+That is the Publish step of the workflow (2026-11-03): the
+Commit and push tab's **Publish to Xray**, **Dismiss**, **Review the
+change** and **Stop** are hidden, still in the page. Without Publish to
+Xray, nothing puts results into an existing Test Execution or adds the
+regression tests to the regression Test Set / Plan.
 
 ### The workflow, stage by stage
 
@@ -2203,7 +2219,7 @@ Each stage is a link to where it is done, and the server holds the gates
 | Stage | Done when | It unlocks |
 |---|---|---|
 | Finalize | **Finalize the cases** (under the review): the approved cases -- titles, steps, suites, Automate -- frozen. An edit afterwards reopens it. | For a job with designed cases: Create in Xray, Automate, Ask AI Agent, a follow-up, Run the tests and Approve |
-| Execution | **Confirm the regression cases** (Commit and push tab: the automated cases in the `regression` group, for the change as it is now -- a follow-up or another Automate needs it again; Publish adds exactly these to the regression Test Set / Plan), then **Run the tests** beside it, on the environment chosen there (the Settings tab's by default): every test passed (a row switched off in its sheet aside; an attempt retried to a pass is not a skip). It can be run again after the change is approved or pushed; only a run while it waits for review opens the push. The run leaves Xray alone -- Publish does that. **Compile** beside it compiles the project and lists the errors in the change's own files first. | Approve & push -- for a run on the Settings tab's environment, of exactly these files |
+| Execution | **This job's new tests** run on the Execute Tests tab (**Run the tests**; **Update Xray** beside it then sends the run's results): a whole run of the job's suite is recorded as the change's run (2026-11-03; a re-run of only the failed tests is not). Every test passed (a row switched off in its sheet aside; an attempt retried to a pass is not a skip). It can be run again after the change is approved or pushed; only a run while it waits for review opens the push. The regression cases are no longer confirmed by hand: Publish adds the run's tests in the `regression` group to the regression Test Set / Plan. | Approve & push -- for a run on the Settings tab's environment, of exactly these files |
 | Publish | **Publish to Xray**: any run, passed or not -- a failure is a result Xray should hold too (the push still needs a green run; publishing does not). A new Test Execution with the run's results (publishing the same run again as a new one is refused), or, with a key in the box beside the button, the results put into that **existing** Test Execution (its summary, description and plan left as they are; it must be a Test Execution). Once the change is pushed, the confirmed regression cases are added to the regression Test Set / Plan (Settings tab); before that they are not -- publish again after the push. If adding them fails, the execution is still on record. | -- |
 | Push | **Approve & push** to `feature_<story key>` (`feature_<job>` without one; `feature_<key>_<job>` when the story's branch exists already). | Publish to Xray |
 
@@ -2212,8 +2228,9 @@ Each stage is a link to where it is done, and the server holds the gates
 The team works in issue branches. Before **Automate**, the Automate Test
 Case tab's **Create the issue branch** (`issuebranch.py start`):
 
-1. makes `issue/<story key>` -- or `feature/<story key>`, chosen beside
-   the button -- from `develop` **on GitLab**, or takes it when it is
+1. makes the branch named in the **Issue branch** box -- filled with
+   `issue/<story key>`; type a sub-task's key, or `feature/`, instead --
+   from `develop` **on GitLab**, or takes it when it is
    there already (the story's jobs collect in one branch);
 2. fetches it and switches this working tree to it -- on a clean tree
    only, with no job running (as **Switch to it**). Refused here, the
@@ -2224,8 +2241,8 @@ Case tab's **Create the issue branch** (`issuebranch.py start`):
 its own. It refuses when the local branch has commits GitLab does not
 have, or is checked out and behind GitLab (pull it first).
 
-**Raise MR to develop** on the Commit and push tab (`issuebranch.py mr`)
-opens once the change is pushed to the issue branch with every test
+**Create Merge Request** on the Commit and push tab (`issuebranch.py mr`),
+from the issue branch to `develop`, opens once the change is pushed to the issue branch with every test
 passing. Title: the story key and summary; description: the run and the
 files. An open merge request for the same branches is shown, not made
 again.

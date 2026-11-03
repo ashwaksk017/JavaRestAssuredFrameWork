@@ -95,6 +95,56 @@ class Base(unittest.TestCase):
         return rc, buf.getvalue()
 
 
+class TheJobsRunCountsForApprove(Base):
+    """The Commit and push tab's Run the tests went (2026-11-03): a whole run
+    of the job's suite on Execute Tests is the change's run Approve reads."""
+
+    PASSING = RESULTS.replace('failed="1"', 'failed="0"').replace('passed="1"', 'passed="2"') \
+        .replace('<test-method status="FAIL" name="bad" duration-ms="300"><exception class="AssertionError">'
+                 '<message>expected 200 but was 404</message></exception></test-method>',
+                 '<test-method status="PASS" name="bad" duration-ms="300"/>')
+
+    def setUp(self):
+        super().setUp()
+        self.job_dir = os.path.join(self.root, ".workbench", "job-1")
+        write(self.root, ".workbench/job-1/review.json", json.dumps(
+            {"state": "pending-review", "scope": "new-test",
+             "files": {"created": ["src/test/java/com/hi/api/tests/jira/FooTest.java"]}}))
+
+    def review(self):
+        with io.open(os.path.join(self.job_dir, "review.json"), encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_a_whole_run_of_the_jobs_suite_is_recorded_with_the_files_hashes(self):
+        rc, said = self.quiet(mr.cmd_test, self.job_dir, self.root, suite="Suites/jira/job-1.xml", env="stg",
+                              project="b2b", compile_first=True, runner=self.runner(results=self.PASSING, rc=0))
+        ran = self.review().get("execution") or {}
+        self.assertTrue(ran.get("ok"), said)
+        self.assertEqual(list(ran["hashes"]), ["src/test/java/com/hi/api/tests/jira/FooTest.java"])
+        self.assertTrue(os.path.isfile(os.path.join(self.job_dir, "execution.json")))
+        self.assertTrue(self.result()["counts_for_approve"])
+
+    def test_only_what_approve_would_accept_counts(self):
+        for kw, words in (({"project": "goal"}, "GOAL's configuration"),
+                          ({"compile_first": False}, "clean build first"),
+                          ({"env": "qa"}, "Approve wants a run on stg")):
+            args = dict({"suite": "Suites/jira/job-1.xml", "env": "stg", "project": "b2b",
+                         "compile_first": True}, **kw)
+            if kw.get("project") == "goal":
+                write(self.root, "src/main/resources/program_configuration.goal.json", json.dumps(
+                    {"stg": {"services": {"hospitality_internal_all_v2": "https://goal.example.test",
+                                          "hospitality_partner_v2": "https://partner.example.test"}}}))
+            rc, said = self.quiet(mr.cmd_test, self.job_dir, self.root, runner=self.runner(results=self.PASSING, rc=0),
+                                  **args)
+            self.assertNotIn("execution", self.review(), kw)
+            self.assertIn(words, self.result().get("why_not_counted", ""), said)
+
+    def test_another_suite_is_not_the_changes_run(self):
+        self.quiet(mr.cmd_test, self.job_dir, self.root, suite="Suites/jira/group-smoke.xml", env="stg",
+                   project="b2b", runner=self.runner(results=self.PASSING, rc=0))
+        self.assertNotIn("execution", self.review())
+
+
 class ChosenProject(Base):
     """The project chosen on the Run tests tab decides the configuration
     file, the default environment and -Dconfig.project; a converted suite
