@@ -4669,6 +4669,63 @@ class CallingCursor(unittest.TestCase):
         finally:
             sys.modules.pop("cursor_sdk._client", None)
 
+    def test_warm_up_ends_the_bridge_it_started(self):
+        # Kept, the check's bridge lived as long as the server and was left
+        # running whenever the server was killed alone (2026-11-03).
+        client = types.ModuleType("cursor_sdk._client")
+        seen = []
+        client._default_client = lambda: seen.append("started")
+        client.close_default_client = lambda: seen.append("closed")
+        sys.modules["cursor_sdk"] = types.ModuleType("cursor_sdk")
+        sys.modules["cursor_sdk._client"] = client
+        try:
+            self.assertEqual(loop.cursor_call.warm_up(self.ca), (True, "started"))
+            self.assertEqual(seen, ["started", "closed"])
+        finally:
+            sys.modules.pop("cursor_sdk._client", None)
+
+
+@unittest.skipUnless(os.name == "nt", "the job object is Windows-only")
+class BridgeEndsWithItsProcess(unittest.TestCase):
+    """A Python that will talk to the AI Agent puts itself in a job object
+    first: killed alone (TerminateProcess, as a test server's terminate()
+    or End task does), what it started goes with it. 99 bridge pairs
+    (cmd.exe -> node.exe) were found left over on 2026-11-03."""
+
+    CHILD = ("import subprocess, sys, time\n"
+             "sys.path.insert(0, sys.argv[1])\n"
+             "import cursor_assist as ca\n"
+             "print(ca._end_children_with_this_process(), flush=True)\n"
+             "kid = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+             "print(kid.pid, flush=True)\n"
+             "time.sleep(120)\n")
+
+    @staticmethod
+    def alive(pid):
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True,
+                             text=True).stdout
+        return str(pid) in out
+
+    def test_a_process_killed_alone_takes_what_it_started_with_it(self):
+        conv = os.path.join(loop.ROOT, "tools", "ra_converter")
+        p = subprocess.Popen([sys.executable, "-B", "-c", self.CHILD, conv],
+                             stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(p.stdout.readline().strip(), "True", "the job object was refused")
+            kid = int(p.stdout.readline().strip())
+            self.assertTrue(self.alive(kid))
+            p.kill()                                    # the Python alone, not its tree
+            p.wait(timeout=20)
+            for _ in range(40):
+                if not self.alive(kid):
+                    break
+                time.sleep(0.25)
+            self.assertFalse(self.alive(kid), "the child outlived the process that started it")
+        finally:
+            if p.poll() is None:
+                p.kill()
+            p.stdout.close()
+
 
 class SdkBootstrap(unittest.TestCase):
     def test_an_installed_sdk_is_left_alone(self):

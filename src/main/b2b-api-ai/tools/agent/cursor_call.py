@@ -121,6 +121,14 @@ def warm_up(ca):
         _default_client()
     except Exception as e:                               # noqa: BLE001
         return False, (str(e).strip() or type(e).__name__)
+    # Only a check: the bridge is ended at once. Kept, it lived as long as
+    # the process that checked -- the server -- and was left running
+    # whenever that was killed alone (2026-11-03). A real call opens its own.
+    try:
+        from cursor_sdk._client import close_default_client
+        close_default_client()
+    except Exception:                                    # noqa: BLE001
+        pass
     return True, "started"
 
 

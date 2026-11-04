@@ -498,10 +498,82 @@ def _read_bridge_discovery(
     raise error_cls("Timed out waiting for bridge discovery")
 
 
+_CHILD_JOB: Any = None      # the job object's handle: open for this process's whole life
+
+
+def _end_children_with_this_process() -> bool:
+    """Windows: put this process in a job object that ends every process in
+    it when its last handle closes -- i.e. when this process ends, however
+    it ends. What it starts afterwards (the SDK's bridge, cmd.exe ->
+    node.exe) joins the job and goes with it.
+
+    The SDK ends its bridge only on a normal exit (atexit). A Python killed
+    alone -- a test server's terminate(), End task, a crash -- left cmd.exe
+    and node.exe running: 99 pairs were found on 2026-11-03. True when the
+    job is in place; False (nothing changed) when Windows refused it."""
+    global _CHILD_JOB
+    if os.name != "nt":
+        return False
+    if _CHILD_JOB is not None:
+        return True
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _Basic(ctypes.Structure):
+            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
+                        ("PerJobUserTimeLimit", ctypes.c_int64),
+                        ("LimitFlags", wintypes.DWORD),
+                        ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t),
+                        ("ActiveProcessLimit", wintypes.DWORD),
+                        ("Affinity", ctypes.c_size_t),
+                        ("PriorityClass", wintypes.DWORD),
+                        ("SchedulingClass", wintypes.DWORD)]
+
+        class _Io(ctypes.Structure):
+            _fields_ = [(n, ctypes.c_uint64) for n in (
+                "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+        class _Extended(ctypes.Structure):
+            _fields_ = [("BasicLimitInformation", _Basic), ("IoInfo", _Io),
+                        ("ProcessMemoryLimit", ctypes.c_size_t),
+                        ("JobMemoryLimit", ctypes.c_size_t),
+                        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                        ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                                     ctypes.c_void_p, wintypes.DWORD]
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return False
+        info = _Extended()
+        # KILL_ON_JOB_CLOSE (0x2000); BREAKAWAY_OK (0x800): a program that
+        # asks to leave the job (a browser) still may.
+        info.BasicLimitInformation.LimitFlags = 0x2000 | 0x800
+        if not (kernel32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info))
+                and kernel32.AssignProcessToJobObject(job, kernel32.GetCurrentProcess())):
+            kernel32.CloseHandle(job)
+            return False
+        _CHILD_JOB = job                 # never closed: closing it would end this process
+        return True
+    except Exception:                    # noqa: BLE001 -- a refusal changes nothing
+        return False
+
+
 def _patch_cursor_sdk_bridge_for_windows() -> None:
     """Replace cursor-sdk's select()-based bridge discovery on Windows."""
     if os.name != "nt":
         return
+    # Before any bridge starts: it then ends with this process.
+    _end_children_with_this_process()
     import cursor_sdk._bridge as bridge
     from cursor_sdk.errors import CursorSDKError
     if getattr(bridge._read_discovery, "_ra_windows_safe", False):

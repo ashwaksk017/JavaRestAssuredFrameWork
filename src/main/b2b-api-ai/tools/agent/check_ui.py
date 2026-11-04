@@ -76,6 +76,26 @@ def renders(browser: str) -> bool:
     return b"probe" in done.stdout
 
 
+def end_server(srv) -> None:
+    """End a test server WITH what it started, as `launch.py stop` does.
+    terminate() alone ended only the Python: its AI Agent bridge (cmd.exe
+    -> node.exe) was left running after every check run (2026-11-03)."""
+    if srv.poll() is not None:
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(["taskkill", "/PID", str(srv.pid), "/T", "/F"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    if srv.poll() is None:
+        srv.terminate()
+    try:
+        srv.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        srv.kill()
+
+
 def find_browser() -> str:
     """The first installed browser that renders; the names are tried
     after the known paths."""
@@ -741,7 +761,7 @@ def main() -> int:
               and (not synced_here or "RUN THIS FROM A LOCAL FOLDER" in html))
 
         # ---- mock mode, through a server that has it switched on ----------------
-        srv.terminate()
+        end_server(srv)
         store = os.path.join(ROOT, ".workbench", "mock-jira.json")
         kept = None
         if os.path.isfile(store):                 # somebody's own mock writes: put back after
@@ -1612,7 +1632,7 @@ def main() -> int:
         check("the Suite box shows for a converted suite, the Migration tab's default",
               'id="agent-suite-field" hidden' not in html and 'id="agent-suite-field"' in html)
     finally:
-        srv.terminate()
+        end_server(srv)
         search.connect, search.ROOT = saved
         shutil.rmtree(job_dir, ignore_errors=True)
         shutil.rmtree(scratch, ignore_errors=True)

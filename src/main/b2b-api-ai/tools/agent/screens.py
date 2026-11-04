@@ -95,8 +95,8 @@ def capture(job: str, root: str = "", browser: str = "", force: bool = False) ->
     wanted = tabs(root)
     if not wanted:
         return {"skipped": "the page's tabs could not be read"}
+    check_ui = _load("screens_check_ui", os.path.join(HERE, "check_ui.py"))
     if not browser:
-        check_ui = _load("screens_check_ui", os.path.join(HERE, "check_ui.py"))
         browser = check_ui.find_browser()
     if not browser:
         return {"skipped": "no Edge or Chrome was found to take the pictures"}
@@ -128,11 +128,7 @@ def capture(job: str, root: str = "", browser: str = "", force: bool = False) ->
             if os.path.isfile(path) and os.path.getsize(path) > 0:
                 taken.append({"tab": tab, "name": name, "file": f"{tab}.png"})
     finally:
-        srv.terminate()
-        try:
-            srv.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            srv.kill()
+        check_ui.end_server(srv)          # with its AI Agent bridge, not the Python alone
     result = {"tabs": taken, "browser": os.path.basename(browser),
               "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
     with io.open(os.path.join(out, LIST), "w", encoding="utf-8") as fh:

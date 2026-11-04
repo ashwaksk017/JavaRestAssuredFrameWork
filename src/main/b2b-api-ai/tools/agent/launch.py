@@ -497,7 +497,7 @@ def stop() -> int:
         return 1
     if end(there["pid"]) and who(p) is None:
         say(f"The workbench (process {there['pid']}) is stopped.\n"
-            f"A command it had started keeps running to its own end.")
+            f"Every command it had started was stopped with it (the AI Agent bridge, Maven, a job).")
         return 0
     say(f"The workbench (process {there['pid']}) did not stop. End that process by hand.")
     return 1
